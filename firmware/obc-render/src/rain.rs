@@ -31,18 +31,41 @@ pub const RAIN_TILE_CELLS: usize = RAIN_TILE_EDGE * RAIN_TILE_EDGE;
 /// The z-index boundary the rain overlay draws **below**: spans with `z >= RAIN_BELOW_Z` (the road
 /// band and everything above it) paint over rain; spans below it (the ground fills) paint under.
 ///
-/// The value leans on the packer schema's stable z ladder (`builder/presets/schema.json`, which
-/// every skin keeps verbatim — skins restyle colors, never z): ground/landuse/water fills and
-/// water lines occupy `z <= 16`, contours 8–9, buildings 10, and the road band starts at `z = 24`
-/// (track/path) with rails and boundaries above. 20 sits in the deliberate gap. Firmware-owned
-/// like the color table: a skin cannot move rain above roads.
-pub const RAIN_BELOW_Z: i8 = 20;
+/// Skins **do** carry `z_index` — the boundary holds because the z ladder's band gap `(16, 24)`
+/// is a *contract*, enforced where skins are stamped and pinned over the shipped presets; see the
+/// authority's docs at [`obc_map_scene::RAIN_BELOW_Z`] (re-exported here so render callers keep
+/// one path).
+pub use obc_map_scene::RAIN_BELOW_Z;
 
-/// Decoded-tile slots the per-frame [`RainScratch`] cache holds. Eight slots cover the widest
-/// rotated 50 km sweep's per-scanline tile staircase (measured ≤ 6 distinct tiles per row), so
-/// consecutive scanlines re-hit their tiles instead of re-reading them — the bound that keeps
-/// arbitrary heading rotation from causing per-pixel SD reads (see the `rotation_*` test).
-pub const RAIN_TILE_SLOTS: usize = 8;
+/// Decoded-tile slots the per-frame [`RainScratch`] cache holds. Within the overlay's zoom regime
+/// ([`RAIN_MAX_CELL_STEP`]) a scanline crosses at most `240 × RAIN_MAX_CELL_STEP / 16 + 2 = 7`
+/// tiles; twelve slots hold that staircase **plus** the neighbouring rows' overlap, so a tile's
+/// whole contiguous span of use stays resident and every visible tile decodes exactly once per
+/// frame at any heading anywhere in the regime (pinned across the full reachable m/px range by
+/// `decode_bound_across_the_reachable_zoom_range`; eight slots measurably re-fetched near the
+/// regime edge). The bound that keeps rotation from causing per-pixel SD reads.
+pub const RAIN_TILE_SLOTS: usize = 12;
+
+/// The overlay's **zoom regime** cap: the rain raster draws only while the per-pixel grid step
+/// along each screen axis stays at or below this many cells (L1 norm of the two fixed-point
+/// increments per axis). `1/3` means every provider cell spans **≥ 3 px** in-regime, which buys
+/// two locked properties at once:
+///
+/// - **no strong cell can vanish** — nearest-neighbour sampling cannot skip a cell that is wider
+///   than a pixel, so a storm core is always hit while the overlay draws at all (the "bounded
+///   conservative cell selection" the issue permits is unnecessary inside the regime, and outside
+///   it nothing draws rather than something wrong);
+/// - **no cache thrash** — a 240-px row crosses at most `240/3/16 + 2 = 7` tiles, inside the
+///   8-slot cache, so each visible tile decodes at most a handful of times per frame at any
+///   heading (test-pinned across the whole reachable m/px range).
+///
+/// For a 1 km product the regime covers up to ~333 m/px north-up (~236 m/px at a 45° heading) —
+/// comfortably past the locked 50 km view (~208 m/px) at every rotation; coarser products reach
+/// proportionally further out. **Out of regime the overlay draws nothing and says so**
+/// ([`RenderStats::rain_out_of_regime`], [`rain_in_regime`]): the weather screens (WX11/WX12) must
+/// read that signal and show their explicit out-of-regime state — a silent rain-free map must
+/// never be read as dry.
+pub const RAIN_MAX_CELL_STEP: f64 = 1.0 / 3.0;
 
 /// A rain product's placement: a regular lat/lon grid in integer microdegrees, `width × height`
 /// cells spanning the half-open box `[west, east) × [south, north)`, row 0 at the **south** edge —
@@ -209,31 +232,17 @@ fn to_fp(value: f64) -> Option<i64> {
     }
 }
 
-/// Draw the rain overlay over the already-painted low-z map band.
-///
-/// One pass over the panel in scan order. The screen→grid transform is affine (the viewport's
-/// rotate/scale/translate composed with the grid's linear lat/lon → cell map), so cell coordinates
-/// are walked with per-pixel Q31.32 **fixed-point increments** — floor of the accumulator is the
-/// nearest-neighbour provider cell, bit-exactly reproducible. Per pixel the steady-state work is
-/// two adds and a cell-change compare; tiles are decoded through the per-frame
-/// [`RainScratch`] cache, at most once per tile per frame (failures included).
-pub(crate) fn draw_rain<D, F>(
-    target: &mut D,
-    vp: &Viewport,
-    scratch: &mut RainScratch,
-    source: &mut dyn RainOverlaySource,
-    color_fn: &F,
-    stats: &mut RenderStats,
-) where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    let Some(grid) = source.grid() else { return };
+/// The setup-time affine screen→cell map, in f64: `(col00, row00, dcol_dx, dcol_dy, drow_dx,
+/// drow_dy)` at pixel centers, or `None` for a degenerate grid/camera. One derivation shared by
+/// [`draw_rain`] and [`rain_in_regime`], so the regime answer a screen shows and the walk the
+/// renderer runs can never disagree.
+#[allow(clippy::type_complexity)]
+fn grid_affine(vp: &Viewport, grid: &RainGrid) -> Option<(f64, f64, f64, f64, f64, f64)> {
     let (width, height) = (grid.width_cells as i64, grid.height_cells as i64);
     let lon_span = grid.east_udeg as i64 - grid.west_udeg as i64;
     let lat_span = grid.north_udeg as i64 - grid.south_udeg as i64;
     if width <= 0 || height <= 0 || lon_span <= 0 || lat_span <= 0 {
-        return;
+        return None;
     }
     let zoom = vp.zoom as f64;
     let aspect = vp.aspect as f64;
@@ -241,13 +250,8 @@ pub(crate) fn draw_rain<D, F>(
     if zoom.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater)
         || aspect.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater)
     {
-        return;
+        return None;
     }
-    scratch.reset();
-
-    // The affine screen→cell map, derived once per frame in f64 (exactly `Viewport::to_map`
-    // composed with the OBCW cell formula), then frozen into Q31.32. Sampling is at pixel
-    // centers (x + 0.5, y + 0.5).
     let (sin_c, cos_c) = (libm::sin(vp.course_rad as f64), libm::cos(vp.course_rad as f64));
     let kx = width as f64 / lon_span as f64; // cells per microdegree of longitude
     let ky = height as f64 / lat_span as f64; // cells per microdegree of latitude
@@ -260,11 +264,83 @@ pub(crate) fn draw_rain<D, F>(
     let dcol_dy = -sin_c / (zoom * aspect) * kx;
     let drow_dx = -sin_c / zoom * ky;
     let drow_dy = -cos_c / zoom * ky;
+    Some((col00, row00, dcol_dx, dcol_dy, drow_dx, drow_dy))
+}
+
+/// Whether the overlay is inside its zoom regime for this viewport and grid — the shared authority
+/// behind [`draw_rain`]'s gate and [`RenderStats::rain_out_of_regime`], public so the weather
+/// screens (WX11) and decision logic (WX12) ask the *same* predicate before deciding what an
+/// absent overlay means. `false` when the per-pixel grid step exceeds [`RAIN_MAX_CELL_STEP`] on
+/// either screen axis, or the grid/camera is degenerate. Out of regime the overlay draws nothing —
+/// and the screen owning the frame must present that as its explicit out-of-regime state, never as
+/// a dry map.
+pub fn rain_in_regime(vp: &Viewport, grid: &RainGrid) -> bool {
+    let Some((_, _, dcol_dx, dcol_dy, drow_dx, drow_dy)) = grid_affine(vp, grid) else {
+        return false;
+    };
+    let step_x = dcol_dx.abs() + drow_dx.abs();
+    let step_y = dcol_dy.abs() + drow_dy.abs();
+    step_x <= RAIN_MAX_CELL_STEP && step_y <= RAIN_MAX_CELL_STEP
+}
+
+/// Draw the rain overlay over the already-painted low-z map band.
+///
+/// One pass over the panel in scan order. The screen→grid transform is affine (the viewport's
+/// rotate/scale/translate composed with the grid's linear lat/lon → cell map), so cell coordinates
+/// are walked with per-pixel Q31.32 **fixed-point increments** — floor of the accumulator is the
+/// nearest-neighbour provider cell, bit-exactly reproducible. Per pixel the steady-state work is
+/// two adds and a cell-change compare; inside the zoom regime ([`RAIN_MAX_CELL_STEP`]) tiles are
+/// decoded through the per-frame [`RainScratch`] cache at most once per tile per frame (failures
+/// included), and outside it the overlay draws nothing and sets
+/// [`RenderStats::rain_out_of_regime`].
+pub(crate) fn draw_rain<D, F>(
+    target: &mut D,
+    vp: &Viewport,
+    scratch: &mut RainScratch,
+    source: &mut dyn RainOverlaySource,
+    color_fn: &F,
+    stats: &mut RenderStats,
+) where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let Some(grid) = source.grid() else { return };
+    // The affine screen→cell map, derived once per frame in f64 (exactly `Viewport::to_map`
+    // composed with the OBCW cell formula), then frozen into Q31.32. Sampling is at pixel
+    // centers (x + 0.5, y + 0.5).
+    let Some((col00, row00, dcol_dx, dcol_dy, drow_dx, drow_dy)) = grid_affine(vp, &grid) else {
+        stats.rain_out_of_regime = true;
+        return;
+    };
+    let (width, height) = (grid.width_cells as i64, grid.height_cells as i64);
+
+    // The zoom-regime gate ([`RAIN_MAX_CELL_STEP`]): out of regime the overlay draws nothing and
+    // reports it — the owning screen presents that state explicitly, never as a dry map.
+    if !(dcol_dx.abs() + drow_dx.abs() <= RAIN_MAX_CELL_STEP && dcol_dy.abs() + drow_dy.abs() <= RAIN_MAX_CELL_STEP) {
+        stats.rain_out_of_regime = true;
+        return;
+    }
+
+    // Overflow bound for the whole Q31.32 walk, checked in f64 before freezing: the accumulator's
+    // magnitude anywhere on the panel is at most |seed| + h·|row step| + w·|column step|, and
+    // keeping that under 2³⁰ **cells** keeps every fixed-point sum under 2⁶² — no i64 wrap even
+    // with validation-legal extreme metadata (a u16::MAX-cell grid over a 1 µdeg span). Violation
+    // draws nothing rather than fabricating cells from wrapped arithmetic.
+    let bound = (1u64 << 30) as f64;
+    let (w_f, h_f) = (vp.w as f64, vp.h as f64);
+    if !(col00.abs() + h_f * dcol_dy.abs() + w_f * dcol_dx.abs() < bound
+        && row00.abs() + h_f * drow_dy.abs() + w_f * drow_dx.abs() < bound)
+    {
+        stats.rain_out_of_regime = true;
+        return;
+    }
     let (Some(col00), Some(row00), Some(dcol_dx), Some(dcol_dy), Some(drow_dx), Some(drow_dy)) =
         (to_fp(col00), to_fp(row00), to_fp(dcol_dx), to_fp(dcol_dy), to_fp(drow_dx), to_fp(drow_dy))
     else {
+        stats.rain_out_of_regime = true;
         return;
     };
+    scratch.reset();
 
     // Resolve all 16 intensity styles through the caller's color quantizer once per frame.
     let lut: [(D::Color, u8); 16] = core::array::from_fn(|i| {
@@ -520,20 +596,119 @@ mod tests {
         assert_eq!((source.fetches, stats.rain_tiles), (0, 0));
     }
 
-    /// The rotation/SD-thrash bound: across a full sweep of headings at the widest supported view,
-    /// each frame decodes each visible tile **once** — fetches never exceed the product's total
-    /// tile count (36 for the DWD shape), and never approach per-scanline re-reading.
+    /// The rotation/SD-thrash bound, re-pinned across the **whole reachable m/px range** (the
+    /// app's zoom clamp reaches ~111 km/px — adversarial review of this PR) at every heading:
+    /// in regime, fetches never exceed the 36-tile product (no per-scanline re-reading at any
+    /// rotation — the regime cap keeps a row's tile staircase inside the 8-slot cache); out of
+    /// regime the overlay decodes nothing, paints nothing, and reports itself
+    /// ([`RenderStats::rain_out_of_regime`]); the public [`rain_in_regime`] predicate agrees with
+    /// the drawn outcome at every point; and the locked 50 km view (~208 m/px) stays **in**
+    /// regime for a 1 km product at every heading.
     #[test]
-    fn rotation_never_causes_cache_thrash() {
+    fn decode_bound_across_the_reachable_zoom_range() {
         let grid = dwd_grid();
-        // ~50 km across 240 px ≈ 208 m/px → zoom = m-per-udeg-lat / mpp ≈ 0.111/208.
+        for mpp in [1.0_f32, 5.0, 10.0, 50.0, 100.0, 208.0, 250.0, 300.0, 350.0, 400.0, 800.0, 3_000.0, 111_000.0] {
+            let zoom = crate::viewport::zoom_for_mpp(mpp);
+            for course_deg in (0..360).step_by(15) {
+                let vp =
+                    Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, zoom, (course_deg as f32).to_radians());
+                let mut source = TestSource { grid, pattern: |_, _| 12, fetches: 0 };
+                let (frame, stats) = draw(&vp, &mut source, 240, 320);
+                assert_eq!(
+                    super::rain_in_regime(&vp, &grid),
+                    !stats.rain_out_of_regime,
+                    "regime predicate disagrees with the drawn outcome at {mpp} m/px, {course_deg}deg"
+                );
+                if stats.rain_out_of_regime {
+                    assert_eq!(
+                        (source.fetches, stats.rain_px),
+                        (0, 0),
+                        "out of regime must decode and paint nothing ({mpp} m/px, {course_deg}deg)"
+                    );
+                } else {
+                    assert!(
+                        source.fetches <= 36,
+                        "{mpp} m/px, {course_deg}deg: {} fetches for a 36-tile product",
+                        source.fetches
+                    );
+                    assert_eq!(source.fetches, stats.rain_tiles, "stats mirror the source's own count");
+                    assert!(
+                        frame.px.iter().any(|&p| p != 0xFFFF - 1),
+                        "in regime over the grid, full-coverage rain paints ({mpp} m/px, {course_deg}deg)"
+                    );
+                }
+                if mpp <= 208.0 {
+                    assert!(
+                        !stats.rain_out_of_regime,
+                        "the locked 50 km view must stay in regime ({mpp} m/px, {course_deg}deg)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Adversarial review (PR #1213), adopted: a grid that passes every OBCW validation gate —
+    /// u16::MAX cells over a 1 udeg lon span — used to overflow the per-row `y * dcol_dy` seed in
+    /// release and panic in debug. The setup-time magnitude bound now refuses it: no panic,
+    /// nothing painted, and the refusal is reported rather than silent.
+    #[test]
+    fn extreme_anisotropic_grid_must_not_overflow() {
+        let grid = RainGrid {
+            west_udeg: 7_000_000,
+            south_udeg: 47_000_000,
+            east_udeg: 7_000_001, // 1 udeg lon span
+            north_udeg: 47_864_000,
+            width_cells: u16::MAX,
+            height_cells: 96,
+        };
         let zoom = crate::viewport::zoom_for_mpp(208.0);
-        for course_deg in (0..360).step_by(15) {
-            let vp = Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, zoom, (course_deg as f32).to_radians());
-            let mut source = TestSource { grid, pattern: |r, c| ((r + c) % 13) as u8, fetches: 0 };
-            let (_, stats) = draw(&vp, &mut source, 240, 320);
-            assert!(source.fetches <= 36, "course {course_deg}°: {} fetches for a 36-tile product", source.fetches);
-            assert_eq!(source.fetches, stats.rain_tiles, "stats mirror the source's own count");
+        for course_deg in [0.0_f32, 45.0, 218.5] {
+            let vp = Viewport::new_rotated(240.0, 320.0, 7_000_000, 47_400_000, zoom, course_deg.to_radians());
+            let mut source = TestSource { grid, pattern: |_, _| 12, fetches: 0 };
+            let (frame, stats) = draw(&vp, &mut source, 240, 320);
+            assert!(frame.px.iter().all(|&p| p == 0xFFFF - 1), "wrapped cells must never paint");
+            assert!(stats.rain_out_of_regime, "the refusal must be reported, not silent");
+            assert_eq!(source.fetches, 0);
+        }
+    }
+
+    /// Adversarial review (PR #1213), adopted: a viewport straddling the grid's west/south corner
+    /// under rotation — every pixel's painted/not-painted outcome must agree with the f64
+    /// reference (the original sweep never crossed a grid boundary).
+    #[test]
+    fn straddling_the_grid_edge_matches_the_reference() {
+        let grid = dwd_grid();
+        for course_deg in [0.0_f32, 37.0, 218.5] {
+            // Camera on the grid's south-west corner: much of the panel is off-grid.
+            let vp = Viewport::new_rotated(240.0, 320.0, 7_000_000, 47_000_000, 0.026, course_deg.to_radians());
+            let mut source = TestSource { grid, pattern: |_, _| 12, fetches: 0 };
+            let (frame, stats) = draw(&vp, &mut source, 240, 320);
+            assert!(!stats.rain_out_of_regime);
+            for y in 0..320i32 {
+                for x in 0..240i32 {
+                    let reference = reference_cell(&vp, &grid, x, y);
+                    // Boundary pixels may land either side of f64 vs Q31.32 rounding; skip only
+                    // those (the same epsilon as the main sweep).
+                    let boundary = {
+                        let near = |v: f64| (v - libm::round(v)).abs() < 1e-6;
+                        let (zoomf, aspect) = (vp.zoom as f64, vp.aspect as f64);
+                        let (sin_c, cos_c) = (libm::sin(vp.course_rad as f64), libm::cos(vp.course_rad as f64));
+                        let (xc, yc) = (x as f64 + 0.5 - 120.0, y as f64 + 0.5 - 160.0);
+                        let ex = cos_c * (xc / zoomf) - sin_c * (yc / zoomf);
+                        let ny = -sin_c * (xc / zoomf) - cos_c * (yc / zoomf);
+                        let lon = vp.cam_lon as f64 + ex / aspect;
+                        let lat = vp.cam_lat as f64 + ny;
+                        near((lon - grid.west_udeg as f64) * 96.0 / (grid.east_udeg - grid.west_udeg) as f64)
+                            || near((lat - grid.south_udeg as f64) * 96.0 / (grid.north_udeg - grid.south_udeg) as f64)
+                    };
+                    if boundary {
+                        continue;
+                    }
+                    let expect_painted = reference.is_some() && BAYER[(y & 3) as usize][(x & 3) as usize] < 16;
+                    let painted = frame.px[(y * 240 + x) as usize] != 0xFFFF - 1;
+                    assert_eq!(painted, expect_painted, "pixel ({x},{y}) at course {course_deg}");
+                }
+            }
         }
     }
 

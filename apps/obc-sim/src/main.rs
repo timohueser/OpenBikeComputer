@@ -1517,7 +1517,11 @@ fn main() {
         );
         // Rain overlay accounting (WX10), for the look-tuning rounds: how many 16×16 tiles were
         // decoded, how many pixels the dither actually painted, and the overlay's own wall time.
-        if stats.rain_tiles > 0 || stats.rain_px > 0 {
+        if stats.rain_out_of_regime {
+            eprintln!(
+                "  rain: OUT OF REGIME — overlay suppressed (cells would drop below ~3 px; see RAIN_MAX_CELL_STEP)"
+            );
+        } else if stats.rain_tiles > 0 || stats.rain_px > 0 {
             eprintln!(
                 "  rain: {} tiles decoded, {} px painted, {:.2} ms overlay",
                 stats.rain_tiles,
