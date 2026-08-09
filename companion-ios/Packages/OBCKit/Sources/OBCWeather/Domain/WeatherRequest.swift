@@ -86,10 +86,15 @@ public struct WeatherCorridor: Equatable, Sendable {
         let latitude = position.latitudeMicrodegrees
         let longitude = position.longitudeMicrodegrees
 
-        let reach = request.speedMetresPerSecond.map { speed in
-            Swift.min(maximumRadiusMetres, Swift.max(minimumRadiusMetres, speed * horizon))
+        let reach = request.speedMetresPerSecond.flatMap { speed -> Double? in
+            guard speed.isFinite, speed >= 0 else { return nil }
+            return Swift.min(maximumRadiusMetres, Swift.max(minimumRadiusMetres, speed * horizon))
         }
-        let directed = reach != nil && request.bearingDegrees != nil
+        // A non-finite bearing is *not* a bearing. Testing only for `!= nil` here let a NaN course
+        // take the directed branch, whose cone arithmetic then produced no forward reach at all —
+        // collapsing the corridor to the 5 km lateral margin, below even the undirected floor. An
+        // unusable heading has to fall through to the reach-sized disc, exactly like an absent one.
+        let directed = reach != nil && (request.bearingDegrees?.isFinite ?? false)
         var bounds = WeatherBoundingBox.around(
             latitudeMicrodegrees: latitude, longitudeMicrodegrees: longitude,
             metres: directed ? lateralMarginMetres : (reach ?? minimumRadiusMetres))

@@ -184,7 +184,11 @@ public extension WeatherServiceManifest {
         var products: [WeatherServiceProduct] = []
         var skipped = 0
         for entry in document.products {
-            if let product = entry.validated() { products.append(product) } else { skipped += 1 }
+            if let product = entry.entry?.validated() {
+                products.append(product)
+            } else {
+                skipped += 1
+            }
         }
         return (
             WeatherServiceManifest(
@@ -197,7 +201,22 @@ public extension WeatherServiceManifest {
     private struct Document: Decodable {
         var version: Int
         var generated_at: String
-        var products: [ProductEntry]
+        var products: [LenientProductEntry]
+    }
+
+    /// One element of `products[]`, decoded so that a *broken element* cannot fail the array.
+    ///
+    /// This is what makes "entry-lenient" real rather than merely semantic. Decoding
+    /// `[ProductEntry]` directly means one entry with `"tier": "radar"`, or one missing a required
+    /// key, throws out of the array decode and takes the whole manifest with it — every region
+    /// offline because of one bad product. Catching inside the element keeps the failure the size
+    /// of the thing that failed; the *document* stays strict, and the skip is counted.
+    private struct LenientProductEntry: Decodable {
+        var entry: ProductEntry?
+
+        init(from decoder: any Decoder) throws {
+            entry = try? ProductEntry(from: decoder)
+        }
     }
 
     private struct ProductEntry: Decodable {

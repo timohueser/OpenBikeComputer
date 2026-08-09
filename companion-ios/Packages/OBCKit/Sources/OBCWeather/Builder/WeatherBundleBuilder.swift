@@ -1,4 +1,5 @@
 import Foundation
+import OBCDomain
 import OBCWeatherWire
 
 public enum WeatherBundleBuildError: Error, Equatable, Sendable {
@@ -68,7 +69,7 @@ public struct WeatherBundleBuilder: Sendable {
             if result.last?.validAt != crop.validAt { result.append(crop) }
         }
 
-        var bounds = try commonWindow(crops: crops, corridor: corridor)
+        var bounds = try commonWindow(crops: crops, corridor: corridor, rider: request.position)
         bounds = budgeted(bounds, crops: crops)
         var frames: [OBCWeatherRainFrame] = []
         var encoded: Data?
@@ -93,7 +94,7 @@ public struct WeatherBundleBuilder: Sendable {
                 // shorter corridor still answers the two-hour question at every timestamp, while
                 // dropping frames puts holes in the timeline. Only once the window cannot usefully
                 // shrink do the furthest-future frames go, and both facts are reported.
-                if attempt < Self.maximumShrinkAttempts, let shrunk = bounds.shrunk(towards: request) {
+                if attempt < Self.maximumShrinkAttempts, let shrunk = bounds.shrunk() {
                     bounds = shrunk
                     attempt += 1
                     continue
@@ -225,7 +226,13 @@ public struct WeatherBundleBuilder: Sendable {
 
         /// Remove an eighth of each axis, keeping the rider's cell inside. Returns `nil` once the
         /// window is a single cell in either direction and cannot usefully shrink again.
-        func shrunk(towards request: WeatherRequest) -> CommonWindow? {
+        ///
+        /// The rider is deliberately not a parameter: `anchorColumn`/`anchorRow` **are** the
+        /// rider's cell, carried through every resize. An earlier version took a `WeatherRequest`
+        /// here and never read it, which read as "shrinks towards the rider" while the anchor was
+        /// really the corridor's midpoint — for a rider at the back of a fast corridor that shrank
+        /// the window clean off them, leaving a bundle with no rain data where they actually were.
+        func shrunk() -> CommonWindow? {
             guard columns > 1 || rows > 1 else { return nil }
             return resized(
                 columns: Swift.max(1, columns - Swift.max(1, columns / 8)),
@@ -256,8 +263,14 @@ public struct WeatherBundleBuilder: Sendable {
     /// window made of its own cells; deriving the window from a fine frame would make every coarse
     /// frame incompatible and drop the whole model tier. With no frames at all the window is the
     /// corridor itself, so an hourly-only bundle still states the region it describes.
+    ///
+    /// - Parameter rider: the rider's own position, which becomes the window's anchor and therefore
+    ///   the point every later shrink keeps inside. The corridor's midpoint is only the fallback for
+    ///   a request with no fix: a corridor is projected *ahead* of the rider, so its midpoint can be
+    ///   tens of kilometres in front of them, and anchoring there is how a shrunken window ends up
+    ///   containing no data for where the rider actually is.
     private func commonWindow(
-        crops: [PrecipitationCrop], corridor: WeatherCorridor
+        crops: [PrecipitationCrop], corridor: WeatherCorridor, rider: Coordinate?
     ) throws -> CommonWindow {
         guard let coarsest = crops.max(by: { lhs, rhs in
             let left = UInt64(lhs.latitudeStrideMicrodegrees) * UInt64(lhs.longitudeStrideMicrodegrees)
@@ -275,20 +288,36 @@ public struct WeatherBundleBuilder: Sendable {
         }
         let latitudeStride = Int64(coarsest.latitudeStrideMicrodegrees)
         let longitudeStride = Int64(coarsest.longitudeStrideMicrodegrees)
-        let centre = corridor.bounds
+        // The rider's own cell when there is a fix; the corridor's midpoint only as a fallback.
+        let anchorLatitude: Int64
+        let anchorLongitude: Int64
+        if let rider, rider.isValidGeographic {
+            anchorLatitude = rider.latitudeMicrodegrees
+            anchorLongitude = rider.longitudeMicrodegrees
+        } else {
+            let centre = corridor.bounds
+            anchorLatitude = (centre.southMicrodegrees + centre.northMicrodegrees) / 2
+            anchorLongitude = (centre.westMicrodegrees + centre.eastMicrodegrees) / 2
+        }
         let anchorColumn = Int(Swift.max(0, Swift.min(
             Int64(coarsest.width) - 1,
-            ((centre.westMicrodegrees + centre.eastMicrodegrees) / 2 - coarsest.westMicrodegrees)
-                / longitudeStride)))
+            floorDivide(anchorLongitude - coarsest.westMicrodegrees, longitudeStride))))
         let anchorRow = Int(Swift.max(0, Swift.min(
             Int64(coarsest.height) - 1,
-            ((centre.southMicrodegrees + centre.northMicrodegrees) / 2 - coarsest.southMicrodegrees)
-                / latitudeStride)))
+            floorDivide(anchorLatitude - coarsest.southMicrodegrees, latitudeStride))))
         return CommonWindow(
             south: coarsest.southMicrodegrees, west: coarsest.westMicrodegrees,
             latitudeStride: latitudeStride, longitudeStride: longitudeStride,
             columns: coarsest.width, rows: coarsest.height,
             anchorColumn: anchorColumn, anchorRow: anchorRow)
+    }
+
+    /// Floor division, so a rider south or west of the crop anchors on cell 0 rather than being
+    /// rounded *into* the window by C's truncation-toward-zero.
+    private func floorDivide(_ numerator: Int64, _ denominator: Int64) -> Int64 {
+        guard denominator > 0 else { return 0 }
+        let quotient = numerator / denominator
+        return numerator % denominator < 0 ? quotient - 1 : quotient
     }
 
     /// Trim the window to a size that has a chance of fitting the 64 KiB producer policy, using the

@@ -265,6 +265,33 @@ struct METLocationforecastTests {
         #expect(http.requests.isEmpty)
     }
 
+    /// Regression, adversarial review finding 3: the caller that *joins* an in-flight request needs
+    /// the same cache-on-failure handling as the caller that started it.
+    ///
+    /// Without it, two identical concurrent jobs against a provider that is down produced two
+    /// different outcomes — one shipping the cached forecast, one failing the whole job and leaving
+    /// the device on its old bundle. Which caller arrived first decided the rider's result.
+    @Test
+    func bothCoalescedCallersFallBackToTheCacheWhenTheProviderIsDown() async throws {
+        let capture = try WeatherFixtures.metCapture("met-locationforecast-oslo-24h.json")
+        let (adapter, http) = Self.adapter(capture)
+        let request = Self.request(capture)
+        let warm = try await adapter.hourlyForecast(for: request, now: Self.now)
+
+        http.mutate(Self.osloURL) { $0.offline = true }
+        http.delayNanoseconds = 20_000_000
+        let later = Self.now.addingTimeInterval(3_600)
+        async let first = adapter.hourlyForecast(for: request, now: later)
+        async let second = adapter.hourlyForecast(for: request, now: later)
+        let forecasts = try await [first, second]
+
+        #expect(forecasts[0].hours == warm.hours)
+        #expect(forecasts[1].hours == warm.hours)
+        #expect(forecasts.allSatisfy { $0.isFromCache })
+        #expect(forecasts.allSatisfy { $0.retrievedAt == Self.now }, "the true retrieval time")
+        #expect(http.requests.count == 2, "the warm-up, plus one coalesced attempt")
+    }
+
     /// Concurrent weather jobs for the same place must cost MET one request, not two.
     @Test
     func concurrentJobsForOnePlaceCoalesceIntoOneRequest() async throws {
