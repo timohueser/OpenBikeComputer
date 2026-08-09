@@ -29,9 +29,10 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 ## Versioning & store epoch
 
 The `protocolVersion` characteristic read is widened in v2 to
-`version u16 · store_epoch u32 · obcm_version u8` (7 bytes LE, readable without
-encryption) when a store is mounted — the trailing byte added by E1 (#911), see
-below. The `protocol_version` is **currently `2`**; `store_epoch` is a
+`version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` (11 bytes LE,
+readable without encryption) when a store is mounted — the trailing byte added by
+E1 (#911) and the trailing word by WX3 (#1188), see below. The `protocol_version`
+is **currently `2`** (neither append moved it); `store_epoch` is a
 `u32` TRNG nonce naming the store's **id era**. It is **card-resident** — it lives
 on the SD card, so the card carries its own era name — and the device changes it
 only on an id-era reset: a lost RRAM id floor (a full-chip reflash, a factory
@@ -59,15 +60,30 @@ read. That host is the web/desktop builder rather than this app; the app decodes
 field into `DeviceInfo.obcmVersion` so the mirror stays honest about what the wire
 says.
 
-**Decode by length, never by an expected total.** The identity read has three
-lengths — **7** (full), **6** (a firmware predating `obcm_version`), **2** (no
-mounted store) — and the app decodes each field on `count >= n`, ignoring anything
-past the fields it knows. That append-only rule is *why* `obcm_version` needed **no
-`protocol_version` bump**: appending a trailing field to a length-driven read breaks
-no peer in either direction, and a bump would instead stop two peers that are fully
-interoperable. A field that did not arrive is `nil`, **never** a fabricated `0` —
-`0` is a legal store epoch, and OBCM `0` would read as "supports OBCM v0" and refuse
-every real map.
+**`feature_bits` — the capability word (WX3, #1188).** The read's fourth field is a
+`u32` bitmask of the optional contracts this firmware implements. **Bit 0 =
+weather** (`OBCProtocol.featureWeather`): the whole Weather Request contract — the
+secondary service, the request context, object type 20 and the Config refresh field
+— because a phone that has only some of those can do nothing with them. Later,
+genuinely separable capabilities take their own bits; **unknown bits are ignored**,
+so a firmware announcing something this build never heard of must not mask the bit
+beside it. `DeviceInfo.supportsWeather` is the gate the weather UI opens on, and it
+is `false` for an absent word (a firmware that predates it *is* a device without
+weather).
+
+**Decode by length, never by an expected total.** The identity read has four
+lengths — **11** (full), **7** (a firmware predating `feature_bits`), **6** (also
+predating `obcm_version`), **2** (no mounted store) — and the app decodes each field
+on `count >= n`, ignoring anything past the fields it knows. That append-only rule is
+*why* neither `obcm_version` nor `feature_bits` needed a **`protocol_version` bump**:
+appending a trailing field to a length-driven read breaks no peer in either
+direction, and a bump would instead stop two peers that are fully interoperable. A
+field that did not arrive is `nil`, **never** a fabricated `0` — `0` is a legal store
+epoch, OBCM `0` would read as "supports OBCM v0" and refuse every real map, and a
+fabricated capability word would make a diagnostic lie about which firmware
+generation answered. A **partial** capability word (8–10 bytes) is a torn read of a
+`u32`, not a smaller capability set: it decodes as absent, so a broken read can never
+claim a feature the device never announced.
 
 **Store epoch — why the app needs it.** Every durable link keys on bare `u16`
 object ids (ride synced-set + tombstones, route `deviceObjectID` links). A device
@@ -99,6 +115,7 @@ only in lockstep with a firmware wire change.
 | **DIS** — Device Information | `0x180A` (SIG) | fw / hw / serial | `deviceInfo()` → `DeviceInfo` |
 | **BAS** — Battery | `0x180F` (SIG) | battery % (notify) | `battery` stream → top bar |
 | **OBC Control** | `3C920000-9916-4EBA-ABC2-342FE08F6B10` | command + bulk-transfer orchestration | see below |
+| **OBC Weather Request** | `B3B60000-33B4-4F02-A5FF-E5954D54B5AA` | the request the device raises while disconnected (§11) | `readWeatherRequestContext()` → `WeatherRequestRead` |
 
 **The firmware-revision dialect — DIS `0x2A26` (#996, epic #773; canonical spec §3.1).**
 The app's whole update decision is a comparison against this string, so the two cases it
@@ -130,7 +147,7 @@ not be reused**:
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
 | `0005` | `transferControl` | **write** | open / abort a CoC object transfer (§ below) — **write-only, no CCCD** in v2 |
 | `0007` | `psm` | read | the dynamically-assigned L2CAP CoC PSM the app opens the channel on |
-| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32 · obcm_version u8` LE, readable without encryption — the connect-time identity check. Decoded **by length**: 7 / 6 / 2 bytes, absent trailing fields `nil` |
+| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` LE, readable without encryption — the connect-time identity check. Decoded **by length**: 11 / 7 / 6 / 2 bytes, absent trailing fields `nil` |
 
 *(v2 dropped `0003` `objectStore` — the change signal is `storeChanged` alone — and
 `0006` `diagnostics`, which returned 0 bytes; real diagnostics cross the CoC as
@@ -200,7 +217,8 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
      op         u8    1 = upload (app → device) · 2 = download · 3 = abort
      type       u8    { route 1, ride 2, config(reserved) 3, diagnostics 4,
                         fwImage 5, routeList 6, rideList 7, echo 8,
-                        trip 9, tripList 10, map 16 (USB only — never on BLE) }
+                        trip 9, tripList 10, map 16 (USB only — never on BLE),
+                        weatherBundle 20 (upload only, singleton at id 0) }
      object_id  u16   0xFFFF on upload = "new" (device assigns the id)
      total_len  u32   upload: full object size · download request / abort: 0
      crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
@@ -427,6 +445,87 @@ live in `OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange
 
 ---
 
+## Weather Request — the secondary service (spec §11, WX3 / #1188)
+
+The device can ask the phone for weather **while nothing is connected**. It raises a
+request, swaps its *advertised* service UUID from OBC Control to the Weather Request
+service, and iOS wakes the app on that service match. The app connects, performs
+**one** authenticated read, and disconnects — BLE is not held across the HTTP that
+follows. The bundle it fetches goes back later as an ordinary upload.
+
+Both services exist in the connected GATT database **at all times**; only the
+advertisement changes. Advertising a service the connected database does not contain
+is exactly the trap this avoids. The service base is a random 128-bit base of its
+own — deliberately *not* a block inside the OBC Control base — because iOS matches
+the advertisement on this UUID alone, so the two must be independently advertisable.
+
+| UUID | Characteristic | Properties | Role |
+|---|---|---|---|
+| `B3B60000-…` | the service | advertised while a request is pending | iOS scan filter |
+| `B3B60001-…` | `weatherRequestContext` | read, **authenticated** | the whole request — 52 LE bytes |
+
+The read is authenticated because the value says where the rider is: an unbonded peer
+that connects to the advertisement gets an ATT security error, and **does not consume
+the pending request** either — a passer-by's scan must not cost the rider a forecast.
+
+```
+WeatherRequestContext v1 (52 bytes, little-endian) — spec §11:
+   0  u8   version = 1                  8  u32  request_id
+   1  u8   encoded_len = 52            12  i32  lat_udeg    ┐
+   2  u16  validity flags              16  i32  lon_udeg    ├ validity bit 0 (position)
+   4  u16  reason flags                20  i64  fix_utc     ┘
+   6  u8   refresh                     28  u16  bearing_deg   bit 1
+   7  u8   reserved = 0                30  u16  speed_deci_ms bit 2
+                                       32  u16  route_id      bit 4
+                                       34  u16  reserved = 0
+                                       36  u32  bundle_generation   ┐
+                                       40  i64  bundle_generated_at ├ bit 3 (bundle)
+                                       48  u32  bundle_crc32        ┘
+  validity bits: 0 position · 1 bearing · 2 speed · 3 bundle · 4 route
+  reason bits:   0 scheduled · 1 urgent · 2 retry · 3 no/expired bundle · 4 out of area
+  refresh:       0 Off · 1 15 min · 2 30 min (default) · 3 60 min · 4 120 min
+```
+
+**Optional groups are guarded by flags, never by sentinel values.** A cleared
+`position` bit means *no fix*, not the equator; a cleared `bundle` bit means *no
+usable bundle on the card*, not generation 0. `WeatherRequestContext` therefore
+exposes them as computed optionals (`fix`, `bundle`, `routeID`, `bearingDegrees`,
+`speedMetersPerSecond`) — reading the flat wire storage past its flag is how a rider
+ends up at 0°N 0°E. **Unknown validity/reason bits and the reserved bytes are ignored,
+not rejected**: those bits are how a later firmware says something this build was
+never going to act on. An out-of-range `refresh` byte **is** an error — it names an
+interval this build cannot honour, and reporting the default back to the rider would
+claim a setting that was discarded.
+
+**Length-declared, append-only.** Byte 1 states how many bytes the writer produced. A
+read that delivered fewer is refused rather than half-decoded; bytes **past 52 are
+ignored**, so a future firmware that appends a field keeps working against a shipped
+app — the same rule the identity read and `Config` live under. A declared length
+*below* 52 is malformed: v1 is the first version, so there is no older writer to be
+lenient towards.
+
+**The answer.** `request_id` is a nonce the phone stamps into the OBCW header it
+uploads, so device and phone can correlate two separate connections. It is
+**monotonic per device boot and stable across the retry ladder** (retries of one
+request stay one request), and it is **not** an authorisation token: a bundle
+carrying a stale or unknown id is still accepted if it validates and is newer than
+the active one, because a fresher forecast is useful no matter which request provoked
+it. The bundle itself rides back as **`weatherBundle` (type 20)**, app → device,
+**upload only**, over the ordinary reliable CoC with the normal whole-object CRC and
+`transferResult`. `object_id` MUST be **0**: there is one bundle, so the id selects
+nothing, and any other value answers `notFound`. It is not `0xFFFF`/new-only like a
+map — a bundle is *always* a replacement, landing in the inactive one of the device's
+two slots so an interrupted upload leaves the old one intact.
+
+**Discovery ownership.** One CoreBluetooth manager serves both intents
+(`BLEDiscoveryIntentPolicy`). A foreground session scans for **both** services and
+accepts any advertiser (that is how a first pairing works); a weather-owned scan
+accepts **only** the peripheral UUID persisted after a successful authenticated
+session, and only a connection the weather request itself created may be dropped when
+it completes — a read that rode an existing foreground link must never tear it down.
+
+---
+
 ## Delta 1 — device name lives in `Config`
 
 The device name is a field of the wire **`Config`** object. Renaming the device
@@ -436,6 +535,16 @@ rename command. This is a hard requirement on the contract, mirrored in
 name is capped at **48 UTF-8 bytes** (spec §7.3): the codec truncates on a
 Character boundary at encode and the rename UI limits to the same, so an
 over-long name can't overflow the `u16` length field into a corrupt blob.
+
+**The blob is append-only, and absence ≠ `Off`.** WX3 appends a trailing
+`weather_refresh u8` after `units` (same enum as the request context). A blob that
+carries **no such byte** means *unspecified* — the device default, 30 minutes — and
+**never** `Off`: an app build predating the field round-trips `Config` to rename the
+device and writes the 3-byte-plus-name blob, and reading that as "the rider chose
+Off" would silently disable weather on a rename. `DeviceConfig.weatherRefresh` is
+therefore an `Optional`, with `effectiveWeatherRefresh` for the "what will the device
+actually do" question. An **unknown** refresh byte is malformed (rejected), not a
+default; trailing bytes past it are ignored, as always.
 
 ## Delta 2 — GPX **and** TCX import
 
@@ -458,8 +567,9 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | Type | File | Contract role |
 |---|---|---|
 | `OBCProtocol.version` | `OBCProtocol.swift` | the pinned `protocol_version` |
-| `DeviceInfo` | `DeviceInfo.swift` | DIS mirror (name, fw/hw, serial, protocolVersion) |
-| `DeviceConfig` | `DeviceConfig.swift` | `Config` blob — **incl. `name`** (Delta 1) |
+| `DeviceInfo` | `DeviceInfo.swift` | DIS mirror (name, fw/hw, serial, protocolVersion) + the identity read's trailing fields (`storeEpoch`, `obcmVersion`, `featureBits` → `supportsWeather`) |
+| `DeviceConfig` | `DeviceConfig.swift` | `Config` blob — **incl. `name`** (Delta 1) and the optional `weatherRefresh` |
+| `WeatherRefresh` | `WeatherRefresh.swift` | the scheduled-request interval, on the wire in both `Config` and the request context |
 | `RouteSummary` / `RouteBlob` | `Route.swift` | route metadata + opaque binary payload |
 | `RouteDetail` | `Route.swift` | detail read for E2 (waypoints + elevation profile) — pinned: decoded from the downloaded OBCR v3 route object |
 | `RouteSource` | `Route.swift` | GPX / TCX (Delta 2) |
@@ -475,6 +585,7 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `ConnectionState` | `ConnectionState.swift` | link lifecycle for `DeviceTransport.state` |
 | `FirmwareInstallResult` | `FirmwareInstall.swift` | mapped `installFw` request outcome (S7) |
 | `OBCUHeader` / `StagedFirmware` | `OBCTransport/Firmware/FirmwareImage.swift` | OBCU update-container header + validated update (both CRCs) — the `fwImage` payload (S7) |
+| `WeatherRequestContext` / `WeatherRequestRead` | `OBCTransport/BLE/WeatherRequest.swift` | the §11 request read: the 52-byte codec + the one-shot's result/error vocabulary |
 
 `RouteID` / `RideID` are thin `String` wrappers in the same files. **B1
 ([#237](https://github.com/timohueser/OpenBikeComputer/issues/237)) is landed:**

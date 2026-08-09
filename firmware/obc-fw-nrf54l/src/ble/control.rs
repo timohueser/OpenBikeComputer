@@ -86,6 +86,7 @@ pub(crate) async fn serve_connection(
                 let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
                 let mut forget_after_ack = false;
+                let mut secured_context_read = false;
                 let reply = match event {
                     GattEvent::Write(e) => {
                         let handle = e.handle();
@@ -165,6 +166,12 @@ pub(crate) async fn serve_connection(
                     }
                     GattEvent::Read(e) => {
                         info!("ble: [gatt] read handle {}", e.handle());
+                        // A stray connection must not consume the one-shot advertisement hint.
+                        // Lower it only for the dedicated probe read after this link has resumed
+                        // the stored bond (or completed authenticated pairing), and only after the
+                        // response is handed to the controller below.
+                        secured_context_read =
+                            e.handle() == server.weather_request.context.handle && state::status().secured;
                         e.accept()
                     }
                     // Permission-violating request (e.g. a write to a read-only attribute): accepting
@@ -176,9 +183,21 @@ pub(crate) async fn serve_connection(
                 // (the RefCell borrows above already ended with `reply`). `config_blob`/storeChanged below
                 // read only the catalog + the settings cache, no card.
                 drop(guard);
-                match reply {
-                    Ok(reply) => reply.send().await,
-                    Err(e) => warn!("ble: [gatt] error sending response: {:?}", e),
+                let reply_sent = match reply {
+                    Ok(reply) => {
+                        // trouble-host's reply send is infallible once accept succeeded: it queues
+                        // the ATT response and returns `()`.
+                        reply.send().await;
+                        true
+                    }
+                    Err(e) => {
+                        warn!("ble: [gatt] error accepting request: {:?}", e);
+                        false
+                    }
+                };
+                if obc_ble::authenticated_context_was_served(secured_context_read, reply_sent) {
+                    state::clear_weather_request();
+                    info!("ble: authenticated Weather Request context served — request hint cleared");
                 }
                 if let Some((buf, len)) = status_msg {
                     notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;

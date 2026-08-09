@@ -98,7 +98,26 @@ struct OBCCompanionApp: App {
         #if DEBUG
         if let mockControl { return MockTransport(control: mockControl) }
         #endif
-        return BLETransport()
+        let transport = BLETransport()
+        #if DEBUG
+        // The WX3 Weather Request transport harness. Pair normally once so BLETransport has an
+        // authenticated peripheral UUID, then launch the real BLE path with
+        // `-OBCWeatherRequestHarness`. The paired launch flow is suppressed below so this one-shot
+        // owns the connection; logs report the request context plus discovery/connected latency.
+        // No UI, no scheduler, no bundle fetch — this exists to measure the background
+        // discovery→connect→read→disconnect beat on glass.
+        if Self.useWeatherRequestHarness {
+            Task {
+                do {
+                    let read = try await transport.readWeatherRequestContext()
+                    print("[OBC weather harness] \(read)")
+                } catch {
+                    print("[OBC weather harness] failed: \(error)")
+                }
+            }
+        }
+        #endif
+        return transport
     }
 
     /// The `-OBCImportSample [gpx|tcx|bad|grimsel]` hook: hand a bundled sample file to
@@ -169,9 +188,16 @@ struct OBCCompanionApp: App {
     static func makeBondStore() -> any BondStore {
         #if DEBUG
         if let mockControl { return MockBondStore(control: mockControl) }
+        if useWeatherRequestHarness { return WeatherRequestHarnessBondStore() }
         #endif
         return UserDefaultsBondStore()
     }
+
+    #if DEBUG
+    private static var useWeatherRequestHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("-OBCWeatherRequestHarness")
+    }
+    #endif
 
     /// The default-retention preference (epic #638). Mock runs stay **in-memory**
     /// — every scenario-driven launch (XCUITests, previews, demos) starts from the
@@ -185,3 +211,14 @@ struct OBCCompanionApp: App {
         return UserDefaultsRetentionDefaultsStore()
     }
 }
+
+#if DEBUG
+/// Keeps the app's ordinary paired-launch flow from raising a competing foreground intent while
+/// the explicit weather-request harness runs. It does not clear the real bond record or the
+/// transport's authenticated peripheral UUID; it is process-local and Debug-only.
+private struct WeatherRequestHarnessBondStore: BondStore {
+    func load() -> BondRecord? { nil }
+    func save(_ record: BondRecord) {}
+    func clear() {}
+}
+#endif

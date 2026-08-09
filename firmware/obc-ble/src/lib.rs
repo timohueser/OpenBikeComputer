@@ -23,13 +23,14 @@ pub mod descriptor;
 pub mod list;
 pub mod sensors;
 pub mod transfer;
+pub mod weather_request;
 
 pub use crc32::Crc32;
 pub use descriptor::{
     install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, SetClock,
     SetPart, SetRouteRetention, StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus,
     VersionRead, CMD_ACK_RIDES, CMD_DELETE_OBJECT, CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK,
-    CMD_SET_ROUTE_RETENTION, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC, SET_ROUTE_RETENTION_MAX,
+    CMD_SET_ROUTE_RETENTION, FEATURE_WEATHER, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC, SET_ROUTE_RETENTION_MAX,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, TripListEntry};
 pub use sensors::{
@@ -39,6 +40,13 @@ pub use sensors::{
     UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
 };
 pub use transfer::{HeldMagic, Receiver, StreamSender, TransferError, MAGIC_LEN};
+pub use weather_request::{
+    authenticated_context_was_served, classify_upload, BundleIdentity, UploadDisposition, WeatherRefresh,
+    WeatherRequestBudget, WeatherRequestContext, REASON_NO_BUNDLE, REASON_OUT_OF_AREA, REASON_RETRY, REASON_SCHEDULED,
+    REASON_URGENT, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID,
+    WEATHER_REQUEST_CONTEXT_UUID, WEATHER_REQUEST_CONTEXT_VERSION, WEATHER_REQUEST_SERVICE_UUID,
+    WEATHER_REQUEST_SERVICE_UUID_LE,
+};
 
 /// The protocol version this crate implements. The app reads it (with the store epoch and the
 /// reader's OBCM version, as a [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees

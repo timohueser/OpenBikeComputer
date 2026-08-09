@@ -45,6 +45,7 @@ import {
     decodeStatusMessage,
     decodeTransferControl,
     decodeVersionRead,
+    FEATURE_WEATHER,
     encodeAckRides,
     encodeConfig,
     encodeSetClock,
@@ -249,19 +250,39 @@ describe("control-plane codecs", () => {
         expect(() => encodeSetRouteRetention(7, 6)).toThrow(RangeError);
     });
 
-    it("round-trips the identity read at all three lengths", () => {
-        // 7 bytes: the full read. `obcmVersion` is the OBCM *map-format* version the device's
+    it("round-trips the identity read at all four lengths", () => {
+        // 11 bytes: the full read a current firmware serves. `featureBits` is the capability word
+        // (§1, WX3) — bit 0 is the Weather Request contract, which is the phone's path and nothing
+        // this host acts on; it is mirrored so the read decodes whole rather than being silently
+        // truncated by the one consumer that does not care about it.
+        const features = decodeVersionRead(vector("version-read-features.bin"));
+        expect(features.featureBits).toBe(FEATURE_WEATHER);
+        expectSameBytes(encodeVersionRead(features), vector("version-read-features.bin"), "version-read-features");
+
+        // 7 bytes: a firmware predating the capability word. Absent, not zero — both mean "no
+        // optional contracts", but only one of them is something the device actually said.
+        // `obcmVersion` is the OBCM *map-format* version the device's
         // reader reads — the fact `OBCC_Spec.md` §10 filters the catalog on, and a different
         // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
-        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: REFERENCE_OBCM_VERSION });
+        expect(full).toEqual({
+            version: 2,
+            storeEpoch: hex("0xA1B2C3D4"),
+            obcmVersion: REFERENCE_OBCM_VERSION,
+            featureBits: null,
+        });
         expectSameBytes(encodeVersionRead(full), vector("version-read.bin"), "version-read");
 
         // 6 bytes: a firmware predating the field. Unknown, not zero — `obcmVersion: 0` would read
         // as "supports OBCM v0" and refuse every real map, where null takes §6(c)'s
         // no-known-target-firmware branch and offers the download stating the version.
         const noObcm = decodeVersionRead(vector("version-read-noobcm.bin"));
-        expect(noObcm).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: null });
+        expect(noObcm).toEqual({
+            version: 2,
+            storeEpoch: hex("0xA1B2C3D4"),
+            obcmVersion: null,
+            featureBits: null,
+        });
         expectSameBytes(encodeVersionRead(noObcm), vector("version-read-noobcm.bin"), "version-read-noobcm");
 
         // 2 bytes: no card means no era to name, so the device serves the version alone. That
@@ -269,7 +290,7 @@ describe("control-plane codecs", () => {
         // conflating them would let a peer stamp id-keyed state under an era it never read. There
         // is no room for an obcm byte after an epoch that is not there, either.
         const short = decodeVersionRead(vector("version-read-nostore.bin"));
-        expect(short).toEqual({ version: 2, storeEpoch: null, obcmVersion: null });
+        expect(short).toEqual({ version: 2, storeEpoch: null, obcmVersion: null, featureBits: null });
         expectSameBytes(encodeVersionRead(short), vector("version-read-nostore.bin"), "version-read-nostore");
     });
 
@@ -277,18 +298,32 @@ describe("control-plane codecs", () => {
         // The append-only rule the `obcm_version` byte itself rode in on (§1): a longer read from a
         // newer firmware decodes to what this build understands rather than failing, which is why
         // appending the field needed no `PROTOCOL_VERSION` bump.
-        const future = new Uint8Array([...vector("version-read.bin"), 0xee, 0xee]);
+        const future = new Uint8Array([...vector("version-read-features.bin"), 0xee, 0xee]);
         expect(decodeVersionRead(future)).toEqual({
             version: 2,
-            storeEpoch: hex("0xA1B2C3D4"),
-            obcmVersion: REFERENCE_OBCM_VERSION,
+            storeEpoch: decodeVersionRead(vector("version-read-features.bin")).storeEpoch,
+            obcmVersion: decodeVersionRead(vector("version-read-features.bin")).obcmVersion,
+            featureBits: FEATURE_WEATHER,
         });
+
+        // A *partial* capability word is absent, not the bytes that turned up: three bytes of a
+        // u32 are a broken read, not a small feature set, and decoding them could claim a contract
+        // the device never announced.
+        for (const len of [8, 9, 10]) {
+            expect(decodeVersionRead(vector("version-read-features.bin").subarray(0, len)).featureBits).toBeNull();
+        }
     });
 
     it("round-trips the Config object", () => {
         const config = decodeConfig(vector("config-v1.bin"));
-        expect(config).toEqual({ name: "OBC Tourer", units: 0 });
+        // An absent `weatherRefresh` means *device default*, not `Off` — collapsing the two would
+        // silently disable weather every time this host round-tripped a Config to rename a device.
+        expect(config).toEqual({ name: "OBC Tourer", units: 0, weatherRefresh: null });
         expectSameBytes(encodeConfig(config), vector("config-v1.bin"), "config-v1");
+
+        const withRefresh = decodeConfig(vector("config-weather-refresh.bin"));
+        expect(withRefresh.weatherRefresh).not.toBeNull();
+        expectSameBytes(encodeConfig(withRefresh), vector("config-weather-refresh.bin"), "config-weather-refresh");
     });
 });
 
@@ -537,6 +572,7 @@ describe("round-trip over the loopback pipe", () => {
                 version: MANIFEST.protocol_version,
                 storeEpoch: hex("0xA1B2C3D4"),
                 obcmVersion: REFERENCE_OBCM_VERSION,
+                featureBits: 0,
             });
             expect((await client.deviceInfo()).firmwareRevision).toBe("0.4.0+abc1234");
         } finally {

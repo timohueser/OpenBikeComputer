@@ -2,9 +2,10 @@
 //!
 //! The GATT table is the **real** control plane the iOS app discovers on connect (see
 //! `obc-ble-interface-spec.md`): **DIS** (real firmware revision / board id / FICR serial), **BAS**
-//! (battery, notify — fed from the `FuelGauge` seam), and the custom **OBC Control** service
+//! (battery, notify — fed from the `FuelGauge` seam), the custom **OBC Control** service
 //! ([`ObcControlService`]) with its six characteristics (protocol v2 retired the `objectStore`
-//! digest and reserved `diagnostics` characteristics). This module owns the
+//! digest and reserved `diagnostics` characteristics), and the **Weather Request** service
+//! ([`WeatherRequestService`], spec §11) with its one authenticated read. This module owns the
 //! `#[gatt_server]`/`#[gatt_service]` tables and the BLE static-random address. The writes
 //! themselves are answered by [`super::control`].
 //!
@@ -38,6 +39,7 @@ pub(crate) struct Server {
     pub dis: DeviceInformationService,
     pub bas: BatteryService,
     pub obc: ObcControlService,
+    pub weather_request: WeatherRequestService,
 }
 
 /// Device Information Service. All read-only strings, seeded at boot; `value` can't hold a runtime
@@ -106,6 +108,29 @@ pub(crate) struct ObcControlService {
     /// runs (before advertising). See [`version_read_blob`].
     #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read)]
     pub protocol_version: heapless09::Vec<u8, { obc_ble::VersionRead::ENCODED_LEN }>,
+}
+
+/// The **Weather Request** service (spec §11): the dedicated UUID the device advertises *instead of*
+/// OBC Control while a weather refresh is due, so a disconnected peripheral can wake the companion.
+///
+/// It lives in the GATT table of **every** BLE build, unconditionally — not only when the harness
+/// feature is on. That is not defensive padding: advertising a service the connected database does
+/// not contain is precisely the trap #1188 forbids, and a table that holds the advertised service
+/// only in some builds is a table that works only in some builds.
+///
+/// The one characteristic is an [`obc_ble::WeatherRequestContext`] — 52 little-endian bytes
+/// describing the request and the rider. `authenticated` because the value carries the rider's
+/// coordinates: an unbonded peer that connects to the advertisement gets an ATT security error and,
+/// per [`super::control`], does not consume the pending request either.
+#[gatt_service(uuid = "B3B60000-33B4-4F02-A5FF-E5954D54B5AA")]
+pub(crate) struct WeatherRequestService {
+    #[characteristic(
+        uuid = "B3B60001-33B4-4F02-A5FF-E5954D54B5AA",
+        read,
+        permissions(authenticated),
+        value = [0u8; obc_ble::WeatherRequestContext::ENCODED_LEN]
+    )]
+    pub context: [u8; obc_ble::WeatherRequestContext::ENCODED_LEN],
 }
 
 // ============================ Radio identity ============================

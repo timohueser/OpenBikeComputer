@@ -207,6 +207,7 @@ describe("the permission model", () => {
             version: 2,
             storeEpoch: 0xa1b2c3d4,
             obcmVersion: REFERENCE_OBCM_VERSION,
+            featureBits: 0,
         });
         expect(watcher.current.info?.firmwareRevision).toBe("0.4.0+abc1234");
         expect(usb.filtersSeen, "adopting must never open the chooser").toEqual([]);
