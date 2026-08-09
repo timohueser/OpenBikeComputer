@@ -9,9 +9,14 @@
     // is the ring cache — stair outlines are geometry over every cell of a
     // part, worth computing once per distinct cell set rather than once per
     // resolution object identity.
+    //
+    // The region tool is armed by default: an empty builder whose map answers
+    // no click is a builder that looks broken, and picking a region is the
+    // first thing almost every map starts with (2026-08-09 feedback round).
 
     import { onDestroy, onMount, tick } from "svelte";
     import { coverageRings, mergeCellRects } from "../../lib/catalog/outline";
+    import type { RegionEntry } from "../../lib/catalog/manifest";
     import {
         degreesToUbox,
         detailBandId,
@@ -28,17 +33,25 @@
         type RenderedPart,
         type RenderedWarning,
     } from "../../lib/map/coverageMap";
+    import type { LatLon } from "../../lib/catalog/selection";
     import CorridorPanel from "./CorridorPanel.svelte";
+    import ToolIcon from "./ToolIcon.svelte";
 
     let { store, active = true }: { store: CoverageStore; active?: boolean } = $props();
 
     let mapEl: HTMLDivElement;
     let view = $state<CoverageMapView | null>(null);
 
-    type Tool = "none" | "region" | "box" | "corridor";
-    let tool = $state<Tool>("none");
+    type Tool = "none" | "region" | "box" | "corridor" | "lasso";
+    let tool = $state<Tool>("region");
 
     const detailBand = $derived(detailBandId(store.catalog));
+
+    /** [lat, lon] degrees → the catalog's integer microdegrees. */
+    const degToLatLon = ([lat, lon]: DegPoint): LatLon => ({
+        lat: Math.round(lat * 1e6),
+        lon: Math.round(lon * 1e6),
+    });
 
     // --- outline cache ----------------------------------------------------
     // Keyed by part id, validated by comparing the cell list itself: the
@@ -66,14 +79,23 @@
             onRegionPick(regionId) {
                 store.addRegion(regionId);
             },
+            onRegionLadder(regionIds, defaultId, x, y) {
+                openLadder(regionIds, defaultId, x, y);
+            },
             onBoxDrawn(south, west, north, east) {
                 store.addBox(degreesToUbox(south, west, north, east));
             },
             boxDragLabel(south, west, north, east) {
                 return priceBox(south, west, north, east);
             },
+            onLassoDrawn(points) {
+                store.addLasso(points.map(degToLatLon));
+            },
+            lassoDragLabel(points) {
+                return priceLabel(store.priceDraggedLasso(points.map(degToLatLon)));
+            },
             onDrawEnd() {
-                if (tool === "box") tool = "none";
+                if (tool === "box" || tool === "lasso") tool = "none";
             },
             onWarningClick(kind) {
                 store.focusWarnings(kind);
@@ -177,6 +199,109 @@
         view?.setRegionToolArmed(tool === "region");
     });
 
+    // --- the ancestor ladder ----------------------------------------------
+
+    /** The click's chain of nested regions, awaiting a pick. `x`/`y` are
+     *  container pixels, already clamped into the pane. */
+    let ladder = $state<{ ids: string[]; defaultId: string; x: number; y: number } | null>(null);
+    let ladderEl = $state<HTMLDivElement>();
+
+    function openLadder(ids: string[], defaultId: string, x: number, y: number) {
+        const paneW = mapEl?.clientWidth ?? 0;
+        const paneH = mapEl?.clientHeight ?? 0;
+        const width = 250;
+        const height = 40 + ids.length * 34;
+        ladder = {
+            ids,
+            defaultId,
+            x: Math.max(8, Math.min(x, paneW - width - 8)),
+            y: Math.max(8, Math.min(y, paneH - height - 8)),
+        };
+        // The zoom-matched rung takes focus so Enter confirms the suggestion
+        // and arrows walk the chain.
+        void tick().then(() => {
+            ladderEl?.querySelector<HTMLButtonElement>("button.default")?.focus();
+        });
+    }
+
+    function closeLadder() {
+        if (!ladder) return;
+        ladder = null;
+        view?.emphasizeRegion(null);
+    }
+
+    function pickLadder(regionId: string) {
+        const visible = view?.regionVisible(regionId) ?? false;
+        store.addRegion(regionId);
+        // Show what was just added when it reaches beyond the current view —
+        // a rung the user can already see needs no camera move.
+        if (!visible) view?.fitRegion(regionId);
+        closeLadder();
+    }
+
+    /** A rung's label: the region, and its price beside it. */
+    function ladderRegion(id: string): RegionEntry | undefined {
+        return store.region(id);
+    }
+
+    // --- the region popover: search + tree --------------------------------
+
+    let query = $state("");
+    /** Expanded tree rows, by region id. Replaced wholesale so `$derived`
+     *  consumers re-fire. */
+    let expanded = $state<ReadonlySet<string>>(new Set());
+
+    const byParent = $derived.by(() => {
+        const children = new Map<string | null, RegionEntry[]>();
+        for (const region of store.catalog.regions) {
+            const list = children.get(region.parent) ?? [];
+            list.push(region);
+            children.set(region.parent, list);
+        }
+        for (const list of children.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+        return children;
+    });
+
+    /** The tree flattened for rendering: each visible row with its depth. */
+    const treeRows = $derived.by(() => {
+        const rows: { region: RegionEntry; depth: number }[] = [];
+        const walk = (parent: string | null, depth: number) => {
+            for (const region of byParent.get(parent) ?? []) {
+                rows.push({ region, depth });
+                if (expanded.has(region.id)) walk(region.id, depth + 1);
+            }
+        };
+        walk(null, 0);
+        return rows;
+    });
+
+    /** Search results: a flat match over every level, each with its parent
+     *  named — "baden" must be findable without knowing where it nests. */
+    const searchRows = $derived.by(() => {
+        const q = query.trim().toLowerCase();
+        if (q.length < 2) return null;
+        return store.catalog.regions
+            .filter((region) => region.name.toLowerCase().includes(q))
+            .slice(0, 30);
+    });
+
+    function toggleExpanded(regionId: string) {
+        const next = new Set(expanded);
+        if (next.has(regionId)) next.delete(regionId);
+        else next.add(regionId);
+        expanded = next;
+    }
+
+    function pickFromList(region: RegionEntry) {
+        if (store.hasRegion(region.id)) return;
+        store.addRegion(region.id);
+        view?.fitRegion(region.id);
+    }
+
+    function parentName(region: RegionEntry): string | null {
+        return region.parent ? (store.region(region.parent)?.name ?? null) : null;
+    }
+
     // --- tools ------------------------------------------------------------
 
     let corridorPanel = $state<{ requestClose(): Promise<boolean> }>();
@@ -194,8 +319,11 @@
             store.previewParts = [];
         }
         if (tool === "box" && target !== "box") view?.cancelBoxDraw();
+        if (tool === "lasso" && target !== "lasso") view?.cancelLassoDraw();
+        if (tool === "region" && target !== "region") closeLadder();
         tool = target;
         if (target === "box") view?.armBoxDraw();
+        if (target === "lasso") view?.armLassoDraw();
         if (leavingCorridor) {
             // The panel held focus (it takes it on open); its unmount dropped
             // focus on <body>. Hand it back to the tool that opened it — but
@@ -207,9 +335,14 @@
     }
 
     function onKey(e: KeyboardEvent) {
-        if (e.key === "Escape" && tool !== "none") {
-            void setTool("none");
+        if (e.key !== "Escape") return;
+        // The ladder is the innermost thing open: Esc peels it first, and only
+        // a second Esc disarms the tool.
+        if (ladder) {
+            closeLadder();
+            return;
         }
+        if (tool !== "none") void setTool("none");
     }
 
     // The rail is a toolbar, and a toolbar is ONE tab stop: Tab lands on the
@@ -239,7 +372,10 @@
      *  drag through the same resolver + ledger as the released part, so the
      *  chip's number is the row's number by construction (#1041 low sweep). */
     function priceBox(south: number, west: number, north: number, east: number): string {
-        const priced = store.priceDraggedBox(degreesToUbox(south, west, north, east));
+        return priceLabel(store.priceDraggedBox(degreesToUbox(south, west, north, east)));
+    }
+
+    function priceLabel(priced: { bytes: number; cells: number } | { refused: true } | null): string {
         if (!priced) return "";
         if ("refused" in priced) return "too large for one map";
         if (priced.cells === 0) return "nothing baked here yet";
@@ -254,9 +390,7 @@
 <div class="map-wrap card">
     <div class="map" bind:this={mapEl}></div>
 
-    <!-- The tool rail (§8 U2): the map owns selection. Lasso is a ghosted slot,
-         not a hidden one — the rail is the one place tools live, and showing
-         where the next one goes costs a single quiet button. -->
+    <!-- The tool rail (§8 U2): the map owns selection. -->
     <div class="overlay rail-wrap">
         <div
             class="rail"
@@ -274,7 +408,7 @@
                 tabindex={railAt === 0 ? 0 : -1}
                 onkeydown={onRailKey}
                 onfocus={() => (railAt = 0)}
-                onclick={() => setTool("region")}>◧</button
+                onclick={() => setTool("region")}><ToolIcon kind="region" /></button
             >
             <button
                 type="button"
@@ -285,7 +419,18 @@
                 tabindex={railAt === 1 ? 0 : -1}
                 onkeydown={onRailKey}
                 onfocus={() => (railAt = 1)}
-                onclick={() => setTool("box")}>▭</button
+                onclick={() => setTool("box")}><ToolIcon kind="box" /></button
+            >
+            <button
+                type="button"
+                class:active={tool === "lasso"}
+                aria-pressed={tool === "lasso"}
+                title="Lasso an area"
+                aria-label="Lasso an area"
+                tabindex={railAt === 2 ? 0 : -1}
+                onkeydown={onRailKey}
+                onfocus={() => (railAt = 2)}
+                onclick={() => setTool("lasso")}><ToolIcon kind="lasso" /></button
             >
             <button
                 type="button"
@@ -294,49 +439,124 @@
                 aria-pressed={tool === "corridor"}
                 title="Add a corridor around a route"
                 aria-label="Add a corridor around a route"
-                tabindex={railAt === 2 ? 0 : -1}
-                onkeydown={onRailKey}
-                onfocus={() => (railAt = 2)}
-                onclick={() => setTool("corridor")}>◠</button
-            >
-            <!-- aria-disabled, not disabled: a disabled button is unfocusable,
-                 so its "later" tooltip was unreachable by keyboard and its
-                 existence invisible to a screen reader (#1041 low sweep). It
-                 stays in the arrow-walk, announces itself, and does nothing. -->
-            <button
-                type="button"
-                class="ghosted"
-                aria-disabled="true"
-                title="Lasso — later"
-                aria-label="Lasso — later"
                 tabindex={railAt === 3 ? 0 : -1}
                 onkeydown={onRailKey}
-                onfocus={() => (railAt = 3)}>◌</button
+                onfocus={() => (railAt = 3)}
+                onclick={() => setTool("corridor")}><ToolIcon kind="corridor" /></button
             >
         </div>
-        <span class="rail-hint small faint">regions · box · corridor</span>
+        <span class="rail-hint small faint">region · box · lasso · corridor</span>
     </div>
 
     {#if tool === "region"}
         <div class="overlay region-list">
-            <p class="small faint head">Click a region on the map, or here:</p>
-            {#each store.catalog.regions as region (region.id)}
-                {@const added = store.hasRegion(region.id)}
-                <button
-                    type="button"
-                    class:added
-                    aria-label={added
-                        ? `${region.name} is already in the map`
-                        : `Add ${region.name} (${formatBytes(region.bytes)})`}
-                    onclick={() => {
-                        if (added) return;
-                        store.addRegion(region.id);
-                        view?.fitRegion(region.id);
-                    }}
-                >
-                    <span>{added ? "✓ " : ""}{region.name}</span>
-                    <span class="mono faint">{formatBytes(region.bytes)}</span>
-                </button>
+            <input
+                type="search"
+                placeholder="Search regions…"
+                aria-label="Search regions"
+                bind:value={query}
+            />
+            {#if searchRows}
+                {#if searchRows.length === 0}
+                    <p class="small faint head">Nothing named like that is baked yet.</p>
+                {/if}
+                {#each searchRows as region (region.id)}
+                    {@const added = store.hasRegion(region.id)}
+                    {@const parent = parentName(region)}
+                    <div class="row" style:padding-left="8px">
+                        <button
+                            type="button"
+                            class="name"
+                            class:added
+                            aria-label={added
+                                ? `${region.name} is already in the map`
+                                : `Add ${region.name} (${formatBytes(region.bytes)})`}
+                            onclick={() => pickFromList(region)}
+                        >
+                            <span
+                                >{added ? "✓ " : ""}{region.name}{#if parent}<span class="faint small">
+                                        · {parent}</span
+                                    >{/if}</span
+                            >
+                            <span class="mono faint">{formatBytes(region.bytes)}</span>
+                        </button>
+                    </div>
+                {/each}
+            {:else}
+                <p class="small faint head">Click a region on the map, or here:</p>
+                {#each treeRows as row (row.region.id)}
+                    {@const added = store.hasRegion(row.region.id)}
+                    {@const kids = byParent.get(row.region.id)?.length ?? 0}
+                    <div class="row" style:padding-left={`${row.depth * 16}px`}>
+                        {#if kids > 0}
+                            <button
+                                type="button"
+                                class="chev"
+                                class:open={expanded.has(row.region.id)}
+                                aria-label={expanded.has(row.region.id)
+                                    ? `Collapse ${row.region.name}`
+                                    : `Expand ${row.region.name} (${kids} inside)`}
+                                aria-expanded={expanded.has(row.region.id)}
+                                onclick={() => toggleExpanded(row.region.id)}
+                            >
+                                <svg viewBox="0 0 12 12" aria-hidden="true"
+                                    ><path
+                                        d="M3 2 L8 6 L3 10"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="1.8"
+                                        stroke-linecap="round"
+                                    /></svg
+                                >
+                            </button>
+                        {:else}
+                            <span class="chev-spacer"></span>
+                        {/if}
+                        <button
+                            type="button"
+                            class="name"
+                            class:added
+                            aria-label={added
+                                ? `${row.region.name} is already in the map`
+                                : `Add ${row.region.name} (${formatBytes(row.region.bytes)})`}
+                            onclick={() => pickFromList(row.region)}
+                        >
+                            <span>{added ? "✓ " : ""}{row.region.name}</span>
+                            <span class="mono faint">{formatBytes(row.region.bytes)}</span>
+                        </button>
+                    </div>
+                {/each}
+            {/if}
+        </div>
+    {/if}
+
+    {#if ladder}
+        <div
+            class="overlay ladder"
+            style:left={`${ladder.x}px`}
+            style:top={`${ladder.y}px`}
+            bind:this={ladderEl}
+            role="menu"
+            aria-label="Add to the map"
+        >
+            <p class="small faint head">Add to the map — smallest first</p>
+            {#each ladder.ids as id (id)}
+                {@const region = ladderRegion(id)}
+                {#if region}
+                    <button
+                        type="button"
+                        role="menuitem"
+                        class:default={id === ladder.defaultId}
+                        class:added={store.hasRegion(id)}
+                        onmouseenter={() => view?.emphasizeRegion(id)}
+                        onmouseleave={() => view?.emphasizeRegion(null)}
+                        onfocus={() => view?.emphasizeRegion(id)}
+                        onclick={() => pickLadder(id)}
+                    >
+                        <span>{store.hasRegion(id) ? "✓ " : ""}{region.name}</span>
+                        <span class="mono faint">{formatBytes(region.bytes)}</span>
+                    </button>
+                {/if}
             {/each}
         </div>
     {/if}
@@ -347,10 +567,12 @@
         </div>
     {/if}
 
-    {#if store.boxError}
-        <div class="overlay bottom-left chip error">{store.boxError}</div>
+    {#if store.drawError}
+        <div class="overlay bottom-left chip error">{store.drawError}</div>
     {:else if tool === "box"}
         <div class="overlay bottom-left chip">Drag to draw a box — Esc cancels.</div>
+    {:else if tool === "lasso"}
+        <div class="overlay bottom-left chip">Drag to draw around an area — Esc cancels.</div>
     {:else if tool === "region"}
         <div class="overlay bottom-left chip">Every region you click joins the map — Esc when done.</div>
     {:else if partCount === 0 && tool === "none"}
@@ -411,14 +633,15 @@
         border-radius: 7px;
         background: var(--parchment);
         color: var(--ink-soft);
-        font-size: 15px;
-        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         transition:
             background 0.15s,
             color 0.15s;
     }
 
-    .rail button:hover:not(.ghosted):not(.active) {
+    .rail button:hover:not(.active) {
         background: var(--parchment-2);
         color: var(--ink);
     }
@@ -426,11 +649,6 @@
     .rail button.active {
         background: var(--forest);
         color: var(--panel);
-    }
-
-    .rail button.ghosted {
-        opacity: 0.45;
-        cursor: default;
     }
 
     .rail button:focus-visible {
@@ -449,8 +667,8 @@
     .region-list {
         top: 12px;
         left: 64px;
-        width: min(280px, 60vw);
-        max-height: min(420px, calc(100% - 24px));
+        width: min(300px, 60vw);
+        max-height: min(440px, calc(100% - 24px));
         overflow: auto;
         background: var(--panel);
         border: 1px solid var(--parchment-3);
@@ -461,30 +679,128 @@
         padding: 6px;
     }
 
+    .region-list input {
+        margin: 2px 2px 6px;
+        padding: 6px 10px;
+        font-size: 13px;
+    }
+
     .region-list .head {
         margin: 4px 8px 6px;
     }
 
-    .region-list button {
+    .region-list .row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+    }
+
+    .region-list .chev {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        border: none;
+        background: none;
+        color: var(--ink-faint);
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 5px;
+    }
+
+    .region-list .chev svg {
+        width: 11px;
+        height: 11px;
+        transition: transform 0.12s;
+    }
+
+    .region-list .chev.open svg {
+        transform: rotate(90deg);
+    }
+
+    .region-list .chev:hover {
+        background: rgba(95, 125, 61, 0.12);
+        color: var(--ink);
+    }
+
+    .chev-spacer {
+        flex: none;
+        width: 20px;
+    }
+
+    .region-list button.name {
+        flex: 1;
         display: flex;
         justify-content: space-between;
         gap: 12px;
         background: none;
         border: none;
         text-align: left;
-        padding: 7px 10px;
+        padding: 6px 8px;
         border-radius: 7px;
         font-size: 13px;
         color: var(--ink);
+        min-width: 0;
     }
 
-    .region-list button:hover {
+    .region-list button.name > span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .region-list button.name:hover {
         background: rgba(95, 125, 61, 0.12);
     }
 
-    .region-list button.added {
+    .region-list button.name.added {
         color: var(--forest-deep);
         font-weight: 600;
+        cursor: default;
+    }
+
+    .ladder {
+        width: 250px;
+        background: var(--panel);
+        border: 1px solid var(--parchment-3);
+        border-radius: 12px;
+        box-shadow: 0 8px 22px rgba(36, 51, 28, 0.22);
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .ladder .head {
+        margin: 3px 8px 4px;
+    }
+
+    .ladder button {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+        background: none;
+        border: none;
+        text-align: left;
+        padding: 7px 9px;
+        border-radius: 7px;
+        font-size: 13.5px;
+        color: var(--ink);
+    }
+
+    .ladder button:hover,
+    .ladder button:focus-visible {
+        background: rgba(95, 125, 61, 0.14);
+        outline: none;
+    }
+
+    .ladder button.default {
+        font-weight: 600;
+    }
+
+    .ladder button.added {
+        color: var(--forest-deep);
         cursor: default;
     }
 
