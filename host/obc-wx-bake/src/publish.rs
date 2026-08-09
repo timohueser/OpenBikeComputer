@@ -178,8 +178,7 @@ impl RcloneStore {
 
     /// Defensive backstop: a secret echoed back by a future rclone must never reach a log.
     fn redact(&self, text: &str) -> String {
-        match self.envs.iter().find(|(name, _)| name.ends_with("_SECRET_ACCESS_KEY")).map(|(_, value)| value.as_str())
-        {
+        match self.envs.iter().find(|(name, _)| name.ends_with("_SECRET_ACCESS_KEY")).map(|(_, value)| value.as_str()) {
             Some(secret) if !secret.is_empty() => text.replace(secret, "***"),
             _ => text.to_string(),
         }

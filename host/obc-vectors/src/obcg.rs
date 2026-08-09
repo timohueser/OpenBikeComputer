@@ -7,8 +7,7 @@
 
 use obc_crc::Crc32;
 use obc_formats::obcg::{
-    self, FrameInput, FLAG_FORECAST, FLAG_OBSERVED, HEADER_LEN, PRODUCT_DWD_RV, PRODUCT_ICON_EU, TIER_MODEL,
-    TIER_RADAR,
+    self, FrameInput, FLAG_FORECAST, FLAG_OBSERVED, HEADER_LEN, PRODUCT_DWD_RV, PRODUCT_ICON_EU, TIER_MODEL, TIER_RADAR,
 };
 use obc_formats::precip4::INTENSITY_NODATA;
 

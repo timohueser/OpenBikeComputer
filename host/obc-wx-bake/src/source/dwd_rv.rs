@@ -211,7 +211,8 @@ fn validate_member(bytes: Vec<u8>, run_time: i64, lead_minutes: u32) -> Result<M
     if shape.as_slice() != NATIVE_SHAPE {
         return Err("DWD RV raster is no longer the 1200x1100 native grid".into());
     }
-    let attrs = |path: &str| file.group(path).and_then(|group| group.attrs()).map_err(|error| format!("{path}: {error}"));
+    let attrs =
+        |path: &str| file.group(path).and_then(|group| group.attrs()).map_err(|error| format!("{path}: {error}"));
     let data_attrs = attrs("dataset1/data1/what")?;
     let where_attrs = attrs("where")?;
     let root_what = attrs("what")?;

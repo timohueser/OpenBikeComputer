@@ -565,8 +565,9 @@ pub fn encoded_len(input: &FrameInput<'_>, scratch: &mut [u8]) -> Result<u32, En
     if scratch.len() != header.tile_cells() {
         return Err(EncodeError::InvalidInput);
     }
-    let directory_len =
-        u64::from(header.page_count()).checked_mul(u64::from(header.page_bytes())).ok_or(EncodeError::LengthOverflow)?;
+    let directory_len = u64::from(header.page_count())
+        .checked_mul(u64::from(header.page_bytes()))
+        .ok_or(EncodeError::LengthOverflow)?;
     let mut total = HEADER_LEN as u64 + directory_len;
     for tile_row in 0..header.tile_rows() {
         for tile_col in 0..header.tile_cols() {
@@ -618,9 +619,9 @@ pub fn encode_format(input: &FrameInput<'_>, scratch: &mut [u8], out: &mut [u8])
         for tile_col in 0..header.tile_cols() {
             gather_tile(input, tile_col, tile_row, scratch);
             let tile_index = (tile_row * header.tile_cols() + tile_col) as usize;
-            let entry_offset =
-                HEADER_LEN + (tile_index / usize::from(input.entries_per_page)) * page_bytes
-                    + (tile_index % usize::from(input.entries_per_page)) * DIRECTORY_ENTRY_LEN;
+            let entry_offset = HEADER_LEN
+                + (tile_index / usize::from(input.entries_per_page)) * page_bytes
+                + (tile_index % usize::from(input.entries_per_page)) * DIRECTORY_ENTRY_LEN;
             let encoded = tile_encoded_len(scratch)?;
             if encoded == 0 {
                 // All-dry sentinel: the entry stays all zero.

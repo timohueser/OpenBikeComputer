@@ -71,7 +71,10 @@ pub fn decode_field(bytes: &[u8], expected: &ExpectedGrib) -> Result<DecodedFiel
             return Err(format!("unexpected GRIB parameter d={discipline} c={category:?} p={parameter:?}"));
         }
         if submessage.grid_def().grid_tmpl_num() != expected.grid_template {
-            return Err(format!("grid template {} is outside the source contract", submessage.grid_def().grid_tmpl_num()));
+            return Err(format!(
+                "grid template {} is outside the source contract",
+                submessage.grid_def().grid_tmpl_num()
+            ));
         }
         if encode_hex(submessage.grid_def().iter().copied()) != expected.expected_grid_definition_hex {
             return Err("GRIB grid definition bytes are outside the exact source contract".into());
@@ -85,10 +88,8 @@ pub fn decode_field(bytes: &[u8], expected: &ExpectedGrib) -> Result<DecodedFiel
             return Err(format!("representation template {representation_template} is outside the source contract"));
         }
         let temporal = submessage.temporal_info();
-        let reference_unix_seconds =
-            temporal.ref_time.ok_or("GRIB reference time is invalid")?.timestamp();
-        let forecast_time =
-            temporal.forecast_time_target.ok_or("GRIB forecast time is invalid")?.timestamp();
+        let reference_unix_seconds = temporal.ref_time.ok_or("GRIB reference time is invalid")?.timestamp();
+        let forecast_time = temporal.forecast_time_target.ok_or("GRIB forecast time is invalid")?.timestamp();
         let (valid_start_unix_seconds, valid_end_unix_seconds) = if product_template == 8 {
             pdt48_interval(submessage.prod_def(), forecast_time, reference_unix_seconds)?
         } else if product_template == 0 {

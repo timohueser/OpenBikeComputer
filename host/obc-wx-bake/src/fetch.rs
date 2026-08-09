@@ -49,10 +49,8 @@ const USER_AGENT: &str = "obc-wx-bake/0.1 https://github.com/timohueser/OpenBike
 
 impl HttpUpstream {
     pub fn new() -> Self {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(120)))
-            .user_agent(USER_AGENT)
-            .build();
+        let config =
+            ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).user_agent(USER_AGENT).build();
         Self { agent: config.into(), attempts: 3, fetched: 0 }
     }
 
@@ -140,11 +138,7 @@ impl Upstream for HttpUpstream {
             if bytes.len() as u64 > cap {
                 return Err(RetryClass::Fatal(format!("body exceeds the {cap}-byte cap")));
             }
-            Ok(FetchOutcome::Body(Fetched {
-                bytes,
-                etag: header("etag"),
-                last_modified: header("last-modified"),
-            }))
+            Ok(FetchOutcome::Body(Fetched { bytes, etag: header("etag"), last_modified: header("last-modified") }))
         })?;
         if let FetchOutcome::Body(fetched) = &outcome {
             self.fetched += fetched.bytes.len() as u64;
@@ -189,8 +183,7 @@ pub struct FixtureUpstream {
 
 impl FixtureUpstream {
     pub fn insert(&mut self, url: impl Into<String>, bytes: Vec<u8>, etag: Option<&str>) {
-        self.objects
-            .insert(url.into(), Fetched { bytes, etag: etag.map(str::to_string), last_modified: None });
+        self.objects.insert(url.into(), Fetched { bytes, etag: etag.map(str::to_string), last_modified: None });
     }
 }
 
