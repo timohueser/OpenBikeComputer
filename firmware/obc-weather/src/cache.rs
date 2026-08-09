@@ -11,11 +11,12 @@ use crate::{checked_add, checked_mul, Error, FormatError, WeatherReader};
 /// Four adjacent entries fit in 48 bytes and match the validated reader's directory window.
 pub const DIRECTORY_WINDOW_ENTRIES: usize = 4;
 
-/// How long a **single-frame** product's one frame counts as current, in seconds — the stand-in
-/// cadence when there is no second frame to measure the real one from (see
-/// [`WeatherReader::current_frame`]). 15 minutes: the finest shipped cadence (DWD RV), so a
-/// one-frame product is never *more* durable than a nine-frame one.
-pub const SINGLE_FRAME_MAX_AGE_S: i64 = 900;
+/// The hard ceiling on how long **any** rain frame counts as current past its own timestamp, in
+/// seconds (see [`WeatherReader::current_frame`]; a product with a finer measured cadence is
+/// bounded by that instead). 15 minutes — the radar-tier cadence: a frame older than this is
+/// weather history, whatever the table's spacing claims, and a single-frame product (no spacing
+/// to measure) gets exactly this.
+pub const FRAME_CURRENT_CAP_S: i64 = 900;
 
 const EMPTY_FRAME: FrameDescriptor = FrameDescriptor {
     valid_at: 0,
@@ -148,16 +149,20 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
     /// be (WX10). This is the one freshness gate between the store and the overlay — expired or
     /// not-yet-valid rain never renders as current, and the renderer itself never sees timestamps.
     ///
-    /// A frame is current exactly while:
-    /// - `now` lies inside the bundle's `[valid_from, valid_until]` window, and
-    /// - it is the newest genuine frame at or before `now` ([`frame_at_or_before`]
-    ///   (Self::frame_at_or_before) — never a future frame presented early), and
-    /// - `now` has not outrun the product's own cadence past the **last** frame: a mid-sequence
-    ///   frame expires when its successor begins (guaranteed by the search), and the final frame
-    ///   `cadence` seconds after its own timestamp — where `cadence` is the real spacing of the
-    ///   last two frames, or [`SINGLE_FRAME_MAX_AGE_S`] for a single-frame product. No synthetic
-    ///   validity is invented beyond that; whether missing rain may be *claimed* dry is decision
-    ///   logic (WX12), not rendering.
+    /// **Every** frame — first, mid-table, last — is current only inside
+    /// `[valid_at, valid_at + cap]`, intersected with its successor's start, where
+    /// `cap = min(smallest inter-frame spacing in the table, FRAME_CURRENT_CAP_S)`. Bounding by
+    /// the *minimum* spacing (never a gap-inflated last-two spacing) and applying it to every
+    /// frame is what makes the gate fail **closed** against irregular tables: a bake gap in the
+    /// middle of the table goes dark once its preceding frame ages past the product's real
+    /// cadence, and a gap before the last frame cannot extend that frame's life (adversarial
+    /// review of PR #1213 demonstrated both against the earlier last-frame-only rule). A
+    /// single-frame product has no spacing to measure and gets [`FRAME_CURRENT_CAP_S`] outright.
+    /// No synthetic validity is invented beyond the cap; whether missing rain may be *claimed*
+    /// dry is decision logic (WX12), not rendering.
+    ///
+    /// Cost: one descriptor sweep (`frame_count` 32-byte reads, contiguous — a DWD table is one
+    /// SD block) on top of the binary search, once per adapter construction.
     pub fn current_frame(&self, now: i64, cache: &mut WeatherCache) -> Result<Option<(usize, FrameDescriptor)>, Error> {
         if now < self.header.valid_from || now > self.header.valid_until {
             return Ok(None);
@@ -165,15 +170,18 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         let Some((index, frame)) = self.frame_at_or_before(now, cache)? else {
             return Ok(None);
         };
-        if index + 1 == self.header.frame_count as usize {
-            let cadence = if index >= 1 {
-                frame.valid_at.saturating_sub(self.frame(index - 1)?.valid_at)
-            } else {
-                SINGLE_FRAME_MAX_AGE_S
-            };
-            if now.saturating_sub(frame.valid_at) > cadence {
-                return Ok(None);
+        let mut cap = FRAME_CURRENT_CAP_S;
+        if self.header.frame_count > 1 {
+            let mut previous = self.frame(0)?.valid_at;
+            for i in 1..self.header.frame_count as usize {
+                let at = self.frame(i)?.valid_at;
+                // Validated strictly increasing, so every spacing is positive.
+                cap = cap.min(at.saturating_sub(previous));
+                previous = at;
             }
+        }
+        if now.saturating_sub(frame.valid_at) > cap {
+            return Ok(None);
         }
         Ok(Some((index, frame)))
     }
