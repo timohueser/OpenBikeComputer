@@ -265,43 +265,43 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --script "B u p d p d d p" --png "$OUT/display-idle-return.png"
 
 # Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
-"$SIM" "$MAP" --boot --script "B u p d d p"  --png "$OUT/connections.png"
+"$SIM" "$MAP" --boot --script "B u p d d d p"  --png "$OUT/connections.png"
 # Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
 # the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
 # at the bottom anchor), the row selected (a step puts the shaded guarded base on it), the guarded
 # hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond, so the
 # Forget row isn't drawn at all (the round-1 only-when-possible grammar).
-"$SIM" "$MAP" --boot --ble-paired --script "B u p d d p p"     --png "$OUT/bluetooth.png"
-"$SIM" "$MAP" --boot --ble-paired --script "B u p d d p p d"   --png "$OUT/bluetooth-forget-selected.png"
-"$SIM" "$MAP" --boot --ble-paired --script "B u p d d p p d H" --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot              --script "B u p d d p p"     --png "$OUT/bluetooth-unpaired.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B u p d d d p p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B u p d d d p p d"   --png "$OUT/bluetooth-forget-selected.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B u p d d d p p d H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot              --script "B u p d d d p p"     --png "$OUT/bluetooth-unpaired.png"
 # Sensors screen (BLE sensors epic #707, SE7) — the group's second row, under Phone. `--sensors-screen`
 # drives the sim's fake central manager: the three-row list (Heart rate Connected · 78 %, Power
 # Searching, Cadence Not set — the HR row selected, so its hold-to-forget footer shows), and the scan
 # list one press deeper (the HR-filtered discovered sensors, name/address + RSSI). A third run with no
 # fake manager pins the empty `Searching...` state while the scan finds nothing.
-"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d p d p"   --png "$OUT/sensors.png"
-"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d p d p p" --png "$OUT/sensors-scan.png"
-"$SIM" "$MAP" --boot                  --script "B u p d d p d p p" --png "$OUT/sensors-scanning.png"
+"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d d p d p"   --png "$OUT/sensors.png"
+"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d d p d p p" --png "$OUT/sensors-scan.png"
+"$SIM" "$MAP" --boot                  --script "B u p d d d p d p p" --png "$OUT/sensors-scanning.png"
 
 # Power (group 3): the GPS fix-interval stepper + the power-saver toggle.
-"$SIM" "$MAP" --boot --script "B u p d d d p" --png "$OUT/power.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p" --png "$OUT/power.png"
 
 # System (group 4) — the device drawer: Units, Date & Time, Language, Firmware, Reset. The menu
 # itself first, then each row's page.
-"$SIM" "$MAP" --boot --script "B u p d d d d p"     --png "$OUT/system.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d p p"   --png "$OUT/units.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d p d p" --png "$OUT/datetime.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p"     --png "$OUT/system.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p p"   --png "$OUT/units.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p d p" --png "$OUT/datetime.png"
 # The Language screen (epic #602): the endonym value picker. The default (English), then two
 # steps cycling to Français — pinning the ç glyph the Latin font (#601) adds.
-"$SIM" "$MAP" --boot --script "B u p d d d d p d d p"     --png "$OUT/language.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d p d d p d d" --png "$OUT/language-french.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p"     --png "$OUT/language.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p d d" --png "$OUT/language-french.png"
 # Factory Reset is the group's last row: four steps in, press to open, arm (press), then a
 # partial-hold to fill the bar.
-"$SIM" "$MAP" --boot --script "B u p d d d d p d d d d p p H" --png "$OUT/reset-hold.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d d p p H" --png "$OUT/reset-hold.png"
 # The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload door ("Install update from
 # card") over the read-only device-info ledger.
-"$SIM" "$MAP" --boot --script "B u p d d d d p d d d p" --png "$OUT/firmware.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d p" --png "$OUT/firmware.png"
 # The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
 # is live), out through the ride menu's Main-menu station (`B u p` — see ride-detail-recording
 # above), then Settings -> System -> Firmware. The row loses its amber box and shows the
@@ -312,7 +312,7 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # the "Checking card..." wait on top (Firmware -> Install), and --dfu-scan / --dfu-error answer it
 # through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
 # real obc-dfu scan). --dfu-progress then presses Install so the "Preparing update..." spinner shows.
-DFU_PRE="B u p d d d d p d d d p p"
+DFU_PRE="B u p d d d d d p d d d p p"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --png "$OUT/dfu-check.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan normal --png "$OUT/dfu-confirm.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan same   --png "$OUT/dfu-confirm-same.png"
@@ -420,6 +420,35 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 "$SIM" "$MAP" --weather demo:scattered --clock "2025-06-29T14:40" --png "$OUT/map-rain-scattered.png"
 "$SIM" "$MAP" --weather demo:frontal --heading 35 --zoom 4 --clock "2025-06-29T14:40" --png "$OUT/map-rain-frontal-heading.png"
 "$SIM" "$MAP" --weather demo:storm --clock "2025-06-29T14:40" --png "$OUT/map-rain-storm.png"
+
+# Weather screens (WX11, epic #1185): the production dashboard / hourly / rain-map / alert /
+# settings surfaces over the deterministic demo bundles. The script prefix "p d d d d w p" walks
+# Home -> Menu -> (4 steps to the Weather station, needle settled) -> dashboard; the demo clock
+# anchors on the bundle's first frame (no --clock), so every derivation is byte-stable.
+WXNAV="p d d d d w p"
+"$SIM" "$MAP" --boot --weather demo:dry --script "$WXNAV" --png "$OUT/weather-dash-dry.png"
+"$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --script "$WXNAV" --png "$OUT/weather-dash-rain.png"
+"$SIM" "$MAP" --boot --weather demo:storm --script "$WXNAV" --png "$OUT/weather-dash-storm.png"
+# Honest states: frames outrun (stale -> WEATHER UPDATE NEEDED), a frameless hourly-only bundle,
+# no store at all, and the non-blocking refresh cue over cached content.
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV" --png "$OUT/weather-dash-stale.png"
+"$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV" --png "$OUT/weather-dash-hourly-only.png"
+"$SIM" "$MAP" --boot --script "$WXNAV" --png "$OUT/weather-dash-nodata.png"
+"$SIM" "$MAP" --boot --weather demo:incoming --weather-refreshing --script "$WXNAV" --png "$OUT/weather-dash-refreshing.png"
+# Hourly rows (no separators; icons/temp/precip/wind columns), fresh + scrolled.
+"$SIM" "$MAP" --boot --weather demo:incoming --script "$WXNAV p" --png "$OUT/weather-hourly.png"
+"$SIM" "$MAP" --boot --weather demo:incoming --script "$WXNAV p d d d d d d" --png "$OUT/weather-hourly-scrolled.png"
+# Rain map: NOW frame, two time-steps ahead, and the three honest banners (stale / hourly-only /
+# out-of-regime at a far-out zoom).
+"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p" --png "$OUT/weather-rainmap.png"
+"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p d d" --png "$OUT/weather-rainmap-step2.png"
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV d p" --png "$OUT/weather-rainmap-stale.png"
+"$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --png "$OUT/weather-rainmap-hourly-only.png"
+"$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --png "$OUT/weather-rainmap-out-of-regime.png"
+# The alert card (locked VIEW RAIN MAP + DISMISS) and the settings refresh picker (open field).
+"$SIM" "$MAP" --boot --weather demo:storm --weather-alert storm:28 --png "$OUT/weather-alert-storm.png"
+"$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --png "$OUT/weather-alert-rain.png"
+"$SIM" "$MAP" --boot --script "p d d d d d w p d d p" --png "$OUT/weather-settings.png"
 # Waypoint UI (epic #523). specs/vectors holds two routes in filename order: id 0 = route-plain,
 # id 1 = route-waypoints ("Vector Loop": named waypoints Brunnen @ ~0 m and Pass Summit @ ~1.70 km on
 # a 2.20 km track). The default `p p p p` rides id 0, so the extra `d` after the Route-menu press
@@ -646,7 +675,7 @@ for lang in de fr es; do
     # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
     # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations.
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d d" --png "$OUT/settings-ride-autodelete-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --png "$OUT/units-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p p"   --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
     # and the icon-gutter picker row have to fit whole.
@@ -657,7 +686,7 @@ for lang in de fr es; do
     # Date & Time is the tightest screen per-language: the localized month name fills the fixed
     # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
     # month glyphs against the active cell's amber border.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d p" --png "$OUT/datetime-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p d p" --png "$OUT/datetime-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p b"    --png "$OUT/statistics-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$CLIMBROUTES" --gpx "$GPX" --at 1500 --open-climb \
@@ -681,7 +710,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B d d d p d p" --png "$OUT/routeswap-$lang.png"
     # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
     # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
-    "$SIM" "$MAP" --boot --lang "$lang" --sensors-screen --script "B u p d d p d p" --png "$OUT/sensors-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --sensors-screen --script "B u p d d d p d p" --png "$OUT/sensors-$lang.png"
     # The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
     # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
     "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B d d d w p p" --png "$OUT/ride-start-$lang.png"
@@ -694,8 +723,8 @@ for lang in de fr es; do
     # first-install confirm (the worst case for vertical fit — the two-row version table + the
     # no-undo note, which wraps to two Label lines), the progress spinner, an error card, and the
     # post-update toast — the text-heaviest DFU screens, to eyeball for clipped/overflowing copy.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p"         --png "$OUT/system-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d d d p" --png "$OUT/firmware-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p"         --png "$OUT/system-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p d d d p" --png "$OUT/firmware-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
     # The terminal installing card per-language — the wrapped Body headline (two lines in French)
@@ -703,6 +732,14 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-error fragmented --png "$OUT/dfu-error-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
+  # Weather screens (WX11): the text-heavy surfaces re-shot per language.
+  WXNAV="p d d d d w p"
+  "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --lang "$lang" --script "$WXNAV" --png "$OUT/weather-dash-rain-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --lang "$lang" --script "$WXNAV" --png "$OUT/weather-dash-stale-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:incoming --lang "$lang" --script "$WXNAV p" --png "$OUT/weather-hourly-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:storm --lang "$lang" --weather-alert storm:28 --png "$OUT/weather-alert-storm-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" --script "p d d d d d w p d d p" --png "$OUT/weather-settings-$lang.png"
+
 done
 
 # Counted from the directory rather than hand-maintained — the literal that used to live here had
