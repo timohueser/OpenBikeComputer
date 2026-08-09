@@ -1,12 +1,17 @@
 //! Provider-neutral 4-bit precipitation intensity and canonical tile codec.
 //!
-//! OBCW and the future OBCG format share these exact thresholds and raw4/RLE4 bytes. Keeping
-//! them below either container prevents the baker, phone, and firmware from growing subtly
-//! different precipitation contracts.
+//! OBCW and OBCG share these exact thresholds and raw4/RLE4 bytes. Keeping them below either
+//! container prevents the baker, phone, and firmware from growing subtly different
+//! precipitation contracts. OBCW always uses the fixed 16 x 16 tile; OBCG chooses a per-product
+//! power-of-two tile edge, so the codec is generalized over the decoded cell count with the
+//! 256-cell entry points kept as exact wrappers.
 
 pub const TILE_EDGE: usize = 16;
 pub const TILE_CELLS: usize = TILE_EDGE * TILE_EDGE;
 pub const RAW4_LEN: usize = TILE_CELLS / 2;
+/// Largest cell count the generalized codec accepts: a 256 x 256-cell OBCG tile. Its raw4
+/// payload is 32,768 bytes, so every canonical encoded length still fits `u16`.
+pub const MAX_CELLS: usize = 256 * 256;
 
 pub const CODEC_RAW4: u8 = 0;
 pub const CODEC_RLE4: u8 = 1;
@@ -73,48 +78,75 @@ pub const fn valid_intensity(value: u8) -> bool {
     value <= INTENSITY_MAX || value == INTENSITY_NODATA
 }
 
-/// Return the deterministic encoded length after validating every intensity code.
-pub fn encoded_tile_len(tile: &[u8; TILE_CELLS]) -> Result<usize, Error> {
-    if tile.iter().any(|&value| !valid_intensity(value)) {
-        return Err(Error::Intensity);
-    }
-    Ok(rle4_len(tile).min(RAW4_LEN))
+/// True when `count` is a legal generalized cell count: even (raw4 packs two cells per byte),
+/// nonzero, and no larger than [`MAX_CELLS`].
+pub const fn valid_cell_count(count: usize) -> bool {
+    count != 0 && count % 2 == 0 && count <= MAX_CELLS
 }
 
-/// Encode one tile using canonical raw4/RLE4 selection.
+/// Return the deterministic encoded length after validating every intensity code.
 ///
-/// `out` may be a 128-byte scratch buffer or an exact-size destination obtained from
-/// [`encoded_tile_len`]. Only the returned prefix is written.
-pub fn encode_tile(tile: &[u8; TILE_CELLS], out: &mut [u8]) -> Result<TileEncoding, Error> {
-    let encoded_len = encoded_tile_len(tile)?;
+/// `cells.len()` is the decoded cell count and must satisfy [`valid_cell_count`]. OBCW always
+/// passes 256; OBCG passes `tile_edge^2` for its per-product tile size.
+pub fn encoded_cells_len(cells: &[u8]) -> Result<usize, Error> {
+    if !valid_cell_count(cells.len()) {
+        return Err(Error::EncodedLength);
+    }
+    if cells.iter().any(|&value| !valid_intensity(value)) {
+        return Err(Error::Intensity);
+    }
+    Ok(rle4_len(cells).min(cells.len() / 2))
+}
+
+/// Return the deterministic encoded length of one 16 x 16 tile.
+pub fn encoded_tile_len(tile: &[u8; TILE_CELLS]) -> Result<usize, Error> {
+    encoded_cells_len(tile)
+}
+
+/// Encode one row-major cell block using canonical raw4/RLE4 selection.
+///
+/// `out` may be a `cells.len() / 2`-byte scratch buffer or an exact-size destination obtained
+/// from [`encoded_cells_len`]. Only the returned prefix is written.
+pub fn encode_cells(cells: &[u8], out: &mut [u8]) -> Result<TileEncoding, Error> {
+    let encoded_len = encoded_cells_len(cells)?;
     if out.len() < encoded_len {
         return Err(Error::OutputTooSmall);
     }
-    let codec = if encoded_len < RAW4_LEN { CODEC_RLE4 } else { CODEC_RAW4 };
+    let raw4_len = cells.len() / 2;
+    let codec = if encoded_len < raw4_len { CODEC_RLE4 } else { CODEC_RAW4 };
     if codec == CODEC_RLE4 {
-        encode_rle4(tile, &mut out[..encoded_len]);
+        encode_rle4(cells, &mut out[..encoded_len]);
     } else {
-        encode_raw4(tile, &mut out[..RAW4_LEN]);
+        encode_raw4(cells, &mut out[..raw4_len]);
     }
     Ok(TileEncoding { codec, encoded_len: encoded_len as u16 })
 }
 
-/// Validate a canonical encoded tile without expanding it.
-pub fn validate_tile(codec: u8, encoded: &[u8]) -> Result<(), Error> {
+/// Encode one 16 x 16 tile using canonical raw4/RLE4 selection.
+pub fn encode_tile(tile: &[u8; TILE_CELLS], out: &mut [u8]) -> Result<TileEncoding, Error> {
+    encode_cells(tile, out)
+}
+
+/// Validate a canonical encoded cell block without expanding it.
+pub fn validate_cells(codec: u8, encoded: &[u8], cell_count: usize) -> Result<(), Error> {
+    if !valid_cell_count(cell_count) {
+        return Err(Error::EncodedLength);
+    }
+    let raw4_len = cell_count / 2;
     let len = encoded.len();
-    if len == 0 || len > RAW4_LEN {
+    if len == 0 || len > raw4_len {
         return Err(Error::EncodedLength);
     }
     match codec {
-        CODEC_RAW4 if len == RAW4_LEN => {
+        CODEC_RAW4 if len == raw4_len => {
             if encoded.iter().any(|byte| !valid_intensity(byte & 0x0F) || !valid_intensity(byte >> 4)) {
                 return Err(Error::Intensity);
             }
-            if raw4_canonical_rle_len(encoded) < RAW4_LEN {
+            if raw4_canonical_rle_len(encoded, cell_count) < raw4_len {
                 return Err(Error::Codec);
             }
         }
-        CODEC_RLE4 if len < RAW4_LEN => {
+        CODEC_RLE4 if len < raw4_len => {
             let mut count = 0usize;
             let mut previous: Option<(u8, usize)> = None;
             for &byte in encoded {
@@ -128,12 +160,12 @@ pub fn validate_tile(codec: u8, encoded: &[u8]) -> Result<(), Error> {
                     return Err(Error::Rle);
                 }
                 count = count.checked_add(run).ok_or(Error::Rle)?;
-                if count > TILE_CELLS {
+                if count > cell_count {
                     return Err(Error::Rle);
                 }
                 previous = Some((value, run));
             }
-            if count != TILE_CELLS {
+            if count != cell_count {
                 return Err(Error::Rle);
             }
         }
@@ -142,9 +174,15 @@ pub fn validate_tile(codec: u8, encoded: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Decode exactly one canonical tile into caller-owned storage.
-pub fn decode_tile(codec: u8, encoded: &[u8], out: &mut [u8; TILE_CELLS]) -> Result<(), Error> {
-    validate_tile(codec, encoded)?;
+/// Validate a canonical encoded 16 x 16 tile without expanding it.
+pub fn validate_tile(codec: u8, encoded: &[u8]) -> Result<(), Error> {
+    validate_cells(codec, encoded, TILE_CELLS)
+}
+
+/// Decode exactly one canonical cell block into caller-owned storage. `out.len()` is the decoded
+/// cell count.
+pub fn decode_cells(codec: u8, encoded: &[u8], out: &mut [u8]) -> Result<(), Error> {
+    validate_cells(codec, encoded, out.len())?;
     if codec == CODEC_RAW4 {
         for (index, &byte) in encoded.iter().enumerate() {
             out[index * 2] = byte & 0x0F;
@@ -161,13 +199,18 @@ pub fn decode_tile(codec: u8, encoded: &[u8], out: &mut [u8; TILE_CELLS]) -> Res
     Ok(())
 }
 
+/// Decode exactly one canonical 16 x 16 tile into caller-owned storage.
+pub fn decode_tile(codec: u8, encoded: &[u8], out: &mut [u8; TILE_CELLS]) -> Result<(), Error> {
+    decode_cells(codec, encoded, out)
+}
+
 /// Count the maximal, 16-cell-capped runs represented by a valid raw4 payload without expanding
-/// the tile. The result is the canonical RLE4 byte length.
-fn raw4_canonical_rle_len(encoded: &[u8]) -> usize {
+/// the block. The result is the canonical RLE4 byte length.
+fn raw4_canonical_rle_len(encoded: &[u8], cell_count: usize) -> usize {
     let mut runs = 0usize;
     let mut previous = None;
     let mut run_len = 0usize;
-    for cell_index in 0..TILE_CELLS {
+    for cell_index in 0..cell_count {
         let byte = encoded[cell_index / 2];
         let value = if cell_index % 2 == 0 { byte & 0x0F } else { byte >> 4 };
         if previous == Some(value) && run_len < 16 {
@@ -181,13 +224,13 @@ fn raw4_canonical_rle_len(encoded: &[u8]) -> usize {
     runs
 }
 
-fn rle4_len(tile: &[u8; TILE_CELLS]) -> usize {
+fn rle4_len(cells: &[u8]) -> usize {
     let mut runs = 0usize;
     let mut index = 0usize;
-    while index < TILE_CELLS {
-        let value = tile[index];
+    while index < cells.len() {
+        let value = cells[index];
         let mut run = 1usize;
-        while index + run < TILE_CELLS && run < 16 && tile[index + run] == value {
+        while index + run < cells.len() && run < 16 && cells[index + run] == value {
             run += 1;
         }
         runs += 1;
@@ -196,19 +239,19 @@ fn rle4_len(tile: &[u8; TILE_CELLS]) -> usize {
     runs
 }
 
-fn encode_raw4(tile: &[u8; TILE_CELLS], out: &mut [u8]) {
-    for index in 0..RAW4_LEN {
-        out[index] = tile[index * 2] | (tile[index * 2 + 1] << 4);
+fn encode_raw4(cells: &[u8], out: &mut [u8]) {
+    for index in 0..cells.len() / 2 {
+        out[index] = cells[index * 2] | (cells[index * 2 + 1] << 4);
     }
 }
 
-fn encode_rle4(tile: &[u8; TILE_CELLS], out: &mut [u8]) {
+fn encode_rle4(cells: &[u8], out: &mut [u8]) {
     let mut input = 0usize;
     let mut output = 0usize;
-    while input < TILE_CELLS {
-        let value = tile[input];
+    while input < cells.len() {
+        let value = cells[input];
         let mut run = 1usize;
-        while input + run < TILE_CELLS && run < 16 && tile[input + run] == value {
+        while input + run < cells.len() && run < 16 && cells[input + run] == value {
             run += 1;
         }
         out[output] = ((run as u8 - 1) << 4) | value;
@@ -275,6 +318,40 @@ mod tests {
         assert_eq!(validate_tile(CODEC_RLE4, &[0xF6; 15]), Err(Error::Rle));
         assert_eq!(validate_tile(CODEC_RLE4, &[0xF6; 17]), Err(Error::Rle));
         assert_eq!(validate_tile(2, &[0; RAW4_LEN]), Err(Error::Codec));
+    }
+
+    #[test]
+    fn generalized_cell_counts_round_trip_and_reject_bad_sizes() {
+        // OBCG's per-product tile sizes: 32 x 32 and 64 x 64 blocks through the same authority.
+        for cell_count in [1_024usize, 4_096] {
+            let raw: std::vec::Vec<u8> = (0..cell_count).map(|index| (index % 13) as u8).collect();
+            let uniform = std::vec![6u8; cell_count];
+            for (cells, expected_codec, expected_len) in
+                [(&raw, CODEC_RAW4, cell_count / 2), (&uniform, CODEC_RLE4, cell_count / 16)]
+            {
+                let mut encoded = std::vec![0u8; cell_count / 2];
+                let encoding = encode_cells(cells, &mut encoded).unwrap();
+                assert_eq!(encoding.codec, expected_codec);
+                assert_eq!(encoding.encoded_len as usize, expected_len);
+                let payload = &encoded[..expected_len];
+                assert_eq!(validate_cells(expected_codec, payload, cell_count), Ok(()));
+                let mut decoded = std::vec![0u8; cell_count];
+                decode_cells(expected_codec, payload, &mut decoded).unwrap();
+                assert_eq!(&decoded, cells);
+            }
+        }
+        // A 256-cell payload is not valid against a different declared cell count.
+        let uniform = [6u8; TILE_CELLS];
+        let mut encoded = [0u8; RAW4_LEN];
+        let encoding = encode_cells(&uniform, &mut encoded).unwrap();
+        let payload = &encoded[..encoding.encoded_len as usize];
+        assert_eq!(validate_cells(encoding.codec, payload, 1_024), Err(Error::Rle));
+        // Odd, zero, and oversized cell counts fail closed.
+        assert_eq!(encoded_cells_len(&[0u8; 15]), Err(Error::EncodedLength));
+        assert_eq!(encoded_cells_len(&[]), Err(Error::EncodedLength));
+        assert_eq!(validate_cells(CODEC_RAW4, &[0u8; 4], 0), Err(Error::EncodedLength));
+        assert!(!valid_cell_count(MAX_CELLS + 2));
+        assert!(valid_cell_count(MAX_CELLS));
     }
 
     #[test]
