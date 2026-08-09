@@ -206,14 +206,17 @@ impl Http for UreqHttp {
 
 /// An in-memory origin: whole objects by URL, sliced on `Range` exactly as a real one would.
 /// This is what CI runs — the fetch path is exercised end to end without a socket.
+/// `(etag, last-modified, expires)` for one fixture object.
+type FixtureHeaders = (Option<String>, Option<String>, Option<String>);
+
 #[derive(Debug, Default, Clone)]
 pub struct FixtureHttp {
     objects: BTreeMap<String, Vec<u8>>,
     /// Every URL+range asked for, in order — the request-accounting ledger the OBCG §7 read
     /// pattern is pinned against.
     pub ledger: Vec<(String, Option<(u64, u64)>)>,
-    /// Per-URL headers handed back with a 200 (`expires`, `last-modified`, `etag`).
-    headers: BTreeMap<String, (Option<String>, Option<String>, Option<String>)>,
+    /// Per-URL headers handed back with a 200.
+    headers: BTreeMap<String, FixtureHeaders>,
 }
 
 impl FixtureHttp {

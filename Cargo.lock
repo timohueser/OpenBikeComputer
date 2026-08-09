@@ -3089,6 +3089,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "obc-formats",
+ "obc-weather",
  "obc-wx-bake",
  "serde",
  "serde_json",

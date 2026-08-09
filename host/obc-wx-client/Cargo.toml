@@ -20,3 +20,6 @@ ureq = "3"
 # Parity oracle: the client's independent manifest model must read a document the *baker* wrote.
 # A dev-dep only, so the release build never pulls the baker's GRIB/HDF5 stack.
 obc-wx-bake = { path = "../obc-wx-bake" }
+# The production OBCW reader — the tests prove a built bundle is one the *device* can open, not
+# merely one this crate's encoder accepts.
+obc-weather = { path = "../../firmware/obc-weather" }

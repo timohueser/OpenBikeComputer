@@ -291,7 +291,7 @@ pub fn crop_frame<H: Http>(http: &mut H, origin: &str, frame: &Frame, corridor: 
         }
     }
 
-    let partial = window.clipped || cells.iter().any(|&cell| cell == INTENSITY_NODATA);
+    let partial = window.clipped || cells.contains(&INTENSITY_NODATA);
     Ok(Crop {
         valid_at: header.valid_at,
         source_class: frame.source_class,
