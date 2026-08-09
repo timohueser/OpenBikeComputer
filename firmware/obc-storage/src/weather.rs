@@ -63,6 +63,12 @@ pub struct Commit {
     pub previous_active: Option<Candidate>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotHandleState {
+    Owned,
+    Released,
+}
+
 /// Small transport-independent state carried across streamed chunks.
 pub struct WeatherUpload {
     target: Slot,
@@ -73,7 +79,7 @@ pub struct WeatherUpload {
     running_outer_crc: Crc32,
     held_magic: [u8; 4],
     held_len: u8,
-    poisoned: bool,
+    handle_state: SlotHandleState,
 }
 
 impl WeatherUpload {
@@ -115,7 +121,7 @@ impl WeatherUpload {
             running_outer_crc: Crc32::new(),
             held_magic: [0; 4],
             held_len: 0,
-            poisoned: false,
+            handle_state: SlotHandleState::Owned,
         })
     }
 
@@ -135,12 +141,11 @@ impl WeatherUpload {
     /// or failed append poisons and immediately abandons the transaction, releasing the slot so a
     /// retry can start from byte zero with a fresh [`Self::begin`] without rebooting.
     pub fn push<I: WeatherSlotIo>(&mut self, io: &mut I, bytes: &[u8]) -> Result<(), UploadError<I::Error>> {
-        if self.poisoned {
+        if self.handle_state == SlotHandleState::Released {
             return Err(UploadError::Poisoned);
         }
         if bytes.len() as u64 > self.remaining() as u64 {
-            self.poisoned = true;
-            io.abandon_slot(self.target);
+            self.release_handle(io);
             return Err(UploadError::Length);
         }
         self.running_outer_crc.update(bytes);
@@ -152,8 +157,7 @@ impl WeatherUpload {
         self.held_len += take as u8;
         if take < bytes.len() {
             if let Err(error) = io.append_slot(self.target, &bytes[take..]) {
-                self.poisoned = true;
-                io.abandon_slot(self.target);
+                self.release_handle(io);
                 return Err(UploadError::Io(error));
             }
         }
@@ -161,23 +165,23 @@ impl WeatherUpload {
     }
 
     /// Validate and make the inactive generation eligible.
-    pub fn finish<I: WeatherSlotIo>(self, io: &mut I) -> Result<Commit, UploadError<I::Error>> {
-        if self.poisoned {
-            io.abandon_slot(self.target);
+    pub fn finish<I: WeatherSlotIo>(mut self, io: &mut I) -> Result<Commit, UploadError<I::Error>> {
+        if self.handle_state == SlotHandleState::Released {
             return Err(UploadError::Poisoned);
         }
         if self.received != self.expected_len || self.held_len != 4 {
-            io.abandon_slot(self.target);
+            self.release_handle(io);
             return Err(UploadError::Length);
         }
         if self.running_outer_crc.finalize() != self.expected_outer_crc {
-            io.abandon_slot(self.target);
+            self.release_handle(io);
             return Err(UploadError::OuterCrc);
         }
         if let Err(error) = io.close_slot(self.target) {
-            io.abandon_slot(self.target);
+            self.release_handle(io);
             return Err(UploadError::Io(error));
         }
+        self.handle_state = SlotHandleState::Released;
 
         let validation = io.inspect_slot(self.target, Some(self.held_magic));
         let incoming = match validation {
@@ -198,8 +202,17 @@ impl WeatherUpload {
     }
 
     /// Orderly transport abort. It never deletes or truncates the active slot.
-    pub fn abort<I: WeatherSlotIo>(self, io: &mut I) {
-        io.abandon_slot(self.target);
+    pub fn abort<I: WeatherSlotIo>(mut self, io: &mut I) {
+        self.release_handle(io);
+    }
+
+    /// Release this token's open slot at most once. A terminal `push` clears ownership before it
+    /// returns, so a stale token cannot abandon a fresh retry that later opens the same slot.
+    fn release_handle<I: WeatherSlotIo>(&mut self, io: &mut I) {
+        if self.handle_state == SlotHandleState::Owned {
+            self.handle_state = SlotHandleState::Released;
+            io.abandon_slot(self.target);
+        }
     }
 }
 
@@ -244,11 +257,13 @@ mod tests {
         open: Option<Slot>,
         failure: Failure,
         appended: usize,
+        abandon_calls: usize,
+        io_calls: usize,
     }
 
     impl MemoryIo {
         fn new(a: Option<Vec<u8>>, b: Option<Vec<u8>>) -> Self {
-            Self { slots: [a, b], open: None, failure: Failure::None, appended: 0 }
+            Self { slots: [a, b], open: None, failure: Failure::None, appended: 0, abandon_calls: 0, io_calls: 0 }
         }
 
         fn bytes(&self, slot: Slot) -> Option<&[u8]> {
@@ -264,6 +279,7 @@ mod tests {
         type Error = FakeError;
 
         fn inspect_slot(&mut self, slot: Slot, magic: Option<[u8; 4]>) -> SlotValidation {
+            self.io_calls += 1;
             if self.failure == Failure::Read(slot) {
                 return SlotValidation::Unreadable;
             }
@@ -276,6 +292,7 @@ mod tests {
         }
 
         fn begin_slot(&mut self, slot: Slot) -> Result<(), Self::Error> {
+            self.io_calls += 1;
             if self.open.is_some() {
                 return Err(FakeError::Busy);
             }
@@ -289,6 +306,7 @@ mod tests {
         }
 
         fn append_slot(&mut self, slot: Slot, bytes: &[u8]) -> Result<(), Self::Error> {
+            self.io_calls += 1;
             assert_eq!(self.open, Some(slot));
             if let Failure::AppendAfter(limit, error) = self.failure {
                 let remaining = limit.saturating_sub(self.appended);
@@ -306,6 +324,7 @@ mod tests {
         }
 
         fn close_slot(&mut self, slot: Slot) -> Result<(), Self::Error> {
+            self.io_calls += 1;
             assert_eq!(self.open.take(), Some(slot));
             if self.failure == Failure::Close {
                 Err(FakeError::Close)
@@ -315,12 +334,15 @@ mod tests {
         }
 
         fn abandon_slot(&mut self, slot: Slot) {
+            self.io_calls += 1;
+            self.abandon_calls += 1;
             if self.open == Some(slot) {
                 self.open = None;
             }
         }
 
         fn commit_magic(&mut self, slot: Slot, magic: [u8; 4]) -> Result<(), Self::Error> {
+            self.io_calls += 1;
             match self.failure {
                 Failure::CommitSeek => Err(FakeError::Patch),
                 Failure::FlushPatchLost => Err(FakeError::Flush),
@@ -384,16 +406,26 @@ mod tests {
         let old = bundle(MINIMAL, 10, 100);
         let new = bundle(DWD, 11, 200);
         let mut io = MemoryIo::new(Some(old.clone()), None);
-        {
-            let mut transfer = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
-            let mut too_many = new.clone();
-            too_many.push(0);
-            assert_eq!(transfer.push(&mut io, &too_many), Err(UploadError::Length));
-        }
-        let retry = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new))
+        let mut stale = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
+        let mut too_many = new.clone();
+        too_many.push(0);
+        assert_eq!(stale.push(&mut io, &too_many), Err(UploadError::Length));
+        assert_eq!(io.abandon_calls, 1, "terminal push must abandon its handle exactly once");
+
+        let mut retry = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new))
             .expect("oversize push retained the inactive-slot handle");
         assert_eq!(retry.target(), Slot::B);
+        let io_calls_before_stale_finish = io.io_calls;
+        assert_eq!(stale.finish(&mut io), Err(UploadError::Poisoned));
+        assert_eq!(io.io_calls, io_calls_before_stale_finish, "stale finish performed storage I/O");
+        assert_eq!(io.abandon_calls, 1, "stale finish touched the retry handle");
+        for chunk in new.chunks(173) {
+            retry.push(&mut io, chunk).unwrap();
+        }
+        let commit = retry.finish(&mut io).unwrap();
         assert_eq!(io.bytes(Slot::A), Some(old.as_slice()));
+        assert_eq!(io.bytes(Slot::B), Some(new.as_slice()));
+        assert_eq!(inspect_slots(&mut io).active, Some(commit.installed));
     }
 
     #[test]
@@ -402,15 +434,25 @@ mod tests {
         let new = bundle(DWD, 11, 200);
         let mut io = MemoryIo::new(Some(old.clone()), None);
         io.failure = Failure::AppendAfter(700, FakeError::CardFull);
-        {
-            let mut transfer = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
-            assert_eq!(transfer.push(&mut io, &new), Err(UploadError::Io(FakeError::CardFull)));
-        }
+        let mut stale = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
+        assert_eq!(stale.push(&mut io, &new), Err(UploadError::Io(FakeError::CardFull)));
+        assert_eq!(io.abandon_calls, 1, "terminal push must abandon its handle exactly once");
+
         io.failure = Failure::None;
-        let retry = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new))
+        let mut retry = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new))
             .expect("append failure retained the inactive-slot handle");
         assert_eq!(retry.target(), Slot::B);
+        let io_calls_before_stale_abort = io.io_calls;
+        stale.abort(&mut io);
+        assert_eq!(io.io_calls, io_calls_before_stale_abort, "stale abort performed storage I/O");
+        assert_eq!(io.abandon_calls, 1, "stale abort touched the retry handle");
+        for chunk in new.chunks(173) {
+            retry.push(&mut io, chunk).unwrap();
+        }
+        let commit = retry.finish(&mut io).unwrap();
         assert_eq!(io.bytes(Slot::A), Some(old.as_slice()));
+        assert_eq!(io.bytes(Slot::B), Some(new.as_slice()));
+        assert_eq!(inspect_slots(&mut io).active, Some(commit.installed));
     }
 
     #[test]
