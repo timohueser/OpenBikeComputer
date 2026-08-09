@@ -62,8 +62,8 @@ without retaining every interval.
 | 12 | Generation | 4 | `uint32` | Monotonic cache generation chosen by the producer |
 | 16 | Request ID | 4 | `uint32` | Echoes the device request; `0` only for unsolicited/manual material |
 | 20 | Generated At | 8 | `int64` | Time the normalized bundle was built; positive |
-| 28 | Valid From | 8 | `int64` | Earliest represented validity; may precede generation for a current observation |
-| 36 | Valid Until | 8 | `int64` | Validity ceiling; every hourly interval end and frame `valid_at` is `<=` this value |
+| 28 | Valid From | 8 | `int64` | Hourly base: the beginning of hourly record 0 |
+| 36 | Valid Until | 8 | `int64` | Overall validity ceiling; every hourly interval end and rain `valid_at` is `<=` this value |
 | 44 | South Latitude | 4 | `int32` | Overall grid bound, -90,000,000...90,000,000 |
 | 48 | West Longitude | 4 | `int32` | Overall grid bound, -180,000,000...180,000,000 |
 | 52 | North Latitude | 4 | `int32` | Strictly greater than south |
@@ -143,11 +143,19 @@ is the hazard supplied by the source. UI icon/color selection is not part of OBC
 ## 5. Rain-frame descriptor (48 bytes)
 
 Descriptors are sorted by strictly increasing `valid_at`. Each timestamp is the actual native
-frame time, not an ordinal or forecast-step guess, and MUST be within the header validity range.
+frame time, not an ordinal or forecast-step guess. It MUST be positive and no later than
+`header.valid_until`. It MAY precede `header.valid_from`: `valid_from` is the hourly base, not the
+earliest rain timestamp. This is required for a genuine latent observation such as an IMERG Early
+frame from about four hours before the current-to-+24-hour hourly forecast.
+
+V1 deliberately has no mutable maximum-age rule in its byte-validity contract. `valid_until` is
+the one on-wire overall upper ceiling; producer/client freshness and coverage policy decides
+whether an older observed frame is usable. Accepting a structurally valid pre-hourly-base frame
+MUST NOT make stale or incomplete rain eligible for a dry claim, alert, or alert-clear signal.
 
 | Offset | Field | Size | Type | V1 rule |
 | ---: | --- | ---: | --- | --- |
-| 0 | Valid At | 8 | `int64` | Actual frame validity timestamp |
+| 0 | Valid At | 8 | `int64` | Positive actual frame validity timestamp, `<= header.valid_until`; may precede `valid_from` |
 | 8 | Width | 2 | `uint16` | Cells west-to-east; nonzero |
 | 10 | Height | 2 | `uint16` | Cells south-to-north; nonzero |
 | 12 | Cell Size | 2 | `uint16` | Nominal metres, nonzero |
@@ -233,7 +241,9 @@ codec choice in either direction. This makes the representation deterministic.
 
 The table represents instantaneous/rate precipitation in millimetres per hour. Interval notation
 is exact: a value on a lower bound belongs to that row. Producers should quantize from their best
-non-negative rate; negative or non-finite source values are no-data.
+non-negative rate; negative or non-finite source values are no-data. The provider-neutral Rust
+authority is `obc-formats::precip4`; both OBCW and OBCG reuse its thresholds and canonical tile
+codec. Swift reuses `OBCPrecipitationTileCodec` within `OBCWeatherWire` for the same reason.
 
 | Code | Rate in mm/h | Meaning |
 | ---: | --- | --- |
@@ -277,7 +287,9 @@ Equivalent early-exit ordering is allowed, but acceptance requires every check b
 5. Validate the 24 exact following-hour offsets, each interval end, fields, flags and reserved
    bytes.
 6. Validate descriptor extent and canonical section order.
-7. For each frame, validate timestamp, dimensions, quality flags and computed tile count.
+7. For each frame, validate a positive, strictly increasing timestamp no later than
+   `valid_until`, plus dimensions, quality flags and computed tile count. Do not require a frame
+   timestamp to be on or after the hourly base.
 8. For each tile entry, validate canonical offset, lengths, reserved fields and codec.
 9. Validate every raw nibble or RLE run, including maximal-run canonicality and the canonical
    raw4/RLE4 codec choice. Stop as soon as an RLE sum exceeds 256; require exactly 256 at its end.
@@ -290,10 +302,11 @@ malformed data.
 
 Checked-in files live in `specs/vectors/` and are described in its `manifest.json` and README.
 Positive vectors cover a dry hourly-only bundle, raw and compressed tiles, a no-data tile, a
-coarse-model shape, a 96 x 96 x nine-frame DWD-shaped raw bundle, and the exact 65,536-byte
-producer-policy boundary. Negative vectors isolate truncation, bad offsets, overlapping sections,
-nonzero hourly flags/reserved bytes, reserved intensity nibbles, compressible raw4, overlong and
-noncanonical RLE, CRC mismatch and timestamp disorder.
+four-hour-latent observation with a current hourly base, a coarse-model shape, a 96 x 96 x
+nine-frame DWD-shaped raw bundle, and the exact 65,536-byte producer-policy boundary. Negative
+vectors isolate truncation, bad offsets, overlapping sections, nonzero hourly flags/reserved
+bytes, reserved intensity nibbles, compressible raw4, overlong and noncanonical RLE, CRC mismatch,
+timestamp disorder, a nonpositive frame time and a frame beyond the overall ceiling.
 
 Rust and Swift must decode the same positives to the same values and independently re-encode the
 exact bytes. Both must reject every negative. Vector provenance is recorded beside the fixtures.

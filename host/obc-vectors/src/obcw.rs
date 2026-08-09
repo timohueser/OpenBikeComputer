@@ -124,6 +124,21 @@ pub fn nodata_tile_bundle() -> Vec<u8> {
     encode(&hours(false), &frames, 4)
 }
 
+/// A global-floor shape: the hourly base is current, while the genuine IMERG-style observation
+/// is four hours older. The old timestamp is data provenance, not permission to treat it as fresh.
+pub fn latent_observation() -> Vec<u8> {
+    let tiles = [[3u8; TILE_CELLS]];
+    let frames = [RainFrameInput {
+        valid_at: GENERATED_AT - 4 * 3_600,
+        width: 16,
+        height: 16,
+        cell_size_m: 10_000,
+        quality_flags: QUALITY_OBSERVED | obcw::QUALITY_DEGRADED,
+        tiles: &tiles,
+    }];
+    encode(&hours(false), &frames, 8)
+}
+
 pub fn coarse_model() -> Vec<u8> {
     let tiles0 = [[0u8; TILE_CELLS], [1u8; TILE_CELLS], [2u8; TILE_CELLS], [3u8; TILE_CELLS]];
     let tiles1 = [[2u8; TILE_CELLS], [3u8; TILE_CELLS], [4u8; TILE_CELLS], [5u8; TILE_CELLS]];
@@ -302,12 +317,29 @@ pub fn invalid_time_order() -> Vec<u8> {
     bytes
 }
 
+pub fn invalid_frame_nonpositive() -> Vec<u8> {
+    let mut bytes = latent_observation();
+    let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
+    put_i64(&mut bytes, descriptor, 0);
+    refresh_crc(&mut bytes);
+    bytes
+}
+
+pub fn invalid_frame_after_valid_until() -> Vec<u8> {
+    let mut bytes = latent_observation();
+    let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
+    put_i64(&mut bytes, descriptor, VALID_UNTIL + 1);
+    refresh_crc(&mut bytes);
+    bytes
+}
+
 pub fn positives() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("weather-minimal-dry.obcw", minimal_dry()),
         ("weather-dwd-96x96-9f.obcw", dwd_shaped()),
         ("weather-coarse-model.obcw", coarse_model()),
         ("weather-nodata-tile.obcw", nodata_tile_bundle()),
+        ("weather-latent-observation.obcw", latent_observation()),
         ("weather-raw-tile.obcw", raw_tile_bundle()),
         ("weather-rle-tile.obcw", rle_tile_bundle()),
         ("weather-max-policy.obcw", maximum_policy()),
@@ -327,6 +359,8 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("weather-invalid-rle-noncanonical.obcw", invalid_rle_noncanonical()),
         ("weather-invalid-crc.obcw", invalid_crc()),
         ("weather-invalid-time-order.obcw", invalid_time_order()),
+        ("weather-invalid-frame-nonpositive.obcw", invalid_frame_nonpositive()),
+        ("weather-invalid-frame-after-valid-until.obcw", invalid_frame_after_valid_until()),
     ]
 }
 

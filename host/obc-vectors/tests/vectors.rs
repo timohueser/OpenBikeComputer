@@ -66,6 +66,11 @@ fn weather_vectors_cross_the_production_reader_and_reject_malformed_files() {
     let maximum_source = SliceSource(&maximum);
     WeatherReader::open(&maximum_source).expect("the exact policy-boundary object is valid");
 
+    let latent = fixture("weather-latent-observation.obcw");
+    let latent_source = SliceSource(&latent);
+    let latent_reader = WeatherReader::open(&latent_source).expect("pre-hourly-base observation is valid");
+    assert_eq!(latent_reader.frame(0).unwrap().valid_at, latent_reader.header().valid_from - 4 * 3_600);
+
     for (name, expected) in obc_vectors::obcw::negatives() {
         let bytes = fixture(name);
         assert_eq!(bytes, expected, "negative OBCW fixture drift: {name}");
