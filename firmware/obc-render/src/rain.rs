@@ -38,33 +38,43 @@ pub const RAIN_TILE_CELLS: usize = RAIN_TILE_EDGE * RAIN_TILE_EDGE;
 pub use obc_map_scene::RAIN_BELOW_Z;
 
 /// Decoded-tile slots the per-frame [`RainScratch`] cache holds. Within the overlay's zoom regime
-/// ([`RAIN_MAX_CELL_STEP`]) a scanline crosses at most `240 × RAIN_MAX_CELL_STEP / 16 + 2 = 7`
-/// tiles; twelve slots hold that staircase **plus** the neighbouring rows' overlap, so a tile's
-/// whole contiguous span of use stays resident and every visible tile decodes exactly once per
-/// frame at any heading anywhere in the regime (pinned across the full reachable m/px range by
-/// `decode_bound_across_the_reachable_zoom_range`; eight slots measurably re-fetched near the
-/// regime edge). The bound that keeps rotation from causing per-pixel SD reads.
+/// ([`RAIN_MAX_CELL_STEP`], grid-axis row norms ≤ 1/3 cell/px) a scanline's combined step is at
+/// most `√2/3` cells per pixel, so a 240-px row crosses at most `240·√2/(3·16) + 2 ≈ 10` tiles;
+/// twelve slots hold that worst-case staircase **plus** the neighbouring rows' overlap, so a
+/// tile's whole contiguous span of use stays resident and every visible tile decodes exactly once
+/// per frame at any heading anywhere in the regime (pinned across the full reachable m/px range —
+/// including the 45°-worst-case boundary zooms — by `decode_bound_across_the_reachable_zoom_range`;
+/// eight slots measurably re-fetched near the regime edge). The bound that keeps rotation from
+/// causing per-pixel SD reads.
 pub const RAIN_TILE_SLOTS: usize = 12;
 
-/// The overlay's **zoom regime** cap: the rain raster draws only while the per-pixel grid step
-/// along each screen axis stays at or below this many cells (L1 norm of the two fixed-point
-/// increments per axis). `1/3` means every provider cell spans **≥ 3 px** in-regime, which buys
+/// The overlay's **zoom regime** cap: the rain raster draws only while each **grid axis** advances
+/// at or below this many cells per screen pixel — the Euclidean row norms of the screen→grid
+/// Jacobian, `√(dcol_dx² + dcol_dy²)` and `√(drow_dx² + drow_dy²)`. Rotation acts on the *screen*
+/// side of that map, so the norms — and with them the regime verdict — are **heading-invariant**:
+/// at a fixed zoom the overlay is in or out for every course alike, never popping in and out as a
+/// heading-up rider turns (the first per-screen-axis criterion measurably did exactly that
+/// through the 250–330 m/px band — delta review of PR #1213). Algebraically the norms reduce to
+/// `kx/(zoom·aspect)` and `ky/zoom`: cells per pixel of ground scale along each grid axis.
+///
+/// `1/3` means every provider cell spans **≥ 3 px along each grid axis** in-regime, which buys
 /// two locked properties at once:
 ///
-/// - **no strong cell can vanish** — nearest-neighbour sampling cannot skip a cell that is wider
-///   than a pixel, so a storm core is always hit while the overlay draws at all (the "bounded
+/// - **no strong cell can vanish** — nearest-neighbour sampling cannot skip a cell wider than a
+///   pixel, so a storm core is always hit while the overlay draws at all (the "bounded
 ///   conservative cell selection" the issue permits is unnecessary inside the regime, and outside
 ///   it nothing draws rather than something wrong);
-/// - **no cache thrash** — a 240-px row crosses at most `240/3/16 + 2 = 7` tiles, inside the
-///   8-slot cache, so each visible tile decodes at most a handful of times per frame at any
-///   heading (test-pinned across the whole reachable m/px range).
+/// - **no cache thrash** — a scanline's combined step is at most `√2 × RAIN_MAX_CELL_STEP` cells
+///   per pixel (both norms at cap, 45° heading), so a 240-px row crosses at most
+///   `240·√2/(3·16) + 2 ≈ 10` tiles, inside the [`RAIN_TILE_SLOTS`]-slot cache — each visible
+///   tile decodes once per frame at any heading (test-pinned across the whole reachable m/px
+///   range).
 ///
-/// For a 1 km product the regime covers up to ~333 m/px north-up (~236 m/px at a 45° heading) —
-/// comfortably past the locked 50 km view (~208 m/px) at every rotation; coarser products reach
-/// proportionally further out. **Out of regime the overlay draws nothing and says so**
-/// ([`RenderStats::rain_out_of_regime`], [`rain_in_regime`]): the weather screens (WX11/WX12) must
-/// read that signal and show their explicit out-of-regime state — a silent rain-free map must
-/// never be read as dry.
+/// For a 1 km product the regime covers up to ~333 m/px — at **every** heading — comfortably past
+/// the locked 50 km view (~208 m/px); coarser products reach proportionally further out. **Out of
+/// regime the overlay draws nothing and says so** ([`RenderStats::rain_out_of_regime`],
+/// [`rain_in_regime`]): the weather screens (WX11/WX12) must read that signal and show their
+/// explicit out-of-regime state — a silent rain-free map must never be read as dry.
 pub const RAIN_MAX_CELL_STEP: f64 = 1.0 / 3.0;
 
 /// A rain product's placement: a regular lat/lon grid in integer microdegrees, `width × height`
@@ -278,9 +288,16 @@ pub fn rain_in_regime(vp: &Viewport, grid: &RainGrid) -> bool {
     let Some((_, _, dcol_dx, dcol_dy, drow_dx, drow_dy)) = grid_affine(vp, grid) else {
         return false;
     };
-    let step_x = dcol_dx.abs() + drow_dx.abs();
-    let step_y = dcol_dy.abs() + drow_dy.abs();
-    step_x <= RAIN_MAX_CELL_STEP && step_y <= RAIN_MAX_CELL_STEP
+    regime_steps_ok(dcol_dx, dcol_dy, drow_dx, drow_dy)
+}
+
+/// The regime criterion on the screen→grid Jacobian: both **grid-axis** row norms at or below
+/// [`RAIN_MAX_CELL_STEP`]. Rotation-invariant by construction (see the constant's docs); the one
+/// implementation behind [`rain_in_regime`] and [`draw_rain`]'s gate.
+fn regime_steps_ok(dcol_dx: f64, dcol_dy: f64, drow_dx: f64, drow_dy: f64) -> bool {
+    let col_norm = libm::sqrt(dcol_dx * dcol_dx + dcol_dy * dcol_dy);
+    let row_norm = libm::sqrt(drow_dx * drow_dx + drow_dy * drow_dy);
+    col_norm <= RAIN_MAX_CELL_STEP && row_norm <= RAIN_MAX_CELL_STEP
 }
 
 /// Draw the rain overlay over the already-painted low-z map band.
@@ -314,9 +331,10 @@ pub(crate) fn draw_rain<D, F>(
     };
     let (width, height) = (grid.width_cells as i64, grid.height_cells as i64);
 
-    // The zoom-regime gate ([`RAIN_MAX_CELL_STEP`]): out of regime the overlay draws nothing and
-    // reports it — the owning screen presents that state explicitly, never as a dry map.
-    if !(dcol_dx.abs() + drow_dx.abs() <= RAIN_MAX_CELL_STEP && dcol_dy.abs() + drow_dy.abs() <= RAIN_MAX_CELL_STEP) {
+    // The zoom-regime gate ([`RAIN_MAX_CELL_STEP`], heading-invariant grid-axis norms): out of
+    // regime the overlay draws nothing and reports it — the owning screen presents that state
+    // explicitly, never as a dry map.
+    if !regime_steps_ok(dcol_dx, dcol_dy, drow_dx, drow_dy) {
         stats.rain_out_of_regime = true;
         return;
     }
@@ -607,7 +625,10 @@ mod tests {
     #[test]
     fn decode_bound_across_the_reachable_zoom_range() {
         let grid = dwd_grid();
-        for mpp in [1.0_f32, 5.0, 10.0, 50.0, 100.0, 208.0, 250.0, 300.0, 350.0, 400.0, 800.0, 3_000.0, 111_000.0] {
+        for mpp in [
+            1.0_f32, 5.0, 10.0, 50.0, 100.0, 208.0, 250.0, 300.0, 320.0, 330.0, 340.0, 350.0, 400.0, 800.0, 3_000.0,
+            111_000.0,
+        ] {
             let zoom = crate::viewport::zoom_for_mpp(mpp);
             for course_deg in (0..360).step_by(15) {
                 let vp =
@@ -644,6 +665,32 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Delta review of PR #1213: at a fixed zoom the regime verdict must be **heading-invariant**
+    /// — the criterion is the grid-axis Jacobian row norms, which rotation (acting on the screen
+    /// side) cannot change. The first per-screen-axis criterion flipped in/out across headings at
+    /// 250–330 m/px; this pins the fix over a fine zoom scan spanning both regime sides.
+    #[test]
+    fn regime_verdict_is_heading_invariant_at_fixed_zoom() {
+        let grid = dwd_grid();
+        for mpp in [10.0_f32, 100.0, 208.0, 230.0, 250.0, 280.0, 300.0, 320.0, 330.0, 340.0, 350.0, 400.0, 1_000.0] {
+            let zoom = crate::viewport::zoom_for_mpp(mpp);
+            let mut verdicts = std::vec::Vec::new();
+            for course_deg in (0..360).step_by(5) {
+                let vp =
+                    Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, zoom, (course_deg as f32).to_radians());
+                let predicate = super::rain_in_regime(&vp, &grid);
+                let mut source = TestSource { grid, pattern: |_, _| 12, fetches: 0 };
+                let (_, stats) = draw(&vp, &mut source, 240, 320);
+                assert_eq!(predicate, !stats.rain_out_of_regime, "{mpp} m/px, {course_deg}deg");
+                verdicts.push(predicate);
+            }
+            assert!(
+                verdicts.windows(2).all(|w| w[0] == w[1]),
+                "{mpp} m/px: the regime verdict varies with heading ({verdicts:?})"
+            );
         }
     }
 
