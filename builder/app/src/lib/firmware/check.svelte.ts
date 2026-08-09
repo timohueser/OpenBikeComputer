@@ -21,8 +21,8 @@
  * ## What the rider has already answered
  *
  * A proactive prompt needs a memory or it is nagging. One ledger, keyed by
- * `(device serial, offered version)` and kept in `localStorage` the way the working config and the
- * thumbnail cache are, records the pairs the rider has answered — dismissed it, followed it to the
+ * `(device serial, offered version)` and kept in `localStorage`, records the pairs the rider has
+ * answered — dismissed it, followed it to the
  * card, or went ahead and staged that very version. A newer release, or a different device, is a
  * new question and is asked. The ledger suppresses the **prompt** and nothing else: the card's own
  * flow — the offer, the send button, the file picker — never reads it.
@@ -32,7 +32,7 @@ import { compareVersions, fetchFirmwareRelease, updateStatus, type FirmwareRelea
 
 /**
  * The slice of `localStorage` the ledger needs — injectable, so the store is tested against a Map
- * rather than a browser global. The same seam, for the same reason, as `device/thumbs.svelte.ts`.
+ * rather than a browser global.
  */
 export interface LedgerStorage {
     get(key: string): string | null;

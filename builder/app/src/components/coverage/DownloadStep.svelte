@@ -3,7 +3,7 @@
     // limits are checked before transfer. Synchronous wasm runs in a Worker;
     // files return one at a time for browser, desktop, or device output.
 
-    import { onDestroy } from "svelte";
+    import { onDestroy, onMount } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
     import {
         isWorkerResponse,
@@ -20,6 +20,9 @@
     import {
         cellStoreRevision,
         cellStoreWritable,
+        clearCellStores,
+        clearMapWorkStorage,
+        discardCellStore,
         hasRoomFor,
         openCellStore,
         readShardOutput,
@@ -45,6 +48,16 @@
     import type { ProtocolClient, UploadResult } from "../../lib/usb/client";
 
     let { store }: { store: CoverageStore } = $props();
+
+    const KEEP_CELLS_KEY = "obcm.keepMapCells";
+
+    function loadKeepCells(): boolean {
+        try {
+            return globalThis.localStorage?.getItem(KEEP_CELLS_KEY) === "true";
+        } catch {
+            return false;
+        }
+    }
 
     /** Where a geometry shard is split (OBCA §5). 256 MB, against the engine's
      *  1 GiB default: it is the largest piece this screen is willing to have
@@ -115,7 +128,14 @@
         } else {
             worker?.terminate();
             void closeDownloadOutput(true);
+            void cleanupTransientCells();
         }
+    });
+
+    // Releases before the opt-in retained cells automatically. The first visit to this step after
+    // the change removes that legacy cache unless the rider has explicitly enabled reuse.
+    onMount(() => {
+        if (!keepCells) void clearStoredCells(false);
     });
 
     // --- the run ----------------------------------------------------------
@@ -162,6 +182,12 @@
      *  them in OPFS under the same digest. */
     let cachedCells = $state(0);
     let cachedBytes = $state(0);
+    /** Opt-in reuse. OPFS may still be the active run's necessary working disk when false. */
+    let keepCells = $state(loadKeepCells());
+    let clearingCells = $state(false);
+    let cellStorageNotice = $state<string | null>(null);
+    /** A revision this run must remove after every reader has closed. */
+    let transientCellRevision: string | null = null;
     let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
@@ -277,8 +303,8 @@
                 // The worker's OPFS ledger, for anyone profiling an assembly
                 // from DevTools — a worker's own console does not surface.
                 if (msg.io) console.debug("[assemble] opfs i/o", msg.io);
+                runWarnings = msg.warnings;
                 if (output?.kind === "device") {
-                    runWarnings = msg.warnings;
                     phase = "done";
                     const state = output.state;
                     if (!state || state.setId === null) {
@@ -299,9 +325,9 @@
                         await failRun(cause);
                         break;
                     }
-                    runWarnings = msg.warnings;
                     phase = "done";
                 }
+                await cleanupTransientCells();
                 output = null;
                 break;
             case "error":
@@ -430,6 +456,47 @@
         if (current) await (discard ? current.discard() : current.finish());
     }
 
+    async function cleanupTransientCells() {
+        const revision = transientCellRevision;
+        transientCellRevision = null;
+        if (!revision) return;
+        try {
+            await discardCellStore(revision);
+        } catch {
+            runWarnings = [
+                ...runWarnings,
+                "Temporary map cells could not be deleted; use ‘Delete stored map data’.",
+            ];
+        }
+    }
+
+    async function setKeepCells(checked: boolean) {
+        keepCells = checked;
+        cellStorageNotice = null;
+        try {
+            globalThis.localStorage?.setItem(KEEP_CELLS_KEY, String(checked));
+        } catch {
+            // The choice still applies to this page; denied storage means it resets to off later.
+        }
+        if (!checked && !running) await clearStoredCells(true);
+    }
+
+    async function clearStoredCells(announce = true) {
+        clearingCells = true;
+        if (announce) cellStorageNotice = null;
+        try {
+            await clearMapWorkStorage();
+            if (announce) cellStorageNotice = "Stored map downloads deleted.";
+        } catch {
+            if (announce) {
+                cellStorageNotice =
+                    "Stored map downloads could not be deleted. Close other builder tabs and try again.";
+            }
+        } finally {
+            clearingCells = false;
+        }
+    }
+
     function settleDevice(result: UploadResult | unknown, failed = false) {
         if (output?.kind !== "device" || output.settled) return;
         output.settled = true;
@@ -468,6 +535,7 @@
         } else {
             await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
         }
+        await cleanupTransientCells();
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
         settleDevice(cause, true);
@@ -573,15 +641,20 @@
         const terrainCells: WorkerTerrainCell[] = [];
         abortCtl = new AbortController();
 
-        // Cells go to disk when this browser will take them, which is what makes
-        // a reload resume rather than start over — and what keeps a country's
-        // worth of them out of the tab's heap. The raster deliberately does not:
+        // Cells go to disk when this browser will take them, which keeps a country's
+        // worth out of the tab's heap. With the opt-in above, the same store also lets
+        // a later build reuse them. The raster deliberately does not:
         // its objects are small and it is downloaded last, so it would buy the
         // least of anything here (a B-series follow-up if that stops being true).
         // Probed by writing and reading a file back, not by sniffing for a
         // method: the fallback has to be chosen on what this browser actually
         // does, and a store that cannot be written to is worse than no store.
-        let cellStore = (await cellStoreWritable()) ? await openCellStore(cellStoreRevision(store.catalog)) : null;
+        const revision = cellStoreRevision(store.catalog);
+        // Unchecked means no reuse in either direction. OPFS still carries this run when available,
+        // because that working disk is what makes country-sized assembly possible.
+        if (!keepCells) await clearCellStores();
+        let cellStore = (await cellStoreWritable()) ? await openCellStore(revision) : null;
+        transientCellRevision = cellStore && !keepCells ? revision : null;
         let fetchPlan = plan;
         if (cellStore) {
             fetchPlan = await skipCached(plan, cellStore);
@@ -589,7 +662,8 @@
             // run — cells, the sink's output, the merge's spill — because after
             // phase D all three live in OPFS: a store with room for the cells
             // but not the shards would fail at shard one, after the download.
-            // Falling back now costs the reload-resume and nothing else.
+            // Falling back now costs disk-backed input and any selected reuse, but avoids a
+            // quota failure after the download.
             if (!(await hasRoomFor(runDiskNeed(l))))  {
                 cellStore = null;
                 fetchPlan = plan;
@@ -651,14 +725,7 @@
                 }
             }
         } catch (e) {
-            if (abortCtl.signal.aborted) {
-                phase = "cancelled";
-            } else {
-                errorMessage = e instanceof Error ? e.message : String(e);
-                phase = "error";
-            }
-            settleDevice(e, true);
-            output = null;
+            await failRun(e);
             return;
         }
 
@@ -1085,6 +1152,30 @@
                 <p class="line caution small">{deviceCaution}</p>
             {/if}
 
+            <div class="cell-storage small">
+                <label>
+                    <input
+                        type="checkbox"
+                        checked={keepCells}
+                        disabled={running || clearingCells}
+                        onchange={(event) => void setKeepCells(event.currentTarget.checked)}
+                    />
+                    <span>
+                        Keep downloaded map cells for future builds
+                        <span class="faint">— otherwise they are temporary and deleted after this build.</span>
+                    </span>
+                </label>
+                <button
+                    type="button"
+                    class="clear-cells"
+                    disabled={running || clearingCells}
+                    onclick={() => void clearStoredCells(true)}
+                >
+                    {clearingCells ? "Deleting…" : "Delete stored map data"}
+                </button>
+                {#if cellStorageNotice}<span class="faint">{cellStorageNotice}</span>{/if}
+            </div>
+
             {#if phase === "idle" || phase === "cancelled" || phase === "error" || phase === "done"}
                 <!-- No size in the label: the stat band above already leads
                      with it, and the same number twice in one card was the P1
@@ -1273,6 +1364,43 @@
 
     .btn {
         align-self: flex-start;
+    }
+
+    .cell-storage {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+        padding: 7px 9px;
+        border: 1px solid var(--parchment-3);
+        border-radius: 8px;
+    }
+
+    .cell-storage label {
+        display: flex;
+        align-items: flex-start;
+        gap: 7px;
+        cursor: pointer;
+    }
+
+    .cell-storage input {
+        margin-top: 3px;
+    }
+
+    .clear-cells {
+        border: 0;
+        padding: 0;
+        background: none;
+        color: var(--forest);
+        text-decoration: underline;
+        font: inherit;
+        cursor: pointer;
+    }
+
+    .clear-cells:disabled,
+    .cell-storage label:has(input:disabled) {
+        cursor: default;
+        opacity: 0.6;
     }
 
     .runrow {

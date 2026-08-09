@@ -443,7 +443,7 @@ export const PREVIEW_POINTS = 256;
  * track (or a route the converter has decimated once), and a stride cannot introduce a shortcut
  * across a switchback that a tolerance-based simplifier can. The first and last points are always
  * kept, so the preview starts and ends where the track did. Shared by the library index and the
- * device page's thumbnail cache (`thumbs.svelte.ts`), so a ride thumbnail is the same points in
+ * device page's session thumbnail store (`thumbs.svelte.ts`), so a ride thumbnail is the same points in
  * both places.
  */
 export function downsampleTrack(points: readonly (readonly [number, number])[]): Array<[number, number]> {
