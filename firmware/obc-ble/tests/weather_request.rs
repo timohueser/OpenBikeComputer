@@ -571,12 +571,12 @@ fn held(age_s: u64) -> BundleFacts {
 fn scheduled_requests_only_during_a_ride_and_never_when_off() {
     let mut s = DueScheduler::new();
     // Not riding: nothing is ever due, no matter how stale the card.
-    assert_eq!(s.poll(0, WeatherRefresh::Every30, false, BundleFacts::NONE), None);
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, false, BundleFacts::NONE), None);
+    assert_eq!(s.poll(0, WeatherRefresh::Every30, false, true, BundleFacts::NONE), None);
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, false, true), None);
     // Off: riding raises nothing either.
-    assert_eq!(s.poll(10, WeatherRefresh::Off, true, BundleFacts::NONE), None);
+    assert_eq!(s.poll(10, WeatherRefresh::Off, true, true, BundleFacts::NONE), None);
     // Riding with a cadence and no bundle: due immediately, reason says both.
-    let raise = s.poll(20, WeatherRefresh::Every30, true, BundleFacts::NONE).expect("due at ride start");
+    let raise = s.poll(20, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("due at ride start");
     assert_eq!(raise.request_id, 1);
     assert_ne!(raise.reason & REASON_SCHEDULED, 0);
     assert_ne!(raise.reason & REASON_NO_BUNDLE, 0);
@@ -589,10 +589,10 @@ fn a_fresh_bundle_defers_the_first_scheduled_request_across_a_reboot() {
     // no countdown was ever persisted.
     let mut s = DueScheduler::new();
     let bundle = held(10 * 60);
-    assert_eq!(s.poll(0, WeatherRefresh::Every30, true, bundle), None);
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, bundle), Some(20 * 60));
-    assert_eq!(s.poll(20 * 60 - 1, WeatherRefresh::Every30, true, bundle), None);
-    let raise = s.poll(20 * 60, WeatherRefresh::Every30, true, bundle).expect("interval elapsed");
+    assert_eq!(s.poll(0, WeatherRefresh::Every30, true, true, bundle), None);
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(20 * 60));
+    assert_eq!(s.poll(20 * 60 - 1, WeatherRefresh::Every30, true, true, bundle), None);
+    let raise = s.poll(20 * 60, WeatherRefresh::Every30, true, true, bundle).expect("interval elapsed");
     assert_ne!(raise.reason & REASON_SCHEDULED, 0);
     assert_eq!(raise.reason & REASON_NO_BUNDLE, 0, "a fresh bundle is not 'no bundle'");
 }
@@ -603,15 +603,15 @@ fn a_bundle_of_unknown_age_anchors_at_scheduler_start() {
     // starts at the first poll rather than firing immediately.
     let mut s = DueScheduler::new();
     let bundle = BundleFacts { held: true, age_s: None };
-    assert_eq!(s.poll(100, WeatherRefresh::Every15, true, bundle), None);
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every15, true, bundle), Some(100 + 15 * 60));
-    assert!(s.poll(100 + 15 * 60, WeatherRefresh::Every15, true, bundle).is_some());
+    assert_eq!(s.poll(100, WeatherRefresh::Every15, true, true, bundle), None);
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every15, true, true), Some(100 + 15 * 60));
+    assert!(s.poll(100 + 15 * 60, WeatherRefresh::Every15, true, true, bundle).is_some());
 }
 
 #[test]
 fn an_expired_bundle_reads_as_no_bundle_and_is_due_immediately() {
     let mut s = DueScheduler::new();
-    let raise = s.poll(0, WeatherRefresh::Every120, true, held(25 * 3600)).expect("expired bundle is due");
+    let raise = s.poll(0, WeatherRefresh::Every120, true, true, held(25 * 3600)).expect("expired bundle is due");
     assert_ne!(raise.reason & REASON_NO_BUNDLE, 0, "expired reads as no-bundle in the advisory word");
 }
 
@@ -619,64 +619,68 @@ fn an_expired_bundle_reads_as_no_bundle_and_is_due_immediately() {
 fn the_retry_ladder_keeps_one_request_id_and_steps_5_10_20_then_cadence() {
     let mut s = DueScheduler::new();
     let bundle = held(2 * 3600);
-    let first = s.poll(0, WeatherRefresh::Every30, true, bundle).expect("stale bundle due");
+    let first = s.poll(0, WeatherRefresh::Every30, true, true, bundle).expect("stale bundle due");
     let id = first.request_id;
 
     // Rung 1 at +5 min.
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, bundle), Some(RETRY_LADDER_S[0]));
-    assert_eq!(s.poll(RETRY_LADDER_S[0] - 1, WeatherRefresh::Every30, true, bundle), None);
-    let r1 = s.poll(RETRY_LADDER_S[0], WeatherRefresh::Every30, true, bundle).expect("rung 1");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(RETRY_LADDER_S[0]));
+    assert_eq!(s.poll(RETRY_LADDER_S[0] - 1, WeatherRefresh::Every30, true, true, bundle), None);
+    let r1 = s.poll(RETRY_LADDER_S[0], WeatherRefresh::Every30, true, true, bundle).expect("rung 1");
     assert_eq!(r1.request_id, id, "retries keep the same request id (spec 11.2)");
     assert_ne!(r1.reason & REASON_RETRY, 0);
 
     // Rung 2 at +10 min, rung 3 at +20 min, then the cadence caps the wait.
     let t1 = RETRY_LADDER_S[0];
     let t2 = t1 + RETRY_LADDER_S[1];
-    let r2 = s.poll(t2, WeatherRefresh::Every30, true, bundle).expect("rung 2");
+    let r2 = s.poll(t2, WeatherRefresh::Every30, true, true, bundle).expect("rung 2");
     assert_eq!(r2.request_id, id);
     let t3 = t2 + RETRY_LADDER_S[2];
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, bundle), Some(t3));
-    let r3 = s.poll(t3, WeatherRefresh::Every30, true, bundle).expect("rung 3");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(t3));
+    let r3 = s.poll(t3, WeatherRefresh::Every30, true, true, bundle).expect("rung 3");
     assert_eq!(r3.request_id, id);
     let t4 = t3 + MIN30;
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, bundle), Some(t4), "past the ladder = the cadence");
-    let r4 = s.poll(t4, WeatherRefresh::Every30, true, bundle).expect("cadence retry");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(t4), "past the ladder = the cadence");
+    let r4 = s.poll(t4, WeatherRefresh::Every30, true, true, bundle).expect("cadence retry");
     assert_eq!(r4.request_id, id, "still the same request until a commit finishes it");
 }
 
 #[test]
 fn success_clears_the_request_and_schedules_from_the_commit() {
     let mut s = DueScheduler::new();
-    let raise = s.poll(0, WeatherRefresh::Every30, true, BundleFacts::NONE).expect("due");
+    let raise = s.poll(0, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("due");
     assert_eq!(s.pending_request_id(), Some(raise.request_id));
 
     s.commit_succeeded(60);
     assert_eq!(s.pending_request_id(), None);
     let fresh = held(0);
     // Nothing due until commit + interval; the next request is a *new* id.
-    assert_eq!(s.poll(61, WeatherRefresh::Every30, true, fresh), None);
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, fresh), Some(60 + MIN30));
-    let next = s.poll(60 + MIN30, WeatherRefresh::Every30, true, fresh).expect("next interval");
+    assert_eq!(s.poll(61, WeatherRefresh::Every30, true, true, fresh), None);
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(60 + MIN30));
+    let next = s.poll(60 + MIN30, WeatherRefresh::Every30, true, true, fresh).expect("next interval");
     assert_ne!(next.request_id, raise.request_id, "a finished request is not re-raised");
 }
 
 #[test]
 fn ride_stop_drops_a_scheduled_request_but_not_an_urgent_one() {
     let mut s = DueScheduler::new();
-    s.poll(0, WeatherRefresh::Every30, true, BundleFacts::NONE).expect("scheduled raise");
+    s.poll(0, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("scheduled raise");
     // Ride stops: the pending scheduled request lapses, and its ladder never fires.
-    assert_eq!(s.poll(1, WeatherRefresh::Every30, false, BundleFacts::NONE), None);
+    assert_eq!(s.poll(1, WeatherRefresh::Every30, false, true, BundleFacts::NONE), None);
     assert_eq!(s.pending_request_id(), None);
-    assert_eq!(s.poll(RETRY_LADDER_S[0] + 1, WeatherRefresh::Every30, false, BundleFacts::NONE), None);
+    assert_eq!(s.poll(RETRY_LADDER_S[0] + 1, WeatherRefresh::Every30, false, true, BundleFacts::NONE), None);
 
     // Urgent survives a ride stop: the rider asked, the answer is still wanted.
     s.open_weather();
-    let urgent = s.poll(1000, WeatherRefresh::Every30, false, BundleFacts::NONE).expect("urgent outside a ride");
+    let urgent = s.poll(1000, WeatherRefresh::Every30, false, true, BundleFacts::NONE).expect("urgent outside a ride");
     assert_ne!(urgent.reason & REASON_URGENT, 0);
     assert!(s.pending_request_id().is_some());
-    assert_eq!(s.poll(1001, WeatherRefresh::Every30, false, BundleFacts::NONE), None, "still pending, not dropped");
+    assert_eq!(
+        s.poll(1001, WeatherRefresh::Every30, false, true, BundleFacts::NONE),
+        None,
+        "still pending, not dropped"
+    );
     let retry = s
-        .poll(1000 + RETRY_LADDER_S[0], WeatherRefresh::Every30, false, BundleFacts::NONE)
+        .poll(1000 + RETRY_LADDER_S[0], WeatherRefresh::Every30, false, true, BundleFacts::NONE)
         .expect("urgent retries too");
     assert_eq!(retry.request_id, urgent.request_id);
 }
@@ -685,32 +689,33 @@ fn ride_stop_drops_a_scheduled_request_but_not_an_urgent_one() {
 fn off_disables_scheduling_but_an_urgent_request_still_raises_and_ladders_out() {
     let mut s = DueScheduler::new();
     s.open_weather();
-    let urgent = s.poll(0, WeatherRefresh::Off, false, BundleFacts::NONE).expect("Weather-screen urgent under Off");
+    let urgent =
+        s.poll(0, WeatherRefresh::Off, false, true, BundleFacts::NONE).expect("Weather-screen urgent under Off");
     assert_ne!(urgent.reason & REASON_URGENT, 0);
 
     // The three rungs fire; with no cadence to fall back on the request then lapses.
     let t1 = RETRY_LADDER_S[0];
     let t2 = t1 + RETRY_LADDER_S[1];
     let t3 = t2 + RETRY_LADDER_S[2];
-    assert!(s.poll(t1, WeatherRefresh::Off, false, BundleFacts::NONE).is_some());
-    assert!(s.poll(t2, WeatherRefresh::Off, false, BundleFacts::NONE).is_some());
-    assert!(s.poll(t3, WeatherRefresh::Off, false, BundleFacts::NONE).is_some());
+    assert!(s.poll(t1, WeatherRefresh::Off, false, true, BundleFacts::NONE).is_some());
+    assert!(s.poll(t2, WeatherRefresh::Off, false, true, BundleFacts::NONE).is_some());
+    assert!(s.poll(t3, WeatherRefresh::Off, false, true, BundleFacts::NONE).is_some());
     assert_eq!(s.pending_request_id(), None, "Off + ladder exhausted = the request lapses");
-    assert_eq!(s.next_wake_s(WeatherRefresh::Off, false, BundleFacts::NONE), None);
+    assert_eq!(s.next_wake_s(WeatherRefresh::Off, false, true), None);
 }
 
 #[test]
 fn opening_weather_while_pending_reuses_the_id_with_a_fresh_fast_ladder() {
     let mut s = DueScheduler::new();
-    let sched = s.poll(0, WeatherRefresh::Every30, true, BundleFacts::NONE).expect("scheduled");
+    let sched = s.poll(0, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("scheduled");
     // 4 minutes in (one minute before rung 1) the rider opens Weather.
     s.open_weather();
-    let urgent = s.poll(4 * 60, WeatherRefresh::Every30, true, BundleFacts::NONE).expect("urgent re-raise");
+    let urgent = s.poll(4 * 60, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("urgent re-raise");
     assert_eq!(urgent.request_id, sched.request_id, "one request, not parallel jobs");
     assert_ne!(urgent.reason & REASON_URGENT, 0);
     assert_ne!(urgent.reason & REASON_SCHEDULED, 0, "the original reason survives");
     // The ladder restarted from the urgent raise.
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, BundleFacts::NONE), Some(4 * 60 + RETRY_LADDER_S[0]));
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(4 * 60 + RETRY_LADDER_S[0]));
 }
 
 #[test]
@@ -719,12 +724,12 @@ fn an_interval_change_lands_at_the_next_poll() {
     s.commit_succeeded(0);
     let fresh = held(0);
     // 30-minute cadence: not due at +16 min.
-    assert_eq!(s.poll(16 * 60, WeatherRefresh::Every30, true, fresh), None);
+    assert_eq!(s.poll(16 * 60, WeatherRefresh::Every30, true, true, fresh), None);
     // The rider tightens it to 15 minutes: the same instant is now past due.
-    assert!(s.poll(16 * 60, WeatherRefresh::Every15, true, fresh).is_some());
+    assert!(s.poll(16 * 60, WeatherRefresh::Every15, true, true, fresh).is_some());
 
     // And relaxing to Off drops the now-pending scheduled request.
-    assert_eq!(s.poll(16 * 60 + 1, WeatherRefresh::Off, true, fresh), None);
+    assert_eq!(s.poll(16 * 60 + 1, WeatherRefresh::Off, true, true, fresh), None);
     assert_eq!(s.pending_request_id(), None);
 }
 
@@ -734,7 +739,104 @@ fn a_served_context_read_does_not_finish_the_request() {
     // The scheduler has no "context served" input at all — this test pins that the ladder keeps
     // running after the first raise regardless of what happened on the air.
     let mut s = DueScheduler::new();
-    let first = s.poll(0, WeatherRefresh::Every30, true, BundleFacts::NONE).expect("due");
-    let retry = s.poll(RETRY_LADDER_S[0], WeatherRefresh::Every30, true, BundleFacts::NONE).expect("still pending");
+    let first = s.poll(0, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("due");
+    let retry =
+        s.poll(RETRY_LADDER_S[0], WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("still pending");
     assert_eq!(retry.request_id, first.request_id);
+}
+
+#[test]
+fn resting_context_serves_the_stored_refresh_byte() {
+    // #1221 F2: the resting attribute value must report the rider's own setting from boot —
+    // structurally EMPTY (nothing valid, no reason, request id 0), refresh byte theirs.
+    for raw in 0u8..=4 {
+        let resting = WeatherRequestContext::resting(raw);
+        assert_eq!(resting.refresh_raw, raw);
+        assert_eq!(resting.validity, 0);
+        assert_eq!(resting.reason, 0);
+        assert_eq!(resting.request_id, 0);
+        // Round-trips through the wire layout like any context.
+        assert_eq!(WeatherRequestContext::decode(&resting.encode()), Ok(resting));
+    }
+    // EMPTY keeps the compile-time default — `resting` is what tracks the stored setting.
+    assert_eq!(WeatherRequestContext::EMPTY.refresh_raw, WeatherRefresh::DEFAULT.as_u8());
+}
+
+#[test]
+fn an_accepted_stale_or_duplicate_answer_finishes_the_request_and_paces_at_the_cadence() {
+    // #1221 F3 (the reviewer's 50-re-raise repro, inverted): the phone answers a stale/duplicate
+    // upload `committed` (§11.6's ignored-but-successful rows) — that IS the answer ("nothing
+    // newer exists upstream"), so the request finishes and the *still-expired* bundle must not
+    // re-raise a second later. The next raise comes from the normal cadence machinery.
+    let mut s = DueScheduler::new();
+    let expired = held(25 * 3600);
+    let first = s.poll(0, WeatherRefresh::Every30, true, true, expired).expect("expired bundle due at ride start");
+
+    // The upload lands at t=10 and the store answers `committed` (stale-ignored) — same seam as a
+    // fresh commit, deliberately.
+    s.commit_succeeded(10);
+    assert_eq!(s.pending_request_id(), None, "an accepted answer of any freshness class finishes the request");
+
+    // One second later, same expired bundle on the card: NOT due again.
+    assert_eq!(s.poll(11, WeatherRefresh::Every30, true, true, expired), None);
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(10 + MIN30), "paced from the accept");
+    assert_eq!(s.poll(10 + MIN30 - 1, WeatherRefresh::Every30, true, true, expired), None);
+
+    let next = s.poll(10 + MIN30, WeatherRefresh::Every30, true, true, expired).expect("next cadence interval");
+    assert_ne!(next.request_id, first.request_id, "a finished request is never re-raised");
+    assert_ne!(next.reason & REASON_NO_BUNDLE, 0, "the reason word still tells the truth about the card");
+}
+
+#[test]
+fn an_urgent_request_lapses_after_the_ladder_even_with_a_cadence_configured() {
+    // #1221 F4 (the reviewer's 200-cycle repro, inverted): an off-ride urgent tap gets exactly the
+    // three ladder retries, then goes quiet — the configured cadence belongs to *scheduled*
+    // requests while riding, never to a standing urgent beacon.
+    let mut s = DueScheduler::new();
+    s.open_weather();
+    let urgent = s.poll(0, WeatherRefresh::Every30, false, true, BundleFacts::NONE).expect("urgent raise");
+
+    let t1 = RETRY_LADDER_S[0];
+    let t2 = t1 + RETRY_LADDER_S[1];
+    let t3 = t2 + RETRY_LADDER_S[2];
+    for t in [t1, t2, t3] {
+        let retry = s.poll(t, WeatherRefresh::Every30, false, true, BundleFacts::NONE).expect("ladder rung");
+        assert_eq!(retry.request_id, urgent.request_id);
+    }
+    assert_eq!(s.pending_request_id(), None, "urgent + ladder exhausted = the request lapses");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, false, true), None);
+    // Hours later: still quiet — no cadence fallback for urgent, ever.
+    assert_eq!(s.poll(t3 + 10 * MIN30, WeatherRefresh::Every30, false, true, BundleFacts::NONE), None);
+
+    // A scheduled request under the same cadence still falls back to it (the F4 boundary).
+    let mut sched = DueScheduler::new();
+    sched.poll(0, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("scheduled");
+    let t4 = t3 + MIN30;
+    for t in [t1, t2, t3, t4] {
+        assert!(sched.poll(t, WeatherRefresh::Every30, true, true, BundleFacts::NONE).is_some(), "rung/cadence at {t}");
+    }
+    assert!(sched.pending_request_id().is_some(), "scheduled requests keep pacing at the cadence");
+}
+
+#[test]
+fn no_storage_means_no_requests_at_all() {
+    // #1221 F5: a card-less device answers every upload `error`, so raising a request would send
+    // the phone round §11.7's fetch-build-upload loop at its own expense, forever. Nothing raises
+    // — scheduled or urgent — and next_wake asks for no timer.
+    let mut s = DueScheduler::new();
+    assert_eq!(s.poll(0, WeatherRefresh::Every30, true, false, BundleFacts::NONE), None);
+    s.open_weather();
+    assert_eq!(s.poll(1, WeatherRefresh::Every30, true, false, BundleFacts::NONE), None, "urgent too");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, false), None);
+
+    // A pending request is dropped the moment the card goes away — its ladder never fires again.
+    let mut s = DueScheduler::new();
+    let raise = s.poll(0, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("due with a card");
+    assert_eq!(s.poll(1, WeatherRefresh::Every30, true, false, BundleFacts::NONE), None);
+    assert_eq!(s.pending_request_id(), None, "the card that left took the request with it");
+    assert_eq!(s.poll(RETRY_LADDER_S[0], WeatherRefresh::Every30, true, false, BundleFacts::NONE), None);
+
+    // Card back: the normal machinery raises a fresh request (a new id, not the dead one's).
+    let fresh = s.poll(RETRY_LADDER_S[0] + 1, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("re-arm");
+    assert_ne!(fresh.request_id, raise.request_id);
 }
