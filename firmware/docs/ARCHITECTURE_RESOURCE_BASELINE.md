@@ -847,6 +847,30 @@ for BLE. Since the #1108 follow-up they **also** check the out-of-line
 where the main task's real frame lives, plus the residual stack and the
 boot-chain ceiling/headroom — see the 2026-08-03 entry above for why.
 
+### Weather reader and dual-slot store (#1192), 2026-08-09 — **+80 B resident; 472 B bounded reader/cache type**
+
+WX7 adds the allocation-free OBCW lookup cache and retains the boot-selected `Candidate` in the
+board `Storage`. Both default and BLE shipping images measure `.bss + .data` at **305,296 B**, up
+80 B from the 305,216 B develop baseline; `.uninit` remains **132,096 B**, so residual stack moves
+by the same 80 B to **54,128 B**. The main task body moves 7,296 → **7,328 B** and the pinned-host
+boot-chain measurement 25,636 → **25,668 B**, both below their existing limits. The largest
+guarded poll frame remains **9,728 B**. The shipping cache is deliberately not placed as another
+static in this PR; the report-only Thumb build records the exact future reader-plus-cache type at
+**472 B**, with compile-time ceilings of 2 KiB target and 4 KiB hard maximum.
+
+The resource gate caught the first composition: validating both weather slots inside
+`Storage::mount` kept the roughly 13.5 KiB `Storage` local live in the main future and expanded its
+permanent task body to **15,040 B**. Mount now returns the composed value directly, and validation
+runs only after it has moved into the final store, behind a non-inlined synchronous boundary. The
+remeasured 7,328 B task body is the accepted architecture; raising the 8,192 B gate was not.
+
+The 46,480-byte DWD fixture exhaustively pins a cold random tile at no more than 3 logical source
+reads and 5 touched 512-byte blocks. Exact tile hits perform no reads. Crash tests cut publication
+at the magic/header, every 512-byte boundary, and the final byte, and cover both legal outcomes of
+a reported final-magic-flush failure: zero magic selects the untouched old slot; a persisted full
+magic lets boot validate and select the complete new slot. See
+[`WEATHER_STORAGE.md`](WEATHER_STORAGE.md) for the storage invariants.
+
 ## Named compile-time allocations
 
 These are exact 32-bit target `size_of` values from the report-only ELF:
@@ -860,6 +884,7 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | map tables | 4,060 B | 4,060 B |
 | route cache | 6,180 B | 6,180 B |
 | route index | 6,252 B | 6,252 B |
+| weather reader + cache (reported type; placement follows in WX10) | 472 B | 472 B |
 | renderer (embedded in `App`) | 8,352 B | 8,352 B |
 | navigation scratch / tile cache / planner | 19,976 / 4,140 / 9,024 B | 19,976 / 4,140 / 9,024 B |
 | stack-reserve floor | 36,864 B | 36,864 B |
