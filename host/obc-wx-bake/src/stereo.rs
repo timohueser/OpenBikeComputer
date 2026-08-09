@@ -11,10 +11,10 @@
 pub const DWD_RV_PROJDEF: &str = "+proj=stere +lat_ts=60 +lat_0=90 +lon_0=10 +x_0=543196.83521776402 +y_0=3622588.8619310022 +units=m +a=6378137 +b=6356752.3142451802 +no_defs";
 
 const A: f64 = 6_378_137.0;
-const B: f64 = 6_356_752.314_245_180_2;
+const B: f64 = 6_356_752.314_245_18;
 const LAT_TS_DEG: f64 = 60.0;
 const LON_0_DEG: f64 = 10.0;
-const X_0: f64 = 543_196.835_217_764_02;
+const X_0: f64 = 543_196.835_217_764;
 const Y_0: f64 = 3_622_588.861_931_002_2;
 
 /// Half-cell registration offsets: the ODIM corners land on `x in [-500, 1_099_500]` and

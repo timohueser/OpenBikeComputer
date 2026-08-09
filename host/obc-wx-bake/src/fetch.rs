@@ -105,7 +105,7 @@ impl Upstream for HttpUpstream {
             }
             let response = match request.call() {
                 Ok(response) => response,
-                Err(ureq::Error::StatusCode(code)) if code == 304 => return Ok(FetchOutcome::Unchanged),
+                Err(ureq::Error::StatusCode(304)) => return Ok(FetchOutcome::Unchanged),
                 Err(ureq::Error::StatusCode(code)) if code == 429 || code >= 500 => {
                     return Err(RetryClass::Retryable(format!("upstream status {code}"), None));
                 }
@@ -125,7 +125,7 @@ impl Upstream for HttpUpstream {
                 return Err(RetryClass::Fatal(format!("upstream status {}", parts.status)));
             }
             if let Some(length) = parts.headers.get("content-length").and_then(|v| v.to_str().ok()) {
-                if length.trim().parse::<u64>().map_or(false, |length| length > cap) {
+                if length.trim().parse::<u64>().is_ok_and(|length| length > cap) {
                     return Err(RetryClass::Fatal(format!("announced {length} bytes exceeds the {cap}-byte cap")));
                 }
             }

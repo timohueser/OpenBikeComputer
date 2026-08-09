@@ -223,7 +223,7 @@ fn validate_member(bytes: Vec<u8>, run_time: i64, lead_minutes: u32) -> Result<M
         || attr_f64(&where_attrs, "yscale")? != 1_000.0
         || attr_u64(&where_attrs, "xsize")? != u64::from(stereo::NATIVE_COLS)
         || attr_u64(&where_attrs, "ysize")? != u64::from(stereo::NATIVE_ROWS)
-        || CORNERS.iter().any(|(name, expected)| attr_f64(&where_attrs, name).map_or(true, |actual| actual != *expected))
+        || CORNERS.iter().any(|(name, expected)| attr_f64(&where_attrs, name) != Ok(*expected))
     {
         return Err("DWD RV native grid is no longer the pinned 1 km registration".into());
     }
