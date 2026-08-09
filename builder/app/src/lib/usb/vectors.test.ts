@@ -46,6 +46,10 @@ import {
     decodeTransferControl,
     decodeVersionRead,
     FEATURE_WEATHER,
+    knownWeatherRefresh,
+    WeatherRefresh,
+    WEATHER_REFRESH_DEFAULT,
+    WEATHER_REFRESH_MINUTES,
     encodeAckRides,
     encodeConfig,
     encodeSetClock,
@@ -322,8 +326,46 @@ describe("control-plane codecs", () => {
         expectSameBytes(encodeConfig(config), vector("config-v1.bin"), "config-v1");
 
         const withRefresh = decodeConfig(vector("config-weather-refresh.bin"));
-        expect(withRefresh.weatherRefresh).not.toBeNull();
+        expect(withRefresh.weatherRefresh).toBe(WeatherRefresh.every60);
+        expect(knownWeatherRefresh(withRefresh.weatherRefresh)).toBe(WeatherRefresh.every60);
+        expect(WEATHER_REFRESH_MINUTES[WeatherRefresh.every60]).toBe(60);
         expectSameBytes(encodeConfig(withRefresh), vector("config-weather-refresh.bin"), "config-weather-refresh");
+    });
+
+    // §11.8's read direction, which this host is always on. The rule is asymmetric on purpose: a
+    // phone → device *write* must reject an interval the device cannot honour, but a *reader* must
+    // not, because an unrecognised value arriving from a device is a newer device rather than a
+    // broken one. Were this strict, appending a fifth interval — an ordinary append to an
+    // append-only enum — would break every shipped reader, and a host would no longer be able to
+    // read Config even to rename the device.
+    it("tolerates a refresh interval it does not know, and never calls it Off", () => {
+        const bytes = vector("config-weather-refresh-unknown.bin");
+        const config = decodeConfig(bytes); // must not throw
+        expect(config.name).toBe("OBC Horizon");
+
+        expect(config.weatherRefresh).toBe(200);
+        expect(knownWeatherRefresh(config.weatherRefresh)).toBeNull();
+        // Unknown is its own state: not Off, and not the default. Collapsing it to either would
+        // misreport the rider's own setting back to them.
+        expect(knownWeatherRefresh(config.weatherRefresh)).not.toBe(WeatherRefresh.off);
+        expect(knownWeatherRefresh(config.weatherRefresh)).not.toBe(WEATHER_REFRESH_DEFAULT);
+        // ...and it is distinguishable from *absent*, which the raw field alone can say.
+        expect(config.weatherRefresh).not.toBeNull();
+        expect(decodeConfig(vector("config-v1.bin")).weatherRefresh).toBeNull();
+
+        // The byte survives verbatim, so a host cannot launder a value it did not understand.
+        expectSameBytes(encodeConfig(config), bytes, "config-weather-refresh-unknown");
+    });
+
+    it("maps every known refresh discriminant, and nothing else", () => {
+        for (const value of Object.values(WeatherRefresh)) {
+            expect(knownWeatherRefresh(value)).toBe(value);
+        }
+        for (const unknown of [5, 9, 200, 255]) {
+            expect(knownWeatherRefresh(unknown)).toBeNull();
+        }
+        expect(knownWeatherRefresh(null)).toBeNull();
+        expect(WEATHER_REFRESH_MINUTES[WeatherRefresh.off]).toBeNull(); // Off has no interval
     });
 });
 
@@ -549,6 +591,33 @@ describe("round-trip over the loopback pipe", () => {
             expect(routes.entries).toEqual(ROUTE_ENTRIES);
             const trips = await client.listTrips();
             expect(trips.entries).toEqual([TRIP_ENTRY]);
+        } finally {
+            await close();
+        }
+    });
+
+    // The device role, which is §11.8's *strict* half — the mirror image of the tolerant read test
+    // above. A simulated device that quietly stored an interval it does not know would model a
+    // firmware that lies to the rider about their own setting.
+    it("refuses a Config write naming a refresh interval it cannot honour", async () => {
+        const { client, close } = loopbackDevice();
+        try {
+            const before = await client.readConfig();
+            await client.writeConfig({ name: "Rejected", units: 1, weatherRefresh: 200 });
+            expect(await client.readConfig()).toEqual(before, "a refused write changes nothing at all");
+
+            // A known interval is accepted, name and all.
+            await client.writeConfig({ name: "Accepted", units: 1, weatherRefresh: WeatherRefresh.every120 });
+            const stored = await client.readConfig();
+            expect(stored.name).toBe("Accepted");
+            expect(stored.weatherRefresh).toBe(WeatherRefresh.every120);
+
+            // ...and an *absent* field is not a request to reset it (§7.3): the rename lands, the
+            // interval the rider chose survives. This is the case an old app's rename hits.
+            await client.writeConfig({ name: "Renamed", units: 1, weatherRefresh: null });
+            const afterRename = await client.readConfig();
+            expect(afterRename.name).toBe("Renamed");
+            expect(afterRename.weatherRefresh).toBe(WeatherRefresh.every120);
         } finally {
             await close();
         }

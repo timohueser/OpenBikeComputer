@@ -1362,12 +1362,21 @@ Config v1:
   units            u8   0 = metric · 1 = imperial
   weather_refresh  u8   how often the device raises a weather request (WX3, §11.8)
                         0 = Off · 1 = 15 · 2 = 30 · 3 = 60 · 4 = 120 minutes
-                        ABSENT = device default (30 min) — NOT Off
+                        ABSENT on a read  = device default (30 min) — NOT Off
+                        ABSENT on a write = leave the stored value untouched
   [future fields append here; readers MUST ignore unknown trailing bytes]
 ```
 
 The append-only rule is the version mechanism: fields are never reordered or
 resized, only appended, and absent trailing fields mean "device default".
+
+**On a *write*, an absent trailing field means "leave the stored value untouched"**
+— not "reset it to the default". The two readings coincide on a factory-fresh
+device and diverge on every configured one, so the distinction has to be stated
+rather than inferred: an old app renaming the device writes the pre-WX3 3-byte
+blob, and a device that read that as *the rider chose the default* would reset a
+rider who had deliberately chosen `Off` back to 30-minute wakeups — a setting
+change they never made, caused by a rename.
 
 **`weather_refresh`** (WX3, #1188) is the first field to land under that rule, and
 it is where "absent means device default" stops being a formality. **Absent is the
@@ -1377,12 +1386,18 @@ written; a device that read that as "the rider chose Off" would silently disable
 weather on a rename, and nothing in the app's UI would ever show why. So a blob
 that stops after `units` leaves the stored setting untouched.
 
-An **out-of-range** refresh byte is a different thing again: it is **malformed**
-and the whole write is rejected (an ATT error, as for any malformed Config), not
-quietly defaulted. Absent means the writer never mentioned refresh; a value of `9`
-means it asked for an interval this build cannot honour, and storing 30 minutes
-for it would tell the rider their choice was applied when it was discarded. The
-same enum crosses the wire in the request context (§11.4), so the two never drift.
+An **out-of-range** refresh byte is a different thing again, and it is handled
+**by direction** (§11.8, which is normative for the rule). On a **write** it is
+malformed and the whole write is rejected (an ATT error, as for any malformed
+Config), not quietly defaulted: absent means the writer never mentioned refresh,
+whereas a value of `9` means it asked for an interval this build cannot honour,
+and storing 30 minutes for it would tell the rider their choice was applied when
+it was discarded. On a **read** it is *not* an error — it is a newer device naming
+an interval this reader predates, so the reader reports it as unknown (neither
+`Off` nor the default) and keeps the rest of the blob. Rejecting the read instead
+would mean a future fifth interval stopped a shipped app from so much as renaming
+its device. The same enum crosses the wire in the request context (§11.4), under
+the same rule, so the two never drift.
 
 The Config object carries **no firmware-version field** (issue #622): the running
 image's version is the DIS **Firmware Revision String** (§3.1, `0x2A26`), which
@@ -1981,8 +1996,11 @@ so a cold start indoors is a request to answer, not a request to suppress.
   artifact validated once and trusted afterwards, whereas these bits are how a
   later firmware mentions something this build was never going to act on. Refusing
   the whole read over one would strand a rider's forecast on a byte nobody needed.
-- An **out-of-range `refresh`** byte is malformed (§11.8), like an out-of-range
-  Config value.
+- An **out-of-range `refresh`** byte is **not** an error here. This is a device →
+  phone read, so a value the reader does not know is a newer device, not a broken
+  one: it is carried verbatim and reported as *unknown* — neither `Off` nor the
+  default — exactly like the unrecognised bits above. The strict reading belongs
+  to the one direction that has to *adopt* the value, a Config write (§11.8).
 - The `reason` word is **advisory scheduling help**, never a gate: a phone that
   recognises none of the bits still performs the full fetch.
 
@@ -2075,6 +2093,17 @@ before WX3. Never a fabricated `0`, so a diagnostic cannot claim a firmware
 generation answered when it did not. **Unknown bits are ignored** — an unknown
 neighbour never masks a known one.
 
+**A device sets the bit only when it implements the whole contract**, not when it
+merely carries the layouts. Serving the 11-byte read and holding the service in
+the GATT table is not the contract; accepting a type-`20` upload and honouring a
+refresh interval is. A device that announced the bit while still answering every
+bundle `error` would send a phone round the fetch-build-upload loop forever, at
+its own expense, for a forecast that can never land — the one failure mode the
+capability word exists to make impossible. Announcing zero optional contracts is
+not a smaller truth than announcing one that does nothing; it is the only accurate
+one, and it costs nothing, because a device that announces nothing is exactly the
+old-client case every app already handles.
+
 ### 11.8 Refresh interval
 
 How often the device raises a *scheduled* request (`reason` bit `0`). One enum,
@@ -2092,9 +2121,40 @@ second read.
 
 `Off` has **no** interval rather than a zero one: the wire carries the
 discriminant and the minutes are derived, so nothing has to encode "never" as a
-number. A value above `4` is **malformed** wherever it appears — rejected, not
-defaulted (§7.3). And an **absent** Config field is the device default, **not**
-`Off`; that distinction is the one an old app's rename depends on (§7.3).
+number.
+
+**An unrecognised value is handled by direction, not uniformly.** This is the one
+rule in §11 that is deliberately asymmetric, and the asymmetry is the point:
+
+| Direction | Where | An unrecognised value |
+| :-- | :-- | :-- |
+| phone → device | a Config **write** (§7.3) | **rejected** — the write fails whole |
+| device → phone | the context `refresh` byte (§11.4) | **unknown** — decoded, reported as unrecognised, never fatal |
+| device → phone | a Config **read** (§7.3) | **unknown** — as above |
+
+A device asked to *adopt* an interval it does not know must refuse: it cannot
+honour the value, and storing anything else — the default, `Off`, the previous
+setting — would tell the rider their choice was applied when it was discarded.
+
+A reader must not. An unrecognised value arriving *from* a device is not a
+malformed device, it is a **newer** one: this enum is append-only like everything
+else here, and adding a fifth interval is an ordinary append. Under a
+direction-blind reject that append would break every **shipped** app against new
+firmware — the context read would fail, so weather would go permanently dead, and
+the Config read would fail too, so the app could no longer read Config even to
+rename the device. A trailing enum value would have become a breaking change,
+which is exactly what the append-only discipline everywhere else in this document
+exists to prevent. So a reader treats it as §11.4 treats an unrecognised `reason`
+bit: carried verbatim, reported as unknown, ignored.
+
+Unknown is its own state, and specifically **not** `Off` and **not** the default —
+a phone that collapsed it to either would misreport the rider's own setting back
+to them. Implementations therefore keep the **raw byte**, so a value they cannot
+name still round-trips unchanged.
+
+An **absent** Config field is likewise not `Off` — and what it *does* mean also
+depends on direction: on a **read** it is the device default; on a **write** it is
+*leave the stored value untouched* (§7.3).
 
 ## Reference implementation
 

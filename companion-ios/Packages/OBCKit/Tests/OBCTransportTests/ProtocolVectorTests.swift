@@ -235,15 +235,39 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(bytes.count, 14)
         let config = try ConfigObjectCodec.decode(bytes)
         XCTAssertEqual(config, DeviceConfig(name: "OBC Alpine", units: .imperial, weatherRefresh: .every60))
-        XCTAssertEqual(config.weatherRefresh?.minutes, 60)
+        XCTAssertEqual(config.knownWeatherRefresh?.minutes, 60)
+        XCTAssertEqual(try config.weatherRefreshToApply(), .every60, "a device may adopt it")
         XCTAssertEqual(ConfigObjectCodec.encode(config), bytes)
 
         // …and its sibling, the blob an app predating WX3 writes: the refresh field is UNSPECIFIED
         // (device default), never `Off`, or a rename would silently switch weather off.
         let v1 = try ConfigObjectCodec.decode(try fixture("config-v1.bin"))
-        XCTAssertNil(v1.weatherRefresh)
-        XCTAssertNotEqual(v1.weatherRefresh, .off)
+        XCTAssertNil(v1.weatherRefreshRaw)
+        XCTAssertNotEqual(v1.knownWeatherRefresh, .off)
         XCTAssertEqual(v1.effectiveWeatherRefresh, .every30)
+        // …and on the *write* side absent is not the default either: it is "change nothing".
+        XCTAssertNil(try v1.weatherRefreshToApply())
+    }
+
+    /// §11.8's asymmetry, pinned on a real blob rather than a hand-built one: a Config whose
+    /// refresh byte names an interval v1 never defined. A **read** must tolerate it — otherwise
+    /// appending a fifth interval one day locks a shipped app out of Config badly enough that it
+    /// can no longer even rename the device — while a **write** of it must be refused, because a
+    /// device cannot honour an interval it does not know and substituting one would report a
+    /// setting back to the rider that was discarded.
+    func testConfigUnknownWeatherRefreshVectorIsToleratedOnReadAndRefusedOnWrite() throws {
+        let bytes = try fixture("config-weather-refresh-unknown.bin")
+        let config = try ConfigObjectCodec.decode(bytes)
+
+        let raw = try XCTUnwrap(config.weatherRefreshRaw)
+        XCTAssertNil(WeatherRefresh(wireByte: raw), "the fixture must name an interval v1 lacks")
+        XCTAssertNil(config.knownWeatherRefresh, "unknown, and specifically not Off")
+        XCTAssertNil(config.effectiveWeatherRefresh, "never dressed up as the 30-minute default")
+        XCTAssertEqual(ConfigObjectCodec.encode(config), bytes, "and a rename re-writes it verbatim")
+
+        XCTAssertThrowsError(try config.weatherRefreshToApply()) { error in
+            XCTAssertEqual(error as? WeatherRequestError, .unknownRefresh(raw))
+        }
     }
 
     /// The weather request context (spec §11) — the one value the companion reads before it
@@ -296,6 +320,59 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertNil(noFix.bundle)
         XCTAssertNil(noFix.routeID)
         XCTAssertEqual(noFix.encode(), noFixBytes)
+    }
+
+    /// The read half of §11.8 against a checked-in fixture: a context whose refresh byte names an
+    /// interval this build does not define. It must decode — a firmware appending a fifth interval
+    /// is an ordinary enum append, and a read that threw here would leave weather permanently dead
+    /// on every already-shipped app — report *unknown* rather than Off or the default, and survive
+    /// a re-encode byte-for-byte so nothing is lost on the way back out.
+    func testWeatherRequestContextUnknownRefreshVectorDecodesAsUnknown() throws {
+        let bytes = try fixture("weather-request-context-unknown-refresh.bin")
+        let context = try WeatherRequestContext(decoding: bytes)
+
+        XCTAssertNil(WeatherRefresh(wireByte: context.refreshRaw), "the fixture must name an interval v1 lacks")
+        XCTAssertNil(context.refresh, "unknown…")
+        XCTAssertNotEqual(context.refresh, .off, "…and specifically not Off")
+        XCTAssertNotEqual(context.refresh, .deviceDefault, "…nor the default")
+        XCTAssertEqual(context.encode(), bytes, "the byte rides back out verbatim")
+
+        // The rest of the read is unaffected — one unknown byte must not cost the whole request.
+        XCTAssertEqual(context.version, WeatherRequestContext.currentVersion)
+        XCTAssertFalse(context.reason.isEmpty, "a request this app must still answer")
+    }
+
+    /// Sign handling, which no other context fixture exercises: a rider in the southern **and**
+    /// western hemispheres, with a pre-1970 timestamp. Latitude/longitude are `i32` microdegrees
+    /// and the two UTC stamps are `i64` seconds, and every one of those four paths goes through a
+    /// bit-pattern reinterpretation — a decoder that read them as unsigned would put this rider
+    /// 4295 degrees north and date the fix to the year 2554 rather than refusing, which is exactly
+    /// the kind of failure that shows up as a forecast for the wrong hemisphere and nothing else.
+    func testWeatherRequestContextSouthernVectorDecodesSignedFieldsCorrectly() throws {
+        let bytes = try fixture("weather-request-context-southern.bin")
+        let context = try WeatherRequestContext(decoding: bytes)
+
+        let fix = try XCTUnwrap(context.fix, "the southern fixture must claim a position")
+        XCTAssertLessThan(fix.latitudeMicrodegrees, 0, "southern hemisphere")
+        XCTAssertLessThan(fix.longitudeMicrodegrees, 0, "western hemisphere")
+        XCTAssertEqual(fix.latitude, Double(fix.latitudeMicrodegrees) / 1_000_000)
+        XCTAssertEqual(fix.longitude, Double(fix.longitudeMicrodegrees) / 1_000_000)
+
+        // At least one of the two i64 stamps is negative (pre-1970) — that is what this fixture is
+        // for. Whichever it is, it must survive as a date before the epoch, not a far-future one.
+        let bundleStamp = context.bundleWireGeneratedAtSeconds
+        XCTAssertTrue(
+            context.fixUTCSeconds < 0 || bundleStamp < 0,
+            "the fixture must carry a negative i64 to be worth pinning"
+        )
+        if context.fixUTCSeconds < 0 {
+            XCTAssertLessThan(fix.utc, Date(timeIntervalSince1970: 0))
+        }
+        if context.validity.contains(.bundle), bundleStamp < 0 {
+            XCTAssertLessThan(try XCTUnwrap(context.bundle).generatedAt, Date(timeIntervalSince1970: 0))
+        }
+
+        XCTAssertEqual(context.encode(), bytes, "and every signed field re-encodes byte-exactly")
     }
 
     func testRideVectorDecodesAndReEncodesByteExactly() throws {

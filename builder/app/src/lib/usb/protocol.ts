@@ -491,6 +491,9 @@ export const CONFIG_MAX_ENCODED = 128;
 /**
  * The Config object: `name_len u16 · name · units u8 · weather_refresh u8`, append-only.
  *
+ * The trailing refresh byte is decoded **raw and unvalidated** — §11.8 makes an unrecognised value
+ * fatal in one direction only (a phone → device write), and this host is never that direction.
+ *
  * Readers must ignore unknown trailing bytes and treat absent trailing fields as "device default" —
  * that rule *is* the version mechanism, so this decoder never rejects a longer blob from a newer
  * firmware.
@@ -500,11 +503,54 @@ export interface DeviceConfig {
     name: string;
     /** `0 = metric · 1 = imperial`. */
     units: number;
-    /** The weather refresh interval (§7.3, §11): `0 = Off · 1 = 15 · 2 = 30 · 3 = 60 · 4 = 120`
-     *  minutes. `null` when the blob carried no such byte, which means **device default** — not
-     *  `Off`. Round-tripping a Config read through a writer that collapsed the two would silently
-     *  disable weather on a plain rename. */
+    /** The weather refresh interval (§7.3, §11.8) **as the raw byte**: `0 = Off · 1 = 15 · 2 = 30 ·
+     *  3 = 60 · 4 = 120` minutes. `null` when the blob carried no such byte, which on a read means
+     *  **device default** — not `Off`. Round-tripping a Config read through a writer that collapsed
+     *  the two would silently disable weather on a plain rename.
+     *
+     *  Raw, and deliberately **not** range-checked here — see {@link knownWeatherRefresh}. */
     weatherRefresh: number | null;
+}
+
+/** The §11.8 refresh enum, as the wire discriminants. */
+export const WeatherRefresh = {
+    off: 0,
+    every15: 1,
+    every30: 2,
+    every60: 3,
+    every120: 4,
+} as const;
+export type WeatherRefreshValue = (typeof WeatherRefresh)[keyof typeof WeatherRefresh];
+
+/** The device default (epic #1185) — also what an *absent* field means on a **read**. */
+export const WEATHER_REFRESH_DEFAULT: WeatherRefreshValue = WeatherRefresh.every30;
+
+/** Minutes per interval; `null` for `off`, which has no interval rather than a zero one. */
+export const WEATHER_REFRESH_MINUTES: Record<WeatherRefreshValue, number | null> = {
+    [WeatherRefresh.off]: null,
+    [WeatherRefresh.every15]: 15,
+    [WeatherRefresh.every30]: 30,
+    [WeatherRefresh.every60]: 60,
+    [WeatherRefresh.every120]: 120,
+};
+
+/**
+ * The refresh interval **as a reader sees it**: the value when it names an interval this build
+ * knows, or `null` when the field was absent *or* names one it does not (§11.8's read direction).
+ *
+ * The tolerance is the point, and it is why {@link decodeConfig} does not range-check. This host is
+ * always the *reading* side — it never has to adopt an interval — and an unrecognised value arriving
+ * from a device is a **newer** device, not a broken one. Rejecting it would mean that appending a
+ * fifth interval, an ordinary append to an append-only enum, broke every shipped reader. The strict
+ * rule belongs to the one direction that must honour the value: a phone → device Config write, which
+ * this host does not perform (see `client.writeConfig`, which sends what the caller supplies).
+ *
+ * `null` is its own state — specifically **not** `off` and **not** the default. Callers that need to
+ * tell "absent" from "unrecognised" read the raw {@link DeviceConfig.weatherRefresh} beside this.
+ */
+export function knownWeatherRefresh(raw: number | null): WeatherRefreshValue | null {
+    if (raw === null) return null;
+    return (Object.values(WeatherRefresh) as number[]).includes(raw) ? (raw as WeatherRefreshValue) : null;
 }
 
 export function encodeConfig(c: DeviceConfig): Uint8Array {

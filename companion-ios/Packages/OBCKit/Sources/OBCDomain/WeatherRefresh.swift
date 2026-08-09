@@ -32,8 +32,22 @@ public enum WeatherRefresh: UInt8, Equatable, Sendable, CaseIterable {
     /// Decode a refresh byte, or `nil` for a value this build does not know.
     ///
     /// An unknown value is **not** something to paper over with `deviceDefault`: it means the peer
-    /// configured an interval this build cannot honour, and silently substituting 30 minutes would
+    /// named an interval this build cannot honour, and silently substituting 30 minutes would
     /// report a setting back to the rider that was never applied.
+    ///
+    /// What a caller *does* with that `nil` is **direction-dependent**, and the asymmetry is the
+    /// whole of spec §11.8 (mirrors `obc_ble::WeatherRefresh::from_u8`):
+    ///
+    /// - **Phone → device, a Config write** is the one direction that must **refuse**: see
+    ///   `DeviceConfig.weatherRefreshToApply()`. The device cannot honour an interval it does not
+    ///   know, and storing anything else would tell the rider their choice was applied.
+    /// - **Device → phone**, both read directions (the request-context read, a Config read), must
+    ///   **tolerate**: an unknown value there is a *newer firmware naming an interval this app
+    ///   predates*. Treating it as fatal would mean appending a fifth interval — an ordinary enum
+    ///   append — silently killed weather on every shipped app, and locked it out of Config badly
+    ///   enough that it could no longer even rename the device. Those readers take
+    ///   `DeviceConfig.knownWeatherRefresh` / `WeatherRequestContext.refresh`, which report
+    ///   *unknown* exactly as an unrecognised `reason` bit is reported: ignored, not fatal.
     public init?(wireByte: UInt8) {
         self.init(rawValue: wireByte)
     }

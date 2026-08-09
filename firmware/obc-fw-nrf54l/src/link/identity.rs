@@ -153,6 +153,17 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
     match Config::decode(data) {
         Some(cfg) => match core::str::from_utf8(cfg.name) {
             Ok(name) => {
+                // §11.8's strict direction. A write naming an interval this build cannot honour is
+                // refused whole rather than applied in part: the rename in the same blob is not a
+                // consolation prize when the setting beside it was silently dropped.
+                //
+                // `Ok(None)` — the field absent — is *not* a request to reset anything, so nothing
+                // is written for it. That is what keeps an old app's rename from resetting a rider
+                // who deliberately chose `Off` back to 30-minute wakeups. Persisting the interval
+                // itself is WX8's; there is no setting to write to yet.
+                if cfg.refresh_to_apply().is_err() {
+                    return false;
+                }
                 store.borrow_mut().apply_config(shared, name, cfg.units);
                 true
             }
@@ -182,21 +193,23 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
 /// map anyway (see the [`VersionRead`](obc_ble::VersionRead) docs).
 /// The capability word this build announces (§1, §11).
 ///
-/// It reports what is actually *there*, which is why it is derived from the compiled feature rather
-/// than hard-coded to [`obc_ble::FEATURE_WEATHER`]. A default build implements the Weather Request
-/// **layouts** — it serves the 11-byte read and carries the service in its GATT table — but does not
-/// yet raise scheduled requests, and a phone that saw the bit set would sit waiting for an
-/// advertisement that never comes. Announcing zero features is not a smaller truth than announcing
-/// a feature that does nothing; it is the only accurate one.
+/// **Zero, in every build this branch produces — including the harness one.** WX3 ships the Weather
+/// Request *layouts*: the 11-byte identity read, the service in the GATT table, the context
+/// characteristic. It does not ship the contract. `classify_transfer` answers every object type
+/// `20` with `error`, and nothing here persists a refresh interval, so a phone that saw
+/// [`FEATURE_WEATHER`](obc_ble::FEATURE_WEATHER) set would build a bundle, upload it, be refused,
+/// and retry forever.
 ///
-/// A device that announces no features is exactly the old-client case, so the app's pre-WX3 path
-/// carries it with no extra branch.
+/// Gating the bit on the `ble-weather-request` feature was the obvious thing and was wrong for the
+/// same reason: the feature arms the *advertising* spike, not the upload path, so a harness build
+/// would have announced a contract it could not honour. The iOS harness is launched by
+/// `-OBCWeatherRequestHarness`, never by reading this bit, so nothing needs the over-claim.
+///
+/// WX8 sets the bit in the same change that makes it true. Until then a device announces no
+/// optional contracts, which is exactly the old-client case the app already handles with no extra
+/// branch.
 const fn feature_bits() -> u32 {
-    if cfg!(feature = "ble-weather-request") {
-        obc_ble::FEATURE_WEATHER
-    } else {
-        0
-    }
+    0
 }
 
 pub(crate) fn version_read_bytes(store_epoch: Option<u32>) -> ([u8; obc_ble::VersionRead::ENCODED_LEN], usize) {
