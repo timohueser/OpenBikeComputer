@@ -15,3 +15,12 @@ finished partial ride from its `grimsel-climb-demo.gpx` replay. It then runs the
 locale, appearance, text size, network fallback, and status bar, then exports and compresses the
 named XCUITest attachments. CI runs the same script with `--check`, so a companion UI change cannot
 silently leave stale landing-page captures behind.
+
+The check compares pixels, so the capture has to be deterministic: the app runs unanimated
+(`-OBCDisableAnimations`) with every timed confirmation parked (`-OBCHoldConfirmations` — the
+post-sync check, the synced line, and the upload sheet that otherwise closes itself 2.6 s after
+"On the device"), every asynchronously arriving element is waited for by accessibility identifier
+(profiles and previews, plus the device name and battery, which land after the connect), and a
+screenshot is only kept once two consecutive frames come back identical. A frame caught mid-render
+— or a beat after a short-lived state expired — would otherwise read as a stale asset on a slow
+runner (#1212).
