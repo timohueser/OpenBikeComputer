@@ -275,22 +275,33 @@ Projected steady state, today's two adapters (RV 288 runs/day, ICON 4 runs/day):
 | **VPS** | CX22-class, ≈ €4–5/month gross | ≤ €7 gate |
 | **Total** | **≈ €4–5/month** | ceiling €10 → ≥ €5 margin |
 
-With WX6's two adapters added (PR #1223: the composed `us` product every 15 min at 1.93 MB/bake,
-and the `gfs` floor at 3.28 MB per 4-runs-a-day) new objects rise to ≈ 450 MB/day, writes to
-≈ 125 k/month and 48 h storage to ≈ 0.9 GB — still $0 on R2, still inside the ceiling, but that is
-when the rolling-window guard starts to matter. `us` is the expensive row because every one of its
-96 daily bakes mints a fresh product reference (a newer MRMS observation), which rewrites its eight
-HRRR forward frames too; that is exactly why its cadence is the display's own 15-minute step and
-not MRMS's 2-minute publication rate, which would cost 7.5x the writes to shave at most 13 minutes
-off the radar frame's age. Record the **actual** metered numbers here after
-the first full month (an epic closeout item):
+With WX6's two adapters added (PR #1223: the composed `us` product every 15 min at ≈ 2.3 MB/bake,
+and the `gfs` floor at ≈ 4.4 MB per 4-runs-a-day) new objects rise to ≈ 500 MB/day and writes to
+≈ 125 k/month — still $0 on R2 and still inside the ceiling. `us` is the expensive row because
+every one of its 96 daily bakes mints a fresh product reference (a newer MRMS observation), which
+rewrites its eight HRRR forward frames too; that is exactly why its cadence is the display's own
+15-minute step and not MRMS's 2-minute publication rate, which would cost 7.5x the writes to shave
+at most 13 minutes off the radar frame's age.
+
+**Set the R2 lifecycle rule to 24 h before WX6 goes live — it is a prerequisite, not an
+escalation.** `freshness_probe.py` models the rolling bucket as *current set x runs/day x 2 days*,
+i.e. a 48 h lifecycle, and with WX6 that projection is ≈ 1.0 GB — over WX1's 1 GB rolling-window
+gate, so the probe alerts on day one. Nothing is lost by halving the window: the longest staleness
+deadline any product carries is `gfs`'s 16 h (`dwd-rv` and `us` expire in 30 min, `icon-eu` in
+10 h), so an object older than 24 h is unusable by contract. With a 24 h lifecycle the real
+footprint is ≈ 0.5 GB; either deploy that and halve the probe's number when reading it, or raise
+`vars.OBC_WX_PROBE_ARGS` (`--max-rolling-bytes`) deliberately toward R2's actual 10 GB free tier.
+Do not leave a gate firing that everyone learns to ignore.
+
+Record the **actual** metered numbers here after the first full month (an epic closeout item):
 
 ```
 first metered month: ____________  VPS €____  R2 $____  total €____
 ```
 
 **If the budget guard fires**, in order of preference: (a) shorten the R2 lifecycle rule from 48 h
-to 24 h — nothing usable is older than ~12 h anyway, and it halves storage; (b) drop the RV cadence
+to 24 h if it is somehow still at 48 h — nothing usable is older than 16 h anyway (the `gfs`
+staleness deadline, the longest in the table), and it halves storage; (b) drop the RV cadence
 in `adapters.conf` from `*:0/5` to `*:0/10` (costs ≤ 5 min of radar freshness), or the `us` cadence
 from `*:0/15` to `*:0/30` (costs ≤ 15 min of radar-frame age, no forecast frames); (c) check that a
 product did not accidentally grow — a full-domain wet RV frame is tens of kB, a *hundreds*-of-kB

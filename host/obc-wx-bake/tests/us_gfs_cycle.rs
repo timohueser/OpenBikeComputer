@@ -59,7 +59,7 @@ const HRRR_RANGES: [(u32, u32, u64); 9] = [
     (4, 240, 191_463_451),
 ];
 /// The captured GFS objects: lead hour → (upstream length, span start).
-const GFS_SPANS: [(u32, u64, u64); 12] = [
+const GFS_SPANS: [(u32, u64, u64); 16] = [
     (1, 537_540_348, 427_603_385),
     (2, 538_822_727, 428_091_880),
     (3, 539_798_514, 428_475_805),
@@ -72,6 +72,10 @@ const GFS_SPANS: [(u32, u64, u64); 12] = [
     (10, 544_255_893, 432_328_102),
     (11, 544_322_108, 431_989_179),
     (12, 545_133_960, 432_276_114),
+    (13, 541_397_261, 431_060_039),
+    (14, 541_818_663, 430_713_865),
+    (15, 542_144_204, 430_643_461),
+    (16, 546_445_777, 433_214_890),
 ];
 
 fn mrms_fixture() -> Vec<u8> {
@@ -186,7 +190,7 @@ fn the_composed_us_product_and_the_global_floor_publish_a_valid_byte_stable_tree
     let report = run_cycle(&adapters, &mut upstream_a, &mut store_a, now(), false).expect("fixture cycle");
     eprintln!("wx6 cycle report:\n{}", report.summary());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-    assert_eq!(report.published_objects, 9 + 12 + 1, "one observation + eight HRRR + twelve GFS + the manifest");
+    assert_eq!(report.published_objects, 9 + 16 + 1, "one observation + eight HRRR + sixteen GFS + the manifest");
 
     // Byte-stability: a second cycle from the same fixtures into a fresh store is identical.
     let dir_b = scratch("cycle-b");
@@ -288,13 +292,13 @@ fn the_composed_us_product_and_the_global_floor_publish_a_valid_byte_stable_tree
     let floor = document.products.iter().find(|product| product.id == "gfs").expect("gfs product");
     assert_eq!(floor.tier, 3);
     assert_eq!(floor.reference_time, "2026-08-09T12:00:00Z");
-    assert_eq!(floor.staleness_deadline, "2026-08-10T00:00:00Z");
+    assert_eq!(floor.staleness_deadline, "2026-08-10T04:00:00Z");
     assert_eq!(floor.cell.nominal_m, 27_750);
-    assert_eq!(floor.frames.len(), 12);
+    assert_eq!(floor.frames.len(), 16);
     assert!(floor.frames.iter().all(|frame| frame.source_class == SourceClass::Forecast), "GFS is never observed");
     assert_eq!(floor.frames[0].offset_min, 60);
     assert_eq!(floor.frames[0].valid_at, "2026-08-09T13:00:00Z");
-    assert_eq!(floor.frames[11].valid_at, "2026-08-10T00:00:00Z");
+    assert_eq!(floor.frames[15].valid_at, "2026-08-10T04:00:00Z");
     // Worldwide, and honest about the antimeridian column OBCG cannot represent.
     assert_eq!(floor.bbox_udeg.south_udeg, -89_875_000);
     assert_eq!(floor.bbox_udeg.north_udeg, 89_875_000);
@@ -512,7 +516,7 @@ fn unchanged_upstream_short_circuits_and_moves_no_frame_bytes() {
     let mut store = DirStore::new(&dir);
     let report = run_cycle(&adapters, &mut first, &mut store, now(), false).expect("first cycle");
     // The whole cycle's upstream ingress: one MRMS object, three HRRR indexes, eight HRRR
-    // messages, twelve GFS indexes and twelve GFS spans.
+    // messages, sixteen GFS indexes and sixteen GFS spans.
     eprintln!("wx6 first-cycle ingress: {} bytes", report.fetched_bytes);
     assert!(report.fetched_bytes < 15_000_000, "ingress {} is above the WX1 budget", report.fetched_bytes);
     let before = tree(&dir);
