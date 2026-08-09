@@ -708,10 +708,16 @@ the same published cell catalog. That removes a second map pipeline and makes
 "same coverage + same skin" mean identical assembled bytes on the web and
 desktop.
 
-Coverage is composed from three kinds of parts:
+Coverage is composed from four kinds of parts:
 
-- named regions, whose exact per-band cell ids are stored in the catalog;
+- named regions, whose exact per-band cell ids are stored in the catalog —
+  regions nest, and a click on ground covered by several offers the whole
+  ancestor chain, smallest first, so a state and its country are both one
+  click;
 - boxes, resolved directly against the global cell grid;
+- lassos — freehand rings drawn on the map, resolved against that same grid by
+  a polygon-overlap test rather than a bounding box, so a diagonal shape does
+  not pay for the rectangle around it;
 - corridors, formed by buffering dropped GPX routes and resolving the resulting
   shape against that same grid.
 
@@ -794,7 +800,7 @@ or assembly algorithms.
 | | Static website | Desktop app | Maintainer server |
 | :-- | :-- | :-- | :-- |
 | Catalog coverage UI | yes | yes | yes |
-| Regions, boxes, GPX corridors | yes | yes | yes |
+| Regions, boxes, lassos, GPX corridors | yes | yes | yes |
 | Shared wasm assembly | yes | yes | yes |
 | Product skin editor | yes | yes | yes |
 | Output | picked folder, or one zip | grouped local folder | one zip download |
