@@ -224,6 +224,41 @@ describe("the write side", () => {
         expect(await fresh.has(KEY_B, 2)).toBe(true);
     });
 
+    it("discards one temporary revision without touching the store root", async () => {
+        const root = opfs();
+        const { discardCellStore, openCellStore } = await withOpfs(root);
+        const store = (await openCellStore("r1"))!;
+        await store.put(KEY_A, new Uint8Array([1, 2, 3, 4]));
+
+        await discardCellStore("r1");
+        expect(root.dirs.has("obc-cells")).toBe(true);
+        expect(root.dirs.get("obc-cells")!.dirs.has("r1")).toBe(false);
+        await expect(discardCellStore("missing")).resolves.toBeUndefined();
+    });
+
+    it("clears all downloaded cells on request", async () => {
+        const root = opfs();
+        const { clearCellStores, openCellStore } = await withOpfs(root);
+        const store = (await openCellStore("r1"))!;
+        await store.put(KEY_A, new Uint8Array([1, 2, 3, 4]));
+
+        await clearCellStores();
+        expect(root.dirs.has("obc-cells")).toBe(false);
+        await expect(clearCellStores()).resolves.toBeUndefined();
+    });
+
+    it("clears every map-working directory on request", async () => {
+        const root = opfs();
+        const { clearMapWorkStorage, openCellStore } = await withOpfs(root);
+        const store = (await openCellStore("r1"))!;
+        await store.put(KEY_A, new Uint8Array([1, 2, 3, 4]));
+        await root.getDirectoryHandle("obc-out", { create: true });
+        await root.getDirectoryHandle("obc-scratch", { create: true });
+
+        await clearMapWorkStorage();
+        expect([...root.dirs.keys()]).toEqual([]);
+    });
+
     it("reports no store where the browser has no OPFS", async () => {
         const { openCellStore, cellStoreWritable } = await withOpfs(null);
         expect(await openCellStore("r1")).toBeNull();

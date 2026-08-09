@@ -38,8 +38,9 @@
 // Cells live under `obc-cells/<revision>/`, where the revision is derived from the
 // catalog's own pins on its cell indices ({@link cellStoreRevision}). A re-bake
 // changes those pins, so its cells land in a fresh directory and the previous
-// one's are swept the next time a store is opened. Nothing accumulates, and there
-// is no setting to get wrong.
+// one's are swept the next time a store is opened. The builder may also discard
+// the current revision after the run; keeping it for future builds is an explicit
+// user choice.
 //
 // ## The other direction: the assembled shards (#1116 D1)
 //
@@ -222,6 +223,47 @@ export async function openCellStore(revision: string): Promise<CellStore | null>
             await writable.close();
         },
     };
+}
+
+/** Delete every downloaded map cell for this origin. Working output and scratch are separate. */
+export async function clearCellStores(): Promise<void> {
+    const root = await opfsRoot();
+    if (!root) return;
+    await removeDirectoryIfPresent(root, ROOT);
+}
+
+/** Delete downloaded cells plus assembly output and scratch left by an interrupted/previous run. */
+export async function clearMapWorkStorage(): Promise<void> {
+    const root = await opfsRoot();
+    if (!root) return;
+    for (const name of [ROOT, OUT, SCRATCH]) await removeDirectoryIfPresent(root, name);
+}
+
+/** Delete one run's cells after its readers have closed. Used when future reuse was not selected. */
+export async function discardCellStore(revision: string): Promise<void> {
+    const root = await opfsRoot();
+    if (!root) return;
+    let home: Directory;
+    try {
+        home = await root.getDirectoryHandle(ROOT);
+    } catch {
+        return;
+    }
+    await removeDirectoryIfPresent(home, revision);
+}
+
+/** Ignore a genuinely absent directory, but surface locks and storage failures to the caller. */
+async function removeDirectoryIfPresent(parent: Directory, name: string): Promise<void> {
+    try {
+        await parent.removeEntry(name, { recursive: true });
+    } catch (cause) {
+        try {
+            await parent.getDirectoryHandle(name);
+        } catch {
+            return;
+        }
+        throw cause;
+    }
 }
 
 /** Delete every revision directory except `keep`, and the probe files beside them. */

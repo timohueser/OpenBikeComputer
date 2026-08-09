@@ -42,8 +42,6 @@
     import { DeviceJob, jobRegistry } from "../lib/device/job.svelte";
     import {
         deviceThumbs,
-        rideFingerprint,
-        routeFingerprint,
         STAGE_COLORS,
         type Thumb,
         type ThumbRequest,
@@ -335,13 +333,12 @@
         await refreshLibrary();
     }
 
-    // --- thumbnails: one small download per object, ever, behind everything else ----
+    // --- thumbnails: one small download per object per page session, behind everything else ----
 
     function routeThumbRequest(c: ProtocolClient, route: RouteListEntry): ThumbRequest {
         return {
             kind: "route",
             id: route.objectId,
-            fingerprint: routeFingerprint(route),
             load: async (signal) => {
                 const points = await routeTrack(await c.download(ObjectType.Route, route.objectId, { signal }));
                 return points.map((p) => [p.lat, p.lon] as [number, number]);
@@ -353,7 +350,6 @@
         return {
             kind: "ride",
             id: ride.objectId,
-            fingerprint: rideFingerprint(ride),
             // A ride already pulled has its preview track in the library index — the free win:
             // no download, and the tile shows exactly what the Ride-library page shows.
             load: held
