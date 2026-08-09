@@ -8,6 +8,11 @@
 //! ```
 //!
 //! Every invocation is idempotent and stateless: state lives only in the published manifest.
+//! A single-adapter invocation is a first-class production mode — `ops/weather` runs one systemd
+//! timer per adapter, so a broken upstream cannot cost the other products their freshness — and
+//! it rewrites only its own product: every other still-unexpired product is carried forward from
+//! the published manifest verbatim (see [`obc_wx_bake::cycle`]). Two invocations must never
+//! overlap; the shipped units serialize every instance behind one `flock`.
 //! `--now` exists for deterministic replays; production timers omit it. `--store <dir>`
 //! publishes into a directory (any static host can serve it); `--r2` uses the `OBC_WX_R2_*`
 //! environment (bucket `obc-wx` by default).
