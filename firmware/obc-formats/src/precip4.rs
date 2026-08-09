@@ -81,7 +81,7 @@ pub const fn valid_intensity(value: u8) -> bool {
 /// True when `count` is a legal generalized cell count: even (raw4 packs two cells per byte),
 /// nonzero, and no larger than [`MAX_CELLS`].
 pub const fn valid_cell_count(count: usize) -> bool {
-    count != 0 && count % 2 == 0 && count <= MAX_CELLS
+    count != 0 && count.is_multiple_of(2) && count <= MAX_CELLS
 }
 
 /// Return the deterministic encoded length after validating every intensity code.
