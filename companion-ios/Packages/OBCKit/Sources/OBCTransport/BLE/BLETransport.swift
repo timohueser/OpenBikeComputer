@@ -129,6 +129,29 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// background scan — a battery bug, and the same rule `obc_ble`'s advertising budget keeps.
     private static let weatherRequestBudget: TimeInterval = 60
     private static let weatherRequestConnectedBudget: DispatchTimeInterval = .seconds(8)
+    // One bounded upload of a weather bundle (spec §11.5, WX9). Queue-confined like the read's
+    // fields above; the two legs share the weather connection lane but never run concurrently —
+    // the job engine sequences them with the network fetch in between, radio idle.
+    private var weatherUploadWaiter: CheckedContinuation<WeatherBundleUpload, Error>?
+    private var cancelledWeatherUploadTokens: Set<UUID> = []
+    private var weatherUploadToken: UUID?
+    private var weatherUploadPayload: Data?
+    private var weatherUploadDeadline: DispatchWorkItem?
+    private var weatherUploadConnectedDeadline: DispatchWorkItem?
+    /// Absolute, like the read's — a budget is a deadline, not a restartable timer (§11.3).
+    private var weatherUploadConnectedDeadlineAt: DispatchTime?
+    private var weatherUploadInFlight = false
+    private var weatherUploadStartedAt: ContinuousClock.Instant?
+    private var weatherUploadConnectedAt: ContinuousClock.Instant?
+    private var weatherUploadReusedForeground = false
+    /// Overall upload-leg budget. Longer than the read's 60 s on purpose: this leg begins with a
+    /// *pending direct connect* (no scan — after the served context read the device advertises OBC
+    /// Control again, §11.3), which iOS holds until the peripheral is reachable.
+    private static let weatherUploadBudget: TimeInterval = 90
+    /// Connected budget for the upload leg: bonded re-encrypt + CoC open (~1–3 s) plus ≤ 64 KiB
+    /// over the CoC (a couple of seconds) with margin for a slow link. Still comfortably inside a
+    /// single background execution window.
+    private static let weatherUploadConnectedBudget: DispatchTimeInterval = .seconds(25)
     /// True only across the #753 gated-phase retry beat — between a first,
     /// retryable gated failure (`resolveAuthenticateRetryable`) and the second
     /// attempt parking its continuation. In this window `authenticateContinuation`
@@ -176,6 +199,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     init(discoveryStore: any BLEDiscoveryStore) {
         self.discoveryStore = discoveryStore
         super.init()
+        // The standing weather watch survives relaunches: re-arm the policy from the persisted
+        // flag *before* the manager exists, so a state-restoration launch has the scanning intent
+        // in place when the delegate callbacks start arriving.
+        if discoveryStore.weatherWatchArmed() {
+            discoveryPolicy.setWeatherWatch(true)
+        }
         _ = central  // force manager creation (and a state callback)
     }
 
@@ -302,7 +331,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 if cancelForegroundConnection, let peripheral { central.cancelPeripheralConnection(peripheral) }
                 if central.isScanning, discoveryPolicy.scanServices.isEmpty { central.stopScan() }
                 stateMulticast.send(.disconnected)
-                if discoveryPolicy.weatherRequestPending { startConnectIfReady() }
+                // Any remaining weather intent (a pending one-shot or the standing watch) keeps
+                // the radio; `startConnectIfReady` no-ops when nothing wants it.
+                if discoveryPolicy.hasIntent { startConnectIfReady() }
                 cont.resume()
             }
         }
@@ -486,7 +517,43 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 + "discovery=\(result.discoveryLatency) connected=\(result.connectedDuration) "
                 + "reused=\(result.reusedForegroundConnection)"
         )
-        if disconnectOwnedConnection, let peripheral { central.cancelPeripheralConnection(peripheral) }
+        if disconnectOwnedConnection {
+            releaseWeatherOwnedConnection()
+        } else if discoveryPolicy.weatherUploadPending {
+            // An upload one-shot queued behind this read shares the kept connection (WX9). The
+            // read-owned connection discovered only the weather service, so the control plane may
+            // still be missing — fetch it, and the characteristic-discovery completion kicks the
+            // upload.
+            continueWeatherUploadOnSharedConnection()
+        }
+    }
+
+    /// Release a weather-owned connection after its one-shot ends. Cancelling a **pending**
+    /// connect delivers no delegate callback (only a connected peripheral produces
+    /// `didDisconnectPeripheral`), so for anything not fully connected the policy phase must be
+    /// unwound here — otherwise the lane would sit `.connecting` forever and park every later
+    /// foreground connect behind it.
+    private func releaseWeatherOwnedConnection() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if let peripheral, peripheral.state == .connected {
+            central.cancelPeripheralConnection(peripheral)  // didDisconnectPeripheral cleans up
+            return
+        }
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        discoveryPolicy.didDisconnect()
+        startConnectIfReady()
+    }
+
+    /// The read leg finished on a connection an upload is also waiting for: start the upload if
+    /// the control plane is discovered, or discover it first (the completion re-enters
+    /// `beginWeatherUploadIfReady`).
+    private func continueWeatherUploadOnSharedConnection() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if characteristics[GATT.transferControl] != nil, characteristics[GATT.psm] != nil {
+            beginWeatherUploadIfReady()
+        } else if let peripheral, peripheral.state == .connected {
+            peripheral.discoverServices([GATT.obcControlService, GATT.weatherRequestService])
+        }
     }
 
     private func failWeatherRequest(_ error: WeatherRequestError, publish: Bool = true) {
@@ -498,8 +565,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         for waiter in waiters { waiter.resume(throwing: error) }
         if publish { weatherRequestMulticast.send(.failed(error)) }
         print("[OBC BLE weather] failed: \(error)")
-        if disconnectOwnedConnection, let peripheral {
-            central.cancelPeripheralConnection(peripheral)
+        if disconnectOwnedConnection {
+            releaseWeatherOwnedConnection()
+        } else if discoveryPolicy.weatherUploadPending, discoveryPolicy.connectionOwnership == .weatherRequest {
+            continueWeatherUploadOnSharedConnection()
         } else if central.isScanning, discoveryPolicy.scanServices.isEmpty {
             central.stopScan()
         }
@@ -514,6 +583,278 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         weatherRequestConnectedDeadlineAt = nil
         weatherRequestReadInFlight = false
         discoveryStore.clearWeatherRestoration()
+        return disconnectOwnedConnection
+    }
+
+    /// Arm the autonomous read the standing watch triggers (WX9): the same bookkeeping
+    /// `registerWeatherRequestWaiter` does, minus a waiter — the result reaches its consumer via
+    /// `weatherRequestEvents`, exactly like a read completed after state restoration. The policy
+    /// has already raised `weatherRequestPending` (see `DiscoveryAction.connectForWeatherRead`).
+    private func armAutonomousWeatherRead() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let now = weatherRequestClock.now
+        weatherRequestStartedAt = now
+        weatherRequestDiscoveredAt = nil
+        weatherRequestConnectedAt = nil
+        weatherRequestConnectedDeadlineAt = nil
+        weatherRequestReusedForeground = false
+        let deadline = Date().addingTimeInterval(Self.weatherRequestBudget)
+        discoveryStore.armWeatherRestoration(until: deadline)
+        armWeatherRequestDeadline(until: deadline)
+    }
+
+    // MARK: One-shot Weather Bundle upload (spec §11.5, WX9)
+
+    /// Arm or disarm the **standing weather watch**: scan for the Weather Request UUID whenever
+    /// nothing else needs the radio, so a device raising a request wakes the app — in the
+    /// foreground, in the background, and (via CoreBluetooth state restoration) after the process
+    /// has been killed. The flag persists across relaunches. Ignored without a known authenticated
+    /// peripheral (`startConnectIfReady` guards): with nothing bonded there is nothing to wake for.
+    public func setWeatherWatch(_ enabled: Bool) {
+        queue.async { [self] in
+            discoveryStore.setWeatherWatchArmed(enabled)
+            discoveryPolicy.setWeatherWatch(enabled)
+            if enabled {
+                startConnectIfReady()
+            } else if central.isScanning, discoveryPolicy.scanServices.isEmpty {
+                central.stopScan()
+                activeScanServices.removeAll()
+            }
+        }
+    }
+
+    /// Upload one OBCW bundle as object type `20`, singleton id `0`, over the ordinary reliable
+    /// CoC — the second connection of the §11 exchange. Rides an existing foreground session when
+    /// one is up (and never tears it down); otherwise makes its own bounded ephemeral connection
+    /// to the known bonded peripheral and disconnects when the verdict lands. Success is the
+    /// device's `committed` — which per §11.6 includes the duplicate/stale ignored-but-successful
+    /// rows, so retrying this call with the same bytes after an ambiguous failure is always safe.
+    public func uploadWeatherBundle(_ payload: Data) async throws -> WeatherBundleUpload {
+        guard !payload.isEmpty else { throw WeatherUploadError.emptyPayload }
+        let token = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<WeatherBundleUpload, Error>) in
+                queue.async { [self] in
+                    if cancelledWeatherUploadTokens.remove(token) != nil {
+                        continuation.resume(throwing: WeatherUploadError.cancelled)
+                        return
+                    }
+                    registerWeatherUpload(token, payload, continuation)
+                }
+            }
+        } onCancel: { [weak self] in
+            self?.queue.async { [weak self] in self?.cancelWeatherUpload(token) }
+        }
+    }
+
+    private func registerWeatherUpload(
+        _ token: UUID, _ payload: Data,
+        _ continuation: CheckedContinuation<WeatherBundleUpload, Error>
+    ) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard weatherUploadWaiter == nil else {
+            continuation.resume(throwing: WeatherUploadError.busy)
+            return
+        }
+        guard let knownID = discoveryStore.knownPeripheralID() else {
+            continuation.resume(throwing: WeatherUploadError.noKnownBondedPeripheral)
+            return
+        }
+        weatherUploadWaiter = continuation
+        weatherUploadToken = token
+        weatherUploadPayload = payload
+        weatherUploadInFlight = false
+        weatherUploadReusedForeground = false
+        let now = weatherRequestClock.now
+        weatherUploadStartedAt = now
+        weatherUploadConnectedAt = nil
+        weatherUploadConnectedDeadlineAt = nil
+
+        // A restoration-adopted upload intent may already hold a connecting/connected weather
+        // connection with no payload — this call supplies the bytes and attaches to it.
+        let deadline = Date().addingTimeInterval(Self.weatherUploadBudget)
+        discoveryStore.armWeatherUploadRestoration(until: deadline)
+        armWeatherUploadDeadline(until: deadline)
+
+        guard central.state == .poweredOn else {
+            // .unknown/.resetting resolve via centralManagerDidUpdateState; hard-off fails now.
+            if central.state == .poweredOff || central.state == .unauthorized || central.state == .unsupported {
+                failWeatherUpload(.bluetoothUnavailable)
+            }
+            return
+        }
+        let connectedID = peripheral?.state == .connected ? peripheral?.identifier : nil
+        switch discoveryPolicy.requestWeatherUpload(
+            knownPeripheralID: knownID, connectedPeripheralID: connectedID
+        ) {
+        case .uploadOnExistingConnection:
+            weatherUploadConnectedAt = now
+            weatherUploadReusedForeground = discoveryPolicy.connectionOwnership == .foreground
+            beginWeatherUploadIfReady()
+        case .connectDirect:
+            guard let retrieved = central.retrievePeripherals(withIdentifiers: [knownID]).first else {
+                failWeatherUpload(.noKnownBondedPeripheral)
+                return
+            }
+            peripheral = retrieved
+            retrieved.delegate = self
+            central.connect(retrieved)
+        case .waitForCurrentConnection:
+            break  // didConnect / finishConnect will kick beginWeatherUploadIfReady().
+        }
+    }
+
+    private func cancelWeatherUpload(_ token: UUID) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if weatherUploadToken == token, weatherUploadWaiter != nil {
+            failWeatherUpload(.cancelled)
+        } else if weatherUploadToken != token {
+            // The cancellation handler may beat the registration hop onto this queue.
+            cancelledWeatherUploadTokens.insert(token)
+        }
+    }
+
+    private func armWeatherUploadDeadline(until deadline: Date) {
+        weatherUploadDeadline?.cancel()
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0 else {
+            failWeatherUpload(.timedOut)
+            return
+        }
+        let item = DispatchWorkItem { [weak self] in self?.failWeatherUpload(.timedOut) }
+        weatherUploadDeadline = item
+        queue.asyncAfter(deadline: .now() + remaining, execute: item)
+    }
+
+    /// One absolute deadline from the moment the connection came up — the same non-restartable
+    /// rule as the read's (§11.3): re-arming per stage would let a slow gated phase plus a slow
+    /// CoC send double the radio hold.
+    private func armWeatherUploadConnectedDeadline() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        weatherUploadConnectedDeadline?.cancel()
+        let deadline = weatherUploadConnectedDeadlineAt ?? .now() + Self.weatherUploadConnectedBudget
+        weatherUploadConnectedDeadlineAt = deadline
+        let item = DispatchWorkItem { [weak self] in self?.failWeatherUpload(.timedOut) }
+        weatherUploadConnectedDeadline = item
+        queue.asyncAfter(deadline: deadline, execute: item)
+    }
+
+    /// Start the CoC exchange once everything is in place: the upload intent has bytes, the known
+    /// peripheral is connected, and the control-plane characteristics are discovered. Called from
+    /// every path that can complete one of those conditions.
+    private func beginWeatherUploadIfReady() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard discoveryPolicy.weatherUploadPending, !weatherUploadInFlight else { return }
+        guard let payload = weatherUploadPayload else { return }  // restoration-adopted, no caller yet
+        guard let knownID = discoveryStore.knownPeripheralID(), peripheral?.identifier == knownID,
+              peripheral?.state == .connected
+        else { return }
+        guard characteristics[GATT.transferControl] != nil, characteristics[GATT.psm] != nil else {
+            return  // service discovery still in flight; its completion re-enters here
+        }
+        weatherUploadInFlight = true
+        if weatherUploadConnectedAt == nil { weatherUploadConnectedAt = weatherRequestClock.now }
+        armWeatherUploadConnectedDeadline()
+        // The gated notify carries the verdict. Arming it on an already-subscribed foreground
+        // link is a no-op; on the ephemeral weather connection it is the first gated op and (like
+        // the PSM read that follows) rides the silent bonded re-encrypt.
+        if let status = characteristics[GATT.status], let peripheral, !status.isNotifying {
+            peripheral.setNotifyValue(true, for: status)
+        }
+        Task { [weak self] in await self?.runWeatherUploadExchange(payload) }
+    }
+
+    /// The exchange itself — an ordinary §4.2 upload through the ordinary machinery: transfer
+    /// slot (serializing with route/ride/trip/DFU transfers on the one unframed CoC), descriptor,
+    /// payload, bounded verdict.
+    private func runWeatherUploadExchange(_ payload: Data) async {
+        let descriptor = TransferControl(
+            op: .upload, type: .weatherBundle, objectID: 0,
+            totalLen: UInt32(payload.count), crc32: CRC32.checksum(payload)
+        )
+        let slot = await acquireTransferSlot("upload weatherBundle len=\(payload.count)")
+        var exchangeOpened = false
+        do {
+            let channel = try await readyChannel()
+            clearPendingStatuses()
+            logDescriptor(descriptor, slot: slot)
+            exchangeOpened = true
+            try await write(descriptor.encode(), to: GATT.transferControl)
+            try await channel.send(payload) { _ in }
+            let result = try await bounded { try await nextTransferResult() }
+            if result.status == .committed,
+               descriptor.acceptsCommittedResult(result, byteCount: descriptor.totalLen) {
+                exchangeOpened = false
+                releaseTransferSlot(slot)
+                queue.async { [weak self] in self?.completeWeatherUpload() }
+                return
+            }
+            // Any non-committed close leaves this exchange's queued bytes on the unframed CoC —
+            // reset the channel before anything else can use it (the UploadRunner rule).
+            await teardownChannel()
+            releaseTransferSlot(slot)
+            let failure: WeatherUploadError = switch result.status {
+            case .crcMismatch: .crcMismatch
+            case .busy: .deviceBusy
+            case .error, .notFound, .storageFull: .rejected
+            case .committed, .aborted: .connectionDropped
+            }
+            queue.async { [weak self] in self?.failWeatherUpload(failure) }
+        } catch {
+            if exchangeOpened { await teardownChannel() }
+            releaseTransferSlot(slot)
+            queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped) }
+        }
+    }
+
+    private func completeWeatherUpload() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard weatherUploadWaiter != nil || discoveryPolicy.weatherUploadPending else { return }
+        let now = weatherRequestClock.now
+        let started = weatherUploadStartedAt ?? now
+        let connected = weatherUploadConnectedAt ?? now
+        let result = WeatherBundleUpload(
+            connectLatency: started.duration(to: connected),
+            connectedDuration: connected.duration(to: now),
+            reusedForegroundConnection: weatherUploadReusedForeground
+        )
+        let disconnectOwnedConnection = endWeatherUploadState()
+        weatherUploadWaiter?.resume(returning: result)
+        weatherUploadWaiter = nil
+        print(
+            "[OBC BLE weather] bundle committed connect=\(result.connectLatency) "
+                + "connected=\(result.connectedDuration) reused=\(result.reusedForegroundConnection)"
+        )
+        if disconnectOwnedConnection { releaseWeatherOwnedConnection() }
+    }
+
+    private func failWeatherUpload(_ error: WeatherUploadError) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard weatherUploadWaiter != nil || discoveryPolicy.weatherUploadPending else { return }
+        let disconnectOwnedConnection = endWeatherUploadState()
+        weatherUploadWaiter?.resume(throwing: error)
+        weatherUploadWaiter = nil
+        print("[OBC BLE weather] bundle upload failed: \(error)")
+        if disconnectOwnedConnection {
+            releaseWeatherOwnedConnection()
+        } else if central.isScanning, discoveryPolicy.scanServices.isEmpty {
+            central.stopScan()
+        }
+    }
+
+    private func endWeatherUploadState() -> Bool {
+        let disconnectOwnedConnection = discoveryPolicy.finishWeatherUpload()
+        weatherUploadDeadline?.cancel()
+        weatherUploadDeadline = nil
+        weatherUploadConnectedDeadline?.cancel()
+        weatherUploadConnectedDeadline = nil
+        weatherUploadConnectedDeadlineAt = nil
+        weatherUploadInFlight = false
+        weatherUploadPayload = nil
+        weatherUploadToken = nil
+        discoveryStore.clearWeatherUploadRestoration()
         return disconnectOwnedConnection
     }
 
@@ -898,6 +1239,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         defer {
             discoveryStore.clearKnownPeripheralID()
             discoveryStore.clearWeatherRestoration()
+            discoveryStore.clearWeatherUploadRestoration()
         }
         let slot = await acquireTransferSlot("command forgetBond")
         defer { releaseTransferSlot(slot) }
@@ -1307,6 +1649,13 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         case .poweredOn:
             let services = discoveryPolicy.scanServices
             guard !services.isEmpty else { return }
+            // A weather-only scan exists to wake on the *known bonded* device; with nothing bonded
+            // there is nothing to wake for, and the standing watch must not burn radio on it.
+            if services == [.weatherRequest], !discoveryPolicy.weatherRequestPending,
+               discoveryStore.knownPeripheralID() == nil {
+                return
+            }
+            discoveryPolicy.noteScanning()  // the watch's scan has no request* call to raise the phase
             if discoveryPolicy.foregroundRequested { stateMulticast.send(.connecting) }
             if central.isScanning, activeScanServices == services { return }
             if central.isScanning, activeScanServices != services { central.stopScan() }
@@ -1331,6 +1680,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private func failRadioUnavailable(_ error: DeviceError) {
         if discoveryPolicy.weatherRequestPending { failWeatherRequest(.bluetoothUnavailable) }
+        if discoveryPolicy.weatherUploadPending || weatherUploadWaiter != nil {
+            failWeatherUpload(.bluetoothUnavailable)
+        }
         if discoverContinuation != nil {
             failDiscover(error)
         } else {
@@ -1396,7 +1748,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             guard let self else { return }
             self.discoveryWatchdog = nil
             if self.discoveryPolicy.connectionOwnership == .weatherRequest {
-                self.failWeatherRequest(.timedOut)
+                if self.discoveryPolicy.weatherRequestPending { self.failWeatherRequest(.timedOut) }
+                if self.discoveryPolicy.weatherUploadPending { self.failWeatherUpload(.timedOut) }
             } else if self.discoverContinuation != nil {
                 self.failDiscover(.deviceNotFound)
             }
@@ -1448,7 +1801,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private func failConnectionSetup() {
         if discoveryPolicy.connectionOwnership == .weatherRequest {
-            failWeatherRequest(.readFailed)
+            if discoveryPolicy.weatherRequestPending { failWeatherRequest(.readFailed) }
+            if discoveryPolicy.weatherUploadPending { failWeatherUpload(.connectionDropped) }
         } else if discoverContinuation != nil {
             failDiscover(.notConnected)
         }
@@ -1539,6 +1893,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     private func finishConnect() {
+        // An **ephemeral weather connection** (WX9) reaches here when its gated phase opens the
+        // CoC for the upload leg. It must never read as the foreground link: publishing
+        // `.connected` would wake every foreground observer of a session the user does not have,
+        // and there is no authenticate continuation to resolve. The channel waiters were already
+        // resumed by `didOpen`; just keep the weather work moving.
+        if discoveryPolicy.connectionOwnership == .weatherRequest, !discoveryPolicy.foregroundRequested {
+            if let peripheral { discoveryStore.saveKnownPeripheralID(peripheral.identifier) }
+            if discoveryPolicy.weatherRequestPending { beginWeatherRequestReadIfReady() }
+            if discoveryPolicy.weatherUploadPending { beginWeatherUploadIfReady() }
+            return
+        }
         // Only announce an actual transition (#302): a mid-session CoC reopen
         // (after a canceled-transfer `teardownChannel`) re-enters here, but the
         // link never left `.connected` — re-sending would re-fire edge-triggered
@@ -1554,6 +1919,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         authenticateContinuation?.resume()
         authenticateContinuation = nil
         if discoveryPolicy.weatherRequestPending { beginWeatherRequestReadIfReady() }
+        if discoveryPolicy.weatherUploadPending { beginWeatherUploadIfReady() }
     }
 
     /// The link is gone: every parked continuation must resolve (a leaked
@@ -1875,8 +2241,43 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        guard let deadline = discoveryStore.weatherRestorationDeadline(), deadline > Date(),
-              let knownID = discoveryStore.knownPeripheralID()
+        guard let knownID = discoveryStore.knownPeripheralID() else {
+            discoveryStore.clearWeatherRestoration()
+            discoveryStore.clearWeatherUploadRestoration()
+            return
+        }
+        // The upload leg's restoration (WX9): a pending **direct connect** — no scan — relaunched
+        // the process. Adopt the known peripheral and hold the connection; the payload arrives when
+        // the job engine (resumed by the app launch this relaunch *is*) calls
+        // `uploadWeatherBundle` from its `bundleReady` checkpoint. The persisted deadline bounds
+        // the wait either way, so an engine that never comes back cannot leak a held connection.
+        if let uploadDeadline = discoveryStore.weatherUploadRestorationDeadline() {
+            if uploadDeadline > Date() {
+                let restoredPeripherals =
+                    dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
+                let restoredIDs = Set(restoredPeripherals.map(\.identifier))
+                if let restoredID = discoveryPolicy.restoreWeatherUpload(
+                    restoredPeripheralIDs: restoredIDs, knownPeripheralID: knownID),
+                    let restored = restoredPeripherals.first(where: { $0.identifier == restoredID }) {
+                    peripheral = restored
+                    restored.delegate = self
+                    weatherUploadStartedAt = weatherRequestClock.now
+                    armWeatherUploadDeadline(until: uploadDeadline)
+                    print("[OBC BLE weather] restored upload intent for known peripheral \(knownID)")
+                    switch restored.state {
+                    case .connected:
+                        self.centralManager(central, didConnect: restored)
+                    case .connecting:
+                        break  // CoreBluetooth will deliver didConnect/didFail on this manager.
+                    default:
+                        central.connect(restored)
+                    }
+                    return
+                }
+            }
+            discoveryStore.clearWeatherUploadRestoration()
+        }
+        guard let deadline = discoveryStore.weatherRestorationDeadline(), deadline > Date()
         else {
             discoveryStore.clearWeatherRestoration()
             return
@@ -1926,7 +2327,19 @@ extension BLETransport: CBCentralManagerDelegate {
         let action = discoveryPolicy.discovered(
             peripheralID: peripheral.identifier, knownPeripheralID: discoveryStore.knownPeripheralID()
         )
-        guard case .connect(let owner) = action else { return }
+        let owner: BLEDiscoveryIntentPolicy.Ownership
+        switch action {
+        case .ignore:
+            return
+        case .connect(let connectionOwner):
+            owner = connectionOwner
+        case .connectForWeatherRead:
+            // The standing watch (WX9) saw the known device raise a request with no caller in
+            // flight: arm the autonomous one-shot's bookkeeping (deadline, restoration intent,
+            // timing evidence) — its result reaches the job engine via `weatherRequestEvents`.
+            armAutonomousWeatherRead()
+            owner = .weatherRequest
+        }
         central.stopScan()
         activeScanServices.removeAll()
         self.peripheral = peripheral
@@ -1938,8 +2351,13 @@ extension BLETransport: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         discoveryPolicy.didConnect(peripheralID: peripheral.identifier)
         if discoveryPolicy.connectionOwnership == .weatherRequest {
-            weatherRequestConnectedAt = weatherRequestClock.now
-            armWeatherRequestConnectedDeadline()
+            if discoveryPolicy.weatherRequestPending {
+                weatherRequestConnectedAt = weatherRequestClock.now
+                armWeatherRequestConnectedDeadline()
+            } else if discoveryPolicy.weatherUploadPending {
+                weatherUploadConnectedAt = weatherRequestClock.now
+                armWeatherUploadConnectedDeadline()
+            }
         }
         armDiscoveryWatchdog()  // bounds GATT discovery, not the scan/reconnect wait (#302)
         let services: [CBUUID]
@@ -1947,6 +2365,11 @@ extension BLETransport: CBCentralManagerDelegate {
             // Foreground discovery accepts either advertisement and always discovers both custom
             // services, preserving the normal Control session when the weather UUID was on air.
             services = [GATT.deviceInformation, GATT.battery, GATT.obcControlService, GATT.weatherRequestService]
+        } else if discoveryPolicy.weatherUploadPending {
+            // The upload leg needs the OBC Control plane (status / PSM / transferControl) for the
+            // ordinary CoC transfer; the weather service rides along for a read that may share
+            // this ephemeral connection.
+            services = [GATT.obcControlService, GATT.weatherRequestService]
         } else {
             services = [GATT.weatherRequestService]
         }
@@ -1955,7 +2378,8 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         if discoveryPolicy.connectionOwnership == .weatherRequest {
-            failWeatherRequest(.connectionDropped)
+            if discoveryPolicy.weatherRequestPending { failWeatherRequest(.connectionDropped) }
+            if discoveryPolicy.weatherUploadPending { failWeatherUpload(.connectionDropped) }
             discoveryPolicy.didDisconnect()
             return
         }
@@ -1970,6 +2394,7 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         if discoveryPolicy.weatherRequestPending { failWeatherRequest(.connectionDropped) }
+        if discoveryPolicy.weatherUploadPending { failWeatherUpload(.connectionDropped) }
         discoveryPolicy.didDisconnect()
         characteristics.removeAll()
         // The scope dies with the link: the device may come back in a new id
@@ -2073,6 +2498,7 @@ extension BLETransport: CBPeripheralDelegate {
         guard pendingServiceDiscovery <= 0 else { return }
         disarmDiscoveryWatchdog()  // discovery completed — the un-gated surface is ready (#302)
         if discoveryPolicy.weatherRequestPending { beginWeatherRequestReadIfReady() }
+        if discoveryPolicy.weatherUploadPending { beginWeatherUploadIfReady() }
         // Every service's characteristics are in hand — the un-gated surface is
         // ready. A pending `discover()` resolves here (its caller runs
         // `authenticate()` next, on the D2 row tap); an unsolicited background

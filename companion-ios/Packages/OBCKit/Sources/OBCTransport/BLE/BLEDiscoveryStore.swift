@@ -7,14 +7,27 @@ protocol BLEDiscoveryStore: Sendable {
     func armWeatherRestoration(until deadline: Date)
     func weatherRestorationDeadline() -> Date?
     func clearWeatherRestoration()
+    /// The upload leg's restoration intent (WX9): a pending direct connect that may relaunch the
+    /// app. Separate from the read intent because the two legs have different budgets and either
+    /// may be in flight when the process dies.
+    func armWeatherUploadRestoration(until deadline: Date)
+    func weatherUploadRestorationDeadline() -> Date?
+    func clearWeatherUploadRestoration()
+    /// The standing weather watch (WX9): survive relaunches, so a background wake re-arms the
+    /// weather-only scan without waiting for a foreground session.
+    func setWeatherWatchArmed(_ armed: Bool)
+    func weatherWatchArmed() -> Bool
 }
 
 /// CoreBluetooth's bond keys remain iOS-owned. This store remembers only the opaque peripheral UUID
-/// after an authenticated connection and the expiry of an in-flight one-shot restoration intent.
-/// Neither value is secret, and neither is any part of a weather request's payload.
+/// after an authenticated connection, the expiry of in-flight one-shot restoration intents, and
+/// whether the standing weather watch is armed. Nothing here is secret, and nothing is any part of
+/// a weather request's payload.
 struct UserDefaultsBLEDiscoveryStore: BLEDiscoveryStore, @unchecked Sendable {
     private static let peripheralKey = "obc.ble.authenticatedPeripheralID"
     private static let restorationDeadlineKey = "obc.ble.weatherRequestDeadline"
+    private static let uploadRestorationDeadlineKey = "obc.ble.weatherUploadDeadline"
+    private static let weatherWatchKey = "obc.ble.weatherWatchArmed"
 
     private let defaults: UserDefaults
 
@@ -44,5 +57,25 @@ struct UserDefaultsBLEDiscoveryStore: BLEDiscoveryStore, @unchecked Sendable {
 
     func clearWeatherRestoration() {
         defaults.removeObject(forKey: Self.restorationDeadlineKey)
+    }
+
+    func armWeatherUploadRestoration(until deadline: Date) {
+        defaults.set(deadline, forKey: Self.uploadRestorationDeadlineKey)
+    }
+
+    func weatherUploadRestorationDeadline() -> Date? {
+        defaults.object(forKey: Self.uploadRestorationDeadlineKey) as? Date
+    }
+
+    func clearWeatherUploadRestoration() {
+        defaults.removeObject(forKey: Self.uploadRestorationDeadlineKey)
+    }
+
+    func setWeatherWatchArmed(_ armed: Bool) {
+        defaults.set(armed, forKey: Self.weatherWatchKey)
+    }
+
+    func weatherWatchArmed() -> Bool {
+        defaults.bool(forKey: Self.weatherWatchKey)
     }
 }
