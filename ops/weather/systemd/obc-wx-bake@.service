@@ -79,6 +79,10 @@ ProtectClock=yes
 ProtectControlGroups=yes
 ProtectHostname=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Upstream weather lives on the public internet; the cloud metadata endpoint (169.254.169.254)
+# does not. Walling off link-local costs this service nothing and takes credential theft off the
+# table for the tar/bzip2/GRIB2/HDF5 parsers that chew on untrusted bytes all day.
+IPAddressDeny=link-local
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes

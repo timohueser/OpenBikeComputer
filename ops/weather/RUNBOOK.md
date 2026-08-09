@@ -91,6 +91,13 @@ reads over `Range`, and the manifest short-circuits on `ETag`.
 passes — a project without a deployed service must not carry a red check about it. There is **no
 secret** to add: the probe reads a public object.
 
+Add a second variable, `OBC_WX_EXPECT` = `dwd-rv,icon-eu` — the products that must be *listed*.
+Freshness alone cannot see a dead timer: when an upstream breaks, its product stays listed and goes
+visibly expired, but when a **timer** is disabled, renamed or never installed, nothing complains —
+the remaining products keep publishing a perfectly fresh manifest without it. Keep this list in
+step with the live rows of `adapters.conf` (so it grows when WX6 lands, and shrinks only when you
+retire an adapter on purpose — §7).
+
 **T9 — Once a month.** Check the Cloudflare R2 usage page and the VPS invoice against §6. Also
 glance at the Actions tab: GitHub disables scheduled workflows in a repository with 60 days of no
 activity, and this repository's alarm is a scheduled workflow.
@@ -202,6 +209,8 @@ infrastructure and alerts when:
 * the manifest itself is older than **30 min** (a healthy tick republishes it even when every
   upstream is unchanged — that is the heartbeat), or
 * any product is past its own `staleness_deadline` + **15 min** grace, or
+* a product named by `OBC_WX_EXPECT` is **not listed at all** (a dead timer, not a dead upstream —
+  see T8), or
 * the manifest is unfetchable/unparseable, or
 * the published set or the projected 48 h rolling footprint breaks the cost guards (§6).
 
@@ -209,14 +218,21 @@ The alert is **one GitHub issue** labelled `wx-freshness` — opened on the firs
 e-mails you), left alone while the outage lasts, then commented and closed automatically on the
 first good probe. No pager, no second notification, no manual cleanup.
 
+That one-notification promise depends on a baker rule worth knowing: **an outage never removes a
+product from the manifest.** A stalled product stays listed and goes visibly expired, so the probe
+keeps saying "stale" until the product genuinely recovers. (Dropping expired entries instead would
+make the manifest flicker the product present/absent, flapping this issue open and closed — and it
+would cost the product's own timer its upstream short-circuit, turning a provider outage into a
+re-download loop against the provider. `specs/OBCG_Spec.md` §10 carries the rule.)
+
 Run it by hand any time:
 
 ```sh
-python3 ops/weather/freshness_probe.py --url https://wx.openbikecomputer.com
+python3 ops/weather/freshness_probe.py --url https://wx.openbikecomputer.com --expect dwd-rv,icon-eu
 python3 ops/weather/freshness_probe.py --manifest ./manifest.json --now 2026-08-09T18:00:00Z
 ```
 
-Exit codes: `0` fresh, `1` stale/over budget, `2` unreachable.
+Exit codes: `0` fresh, `1` stale / missing / over budget, `2` unreachable.
 
 ### Drill it (WX15 gate, epic closeout)
 
@@ -302,9 +318,21 @@ sudo systemctl start 'obc-wx-bake@*.timer'
 # rollback: sudo cp /usr/local/bin/obc-wx-bake.prev /usr/local/bin/obc-wx-bake && sudo systemctl start …
 ```
 
-**Change a cadence / add an adapter.** Edit `adapters.conf`, re-run `install.sh`. Adding a WX6
-adapter is *only* that — no firmware, no app, no protocol release. Removing a row retires its
-timer; its product then expires out of the manifest on its own deadline.
+**Change a cadence / add an adapter.** Edit `adapters.conf`, re-run `install.sh`, and add the new
+id to the `OBC_WX_EXPECT` variable (**T8**). Adding a WX6 adapter is *only* that — no firmware, no
+app, no protocol release.
+
+**Retire an adapter (deliberately).** Removing a product is an operator act, because an outage
+never removes one — a stalled product stays listed and visibly expired, which is what keeps the
+alarm honest. So retirement is three steps, in this order:
+
+1. delete its row from `adapters.conf` and re-run `install.sh` (its timer is disabled and removed);
+2. remove its id from the `OBC_WX_EXPECT` variable, or the probe will now alert that it is missing;
+3. remove the entry itself: the surviving timers would otherwise carry it forward forever. Load the
+   environment as in §4 step 5 and delete the manifest —
+   `rclone deletefile obcwx:obc-wx/wx/v1/manifest.json` — then run one bake per remaining adapter.
+   Each rebakes from upstream within its own next tick anyway; the retired product's frame objects
+   age out on their own.
 
 **Rotate the R2 token.** Zero-downtime, because credentials are only read at process start:
 
@@ -326,9 +354,11 @@ risk. Wait for the next tick before intervening.
 
 | Symptom | What it means | Do |
 | :-- | :-- | :-- |
-| One adapter's unit fails, others fine | that upstream is broken/changed | nothing yet — its product expires honestly while the others stay fresh. That decoupling is why the timers are per-adapter |
+| One adapter's unit fails, others fine | that upstream is broken/changed | nothing yet — its product stays listed and expires honestly while the others stay fresh. That decoupling is why the timers are per-adapter |
+| `… carried past its staleness deadline … no longer verified` | a product has been stalled long enough to expire; it stays published so its expiry is visible, and its frames stop being proven fetchable | check that provider; nothing on the box to fix |
 | `rclone: … 403 / AccessDenied` | token wrong, expired, or scoped to another bucket | §7 rotate; re-check **T5** |
-| `… is not fetchable — refusing to swap the manifest in` | a published frame the new manifest still references is gone — almost always a too-aggressive lifecycle rule | check **T4**'s rule is ≥ 48 h; the previous manifest is untouched meanwhile |
+| `… is not fetchable — refusing to swap the manifest in` | a frame of a **still-usable** product is gone — almost always a too-aggressive lifecycle rule (expired products' frames are exempt, so this is never a dead product's fault) | check **T4**'s rule is ≥ 48 h; the previous manifest is untouched meanwhile |
+| The probe says a product is `MISSING` | not weather: its timer is gone (disabled, renamed, never installed) — an outage would have left it listed | `systemctl list-timers 'obc-wx-bake@*'`, then `adapters.conf` + re-run `install.sh` |
 | Cycle killed, `MemoryMax` in the journal | an adapter exceeded 768 MB | that is a bug in the adapter, not a tuning problem — file it; raise the cap in the unit template only with a measurement |
 | Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop 'obc-wx-bake@*.service'`, check `ps`, then start one by hand |
 | `published manifest is unreadable (…); rebaking everything` | the manifest object got corrupted | self-healing — the next tick rebakes it from scratch |

@@ -7,11 +7,17 @@ name: Weather freshness
 # the last objects and the device degrades honestly ("WEATHER UPDATE NEEDED", never "dry"), so
 # this is e-mail-grade, not a pager. GitHub's own notification on an opened issue is the e-mail.
 #
-# Two knobs, both repository-level, no secrets:
+# Three knobs, all repository-level variables, no secrets:
 #   vars.OBC_WX_BASE_URL   the public service origin (e.g. https://wx.openbikecomputer.com).
 #                          Unset ⇒ this workflow says "skipped" and passes, because a project
 #                          that has not deployed the service yet must not carry a red check
 #                          about it (the same contract as bake.yml's catalog guard).
+#   vars.OBC_WX_EXPECT     comma-separated product ids that must be *listed* (`dwd-rv,icon-eu`).
+#                          Freshness alone cannot see a dead timer: a product whose upstream broke
+#                          stays listed and goes expired, but a product whose timer was disabled,
+#                          renamed or never installed simply stops being republished by anyone —
+#                          and everything that remains looks perfectly healthy. Keep this in step
+#                          with ops/weather/adapters.conf.
 #   vars.OBC_WX_PROBE_ARGS optional extra freshness_probe.py arguments (e.g. a wider grace while
 #                          an upstream is known-broken). Normally empty.
 #
@@ -54,6 +60,7 @@ jobs:
         id: probe
         env:
           BASE_URL: ${{ inputs.url || vars.OBC_WX_BASE_URL }}
+          EXPECT: ${{ vars.OBC_WX_EXPECT }}
           PROBE_ARGS: ${{ inputs.probe_args || vars.OBC_WX_PROBE_ARGS }}
         run: |
           # +e deliberately: the runner's default shell is `bash -eo pipefail`, and a stale probe
@@ -65,9 +72,11 @@ jobs:
             echo "state=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          expect=()
+          [ -n "$EXPECT" ] && expect=(--expect "$EXPECT")
           # Word-splitting PROBE_ARGS is deliberate: it is a maintainer-typed argument list.
           # shellcheck disable=SC2086
-          python3 ops/weather/freshness_probe.py --url "$BASE_URL" $PROBE_ARGS | tee probe.txt
+          python3 ops/weather/freshness_probe.py --url "$BASE_URL" "${expect[@]}" $PROBE_ARGS | tee probe.txt
           code=${PIPESTATUS[0]}
           echo "code=$code" >> "$GITHUB_OUTPUT"
           case "$code" in
