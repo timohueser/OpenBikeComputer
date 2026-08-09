@@ -50,18 +50,50 @@ prebuilt binary but will thrash `cargo build`. Nothing else ever runs on this ma
 `install.sh` enables `unattended-upgrades` for you if it is not already on.
 
 **T3 — Create the R2 bucket.** Cloudflare dashboard → R2 → *Create bucket* → name **`obc-wx`**,
-location hint EU, storage class **Standard** (*not* Infrequent Access: weather expires in ~48 h and
-IA bills a minimum storage duration — WX1's frozen decision). It must be a **separate bucket** from
-map hosting so lifecycle rules can never collide.
+storage class **Standard** (*not* Infrequent Access: weather expires within a day and IA bills a
+minimum storage duration — WX1's frozen decision). It must be a **separate bucket** from map
+hosting so lifecycle rules can never collide.
+
+The dialog's *Location* control offers two things that look alike and are not interchangeable:
+
+* an **automatic location hint** — *EU* here — is a placement *preference*. The bucket still lives
+  on the account's default S3 endpoint, `https://<account>.r2.cloudflarestorage.com`. Prefer this:
+  it is what the baker derives from the account id, so nothing else needs configuring.
+* a **jurisdiction** (*European Union*, *FedRAMP*) is a data-residency *guarantee*, and it moves
+  the bucket onto its own endpoint — `https://<account>.eu.r2.cloudflarestorage.com`. A
+  jurisdiction bucket is simply not visible from the default endpoint, so a correct, correctly
+  scoped token gets **403 AccessDenied** on every object. That is exactly how the first real
+  deploy failed (2026-08-09).
+
+A jurisdiction bucket is fine to keep — it needs one extra line in `r2.env` naming the endpoint
+(**T5**, §3), and nothing else in the service changes.
 
 **T4 — Lifecycle rule.** Bucket → *Settings* → *Object lifecycle rules* → add a rule:
-prefix `wx/`, **delete objects 2 days after upload** (48 h). This is the only thing keeping storage
+prefix `wx/`, **delete objects 1 day after upload** (24 h). This is the only thing keeping storage
 bounded — nothing in the baker ever deletes an object. Verify it for real in §4.
+
+24 h is the default (decided 2026-08-09) because nothing outlives it by contract: the longest
+staleness deadline any product carries is `gfs`'s 16 h — `dwd-rv` and `us` expire in 30 min,
+`icon-eu` in 10 h — so a frame older than a day is already unusable. It is also what keeps the cost
+guard honest: with all four products live, a 48 h window projects ≈ 1 GB and trips the probe's
+rolling-window gate on day one (§6). Do not go below 24 h — see §8's "not fetchable" row.
 
 **T5 — Scoped API token.** R2 → *Manage API tokens* → *Create API token*:
 permission **Object Read & Write**, **specify bucket = `obc-wx` only** (never "all buckets"), no
 TTL or a long one you will remember to rotate. Copy the **Access Key ID**, **Secret Access Key**
 and your **Account ID**. Paste them into `/etc/obc-wx/r2.env` on the box (§3), nowhere else.
+
+If **T3** left you with a **jurisdiction** bucket, add its endpoint to that same file — the account
+id alone cannot tell the baker where the bucket lives:
+
+```sh
+OBC_WX_R2_ENDPOINT=https://<account>.eu.r2.cloudflarestorage.com
+```
+
+The bucket's own *Settings* page shows the host to use as its **S3 API** address; copy the origin
+from there rather than assembling it from memory. With a plain location hint, leave the line out —
+the derived `https://<account>.r2.cloudflarestorage.com` is correct. The by-hand `rclone` recipe in
+§4 step 5 — and everything that refers back to it — reads the same value out of `r2.env`.
 
 **T6 — Public read + a hostname.** R2 bucket → *Settings* → *Public access*: connect a **custom
 domain** (e.g. `wx.openbikecomputer.com`) — that is the origin the phone and the simulator fetch
@@ -151,13 +183,20 @@ or the binary. It:
 Then fill in the credentials from **T5** and take the first real publish by hand:
 
 ```sh
-sudo nano /etc/obc-wx/r2.env          # OBC_WX_R2_ACCOUNT_ID / ACCESS_KEY_ID / SECRET_ACCESS_KEY
+sudo nano /etc/obc-wx/r2.env          # OBC_WX_R2_ACCOUNT_ID / ACCESS_KEY_ID / SECRET_ACCESS_KEY,
+                                      # plus OBC_WX_R2_ENDPOINT for a jurisdiction bucket (T3/T5)
 sudo systemctl start obc-wx-bake@dwd-rv.service
 sudo journalctl -u obc-wx-bake@dwd-rv.service -n 60 --no-pager
 ```
 
 A healthy first publish looks like `publishing to r2 bucket obc-wx via https://<account>.r2…`,
 then `dwd-rv: baked 9 frames`, then `published 10 objects / … bytes; …ms`. Two seconds is normal.
+
+If instead every object comes back **403 AccessDenied** with a token you just minted, read the
+endpoint in that first line before suspecting the token: a jurisdiction bucket answers only at
+`https://<account>.eu.r2.cloudflarestorage.com`, and uncommenting `OBC_WX_R2_ENDPOINT` in `r2.env`
+is the whole fix (**T3**/**T5**). A wrong or mis-scoped token gives the same 403, so check the
+cheap thing first.
 
 ## 4. Verify the deployment (do all six)
 
@@ -172,21 +211,21 @@ then `dwd-rv: baked 9 frames`, then `published 10 objects / … bytes; …ms`. T
 4. **The probe is green.**
    `python3 ops/weather/freshness_probe.py --url https://wx.openbikecomputer.com`
 5. **The lifecycle rule is real, not assumed.** Drop a throwaway object under the same prefix and
-   check in two days that R2 removed it. There is no config file on the box: the baker builds its
+   check the next day that R2 removed it. There is no config file on the box: the baker builds its
    rclone remote entirely from the environment, so do the same by hand (as root — the env file is
    root-only — and close the shell afterwards):
    ```sh
    set -a; . /etc/obc-wx/r2.env; set +a
    export RCLONE_CONFIG_OBCWX_TYPE=s3 RCLONE_CONFIG_OBCWX_PROVIDER=Cloudflare \
           RCLONE_CONFIG_OBCWX_REGION=auto \
-          RCLONE_CONFIG_OBCWX_ENDPOINT="https://$OBC_WX_R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+          RCLONE_CONFIG_OBCWX_ENDPOINT="${OBC_WX_R2_ENDPOINT:-https://$OBC_WX_R2_ACCOUNT_ID.r2.cloudflarestorage.com}" \
           RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID="$OBC_WX_R2_ACCESS_KEY_ID" \
           RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY="$OBC_WX_R2_SECRET_ACCESS_KEY"
 
    date -u; echo lifecycle probe | rclone rcat obcwx:obc-wx/wx/v1/_lifecycle-probe.txt
    rclone lsl obcwx:obc-wx/wx/v1/_lifecycle-probe.txt          # it exists now
    ```
-   Set a reminder for ~50 h later and run the `lsl` again: it must report *not found*. Until you
+   Set a reminder for ~26 h later and run the `lsl` again: it must report *not found*. Until you
    have seen that, the rule is unverified and storage is unbounded. (An S3-API `HEAD` may also show
    an `x-amz-expiration` header the same day — a useful hint, not the proof.)
 6. **The token cannot touch the map buckets.** With the same environment loaded, a read of the maps
@@ -267,7 +306,7 @@ Projected steady state, today's two adapters (RV 288 runs/day, ICON 4 runs/day):
 | Line | Amount | Against |
 | :-- | --: | :-- |
 | New objects/day | ≈ 250 MB | — |
-| **R2 storage** (48 h rolling) | ≈ 0.5 GB | 10 GB free → **$0** |
+| **R2 storage** (24 h rolling, T4) | ≈ 0.25 GB | 10 GB free → **$0** |
 | **R2 class A** (writes: frames + one manifest per tick) | ≈ 92 k/month | 1 M free → **$0** |
 | **R2 class B** (the baker's own head/get checks + rider reads) | ≈ 0.3 M/month | 10 M free → **$0** |
 | **R2 egress** | any | free on R2 → **$0** |
@@ -283,15 +322,14 @@ rewrites its eight HRRR forward frames too; that is exactly why its cadence is t
 15-minute step and not MRMS's 2-minute publication rate, which would cost 7.5x the writes to shave
 at most 13 minutes off the radar frame's age.
 
-**Set the R2 lifecycle rule to 24 h before WX6 goes live — it is a prerequisite, not an
-escalation.** `freshness_probe.py` models the rolling bucket as *current set x runs/day x 2 days*,
-i.e. a 48 h lifecycle, and with WX6 that projection is ≈ 1.0 GB — over WX1's 1 GB rolling-window
-gate, so the probe alerts on day one. Nothing is lost by halving the window: the longest staleness
-deadline any product carries is `gfs`'s 16 h (`dwd-rv` and `us` expire in 30 min, `icon-eu` in
-10 h), so an object older than 24 h is unusable by contract. With a 24 h lifecycle the real
-footprint is ≈ 0.5 GB; either deploy that and halve the probe's number when reading it, or raise
-`vars.OBC_WX_PROBE_ARGS` (`--max-rolling-bytes`) deliberately toward R2's actual 10 GB free tier.
-Do not leave a gate firing that everyone learns to ignore.
+**The 24 h lifecycle rule (T4) is a prerequisite of WX6 going live, not an escalation** — and the
+probe's number is deliberately conservative about it. `freshness_probe.py` models the rolling
+bucket as *current set x runs/day x 2 days*, i.e. it still assumes a 48 h window, so it reports
+roughly **twice** the footprint a 24 h bucket actually holds. With all four products it projects
+≈ 1.0 GB against WX1's 1 GB gate where the truth is ≈ 0.5 GB. So either halve its number when you
+read it, or raise `vars.OBC_WX_PROBE_ARGS` (`--max-rolling-bytes 2000000000`) — the same 1 GB gate
+expressed in the probe's 48 h units — and only go beyond that deliberately, toward R2's actual
+10 GB free tier. Do not leave a gate firing that everyone learns to ignore.
 
 Record the **actual** metered numbers here after the first full month (an epic closeout item):
 
@@ -299,9 +337,9 @@ Record the **actual** metered numbers here after the first full month (an epic c
 first metered month: ____________  VPS €____  R2 $____  total €____
 ```
 
-**If the budget guard fires**, in order of preference: (a) shorten the R2 lifecycle rule from 48 h
-to 24 h if it is somehow still at 48 h — nothing usable is older than 16 h anyway (the `gfs`
-staleness deadline, the longest in the table), and it halves storage; (b) drop the RV cadence
+**If the budget guard fires**, in order of preference: (a) confirm the R2 lifecycle rule really is
+24 h and not the old 48 h — nothing usable is older than 16 h anyway (the `gfs` staleness deadline,
+the longest in the table), and halving the window halves storage; (b) drop the RV cadence
 in `adapters.conf` from `*:0/5` to `*:0/10` (costs ≤ 5 min of radar freshness), or the `us` cadence
 from `*:0/15` to `*:0/30` (costs ≤ 15 min of radar-frame age, no forecast frames); (c) check that a
 product did not accidentally grow — a full-domain wet RV frame is tens of kB, a *hundreds*-of-kB
@@ -373,8 +411,8 @@ risk. Wait for the next tick before intervening.
 | :-- | :-- | :-- |
 | One adapter's unit fails, others fine | that upstream is broken/changed | nothing yet — its product stays listed and expires honestly while the others stay fresh. That decoupling is why the timers are per-adapter |
 | `… carried past its staleness deadline … no longer verified` | a product has been stalled long enough to expire; it stays published so its expiry is visible, and its frames stop being proven fetchable | check that provider; nothing on the box to fix |
-| `rclone: … 403 / AccessDenied` | token wrong, expired, or scoped to another bucket | §7 rotate; re-check **T5** |
-| `… is not fetchable — refusing to swap the manifest in` | a frame of a **still-usable** product is gone — almost always a too-aggressive lifecycle rule (expired products' frames are exempt, so this is never a dead product's fault) | check **T4**'s rule is ≥ 48 h; the previous manifest is untouched meanwhile |
+| `rclone: … 403 / AccessDenied` | token wrong, expired, or scoped to another bucket — **or** the bucket has a jurisdiction and the baker is talking to the default endpoint | read the endpoint the journal prints: if the bucket is EU-jurisdiction, set `OBC_WX_R2_ENDPOINT` (**T3**/**T5**). Otherwise §7 rotate; re-check **T5** |
+| `… is not fetchable — refusing to swap the manifest in` | a frame of a **still-usable** product is gone — almost always a too-aggressive lifecycle rule (expired products' frames are exempt, so this is never a dead product's fault) | check **T4**'s rule is not shorter than 24 h — it has to outlive `gfs`'s 16 h deadline; the previous manifest is untouched meanwhile |
 | The probe says a product is `MISSING` | not weather: its timer is gone (disabled, renamed, never installed) — an outage would have left it listed | `systemctl list-timers 'obc-wx-bake@*'`, then `adapters.conf` + re-run `install.sh` |
 | Cycle killed, `MemoryMax` in the journal | an adapter exceeded 768 MB | that is a bug in the adapter, not a tuning problem — file it; raise the cap in the unit template only with a measurement |
 | Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop 'obc-wx-bake@*.service'`, check `ps`, then start one by hand |
@@ -405,7 +443,9 @@ nothing on the box worth keeping except the contents of `r2.env`.
 4. `sudo ops/weather/install.sh --from-source develop` (5–10 min: the cargo build dominates; use
    `--binary` with a prebuilt file to make it ~1 min).
 5. Paste the R2 credentials into `/etc/obc-wx/r2.env` — the **only** secret, and the only thing
-   worth keeping in your password manager (5 min including finding them).
+   worth keeping in your password manager (5 min including finding them). Keep `OBC_WX_R2_ENDPOINT`
+   there too if the bucket has a jurisdiction (**T5**); it is not a secret, but forgetting it turns
+   the rebuild into a wall of 403s.
 6. `systemctl start obc-wx-bake@dwd-rv.service`, read the journal (1 min).
 7. Walk §4's six checks (5 min).
 8. Point DNS at the new box only if you moved the hostname — normally you did not: the public

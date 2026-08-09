@@ -136,7 +136,8 @@ impl ObjectStore for DirStore {
 /// OBC_WX_R2_BUCKET            bucket name (default obc-wx)
 /// OBC_WX_R2_ACCESS_KEY_ID     R2 API token id
 /// OBC_WX_R2_SECRET_ACCESS_KEY
-/// OBC_WX_R2_ENDPOINT          optional, overrides the derived endpoint (an S3 test double)
+/// OBC_WX_R2_ENDPOINT          optional, overrides the derived endpoint — a jurisdiction bucket
+///                             (https://<account>.eu.r2.cloudflarestorage.com), or a test double
 /// ```
 pub struct RcloneStore {
     bucket: String,

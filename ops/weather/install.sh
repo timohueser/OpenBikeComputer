@@ -180,6 +180,12 @@ OBC_WX_R2_ACCOUNT_ID=
 OBC_WX_R2_BUCKET=obc-wx
 OBC_WX_R2_ACCESS_KEY_ID=
 OBC_WX_R2_SECRET_ACCESS_KEY=
+
+# Only for a bucket created with a *jurisdiction* (European Union / FedRAMP) rather than a plain
+# location hint: those live on their own S3 endpoint, and the endpoint the account id derives
+# (https://<account>.r2.cloudflarestorage.com) cannot see them — every object comes back 403
+# AccessDenied with a perfectly valid token. Uncomment and paste the bucket's own S3 API host:
+#OBC_WX_R2_ENDPOINT=https://<account>.eu.r2.cloudflarestorage.com
 EOF
     )
     chown root:root "$ENV_FILE"; chmod 0600 "$ENV_FILE"
