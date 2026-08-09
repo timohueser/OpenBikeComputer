@@ -289,6 +289,7 @@ fn file_name(path: &Path) -> String {
 
 /// Everything a frame draws its map from: the scene (a mounted set when present), the core reader
 /// for POI/hours, and the active route.
+#[derive(Clone, Copy)]
 pub struct Scene<'a, 'm, 'd> {
     pub set: Option<&'a MountedSet<'m>>,
     pub reader: &'a obc_reader::Reader<'d>,
@@ -303,6 +304,7 @@ pub fn render_frame<D, F>(
     scratch: &mut obc_render::RenderScratch,
     target: &mut D,
     scene: Scene<'_, '_, '_>,
+    rain: Option<&mut dyn obc_render::RainOverlaySource>,
     (w, h): (f32, f32),
     color_fn: F,
 ) -> RenderStats
@@ -311,9 +313,45 @@ where
     F: Fn(u16) -> D::Color,
 {
     let Scene { set, reader, route } = scene;
-    match set {
-        Some(set) => app.render_scene_frame(Some(scratch), target, set, reader, route, w, h, color_fn),
-        None => app.render_frame(Some(scratch), target, reader, route, w, h, color_fn),
+    // A real microsecond clock so the returned stats carry the per-stage map timings (including
+    // `rain_us`, the WX10 overlay's own wall time) — the panel and the headless log both read them.
+    let clock = StdClock(std::time::Instant::now());
+    let stats = match set {
+        Some(set) => app.render_scene_map_rain_timed(
+            Some(scratch),
+            target,
+            Some(set),
+            Some(reader),
+            route,
+            rain,
+            w,
+            h,
+            &color_fn,
+            &clock,
+        ),
+        None => app.render_scene_map_rain_timed(
+            Some(scratch),
+            target,
+            Some(reader),
+            Some(reader),
+            route,
+            rain,
+            w,
+            h,
+            &color_fn,
+            &clock,
+        ),
+    };
+    app.render_overlay(target, w, h, &color_fn);
+    stats
+}
+
+/// Microsecond [`obc_render::Clock`] over a host `Instant` — the sim's stage-timing source.
+struct StdClock(std::time::Instant);
+
+impl obc_render::Clock for StdClock {
+    fn now_us(&self) -> u64 {
+        self.0.elapsed().as_micros() as u64
     }
 }
 
@@ -552,7 +590,7 @@ mod tests {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         let set = map.set();
         let scene = Scene { set, reader: &reader, route: route.as_ref() };
-        render_frame(&mut app, &mut scratch, &mut fb, scene, (w as f32, h as f32), |c| crate::color_of(c, true));
+        render_frame(&mut app, &mut scratch, &mut fb, scene, None, (w as f32, h as f32), |c| crate::color_of(c, true));
         fb.as_rgb888().to_vec()
     }
 
