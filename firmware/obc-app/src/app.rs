@@ -481,6 +481,12 @@ pub enum ClockTrust {
     Ble,
 }
 
+/// How stale the last GPS fix may be (map-plane ms) and still serve in the weather request context
+/// as "where the rider is" (WX8, #1193): a 30-second-old fix is still the rider to within metres,
+/// while a tunnel or indoor stop past that reads as *no position* — the phone then fetches by its
+/// own location, which is the spec's cold-start answer.
+pub const WEATHER_FIX_FRESH_MS: u32 = 30_000;
+
 pub struct App {
     /// The camera / orientation / last-fix state — public so the host's mouse pan/zoom and control
     /// panel can read and adjust it directly.
@@ -2089,6 +2095,70 @@ impl App {
     pub fn wall_unix_now(&self) -> u32 {
         let local = self.wall_clock.unix_now(self.ui.now_ms);
         (local as i64 - self.settings.utc_offset_min as i64 * 60) as u32
+    }
+
+    /// The app-side half of the §11.4 weather request context (WX8, #1193), distilled to the
+    /// [`WeatherSnapshot`](crate::ble::WeatherSnapshot) the host's weather plane reads each pass —
+    /// the reverse direction of [`set_ble_status`](App::set_ble_status), and like it free of any
+    /// wire type.
+    ///
+    /// Honesty rules (the spec's flags-not-sentinels discipline):
+    /// - **position** is served only while the last fix is *fresh* (≤ [`WEATHER_FIX_FRESH_MS`])
+    ///   **and** the wall clock was established from a real source this boot — a fix the app can't
+    ///   date has no `fix_utc` to give, and the spec guards all three fields with one bit. The
+    ///   fix's UTC is the wall clock read back by the fix's age, exact to the second at the 1 Hz
+    ///   cadence the receiver runs at.
+    /// - **bearing** is the GPS course only while actually *moving* (≥ 1 m/s): a stationary
+    ///   receiver's course is noise, not a travel bearing the device believes. The compass is
+    ///   deliberately not substituted — it says where the *device* points, not where the rider
+    ///   travels.
+    /// - **route id** is the active route's durable object id — the id the phone's route list
+    ///   already knows — and absent for a route that has none resident.
+    pub fn weather_snapshot(&self) -> crate::ble::WeatherSnapshot {
+        let now_utc = if self.clock_trusted() { Some(self.wall_unix_now()) } else { None };
+        // The fresh fix + its age on the map-plane clock (the same timebase `last_fix_ms` stamps).
+        let fresh = match (self.state.user_fix, self.ride.last_fix_ms) {
+            (Some(fix), Some(at_ms)) => {
+                let age_ms = self.ui.now_ms.wrapping_sub(at_ms);
+                if age_ms <= WEATHER_FIX_FRESH_MS {
+                    Some((fix, age_ms))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let position = match (fresh, now_utc) {
+            (Some((fix, age_ms)), Some(now)) => Some(crate::ble::WeatherFix {
+                lat_udeg: fix.lat,
+                lon_udeg: fix.lon,
+                fix_utc: now as i64 - (age_ms / 1000) as i64,
+            }),
+            _ => None,
+        };
+        let speed_mps = fresh.and_then(|(fix, _)| fix.speed_mps);
+        let moving = speed_mps.is_some_and(|s| s >= 1.0);
+        let bearing_deg = if moving {
+            fresh.and_then(|(fix, _)| fix.course).map(|c| {
+                // Wrap into `0..360` with core-only float ops (`rem_euclid` needs libm here).
+                let mut deg = c % 360.0;
+                if deg < 0.0 {
+                    deg += 360.0;
+                }
+                deg as u16 % 360
+            })
+        } else {
+            None
+        };
+        let speed_deci_ms = speed_mps.map(|s| (s.max(0.0) * 10.0).min(u16::MAX as f32) as u16);
+        crate::ble::WeatherSnapshot {
+            ride_active: self.activity.is_tracking(),
+            position,
+            bearing_deg,
+            speed_deci_ms,
+            route_id: self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i)),
+            now_utc,
+        }
     }
 
     /// The ride totals + wall-clock anchor for the Finish-time ride-object save, read in the same

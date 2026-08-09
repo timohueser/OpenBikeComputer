@@ -150,10 +150,8 @@ static WEATHER_REQUEST_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new()
 static WEATHER_REQUEST_BUDGET: BlockingMutex<CriticalSectionRawMutex, Cell<Option<obc_ble::WeatherRequestBudget>>> =
     BlockingMutex::new(Cell::new(None));
 
-// The arming seam. Today only the `ble-weather-request` harness calls it; the production
-// lifecycle is the second caller, so it stays compiled (and type-checked) in every build rather
-// than being feature-gated out and rotting.
-#[cfg_attr(not(feature = "ble-weather-request"), allow(dead_code))]
+// The arming seam: the production due scheduler ([`super::weather`]) arms it on every raise, and
+// the `ble-weather-request` harness once at boot.
 pub(crate) fn arm_weather_request(window: Duration) {
     WEATHER_REQUEST_BUDGET.lock(|budget| {
         budget.set(Some(obc_ble::WeatherRequestBudget::new(Instant::now().as_ticks(), window.as_ticks())))

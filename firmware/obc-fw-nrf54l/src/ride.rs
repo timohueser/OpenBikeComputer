@@ -955,6 +955,11 @@ pub(crate) async fn run_app(
             // this loop never blocks on the radio winding down, so no wake source here can go dead
             // with the radio off (#438's lesson).
             crate::ble::set_radio_enabled(app.settings().ble_enabled);
+            // The weather due plane's inputs (WX8, #1193): the app-side half of the §11.4 request
+            // context — ride state, fresh fix + its UTC, bearing/speed, active route id, trusted
+            // "now". One small `Cell` store per pass; the scheduler task wakes only on the edges
+            // it keys on (ride state, route), never at the fix cadence.
+            crate::ble::set_weather_inputs(app.weather_snapshot());
         }
 
         // ── Map-transfer card (issue #927): the on-glass half of a write that runs for minutes ──
