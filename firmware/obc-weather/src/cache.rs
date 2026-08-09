@@ -11,6 +11,13 @@ use crate::{checked_add, checked_mul, Error, FormatError, WeatherReader};
 /// Four adjacent entries fit in 48 bytes and match the validated reader's directory window.
 pub const DIRECTORY_WINDOW_ENTRIES: usize = 4;
 
+/// The hard ceiling on how long **any** rain frame counts as current past its own timestamp, in
+/// seconds (see [`WeatherReader::current_frame`]; a product with a finer measured cadence is
+/// bounded by that instead). 15 minutes — the radar-tier cadence: a frame older than this is
+/// weather history, whatever the table's spacing claims, and a single-frame product (no spacing
+/// to measure) gets exactly this.
+pub const FRAME_CURRENT_CAP_S: i64 = 900;
+
 const EMPTY_FRAME: FrameDescriptor = FrameDescriptor {
     valid_at: 0,
     width: 0,
@@ -136,6 +143,47 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
     ) -> Result<Option<(usize, FrameDescriptor)>, Error> {
         let Some((index, frame)) = self.frame_at_or_before(timestamp, cache)? else { return Ok(None) };
         Ok((frame.valid_at == timestamp).then_some((index, frame)))
+    }
+
+    /// The frame the rain **renderer** may draw as *current* at `now`, or `None` when nothing may
+    /// be (WX10). This is the one freshness gate between the store and the overlay — expired or
+    /// not-yet-valid rain never renders as current, and the renderer itself never sees timestamps.
+    ///
+    /// **Every** frame — first, mid-table, last — is current only inside
+    /// `[valid_at, valid_at + cap]`, intersected with its successor's start, where
+    /// `cap = min(smallest inter-frame spacing in the table, FRAME_CURRENT_CAP_S)`. Bounding by
+    /// the *minimum* spacing (never a gap-inflated last-two spacing) and applying it to every
+    /// frame is what makes the gate fail **closed** against irregular tables: a bake gap in the
+    /// middle of the table goes dark once its preceding frame ages past the product's real
+    /// cadence, and a gap before the last frame cannot extend that frame's life (adversarial
+    /// review of PR #1213 demonstrated both against the earlier last-frame-only rule). A
+    /// single-frame product has no spacing to measure and gets [`FRAME_CURRENT_CAP_S`] outright.
+    /// No synthetic validity is invented beyond the cap; whether missing rain may be *claimed*
+    /// dry is decision logic (WX12), not rendering.
+    ///
+    /// Cost: one descriptor sweep (`frame_count` 32-byte reads, contiguous — a DWD table is one
+    /// SD block) on top of the binary search, once per adapter construction.
+    pub fn current_frame(&self, now: i64, cache: &mut WeatherCache) -> Result<Option<(usize, FrameDescriptor)>, Error> {
+        if now < self.header.valid_from || now > self.header.valid_until {
+            return Ok(None);
+        }
+        let Some((index, frame)) = self.frame_at_or_before(now, cache)? else {
+            return Ok(None);
+        };
+        let mut cap = FRAME_CURRENT_CAP_S;
+        if self.header.frame_count > 1 {
+            let mut previous = self.frame(0)?.valid_at;
+            for i in 1..self.header.frame_count as usize {
+                let at = self.frame(i)?.valid_at;
+                // Validated strictly increasing, so every spacing is positive.
+                cap = cap.min(at.saturating_sub(previous));
+                previous = at;
+            }
+        }
+        if now.saturating_sub(frame.valid_at) > cap {
+            return Ok(None);
+        }
+        Ok(Some((index, frame)))
     }
 
     /// Find the newest genuine frame at or before `timestamp`; no synthetic interval is invented.
@@ -476,6 +524,34 @@ mod tests {
         assert_eq!((north_east.row, north_east.column), (frame.height - 1, frame.width - 1));
         assert!(reader.cell_index(frame, header.north_lat_udeg, header.west_lon_udeg).unwrap().is_none());
         assert!(reader.cell_index(frame, header.south_lat_udeg, header.east_lon_udeg).unwrap().is_none());
+    }
+
+    /// WX10's freshness gate: the DWD fixture carries 9 frames at a 900 s cadence starting at
+    /// `valid_from`. Exactly the current frame renders; before the bundle, past its last frame's
+    /// cadence, or past `valid_until` nothing does — stale rain never renders as current.
+    #[test]
+    fn current_frame_never_serves_stale_or_future_rain() {
+        let reader = WeatherReader::open(&SliceSource(DWD)).unwrap();
+        let mut cache = WeatherCache::new();
+        let header = reader.header();
+        let first = reader.frame(0).unwrap().valid_at;
+        let last = reader.frame(header.frame_count as usize - 1).unwrap().valid_at;
+        let cadence = last - reader.frame(header.frame_count as usize - 2).unwrap().valid_at;
+
+        // Before the bundle window / before the first frame: nothing is current.
+        assert_eq!(reader.current_frame(header.valid_from - 1, &mut cache).unwrap(), None);
+        // At and between frames: the newest at-or-before frame.
+        let (i0, f0) = reader.current_frame(first, &mut cache).unwrap().unwrap();
+        assert_eq!((i0, f0.valid_at), (0, first));
+        let (i1, f1) = reader.current_frame(first + 901, &mut cache).unwrap().unwrap();
+        assert_eq!((i1, f1.valid_at), (1, first + 900));
+        // The last frame stays current for exactly its measured cadence…
+        let (il, fl) = reader.current_frame(last + cadence, &mut cache).unwrap().unwrap();
+        assert_eq!((il, fl.valid_at), (header.frame_count as usize - 1, last));
+        // …and not one second longer.
+        assert_eq!(reader.current_frame(last + cadence + 1, &mut cache).unwrap(), None);
+        // Past the bundle's own validity nothing renders, whatever the frames say.
+        assert_eq!(reader.current_frame(header.valid_until + 1, &mut cache).unwrap(), None);
     }
 
     #[test]

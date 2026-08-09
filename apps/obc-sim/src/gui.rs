@@ -165,6 +165,9 @@ struct SimGui {
     /// for the duration of a render call and keeps nothing across frames). Boxed so it never rides
     /// this struct's moves through the eframe setup.
     scratch: Box<obc_render::RenderScratch>,
+    /// `--weather` (WX10): the loaded weather store, leased to every map frame as the production
+    /// rain-overlay adapter. `None` (no flag / no valid slot) renders byte-identical rain-free maps.
+    weather: Option<crate::weather_store::SimWeather>,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -330,9 +333,19 @@ impl SimGui {
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
         let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Forest);
+        // `--weather` (WX10): a store root or a `demo[:scenario]` bundle over the map's bbox.
+        let map_bbox = {
+            let b = map.reader().bbox;
+            (b.min_lon, b.min_lat, b.max_lon, b.max_lat)
+        };
+        let weather = args
+            .weather
+            .as_ref()
+            .and_then(|arg| crate::weather_store::SimWeather::from_arg(arg, args.weather_now, map_bbox));
         let mut gui = SimGui {
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
+            weather,
             store,
             trip_store,
             ride_store,
@@ -584,14 +597,21 @@ impl SimGui {
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
         let set = self.map.set();
         let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
-        let mut stats = crate::map_set::render_frame(
-            &mut self.app,
-            &mut self.scratch,
-            &mut fbdev,
-            scene,
-            (dev_w as f32, dev_h as f32),
-            |c| Rgb565::from(RawU16::new(c)),
-        );
+        // The rain-overlay lease (WX10): constructed per frame from the loaded weather store so
+        // the GUI exercises exactly the device's adapter → hook path; no store ⇒ `None`.
+        let (app, scratch, weather) = (&mut self.app, &mut *self.scratch, self.weather.as_mut());
+        let render = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
+                      app: &mut App,
+                      scratch: &mut obc_render::RenderScratch,
+                      fbdev: &mut FbDevice64<'_>| {
+            crate::map_set::render_frame(app, scratch, fbdev, scene, rain, (dev_w as f32, dev_h as f32), |c| {
+                Rgb565::from(RawU16::new(c))
+            })
+        };
+        let mut stats = match weather {
+            Some(weather) => weather.lease(|rain| render(rain, app, scratch, &mut fbdev)),
+            None => render(None, app, scratch, &mut fbdev),
+        };
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // Drain the shared dirty signal for the stats readout (the sim always redraws, so this
