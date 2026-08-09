@@ -1,5 +1,6 @@
 [package]
 name = "obc-sim"
+default-run = "obc-sim"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
