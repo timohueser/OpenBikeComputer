@@ -3,7 +3,7 @@
 //! Deterministic (fixed xorshift seed) so a failure reproduces exactly. This is the WX5/WX6
 //! "every decode is bounds-checked and fuzzed" gate over every adapter's full decode path — tar
 //! + ODIM HDF5 for DWD RV, bzip2 + GRIB2/CCSDS for ICON-EU, gzip + GRIB2/PNG for MRMS, and the
-//! byte-range GRIB2 complex-packing paths of HRRR and GFS.
+//!   byte-range GRIB2 complex-packing paths of HRRR and GFS.
 
 use std::path::PathBuf;
 

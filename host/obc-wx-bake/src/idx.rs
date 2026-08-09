@@ -20,8 +20,13 @@ pub struct ByteRange {
 }
 
 impl ByteRange {
+    /// Byte count of the range. `resolve` never produces an empty one.
     pub fn len(self) -> u64 {
         self.end_inclusive.saturating_sub(self.start) + 1
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.end_inclusive < self.start
     }
 }
 

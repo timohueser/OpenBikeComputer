@@ -59,7 +59,7 @@ impl ExpectedGrib {
     /// Is `value` one of this source's documented no-data sentinels? NaN is always no-data: a
     /// bitmap-masked or otherwise absent cell must never decode as dry weather.
     pub fn is_missing(&self, value: f32) -> bool {
-        value.is_nan() || self.missing_sentinels.iter().any(|sentinel| *sentinel == value)
+        value.is_nan() || self.missing_sentinels.contains(&value)
     }
 }
 
