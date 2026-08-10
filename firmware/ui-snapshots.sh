@@ -412,14 +412,20 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
 # Rain overlay (WX10, epic #1185): the deterministic `--weather demo` scenarios over the map's own
-# bbox, through the production adapter -> renderer path. Three visually distinct scenes -- scattered
-# showers (dither-as-transparency), a frontal edge (rendered heading-up so the rotated fixed-point
-# walk is pinned too), and a violet storm core (the high-coverage end; roads/route stay above the
-# rain). Byte-stable: the demo bundle, the Bayer matrix and the sampler are all deterministic --
-# but the frames move whenever `RAIN_SAMPLING` does (bilinear since #1250).
-"$SIM" "$MAP" --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-scattered.png"
-"$SIM" "$MAP" --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-frontal-heading.png"
-"$SIM" "$MAP" --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-storm.png"
+# bbox, through the production adapter -> renderer path, on the one screen the raster belongs to --
+# the WX11 rain map ("$WXRAIN" walks Home -> Menu -> Weather -> RAIN MAP). Three visually distinct
+# scenes -- scattered showers (dither-as-transparency), a hard frontal edge (nearest-neighbour, no
+# smoothing; rendered heading-up so the rotated fixed-point walk is pinned too), and a violet storm
+# core (the high-coverage end; roads/route stay above the rain). Byte-stable: the demo bundle and
+# the Bayer matrix are both deterministic.
+WXRAIN="p d d d d w p d p"
+"$SIM" "$MAP" --boot --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --png "$OUT/map-rain-scattered.png"
+"$SIM" "$MAP" --boot --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --png "$OUT/map-rain-frontal-heading.png"
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --png "$OUT/map-rain-storm.png"
+# ...and the same bundle mounted while the rider is on the *ordinary* Map: rain-free, because the
+# overlay is the rain map's declared content (`Caps::rain_overlay`), not a property of the frame.
+# This is the state-leak regression surface -- it must stay a plain map however heavy the weather.
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "p d d d w p" --png "$OUT/map-rain-free.png"
 
 # Weather screens (WX11, epic #1185): the production dashboard / hourly / rain-map / alert /
 # settings surfaces over the deterministic demo bundles. The script prefix "p d d d d w p" walks

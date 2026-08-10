@@ -104,8 +104,11 @@ struct Args {
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
     /// device default (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_ports::DateTime>,
-    /// `--weather DIR|demo[:SCENARIO]`: feed the production rain-overlay lease on every map frame —
-    /// GUI and headless `--png` alike (WX10). A directory is a weather-store root holding
+    /// `--weather DIR|demo[:SCENARIO]`: offer the production rain-overlay lease on every frame —
+    /// GUI and headless `--png` alike (WX10). Offering is not drawing: the app hands the lease on
+    /// only to a screen that declared it wants rain (`Caps::rain_overlay`), so the raster appears
+    /// on the WX11 **rain map** and the ordinary Map stays rain-free with a store mounted. A
+    /// directory is a weather-store root holding
     /// `WEATHER.A`/`WEATHER.B` (the WX7 A/B layout; `specs/vectors/*.obcw` copied under those names
     /// work). `demo` synthesizes a deterministic bundle over the loaded map's own bbox —
     /// scenarios `scattered` (default) | `drizzle` | `frontal` | `storm` — the WX10 look-tuning
