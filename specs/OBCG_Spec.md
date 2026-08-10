@@ -141,7 +141,9 @@ unknown nonzero code and MUST NOT use it for selection policy.
 | 3 | `mrms` | NOAA MRMS `PrecipRate` (CONUS radar observation) |
 | 4 | `hrrr` | NOAA HRRR subhourly `PRATE` (CONUS model) |
 | 5 | `gfs` | NOAA GFS `APCP` (worldwide floor) |
-| 6...254 | - | Reserved for future registry additions |
+| 6 | `opera-cirrus` | EUMETNET OPERA CIRRUS `DBZH` (Europe 1 km radar reflectivity) |
+| 7 | `opera-nimbus` | EUMETNET OPERA NIMBUS `RATE` (Europe 2 km radar rain rate) |
+| 8...254 | - | Reserved for future registry additions |
 | 255 | - | Experimental / private products |
 
 ### 3.2 Flags

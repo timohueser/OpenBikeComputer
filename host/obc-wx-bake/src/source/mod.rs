@@ -8,6 +8,9 @@ pub mod gfs;
 pub mod hrrr;
 pub mod icon_eu;
 pub mod mrms;
+pub mod opera;
+pub mod opera_cirrus;
+pub mod opera_nimbus;
 pub mod us;
 
 use crate::fetch::Upstream;
