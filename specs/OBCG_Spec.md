@@ -47,8 +47,12 @@ floats do not occur anywhere in v1.
   the four bounds can never disagree with the cell lattice.
 - The tile edge is a **per-product power of two** between 16 and 256 cells, chosen by the
   producer so directories stay small and tiles stay corridor-sized. Tiles reuse the canonical
-  WX2 4-bit intensity table and raw4/RLE4 codec (`OBCW_Spec.md` §6-§7), generalized from 256
-  cells to `tile_edge^2` cells; `obc-formats::precip4` is the one shared authority.
+  WX2 4-bit intensity table and raw4/RLE4 codecs (`OBCW_Spec.md` §6-§7), generalized from 256
+  cells to `tile_edge^2` cells; `obc-formats::precip4` is the one shared authority for those two.
+  OBCG adds a third codec of its own (§5, deflate over the raw4 nibbles) which **OBCW does not
+  have**: it is decoded by the phone, never by the device, and it lives above the shared
+  authority precisely so that no LZ decoder can reach the firmware and no OBCW tile can name a
+  codec the device cannot decode.
 - Dimensions are bounded: `1 <= width, height <= 100,000` and `width x height <= 30,000,000`
   cells (the WX1 decode ceiling). Tile count and every section offset then fit `uint32` with
   margin.
@@ -176,9 +180,14 @@ covered by that page's CRC like any other entry bytes.
 | ---: | --- | ---: | --- | --- |
 | 0 | Data Offset | 4 | `uint32` | Absolute payload offset, or `0` for a dry tile |
 | 4 | Encoded Len | 2 | `uint16` | Payload length; `0` is the all-dry sentinel |
-| 6 | Codec | 1 | `uint8` | `0` raw4 or `1` RLE4; `0` for a dry tile |
+| 6 | Codec | 1 | `uint8` | `0` raw4, `1` RLE4 or `2` deflate4 (§5); `0` for a dry tile |
 | 7 | Reserved | 1 | - | Zero |
-| 8 | Tile CRC-32 | 4 | `uint32` | CRC-32 of the payload bytes; `0` for a dry tile |
+| 8 | Tile CRC-32 | 4 | `uint32` | CRC-32 of the stored (encoded) payload bytes; `0` for a dry tile |
+
+A codec other than `0`, `1` or `2` is invalid and MUST be rejected; the codec set is closed and
+extending it is a format version bump, not a table addition (unlike §3.1's product registry,
+which is provenance a consumer never branches on). The tile CRC covers the payload **as stored**,
+so a consumer verifies integrity *before* decompressing anything (§9 step 6).
 
 **Dry sentinel.** `encoded_len == 0` declares every cell of the tile to be intensity `0`
 (dry). A dry entry has no payload bytes and its other fields MUST be zero — a dry entry is
@@ -187,7 +196,8 @@ cells MUST be encoded (as RLE4 no-data runs), because missing data must never de
 weather. A dry sentinel MUST NOT be used for a partial tile at the north or east grid edge —
 such a tile contains no-data padding cells (§5) and MUST be encoded; a reader MUST reject a dry
 entry at a partial-edge tile index. Together with §5's all-dry noncanonicality rule this makes
-the encoding of every tile unique: exactly one byte representation exists for any frame.
+the *dry* representation unique: a tile of dry cells has exactly one legal encoding, the
+sentinel, and it can never be confused with a tile of missing data.
 
 **Canonical packing.** Non-dry payloads are stored in ascending tile index order with no gaps:
 the first non-dry entry's `data_offset` MUST equal the header `data_offset`, and each subsequent
@@ -208,8 +218,9 @@ the natural sub-grid of §3's cell order. A partial tile at the north or east gr
 decodes to the full `tile_edge^2` cells; cells outside the declared width/height MUST be the
 no-data intensity `15`, and a consumer MUST clip them.
 
-The payload encoding is the canonical WX2 codec of `OBCW_Spec.md` §6.1/§6.2 with the decoded
-cell count `N = tile_edge^2` in place of 256:
+Three codecs are defined, with the decoded cell count `N = tile_edge^2`. Codecs 0 and 1 are the
+canonical WX2 pair of `OBCW_Spec.md` §6.1/§6.2 generalized from 256 cells to `N`; codec 2 is
+OBCG's own and does not exist in OBCW.
 
 - **raw4 (codec 0)**: exactly `N / 2` bytes; each byte holds two row-major cells, earlier cell
   in the low nibble. Valid only when the maximal-run RLE4 encoding would be `N / 2` bytes or
@@ -219,16 +230,61 @@ cell count `N = tile_edge^2` in place of 256:
   after a full 16-cell run), MUST NOT cross the tile boundary, and MUST sum to exactly `N`
   cells — a reader stops as soon as the sum exceeds `N`. The payload MUST be shorter than
   `N / 2` bytes.
+- **deflate4 (codec 2)**: a **raw DEFLATE stream (RFC 1951)** whose decompressed output is
+  exactly the `N / 2` raw4 bytes of codec 0 — the same nibble packing, without codec 0's
+  canonicality restriction. No zlib (RFC 1950) or gzip (RFC 1952) wrapper, no preset dictionary,
+  no concatenated streams: the payload is one complete stream, and its last byte is the last byte
+  of the payload. The wrapper is omitted because §4.1's tile CRC-32 already covers the stored
+  bytes, so a zlib header plus Adler-32 would add six bytes of duplicated integrity to every
+  tile; raw DEFLATE is also what both reference implementations speak natively (miniz_oxide's
+  `compress_to_vec` / `inflate::core` on the Rust side, Apple's `COMPRESSION_ZLIB` — which is RFC
+  1951 despite the name — on the Swift side).
 
-Producers MUST choose RLE4 if and only if its maximal-run encoding is strictly smaller than
-raw4; ties use raw4. A full (non-edge) tile whose `N` cells are all dry MUST use the §4.1
-sentinel instead of a payload; consequently a decoded payload with every cell dry is
-noncanonical and MUST be rejected. (An edge tile is never all-dry — its padding is no-data —
-and per §4.1 it is never a sentinel either, so both rules stay disjoint.)
+**Why an LZ codec is here at all.** RLE4 caps runs at 16 cells and has no back-reference, so a
+uniform field costs one byte per 16 cells however uniform it is, and 25 identical rows cost 25x
+one row. That is exactly the shape of a coarse source upsampled onto a fine lattice, which is
+what the baker publishes. DEFLATE collapses both axes: WXR1 measured 5.1x-19.2x over the
+raw4/RLE4 pair across a whole global cycle, and up to 42x on upsampled coarse data.
+
+**Codec choice, and what stays unique.** A producer MUST encode each non-dry tile with the codec
+that yields the **strictly smallest** payload, breaking a tie in favour of the **lowest codec id**
+(raw4 < RLE4 < deflate4). Two of the three resulting rules are checkable by a consumer and are
+therefore binding on the reader as well:
+
+- codec 0 is valid only when the maximal-run RLE4 length is `>= N / 2` (as above);
+- codec 1 is valid only when its payload is shorter than `N / 2` bytes (as above);
+- codec 2 is valid only when its payload is **strictly shorter than the canonical raw4/RLE4
+  length of the same decoded cells** — that is, than `min(N / 2, maximal-run RLE4 length)`. The
+  consumer computes that length from the cells it has just decoded and MUST reject a codec-2 tile
+  that does not beat it. This rule is what keeps RLE4 in use where it genuinely wins — small or
+  sparse tiles, where DEFLATE's block overhead loses — rather than leaving it dead weight.
+
+The remaining half of the producer rule, "use deflate4 whenever it *is* strictly smaller", is not
+consumer-checkable and is not checked: DEFLATE output depends on the encoder, so a consumer that
+demanded a particular compressed length would be pinning an implementation rather than a format.
+**A frame therefore no longer has exactly one legal byte image.** V1 guarantees that the *decoded*
+frame is canonical — every tile decodes to one cell array, a dry tile has exactly one
+representation, codecs 0 and 1 have exactly one payload each for given cells — and that any codec
+choice a consumer can disprove is rejected. It does not guarantee that two conforming producers
+emit identical bytes. The §11 negative vectors pin the rules that remain checkable.
+
+A full (non-edge) tile whose `N` cells are all dry MUST use the §4.1 sentinel instead of a
+payload, under every codec; consequently a decoded payload with every cell dry is noncanonical
+and MUST be rejected. (An edge tile is never all-dry — its padding is no-data — and per §4.1 it
+is never a sentinel either, so both rules stay disjoint.)
+
+**Decompression is bounded before it is attempted.** A tile decodes to `N` cells and therefore to
+exactly `N / 2` raw4 bytes — a number the consumer already has from the *header*. A codec-2
+consumer MUST size its output buffer from that number and never from anything the payload claims;
+MUST reject a payload of `N / 2` bytes or more before inflating it; and MUST reject a stream that
+would write more than `N / 2` bytes, writes fewer, fails to terminate, or leaves input bytes
+unconsumed. There is consequently no allocation a decompression bomb can grow, and every one of
+those failures is the same verdict: the tile is invalid.
 
 Cell intensities are the canonical 4-bit precipitation table of `OBCW_Spec.md` §7 — the same
 codes, the same mm/h thresholds, the same reserved values 13/14 (reject) and no-data 15 (never
-dry, never an alert-clear signal). OBCG adds no second quantization authority.
+dry, never an alert-clear signal). OBCG adds no second quantization authority, and codec 2's
+decompressed nibbles are checked against that table exactly like codec 0's.
 
 ## 6. Coordinate lookup
 
@@ -257,8 +313,9 @@ A corridor consumer performs, in order:
    needed indexes to pages (§4), and fetch exactly those pages. Validate each page's CRC and the
    §4.1 entry rules for the entries it uses.
 3. **Tile reads**: fetch `[data_offset, data_offset + encoded_len)` for each needed non-dry
-   entry, validate the tile CRC, then decode under the §5 rules. Dry-sentinel tiles cost no
-   read.
+   entry, validate the tile CRC over those stored bytes, then decode under the §5 rules — for
+   codec 2 that means inflating into a `tile_edge^2 / 2`-byte buffer sized from the header.
+   Dry-sentinel tiles cost no read.
 
 Nothing else is required, and a conforming consumer MUST NOT need any byte outside those ranges;
 the request-accounting tests in `host/obc-vectors` pin exactly this set. Consecutive needed
@@ -304,9 +361,14 @@ fetched; a full-object consumer applies all of them:
    `tile_count` to be all-zero.
 5. For each entry used: validate the §4.1 field rules — a dry sentinel is all-zero; a non-dry
    entry's offset/length lie inside the data section and respect canonical packing.
-6. For each tile payload used: verify the tile CRC, then the §5 codec rules including reserved
-   intensities, maximal runs, exact cell count, canonical codec choice, the all-dry
-   noncanonicality rule, and no-data edge padding.
+6. For each tile payload used: verify the tile CRC over the stored bytes **before** decoding or
+   decompressing them, then the §5 codec rules — a known codec id, reserved intensities, maximal
+   runs, exact cell count, the checkable half of the canonical codec choice, the bounded
+   decompressed size and full input consumption for codec 2, the all-dry noncanonicality rule,
+   and no-data edge padding.
+
+A decoder MUST NOT allocate or reserve memory in proportion to any length a payload claims. The
+only sizes it may act on are the header's, and for a codec-2 tile that is `tile_edge^2 / 2` bytes.
 
 ## 10. Service manifest
 
@@ -349,13 +411,17 @@ pinned by tests. It is delivery metadata, not a byte format, but its contract is
 ## 11. Golden and negative material
 
 Checked-in files live in `specs/vectors/` (`grid-*.obcg`) and are described in its
-`manifest.json` and README. Positive vectors cover the all-dry sentinel object, raw4 and RLE4
-tiles, an explicit all-no-data tile, edge-tile no-data padding, and a multi-page directory with
-last-page padding. Negative vectors isolate truncation, bad payload offsets, overlapping/
-non-canonically packed payloads, impossible dimensions, a non-power-of-two tile edge, bad paging
-parameters, overlong RLE, a compressible raw4 tile, a noncanonical encoded all-dry tile, a
-nonzero dry sentinel, header CRC, object CRC, page CRC and tile CRC mismatches, and nonzero
-reserved bytes.
+`manifest.json` and README. Positive vectors cover the all-dry sentinel object; one tile per
+codec — an incompressible raw4 tile, an RLE4 tile that wins on a tie, an RLE4 tile that wins
+outright over deflate4, and a deflate4 tile of upsampled coarse data at tile edge 64; an explicit
+all-no-data tile; edge-tile no-data padding; and a multi-page directory with last-page padding.
+Negative vectors isolate truncation, bad payload offsets, overlapping/non-canonically packed
+payloads, impossible dimensions, a non-power-of-two tile edge, bad paging parameters, an unknown
+codec id, overlong RLE, noncanonical RLE, a compressible raw4 tile, a truncated deflate stream, a
+deflate stream that over-inflates past the tile's raw4 size, one that under-inflates, a deflate
+payload that fails to beat the canonical raw4/RLE4 length, a noncanonical encoded all-dry tile, a
+nonzero dry sentinel, a dry sentinel on a partial edge tile, header CRC, object CRC, page CRC and
+tile CRC mismatches, and nonzero reserved bytes.
 
 Rust builds and validates them through the `obc-formats` authority; Swift independently decodes
 the same positives to the same cells and rejects every negative. Vector provenance is recorded
@@ -371,8 +437,9 @@ directory is `3 x 6,148 = 18,444` bytes and the header-plus-one-page first fetch
 are sentinels, while the 74 partial north/east edge tiles carry short dry-plus-no-data RLE4
 payloads (`35 x 96 + 38 x 64 + 76 = 5,868` bytes) — the §4.1 edge rule keeps padding honest
 even on a dry day. Worst-case raw4 payloads
-would add `1,404 x 512 = 718,848` bytes, but real frames are dominated by dry sentinels and
-short RLE4 runs. ICON-EU (1,377 x 657 at 0.0625 deg, tile edge 16, `87 x 42 = 3,654` tiles)
+would add `1,404 x 512 = 718,848` bytes, but real frames are dominated by dry sentinels and, for
+the tiles that do carry weather, by §5's deflate4 payloads — WXR1 measured a whole wet global
+cycle at 14.69 MB with codec 2 against 43.60 MB without it. ICON-EU (1,377 x 657 at 0.0625 deg, tile edge 16, `87 x 42 = 3,654` tiles)
 pages to `8 x 6,148 = 49,184` directory bytes. A CONUS-scale MRMS frame (7,000 x 3,500, tile
 edge 64) is `110 x 55 = 6,050` tiles — twelve pages, 73,776 directory bytes — which is exactly
 why the directory is paged

@@ -425,6 +425,58 @@ fn the_frames_actually_contain_the_storm() {
     }
 }
 
+/// Rewrite the pack's baked halves after a deliberate format change, the way
+/// `cargo test -p obc-vectors regenerate -- --ignored` rewrites `specs/vectors/`:
+/// `cargo test -p obc-wx-bake --test event_pack regenerate -- --ignored`.
+///
+/// `upstream/` is never touched — those are the archive's bytes, the pack's whole point. Only
+/// `service/`, `truth/` and the digests `event.json` swears to them are re-derived, from the
+/// checked-in upstream and through the production bake. The checks above then re-prove the
+/// result, so this hook can only ever move the pack to what today's baker really produces.
+#[test]
+#[ignore]
+fn regenerate() {
+    let root = pack_root();
+    let mut event = event();
+    let scratch = scratch("regenerate");
+
+    // service/: the whole tree, replaced with what the baker makes of upstream/ today.
+    rebake::bake_into(&root, &event, &scratch).expect("the pack re-bakes");
+    let rebaked = pack::read_tree(&scratch).expect("the fresh service tree");
+    std::fs::remove_dir_all(root.join("service")).expect("clear the stale service tree");
+    for (key, bytes) in &rebaked {
+        pack::write_file(&root.join("service").join(key), bytes).expect("write the service object");
+    }
+    event.service = rebaked
+        .iter()
+        .map(|(key, bytes)| pack::ServiceObject {
+            key: key.clone(),
+            bytes: bytes.len() as u64,
+            sha256: pack::sha256(bytes),
+        })
+        .collect();
+
+    // truth/: each observed frame re-derived from the pack's own stored MRMS bytes.
+    let anchor = manifest::parse_rfc3339(&event.window_start).expect("window_start");
+    let mut upstream = rebake::truth_upstream(&root, &event).expect("the truth replay");
+    for frame in &mut event.truth_frames {
+        let valid_at = manifest::parse_rfc3339(&frame.valid_at).expect("valid_at");
+        let baked =
+            pack::capture::bake_truth_frame(&mut upstream, anchor, frame.offset_min, valid_at, event.bake.bbox_udeg)
+                .expect("truth frame re-bakes");
+        pack::write_file(&pack::resolve(&root, &frame.path).expect("truth path"), &baked).expect("write");
+        frame.bytes = baked.len() as u64;
+        frame.sha256 = pack::sha256(&baked);
+    }
+
+    event.write(&root).expect("event.json");
+    eprintln!(
+        "{EVENT_ID}: {} service objects and {} truth frames rewritten",
+        event.service.len(),
+        event.truth_frames.len()
+    );
+}
+
 /// The storm moved: consecutive truth frames must differ. A capture bug that fetched the same
 /// object eight times would otherwise sail through every check above.
 #[test]
