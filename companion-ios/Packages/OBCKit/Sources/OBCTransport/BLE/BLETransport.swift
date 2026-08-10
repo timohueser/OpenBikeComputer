@@ -697,7 +697,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             weatherUploadConnectedDeadlineAt = nil
         }
         let fresh = Date().addingTimeInterval(Self.weatherUploadBudget)
-        let deadline = min(fresh, discoveryStore.weatherUploadRestorationDeadline() ?? fresh)
+        // Only an adopted (restoration) intent inherits the persisted deadline: after a
+        // force-quit iOS discards restoration state, willRestoreState never clears the stored
+        // key, and inheriting it here would time the relaunch resume out instantly (review
+        // NEW-1) - the exact resume the checkpoint exists to serve.
+        let deadline = adopted ? min(fresh, discoveryStore.weatherUploadRestorationDeadline() ?? fresh) : fresh
         discoveryStore.armWeatherUploadRestoration(until: deadline)
         armWeatherUploadDeadline(until: deadline)
         startWeatherUploadConnectIfReady()
@@ -877,6 +881,13 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let slotWaitStart = DispatchTime.now()
         let slot = await acquireTransferSlot("upload weatherBundle len=\(payload.count)")
         let waited = DispatchTime.now().uptimeNanoseconds &- slotWaitStart.uptimeNanoseconds
+        // A superseded attempt is cancelled while parked in the FIFO; the continuation cannot
+        // be interrupted, so unwind here instead of spending the slot and a radio window on an
+        // exchange nobody is waiting for (review F2 residual).
+        guard !Task.isCancelled else {
+            releaseTransferSlot(slot)
+            return
+        }
         queue.async { [weak self] in self?.creditWeatherUploadSlotWait(waited, token: token) }
         var exchangeOpened = false
         do {
