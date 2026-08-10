@@ -7,6 +7,7 @@
 //! obc-wx-bake us      [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   CONUS MRMS+HRRR, tier 1
 //! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
 //! obc-wx-bake schema                                                       print the manifest JSON Schema
+//! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
 //!
 //! One product's failure never blocks another's: run the per-product subcommands from separate
@@ -44,6 +45,10 @@ fn run(args: &[String]) -> Result<(), String> {
     if command == "schema" {
         print!("{}", manifest::schema_json());
         return Ok(());
+    }
+    // The WXR1 (#1240) measurement spike: fixtures in, numbers out, nothing published.
+    if command == "spike" {
+        return obc_wx_bake::spike::run(&args[1..]);
     }
     let dwd = DwdRv;
     let icon = IconEu;

@@ -31,3 +31,8 @@ ureq = "3"
 # Event-pack provenance: every captured upstream member records the sha256 of its exact bytes,
 # the same digest discipline `tests/fixtures/README.md` already holds checked-in fixtures to.
 sha2 = "0.11"
+# WXR1 spike only (`src/spike.rs`, subcommand `spike`): a 4-thread pool to match the production
+# VPS shape, and `getrusage` for a true peak-RSS high-water mark. Both are already in the
+# workspace lock; the spike adds no new third-party code to the bakery.
+rayon = "1"
+libc = "0.2"
