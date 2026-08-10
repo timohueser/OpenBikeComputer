@@ -260,8 +260,11 @@ codec choice in either direction. This makes the representation deterministic.
 The table represents instantaneous/rate precipitation in millimetres per hour. Interval notation
 is exact: a value on a lower bound belongs to that row. Producers should quantize from their best
 non-negative rate; negative or non-finite source values are no-data. The provider-neutral Rust
-authority is `obc-formats::precip4`; both OBCW and OBCG reuse its thresholds and canonical tile
-codec. Swift reuses `OBCPrecipitationTileCodec` within `OBCWeatherWire` for the same reason.
+authority is `obc-formats::precip4`; both OBCW and OBCG reuse its thresholds and its two canonical
+tile codecs. Swift reuses `OBCPrecipitationTileCodec` within `OBCWeatherWire` for the same reason.
+§6's codec column is a **closed two-value set** here and stays one: OBCG adds a third codec of its
+own (`OBCG_Spec.md` §5, deflate over the raw4 nibbles) *above* the shared authority, so it cannot
+appear in an OBCW tile and the device never needs a decompressor to read one.
 
 | Code | Rate in mm/h | Meaning |
 | ---: | --- | --- |

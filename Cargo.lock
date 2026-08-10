@@ -2794,6 +2794,7 @@ dependencies = [
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
  "obc-crc",
  "obc-ports",
 ]
@@ -3003,6 +3004,7 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "miniz_oxide",
  "obc-crc",
  "obc-dfu",
  "obc-elevation",

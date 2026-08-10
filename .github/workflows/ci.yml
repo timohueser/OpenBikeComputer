@@ -207,6 +207,14 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - name: cargo test (workspace, all features)
         run: cargo test --workspace --all-features --locked
+      # …and once with obc-formats' *default* features, which is the shape the device image
+      # links. `obcg-deflate` (OBCG codec 2, `OBCG_Spec.md` §5) is off there, so the tests that
+      # pin the firmware boundary — no inflate in the crate, a codec-2 tile refused rather than
+      # silently accepted — are `#[cfg(not(feature = ...))]` and are compiled *out* of the
+      # all-features run above. One crate, a few seconds, and the PR's structural claim stops
+      # being asserted by dead code (#1241).
+      - name: cargo test (obc-formats, default features = the device's shape)
+        run: cargo test -p obc-formats --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
       - name: firmware production dependency direction
