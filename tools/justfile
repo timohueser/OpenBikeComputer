@@ -20,6 +20,9 @@ default:
 # Run the simulator (always --physical). Args: [MAP.obcm] [TRACK.gpx] [-- extra sim flags].
 # MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK to $OBC_GPX
 # or the bundled grimsel-climb.gpx. Pass `none` as the track to run without a GPS.
+# Live weather needs no task of its own — it is a sim flag:
+#   obc sim -- --weather live            (real service + MET for the rider's position)
+#   obc sim -- --weather live --weather-offline   (and the WX14 failure controls)
 # Run the simulator on a map + GPX, always at physical size. Args: [MAP] [TRACK.gpx] [-- sim flags]
 sim *args:
     #!/usr/bin/env bash
