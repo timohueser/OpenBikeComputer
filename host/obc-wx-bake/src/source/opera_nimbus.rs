@@ -6,10 +6,13 @@
 //! pins the `zr_a`/`zr_b` it declares so that [`super::opera_cirrus`], which must convert, uses
 //! the same relation.
 //!
-//! It sits **below** CIRRUS in the mosaic, and it earns its place there twice over. It reaches
-//! about 23 k of its 2 km cells (roughly 93,000 km²) that CIRRUS did not cover in the frame pair
-//! measured on 2026-08-10, and it is a near-surface `PPI` rather than a column maximum, so where
-//! CIRRUS drops out NIMBUS is not a degraded fallback but the physically closer measurement.
+//! It sits **below** CIRRUS in the mosaic, and it earns its place there three times over. It
+//! reaches about 23 k of its 2 km cells (roughly 93,000 km²) that CIRRUS did not cover in the
+//! frame pair measured on 2026-08-10; it is a near-surface `PPI` rather than a column maximum, so
+//! where CIRRUS drops out NIMBUS is not a degraded fallback but the physically closer
+//! measurement; and it is the *reference* CIRRUS's column-max correction is calibrated against
+//! ([`super::opera::MAX_TO_SURFACE_RATIO`]), so deleting it would leave that correction with
+//! nothing to be measured from.
 //!
 //! The rejected third option is OPERA's `ACRR`, which the same key schema publishes. It is on the
 //! same 2 km grid, and it is a **one-hour** accumulation (`prodname` says so; `startdate`/
@@ -41,13 +44,17 @@ pub const CONTRACT: Contract = Contract {
     product_code: PRODUCT_OPERA_NIMBUS,
     quantity: Quantity::RainRate,
     prodname: "OPERA NIMBUS instantaneous rain rate composite",
+    odim_product: "PPI",
     width: 1_900,
     height: 2_200,
     cell_m: 2_000.0,
-    // The same registration as CIRRUS at twice the pitch: cell centres coincide exactly with the
-    // even CIRRUS cells, so the two products describe one grid at two resolutions.
-    ul_x: -1_000.000_271_433_265_9,
-    ul_y: 999.999_912_387_225_8,
+    // The same grid corner as CIRRUS at twice the pitch, so NIMBUS cell (r, c) is exactly the
+    // 2 x 2 block of CIRRUS cells (2r, 2c) … (2r+1, 2c+1) — one composite at two resolutions, and
+    // the property `opera::tests::a_nimbus_cell_is_an_exact_two_by_two_block_of_cirrus_cells`
+    // exists to keep it true. The COG's tiepoint is half of *this* product's pixel north-west of
+    // it, which is the same half-pixel converter bug at twice the size.
+    ul_x: 0.0,
+    ul_y: 0.0,
     cadence_seconds: 900,
     // Seventy-five minutes back, against a measured 10-minute publication lag.
     max_discovery_probes: 5,

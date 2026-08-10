@@ -157,15 +157,17 @@ is addressed by tile rather than by offset because that is how a COG is laid out
 - `opera-cirrus-20260810T0000-dbzh-crop.tiff` — 78,283 bytes,
   sha256 `37029d14c5bea6072797f19941e856853753e9f074ed48f76ee2960c6795cdbb`.
   Tiles (rows 5-6, cols 3-4) of the 3,800 x 4,400 composite: 1,024 x 1,024 native 1 km cells over
-  the Alps, northern Italy and the Balkans. Tiepoint (1535499.9997285667, -2559500.000087613).
+  the Alps, northern Italy and the Balkans. Grid corner (1536000, -2560000); tiepoint
+  (1535499.9997285667, -2559500.000087613), i.e. that corner less half a pixel, exactly as the
+  upstream object states its own.
   Content mix: 2.64 % no-coverage, 93.87 % undetect, 3.49 % finite, -21.0 to 55.5 dBZ.
 - `opera-nimbus-20260810T0000-rate-crop.tiff` — 170,558 bytes,
   sha256 `951cb8bd3737e4ab48d949125cb69ee5d9b68abb0e89fe5666de00cb05acf923`.
   Tiles (rows 3-4, cols 1-2) of the 1,900 x 2,200 composite: 1,024 x 664 native 2 km cells over
   the central Mediterranean, deliberately including the composite's **partial southern tile
-  row**, so the decoder's edge-padding handling is exercised on real bytes. Tiepoint
-  (1022999.9997285667, -3071000.000087613). Content mix: 51.98 % no-coverage, 45.91 % undetect,
-  2.11 % finite, 0.02 to 577.9 mm/h.
+  row**, so the decoder's edge-padding handling is exercised on real bytes. Grid corner
+  (1024000, -3072000); tiepoint (1022999.9997285667, -3071000.000087613). Content mix: 51.98 %
+  no-coverage, 45.91 % undetect, 2.11 % finite, 0.02 to 577.9 mm/h.
 
 Both crops keep the upstream `GDAL_METADATA`, `GDAL_NODATA` and GeoTIFF keys verbatim, so
 `tests/opera.rs` verifies the whole pinned source contract — `prodname`, band `DESCRIPTION`,

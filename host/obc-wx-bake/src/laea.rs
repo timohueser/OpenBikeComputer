@@ -127,35 +127,49 @@ pub fn forward_model(lat_deg: f64, lon_deg: f64) -> Option<(f64, f64)> {
 mod tests {
     use super::*;
 
-    /// The projection origin is exactly the false origin, and it lands where #1245 verified it
-    /// does on the 1 km raster: fractional pixel (col 1950.5, row 2100.5), i.e. the centre of
-    /// pixel (1950, 2100). The registration constants are the CIRRUS COG's own tiepoint and
-    /// pixel scale, restated here so this test fails if either the projection or the pinned
-    /// registration drifts.
+    /// The projection origin is exactly the false origin, and the false origin is what puts the
+    /// composite's north-west corner at model (0, 0): `x_0 = 1,950,000` and `y_0 = -2,100,000`
+    /// are precisely the distances from (55 N, 10 E) to that corner. So (55 N, 10 E) sits on the
+    /// **corner shared by pixels (1949, 2099), (1950, 2099), (1949, 2100) and (1950, 2100)** of
+    /// the 1 km raster, at fractional pixel (1950.0, 2100.0).
+    ///
+    /// #1245 recorded (1950.5, 2100.5), which is what GDAL prints — and which is true of the
+    /// COG's `ModelTiepoint` rather than of the grid. Both are asserted below, because the
+    /// difference between them *is* the half-pixel the tiepoint carries
+    /// ([`crate::source::opera::Contract::verify`] requires it to be exactly that).
     #[test]
-    fn the_projection_origin_lands_on_the_verified_pixel() {
+    fn the_projection_origin_lands_on_the_grid_corner_and_explains_the_tiepoint() {
         let (x, y) = forward(LAT_0_DEG, LON_0_DEG).expect("the origin projects");
         assert!(x.abs() < 1e-9 && y.abs() < 1e-9, "origin at ({x}, {y})");
         let (model_x, model_y) = forward_model(LAT_0_DEG, LON_0_DEG).expect("the origin projects");
         assert_eq!((model_x, model_y), (FALSE_EASTING_M, FALSE_NORTHING_M));
 
-        let (ul_x, ul_y) = (-500.000_271_433_265_9, 499.999_912_387_225_8);
-        let col = (model_x - ul_x) / 1_000.0;
-        let row = (ul_y - model_y) / 1_000.0;
-        assert!((col - 1_950.5).abs() < 1e-6, "col {col}");
-        assert!((row - 2_100.5).abs() < 1e-6, "row {row}");
+        // The grid: upper-left corner of pixel (0, 0) at model (0, 0).
+        assert!((model_x / 1_000.0 - 1_950.0).abs() < 1e-9, "col {}", model_x / 1_000.0);
+        assert!((-model_y / 1_000.0 - 2_100.0).abs() < 1e-9, "row {}", -model_y / 1_000.0);
+
+        // What GDAL prints, and why: the tiepoint is that corner minus half a pixel, so every
+        // fractional pixel coordinate read off the file is half a cell larger.
+        let (tiepoint_x, tiepoint_y): (f64, f64) = (-500.000_271_433_265_9, 499.999_912_387_225_8);
+        assert!((tiepoint_x + 500.0).abs() < 0.001 && (tiepoint_y - 500.0).abs() < 0.001);
+        assert!(((model_x - tiepoint_x) / 1_000.0 - 1_950.5).abs() < 1e-6);
+        assert!(((tiepoint_y - model_y) / 1_000.0 - 2_100.5).abs() < 1e-6);
     }
 
-    /// OPERA's ODIM `where` attributes give the composite's corner coordinates: `LL` is the
-    /// centre of the south-west corner pixel and `UR` the centre of the north-east one, on the
-    /// 1 km raster whose upper-left pixel corner is at projected (-1,950,500, +2,100,500).
+    /// OPERA's ODIM `where` attributes give the composite's **outer** corners: `LL` is the
+    /// south-west corner of the south-west pixel and `UR` the north-east corner of the north-east
+    /// one. That is not an interpretation, it is arithmetic — `LL` to `UR` spans exactly
+    /// 3,800,000 x 4,400,000 m, which is exactly 3,800 x 4,400 cells of 1 km, and corners read as
+    /// pixel *centres* would need a 3,801 x 4,401 raster to span the same distance. The corners
+    /// also land on model (0, -4,400,000) and (3,800,000, 0), which is what OPERA's false origin
+    /// is for.
     ///
     /// PROJ itself produced those lat/lons, so reproducing them to well under a millimetre pins
     /// this implementation against the reference one — the ellipsoidal form, the authalic
     /// latitude, `R_q`, `D` and the oblique rotation all at once. The spherical approximation
     /// misses these corners by kilometres.
     #[test]
-    fn the_odim_corner_coordinates_pin_the_projection() {
+    fn the_odim_corner_coordinates_pin_the_projection_and_the_registration() {
         // ODIM: LL_lat/LL_lon and UR_lat/UR_lon of `OPERA@...@0@DBZH.h5`.
         let corners = [
             (31.746_215_318_3, -10.434_576_838_6, -1_950_000.0, -2_300_000.0), // LL
@@ -166,6 +180,13 @@ mod tests {
             assert!((x - expected_x).abs() < 0.002, "x for {lat},{lon}: {x} != {expected_x}");
             assert!((y - expected_y).abs() < 0.002, "y for {lat},{lon}: {y} != {expected_y}");
         }
+        // The decisive arithmetic: the span is a whole number of cells, so these are edges.
+        let (ll_x, ll_y) = forward(31.746_215_318_3, -10.434_576_838_6).expect("LL");
+        let (ur_x, ur_y) = forward(67.621_037_107_2, 57.811_964_750_1).expect("UR");
+        assert!(((ur_x - ll_x) / 1_000.0 - 3_800.0).abs() < 1e-5, "x span {}", (ur_x - ll_x) / 1_000.0);
+        assert!(((ur_y - ll_y) / 1_000.0 - 4_400.0).abs() < 1e-5, "y span {}", (ur_y - ll_y) / 1_000.0);
+        // …and they are the corners the false origin names: model (0, -4,400,000) / (3,800,000, 0).
+        assert!((ll_x + FALSE_EASTING_M).abs() < 0.002 && (ur_y + FALSE_NORTHING_M).abs() < 0.002);
     }
 
     /// Equal-area, oblique and centred: the mapping is monotone in both axes near the origin,

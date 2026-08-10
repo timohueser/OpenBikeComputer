@@ -277,8 +277,16 @@ fn published_cells_equal_quantized_nearest_neighbour_source_cells() {
     assert!(wet > 0, "the captured ICON run must contain rain for the agreement to mean anything");
 }
 
+/// A corrupt upstream publishes **nothing of that product** and leaves its published frames
+/// standing — and, since WXR6 (#1245), costs no *other* product its publication.
+///
+/// The isolation is the change: before it, one adapter's error propagated out of `run_cycle` and
+/// blocked every healthy product in the same invocation, which is the coupling the per-adapter
+/// systemd timers exist to work around. What has not changed is what fail-closed protects: the
+/// failing product moves no bytes, its previous entry is carried forward verbatim, and a cycle in
+/// which *every* selected adapter failed is still an error that publishes nothing.
 #[test]
-fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
+fn a_corrupt_upstream_publishes_nothing_of_its_own_and_does_not_block_the_others() {
     let (dwd, icon) = adapters();
     let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
 
@@ -288,15 +296,33 @@ fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
     let mut store = DirStore::new(&dir);
     run_cycle(&adapters, &mut good_upstream, &mut store, now(), false).expect("good cycle");
     let before = tree(&dir);
+    let frames_before: BTreeMap<_, _> =
+        before.iter().filter(|(key, _)| key.ends_with(".obcg")).map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    // A truncated RV tar fails the whole cycle and moves nothing.
+    // A truncated RV tar: RV publishes nothing, ICON is untouched and short-circuits, so no frame
+    // object anywhere moves — only the manifest is rewritten, with the failure recorded.
     let mut truncated = upstream();
     let mut tar = fixture("composite_rv_20260809_1420.tar");
     tar.truncate(tar.len() / 2);
     truncated.insert(dwd_rv::LATEST_URL, tar, Some("\"changed-1\""));
-    let error = run_cycle(&adapters, &mut truncated, &mut store, now() + 300, false).unwrap_err();
-    eprintln!("truncated tar: {error}");
-    assert_eq!(before, tree(&dir), "a failed cycle must leave the previous publication untouched");
+    let report = run_cycle(&adapters, &mut truncated, &mut store, now() + 300, false).expect("the cycle survives");
+    eprintln!("truncated tar:\n{}", report.summary());
+    assert!(
+        report.products.iter().any(|(id, status, _)| id == "dwd-rv" && *status == ProductStatus::Failed),
+        "{:?}",
+        report.products
+    );
+    assert!(
+        report.products.iter().any(|(id, status, _)| id == "icon-eu" && *status == ProductStatus::Unchanged),
+        "a healthy product must still publish: {:?}",
+        report.products
+    );
+    assert!(report.warnings.iter().any(|warning| warning.contains("dwd-rv: bake failed")), "{:?}", report.warnings);
+    let after: BTreeMap<_, _> = tree(&dir).into_iter().filter(|(key, _)| key.ends_with(".obcg")).collect();
+    assert_eq!(frames_before, after, "a failed product must not move a single frame object");
+    let document = manifest::from_json(&std::fs::read(dir.join("wx/v1/manifest.json")).unwrap()).unwrap();
+    let rv = document.products.iter().find(|product| product.id == "dwd-rv").expect("carried forward");
+    assert_eq!(rv.reference_time, "2026-08-09T14:20:00Z", "the failed product's published entry stands unchanged");
 
     // A flipped byte inside an HDF5 member: ditto.
     let mut flipped = upstream();
@@ -304,31 +330,52 @@ fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
     let middle = tar.len() / 2;
     tar[middle] ^= 0x40;
     flipped.insert(dwd_rv::LATEST_URL, tar, Some("\"changed-2\""));
-    let error = run_cycle(&adapters, &mut flipped, &mut store, now() + 600, false).unwrap_err();
-    eprintln!("flipped tar byte: {error}");
-    assert_eq!(before, tree(&dir));
+    let report = run_cycle(&adapters, &mut flipped, &mut store, now() + 600, false).expect("the cycle survives");
+    eprintln!("flipped tar byte:\n{}", report.summary());
+    let after: BTreeMap<_, _> = tree(&dir).into_iter().filter(|(key, _)| key.ends_with(".obcg")).collect();
+    assert_eq!(frames_before, after);
 
-    // A truncated ICON lead fails the cycle even though the RV product was fine: never partial.
-    // (The RV etag matches the published manifest here, so RV short-circuits; ICON's fresh run
-    // decode then dies.)
-    let mut icon_bad = upstream();
+    // A truncated ICON lead, with RV *also* broken: every selected adapter has now failed, so the
+    // cycle itself is an error and nothing — not even the manifest — is republished.
+    let mut both_bad = upstream();
+    let mut tar = fixture("composite_rv_20260809_1420.tar");
+    tar.truncate(tar.len() / 2);
+    both_bad.insert(dwd_rv::LATEST_URL, tar, Some("\"changed-3\""));
     let mut lead = fixture("icon-eu-2026080906_005.grib2.bz2");
     lead.truncate(lead.len() - 100);
-    icon_bad.insert(icon_eu::lead_url(icon_run(), 5), lead, None);
+    both_bad.insert(icon_eu::lead_url(icon_run(), 5), lead, None);
     // Make ICON re-bake by pretending the published run is older.
-    let mut manifest_bytes = std::fs::read(dir.join("wx/v1/manifest.json")).unwrap();
-    let mut document = manifest::from_json(&manifest_bytes).unwrap();
+    let mut document = manifest::from_json(&std::fs::read(dir.join("wx/v1/manifest.json")).unwrap()).unwrap();
     for product in &mut document.products {
         if product.id == "icon-eu" {
             product.reference_time = "2026-08-09T00:00:00Z".to_string();
         }
     }
-    manifest_bytes = manifest::to_json(&document).into_bytes();
-    std::fs::write(dir.join("wx/v1/manifest.json"), &manifest_bytes).unwrap();
-    let before_icon = tree(&dir);
-    let error = run_cycle(&adapters, &mut icon_bad, &mut store, now() + 900, false).unwrap_err();
-    eprintln!("truncated ICON lead: {error}");
-    assert_eq!(before_icon, tree(&dir));
+    std::fs::write(dir.join("wx/v1/manifest.json"), manifest::to_json(&document)).unwrap();
+    let before_both = tree(&dir);
+    let error = run_cycle(&adapters, &mut both_bad, &mut store, now() + 900, false).unwrap_err();
+    eprintln!("every adapter broken: {error}");
+    assert_eq!(before_both, tree(&dir), "a wholly failed cycle must publish nothing at all");
+}
+
+/// One broken adapter must not be able to fail a cycle it is not selected in, and a single-
+/// adapter invocation whose one adapter fails must still be a loud, non-zero failure — that is
+/// what the shipped per-adapter systemd units read.
+#[test]
+fn a_single_adapter_invocation_still_fails_loudly() {
+    let (dwd, icon) = adapters();
+    let dir = scratch("single-fail");
+    let mut store = DirStore::new(&dir);
+    run_cycle(&[&dwd, &icon], &mut upstream(), &mut store, now(), false).expect("good cycle");
+    let before = tree(&dir);
+
+    let mut truncated = upstream();
+    let mut tar = fixture("composite_rv_20260809_1420.tar");
+    tar.truncate(tar.len() / 2);
+    truncated.insert(dwd_rv::LATEST_URL, tar, Some("\"changed-1\""));
+    let error = run_cycle(&[&dwd], &mut truncated, &mut store, now() + 300, false).unwrap_err();
+    assert!(error.contains("dwd-rv: bake failed"), "{error}");
+    assert_eq!(before, tree(&dir), "the only selected adapter failing must publish nothing");
 }
 
 /// Review finding 6: an upstream run regression (newest complete run older than the published
