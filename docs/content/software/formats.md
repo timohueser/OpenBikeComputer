@@ -1167,6 +1167,27 @@ would take apart. The US product learned this the hard way: a 27,000 × 34,000 m
 lattice over a 10,000 × 10,000 observation divides in neither axis, and the 1 km radar frame was
 silently dropped from every bundle until the forecast lattice moved to 30,000 × 30,000.
 
+That last paragraph is now history rather than description, and the trade it names is the one we
+took back. "No resampling, by construction" bought a precision distinction no rider ever asked for
+and paid for it with a selection policy in three implementations — and with exactly the class of
+bug the US lattice was. So the baker now **normalises every source onto one canonical global
+0.01 degree lattice** before it publishes anything: coarse sources are cell-replicated (one
+6.5 km model cell becomes a block of identical 1 km cells), and where two sources overlap, one
+ordered priority table — radar over model, finer radar over coarser, national over pan-European,
+a global floor last — decides each cell. The resampling still happens exactly once and still
+nearest-neighbour, which is what the format always required; what changed is that it happens in
+the baker instead of being pushed onto every consumer. Downstream there are no products, no tiers,
+no bboxes and no resolutions to choose between, so there is no composition left to get wrong.
+
+Two consequences are worth stating because they look like losses and are not. A frame mixing 1 km
+radar with 6.5 km model fill has no single true source resolution, so `cell_size_m` stops
+describing a source and states the lattice instead — and rather than transport the missing
+information in a per-cell plane or a per-tile label, we **remove** it. That is honest because the
+mosaic always has a global floor: every cell always carries a best-available value, so "no radar
+coverage" renders as visibly coarse model fill, never as no rain. And intensity code 15 keeps its
+one meaning — *we do not know* — for the case that actually needs it: a source outage, or a shard
+that failed to bake.
+
 Beneath the regional tiers a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
 on purpose, never smoothed into looking better than it is. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
