@@ -247,6 +247,9 @@ struct WeatherSettingsModelTests {
         #expect(model.lastDeliveryValue == "Never")
         #expect(model.statusLine == "No weather sent yet")
         #expect(!model.canRetry)
+        // …and the live-status row stays away: with nothing owed and nothing failed it would only
+        // repeat the row above it.
+        #expect(!model.showsStatusRow)
     }
 
     @Test func aDeliveredJobShowsWhenItLanded() async {
@@ -255,6 +258,22 @@ struct WeatherSettingsModelTests {
         await waitFor("history") { model.lastDelivery != nil }
         #expect(model.lastDeliveryValue == "12 min ago")
         #expect(model.statusLine == "Delivered 12 min ago")
+        #expect(!model.showsStatusRow, "a success needs one line, not two")
+    }
+
+    /// A failed last run is the one thing the delivery row cannot say, so it gets its own line —
+    /// labelled as history ("Last try"), not as something still happening.
+    @Test func aFailedLastRunIsStatedAsHistoryNotAsProgress() async {
+        let (model, _, _) = makeModel(history: [
+            historyEntry(outcome: .committed, minutesAgo: 90),
+            historyEntry(outcome: .failed, failure: .uploadFailed, minutesAgo: 6, attempts: 6),
+        ])
+        model.start()
+        await waitFor("history") { model.lastAttempt != nil }
+        #expect(model.showsStatusRow)
+        #expect(model.statusRowLabel == "Last try")
+        #expect(model.statusLine == "Last try failed · The Bluetooth transfer dropped")
+        #expect(model.lastDeliveryValue == "2 h ago", "the successful one is still stated")
     }
 
     /// The acceptance question: "phone had the data but the upload failed" must read differently
@@ -270,6 +289,10 @@ struct WeatherSettingsModelTests {
         #expect(WeatherCopy.failureExplanation(fetchFailure)
             == "The forecast never reached the phone.")
         #expect(WeatherCopy.failureExplanation(historyEntry(outcome: .committed)) == nil)
+        // A job that ran out of time is not a send that failed, whatever phase it died in.
+        #expect(WeatherCopy.failureExplanation(historyEntry(
+            outcome: .failed, failure: .agedOut, phase: .bundleReady))
+            == "It expired before it reached the OBC.")
     }
 
     /// The two source-level splits this issue landed, read at the screen: a drop and a corruption
@@ -294,6 +317,8 @@ struct WeatherSettingsModelTests {
         model.start()
         await waitFor("pending") { model.pending != nil }
         #expect(model.statusLine == "Ready to send")
+        #expect(model.showsStatusRow)
+        #expect(model.statusRowLabel == "Now")
         #expect(model.canRetry)
 
         await model.retryNow()

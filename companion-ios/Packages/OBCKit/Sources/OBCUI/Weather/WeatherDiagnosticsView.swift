@@ -74,7 +74,10 @@ public struct WeatherDiagnosticsView: View {
                     .font(.obcMono(size: 12))
                     .foregroundStyle(OBCTheme.inkFaint)
                 Spacer(minLength: 4)
-                Text("req \(entry.requestID)")
+                // `verbatim`: a plain `Text("req \(id)")` is a LocalizedStringKey, and SwiftUI
+                // group-separates interpolated numbers by locale — the request id would render as
+                // "4.182" on a German phone, which is not the id the device sent.
+                Text(verbatim: "req \(entry.requestID)")
                     .font(.obcMono(size: 11))
                     .foregroundStyle(OBCTheme.inkFaint)
             }

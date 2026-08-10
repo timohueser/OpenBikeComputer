@@ -172,16 +172,19 @@ public struct WeatherSettingsView: View {
                 icon: "checkmark.seal",
                 iconColor: OBCTheme.forest,
                 label: "Last delivered",
-                value: model.lastDeliveryValue
+                value: model.lastDeliveryValue,
+                showsDivider: model.showsStatusRow
             )
-            OBCListRow(
-                icon: "arrow.triangle.2.circlepath",
-                iconColor: OBCTheme.wood,
-                label: "Now",
-                value: model.statusLine,
-                showsDivider: model.canRetry
-            )
-            .accessibilityIdentifier("weather.status")
+            if model.showsStatusRow {
+                OBCListRow(
+                    icon: "arrow.triangle.2.circlepath",
+                    iconColor: OBCTheme.wood,
+                    label: model.statusRowLabel,
+                    value: model.statusLine,
+                    showsDivider: model.canRetry
+                )
+                .accessibilityIdentifier("weather.status")
+            }
             if model.canRetry {
                 OBCListRow(
                     icon: "arrow.clockwise",

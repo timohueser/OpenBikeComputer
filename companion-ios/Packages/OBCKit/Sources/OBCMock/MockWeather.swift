@@ -90,7 +90,7 @@ public struct MockWeatherFixtures: Sendable {
         }
 
         switch state {
-        case .healthy, .unsupported:
+        case .healthy:
             return MockWeatherFixtures(
                 history: [
                     entry(.committed, nil, phase: .uploading, minutesAgo: 94, requestID: 4_180),
@@ -101,7 +101,9 @@ public struct MockWeatherFixtures: Sendable {
                 ],
                 pending: nil,
                 status: status([radar, model, floor], age: 200))
-        case .empty:
+        case .empty, .unsupported:
+            // A device that never asks has never been answered: an `unsupported` run with delivery
+            // rows in it would contradict its own banner.
             return MockWeatherFixtures(
                 history: [], pending: nil, status: status([radar, model, floor], age: 200))
         case .stale:

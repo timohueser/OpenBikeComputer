@@ -73,6 +73,14 @@ public enum WeatherCopy {
     /// exactly where the boundary sits.
     public static func failureExplanation(_ entry: WeatherJobHistoryEntry) -> String? {
         guard entry.outcome == .failed else { return nil }
+        // Two reasons are not about *where* the job got to, so the phase would mis-explain them: a
+        // job that ran out of time was not "failing to send", and a fixless request never had a
+        // place to fetch for.
+        switch entry.failureReason {
+        case .agedOut: return "It expired before it reached the OBC."
+        case .noPosition: return "The OBC couldn't say where it was."
+        default: break
+        }
         switch entry.phaseReached {
         case .readingContext:
             return "The app never got the request off the OBC."

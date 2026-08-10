@@ -254,6 +254,17 @@ public final class WeatherSettingsModel {
     /// Whether a *Retry now* row is worth showing at all.
     public var canRetry: Bool { jobs != nil && pending != nil }
 
+    /// Whether the live-status row is worth a line of its own. A successful last delivery is
+    /// already stated by the row above it, and repeating it there ("Last delivered 14 min ago" /
+    /// "Delivered 14 min ago") is the kind of filler the copy rules forbid. It earns its place only
+    /// when something is in flight or something went wrong.
+    public var showsStatusRow: Bool {
+        pending != nil || lastAttempt?.outcome == .failed
+    }
+
+    /// The status row's label: what is happening now, or what happened last.
+    public var statusRowLabel: String { pending != nil ? "Now" : "Last try" }
+
     /// The plain sentence under the status group: what is owed and who owes it.
     public var statusFooter: String {
         if deviceSupportsWeather == false {
