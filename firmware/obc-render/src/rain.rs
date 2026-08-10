@@ -57,22 +57,36 @@ pub use obc_map_scene::RAIN_BELOW_Z;
 /// most `√2/3` cells per pixel, so a 240-px row crosses at most `240·√2/(3·16) + 2 ≈ 10` tiles;
 /// the cache must hold that worst-case staircase **plus** the neighbouring rows' overlap, so a
 /// tile's whole contiguous span of use stays resident and every visible tile decodes exactly once
-/// per frame at any heading anywhere in the regime (pinned across the full reachable m/px range —
-/// including the 45°-worst-case boundary zooms — by `decode_bound_across_the_reachable_zoom_range`;
-/// eight slots measurably re-fetched near the regime edge). The bound that keeps rotation from
-/// causing per-pixel SD reads.
+/// per frame. The bound that keeps rotation from causing per-pixel SD reads.
 ///
-/// **Fourteen, not twelve, because a smoothing kernel reaches further than nearest neighbour**
+/// **Sixteen, not twelve, because a smoothing kernel reaches further than nearest neighbour**
 /// ([`RainSampling`]) — half a cell for the jitter modes, a whole one for bilinear's 2 × 2
-/// stencil — which widens that staircase by a tile at each end. Measured over the same sweep,
-/// worst case per frame for a 36-tile product at twelve slots:
-/// `Nearest` 36, `EdgeSoften` 36, `Jitter` 37, `Bilinear` **71**; at fourteen, all four sit at 36.
-/// The two extra slots cost 524 B of [`RainScratch`], which the arena's render arm absorbs
-/// without moving a resident byte. With `Bilinear` shipped (#1250) these two slots are load-
-/// bearing — at twelve the default would very nearly double its SD reads.
-/// `the_decode_bound_holds_in_every_sampling_mode` is the check, and it covers all four modes so
-/// the number stays honest if the knob is ever flipped back.
-pub const RAIN_TILE_SLOTS: usize = 14;
+/// stencil — which widens that staircase by a tile at each end.
+///
+/// The sizing sweep has **three** axes: zoom, heading, and **camera phase** — where the tile
+/// lattice falls under the scanline, which is free and which the smoothing kernels are precisely
+/// sensitive to. Worst case per frame for a 36-tile product, over the full reachable m/px range ×
+/// 24 headings × a 16 × 16 grid of sub-tile offsets:
+///
+/// | slots | `Nearest` | `EdgeSoften` | `Jitter` | `Bilinear` |
+/// | ---: | ---: | ---: | ---: | ---: |
+/// | 12 | 36 | 36 | 37 | 71 |
+/// | 14 | 36 | 36 | **37** | **47** |
+/// | 15 | 36 | 36 | 36 | 36 |
+/// | 16 | 36 | 36 | 36 | 36 |
+///
+/// Fifteen is the measured floor and sixteen is what ships: the whole lesson of the phase axis is
+/// that a *measured* minimum is not a *bound*, so the constant does not sit on the cliff edge. A
+/// pinned-camera version of the sweep reported twelve as sufficient for every mode, and a coarser
+/// 8 × 8 phase grid still missed jitter's 37 — both numbers were real and both were wrong.
+///
+/// The four extra slots over twelve cost 1,048 B of [`RainScratch`], which the arena's render arm
+/// absorbs without moving a resident byte. With `Bilinear` shipped (#1250) they are load-bearing,
+/// not headroom: at fourteen the default re-decodes 11 tiles per frame (+31 % SD reads) on a
+/// heading-up ride at the coarse end of the regime — exactly where WX11's `rain_min_zoom` clamp
+/// parks the rain map. `the_decode_bound_holds_in_every_sampling_mode` is the check, and it covers
+/// all four modes so the number stays honest if the knob is ever flipped back.
+pub const RAIN_TILE_SLOTS: usize = 16;
 
 /// The overlay's **zoom regime** cap: the rain raster draws only while each **grid axis** advances
 /// at or below this many cells per screen pixel — the Euclidean row norms of the screen→grid
@@ -86,15 +100,19 @@ pub const RAIN_TILE_SLOTS: usize = 14;
 /// `1/3` means every provider cell spans **≥ 3 px along each grid axis** in-regime, which buys
 /// two locked properties at once:
 ///
-/// - **no strong cell can vanish** — nearest-neighbour sampling cannot skip a cell wider than a
-///   pixel, so a storm core is always hit while the overlay draws at all (the "bounded
-///   conservative cell selection" the issue permits is unnecessary inside the regime, and outside
-///   it nothing draws rather than something wrong);
+/// - **no strong cell can vanish** — no sampling mode can skip a cell wider than a pixel, so a
+///   storm core is always hit while the overlay draws at all. Nearest neighbour cannot skip it
+///   because the cell covers ≥ 3 px of every scanline crossing it; the smoothing modes
+///   ([`RainSampling`]) only ever *widen* a cell's influence — jitter displaces the sample point
+///   by at most half a cell, and bilinear's stencil is a superset of the pixel's own cell — so
+///   none of them can shrink a core below visibility either. (The "bounded conservative cell
+///   selection" the issue permits is unnecessary inside the regime, and outside it nothing draws
+///   rather than something wrong.)
 /// - **no cache thrash** — a scanline's combined step is at most `√2 × RAIN_MAX_CELL_STEP` cells
 ///   per pixel (both norms at cap, 45° heading), so a 240-px row crosses at most
 ///   `240·√2/(3·16) + 2 ≈ 10` tiles, inside the [`RAIN_TILE_SLOTS`]-slot cache — each visible
-///   tile decodes once per frame at any heading (test-pinned across the whole reachable m/px
-///   range).
+///   tile decodes once per frame. The slot count is sized by sweeping zoom × heading × **camera
+///   phase**; see [`RAIN_TILE_SLOTS`], where the phase axis is the reason the number is 16.
 ///
 /// For a 1 km product the regime covers up to ~333 m/px — at **every** heading — comfortably past
 /// the locked 50 km view (~208 m/px); coarser products reach proportionally further out. **Out of
@@ -784,6 +802,9 @@ mod tests {
         px: std::vec::Vec<u16>,
     }
 
+    /// The [] background sentinel: a pixel the overlay never painted.
+    const BLANK: u16 = 0xFFFF - 1;
+
     impl Frame {
         fn new(w: i32, h: i32) -> Self {
             Self { w, h, px: std::vec![0xFFFF_u16 - 1; (w * h) as usize] }
@@ -954,7 +975,9 @@ mod tests {
     /// The rotation/SD-thrash bound, re-pinned across the **whole reachable m/px range** (the
     /// app's zoom clamp reaches ~111 km/px — adversarial review of this PR) at every heading:
     /// in regime, fetches never exceed the 36-tile product (no per-scanline re-reading at any
-    /// rotation — the regime cap keeps a row's tile staircase inside the 8-slot cache); out of
+    /// rotation — the regime cap keeps a row's tile staircase inside the [`RAIN_TILE_SLOTS`]-slot
+    /// cache; this one pins a single camera, and
+    /// `the_decode_bound_holds_in_every_sampling_mode` is the one that sweeps phase); out of
     /// regime the overlay decodes nothing, paints nothing, and reports itself
     /// ([`RenderStats::rain_out_of_regime`]); the public [`rain_in_regime`] predicate agrees with
     /// the drawn outcome at every point; and the locked 50 km view (~208 m/px) stays **in**
@@ -1184,6 +1207,67 @@ mod tests {
         }
     }
 
+    /// **The contrast variants (#1250 review).** The two pixel-identity pins above hold the wet
+    /// side at a single band on purpose — that is what makes whole-frame equality a legal
+    /// assertion — but it also means bilinear degenerates to nearest in the interior, so those
+    /// tests exercise the fallback without ever exercising the interpolation. These fixtures put
+    /// a real dry ↔ torrential contrast either side of the gap, which makes the modes genuinely
+    /// diverge, and then assert the property that is still exactly true with contrast present:
+    ///
+    /// **no mode ever paints a pixel whose own cell is no-data or off-grid.** Interior colours may
+    /// differ (that is the whole point of the round); the *coverage* may not grow by one pixel.
+    ///
+    /// The no-data set is identified without replicating the screen→grid transform: a control
+    /// frame maps every real cell to band 12, whose coverage is a full 16/16, so in the control
+    /// `painted ⟺ the pixel's cell is real`. Each mode's painted set must be a subset of that.
+    #[test]
+    fn no_mode_paints_into_no_data_over_a_contrasting_field() {
+        let grid = dwd_grid();
+        // A ragged stripe of no-data, and an interior hole — the two shapes a radar gap takes.
+        let ragged = |r: u32, c: u32| c + (r % 5) >= 40 && c + (r % 5) < 48;
+        let hole = |r: u32, c: u32| (30..44).contains(&r) && (30..44).contains(&c);
+        for (name, gap) in [("ragged stripe", &ragged as &dyn Fn(u32, u32) -> bool), ("interior hole", &hole)] {
+            // Dry/torrential blocks either side of the gap: maximum contrast for bilinear.
+            let pattern = |r: u32, c: u32| {
+                if gap(r, c) {
+                    15
+                } else if (r / 3 + c / 3).is_multiple_of(2) {
+                    0
+                } else {
+                    12
+                }
+            };
+            let control = |r: u32, c: u32| if gap(r, c) { 15 } else { 12 };
+            for course_deg in [0.0_f32, 37.0, 218.5] {
+                // ~100 m/px: a 1 km cell spans ~10 px, so several blocks and the gap are all on
+                // screen at once. At the pixel-identity tests' 4 m/px a single block fills the
+                // frame and no mode could diverge from any other.
+                let zoom = crate::viewport::zoom_for_mpp(100.0);
+                let vp = Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, zoom, course_deg.to_radians());
+                let mut ctl = TestSource { grid, pattern: control, fetches: 0 };
+                let (real_cells, _) = draw_mode(&vp, &mut ctl, 240, 320, RainSampling::Nearest);
+
+                let mut nearest_src = TestSource { grid, pattern, fetches: 0 };
+                let (nearest, _) = draw_mode(&vp, &mut nearest_src, 240, 320, RainSampling::Nearest);
+                let mut diverged = false;
+                for mode in MODES {
+                    let mut source = TestSource { grid, pattern, fetches: 0 };
+                    let (frame, _) = draw_mode(&vp, &mut source, 240, 320, mode);
+                    for (i, (&px, &ctl_px)) in frame.px.iter().zip(real_cells.px.iter()).enumerate() {
+                        assert!(
+                            px == BLANK || ctl_px != BLANK,
+                            "{mode:?} painted into no-data at pixel {i} ({name}, course {course_deg})"
+                        );
+                    }
+                    diverged |= frame.px != nearest.px;
+                }
+                // If nothing diverged the fixture has no contrast left and the subset check above
+                // is proving nothing about interpolation.
+                assert!(diverged, "no mode diverged from nearest on {name} at course {course_deg} — fixture is moot");
+            }
+        }
+    }
+
     /// The same, for the grid's own outer boundary: off-grid is no-data by another name, so the
     /// frame edge must not soften either.
     #[test]
@@ -1277,37 +1361,108 @@ mod tests {
         assert_ne!(DITHER_B, BAYER, "bilinear must not share the transparency matrix");
     }
 
+    /// Every camera the decode-bound tests sweep phase over: the base position plus the two
+    /// worst cases the exhaustive sweep found, each recorded with the configuration that produced
+    /// it. Pinning them keeps the regression guard fast without losing the findings.
+    ///
+    /// At twelve slots these measured 71 (bilinear) and 37 (jitter); at fourteen, 47 and 37; at
+    /// sixteen — what ships — both sit at the 36-tile product size.
+    const DECODE_WORST_CASES: [(f32, i32, i32, i32); 2] = [
+        (330.0, 45, 7_600_000, 47_472_000),  // Bilinear's worst: 47 fetches at 14 slots
+        (300.0, 225, 7_788_118, 47_517_000), // Jitter's worst: 37 fetches at 14 slots
+    ];
+
+    /// One frame's decode count, asserted against the 36-tile product.
+    fn assert_decode_bound(grid: RainGrid, mpp: f32, course_deg: i32, cam: (i32, i32), mode: RainSampling) {
+        let zoom = crate::viewport::zoom_for_mpp(mpp);
+        let vp = Viewport::new_rotated(240.0, 320.0, cam.0, cam.1, zoom, (course_deg as f32).to_radians());
+        let mut source = TestSource { grid, pattern: |r, c| ((r / 3 + c / 2) % 13) as u8, fetches: 0 };
+        let (_, stats) = draw_mode(&vp, &mut source, 240, 320, mode);
+        if stats.rain_out_of_regime {
+            assert_eq!(source.fetches, 0, "{mode:?} decoded out of regime");
+            return;
+        }
+        assert!(
+            source.fetches <= 36,
+            "{mode:?} at {mpp} m/px, {course_deg}deg, cam {cam:?}: {} fetches for a 36-tile product \
+             — the smoothing kernel outgrew RAIN_TILE_SLOTS",
+            source.fetches
+        );
+    }
+
     /// The rotation/SD-thrash bound survives smoothing: reaching half a cell (jitter) or a whole
     /// one (bilinear's stencil) further than nearest may add tiles to a scanline's staircase, and
     /// the [`RAIN_TILE_SLOTS`] cache must still absorb it — one decode per visible tile per frame,
     /// at every heading, in **every** mode. This is the test that sizes the cache.
+    ///
+    /// **Camera phase is a third axis, and it is not optional.** Zoom and heading fix the *shape*
+    /// of a scanline's tile staircase; where the tile lattice falls under it is free, and the
+    /// smoothing kernels are precisely sensitive to it. An earlier version pinned one camera and
+    /// concluded twelve slots sufficed for every mode — bilinear actually takes 47 fetches at
+    /// 330 m/px / 45° and jitter 37 at 300 m/px / 225°, both invisible from that camera.
+    ///
+    /// This is the **fast regression guard**, in three parts: the full zoom × heading sweep at the
+    /// base camera, the worst cases the exhaustive search found ([`DECODE_WORST_CASES`]), and a
+    /// coarse phase grid at the coarse zooms where the staircase is widest. The exhaustive 16 × 16
+    /// phase search that *derived* those numbers is
+    /// `the_decode_bound_survives_an_exhaustive_phase_sweep`, `#[ignore]`d because it renders
+    /// ~172,000 frames; re-run it whenever a sampler, the regime cap or the tile shape changes.
     #[test]
     fn the_decode_bound_holds_in_every_sampling_mode() {
         let grid = dwd_grid();
+        let tile_lon = (grid.east_udeg - grid.west_udeg) / 6;
+        let tile_lat = (grid.north_udeg - grid.south_udeg) / 6;
+        for mode in MODES {
+            // 1. Every reachable zoom at every heading, base camera.
+            for mpp in [1.0_f32, 10.0, 50.0, 100.0, 208.0, 300.0, 330.0] {
+                for course_deg in (0..360).step_by(15) {
+                    assert_decode_bound(grid, mpp, course_deg, (7_600_000, 47_400_000), mode);
+                }
+            }
+            // 2. The exhaustive sweep's findings, pinned.
+            for (mpp, course_deg, lon, lat) in DECODE_WORST_CASES {
+                assert_decode_bound(grid, mpp, course_deg, (lon, lat), mode);
+            }
+            // 3. A phase grid at the coarse end, where a scanline crosses the most tiles.
+            for mpp in [300.0_f32, 330.0] {
+                for course_deg in (0..360).step_by(45) {
+                    for pi in 0..4 {
+                        for pj in 0..4 {
+                            let cam = (7_600_000 + pi * (tile_lon / 4), 47_400_000 + pj * (tile_lat / 4));
+                            assert_decode_bound(grid, mpp, course_deg, cam, mode);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The exhaustive phase search behind [`RAIN_TILE_SLOTS`] — the *derivation*, not a guard.
+    /// Every reachable zoom × 24 headings × a 16 × 16 grid of sub-tile camera offsets spanning one
+    /// whole tile, in all four modes: ~172,000 rendered frames, minutes even in release, which is
+    /// why it is `#[ignore]`d rather than run on every commit.
+    ///
+    /// Run it (`cargo test --release -p obc-render -- --ignored`) whenever a sampling mode, the
+    /// zoom regime cap or the tile geometry changes, and re-derive the slot count from what it
+    /// reports. A coarser 8 × 8 grid is *not* a substitute: it misses jitter's 37-fetch case
+    /// entirely, whose worst camera lands on an odd sixteenth in both axes.
+    #[test]
+    #[ignore = "exhaustive derivation: ~172k frames, minutes to run"]
+    fn the_decode_bound_survives_an_exhaustive_phase_sweep() {
+        let grid = dwd_grid();
+        let tile_lon = (grid.east_udeg - grid.west_udeg) / 6;
+        let tile_lat = (grid.north_udeg - grid.south_udeg) / 6;
+        const PHASE_STEPS: i32 = 16;
         for mode in MODES {
             for mpp in [1.0_f32, 10.0, 50.0, 100.0, 208.0, 300.0, 330.0] {
-                let zoom = crate::viewport::zoom_for_mpp(mpp);
                 for course_deg in (0..360).step_by(15) {
-                    let vp = Viewport::new_rotated(
-                        240.0,
-                        320.0,
-                        7_600_000,
-                        47_400_000,
-                        zoom,
-                        (course_deg as f32).to_radians(),
-                    );
-                    let mut source = TestSource { grid, pattern: |r, c| ((r / 3 + c / 2) % 13) as u8, fetches: 0 };
-                    let (_, stats) = draw_mode(&vp, &mut source, 240, 320, mode);
-                    if stats.rain_out_of_regime {
-                        assert_eq!(source.fetches, 0, "{mode:?} decoded out of regime");
-                        continue;
+                    for pi in 0..PHASE_STEPS {
+                        for pj in 0..PHASE_STEPS {
+                            let cam =
+                                (7_600_000 + pi * (tile_lon / PHASE_STEPS), 47_400_000 + pj * (tile_lat / PHASE_STEPS));
+                            assert_decode_bound(grid, mpp, course_deg, cam, mode);
+                        }
                     }
-                    assert!(
-                        source.fetches <= 36,
-                        "{mode:?} at {mpp} m/px, {course_deg}deg: {} fetches for a 36-tile product \
-                         — the smoothing kernel outgrew RAIN_TILE_SLOTS",
-                        source.fetches
-                    );
                 }
             }
         }
@@ -1388,9 +1543,9 @@ mod tests {
     /// in `cargo test` rather than in the board build.
     #[test]
     fn rain_scratch_size_is_pinned() {
-        // 12 slots x 256 cells + 12 keys x 4 B + 12 flags + the round-robin cursor + the
-        // one-entry slot memo (key + slot), rounded to the struct's 4-byte alignment.
-        assert_eq!(core::mem::size_of::<RainScratch>(), 3_660);
+        // RAIN_TILE_SLOTS (16) x 256 cells + 16 keys x 4 B + 16 flags + the round-robin cursor +
+        // the one-entry slot memo (key + slot), rounded to the struct's 4-byte alignment.
+        assert_eq!(core::mem::size_of::<RainScratch>(), 4_184);
     }
 
     /// The Bayer matrix is the canonical index-4 ordered matrix: a permutation of 0..16 in which
