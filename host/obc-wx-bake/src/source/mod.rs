@@ -49,16 +49,15 @@ pub struct MosaicSource {
 /// number to keep in sync, and [`mosaic_rank`] is the only reader.
 pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
     MosaicSource { id: dwd_rv::ID, why: "national 1 km radar nowcast (Germany) — the finest radar we ingest" },
-    // WXR6 #1245's rows, in the slot WXR3 left for them. Below `dwd-rv`, which is gauge-adjusted
-    // and carries +120 min of nowcast frames OPERA has none of; above every model. Their order
-    // relative to `us` is immaterial — CONUS and Europe never share a cell — so they sit where
-    // the placeholder was rather than being argued about.
+    MosaicSource { id: us::ID, why: "national CONUS composite: 1 km MRMS radar observation, 3 km HRRR model ahead" },
+    // WXR6 #1245's rows. Below every national radar composite and above every model, which is
+    // the stated rule with no exception attached: `us` covers CONUS and OPERA covers Europe, so
+    // the two never contend for a cell and nothing is lost by reading the rule literally.
     MosaicSource { id: opera_cirrus::ID, why: "pan-European 1 km radar: 5-minute reflectivity, the finest thing over Europe" },
     MosaicSource {
         id: opera_nimbus::ID,
         why: "pan-European 2 km radar rain rate — coarser and later than CIRRUS, but native mm/h and near-surface, and it covers cells CIRRUS does not",
     },
-    MosaicSource { id: us::ID, why: "national CONUS composite: 1 km MRMS radar observation, 3 km HRRR model ahead" },
     MosaicSource { id: icon_eu::ID, why: "pan-European 6.5 km model — fill where no radar reaches" },
     MosaicSource { id: gfs::ID, why: "global 27.75 km model floor — the last row, and the reason no cell is blank" },
 ];
@@ -225,9 +224,12 @@ mod priority_tests {
         assert!(rank(dwd_rv::ID) < rank(icon_eu::ID), "national radar must beat the pan-European model");
         assert!(rank(us::ID) < rank(icon_eu::ID), "a national composite must beat the pan-European model");
         assert!(rank(icon_eu::ID) < rank(gfs::ID), "the regional model must beat the global floor");
-        // WXR6 #1245: pan-European radar sits under the national composite that overlaps it and
-        // over every model, and the finer, fresher OPERA product outranks the coarser one.
-        assert!(rank(dwd_rv::ID) < rank(opera_cirrus::ID), "national radar must beat pan-European radar");
+        // WXR6 #1245: pan-European radar sits under **every** national radar composite and over
+        // every model — the rule as stated, with no exception — and the finer, fresher OPERA
+        // product outranks the coarser one.
+        for national in [dwd_rv::ID, us::ID] {
+            assert!(rank(national) < rank(opera_cirrus::ID), "{national} must beat pan-European radar");
+        }
         assert!(rank(opera_cirrus::ID) < rank(opera_nimbus::ID), "1 km / 5 min must beat 2 km / 15 min");
         assert!(rank(opera_nimbus::ID) < rank(icon_eu::ID), "any radar must beat the pan-European model");
         assert_eq!(
