@@ -37,6 +37,10 @@ public final class WeatherSettingsModel {
     /// True when the device stored a refresh byte this build cannot name — a newer firmware, not a
     /// broken one. The row says so instead of showing a made-up interval.
     public private(set) var refreshIsUnknownToThisBuild = false
+    /// The write went out but the confirming read never came back, so the value on this row is the
+    /// rider's choice and *not* device truth. Said out loud rather than left to look identical to a
+    /// confirmed value; settled by a re-read on the next visit.
+    public private(set) var refreshIsUnconfirmed = false
     public private(set) var hasReadConfig = false
     /// The last interval write failed; the view surfaces it once and clears it.
     public var refreshWriteFailed = false
@@ -66,6 +70,18 @@ public final class WeatherSettingsModel {
     private let now: @Sendable () -> Date
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
+    /// The interval write currently in flight, if any — the tail of a single serial chain. See
+    /// ``setRefresh(_:)``.
+    @ObservationIgnored private var refreshWriteTask: Task<Void, Never>?
+    /// Bumped by every selection; a write task acts only while it still matches.
+    @ObservationIgnored private var refreshWriteGeneration = 0
+    /// Selections written but not yet settled. While this is non-zero the refresh field belongs to
+    /// the write chain, and a routine device re-read may not touch it.
+    @ObservationIgnored private var refreshWritesInFlight = 0
+    /// The last interval the *device* stated, and whether it was one this build cannot name — the
+    /// only thing a failed write may revert to.
+    @ObservationIgnored private var confirmedRefresh: WeatherRefresh?
+    @ObservationIgnored private var confirmedRefreshIsUnknown = false
 
     public init(
         transport: any DeviceTransport,
@@ -86,6 +102,7 @@ public final class WeatherSettingsModel {
 
     deinit {
         streamTasks.forEach { $0.cancel() }
+        refreshWriteTask?.cancel()
     }
 
     /// Subscribe the link state and load everything the screen shows (call once, from `.task`).
@@ -107,6 +124,18 @@ public final class WeatherSettingsModel {
         Task { [weak self] in await self?.loadServiceStatus() }
     }
 
+    /// The view's `.task` hook. First appearance starts the streams; a later one settles anything
+    /// the screen knows it is unsure about — today that is exactly one thing: an interval whose
+    /// confirming read never came back (F7). Re-reading everything on every appearance would be a
+    /// device round trip for a screen the rider is only glancing at.
+    public func appeared() async {
+        guard started else {
+            start()
+            return
+        }
+        if refreshIsUnconfirmed { await refreshAll() }
+    }
+
     /// Re-read everything that can change behind the screen's back (the pull-to-refresh / reappear
     /// hook). Deliberately cheap: the manifest read rides the client's 60 s cache.
     public func refreshAll() async {
@@ -122,15 +151,26 @@ public final class WeatherSettingsModel {
             deviceSupportsWeather = info.supportsWeather
         }
         guard let config = try? await transport.readConfig() else { return }
+        // The other unordered read-back, arriving by the other door. This screen re-reads the
+        // device on launch *and* when the link comes up, and either of those can still be in the
+        // air when the rider picks a new interval — landing afterwards it would snap the row back
+        // to the value the device held a moment ago, which reads exactly like a rejected write.
+        // A write in flight owns the refresh field until it settles (#1198 review).
+        guard refreshWritesInFlight == 0 else { return }
         applyReadConfig(config)
     }
 
+    /// The **only** writer of confirmed device truth. Everything else that moves `refresh` moves an
+    /// optimistic guess, and says so.
     private func applyReadConfig(_ config: DeviceConfig) {
         hasReadConfig = true
         // `effectiveWeatherRefresh` is the one correct reader: an absent field is the device's
         // documented default (30 min), and only an interval this build cannot name reads as `nil`.
         refresh = config.effectiveWeatherRefresh
         refreshIsUnknownToThisBuild = config.effectiveWeatherRefresh == nil
+        refreshIsUnconfirmed = false
+        confirmedRefresh = refresh
+        confirmedRefreshIsUnknown = refreshIsUnknownToThisBuild
     }
 
     /// Whether the refresh control may be operated: a connected device that announced the weather
@@ -141,26 +181,50 @@ public final class WeatherSettingsModel {
 
     /// Write a new interval to the device (read-modify-write, so the name and units survive).
     /// Optimistic: the row moves at once and reverts if the device never took it.
+    ///
+    /// **Serial, and last-writer-wins.** A rider scrubbing the picker fires several of these within
+    /// a second, and unsupervised they are three concurrent read-modify-writes plus three
+    /// confirming reads landing in whatever order the link feels like. Two things fix that: each
+    /// write awaits its predecessor, so the device sees them in tap order and no read-modify-write
+    /// straddles another; and every task carries the generation it was born with, so a superseded
+    /// one neither writes a value the rider has already changed their mind about nor applies a
+    /// read-back that would snap the row to a value the device no longer holds (#1198 review).
     public func setRefresh(_ new: WeatherRefresh) {
         guard canEditRefresh, new != refresh || refreshIsUnknownToThisBuild else { return }
-        let previous = refresh
-        let previousUnknown = refreshIsUnknownToThisBuild
         refresh = new
         refreshIsUnknownToThisBuild = false
-        Task { [weak self, transport] in
+        refreshIsUnconfirmed = false
+        refreshWriteGeneration &+= 1
+        let generation = refreshWriteGeneration
+        let predecessor = refreshWriteTask
+        refreshWritesInFlight += 1
+        refreshWriteTask = Task { [weak self, transport] in
+            await predecessor?.value
+            guard let self else { return }
+            defer { refreshWritesInFlight -= 1 }
+            guard generation == refreshWriteGeneration else { return }
             do {
                 var config = try await transport.readConfig()
                 config.weatherRefreshRaw = new.rawValue
                 try await transport.writeConfig(config)
+                guard generation == refreshWriteGeneration else { return }
                 // Read back rather than trust the write: the device applies §11.8's strict half and
-                // is the only authority on what it stored.
-                if let stored = try? await transport.readConfig() {
-                    self?.applyReadConfig(stored)
+                // is the only authority on what it stored. A read that never answers leaves the row
+                // *unconfirmed* rather than silently promoting this phone's optimism to device
+                // truth — the write may well have landed, but "may well have" is not a value.
+                let stored = try? await transport.readConfig()
+                guard generation == refreshWriteGeneration else { return }
+                if let stored {
+                    applyReadConfig(stored)
+                } else {
+                    refreshIsUnconfirmed = true
                 }
             } catch {
-                guard let self else { return }
-                refresh = previous
-                refreshIsUnknownToThisBuild = previousUnknown
+                guard generation == refreshWriteGeneration else { return }
+                // Back to the last value the *device* stated, never to an earlier optimistic guess.
+                refresh = confirmedRefresh
+                refreshIsUnknownToThisBuild = confirmedRefreshIsUnknown
+                refreshIsUnconfirmed = false
                 refreshWriteFailed = true
             }
         }
@@ -320,15 +384,16 @@ public final class WeatherSettingsModel {
     public var serviceFooter: String {
         switch service {
         case .loading:
-            return "Reading what the weather service is publishing."
+            return "Reading what the \(WeatherCopy.serviceName) is publishing."
         case .unavailable:
-            return "Couldn't reach the weather service. Hourly forecasts come straight from MET "
-                + "Norway and still work; the rain map needs this service."
+            return "Couldn't reach the \(WeatherCopy.serviceName). Hourly forecasts come straight "
+                + "from MET Norway and still work; the rain map needs this service."
         case .available(let status):
             let stale = status.staleProducts(at: now())
             if stale.isEmpty {
-                return "Rain maps are built once, server-side, and published as plain files. Your "
-                    + "OBC gets whichever product covers where you are."
+                return "The \(WeatherCopy.serviceName) builds rain maps once, server-side, and "
+                    + "publishes them as plain files. Your OBC gets whichever product covers where "
+                    + "you are."
             }
             let names = stale.map(\.id).sorted().joined(separator: ", ")
             let since = stale.map(\.stalenessDeadline).min().map {

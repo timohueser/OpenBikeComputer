@@ -47,7 +47,8 @@ public struct MockWeatherFixtures: Sendable {
             _ outcome: WeatherJobHistoryEntry.Outcome, _ failure: WeatherJobFailure?,
             phase: WeatherJobPhase, minutesAgo: Double, requestID: UInt32 = 4_182,
             attempts: Int = 1, product: String? = "dwd-rv",
-            readMS: Int? = 1_700, uploadMS: Int? = 2_400, bytes: Int? = 43_800
+            readMS: Int? = 1_700, uploadMS: Int? = 2_400, bytes: Int? = 43_800,
+            noRainMap: NoRainMapReason? = nil
         ) -> WeatherJobHistoryEntry {
             WeatherJobHistoryEntry(
                 startedAt: now.addingTimeInterval(-minutesAgo * 60 - 22),
@@ -55,7 +56,7 @@ public struct MockWeatherFixtures: Sendable {
                 requestID: requestID, outcome: outcome, failureReason: failure,
                 phaseReached: phase, attempts: attempts, bundleByteCount: bytes,
                 readConnectedMilliseconds: readMS, uploadConnectedMilliseconds: uploadMS,
-                precipitationProductID: product)
+                precipitationProductID: product, noRainMapReason: noRainMap)
         }
 
         let radar = WeatherServiceProductStatus(
@@ -129,8 +130,12 @@ public struct MockWeatherFixtures: Sendable {
                           requestID: 4_181, attempts: 6, product: nil, uploadMS: nil, bytes: nil),
                     entry(.failed, .transferCorrupted, phase: .uploading, minutesAgo: 21,
                           requestID: 4_182, attempts: 3, uploadMS: 4_100),
-                    entry(.failed, .agedOut, phase: .bundleReady, minutesAgo: 8,
-                          requestID: 4_183, attempts: 2, uploadMS: nil),
+                    // Its own calm outcome, not a failure: the job continued and the row is there
+                    // to be readable, not alarming (#1198 review).
+                    entry(.agedOut, .agedOut, phase: .bundleReady, minutesAgo: 8,
+                          requestID: 4_183, attempts: 2, uploadMS: nil,
+                          noRainMap: .allCoveringProductsExpired(
+                              latestDeadline: now.addingTimeInterval(-2_400))),
                 ],
                 pending: WeatherJobPending(
                     phase: .bundleReady, requestID: 4_184,

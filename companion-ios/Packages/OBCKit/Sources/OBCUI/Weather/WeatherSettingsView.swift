@@ -53,7 +53,7 @@ public struct WeatherSettingsView: View {
             message: "Couldn't change the interval on your OBC. It kept its current setting.",
             duration: .seconds(4)
         )
-        .task { model.start() }
+        .task { await model.appeared() }
     }
 
     // MARK: Capability
@@ -98,7 +98,8 @@ public struct WeatherSettingsView: View {
                     Text(WeatherCopy.refreshValue(
                         model.refresh,
                         unknownToThisBuild: model.refreshIsUnknownToThisBuild,
-                        hasRead: model.hasReadConfig))
+                        hasRead: model.hasReadConfig,
+                        unconfirmed: model.refreshIsUnconfirmed))
                         .font(.system(size: 15))
                         .foregroundStyle(OBCTheme.inkFaint)
                     Image(systemName: "chevron.up.chevron.down")
@@ -121,6 +122,10 @@ public struct WeatherSettingsView: View {
         }
         if !model.canEditRefresh {
             return "The interval is stored on your OBC, so it can only be changed while connected."
+        }
+        if model.refreshIsUnconfirmed {
+            return "The new interval was sent, but your OBC didn't confirm what it stored. This "
+                + "screen re-reads it the next time you open it."
         }
         if model.refreshIsUnknownToThisBuild {
             return "Your OBC is set to an interval this app version doesn't know — a newer "
@@ -292,8 +297,7 @@ public struct WeatherSettingsView: View {
     // MARK: The two pushed pages
 
     private var aboutGroup: some View {
-        OBCGroupedSection(footer: "The weather service never receives your position. Only MET "
-            + "Norway does, for the hourly forecast.") {
+        OBCGroupedSection(footer: WeatherCopy.aboutFooter) {
             OBCListRow(
                 icon: "list.bullet.rectangle",
                 iconColor: OBCTheme.wood,

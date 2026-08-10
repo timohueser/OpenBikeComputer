@@ -86,7 +86,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
     public var bundleBuiltAt: Date?
     /// Diagnostics snapshots for the eventual history entry (no coordinates).
     public var precipitationProductID: String?
-    public var noRainMapReason: String?
+    public var noRainMapReason: NoRainMapReason?
     /// Completed attempts that ended in a retryable failure.
     public var attempts: Int
     /// Deferrals: waits the *device* (or a foreground transfer) asked for, which do not spend an
@@ -108,7 +108,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
         bundleWindow: [Int64]? = nil,
         bundleBuiltAt: Date? = nil,
         precipitationProductID: String? = nil,
-        noRainMapReason: String? = nil,
+        noRainMapReason: NoRainMapReason? = nil,
         attempts: Int = 0,
         deferrals: Int = 0,
         startedAt: Date,

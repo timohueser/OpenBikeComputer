@@ -59,6 +59,11 @@ public protocol WeatherJobControlling: Sendable {
     /// The job the checkpoint currently owes, coordinate-free; `nil` when nothing is owed.
     func pendingJob() async -> WeatherJobPending?
     /// Finish the owed job now, waiving the local retry cooldown. A no-op when nothing is owed.
+    ///
+    /// **Returns when the work is finished**, not when it is scheduled — including when the tap
+    /// lands on a run already in flight and is merged into it. The screen's spinner is bound to
+    /// this call, so returning on "queued" would stop the spinner while the job was still going
+    /// (#1198 review).
     func retryNow() async
 }
 
@@ -69,5 +74,8 @@ extension WeatherJobEngine: WeatherJobControlling {
 
     public func retryNow() async {
         await kick(.userRetry)
+        // `kick` returns immediately when it only *queued* the trigger behind a run in flight, so
+        // the wait for the loop to drain is the second half of the contract above.
+        await awaitIdle()
     }
 }

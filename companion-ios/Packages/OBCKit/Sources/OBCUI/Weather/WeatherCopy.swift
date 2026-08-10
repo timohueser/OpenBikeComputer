@@ -14,6 +14,24 @@ import OBCWeather
 /// Copy tone: plain. No wordplay, no reassurance the state does not support, no explainer line that
 /// repeats the row above it.
 public enum WeatherCopy {
+    // MARK: Names
+
+    /// What the rain-map half of the system is called, everywhere it is named.
+    ///
+    /// One name, three surfaces. The settings screen used to say "the weather service", the privacy
+    /// page "OBC's file storage" and, two bullets later, "OBC's own service" — three names for one
+    /// thing, on pages that link to each other, in the exact place a reader is trying to work out
+    /// how many parties there are (#1198 review). Written with the article separate so it reads as
+    /// a name rather than a slogan.
+    public static let serviceName = "OBC weather service"
+
+    /// The main screen's about-group footer. Lives here rather than inline in the view because it
+    /// makes the same claim the privacy page makes, and the test that keeps the two in step needs
+    /// something to hold.
+    public static let aboutFooter =
+        "The \(serviceName) is only ever asked for map files — a corridor that names a region, "
+        + "never your position. MET Norway receives the position, for the hourly forecast."
+
     // MARK: Refresh interval
 
     /// The rider-facing name of a refresh interval — the device's own Off / 15 / 30 / 60 / 120.
@@ -27,13 +45,17 @@ public enum WeatherCopy {
         }
     }
 
-    /// The value column for the refresh row. Three genuinely different unknowns, none of them
-    /// flattened into a plausible-looking interval:
-    /// nothing read yet, an interval this build does not know, and a device that is not there.
+    /// The value column for the refresh row. Four genuinely different unknowns, none of them
+    /// flattened into a plausible-looking interval: nothing read yet, an interval this build does
+    /// not know, a device that is not there — and a value this phone *chose* but never got
+    /// confirmed back, which is the one that would otherwise pass itself off as device truth.
     public static func refreshValue(
-        _ refresh: WeatherRefresh?, unknownToThisBuild: Bool, hasRead: Bool
+        _ refresh: WeatherRefresh?, unknownToThisBuild: Bool, hasRead: Bool,
+        unconfirmed: Bool = false
     ) -> String {
-        if let refresh { return refreshLabel(refresh) }
+        if let refresh {
+            return unconfirmed ? "\(refreshLabel(refresh)) · not confirmed" : refreshLabel(refresh)
+        }
         if unknownToThisBuild { return "Set on the device" }
         return hasRead ? "—" : "Not read yet"
     }
@@ -45,6 +67,7 @@ public enum WeatherCopy {
         case .committed: "Delivered"
         case .failed: "Failed"
         case .superseded: "Replaced"
+        case .agedOut: "Expired"
         }
     }
 
@@ -72,12 +95,12 @@ public enum WeatherCopy {
     /// the network, the Bluetooth link, or the OBC. Reads off the phase the job reached, which is
     /// exactly where the boundary sits.
     public static func failureExplanation(_ entry: WeatherJobHistoryEntry) -> String? {
-        guard entry.outcome == .failed else { return nil }
+        guard entry.outcome == .failed || entry.outcome == .agedOut else { return nil }
         // Two reasons are not about *where* the job got to, so the phase would mis-explain them: a
         // job that ran out of time was not "failing to send", and a fixless request never had a
         // place to fetch for.
         switch entry.failureReason {
-        case .agedOut: return "It expired before it reached the OBC."
+        case .agedOut: return "It went out of date before it reached the OBC."
         case .noPosition: return "The OBC couldn't say where it was."
         default: break
         }
@@ -88,6 +111,28 @@ public enum WeatherCopy {
             return "The forecast never reached the phone."
         case .bundleReady, .uploading:
             return "The phone had the weather ready; sending it to the OBC failed."
+        }
+    }
+
+    /// Why a delivered bundle carried no rain map, in words rather than in Swift's.
+    ///
+    /// The engine used to flatten this to `String(describing:)`, which put
+    /// `allCoveringProductsExpired(latestDeadline: 2026-08-10 12:00:00 +0000)` on a diagnostics row
+    /// — a case name, a label and a UTC debug date, none of which is copy. Each case gets its own
+    /// sentence, and the one associated value gets rendered as the time it is.
+    public static func noRainMapReasonLabel(_ reason: NoRainMapReason, locale: Locale = .current)
+        -> String {
+        switch reason {
+        case .corridorNotCovered:
+            return "no rain map covers this area"
+        case .allCoveringProductsExpired(let latestDeadline):
+            return "rain maps for this area expired at \(absolute(latestDeadline, locale: locale))"
+        case .serviceUnavailable:
+            return "the \(serviceName) couldn't be reached"
+        case .framesUnavailable:
+            return "the rain-map frames couldn't be downloaded"
+        case .noFramesInWindow:
+            return "no rain-map frame for the hours ahead"
         }
     }
 

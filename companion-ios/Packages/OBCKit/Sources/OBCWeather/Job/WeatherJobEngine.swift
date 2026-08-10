@@ -78,11 +78,19 @@ public actor WeatherJobEngine {
         /// cooldowns. Nothing persisted means nothing to do.
         case resume
         /// The rider tapped *Retry now* on the WX13 screen. Like `.resume` it finishes only what
-        /// the checkpoint already owes — the phone cannot invent a request the device did not
-        /// raise, and a manufactured read leg would spend a 60 s scan hunting an advertisement
-        /// nobody is broadcasting. Unlike `.resume` it ignores the local cooldown: an explicit tap
-        /// outranks a timer the rider cannot see. It never overrides the device's own ladder,
-        /// because there is nothing here to override — the device is not being asked anything new.
+        /// the checkpoint already owes: with nothing persisted it is a no-op, because the phone
+        /// cannot invent a request the device never raised.
+        ///
+        /// "Only what is owed" **includes the context read**, when that is the phase the checkpoint
+        /// is parked in. The device raised the request — the advertisement is what created the
+        /// checkpoint — so re-reading it is finishing the exchange, not manufacturing one. (An
+        /// earlier version of this comment claimed a tap never starts a read leg; it does, and it
+        /// should, or the one failure a rider is most likely to be staring at would have no retry.)
+        ///
+        /// Two things separate it from `.resume`. It ignores the local cooldown: an explicit tap
+        /// outranks a timer the rider cannot see. And it does not spend an attempt — the attempt
+        /// budget bounds the *autonomous* work this phone does per request, and a rider asking for
+        /// one more go must not be what abandons the job to the device's ladder.
         case userRetry
     }
 
@@ -95,6 +103,13 @@ public actor WeatherJobEngine {
 
     private var running = false
     private var queuedTrigger: Trigger?
+    /// Whether the run currently in flight was started by a rider's tap. Read only by
+    /// ``recordFailure(_:_:error:)``, which must not spend an attempt on one.
+    private var runIsUserInitiated = false
+    /// Callers parked in ``awaitIdle()`` until the run loop drains. `retryNow()` uses it so a tap
+    /// that only *queues* behind a run in flight still returns when the work is actually finished —
+    /// a spinner that stops on "queued" is a spinner that lies (#1198 review).
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
     /// The read leg's connected time, carried job-long for the history entry.
     private var readConnectedMilliseconds: Int?
     /// The last committed job's request id and commit time — so the transport's replayed/echoed
@@ -139,11 +154,24 @@ public actor WeatherJobEngine {
             queuedTrigger = nil
         }
         running = false
+        let waiters = idleWaiters
+        idleWaiters = []
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Suspend until no run is in flight. Returns immediately when the engine is already idle.
+    func awaitIdle() async {
+        guard running else { return }
+        await withCheckedContinuation { idleWaiters.append($0) }
     }
 
     /// Prefer the trigger that carries more information: a completed read beats a bare discovery,
-    /// and anything beats `.resume`.
-    private func merged(_ queued: Trigger?, with incoming: Trigger) -> Trigger {
+    /// a rider's tap beats the scene-phase resume that races it, and anything beats `.resume`.
+    ///
+    /// `internal` rather than `private` so the table can be pinned row by row — it is a policy
+    /// decision about whose intent survives a collision, and one wrong row silently swallows a
+    /// rider's press.
+    func merged(_ queued: Trigger?, with incoming: Trigger) -> Trigger {
         switch (queued, incoming) {
         case (nil, _): return incoming
         case (.contextRead(let snapshot, let ms), .resume),
@@ -152,6 +180,11 @@ public actor WeatherJobEngine {
             return .contextRead(snapshot, readConnectedMilliseconds: ms)
         case (.deviceRaisedRequest, .resume), (.deviceRaisedRequest, .userRetry):
             return .deviceRaisedRequest
+        // A queued tap outranks the scene-phase `.resume` that so often lands on top of it (open
+        // the app, tap Retry now: the foreground kick and the tap race). Without this row the tap
+        // was swallowed — `.resume` honours the cooldown the tap exists to waive, so the rider's
+        // press became a wait they could not see (#1198 review).
+        case (.userRetry, .resume): return .userRetry
         default: return incoming
         }
     }
@@ -163,6 +196,8 @@ public actor WeatherJobEngine {
     // MARK: - The run
 
     private func run(_ trigger: Trigger) async {
+        runIsUserInitiated = trigger == .userRetry
+        defer { runIsUserInitiated = false }
         let now = now()
         var job = store.load() ?? WeatherJobRecord(startedAt: now, updatedAt: now)
 
@@ -170,7 +205,7 @@ public actor WeatherJobEngine {
         // moved on, and the device's ladder has long since re-raised or the ride ended. It aged
         // out; it did not run out of attempts (it may have spent none) and nothing superseded it.
         if now.timeIntervalSince(job.startedAt) > configuration.jobLifetime, store.load() != nil {
-            finish(job: &job, outcome: .failed, failure: .agedOut, at: now)
+            finish(job: &job, outcome: .agedOut, failure: .agedOut, at: now)
             job = WeatherJobRecord(startedAt: now, updatedAt: now)
         }
 
@@ -248,7 +283,7 @@ public actor WeatherJobEngine {
             let failure: WeatherJobFailure =
                 (existing.requestID == snapshot.requestID && !freshEnough) ? .agedOut : .superseded
             history.append(historyEntry(
-                for: job, outcome: failure == .agedOut ? .failed : .superseded,
+                for: job, outcome: failure == .agedOut ? .agedOut : .superseded,
                 failure: failure, at: now))
         } else if sameRequest == false {
             // A *new* request id landing on a job that had not built anything yet still abandons
@@ -322,7 +357,7 @@ public actor WeatherJobEngine {
                     ]
                     job.bundleBuiltAt = now()
                     job.precipitationProductID = built.state.precipitation?.productID
-                    job.noRainMapReason = built.state.noRainMapReason.map { String(describing: $0) }
+                    job.noRainMapReason = built.state.noRainMapReason
                     job.phase = .bundleReady
                     persist(&job)
                 } catch let error as WeatherBundleBuildError {
@@ -337,6 +372,14 @@ public actor WeatherJobEngine {
                 // upload window) is old weather — rebuild rather than upload it as current.
                 if let builtAt = job.bundleBuiltAt,
                    now().timeIntervalSince(builtAt) > configuration.bundleMaxAge {
+                    // The *same* event `adopt(snapshot:into:at:)` records when a ladder re-read
+                    // finds the bundle expired, so it gets the same row. This is the resume path —
+                    // no re-read, just the app waking up on its own — and it used to discard the
+                    // bundle in silence: the ring showed a corridor fetch that vanished, and the
+                    // two horizons the engine enforces (`jobLifetime`, `bundleMaxAge`) were only
+                    // half visible (#1198 review).
+                    history.append(historyEntry(
+                        for: job, outcome: .agedOut, failure: .agedOut, at: now()))
                     job.bundleBytes = nil
                     job.bundleGeneration = nil
                     job.bundleWindow = nil
@@ -421,8 +464,14 @@ public actor WeatherJobEngine {
     }
 
     private func recordFailure(_ job: inout WeatherJobRecord, _ failure: WeatherJobFailure, error: Error) {
-        job.attempts += 1
-        if job.attempts >= configuration.maxAttempts {
+        // A rider's *Retry now* does not spend an attempt. The budget exists to bound what this
+        // phone does **on its own** per request — six autonomous goes, then the device's ladder
+        // owns it. A tap is not autonomous work, and letting taps burn the budget would mean the
+        // rider's third press is what abandons their own job (#1198 review). Spam is bounded
+        // elsewhere: the screen's in-flight gate allows one tap at a time, and a tap can only ever
+        // finish work the device already asked for.
+        if !runIsUserInitiated { job.attempts += 1 }
+        if !runIsUserInitiated, job.attempts >= configuration.maxAttempts {
             // The attempt count in the entry already says "exhausted"; the reason field keeps the
             // *last* failure, which is the diagnostic that matters on the WX13 screen.
             finish(job: &job, outcome: .failed, failure: failure, at: now())
