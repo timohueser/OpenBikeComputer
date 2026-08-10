@@ -14,6 +14,8 @@
 //! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
 //! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
 //! - [`cycle`] — the idempotent orchestrator a systemd timer invokes.
+//! - [`spike`] — the WXR1 (#1240) measurement harness. Throwaway, off the checked-in fixtures,
+//!   reachable only through the `spike` subcommand; nothing in the production path calls it.
 
 pub mod cycle;
 pub mod emit;
@@ -25,4 +27,5 @@ pub mod lcc;
 pub mod manifest;
 pub mod publish;
 pub mod source;
+pub mod spike;
 pub mod stereo;

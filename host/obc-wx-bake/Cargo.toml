@@ -28,3 +28,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 schemars = { version = "1", features = ["preserve_order"] }
 # The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack.
 ureq = "3"
+# WXR1 spike only (`src/spike.rs`, subcommand `spike`): a 4-thread pool to match the production
+# VPS shape, and `getrusage` for a true peak-RSS high-water mark. Both are already in the
+# workspace lock; the spike adds no new third-party code to the bakery.
+rayon = "1"
+libc = "0.2"
