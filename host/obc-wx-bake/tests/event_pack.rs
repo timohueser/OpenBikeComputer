@@ -18,6 +18,7 @@ use obc_formats::obcg;
 use obc_formats::precip4;
 use obc_wx_bake::manifest::{self, SourceClass};
 use obc_wx_bake::pack::{self, rebake, Event, Retrieval, Role};
+use obc_wx_bake::source::mrms;
 
 const EVENT_ID: &str = "us-derecho-2020-08-10";
 
@@ -105,11 +106,98 @@ fn read(relative: &str) -> Vec<u8> {
 fn the_pack_rebakes_byte_identically() {
     let event = event();
     let report = rebake::verify_rebake(&pack_root(), &event, &scratch("rebake")).expect("the pack re-bakes");
-    eprintln!("{EVENT_ID} re-bake:\n{}", report.summary());
-    // The replay is offline by construction: a `FixtureUpstream` 404s anything it was not given,
-    // so a re-bake that reached the network could not have succeeded.
-    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-    assert_eq!(report.published_objects, event.service.len(), "every published object is in the pack");
+    eprintln!("{EVENT_ID} re-bake:\n{}", report.cycle.summary());
+    assert!(report.cycle.warnings.is_empty(), "{:?}", report.cycle.warnings);
+    assert_eq!(report.cycle.published_objects, event.service.len(), "every published object is in the pack");
+
+    // Hermeticity, asserted rather than asserted about. `verify_rebake` already refuses a request
+    // no member accounts for; here the *converse* is checked, so a pack cannot pass by carrying
+    // members the bake never reads either.
+    eprintln!("{EVENT_ID} replay made {} requests", report.requests.len());
+    assert!(!report.requests.is_empty());
+    for member in event.service_members() {
+        let expected = match &member.retrieval {
+            Retrieval::Probe { .. } => format!("HEAD {}", member.url),
+            Retrieval::Body => member.url.clone(),
+            Retrieval::Range { start, end_inclusive, .. } => format!("{}#{start}-{end_inclusive}", member.url),
+        };
+        assert!(report.requests.contains(&expected), "the replay never asked for {expected} — a dead member");
+    }
+}
+
+/// **F1: the pack must not contain the future.** Every service member's key states when its bytes
+/// were published, and no service member may have been published after the capture instant.
+///
+/// This is the property the shipped pack originally violated: replayed against an archive that
+/// already holds the whole day, run discovery picked an HRRR run and an MRMS observation that did
+/// not exist yet, so the pack carried a model baseline with an extra hour of assimilation and
+/// radar the device could not have had. A nowcaster scored against `truth/` on that basis measures
+/// something no device will ever see.
+#[test]
+fn no_service_member_was_published_after_the_capture_instant() {
+    let event = event();
+    let at = manifest::parse_rfc3339(&event.bake.now).expect("bake.now is RFC 3339");
+    let mut suppressed = 0usize;
+    for member in event.service_members() {
+        let published =
+            pack::archive::published_at(&member.url).unwrap_or_else(|error| panic!("{}: {error}", member.url));
+        let exists = match &member.retrieval {
+            Retrieval::Probe { object_length } => object_length.is_some(),
+            _ => true,
+        };
+        if !exists {
+            // A probe that found nothing is the guard doing its work — and the only kind of
+            // service member allowed to name an object from the future.
+            suppressed += 1;
+            continue;
+        }
+        assert!(
+            published <= at,
+            "{} was published at {} — after the capture instant {}",
+            member.url,
+            manifest::rfc3339(published),
+            event.bake.now
+        );
+    }
+    assert!(suppressed > 0, "a capture that suppressed nothing has not exercised the as-of guard at all");
+    eprintln!("{EVENT_ID}: {suppressed} probes found nothing, which is the guard's fallback in the document");
+
+    // The truth ladder is the deliberate exception: it *is* the future, and every rung must be.
+    for frame in &event.truth_frames {
+        let valid = manifest::parse_rfc3339(&frame.valid_at).unwrap();
+        assert!(valid > at, "truth frame {} is not ahead of the capture instant", frame.path);
+    }
+}
+
+/// The pack states the ground it covers and the basemap that ground needs, so a future US pack
+/// drifting off the one map the bakery carries is visible in the document.
+#[test]
+fn the_pack_stays_on_the_basemap_it_names() {
+    let event = event();
+    assert_eq!(event.basemap_region, pack::US_BASEMAP_REGION);
+    let map = pack::US_BASEMAP_BBOX;
+    let coverage = event.coverage_udeg;
+    // Crops are aligned outward to whole tiles, so a window hugging a state border overshoots it
+    // by up to one tile of the finest lattice. That is the honest tolerance — derived, not chosen.
+    let tile = i64::from(mrms::GEOMETRY.tile_edge) * i64::from(mrms::GEOMETRY.cell_lat_udeg);
+    assert_eq!(tile, 640_000, "the observation's tile stride is 0.64 degrees");
+    for (edge, over) in [
+        ("south", map.south_udeg - coverage.south_udeg),
+        ("west", map.west_udeg - coverage.west_udeg),
+        ("north", coverage.north_udeg - map.north_udeg),
+        ("east", coverage.east_udeg - map.east_udeg),
+    ] {
+        assert!(
+            over <= tile,
+            "coverage reaches {:.3} degrees past the {edge} edge of {} — more than one tile, so this pack \
+             needs a basemap conversation rather than a quiet capture",
+            over as f64 / 1e6,
+            pack::US_BASEMAP_REGION
+        );
+    }
+    // And it must actually overlap the map, not merely sit near it.
+    assert!(coverage.south_udeg < map.north_udeg && coverage.north_udeg > map.south_udeg);
+    assert!(coverage.west_udeg < map.east_udeg && coverage.east_udeg > map.west_udeg);
 }
 
 /// Provenance: length + sha256 of every stored member and every baked object.
@@ -156,6 +244,10 @@ fn members_record_the_canonical_url_and_the_archive_it_came_from() {
     let ranges: Vec<&pack::Member> =
         event.members.iter().filter(|member| matches!(member.retrieval, Retrieval::Range { .. })).collect();
     assert_eq!(ranges.len(), 8, "eight HRRR PRATE messages");
+    assert!(
+        ranges.iter().all(|member| member.url.contains("hrrr.t17z.")),
+        "the as-of guard's fallback: at 18:52 the newest *complete* HRRR run is 17Z"
+    );
     for member in ranges {
         let Retrieval::Range { object_length, start, end_inclusive } = member.retrieval else { unreachable!() };
         assert!(object_length > 100_000_000, "{}: the whole object is {object_length} bytes", member.url);
@@ -173,14 +265,18 @@ fn the_frozen_manifest_is_the_real_composed_us_timeline() {
     assert_eq!(document.products.len(), 1);
     let product = &document.products[0];
     assert_eq!(product.id, "us");
-    assert_eq!(product.reference_time, "2020-08-10T18:52:00Z");
+    // 18:48, not the 18:52 the capture was clocked at: MRMS takes ~3 minutes to publish, so 18:48
+    // is the newest observation that existed at the capture instant. The as-of guard is what makes
+    // that the answer rather than a wish.
+    assert_eq!(product.reference_time, "2020-08-10T18:48:00Z");
     assert_eq!(product.frames.len(), 9);
     assert_eq!(product.frames[0].source_class, SourceClass::Observation);
     assert_eq!(product.frames[0].geometry.cell_size_m, 1_000);
-    // The forward frames keep HRRR's own 15-minute steps, which land at 8, 23, 38 ... minutes
-    // ahead of an 18:52 observation. Nothing is re-spaced onto a round cadence.
+    // The forward frames keep HRRR's own 15-minute steps — the 17Z run's +120..+225 leads, which
+    // land 12, 27, 42 ... minutes ahead of an 18:48 observation. Nothing is re-spaced onto a round
+    // cadence, and the run is 17Z because the 18Z set was still publishing.
     let forward: Vec<u32> = product.frames[1..].iter().map(|frame| frame.offset_min).collect();
-    assert_eq!(forward, vec![8, 23, 38, 53, 68, 83, 98, 113]);
+    assert_eq!(forward, vec![12, 27, 42, 57, 72, 87, 102, 117]);
     for frame in &product.frames[1..] {
         assert_eq!(frame.source_class, SourceClass::Forecast);
         assert_eq!(frame.geometry.cell_size_m, 3_000);
@@ -214,14 +310,24 @@ fn the_frames_actually_contain_the_storm() {
         wet as f64 / cells.len() as f64
     };
 
-    // The observation: a mature derecho over Iowa fills a serious fraction of the window.
-    assert!(wet_fraction("service/wx/v1/us/20200810T1852Z/f0.obcg") > 0.02);
-    // The model's view of the same storm, and its two-hour-out frame.
-    assert!(wet_fraction("service/wx/v1/us/20200810T1852Z/f8.obcg") > 0.02);
-    assert!(wet_fraction("service/wx/v1/us/20200810T1852Z/f113.obcg") > 0.005);
-    // …and the ground truth at both ends of the ladder.
-    assert!(wet_fraction("truth/f14.obcg") > 0.02);
-    assert!(wet_fraction("truth/f120.obcg") > 0.005);
+    // The floors are close to the measured values, not decorative. An earlier round used `> 0.02`
+    // against a 36.9 % observation — a pack that lost nine tenths of its precipitation would have
+    // sailed through. These sit roughly a quarter below what the bytes actually contain, which
+    // notices a real regression while leaving room for a re-capture's honest drift.
+    let document = manifest::from_json(&read(&format!("service/{}", event.manifest_key))).expect("manifest parses");
+    let product = &document.products[0];
+    let key = |index: usize| format!("service/{}", product.frames[index].key);
+
+    // The observation: a mature derecho fills a third of the window. Measured 36.92 %.
+    assert!(wet_fraction(&key(0)) > 0.28, "the observation frame lost its storm");
+    // The model's view of the same storm at its first step, and at the far end of the window.
+    // Measured 15.06 % and 8.57 % — the forecast lattice is coarser and the storm leaves eastward.
+    assert!(wet_fraction(&key(1)) > 0.11, "the first forecast frame lost its storm");
+    assert!(wet_fraction(&key(product.frames.len() - 1)) > 0.06, "the last forecast frame lost its storm");
+    // …and the ground truth at both ends of the ladder. Measured 37.90 % and 18.26 %.
+    let truth = |index: usize| event.truth_frames[index].path.clone();
+    assert!(wet_fraction(&truth(0)) > 0.28, "the first truth frame lost its storm");
+    assert!(wet_fraction(&truth(event.truth_frames.len() - 1)) > 0.13, "the last truth frame lost its storm");
 
     // Truth frames are observations on the observation lattice, stamped with the cycle's anchor,
     // so a later scorer can line one up against the forecast frame nearest it without arithmetic.
@@ -242,9 +348,7 @@ fn the_frames_actually_contain_the_storm() {
 
     // The observation frame and the truth frames share one lattice: same origin, same cell size,
     // same dimensions. Scoring is then a cell-by-cell comparison, with no resampling in between.
-    let observation =
-        obcg::decode_header(read("service/wx/v1/us/20200810T1852Z/f0.obcg")[..obcg::HEADER_LEN].try_into().unwrap())
-            .unwrap();
+    let observation = obcg::decode_header(read(&key(0))[..obcg::HEADER_LEN].try_into().unwrap()).unwrap();
     for frame in &event.truth_frames {
         let truth = obcg::decode_header(read(&frame.path)[..obcg::HEADER_LEN].try_into().unwrap()).unwrap();
         assert_eq!(
