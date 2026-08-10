@@ -453,7 +453,8 @@ leaving attribution to UI guesswork:
 
 The exact fixture retrieval URLs/ranges, content hashes, full-vs-subset status,
 and terms are in
-[`host/obc-wx-bake/tests/fixtures/README.md`](../../host/obc-wx-bake/tests/fixtures/README.md).
+the registry provenance in [`fixtures/catalog.toml`](../../fixtures/catalog.toml) and
+[`fixtures/README.md`](../../fixtures/README.md).
 
 ## Reproduction and checked evidence
 

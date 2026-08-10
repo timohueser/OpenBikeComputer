@@ -28,7 +28,12 @@ _obc_tasks() {
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "sim flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device doctor setup"
+  echo "fixtures sim flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device doctor setup"
+}
+
+_obc_fixture_ids() {
+  local root; root="$(_obc_root)" || return
+  python3 "$root/tools/fixtures.py" complete "$1" 2>/dev/null
 }
 
 # .obcm maps across the repo root, maps/, and the web-builder cache.
@@ -42,7 +47,7 @@ _obc_maps() {
 # Bundled + saved GPX tracks worth suggesting.
 _obc_gpx() {
   local root; root="$(_obc_root)" || return
-  find "$root/apps/obc-sim/assets" "$root/tracks" -maxdepth 1 -name '*.gpx' 2>/dev/null
+  find "$root/fixtures/sources" "$root/tracks" -maxdepth 5 -name '*.gpx' 2>/dev/null
 }
 
 # The shipped packer configs. `-maxdepth 1` is doing real work: it keeps
@@ -80,7 +85,7 @@ _obc() {
   case "$task" in
     sim)
       case "$idx" in
-        0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
+        0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_fixture_ids scenarios) $(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
         1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx) none" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
       esac ;;
     uart)
@@ -108,6 +113,12 @@ _obc() {
       _obc_reply < <(compgen -W "--install" -- "$cur") ;;
     test)
       _obc_reply < <(compgen -W "-p --release --" -- "$cur") ;;
+    fixtures)
+      if (( idx == 0 )); then
+        _obc_reply < <(compgen -W "list show sync verify prune pack publish" -- "$cur")
+      else
+        _obc_reply < <(compgen -W "$(_obc_fixture_ids targets) --apply" -- "$cur")
+      fi ;;
   esac
 }
 

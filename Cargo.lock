@@ -2759,6 +2759,7 @@ name = "obc-dem"
 version = "0.1.0"
 dependencies = [
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "sha2",
  "tiff",
@@ -2791,6 +2792,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-fixtures"
+version = "0.1.0"
+
+[[package]]
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
@@ -2805,6 +2810,7 @@ dependencies = [
  "embedded-graphics",
  "obc-app",
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",
@@ -2881,6 +2887,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obcm-testkit",
@@ -2913,6 +2920,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obc-pack",
@@ -2941,6 +2949,7 @@ dependencies = [
  "obc-ble",
  "obc-dfu",
  "obc-display",
+ "obc-fixtures",
  "obc-formats",
  "obc-host-core",
  "obc-ports",
@@ -3075,6 +3084,7 @@ dependencies = [
  "grib",
  "hdf5-pure",
  "obc-crc",
+ "obc-fixtures",
  "obc-formats",
  "schemars",
  "serde",

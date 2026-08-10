@@ -6,6 +6,8 @@
 //! cell is proven equal to the quantized nearest-neighbour source cell against independently
 //! decoded upstream bytes — no smoothing, no invented cadence.
 
+#![cfg(feature = "external-fixtures")]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +25,7 @@ use obc_wx_bake::publish::DirStore;
 use obc_wx_bake::source::{gfs, hrrr, mrms, us, Adapter};
 
 fn fixture(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    let path = obc_fixtures::root().join("weather-noaa").join(name);
     std::fs::read(&path).unwrap_or_else(|error| panic!("fixture {name}: {error}"))
 }
 

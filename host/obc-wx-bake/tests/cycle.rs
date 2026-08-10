@@ -5,6 +5,8 @@
 //! Unchanged upstream ⇒ no frame bytes move. And every published cell equals the quantized
 //! nearest-neighbour source cell — no smoothing, provably.
 
+#![cfg(feature = "external-fixtures")]
+
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,7 @@ use obc_wx_bake::source::{dwd_rv, icon_eu, Adapter};
 use obc_wx_bake::stereo;
 
 fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    obc_fixtures::root().join("weather-dwd-icon")
 }
 
 fn fixture(name: &str) -> Vec<u8> {

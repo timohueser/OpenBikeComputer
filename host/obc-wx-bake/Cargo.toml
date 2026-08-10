@@ -5,6 +5,9 @@ edition = "2021"
 publish = false # internal host service — never on the device or the phone
 description = "The OBC weather bakery: upstream radar/model products -> OBCG frames + manifest on R2 (WX5, specs/OBCG_Spec.md). The only place upstream weather formats are parsed."
 
+[features]
+external-fixtures = []
+
 [dependencies]
 # The OBCG byte authority and the shared WX2 intensity/tile codec. The baker never re-derives a
 # byte layout or a quantization threshold: it hands cell grids to `obc_formats::obcg` and reads
@@ -28,3 +31,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 schemars = { version = "1", features = ["preserve_order"] }
 # The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack.
 ureq = "3"
+
+[dev-dependencies]
+obc-fixtures = { path = "../obc-fixtures" }

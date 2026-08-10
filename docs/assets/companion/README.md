@@ -9,7 +9,7 @@ Regenerate them from the repository root with:
 companion-ios/scripts/capture-website-screenshots.sh
 ```
 
-The script first derives the app import from `apps/obc-sim/assets/grimsel-climb.gpx` and the
+The script first derives the app import from `fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx` and the
 finished partial ride from its `grimsel-climb-demo.gpx` replay. It then runs the focused
 `WebsiteScreenshotTests` flow on an iPhone 17 Pro simulator, pins the
 locale, appearance, text size, network fallback, and status bar, then exports and compresses the

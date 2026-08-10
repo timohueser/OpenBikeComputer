@@ -130,7 +130,7 @@ mod tests {
 
     // Two distinct valid OBCR blobs the mem route store seeds from (the committed climb route, twice —
     // the bytes only need to parse as a `RouteSummary`; identity/index mechanics are what's under test).
-    const ROUTE: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel-climb.obcr");
+    const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
     #[test]
     fn mem_route_store_passes_the_conformance_suite() {

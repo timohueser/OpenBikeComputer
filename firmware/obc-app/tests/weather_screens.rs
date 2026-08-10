@@ -3,7 +3,7 @@
 //! alert card's locked actions, and the rain map's time-step clamp.
 //!
 //! Full-frame RGB222 PNG pins per language are the epic-closeout sweep (`ui-snapshots.sh` +
-//! the committed `wx11-weather-previews`); here the pins are behavioral: deterministic frames,
+//! the former design-review weather previews); here the pins are behavioral: deterministic frames,
 //! per-language rendering, and stale-never-looks-dry at the frame level.
 
 use embedded_graphics::pixelcolor::Rgb888;
