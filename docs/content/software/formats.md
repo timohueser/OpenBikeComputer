@@ -1159,11 +1159,13 @@ picks the coarsest frame's. Every other frame is then laid onto that window at *
 — which only works if the window is a whole number of that frame's cells, aligned to its lattice.
 When it is not, the frame is refused rather than stretched, because a stretched frame is a
 fabricated observation. So a composed product's lattices must **nest**: the coarse cell strides
-have to be integer multiples of the fine ones, and the origins congruent. The baker verifies this
-before publishing and fails the cycle closed if it does not hold. The US product learned this the
-hard way — a 27,000 × 34,000 microdegree forecast lattice over a 10,000 × 10,000 observation
-divides in neither axis, and the 1 km radar frame was silently dropped from every bundle until the
-forecast lattice moved to 30,000 × 30,000.
+have to be integer multiples of the fine ones, and the origins congruent. Each object is
+individually valid either way — it is the *composition* that breaks — so the rule lives in the
+spec, is pinned by tests over the baker's lattice constants, and is re-checked at bake time for
+composed products, where a violation fails the cycle rather than publishing a product a client
+would take apart. The US product learned this the hard way: a 27,000 × 34,000 microdegree forecast
+lattice over a 10,000 × 10,000 observation divides in neither axis, and the 1 km radar frame was
+silently dropped from every bundle until the forecast lattice moved to 30,000 × 30,000.
 
 Beneath the regional tiers a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
