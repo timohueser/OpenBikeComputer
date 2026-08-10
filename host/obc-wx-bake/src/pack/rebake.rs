@@ -57,7 +57,17 @@ fn member_bytes(root: &Path, member: &Member) -> Result<Vec<u8>, String> {
 }
 
 /// Bake the pack's upstream into `destination`, exactly as the capture did.
-pub fn bake_into(root: &Path, event: &Event, destination: &Path) -> Result<CycleReport, String> {
+/// What a re-bake produced, plus the evidence that it was offline.
+pub struct RebakeReport {
+    pub cycle: CycleReport,
+    /// Every URL the replay asked for, in order, as [`FixtureUpstream`] logs them (`HEAD <url>`
+    /// for a probe, `<url>#start-end` for a range). Exposed so hermeticity can be *asserted*
+    /// rather than asserted about: a request the pack does not carry a member for would mean the
+    /// pack is incomplete, and the only reason it baked is something outside it.
+    pub requests: Vec<String>,
+}
+
+pub fn bake_into(root: &Path, event: &Event, destination: &Path) -> Result<RebakeReport, String> {
     if event.bake.adapter != crate::source::us::ID {
         return Err(format!(
             "pack adapter {:?} cannot be replayed yet (supported: {})",
@@ -78,12 +88,13 @@ pub fn bake_into(root: &Path, event: &Event, destination: &Path) -> Result<Cycle
         }
         None => &base,
     };
-    run_cycle(&[adapter], &mut upstream, &mut store, now, false)
+    let cycle = run_cycle(&[adapter], &mut upstream, &mut store, now, false)?;
+    Ok(RebakeReport { cycle, requests: upstream.requests })
 }
 
 /// The whole CI check: replay `upstream/`, and prove the result equals `service/` byte for byte
 /// and key for key.
-pub fn verify_rebake(root: &Path, event: &Event, scratch: &Path) -> Result<CycleReport, String> {
+pub fn verify_rebake(root: &Path, event: &Event, scratch: &Path) -> Result<RebakeReport, String> {
     // The comparison is over the *whole* destination tree, so it has to start empty — and an
     // empty destination must be earned, never taken: `--out` is a user-supplied path.
     if scratch.exists() {
@@ -107,7 +118,26 @@ pub fn verify_rebake(root: &Path, event: &Event, scratch: &Path) -> Result<Cycle
     if !event.service.iter().any(|object| object.key == event.manifest_key) {
         return Err(format!("event.json's manifest_key {} is not among its service objects", event.manifest_key));
     }
+    // Hermeticity, as a check rather than a claim: every request the replay made must be one the
+    // pack carries a member for. `FixtureUpstream` has no network, so a request outside this set
+    // could only have been satisfied by something the pack does not describe.
+    let unaccounted: Vec<&String> = report.requests.iter().filter(|request| !accounted_for(event, request)).collect();
+    if !unaccounted.is_empty() {
+        return Err(format!("the re-bake asked for {unaccounted:?}, which no member of the pack accounts for"));
+    }
     Ok(report)
+}
+
+/// Does some member of `event` describe the retrieval `request` names?
+///
+/// `FixtureUpstream` logs `HEAD <url>` for a probe, `<url>#start-end` for a range, and the bare
+/// URL for a body — the same three shapes [`Retrieval`] distinguishes.
+fn accounted_for(event: &Event, request: &str) -> bool {
+    event.service_members().any(|member| match &member.retrieval {
+        Retrieval::Probe { .. } => request == format!("HEAD {}", member.url),
+        Retrieval::Body => request == member.url,
+        Retrieval::Range { start, end_inclusive, .. } => request == format!("{}#{start}-{end_inclusive}", member.url),
+    })
 }
 
 fn compare(stored: &BTreeMap<String, Vec<u8>>, rebaked: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {

@@ -31,6 +31,76 @@ pub const NOAA_LICENCE: &str = "NOAA Open Data Dissemination — public-use U.S.
 /// producing a pack whose `upstream/` cannot be replayed.
 pub const SUPPORTED_ADAPTERS: [&str; 1] = [us::ID];
 
+/// When MRMS `PrecipRate` becomes fetchable, relative to the observation instant its key names.
+///
+/// Measured against the live bucket on 2026-08-10 (`Last-Modified` on *current* objects is the
+/// real publication time; only the 2014-2021 backfills carry a mirror's ingest time and are
+/// useless): 11:40 → +2:49, 12:00 → +2:52, 12:18 → +3:01, 12:24 → +2:58. `mrms.rs` cites WX1's
+/// 2 min 44 s, which is the fast end of that spread. **The constant here rounds up, on purpose**:
+/// treating an object as unpublished a little too long only makes a capture more conservative,
+/// while treating it as published too early is exactly the failure this guard exists to prevent.
+pub const MRMS_PUBLICATION_LAG_SECONDS: i64 = 180;
+
+/// When an HRRR subhourly *run* becomes usable, relative to its run hour.
+///
+/// One constant for the whole run rather than a per-file table, because
+/// [`crate::source::hrrr::select_run`] requires all four `wrfsubhf` objects — only the slowest
+/// matters. Measured on 2026-08-09/10: the 11Z set landed at +53:38, +55:49, +56:51, +58:53, and
+/// 06Z/00Z at +55:56/+55:18. `hrrr.rs` assumes objects appear in lead order, and mostly they do —
+/// but 2026-08-09's 18Z run wrote `wrfsubhf01`'s index at **+62:21**, *after* `wrfsubhf04`'s
+/// +55:45, so the set was genuinely incomplete until past the hour. 65 minutes is the conservative
+/// ceiling over everything observed.
+pub const HRRR_RUN_COMPLETE_LAG_SECONDS: i64 = 65 * 60;
+
+/// The instant `url`'s bytes first became fetchable, derived from the key alone.
+///
+/// This is the whole basis of the as-of guard ([`crate::pack::capture::AsOf`]). It needs no
+/// response header — which matters, because headers cannot answer it: MTArchive reports its own
+/// 2020-08-11 ingest time for a 2020-08-10 object, and NOAA's HRRR bucket reports a 2021
+/// re-upload. The key, by contrast, states the observation instant or the run hour outright, and
+/// the lag from that to publication is a measured property of the source.
+pub fn published_at(url: &str) -> Result<i64, String> {
+    if let Some(rest) = url.strip_prefix(mrms::BUCKET) {
+        return Ok(mrms_valid_at(rest)? + MRMS_PUBLICATION_LAG_SECONDS);
+    }
+    if let Some(rest) = url.strip_prefix(hrrr::BUCKET) {
+        return Ok(hrrr_run(rest)? + HRRR_RUN_COMPLETE_LAG_SECONDS);
+    }
+    Err(format!("cannot derive a publication instant for {url}"))
+}
+
+/// The observation instant an MRMS key names.
+fn mrms_valid_at(key: &str) -> Result<i64, String> {
+    let name = key.rsplit('/').next().unwrap_or_default();
+    let stamp = name
+        .strip_prefix("MRMS_PrecipRate_00.00_")
+        .and_then(|rest| rest.split('.').next())
+        .ok_or_else(|| format!("unexpected MRMS object name {name}"))?;
+    let (date, time) = stamp.split_once('-').ok_or_else(|| format!("unexpected MRMS timestamp {stamp}"))?;
+    let time = chrono::NaiveDateTime::parse_from_str(&format!("{date}{time}"), "%Y%m%d%H%M%S")
+        .map_err(|error| format!("unexpected MRMS timestamp {stamp}: {error}"))?;
+    Ok(time.and_utc().timestamp())
+}
+
+/// The run hour an HRRR key names: `/hrrr.YYYYMMDD/conus/hrrr.tHHz.wrfsubhfFF.grib2[.idx]`.
+fn hrrr_run(key: &str) -> Result<i64, String> {
+    let date = key
+        .strip_prefix("/hrrr.")
+        .and_then(|rest| rest.split('/').next())
+        .ok_or_else(|| format!("unexpected HRRR key {key}"))?;
+    let name = key.rsplit('/').next().unwrap_or_default();
+    let hour = name
+        .strip_prefix("hrrr.t")
+        .and_then(|rest| rest.split('z').next())
+        .filter(|hour| hour.len() == 2)
+        .ok_or_else(|| format!("unexpected HRRR object name {name}"))?;
+    // The run hour is the whole of the timestamp; chrono wants a complete one, so state the
+    // zero minutes and seconds explicitly rather than leaving them to be inferred.
+    let time = chrono::NaiveDateTime::parse_from_str(&format!("{date}{hour}0000"), "%Y%m%d%H%M%S")
+        .map_err(|error| format!("unexpected HRRR run {date}/{hour}: {error}"))?;
+    Ok(time.and_utc().timestamp())
+}
+
 /// The licence and attribution URL that govern `url`'s bytes.
 pub fn terms(url: &str) -> Result<(&'static str, &'static str), String> {
     if url.starts_with(mrms::BUCKET) || url.starts_with(hrrr::BUCKET) {
@@ -108,6 +178,33 @@ mod tests {
             assert!(archive_url(url).is_err(), "{url} must be refused");
             assert!(terms(url).is_err(), "{url} must have no licence record");
         }
+    }
+
+    /// The publication instant comes out of the key, and it is the number that decides what a
+    /// capture is allowed to see.
+    #[test]
+    fn publication_instants_come_out_of_the_key() {
+        let observation = crate::manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        assert_eq!(published_at(&mrms::object_url(observation)).unwrap(), observation + MRMS_PUBLICATION_LAG_SECONDS);
+        let run = crate::manifest::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
+        for url in [hrrr::object_url(run, 1), hrrr::index_url(run, 4)] {
+            assert_eq!(published_at(&url).unwrap(), run + HRRR_RUN_COMPLETE_LAG_SECONDS, "{url}");
+        }
+        // The measured cases the shipped pack turns on: at 18:52:00Z the newest legal MRMS
+        // observation is 18:48, and the 18Z HRRR run is still incomplete.
+        let at = crate::manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        assert!(published_at(&mrms::object_url(observation)).unwrap() > at);
+        assert!(published_at(&mrms::object_url(observation - 120)).unwrap() > at, "18:50 is not published either");
+        assert!(published_at(&mrms::object_url(observation - 240)).unwrap() <= at, "18:48 is");
+        assert!(published_at(&hrrr::index_url(run, 4)).unwrap() > at, "the 18Z run is not complete at 18:52");
+        assert!(published_at(&hrrr::index_url(run - 3_600, 4)).unwrap() <= at, "the 17Z run is");
+    }
+
+    #[test]
+    fn an_underivable_publication_instant_is_an_error() {
+        assert!(published_at("https://example.invalid/whatever").is_err());
+        assert!(published_at(&format!("{}/CONUS/PrecipRate_00.00/x/y.grib2.gz", mrms::BUCKET)).is_err());
+        assert!(published_at(&format!("{}/hrrr.nonsense/conus/hrrr.tXXz.wrfsubhf01.grib2", hrrr::BUCKET)).is_err());
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
 use crate::manifest::Product;
 use crate::pack::BboxUdeg;
-use crate::source::{Adapter, AdapterOutcome, BakedFrame, BakedProduct, FrameSource};
+use crate::source::{verify_frames_nest, Adapter, AdapterOutcome, BakedFrame, BakedProduct, FrameSource};
 
 /// An adapter that bakes exactly like `inner` and then crops the result to `bbox`.
 pub struct CroppedAdapter<'a> {
@@ -49,7 +49,15 @@ impl Adapter for CroppedAdapter<'_> {
     ) -> Result<AdapterOutcome, String> {
         match self.inner.bake(upstream, previous, now, warnings)? {
             AdapterOutcome::Unchanged => Ok(AdapterOutcome::Unchanged),
-            AdapterOutcome::Baked(product) => Ok(AdapterOutcome::Baked(Box::new(crop_product(*product, self.bbox)?))),
+            AdapterOutcome::Baked(product) => {
+                let cropped = crop_product(*product, self.bbox)?;
+                // The inner adapter proved its frames nest before it returned; the crop moved
+                // every origin, so prove it again rather than assume the property survived. It
+                // does survive whenever each frame's tile stride is a multiple of the finest
+                // cell — which is true today and is exactly what this catches if it stops being.
+                verify_frames_nest(&cropped)?;
+                Ok(AdapterOutcome::Baked(Box::new(cropped)))
+            }
         }
     }
 }
@@ -73,35 +81,60 @@ impl Window {
     }
 }
 
+/// The retained `[start, end)` cell range of one axis, or `None` when the request and the grid do
+/// not overlap on that axis.
+///
+/// Emptiness is decided in **unclamped** index space, before any clamp or tile alignment touches
+/// the numbers. That ordering is the whole correctness argument: clamping first folds a window
+/// that lies wholly past an edge back onto the boundary cell, where alignment then widens it into
+/// a plausible-looking sliver — an 8-column strip of the CONUS east edge for a bbox over Europe,
+/// which is not an empty crop but a *wrong* one.
+fn axis(origin: i64, step: i64, limit: u32, low: i64, high: i64, edge: u32) -> Option<(u32, u32)> {
+    // The cell containing `low`, and the exclusive end that retains the cell containing `high`.
+    let first = (low - origin).div_euclid(step);
+    let last = (high - origin + step - 1).div_euclid(step);
+    let start = first.max(0);
+    let end = last.min(i64::from(limit));
+    if end <= start {
+        return None;
+    }
+    // Only now: align outward to whole tiles of this grid.
+    let start = (start as u32 / edge) * edge;
+    let end = (end as u32).div_ceil(edge).saturating_mul(edge).min(limit);
+    Some((start, end))
+}
+
 /// Compute the retained window, or say plainly that the bbox and the frame do not overlap.
 pub fn window(geometry: &GridGeometry, bbox: &BboxUdeg) -> Result<Window, String> {
     let edge = u32::from(geometry.tile_edge);
-    let lower = |value: i64, origin: i64, step: i64, limit: u32| -> u32 {
-        let index = (value - origin).div_euclid(step);
-        let index = index.clamp(0, i64::from(limit)) as u32;
-        (index / edge) * edge
-    };
-    let upper = |value: i64, origin: i64, step: i64, limit: u32| -> u32 {
-        // Ceiling division: the cell containing `value` is retained whole.
-        let index = (value - origin + step - 1).div_euclid(step);
-        let index = index.clamp(0, i64::from(limit)) as u32;
-        index.div_ceil(edge).saturating_mul(edge).min(limit)
-    };
-    let west = i64::from(geometry.west_lon_udeg);
-    let south = i64::from(geometry.south_lat_udeg);
-    let col0 = lower(bbox.west_udeg, west, i64::from(geometry.cell_lon_udeg), geometry.width);
-    let col1 = upper(bbox.east_udeg, west, i64::from(geometry.cell_lon_udeg), geometry.width);
-    let row0 = lower(bbox.south_udeg, south, i64::from(geometry.cell_lat_udeg), geometry.height);
-    let row1 = upper(bbox.north_udeg, south, i64::from(geometry.cell_lat_udeg), geometry.height);
-    if col1 <= col0 || row1 <= row0 {
-        return Err(format!(
-            "crop window {bbox:?} does not intersect the frame's grid ({}..{}, {}..{} udeg)",
+    let disjoint = |axis_name: &str| {
+        format!(
+            "crop window {bbox:?} does not intersect the frame's grid on the {axis_name} axis \
+             (grid {}..{} lat, {}..{} lon udeg)",
             geometry.south_lat_udeg,
             geometry.north_lat_udeg(),
             geometry.west_lon_udeg,
             geometry.east_lon_udeg()
-        ));
-    }
+        )
+    };
+    let (col0, col1) = axis(
+        i64::from(geometry.west_lon_udeg),
+        i64::from(geometry.cell_lon_udeg),
+        geometry.width,
+        bbox.west_udeg,
+        bbox.east_udeg,
+        edge,
+    )
+    .ok_or_else(|| disjoint("longitude"))?;
+    let (row0, row1) = axis(
+        i64::from(geometry.south_lat_udeg),
+        i64::from(geometry.cell_lat_udeg),
+        geometry.height,
+        bbox.south_udeg,
+        bbox.north_udeg,
+        edge,
+    )
+    .ok_or_else(|| disjoint("latitude"))?;
     Ok(Window { col0, col1, row0, row1 })
 }
 
@@ -237,12 +270,62 @@ mod tests {
         assert_eq!(window, Window { col0: 0, col1: 200, row0: 0, row1: 100 });
     }
 
+    /// Each edge, on its own. A bbox that misses on **one** axis must be refused even though the
+    /// other axis overlaps perfectly — the bug this pins produced a plausible-looking sliver of
+    /// the boundary tile instead: `--bbox 45,-5,50,5` (Europe) against the CONUS grid silently
+    /// cropped an 8-column strip of the east edge, out over the Atlantic. The old single-bbox
+    /// guard test passed only because its window missed on *both* axes, so the latitude check
+    /// masked the hole in the longitude one.
     #[test]
-    fn a_disjoint_bbox_is_an_error_not_an_empty_frame() {
+    fn a_bbox_disjoint_on_either_axis_alone_is_an_error_not_a_boundary_sliver() {
+        // GRID spans 20.0..21.0 N, -130.0..-128.0 E.
+        let cases = [
+            ("east of the grid", 20_200_000i64, -127_000_000i64, 20_800_000i64, -126_000_000i64, "longitude"),
+            ("west of the grid", 20_200_000, -133_000_000, 20_800_000, -131_000_000, "longitude"),
+            ("north of the grid", 22_000_000, -129_500_000, 23_000_000, -128_500_000, "latitude"),
+            ("south of the grid", 18_000_000, -129_500_000, 19_000_000, -128_500_000, "latitude"),
+        ];
+        for (name, south, west, north, east, axis) in cases {
+            let bbox = BboxUdeg { south_udeg: south, west_udeg: west, north_udeg: north, east_udeg: east };
+            let Err(error) = window(&GRID, &bbox) else {
+                panic!("{name}: a bbox {axis}-disjoint from the grid must be refused, not cropped");
+            };
+            assert!(error.contains("does not intersect"), "{name}: {error}");
+            assert!(error.contains(axis), "{name}: the message must name the {axis} axis — {error}");
+        }
+        // Touching an edge exactly covers zero cells, and is refused for the same reason.
+        let touching = BboxUdeg {
+            south_udeg: 20_200_000,
+            west_udeg: -128_000_000,
+            north_udeg: 20_800_000,
+            east_udeg: -127_000_000,
+        };
+        assert!(window(&GRID, &touching).is_err(), "a bbox starting exactly at the east edge covers no cell");
+    }
+
+    /// The composite of the four: disjoint on both axes at once.
+    #[test]
+    fn a_wholly_disjoint_bbox_is_an_error_not_an_empty_frame() {
         let bbox =
             BboxUdeg { south_udeg: -40_000_000, west_udeg: 10_000_000, north_udeg: -30_000_000, east_udeg: 20_000_000 };
         let error = window(&GRID, &bbox).unwrap_err();
         assert!(error.contains("does not intersect"), "{error}");
+    }
+
+    /// The real geometries, the real crop: the US product's two lattices must still nest after
+    /// the crop moved both origins, or a client holding the bundle drops the 1 km radar frame.
+    #[test]
+    fn cropping_preserves_the_us_products_lattice_nesting() {
+        use crate::source::{hrrr, mrms};
+        let bbox =
+            BboxUdeg { south_udeg: 40_500_000, west_udeg: -96_500_000, north_udeg: 43_500_000, east_udeg: -90_000_000 };
+        let (observation, _) = crop_geometry(&mrms::GEOMETRY, &bbox).expect("the observation crops");
+        let (forecast, _) = crop_geometry(&hrrr::GEOMETRY, &bbox).expect("the forecast crops");
+        assert!(observation.cell_area() < forecast.cell_area());
+        assert!(
+            observation.nests_under(&forecast),
+            "cropped lattices stopped nesting: observation={observation:?} forecast={forecast:?}"
+        );
     }
 
     /// The crop copies cells and re-anchors the origin: every retained cell keeps its ground

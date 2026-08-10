@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! obc-wx-pack capture <event-id> --at <rfc3339> [--out <dir>] [--title <t>] [--region <r>]
-//!                                [--bbox <s,w,n,e>] [--truth-offsets 15,30,...|none]
-//!                                [--store-truth-upstream]
+//!                                [--basemap <regions.toml id>] [--bbox <s,w,n,e>]
+//!                                [--truth-offsets 15,30,...|none] [--store-truth-upstream]
 //! obc-wx-pack rebake  <pack-dir> [--out <dir>]   re-bake upstream/ and byte-compare service/
 //! obc-wx-pack verify  <pack-dir>                 sha256 every stored member, then rebake
 //! obc-wx-pack fetch   <pack-dir>                 materialize the members that are not checked in
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
 use obc_wx_bake::pack::capture::{capture, materialize, CaptureRequest, DEFAULT_TRUTH_OFFSETS_MIN};
-use obc_wx_bake::pack::{archive, rebake, verify_digests, BboxUdeg, Event, Role};
+use obc_wx_bake::pack::{self, archive, rebake, verify_digests, BboxUdeg, Event, Role};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,8 +50,8 @@ fn run(args: &[String]) -> Result<(), String> {
 fn usage() -> String {
     concat!(
         "usage: obc-wx-pack capture <event-id> --at <rfc3339> [--out <dir>] [--title <t>] [--region <r>]\n",
-        "                           [--bbox <south,west,north,east>] [--truth-offsets <m,m,...>|none]\n",
-        "                           [--store-truth-upstream]\n",
+        "                           [--basemap <regions.toml id>] [--bbox <south,west,north,east>]\n",
+        "                           [--truth-offsets <m,m,...>|none] [--store-truth-upstream]\n",
         "       obc-wx-pack rebake <pack-dir> [--out <dir>]\n",
         "       obc-wx-pack verify <pack-dir>\n",
         "       obc-wx-pack fetch  <pack-dir>\n",
@@ -105,7 +105,8 @@ impl Flags {
     }
 }
 
-const CAPTURE_FLAGS: [&str; 7] = ["at", "out", "title", "region", "bbox", "truth-offsets", "store-truth-upstream"];
+const CAPTURE_FLAGS: [&str; 8] =
+    ["at", "out", "title", "region", "basemap", "bbox", "truth-offsets", "store-truth-upstream"];
 
 fn run_capture(args: &[String]) -> Result<(), String> {
     let flags = parse(args, &["store-truth-upstream"])?;
@@ -135,6 +136,7 @@ fn run_capture(args: &[String]) -> Result<(), String> {
     let request = CaptureRequest {
         title: flags.value("title").unwrap_or(&id).to_string(),
         region: flags.value("region").unwrap_or("conus").to_string(),
+        basemap_region: flags.value("basemap").unwrap_or(pack::US_BASEMAP_REGION).to_string(),
         id,
         now,
         bbox,
@@ -143,7 +145,7 @@ fn run_capture(args: &[String]) -> Result<(), String> {
     };
 
     eprintln!(
-        "capturing {} at {} into {} (adapter {}, archives: {})",
+        "capturing {} as of {} into {} (adapter {}, archives: {})",
         request.id,
         manifest::rfc3339(now),
         root.display(),
@@ -160,6 +162,15 @@ fn run_capture(args: &[String]) -> Result<(), String> {
         report.service_bytes,
         report.truth_bytes
     );
+    // The as-of guard's work, stated. Zero suppressions means every candidate already existed at
+    // the capture instant — possible, but worth a second look at `--at` before trusting the pack.
+    eprintln!(
+        "as-of guard: {} discovery probes answered \"not published yet\" (MRMS lag {} s, HRRR run lag {} s)",
+        report.suppressed,
+        archive::MRMS_PUBLICATION_LAG_SECONDS,
+        archive::HRRR_RUN_COMPLETE_LAG_SECONDS
+    );
+    report_coverage(&report.event);
     let deferred = rebake::unmaterialized(&report.event);
     if !deferred.is_empty() {
         eprintln!("{} recorded members are not checked in; `obc-wx-pack fetch` restores them", deferred.len());
@@ -171,6 +182,47 @@ fn run_capture(args: &[String]) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&scratch);
     eprintln!("self-check: the pack re-bakes byte-identically");
     Ok(())
+}
+
+/// State the ground the pack covers against the basemap it expects, so a future pack drifting off
+/// that map is visible at capture time rather than discovered as a blank screen in the simulator.
+fn report_coverage(event: &Event) {
+    let coverage = event.coverage_udeg;
+    let degrees = |udeg: i64| udeg as f64 / 1e6;
+    eprintln!(
+        "coverage: {:.3},{:.3} .. {:.3},{:.3} — basemap {}",
+        degrees(coverage.south_udeg),
+        degrees(coverage.west_udeg),
+        degrees(coverage.north_udeg),
+        degrees(coverage.east_udeg),
+        event.basemap_region
+    );
+    if event.basemap_region != pack::US_BASEMAP_REGION {
+        eprintln!(
+            "note: {} is not a region the bakery carries — add it before rendering this pack",
+            event.basemap_region
+        );
+        return;
+    }
+    let map = pack::US_BASEMAP_BBOX;
+    let overhang = [
+        ("south", map.south_udeg - coverage.south_udeg),
+        ("west", map.west_udeg - coverage.west_udeg),
+        ("north", coverage.north_udeg - map.north_udeg),
+        ("east", coverage.east_udeg - map.east_udeg),
+    ];
+    let outside: Vec<String> = overhang
+        .iter()
+        .filter(|(_, over)| *over > 0)
+        .map(|(edge, over)| format!("{edge} +{:.3}°", degrees(*over)))
+        .collect();
+    if outside.is_empty() {
+        eprintln!("coverage sits inside the {} basemap", pack::US_BASEMAP_REGION);
+    } else {
+        // Not an error: crops are aligned outward to whole tiles, so a window that hugs a state
+        // border always overshoots it a little. The number is what matters.
+        eprintln!("coverage reaches past the basemap: {} (tile alignment overshoots by design)", outside.join(", "));
+    }
 }
 
 fn pack_root(flags: &Flags) -> Result<(PathBuf, Event), String> {
@@ -188,8 +240,13 @@ fn run_rebake(args: &[String]) -> Result<(), String> {
         None => std::env::temp_dir().join(format!("obc-wx-pack-rebake-{}", std::process::id())),
     };
     let report = rebake::verify_rebake(&root, &event, &scratch)?;
-    eprintln!("{}", report.summary());
-    println!("{}: re-bakes byte-identically into {}", event.id, scratch.display());
+    eprintln!("{}", report.cycle.summary());
+    println!(
+        "{}: re-bakes byte-identically into {} ({} offline requests, all accounted for by the pack)",
+        event.id,
+        scratch.display(),
+        report.requests.len()
+    );
     Ok(())
 }
 
@@ -238,6 +295,14 @@ fn run_show(args: &[String]) -> Result<(), String> {
         ),
         None => println!("  crop       none (full domain)"),
     }
+    println!(
+        "  coverage   {:.3},{:.3} .. {:.3},{:.3}",
+        event.coverage_udeg.south_udeg as f64 / 1e6,
+        event.coverage_udeg.west_udeg as f64 / 1e6,
+        event.coverage_udeg.north_udeg as f64 / 1e6,
+        event.coverage_udeg.east_udeg as f64 / 1e6
+    );
+    println!("  basemap    {}", event.basemap_region);
     let mut stored = 0u64;
     let mut recorded = 0u64;
     for member in &event.members {
