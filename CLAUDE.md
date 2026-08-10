@@ -69,9 +69,15 @@ where it belongs — don't re-explain the architecture in a README.
 
 ## Build & verify
 
-- Host crates + sim: `cargo build --release` and `cargo test` from the **repo
-  root** (that's where the workspace is rooted; cargo walks up, so running from
-  a subdirectory works too).
+- Follow the proportional verification policy in [CONTRIBUTING.md](CONTRIBUTING.md).
+  During development and before handoff, run tests and clippy for the packages and
+  surfaces actually changed. Do not default to the full workspace suite merely
+  because a task is ending; `obc test full` and `obc check full` are explicit
+  cross-cutting gates.
+- Host crates + sim build from the **repo root** (that's where the workspace is
+  rooted; Cargo walks up, so running from a subdirectory works too). Use
+  `obc test -p <crate>` for the normal focused loop and `obc test fixtures -p
+  <crate>` only when captured external data is part of the behavior.
 - The workspace **excludes** three standalone crates, so workspace
   `cargo test`/`build` does **not** touch them — build each on its own: the board
   crate `obc-fw-nrf54l` and the bootloader `obc-boot` (own MCU target +

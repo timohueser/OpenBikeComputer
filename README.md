@@ -14,6 +14,9 @@ pipeline, the data formats, the UI, the display protocol — lives at
 <https://openbikecomputer.com/>, which also runs the firmware's
 own render path **live in your browser** (compiled to wasm).
 
+The developer workflow, proportional verification tiers, and safe worktree/build cleanup are documented
+in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ```
   .osm.pbf  ──►  obc-pack  ──►  *.obcm (v12) ─┐
  (OSM data)    (Rust packer)   (binary map)   │

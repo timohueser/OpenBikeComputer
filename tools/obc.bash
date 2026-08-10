@@ -28,7 +28,7 @@ _obc_tasks() {
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "fixtures sim flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device doctor setup"
+  echo "fixtures sim flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -108,11 +108,13 @@ _obc() {
     flash-boot)
       _obc_reply < <(compgen -W "rtt build" -- "$cur") ;;
     check)
-      _obc_reply < <(compgen -W "fmt clippy test device docs board frontend deny wasm" -- "$cur") ;;
+      _obc_reply < <(compgen -W "fmt clippy test device docs board frontend deny wasm full" -- "$cur") ;;
     doctor)
       _obc_reply < <(compgen -W "--install" -- "$cur") ;;
     test)
-      _obc_reply < <(compgen -W "-p --release --" -- "$cur") ;;
+      _obc_reply < <(compgen -W "-p fixtures full --release --" -- "$cur") ;;
+    clean)
+      _obc_reply < <(compgen -W "--apply --days --base --include-builds" -- "$cur") ;;
     fixtures)
       if (( idx == 0 )); then
         _obc_reply < <(compgen -W "list show sync verify prune pack publish" -- "$cur")

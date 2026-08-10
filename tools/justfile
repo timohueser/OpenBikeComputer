@@ -466,18 +466,55 @@ build:
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"; _run cargo build --release
 
-# Run the complete host test suite. Syncs the external `test` fixture profile;
-# extra args pass through (e.g. -p obc-pack).
+# Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
+# `fixtures` syncs captured inputs but remains scoped; `full` is the explicit
+# complete all-feature workspace suite.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/fixtures.py" sync test
-    export OBC_FIXTURE_ROOT
-    OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-    export OBC_REQUIRE_FIXTURES=1
-    _run cargo test --all-features "$@"
+    mode="${1:-}"
+    [[ -n "$mode" ]] || {
+      _err "a test scope is required"
+      _hint "focused: obc test -p <crate> [test-filter]"
+      _hint "captured fixtures: obc test fixtures -p <crate>"
+      _hint "cross-cutting only: obc test full"
+      exit 2
+    }
+    require_scope() {
+      local arg
+      for arg in "$@"; do
+        case "$arg" in
+          -p|--package|--package=*|--manifest-path|--manifest-path=*) return 0 ;;
+        esac
+      done
+      _err "a Cargo package scope is required (-p/--package or --manifest-path)"
+      return 2
+    }
+    case "$mode" in
+      full)
+        shift
+        _run python3 "$OBC_TOOLS/fixtures.py" sync test
+        export OBC_FIXTURE_ROOT
+        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+        export OBC_REQUIRE_FIXTURES=1
+        _run cargo test --workspace --all-features --locked "$@"
+        ;;
+      fixtures)
+        shift
+        require_scope "$@" || { _hint "example: obc test fixtures -p obc-wx-bake"; exit 2; }
+        _run python3 "$OBC_TOOLS/fixtures.py" sync test
+        export OBC_FIXTURE_ROOT
+        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+        export OBC_REQUIRE_FIXTURES=1
+        _run cargo test --locked --features external-fixtures "$@"
+        ;;
+      *)
+        require_scope "$@" || { _hint "example: obc test -p obc-weather"; exit 2; }
+        _run cargo test --locked "$@"
+        ;;
+    esac
 
 # The workspace excludes three crates, and rustfmt walks up from each file to find its
 # own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
@@ -518,15 +555,25 @@ check-device:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
-# Run the CI rust gates locally — "will CI pass?" before you push. Mirrors the required
-# `ci` job (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
-# deny/wasm if cargo-deny/trunk are installed). Filter to a subset, e.g.:
+# Run explicitly selected CI gates locally. `full` mirrors the broad required
+# gate (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
+# deny/wasm if cargo-deny/trunk are installed). Examples:
 #   obc check fmt         obc check test         obc check board docs
+#   obc check full        # cross-cutting changes only
 check *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board frontend deny wasm)
+    sel=("$@")
+    (( ${#sel[@]} )) || {
+      _err "select one or more gates (fmt, clippy, test, device, docs, board, frontend, deny, wasm)"
+      _hint "use package-scoped checks during development; use 'obc check full' only for cross-cutting changes"
+      exit 2
+    }
+    if [[ "${sel[0]}" == full ]]; then
+      (( ${#sel[@]} == 1 )) || { _err "'full' cannot be combined with individual gates"; exit 2; }
+      sel=(fmt clippy test device docs board frontend deny wasm)
+    fi
     want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
     FAILED=(); PASSED=(); SKIPPED=()
     step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
@@ -601,6 +648,15 @@ check *args:
     (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
+
+# Inventory and safely remove stale worktrees, build outputs, and OBC test scratch.
+# Dry-run by default. Common forms: `obc clean`, `obc clean --apply`,
+# `obc clean --include-builds --days 14 --apply`.
+clean *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
