@@ -1750,6 +1750,10 @@ pub mod palette {
     /// reads apart from the magenta route it will replace, the warning-orange skipped span, and
     /// the (recessive navy) breadcrumb behind it.
     pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
+    /// Rain blue — the precipitation *amount* on the Hourly rows, so a wet hour's millimetres read
+    /// as water at a glance rather than as another ink number. The WX17 icons' own rain-streak
+    /// blue (`weather_icons::SKY`), so the row's icon and its number carry one hue.
+    pub const RAIN: u16 = rgb565(0, 110, 230); // → (0,85,255) blue
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
