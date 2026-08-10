@@ -127,7 +127,10 @@ lattice — 36,000 × 18,000 cells at 0.01°, a 6 × 4 grid of 6,144 × 4,608-ce
 live bake, because what this fixture pins is the *document* contract; the bytes are pinned by the
 `grid-*.obcg` vectors above. It carries deliberate presence holes — f0 omits shards (2,0) and (3,0),
 f120 omits (5,3) — so the present / dry / out-of-domain trichotomy is exercised rather than assumed,
-and exactly one shard (f0's (3,2)) is observed.
+and exactly one shard (f0's (3,2)) is observed. Coordinates throughout are microdegrees in the
+−180..180 / −90..90 convention; `west > east` means an antimeridian crossing and every other
+spelling of an out-of-range coordinate is an error rather than a clamp
+([`OBCG_Spec.md` §10.2a](../OBCG_Spec.md)).
 
 Three obligations, recorded in `manifest.json`'s `wx_manifest_v2` block:
 
@@ -135,7 +138,13 @@ Three obligations, recorded in `manifest.json`'s `wx_manifest_v2` block:
   fixture invents or misspells fails loudly instead of being silently ignored by the two lenient
   readers;
 - both clients derive the **same shard key set from the same bbox** — the `bbox_equivalence` cases
-  are the pinned answers, and that equivalence is what replaced product selection;
+  are the pinned answers, and that equivalence is what replaced product selection. The ten cases are
+  chosen to be the geometry a second implementation can get wrong while passing everything else: an
+  exact shard boundary (the half-open rule), a southern-hemisphere corridor, an antimeridian wrap
+  (`west > east`), the polar band outside `covered_rows`, and three bboxes that must be **refused**
+  rather than clamped — wholly off the lattice, a 0..360 longitude, and one reaching past a pole.
+  Each case pins the shard set, the composed f0 keys, and the plan's outcome, because "no objects" is
+  several different answers and only one of them is about rain;
 - a listed-but-missing shard is an error, a bitmap-absent shard is dry, and a shard off the grid is
   out of domain. A 404 is never dry, in either language.
 

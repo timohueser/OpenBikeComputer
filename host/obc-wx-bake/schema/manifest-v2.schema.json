@@ -11,26 +11,32 @@
     },
     "generation": {
       "description": "The current generation: `YYYYMMDD'T'HHMM'Z'`, and the second segment of every object key.",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{4}Z$"
     },
     "generated_at": {
       "description": "Wall-clock UTC time this manifest was produced (RFC 3339 seconds).",
-      "type": "string"
+      "type": "string",
+      "format": "date-time"
     },
     "reference_time": {
       "description": "The cycle anchor: frame `f<offset>` is valid at `reference_time + offset` minutes.",
-      "type": "string"
+      "type": "string",
+      "format": "date-time"
     },
     "key_prefix": {
       "description": "The prefix every object key of this dataset starts with.",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$"
     },
     "previous_generations": {
-      "description": "Superseded generations whose objects are still fetchable, **newest first**, at most\n[`RETAINED_PREVIOUS_GENERATIONS`]. A client holding a stale manifest may finish reading\nfrom one of these; a sweep may delete anything not named here or by `generation`.",
+      "description": "Superseded generations whose objects are still fetchable, **newest first**, at most\n[`RETAINED_PREVIOUS_GENERATIONS`]. A client holding a stale manifest may finish reading\nfrom one of these; a sweep may delete anything not named here or by `generation`.\n\nThe cap is normative, not advisory (§10.4): a reader rejects a longer list rather than\ntruncating it, because a sweep that keeps fewer generations than the document names is the\noutage retention exists to prevent, and raising the cap is a manifest version bump.",
       "type": "array",
       "items": {
-        "type": "string"
-      }
+        "type": "string",
+        "pattern": "^[0-9]{8}T[0-9]{4}Z$"
+      },
+      "maxItems": 2
     },
     "lattice": {
       "$ref": "#/$defs/LatticeDescriptor"
@@ -139,7 +145,7 @@
           "maximum": 65535
         },
         "covered_rows": {
-          "description": "The lattice rows at least one source reaches, `[first, end)`. Rows outside it have no\nsource at all and are published as intensity 15 in every frame, forever — a permanent\nproperty of the dataset rather than an outage, so it is stated once here instead of being\ninferred from cells (#1242's polar band).",
+          "description": "The lattice rows at least one source reaches, `[start, end)`. Rows outside it have no\nsource at all and are published as intensity 15 in every frame, forever — a permanent\nproperty of the dataset rather than an outage, so it is stated once here instead of being\ninferred from cells (#1242's polar band).",
           "$ref": "#/$defs/RowRange"
         }
       },
@@ -163,7 +169,7 @@
     "RowRange": {
       "type": "object",
       "properties": {
-        "first": {
+        "start": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -176,7 +182,7 @@
       },
       "additionalProperties": false,
       "required": [
-        "first",
+        "start",
         "end"
       ]
     },
@@ -220,11 +226,13 @@
         },
         "next_generation_expected_at": {
           "description": "When the next generation should exist. Past it with no new manifest, the service is late;\nthe data is not yet unusable. This is the probe's alarm, not the client's.",
-          "type": "string"
+          "type": "string",
+          "format": "date-time"
         },
         "stale_after": {
           "description": "When this generation stops being usable at all: the validity of its **last** frame. Past\nit every frame describes the past, so there is nothing left to answer with. Derived, not\nchosen. Expiry never turns into a dry claim — a client past this deadline has *no* weather,\nwhich is a different thing from no rain.",
-          "type": "string"
+          "type": "string",
+          "format": "date-time"
         }
       },
       "additionalProperties": false,
@@ -266,11 +274,13 @@
         },
         "valid_at": {
           "description": "The frame's UTC validity (RFC 3339) — never a re-stamped bake time.",
-          "type": "string"
+          "type": "string",
+          "format": "date-time"
         },
         "present": {
           "description": "Shard presence, one bit per shard, `ceil(shard_count / 8)` bytes as lowercase hex, first\nbyte first, least-significant bit first inside each byte. Bit `row * shard_cols + col` set\nmeans the object exists; clear means that shard is entirely dry. Bits past `shard_count` in\nthe final byte are zero.",
-          "type": "string"
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})+$"
         },
         "shards": {
           "description": "One entry per present shard, ascending by `(row, col)`. Exactly the shards `present` names:\na reader MUST reject a frame where the two disagree.",
@@ -309,7 +319,8 @@
         },
         "object_crc32": {
           "description": "The OBCG whole-object CRC-32 (`0x` + 8 uppercase hex digits).",
-          "type": "string"
+          "type": "string",
+          "pattern": "^0x[0-9A-F]{8}$"
         },
         "observed": {
           "description": "Was **every** cell of this shard painted by an observation? Per shard rather than per\nframe, because a mosaic frame is radar over Germany and model over the Atlantic at the same\ninstant — this mirrors the object's own `FLAG_OBSERVED`, which the baker measures.",

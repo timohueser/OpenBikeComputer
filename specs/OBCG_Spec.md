@@ -504,7 +504,11 @@ bbox by division; a flat index would have it multiply by `shard_cols` to name an
 back to read the presence bitmap, which is two spellings of one identity.
 
 Objects upload first; the manifest swaps last, atomically. A failed cycle leaves the previous
-manifest and its objects fully consistent. Frame objects carry long immutable `Cache-Control`; the
+manifest and its objects fully consistent. The publisher's pre-swap proof is **existence and exact
+length** at the destination, not a re-read of the bytes: a store that returned wrong content at the
+right length would ship a manifest whose `object_crc32` the object does not have. That is a
+monitoring gap and deliberately not a consumer one — the client verifies the CRC on every read and
+calls a mismatch an error, which §10.3 requires it never to soften into "dry". Frame objects carry long immutable `Cache-Control`; the
 manifest's own maximum age is stated in the document (`freshness.manifest_max_age_s`) as well as in
 its header, so the rule survives a proxy that rewrites headers.
 
@@ -512,17 +516,51 @@ its header, so the rule survives a proxy that rewrites headers.
 
 `lattice` carries the lattice origin and cell pitch in microdegrees, its width and height in cells,
 the shard extent and the shard grid dimensions, the tile edge and paging every object uses, the
-`cell_size_m` every object declares, and `covered_rows`.
+`cell_size_m` every object declares, and `covered_rows` as `{start, end}`.
 
 A client MUST take the grid from this block and MUST NOT hardcode it: re-cutting the dataset is then
 a baker deploy rather than a client release. `shard_cols` MUST equal `ceil(width / shard_width)` and
 `shard_rows` MUST equal `ceil(height / shard_height)`; a client MUST reject a document where they do
 not, because it and the publisher would then disagree about which object holds a cell.
 
+### 10.2a Coordinates and the antimeridian
+
+All coordinates in this contract are signed integer microdegrees with latitude in
+`[-90000000, 90000000]` and longitude in `[-180000000, 180000000]`. **There is no other
+convention**: a 0..360 longitude (`352150000` for `-7.85` degrees) is not a longitude this contract
+recognises, and a consumer MUST reject it rather than clamp it or reinterpret it — clamping answers a
+corridor from the wrong hemisphere with no error anywhere, which is worse than answering none.
+
+A query window with `west > east` is **not** malformed: it means the window **crosses the
+antimeridian**, and a consumer MUST serve it by splitting into `[west, +180)` and `[-180, east)` and
+taking the union of the shards each half reaches. `west == east`, `south >= north`, or any
+coordinate outside the ranges above are errors.
+
+The lattice itself does not wrap: column `width - 1` and column `0` are neighbours on the globe but
+are separate shards, and the shard grid is a plain rectangular partition. Wrapping is a property of
+the *query*, resolved by the split above, never of the addressing.
+
+A shard set derived from a bbox is ordered **ascending by `(row, col)`** — including across a
+wrap, where the eastern hemisphere's `col 0` therefore precedes the western hemisphere's last
+column. Deterministic order is what makes two implementations comparable.
+
+A bbox that is well-formed but does not intersect the lattice yields **no shards**, and a consumer
+MUST report that as out-of-domain rather than as an empty result indistinguishable from "everywhere
+dry". It MUST NOT clamp the interval onto the lattice edge before testing for intersection: an
+off-lattice window clamped first collapses onto the nearest edge shard, and the rider is served
+another region's weather instead of being told they are off the map.
+
 `covered_rows` is the half-open range of lattice rows that at least one source reaches. Rows outside
 it have no source at all and are published as intensity 15 in **every** frame, permanently — a
 property of the dataset, not an outage (§3's covered-domain amendment). Stating it once is what lets
 a consumer tell a permanent hole from a broken cycle without a per-cell channel.
+
+The objects there **exist and are listed**; the range is not a second presence channel. What it buys
+a consumer is the ability to answer *before* fetching: a bbox whose every row falls outside
+`covered_rows` can only decode to "we do not know" in every frame, so a consumer SHOULD say so
+directly rather than spend a Range read per frame to learn a permanent fact this field already
+stated. A bbox that is only partly outside is ordinary: fetch it, and the uncovered cells arrive as
+intensity 15, which is the truth.
 
 ### 10.3 What exists: presence, and why a 404 must not mean dry
 
@@ -563,6 +601,20 @@ fetched the manifest just before a swap and is still reading the generation it n
 A client MAY finish a read from a listed previous generation; it MUST NOT start planning from one,
 because only the current generation's presence and integrity data is in the document.
 
+`previous_generations` MUST hold at most two entries. The cap is normative rather than advisory: a
+consumer that saw more would disagree with the publisher's sweep about which generations exist, and
+raising it is a manifest version bump, not a configuration change.
+
+**The sweep's precondition, and it is the important sentence in this section.** An empty
+`previous_generations` is a positive claim that no superseded generation exists — it is what makes a
+sweep delete. A publisher therefore MUST NOT write one unless it *knows* that: it may write an empty
+chain only when the manifest key genuinely held no document, and it MUST fail the cycle when a
+document is there but cannot be read. A torn or truncated read must never be turned into a deletion
+set; leaving the previous manifest in place costs one cycle of freshness, while publishing an empty
+chain from a torn read deletes the objects in-flight clients are still Range-reading, and a 404 on a
+set presence bit is an error by §10.3. A sweep MAY act only on a manifest whose chain was carried
+forward from a successfully parsed predecessor.
+
 ### 10.5 Freshness: deadlines, not client constants
 
 `freshness` carries absolute timestamps, so a client compares times and holds no durations of its
@@ -574,6 +626,13 @@ own:
 - `stale_after` — when this generation stops being usable at all: the validity of its **last**
   frame, past which every frame describes the past. A client past this deadline has *no weather*,
   which is a different thing from no rain: expiry MUST NOT render as dry.
+
+Every timestamp in this document is UTC, and a consumer compares them against **its own clock**.
+The service cannot know whether that clock is right, so a consumer whose clock is untrusted SHOULD
+treat `generated_at` as a lower bound on the current time rather than declare a fresh generation
+expired; a consumer that is confident in its clock SHOULD apply a small tolerance before acting on a
+deadline, for the same reason the operational probe allows a few minutes of skew on `generated_at`.
+Neither direction may turn into a dry claim.
 
 `cadence` states `frame_step_min`, the number of `frames`, and `max_source_skew_s` — how far from a
 frame's stated validity the source that painted a cell may have been. It is a property of the data,

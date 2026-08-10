@@ -5,7 +5,8 @@
     ops/weather/freshness_probe.py --manifest ./manifest.json --now 2026-08-09T18:00:00Z
 
 It fetches (or reads) the service manifest — `wx/v1/manifest.json`, or `wx/v2/manifest.json`
-with `--v2` — and answers one question: **is what the service is serving right now still usable?** Nothing about the VPS is consulted — that is the whole point.
+with `--v2` — and answers one question: **is what the service is serving right now still usable?**
+Nothing about the VPS is consulted — that is the whole point.
 The baker is a stateless publisher; if it dies, R2 keeps serving the last objects and the product
 degrades honestly through staleness. So the heartbeat is the published manifest, and the alarm
 must live somewhere the baker's death cannot silence it (WX18 runs it from GitHub Actions).
@@ -129,7 +130,8 @@ def finish_v2(document, now, args, where, report, alerts, result) -> int:
 
     result["generation"] = generation
     result["previous_generations"] = previous
-    report.append(f"ok       generation {generation}, keeping {len(previous)} previous ({', '.join(previous) or 'none'})")
+    kept = ", ".join(previous) or "none"
+    report.append(f"ok       generation {generation}, keeping {len(previous)} previous ({kept})")
 
     # ── 3. The document's own deadlines ───────────────────────────────────────────────────────
     result["stale_after"] = freshness["stale_after"]
@@ -158,9 +160,18 @@ def finish_v2(document, now, args, where, report, alerts, result) -> int:
         try:
             shards = frame["shards"]
             bytes_now = sum(int(shard["bytes"]) for shard in shards)
+            flagged = bin(int(frame["present"], 16)).count("1")
         except (KeyError, TypeError, ValueError) as error:
             alerts.append(f"a frame entry is malformed ({error})")
             continue
+        # The bitmap and the list are one statement (OBCG 10.3). A client refuses a frame where they
+        # disagree, which means the rider silently loses that frame; the probe is the one place that
+        # can see it happening to everyone at once.
+        if flagged != len(shards):
+            alerts.append(
+                f"f{frame.get('offset_min')}: the presence bitmap flags {flagged} shards and the list "
+                f"has {len(shards)} - clients refuse a frame where those disagree, so it reaches nobody"
+            )
         set_bytes += bytes_now
         published += len(shards)
         frame_rows.append({"offset_min": frame.get("offset_min"), "shards": len(shards), "bytes": bytes_now})
@@ -291,7 +302,12 @@ def main() -> int:
         return 2
 
     if version not in SUPPORTED_MANIFEST_VERSIONS:
-        alerts.append(f"manifest version {version} is not one this probe understands {sorted(SUPPORTED_MANIFEST_VERSIONS)}")
+        # Alert and stop. Running v2's checks over a v3 document would report on fields whose meaning
+        # it guessed, which is a worse answer than "I do not understand this".
+        print(f"OBC weather freshness probe - {where}")
+        print(f"UNSUPPORTED  manifest version {version}, not one of {sorted(SUPPORTED_MANIFEST_VERSIONS)}")
+        print("A probe that interprets a document it does not understand reports confident nonsense.")
+        return 1
 
     # ── 2. Manifest age ───────────────────────────────────────────────────────────────────────
     manifest_age = now - generated_at

@@ -794,8 +794,21 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
     let times = CycleTimes { reference_time: t0 };
     let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
     let mut seen = 0usize;
+    // The manifest is built here too, so the outage travels the whole way to a **set** presence bit
+    // rather than being proved at the bake layer and asserted at the document layer separately.
+    let mut document = manifest_v2::Builder::new(&lattice, times, t0, Vec::new(), Vec::new());
     bake_cycle(&lattice, &mosaic, times, 2, &mut |object| {
         seen += 1;
+        if !object.fill.all_dry {
+            document.record(
+                object.offset_min,
+                object.col,
+                object.row,
+                object.bytes.len() as u64,
+                object.object_crc32,
+                object.fill.all_observed,
+            );
+        }
         if object.col == 0 {
             assert!(object.fill.all_dry, "s0-{}: dry everywhere, so it is omitted", object.row);
             assert!(object.fill.painted, "the dry source did paint it");
@@ -814,6 +827,22 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
     })
     .expect("bakes");
     assert_eq!(seen, usize::try_from(lattice.shard_count()).unwrap() * usize::try_from(CYCLE_FRAMES).unwrap());
+
+    // Every frame: the two dry western shards are bit-clear and unlisted; the two no-data eastern
+    // ones are bit-set and listed. A source outage is a published object the client must fetch —
+    // it can never reach a rider as "no rain".
+    let manifest = document.finish();
+    assert_eq!(manifest.frames.len(), usize::try_from(CYCLE_FRAMES).unwrap());
+    for frame in &manifest.frames {
+        assert_eq!(frame.present, "0a", "bits 1 and 3 — the (1,0) and (1,1) shards — and nothing else");
+        assert_eq!(
+            frame.shards.iter().map(|shard| (shard.col, shard.row)).collect::<Vec<_>>(),
+            vec![(1, 0), (1, 1)],
+            "f{}: only the no-data shards are published",
+            frame.offset_min
+        );
+        assert!(frame.shards.iter().all(|shard| !shard.observed));
+    }
 }
 
 /// The retention contract WXR8's sweep derives its delete set from: a generation names the two
