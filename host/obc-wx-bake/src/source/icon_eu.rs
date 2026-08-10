@@ -18,9 +18,15 @@ use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProdu
 
 pub const ID: &str = "icon-eu";
 
-/// The native grid, restated as OBCG geometry: cell centers from (29.5 N, -23.5 E) on exact
-/// 0.0625-degree strides, so the south/west **edges** sit half a cell lower. GRIB scanning is
-/// +i west-east, +j south-north — identical to OBCG's row order, no reindexing.
+/// The **source window**: the native grid restated as geometry, with cell centres from
+/// (29.5 N, -23.5 E) on exact 0.0625-degree strides, so the south/west **edges** sit half a cell
+/// lower. GRIB scanning is +i west-east, +j south-north — identical to OBCG's row order, no
+/// reindexing.
+///
+/// The window stays at the native 6.5 km pitch (WXR3 #1242): eagerly upsampling a continental
+/// model onto the canonical 1 km lattice would cost 28 M cells a frame for no information, so the
+/// mosaic cell-replicates it lazily, one shard at a time. `cell_size_m` here states the source's
+/// true ground resolution; the *published* frames state the lattice's.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 29_468_750,
     west_lon_udeg: -23_531_250,

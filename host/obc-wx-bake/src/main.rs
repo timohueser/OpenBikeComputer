@@ -1,6 +1,8 @@
 //! `obc-wx-bake` — the weather bakery CLI.
 //!
 //! ```text
+//! obc-wx-bake canonical [--store <dir>|--r2] [--now <rfc3339>] [--threads n] [--dry-run]
+//!                                                                          the one mosaic dataset
 //! obc-wx-bake cycle   [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   every adapter
 //! obc-wx-bake dwd-rv  [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Germany radar, tier 1
 //! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
@@ -9,6 +11,13 @@
 //! obc-wx-bake schema                                                       print the manifest JSON Schema
 //! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
+//!
+//! `canonical` is the WXR3 (#1242) path and the one the service is moving to: it bakes **every**
+//! adapter, mosaics them onto the canonical global 0.01 degree lattice by the ordered
+//! `source::MOSAIC_PRIORITY` table, and publishes one provider-agnostic dataset of 24 shards x 9
+//! frames under `wx/v2/` — beside the live `wx/v1` tree, never over it. Its manifest is a
+//! deliberate placeholder until WXR4 #1243 designs the real one. Everything else below is the
+//! multi-product path WXR7 #1246 deletes.
 //!
 //! One product's failure never blocks another's: run the per-product subcommands from separate
 //! timers when that isolation matters more than a single-manifest cycle.
@@ -23,6 +32,7 @@
 //! publishes into a directory (any static host can serve it); `--r2` uses the `OBC_WX_R2_*`
 //! environment (bucket `obc-wx` by default).
 
+use obc_wx_bake::canonical::{run_canonical_cycle, BAKE_THREADS, CANONICAL};
 use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
@@ -55,7 +65,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let us = UsComposite;
     let gfs = GfsFloor;
     let adapters: Vec<&dyn Adapter> = match command {
-        "cycle" => vec![&dwd, &icon, &us, &gfs],
+        "canonical" | "cycle" => vec![&dwd, &icon, &us, &gfs],
         "dwd-rv" => vec![&dwd],
         "icon-eu" => vec![&icon],
         "us" => vec![&us],
@@ -67,6 +77,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut use_r2 = false;
     let mut now: Option<i64> = None;
     let mut dry_run = false;
+    let mut threads = BAKE_THREADS;
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -77,6 +88,10 @@ fn run(args: &[String]) -> Result<(), String> {
             "--now" => {
                 let text = rest.next().ok_or("--now needs an RFC 3339 timestamp")?;
                 now = Some(manifest::parse_rfc3339(text).ok_or_else(|| format!("--now: {text} is not RFC 3339"))?);
+            }
+            "--threads" => {
+                let text = rest.next().ok_or("--threads needs a count")?;
+                threads = text.parse().map_err(|_| format!("--threads: {text} is not a count"))?;
             }
             "--dry-run" => dry_run = true,
             other => return Err(format!("unknown argument {other}\n{}", usage())),
@@ -92,12 +107,16 @@ fn run(args: &[String]) -> Result<(), String> {
 
     eprintln!("publishing to {}", store.describe());
     let mut upstream = HttpUpstream::new();
-    let report = run_cycle(&adapters, &mut upstream, store.as_mut(), now, dry_run)?;
-    eprintln!("{}", report.summary());
+    let summary = if command == "canonical" {
+        run_canonical_cycle(&CANONICAL, &adapters, &mut upstream, store.as_mut(), now, threads, dry_run)?.summary()
+    } else {
+        run_cycle(&adapters, &mut upstream, store.as_mut(), now, dry_run)?.summary()
+    };
+    eprintln!("{summary}");
     Ok(())
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema"
+    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema"
         .to_string()
 }

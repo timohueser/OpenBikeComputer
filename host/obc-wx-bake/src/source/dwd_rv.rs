@@ -23,8 +23,19 @@ use crate::stereo;
 pub const ID: &str = "dwd-rv";
 pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
 
-/// The fixed publication window: a regular lat/lon cover of the composite's trapezoid at native
-/// ~1 km cells (9,000 x 14,000 microdegrees). Cells outside the projected raster are no-data.
+/// The **source window**: a regular lat/lon cover of the composite's trapezoid at native ~1 km
+/// cells (9,000 x 14,000 microdegrees, which is 1,002 m x 1,002 m at 50 N — the strides were
+/// chosen to make the cells square over Germany). Cells outside the projected raster are no-data,
+/// and the mosaic reads that as "not covered" and falls through to the next-priority source.
+///
+/// **This const is frozen until the cutover.** It is what the live `wx/v1/dwd-rv` product is
+/// published on, so moving it onto the canonical 0.01 degree lattice — which would buy the
+/// canonical path one nearest-neighbour hop from the stereographic raster instead of a
+/// nearest-neighbour of a nearest-neighbour — would also move the live product's lattice, shrink
+/// the German corridor against an unchanged 64 KiB OBCW producer cap, and make the
+/// `cell_size_m = 1_000` this path still emits wrong in both axes. WXR7 #1246 deletes the v1 path
+/// wholesale; the alignment belongs in the same push, not before it. Until then the mosaic pays
+/// the second hop, which is ~1 km of positional slop on a ~1 km source.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 45_680_000,
     west_lon_udeg: 1_460_000,

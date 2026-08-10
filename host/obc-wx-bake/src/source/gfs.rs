@@ -41,9 +41,24 @@ use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProdu
 pub const ID: &str = "gfs";
 pub const BUCKET: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
 
-/// The published window: the GFS lattice minus the antimeridian column and the two polar rows
+/// The **source window**: the GFS lattice minus the antimeridian column and the two polar rows
 /// (see the module docs). Cell centres coincide **exactly** with GFS grid points, so the mapping
-/// from source point to published cell is an integer remap — no resampling of any kind.
+/// from source point to source-window cell is an integer remap — no resampling of any kind.
+///
+/// It stays at the native 0.25 degree pitch (WXR3 #1242). This is the mosaic's **floor**: the last
+/// row of `MOSAIC_PRIORITY`, and the reason every canonical cell in the covered domain always
+/// carries a best-available value instead of needing a coverage flag. Upsampling it eagerly would
+/// be 648 M cells a frame, so the mosaic cell-replicates it lazily, one shard at a time — 750
+/// canonical cells to one GFS cell at the equator, which is exactly as coarse as it looks and
+/// honestly so.
+///
+/// Two edges of this window are load-bearing for the mosaic, and neither is obvious from the
+/// numbers. **Longitude**: dropping the antimeridian column does *not* leave a hole, because the
+/// underlying grid is periodic and `canonical::source_column` wraps onto it — without that wrap
+/// there is a 25-column stripe of permanent no-data through Fiji. **Latitude**: dropping the two
+/// polar rows genuinely does leave a hole, because latitude does not wrap. That band is the
+/// dataset's whole uncovered domain and it is named in `canonical::Lattice::covered_rows` rather
+/// than left to be discovered.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: -89_875_000,
     west_lon_udeg: -179_875_000,
