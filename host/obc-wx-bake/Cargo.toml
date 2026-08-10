@@ -28,3 +28,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 schemars = { version = "1", features = ["preserve_order"] }
 # The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack.
 ureq = "3"
+# Event-pack provenance: every captured upstream member records the sha256 of its exact bytes,
+# the same digest discipline `tests/fixtures/README.md` already holds checked-in fixtures to.
+sha2 = "0.11"
