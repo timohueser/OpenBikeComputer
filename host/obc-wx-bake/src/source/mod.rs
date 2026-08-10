@@ -1,7 +1,13 @@
 //! The adapter seam: one module per upstream source, all returning the same provider-neutral
-//! baked product (WX1's prescribed layering). Fetch → decode → reproject (nearest-neighbour at
-//! native cell size) → quantize (the WX2 table) → tile happens entirely inside an adapter; the
-//! cycle, emitter, manifest and publisher never see a provider format.
+//! baked product (WX1's prescribed layering). Fetch → decode → reproject (nearest-neighbour) →
+//! quantize (the WX2 table) happens entirely inside an adapter; the cycle, emitter, manifest and
+//! publisher never see a provider format.
+//!
+//! Since WXR3 (#1242) an adapter's `GEOMETRY` const is a **source-window description** — where
+//! this source has data and at what pitch — not an output lattice. The last stage, resampling
+//! onto the one canonical lattice, is [`crate::canonical`]'s single shared implementation, and
+//! which source wins a cell where two overlap is decided by exactly one thing: the ordered
+//! [`MOSAIC_PRIORITY`] table below.
 
 pub mod dwd_rv;
 pub mod gfs;
@@ -16,6 +22,52 @@ pub mod us;
 use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
 use crate::manifest::Product;
+
+/// One row of the mosaic priority table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MosaicSource {
+    /// The adapter's [`Adapter::id`], which is also its baked product's id.
+    pub id: &'static str,
+    /// Why this source sits where it sits. Prose for the reader; nothing reads it.
+    pub why: &'static str,
+}
+
+/// **The mosaic priority table — the one place a source's precedence lives.**
+///
+/// Ordered best first: a lattice cell is painted by the first source in this list that both
+/// covers it and has data there. Everything below it is fill for cells it does not answer, and
+/// the last row is the global floor that guarantees every cell **in the covered domain** always
+/// carries a best-available value (which is what makes the no-provenance decision honest — see
+/// [`crate::canonical`], and [`crate::canonical::Lattice::covered_rows`] for what the floor does
+/// not reach).
+///
+/// The ordering rule, locked 2026-08-10 (#1242): **radar beats model, finer radar beats coarser,
+/// national beats pan-European.** It is baker configuration and never client policy — nothing
+/// downstream of the bakery is told which source painted which cell.
+///
+/// Adding a source is one row. Its position in this list *is* its priority; there is no separate
+/// number to keep in sync, and [`mosaic_rank`] is the only reader.
+pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
+    MosaicSource { id: dwd_rv::ID, why: "national 1 km radar nowcast (Germany) — the finest radar we ingest" },
+    // WXR6 #1245's rows, in the slot WXR3 left for them. Below `dwd-rv`, which is gauge-adjusted
+    // and carries +120 min of nowcast frames OPERA has none of; above every model. Their order
+    // relative to `us` is immaterial — CONUS and Europe never share a cell — so they sit where
+    // the placeholder was rather than being argued about.
+    MosaicSource { id: opera_cirrus::ID, why: "pan-European 1 km radar: 5-minute reflectivity, the finest thing over Europe" },
+    MosaicSource {
+        id: opera_nimbus::ID,
+        why: "pan-European 2 km radar rain rate — coarser and later than CIRRUS, but native mm/h and near-surface, and it covers cells CIRRUS does not",
+    },
+    MosaicSource { id: us::ID, why: "national CONUS composite: 1 km MRMS radar observation, 3 km HRRR model ahead" },
+    MosaicSource { id: icon_eu::ID, why: "pan-European 6.5 km model — fill where no radar reaches" },
+    MosaicSource { id: gfs::ID, why: "global 27.75 km model floor — the last row, and the reason no cell is blank" },
+];
+
+/// This source's rank in [`MOSAIC_PRIORITY`] (lower wins), or `None` if it has no row — which is
+/// a bakery configuration bug, not a runtime condition, and the mosaic refuses to build.
+pub fn mosaic_rank(id: &str) -> Option<usize> {
+    MOSAIC_PRIORITY.iter().position(|source| source.id == id)
+}
 
 /// NOAA Open Data Dissemination terms, the attribution URL of every NOAA-sourced product
 /// (WX1's license record: public-use U.S. government data, no endorsement implied).
@@ -86,6 +138,11 @@ pub struct BakedProduct {
 
 /// Refuse a composed product whose frames cannot all be laid onto one bundle window.
 ///
+/// **Vestigial since WXR3 (#1242), removed by WXR7 (#1246).** The canonical dataset publishes one
+/// lattice, which trivially nests under itself, so nothing the mosaic emits can violate this. It
+/// still guards the per-product path that is live until WXR7 deletes it, and both callers
+/// ([`us::UsComposite`] and [`crate::pack::crop`]) are on that path.
+///
 /// A client assembles a bundle on the coarsest frame's lattice and drops any frame that lattice
 /// cannot tile ([`crate::geometry::GridGeometry::nests_under`]). A dropped frame is not a
 /// degraded frame — it is a hole in the two-hour timeline, and the frame most likely to be
@@ -126,6 +183,60 @@ pub fn verify_frames_nest(product: &BakedProduct) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    /// Every adapter the bakery ships must have exactly one row, and every row must name a real
+    /// adapter. A source with no row cannot be mosaicked at all, and a duplicate row would make
+    /// "its position is its priority" ambiguous.
+    #[test]
+    fn every_adapter_has_exactly_one_row_and_every_row_an_adapter() {
+        let adapters: [&dyn Adapter; 6] = [
+            &dwd_rv::DwdRv,
+            &icon_eu::IconEu,
+            &us::UsComposite,
+            &gfs::GfsFloor,
+            &opera_cirrus::OperaCirrus,
+            &opera_nimbus::OperaNimbus,
+        ];
+        for adapter in adapters {
+            let rows = MOSAIC_PRIORITY.iter().filter(|source| source.id == adapter.id()).count();
+            assert_eq!(rows, 1, "{} has {rows} rows in MOSAIC_PRIORITY", adapter.id());
+        }
+        for source in MOSAIC_PRIORITY {
+            assert!(
+                adapters.iter().any(|adapter| adapter.id() == source.id),
+                "MOSAIC_PRIORITY names {} but no adapter answers to it",
+                source.id
+            );
+        }
+        assert_eq!(MOSAIC_PRIORITY.len(), adapters.len());
+    }
+
+    /// The locked ordering rule, spelled out so a reordering has to argue with a test: radar
+    /// beats model, national beats pan-European, and the global floor is last so that every cell
+    /// always has a best-available value.
+    #[test]
+    fn the_table_encodes_the_locked_ordering_rule() {
+        let rank = |id| mosaic_rank(id).unwrap_or_else(|| panic!("{id} has no row"));
+        assert!(rank(dwd_rv::ID) < rank(icon_eu::ID), "national radar must beat the pan-European model");
+        assert!(rank(us::ID) < rank(icon_eu::ID), "a national composite must beat the pan-European model");
+        assert!(rank(icon_eu::ID) < rank(gfs::ID), "the regional model must beat the global floor");
+        // WXR6 #1245: pan-European radar sits under the national composite that overlaps it and
+        // over every model, and the finer, fresher OPERA product outranks the coarser one.
+        assert!(rank(dwd_rv::ID) < rank(opera_cirrus::ID), "national radar must beat pan-European radar");
+        assert!(rank(opera_cirrus::ID) < rank(opera_nimbus::ID), "1 km / 5 min must beat 2 km / 15 min");
+        assert!(rank(opera_nimbus::ID) < rank(icon_eu::ID), "any radar must beat the pan-European model");
+        assert_eq!(
+            mosaic_rank(gfs::ID),
+            Some(MOSAIC_PRIORITY.len() - 1),
+            "the global floor is the last row by construction"
+        );
+        assert_eq!(mosaic_rank("no-such-source"), None);
+    }
 }
 
 #[cfg(test)]

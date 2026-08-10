@@ -3,6 +3,11 @@
 //! Every emitted object is immediately re-validated through `obc_formats::obcg::validate` — the
 //! same fail-closed validator the shared vectors pin — so a baker bug can never publish an
 //! object the phone would reject.
+//!
+//! **This is the per-product emit path**, one object per product per frame on each product's own
+//! lattice. WXR3 (#1242) replaced it for the canonical dataset with
+//! [`crate::canonical::emit_shard`], which emits one lattice sharded across objects; the two
+//! coexist only until WXR7 (#1246) deletes the multi-product path, and this module goes with it.
 
 use obc_formats::obcg::{self, FrameInput};
 

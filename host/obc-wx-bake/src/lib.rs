@@ -7,9 +7,12 @@
 //! else** — never on the phone, never in firmware.
 //!
 //! Layer map (WX1's prescribed boundaries):
-//! - [`source`] — one adapter per upstream; the only provider-aware code.
+//! - [`source`] — one adapter per upstream; the only provider-aware code, and the ordered
+//!   `MOSAIC_PRIORITY` table that says which source wins a cell where two overlap.
 //! - [`grib`], [`idx`], [`tiff`], [`stereo`], [`lcc`], [`laea`] — pinned decode/selection/
 //!   projection primitives the adapters share.
+//! - [`canonical`] — the canonical lattice, the priority mosaic and the sharded emit (WXR3
+//!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions.
 //! - [`emit`] — cell grids → OBCG bytes through the `obc-formats` byte authority.
 //! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
 //! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
@@ -21,6 +24,7 @@
 //! the bakery depends on it. [`spike`] is the WXR1 (#1240) measurement harness: throwaway, off the
 //! checked-in fixtures, reachable only through the `spike` subcommand, and deleted by WXR7.
 
+pub mod canonical;
 pub mod cycle;
 pub mod emit;
 pub mod fetch;
