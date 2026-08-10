@@ -1151,7 +1151,21 @@ One OBCG object is exactly one frame of one product (a DWD radar nowcast step, a
 hour), so products whose frames have different native resolutions compose with no resampling at
 all. The US product is exactly that: frame 0 is a 1 km MRMS radar observation and the forward
 frames are 3 km HRRR model steps, one timeline whose frames keep their own grids, their own real
-valid times and their own observation/forecast provenance. Beneath the regional tiers a
+valid times and their own observation/forecast provenance.
+
+"No resampling" has a price, and it is worth naming because getting it wrong is invisible. A phone
+assembling one OBCW bundle has to state a single geographic window for the whole timeline, and it
+picks the coarsest frame's. Every other frame is then laid onto that window at *its own* cell size
+— which only works if the window is a whole number of that frame's cells, aligned to its lattice.
+When it is not, the frame is refused rather than stretched, because a stretched frame is a
+fabricated observation. So a composed product's lattices must **nest**: the coarse cell strides
+have to be integer multiples of the fine ones, and the origins congruent. The baker verifies this
+before publishing and fails the cycle closed if it does not hold. The US product learned this the
+hard way — a 27,000 × 34,000 microdegree forecast lattice over a 10,000 × 10,000 observation
+divides in neither axis, and the 1 km radar frame was silently dropped from every bundle until the
+forecast lattice moved to 30,000 × 30,000.
+
+Beneath the regional tiers a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
 on purpose, never smoothed into looking better than it is. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
 intensities and the same raw4/RLE4 tile codec, generalized to a per-product power-of-two tile
