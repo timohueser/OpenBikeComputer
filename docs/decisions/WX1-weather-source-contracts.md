@@ -248,6 +248,54 @@ it is not clamped. The captured delta had 262,086 positive cells and a
 12.145752 mm maximum. Decode plus de-accumulation took 0.08 s and 25.7 MB peak
 RSS.
 
+## EUMETNET OPERA: European radar (addendum, 2026-08-10, WXR6 #1245)
+
+Amendment, not a rewrite: WX1 recorded no European tier-1 radar because none was
+surveyed. [#1245](https://github.com/timohueser/OpenBikeComputer/issues/1245)
+surveyed one and it is a **GO**, so the frozen table above should be read as
+having gained a `Europe, tier 1` row whose fallback ladder is ICON-EU, then GFS.
+
+Objects are anonymous on CloudFerro, CC BY 4.0 (each object states its own
+licence in `GDAL_METADATA`):
+
+```text
+https://s3.waw3-1.cloudferro.com/openradar-24h/
+  YYYY/MM/DD/OPERA/COMP/OPERA@YYYYMMDDTHHMM@0@{DBZH,RATE,ACRR}.{h5,tiff}
+```
+
+Two products are used, both as observation frames, both read from the **COG**
+rather than the ODIM HDF5 twin (`openradar-archive`, which reaches back to 2012,
+carries only the HDF5s; the live 24-hour bucket carries both):
+
+- **CIRRUS `DBZH`** — 3,800 x 4,400 cells of 1 km, every 5 minutes, measured
+  publication lag 4.1 min. Column-maximum reflectivity, converted to a rate with
+  Marshall-Palmer `Z = 200 R^1.6`.
+- **NIMBUS `RATE`** — 1,900 x 2,200 cells of 2 km, every 15 minutes, measured lag
+  10 min. Already mm/h; its metadata declares `zr_a = 200.0`, `zr_b = 1.6`, which
+  is where the CIRRUS relation comes from and what pins it.
+
+`ACRR` is rejected: same 2 km grid, and it is a **one-hour** accumulation, which
+smears a moving shower across an hour of track.
+
+Pinned contract, verified against the live objects:
+
+- classic TIFF, `Compression = 8`, `Predictor = 1`, 512 x 512 tiles,
+  `SamplesPerPixel = 2` (value + `pl.imgw.quality.qi_total`), both `float32`;
+- LAEA/WGS-84, `+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0
+  +y_0=-2100000.0 +units=m +ellps=WGS84`; (55 N, 10 E) lands on fractional pixel
+  (col 1950.5, row 2100.5) of the 1 km raster;
+- `GDAL_NODATA = -9999000` means **no radar coverage**; a `NaN` sample is ODIM
+  `undetect`, meaning covered with nothing detected. The two are different facts
+  and only the second is dry.
+
+Coverage is static in shape and not to the cell: 50.34 / 50.34 / 50.21 / 50.22 %
+of the domain over four frames spanning 18 hours on 2026-08-10, with the union
+and intersection of those masks differing by 21,936 cells (0.13 % of the domain).
+It is therefore read per frame from the nodata sentinel, never from a committed
+mask. Structurally uncovered: central and southern Italy, all of Greece, Albania,
+North Macedonia, southern Bulgaria, Ukraine east of Lviv, Belarus — which is why
+"OPERA lands" must never be read as "Europe is covered".
+
 ## NOAA GFS: worldwide v1 floor
 
 Use NODD objects and indexes:
@@ -448,6 +496,7 @@ leaving attribution to UI guesswork:
 | --- | --- | --- |
 | DWD RV / ICON-EU | DWD Open Data, CC BY 4.0 | `Source: Deutscher Wetterdienst (DWD); modified/quantized by OpenBikeComputer` plus DWD legal and CC BY links |
 | NOAA MRMS / HRRR / GFS | NOAA NODD public-use U.S. government data | `Source: NOAA/NCEP <product>; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied` |
+| EUMETNET OPERA CIRRUS / NIMBUS | CC BY 4.0 (stated in each object's own `GDAL_METADATA`) | `Source: EUMETNET OPERA <composite> (CC BY 4.0); modified/quantized by OpenBikeComputer`, and for CIRRUS the Marshall-Palmer conversion is named in the same string |
 | NASA IMERG, if later approved | NASA Earth science data policy and GPM citation rules | exact product/citation and transformation notice; not present in v1 manifests |
 | MET Locationforecast | NLOD 2.0 or CC BY 4.0 | `Data from MET Norway` (phone-side attribution, not an R2 baker source) |
 
