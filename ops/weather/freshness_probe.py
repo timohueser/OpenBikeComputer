@@ -110,12 +110,16 @@ def main() -> int:
                              "catches a dead timer, which no freshness check can see")
     parser.add_argument("--max-set-bytes", type=int, default=50 * BYTES_PER_MB,
                         help="alert when the currently published frame set exceeds this (default: 50 MB)")
-    # 3 GB against a real 24 h window. WX1 wrote 1 GB when the model assumed 48 h and only two
-    # adapters were live; four adapters at their current cadences project ≈ 0.95 GB of genuine
-    # daily churn, so a 1 GB gate would now fire on healthy operation. 3 GB is still under a third
-    # of R2's 10 GB free tier and leaves room for one more product before this needs re-deciding.
-    parser.add_argument("--max-rolling-bytes", type=int, default=3000 * BYTES_PER_MB,
-                        help="alert when the projected 24 h bucket footprint exceeds this (default: 3 GB)")
+    # 1.5 GB against a real 24 h window. WX1 wrote 1 GB when the model assumed 48 h — i.e. a real
+    # budget of 0.5 GB — and only two adapters were live. Four adapters at their current cadences
+    # project ≈ 0.95 GB of genuine daily churn, so 1 GB would now fire on healthy operation, but a
+    # gate is only worth having if it still catches the mistakes it exists for. The one that
+    # matters is a cadence fat-finger: `us` at `*:0/2` instead of `*:0/5` burns 5x the intended
+    # churn and lands at ≈ 1.95 GB, which a 3 GB gate would wave through and this one does not.
+    # 1.5 GB keeps ≈ 58 % headroom over healthy operation and stays far under R2's 10 GB free
+    # tier. Raise it deliberately, with a number, when a new product genuinely needs the room.
+    parser.add_argument("--max-rolling-bytes", type=int, default=1500 * BYTES_PER_MB,
+                        help="alert when the projected 24 h bucket footprint exceeds this (default: 1.5 GB)")
     parser.add_argument("--adapters-conf", type=Path, default=Path(__file__).with_name("adapters.conf"),
                         help="cadence table used for the rolling-storage projection")
     parser.add_argument("--timeout", type=float, default=20.0)

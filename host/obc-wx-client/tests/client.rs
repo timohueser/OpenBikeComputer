@@ -493,11 +493,19 @@ fn the_met_url_rounds_the_coordinate_to_four_decimals() {
 // ── bundle ─────────────────────────────────────────────────────────────────────────────────
 
 fn crop(valid_at: i64, cell: u32, width: u32, height: u32, value: u8) -> Crop {
+    crop_at(valid_at, (47_000_000, 7_000_000), cell, width, height, value)
+}
+
+/// [`crop`] with an explicit origin, for the tests that care about lattice *alignment* rather
+/// than stride. Sharing one hardcoded origin makes congruence hold for free, which is exactly the
+/// half of the nesting rule the production pair actually turns on — HRRR sits at
+/// (21,100,000, −134,100,000) and MRMS at (20,000,000, −130,000,000).
+fn crop_at(valid_at: i64, origin: (i64, i64), cell: u32, width: u32, height: u32, value: u8) -> Crop {
     Crop {
         valid_at,
         source_class: SourceClass::Forecast,
-        south_udeg: 47_000_000,
-        west_udeg: 7_000_000,
+        south_udeg: origin.0,
+        west_udeg: origin.1,
         cell_lat_udeg: cell,
         cell_lon_udeg: cell,
         cell_size_m: 1_000,
@@ -560,8 +568,12 @@ fn a_frame_whose_lattice_cannot_tile_the_window_is_dropped_not_resampled() {
 fn a_nesting_observation_frame_survives_at_its_own_resolution() {
     let hourly = hourly();
     let crops = [
-        crop(hourly.valid_from, 10_000, 30, 30, 5),       // 1 km observation
-        crop(hourly.valid_from + 900, 30_000, 10, 10, 3), // 3 km model, exactly 3x — sets the window
+        // Deliberately *different* origins, congruent modulo the fine stride — the production
+        // pair's shape (HRRR at 21,100,000/-134,100,000 over MRMS at 20,000,000/-130,000,000). A
+        // shared origin satisfies the alignment half of the rule for free and would leave only
+        // the stride half under test.
+        crop_at(hourly.valid_from, (47_000_000, 7_000_000), 10_000, 40, 40, 5), // 1 km observation
+        crop_at(hourly.valid_from + 900, (47_030_000, 7_020_000), 30_000, 10, 10, 3), // 3 km, 3x
     ];
     let (bytes, report) =
         bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &test_corridor(), &crops, &hourly)
