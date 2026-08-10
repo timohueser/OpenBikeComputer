@@ -1126,24 +1126,44 @@ fn corridor_window(site: &Site) -> Window {
     Window { col0: col0.floor() as u32, row0: row0.floor() as u32, width, height }
 }
 
-/// How many lattice columns the phone merges to reach ~1 km **physical** cells at `lat_deg`.
+/// Metres per 0.01 degree of latitude: the north-south cell height of the canonical lattice, and
+/// the east-west column pitch the phone resamples a corridor onto.
+const LATTICE_CELL_METRES: f64 = 1_113.2;
+
+/// How many columns a corridor window becomes once the phone resamples it onto a **uniform
+/// ~1,113 m east-west pitch** — the same physical size as the lattice's north-south cell.
 ///
-/// A 0.01 degree column is `111.32 x cos(lat)` km wide, so the degree lattice oversamples
-/// east-west by `1/cos(lat)` — 1.6x at 50 N, 2.9x at Tromso. Merging that many columns is
-/// information-lossless (no source is finer than ~1 km) and makes a fixed-radius corridor cost
-/// the same number of cells at every latitude. `1` at the equator, i.e. a no-op.
-fn column_group(lat_deg: f64) -> u32 {
-    (1.0 / lat_deg.to_radians().cos()).round().max(1.0) as u32
+/// The degree lattice oversamples east-west by `1/cos(lat)`: a 0.01 degree column is only
+/// `1113 x cos(lat)` metres wide, 715 m at 50 N and 387 m at Tromso, finer than anything any
+/// source produces. Resampling to a fixed metric pitch spends that surplus once and gives the
+/// same cell count for the same ground radius at every latitude — 162 columns for a 90 km disc,
+/// north to south and east to west alike.
+///
+/// This replaces an earlier `round(1/cos lat)` **column merge**, which was worse in three ways a
+/// review caught: it produced 1,428 m cells at Frankfurt (coarser than the 1 km radar painting
+/// them), it stepped 2x across 48.19 N where `round()` flips, and taking each group's maximum
+/// biased the result wet. Nearest-neighbour is also what `OBCG_Spec` §6 and `OBCW_Spec` §5
+/// mandate everywhere else — no interpolation, no fabricated sub-cell precision.
+fn uniform_pitch_width(window: Window, lat_deg: f64) -> u32 {
+    let span_metres = f64::from(window.width) * LATTICE_CELL_METRES * lat_deg.to_radians().cos();
+    ((span_metres / LATTICE_CELL_METRES).round() as u32).max(1)
+}
+
+/// The east-west cell pitch, in metres, that `out_width` columns give this window at `lat_deg`.
+fn column_pitch_metres(window: Window, lat_deg: f64, out_width: u32) -> f64 {
+    f64::from(window.width) * LATTICE_CELL_METRES * lat_deg.to_radians().cos() / f64::from(out_width)
 }
 
 /// Exact OBCW v1 byte cost of a nine-frame bundle over `window`, per `OBCW_Spec` §§2-6.
 /// OBCW has no dry sentinel: a dry 256-cell tile still costs 16 RLE4 bytes.
 ///
-/// `group` merges that many lattice columns into one bundle column, taking the **maximum**
-/// intensity of the group — the only safe reduction for precipitation, because it can never turn
-/// rain into dry, and no-data (15) only survives where every source column was no-data.
-fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, group: u32, worst_case: bool) -> (u64, u64, u64) {
-    let width = window.width.div_ceil(group);
+/// `out_width` is the bundle's column count. Pass `window.width` for the raw degree lattice, or
+/// [`uniform_pitch_width`] for the phone-normalised grid; columns are taken **nearest-neighbour**
+/// from the lattice, never averaged and never merged. `OBCW_Spec` §5 states the window as a bbox
+/// plus per-frame width/height and derives cells affinely, so a bundle grid that is not aligned
+/// to the source lattice is already expressible — the device reads no per-axis stride.
+fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, out_width: u32, worst_case: bool) -> (u64, u64, u64) {
+    let width = out_width;
     let tile_cols = width.div_ceil(16) as usize;
     let tile_rows = window.height.div_ceil(16) as usize;
     let tile_count = (tile_cols * tile_rows) as u64;
@@ -1156,16 +1176,17 @@ fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, group: u32, worst_case: bo
             continue;
         }
         mosaic.fill(frame * FRAME_STEP_MIN, window, &mut cells);
+        // Nearest-neighbour: output column c samples the lattice column under its centre.
+        let columns: Vec<usize> = (0..width as usize)
+            .map(|index| {
+                ((2 * index + 1) * window.width as usize / (2 * width as usize)).min(window.width as usize - 1)
+            })
+            .collect();
         for row in 0..window.height as usize {
             let source = &cells[row * window.width as usize..(row + 1) * window.width as usize];
             let destination = &mut reduced[row * width as usize..(row + 1) * width as usize];
-            for (index, cell) in destination.iter_mut().enumerate() {
-                let first = index * group as usize;
-                let last = (first + group as usize).min(source.len());
-                // No-data must not win over a real reading, and rain must not lose to dry.
-                let span = &source[first..last];
-                let strongest = span.iter().copied().filter(|&value| value != precip4::INTENSITY_NODATA).max();
-                *cell = strongest.unwrap_or(precip4::INTENSITY_NODATA);
+            for (cell, column) in destination.iter_mut().zip(&columns) {
+                *cell = source[*column];
             }
         }
         for tile_row in 0..tile_rows {
@@ -1200,7 +1221,8 @@ fn phase_corridor(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
         "site", "what paints it", "cells/frame", "tiles", "dir/frame", "measured", "raw4 worst", "radar-scaled"
     );
     let reference = corridor_window(&CORRIDOR_FETCH_SITE);
-    let (reference_bytes, reference_tiles, reference_directory) = obcw_bundle_bytes(mosaic, reference, 1, false);
+    let (reference_bytes, reference_tiles, reference_directory) =
+        obcw_bundle_bytes(mosaic, reference, reference.width, false);
     let frankfurt_payload_per_tile =
         (reference_bytes - reference_directory - OBCW_FIXED) / (reference_tiles * u64::from(CYCLE_FRAMES));
     println!(
@@ -1209,8 +1231,8 @@ fn phase_corridor(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
     );
     for site in &SITES {
         let window = corridor_window(site);
-        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, 1, false);
-        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, 1, true);
+        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, window.width, false);
+        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, window.width, true);
         // What the site would measure under genuine 1 km radar texture, priced from Frankfurt's
         // own per-tile payload — the only site in the table that is radar-covered in all nine
         // frames. Without this the northern rows read as reassurance they have not earned.
@@ -1231,35 +1253,65 @@ fn phase_corridor(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
         );
     }
 
-    println!("\n## Phase 4a-norm — the same bundles after the phone normalises columns to ~1 km physical");
     println!(
-        "  The degree lattice oversamples east-west by 1/cos(lat). Merging that many columns is \
-         lossless (no source is finer than ~1 km) and makes the bundle latitude-independent."
+        "\n## Phase 4a-norm — the same bundles after the phone resamples onto a uniform ~{:.0} m \
+         east-west pitch",
+        LATTICE_CELL_METRES
     );
     println!(
-        "  {:18} {:>6} {:>11} {:>7} {:>12} {:>12} {:>13}  verdict",
-        "site", "merge", "cells/frame", "tiles", "measured", "raw4 worst", "radar-scaled"
+        "  Nearest-neighbour onto the same physical pitch as the lattice's north-south cell. A \
+         fixed ground radius then costs the same cell count at every latitude, cells stay square, \
+         and there is no step where a rounding rule flips."
+    );
+    println!(
+        "  {:18} {:>11} {:>9} {:>7} {:>12} {:>12} {:>13} {:>10}",
+        "site", "cells/frame", "E-W pitch", "tiles", "measured", "raw4 worst", "radar-scaled", "headroom"
     );
     for site in &SITES {
         let window = corridor_window(site);
-        let group = column_group(site.lat_deg);
-        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, group, false);
-        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, group, true);
+        let out_width = uniform_pitch_width(window, site.lat_deg);
+        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, out_width, false);
+        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, out_width, true);
         let radar_scaled = OBCW_FIXED + directory + tiles * u64::from(CYCLE_FRAMES) * frankfurt_payload_per_tile;
         println!(
-            "  {:18} {:>5}x {:>4} x {:<4} {:>7} {:>12} {:>12} {:>13}  {} / {}",
+            "  {:18} {:>4} x {:<4} {:>7.0} m {:>7} {:>12} {:>12} {:>13} {:>9.1}%",
             site.name,
-            group,
-            window.width.div_ceil(group),
+            out_width,
             window.height,
+            column_pitch_metres(window, site.lat_deg, out_width),
             tiles,
             bytes(measured),
             bytes(worst),
             bytes(radar_scaled),
-            if measured <= OBCW_PRODUCER_CAP { "fits 64 KiB" } else { "OVER 64 KiB" },
-            if worst <= OBCW_PROPOSED_CAP { "worst fits 256 KiB" } else { "worst OVER 256 KiB" }
+            100.0 * (1.0 - worst as f64 / OBCW_PROPOSED_CAP as f64)
         );
     }
+    // The swept worst case, not a six-city sample: round-2 review found the previous mechanism's
+    // maximum sitting at 48.19 N, between two of the listed cities, where nobody had looked.
+    let mut worst_latitude = 0.0;
+    let mut worst_bytes = 0u64;
+    let mut widest = 0u32;
+    let mut narrowest = u32::MAX;
+    let mut latitude = 0.0;
+    while latitude <= 80.0 {
+        let site = Site { name: "sweep", lat_deg: latitude, lon_deg: 0.0, source: "n/a" };
+        let window = corridor_window(&site);
+        let out_width = uniform_pitch_width(window, latitude);
+        widest = widest.max(out_width);
+        narrowest = narrowest.min(out_width);
+        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, out_width, true);
+        if worst > worst_bytes {
+            worst_bytes = worst;
+            worst_latitude = latitude;
+        }
+        latitude += 0.05;
+    }
+    println!(
+        "  swept 0-80 N at 0.05 deg: worst raw4 bundle {} at {worst_latitude:.2} N ({:.1}% headroom \
+         under the 256 KiB cap); column count stays in {narrowest}..={widest} across the whole sweep",
+        bytes(worst_bytes),
+        100.0 * (1.0 - worst_bytes as f64 / OBCW_PROPOSED_CAP as f64)
+    );
 
     println!("\n## Phase 4b — what a corridor must fetch out of OBCG, by tile edge and page size");
     println!(
@@ -1509,31 +1561,35 @@ mod tests {
         assert_eq!((window.width, window.height), (252, 162));
     }
 
-    /// Timo's decision, as arithmetic: merging `round(1/cos lat)` columns bounds a fixed-radius
-    /// disc at every latitude, where the raw degree lattice grows without bound.
+    /// Timo's decision, as arithmetic. Two properties, both swept rather than sampled at cities:
+    /// the resampled bundle's raw4 worst case stays well under the producer cap at every latitude,
+    /// and the east-west cell pitch stays within a couple of percent of the north-south one.
     ///
-    /// It is a **bound**, not a constant — the merge factor is an integer, so rounding leaves up
-    /// to ~1.5x residual oversampling (Reykjavik's exact factor is 2.29 and it merges 2x, so it
-    /// keeps 186 columns rather than 162). That residual is what the 256 KiB cap absorbs.
+    /// The second assertion is the guard. The `round(1/cos lat)` merge this replaced satisfied the
+    /// cap (222,880 B at 48.19 N, 15 % headroom) but produced a 1,428 m east-west cell against a
+    /// 1,113 m north-south one — so a cap-only test would not have caught it. The round-2 review
+    /// found that maximum by sweeping; this test is what makes the sweep permanent.
     #[test]
-    fn column_normalisation_bounds_the_corridor_at_every_latitude() {
-        let disc_columns = corridor_window(&Site { name: "eq", lat_deg: 0.0, lon_deg: 0.0, source: "n/a" }).width;
-        let ceiling = disc_columns * 3 / 2 + 1;
-        let mut widest_raw = 0;
-        for latitude in [0.0, 20.0, 40.0, 50.11, 59.91, 64.13, 69.65, 75.0, 80.0] {
+    fn uniform_pitch_bounds_the_corridor_in_bytes_at_every_latitude() {
+        // A byte model only: `worst_case` skips the mosaic, so no fixtures are needed.
+        let mosaic = Mosaic { layers: Vec::new() };
+        // Comfortably under the 256 KiB cap, and comfortably under the 217.7 KiB the merge left.
+        let budget = 200 * 1024;
+        let mut latitude = 0.0f64;
+        while latitude <= 80.0 {
             let site = Site { name: "sweep", lat_deg: latitude, lon_deg: 0.0, source: "n/a" };
             let window = corridor_window(&site);
-            widest_raw = widest_raw.max(window.width);
-            let normalised = window.width.div_ceil(column_group(latitude));
+            let out_width = uniform_pitch_width(window, latitude);
+            let (worst, _, _) = obcw_bundle_bytes(&mosaic, window, out_width, true);
+            assert!(worst <= budget, "{latitude:.2} N: raw4 worst case {worst} B is over the {budget} B budget");
+            let pitch = column_pitch_metres(window, latitude, out_width);
+            let ratio = pitch / LATTICE_CELL_METRES;
             assert!(
-                normalised <= ceiling,
-                "{latitude} N normalises to {normalised} columns, over the {ceiling} the rounding allows"
+                (0.98..=1.02).contains(&ratio),
+                "{latitude:.2} N: east-west pitch {pitch:.0} m is {ratio:.3}x the north-south cell"
             );
+            latitude += 0.05;
         }
-        assert!(widest_raw > 900, "the raw lattice must be the thing that runs away: {widest_raw}");
-        assert_eq!(column_group(0.0), 1, "the equator is a no-op");
-        assert_eq!(column_group(50.11), 2);
-        assert_eq!(column_group(69.65), 3);
     }
 
     /// A corridor that straddles a shard seam must be priced across every shard it overlaps, not
