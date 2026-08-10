@@ -502,27 +502,29 @@ impl ObjectStore {
     /// `new(shared)`-then-`RefCell::new` shape put **two** copies of it in `link::init_store`'s
     /// frame (the return slot + the wrapper's argument), the measured ~27.6 KB boot spike that
     /// overran the residual stack once EL7 grew the ride task's poll frame (STKOF HardFault at
-    /// the `init_store` prologue, 2026-08-03). One by-value hop into the `.bss` slot is the floor
-    /// for safe code; everything that scans stays in [`hydrate`], operating on the slot directly.
-    pub fn empty() -> Self {
-        ObjectStore {
-            settings: Settings::default(),
-            routes: Vec::new(),
-            rides: Vec::new(),
-            trips: Vec::new(),
-            next_id: 0,
-            next_trip_id: 0,
-            revision: 1,
-            trip_revision: 1,
-            route_total: 0,
-            ride_total: 0,
-            trip_total: 0,
-            list_buf: [0; LIST_BUF_LEN],
-            set_upload: None,
-        }
-    }
+    /// the `init_store` prologue, 2026-08-03). Since WX12 (#1197) the empty store is a **`const`**
+    /// — a `.rodata` image the slot write copies from — because even the one by-value hop proved
+    /// optimizer-fragile: a +96 B `Settings` growth was enough for rustc 1.96 to stop collapsing
+    /// `RefCell::new(empty())` and stack the two ~13.6 KB temporaries again (the boot-chain guard
+    /// caught it, as designed). A constant can't be duplicated onto the stack; everything that
+    /// scans stays in [`hydrate`], operating on the slot directly.
+    pub const EMPTY: ObjectStore = ObjectStore {
+        settings: Settings::DEFAULT,
+        routes: Vec::new(),
+        rides: Vec::new(),
+        trips: Vec::new(),
+        next_id: 0,
+        next_trip_id: 0,
+        revision: 1,
+        trip_revision: 1,
+        route_total: 0,
+        ride_total: 0,
+        trip_total: 0,
+        list_buf: [0; LIST_BUF_LEN],
+        set_upload: None,
+    };
 
-    /// Mount-time fill of an [`empty`](Self::empty) store, **in place**: load settings, scan
+    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings, scan
     /// `/routes` into the id table, and sweep aborted commits (files whose held-back magic never
     /// got patched — see `sd.rs`). Runs under a boot-time lock of the shared store (`shared`),
     /// which it borrows for the settings load + scans.

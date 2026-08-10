@@ -75,8 +75,15 @@ pub struct DateTime {
 impl Default for DateTime {
     /// A neutral in-range stamp; a host or user supplies the real time.
     fn default() -> Self {
-        Self { year: 2025, month: 1, day: 1, hour: 12, minute: 0 }
+        Self::DEFAULT
     }
+}
+
+impl DateTime {
+    /// The [`Default`] stamp as a `const` — one link in the const `Settings::DEFAULT` chain
+    /// (`obc-app`), which exists so the board can build its object store from a `.rodata` image
+    /// instead of a stack temporary (the #1197 boot-chain fix).
+    pub const DEFAULT: DateTime = DateTime { year: 2025, month: 1, day: 1, hour: 12, minute: 0 };
 }
 
 impl DateTime {

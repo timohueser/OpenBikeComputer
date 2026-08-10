@@ -62,6 +62,7 @@ pub mod trip;
 pub(crate) mod ui_runtime;
 pub mod wall_clock;
 pub mod weather;
+pub mod weather_alerts;
 pub mod weather_rain;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAction};
@@ -108,5 +109,6 @@ pub use settings::{
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 pub use wall_clock::{MinuteTicker, WallClock};
-pub use weather::{rain_outlook, RainOutlook, WeatherFeed, WeatherSnapshot};
+pub use weather::{rain_outlook, RainOutlook, RideProjection, WeatherFeed, WeatherSnapshot};
+pub use weather_alerts::{AlertCandidate, AlertClass, AlertMark};
 pub use weather_rain::RainOverlayAdapter;

@@ -569,6 +569,8 @@ alert_rain = "REGEN VORAUS"
 alert_storm = "STURM VORAUS"
 alert_rain_body = "Starker Regen auf der Route."
 alert_storm_body = "Gewitter auf der Route."
+alert_gust = "STARKER WIND"
+alert_gust_body = "Gefährliche Böen voraus."
 view_rain_map = "REGENKARTE"
 dismiss = "SCHLIESSEN"
 

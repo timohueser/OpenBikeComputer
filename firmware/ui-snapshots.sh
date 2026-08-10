@@ -450,6 +450,23 @@ WXNAV="p d d d d w p"
 "$SIM" "$MAP" --boot --weather demo:storm --weather-alert storm:28 --png "$OUT/weather-alert-storm.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --png "$OUT/weather-alert-rain.png"
 "$SIM" "$MAP" --boot --script "p d d d d d w p d d p" --png "$OUT/weather-settings.png"
+# WX12 (#1197): the two-hour *ride* decision + engine-fired alerts. `stormahead`/`rainahead` are
+# stationary rings around the grid centre: parked at the centre the dashboard honestly reads DRY,
+# while `--weather-decide` samples the bundle **route-projected** (the app's own matched progress +
+# recent pace) and runs the production alert engine on the final frame — the ride crosses the ring.
+# ETAROUTE holds just the Grimsel route, so `p p p p` rides it and the replay locks the matcher;
+# WXRIDE then walks ride menu -> Main menu -> Weather station -> dashboard.
+WXRIDE="p p p p B u p d d d d w p"
+"$SIM" "$MAP" --boot --weather demo:stormahead --script "$WXNAV" --png "$OUT/weather-dash-parked-dry.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:rainahead --weather-decide \
+    --script "$WXRIDE" --png "$OUT/weather-dash-ride-rain-ahead.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:stormahead --weather-decide \
+    --script "$WXRIDE" --png "$OUT/weather-alert-storm-engine.png"
+"$SIM" "$MAP" --boot --weather demo:gusty --weather-decide --script "$WXNAV" --png "$OUT/weather-alert-gust.png"
+# Route-relative wind: the hourly rows' arrows pick up tail/cross/head ink from the ride's travel
+# direction (the same replay-locked tangent), where the routeless sweep above stays neutral.
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:rainahead --weather-decide \
+    --script "$WXRIDE p" --png "$OUT/weather-hourly-wind-route.png"
 # Waypoint UI (epic #523). specs/vectors holds two routes in filename order: id 0 = route-plain,
 # id 1 = route-waypoints ("Vector Loop": named waypoints Brunnen @ ~0 m and Pass Summit @ ~1.70 km on
 # a 2.20 km track). The default `p p p p` rides id 0, so the extra `d` after the Route-menu press
@@ -739,6 +756,8 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --lang "$lang" --script "$WXNAV" --png "$OUT/weather-dash-stale-$lang.png"
   "$SIM" "$MAP" --boot --weather demo:incoming --lang "$lang" --script "$WXNAV p" --png "$OUT/weather-hourly-$lang.png"
   "$SIM" "$MAP" --boot --weather demo:storm --lang "$lang" --weather-alert storm:28 --png "$OUT/weather-alert-storm-$lang.png"
+  # WX12: the new STRONG WIND card copy, per language.
+  "$SIM" "$MAP" --boot --weather demo:gusty --lang "$lang" --weather-alert gust:0 --png "$OUT/weather-alert-gust-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" --script "p d d d d d w p d d p" --png "$OUT/weather-settings-$lang.png"
 
 done
