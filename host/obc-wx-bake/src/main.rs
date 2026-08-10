@@ -10,7 +10,7 @@
 //! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
 //! obc-wx-bake opera-cirrus  [...]                                          Europe 1 km radar, tier 1
 //! obc-wx-bake opera-nimbus  [...]                                          Europe 2 km radar, tier 1
-//! obc-wx-bake schema [--v2]                                                print a manifest JSON Schema
+//! obc-wx-bake schema [--mosaic]                                            print a manifest JSON Schema
 //! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
 //!
@@ -69,8 +69,10 @@ const OPERA_ADAPTERS: [&str; 2] = [obc_wx_bake::source::opera_cirrus::ID, obc_wx
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
-        let v2 = args[1..].iter().any(|arg| arg == "--v2");
-        print!("{}", if v2 { manifest_v2::schema_json() } else { manifest::schema_json() });
+        // Named for the dataset rather than for a version number: it outlives #1246, which
+        // deletes the multi-product path and would leave a `v` flag naming the only thing left.
+        let mosaic = args[1..].iter().any(|arg| arg == "--mosaic");
+        print!("{}", if mosaic { manifest_v2::schema_json() } else { manifest::schema_json() });
         return Ok(());
     }
     // The WXR1 (#1240) measurement spike: fixtures in, numbers out, nothing published.
@@ -159,6 +161,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs|opera-cirrus|opera-nimbus> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema [--v2]   (v1 by default; --v2 is the canonical dataset's manifest)"
+    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs|opera-cirrus|opera-nimbus> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema [--mosaic]   (the multi-product manifest by default; --mosaic is the canonical dataset's)"
         .to_string()
 }
