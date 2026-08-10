@@ -19,9 +19,19 @@
 //!   edge is pixel-identical whatever the sampling mode, so "no rain" can never blur into "no
 //!   radar" or the reverse.
 //!
-//! *Spatial* sampling — how a screen pixel picks its provider cell — is the one thing reopened:
-//! [`RAIN_SAMPLING`] selects it and is the entire knob. See [`RainSampling`] for the options, what
-//! each costs, and (for [`Bilinear`](RainSampling::Bilinear) alone) which locked rule it breaks.
+//! **This module is display, and display alone.** That is what lets [`RAIN_SAMPLING`] default to
+//! [`Bilinear`](RainSampling::Bilinear) — a mode that paints interpolated bands no provider cell
+//! reported — without weakening anything the rider is told. Every *claim* (the DRY verdict, RAIN
+//! IN N, the heavy-rain alert and its clear) is derived in `obc-app`'s weather module from
+//! `obc_weather`'s `intensity_at`, which is normatively nearest-neighbour and never reaches this
+//! file. The specs draw the same line: OBCW §5 and OBCG §6 hold *data queries* to the selected
+//! cell exactly, and permit interpolation only for display. `obc-app`'s
+//! `the_decision_path_is_identical_in_every_sampling_mode` is the standing proof the two paths
+//! stay apart.
+//!
+//! *Spatial* sampling — how a screen pixel picks its provider cell — is [`RAIN_SAMPLING`], and it
+//! is the entire knob. See [`RainSampling`] for the four modes, what each costs, and which of them
+//! can synthesise a band.
 
 use embedded_graphics::prelude::*;
 
@@ -58,8 +68,10 @@ pub use obc_map_scene::RAIN_BELOW_Z;
 /// worst case per frame for a 36-tile product at twelve slots:
 /// `Nearest` 36, `EdgeSoften` 36, `Jitter` 37, `Bilinear` **71**; at fourteen, all four sit at 36.
 /// The two extra slots cost 524 B of [`RainScratch`], which the arena's render arm absorbs
-/// without moving a resident byte. If the #1185 round settles on `Nearest` or `EdgeSoften` this
-/// goes back to twelve — `the_decode_bound_holds_in_every_sampling_mode` is the check.
+/// without moving a resident byte. With `Bilinear` shipped (#1250) these two slots are load-
+/// bearing — at twelve the default would very nearly double its SD reads.
+/// `the_decode_bound_holds_in_every_sampling_mode` is the check, and it covers all four modes so
+/// the number stays honest if the knob is ever flipped back.
 pub const RAIN_TILE_SLOTS: usize = 14;
 
 /// The overlay's **zoom regime** cap: the rain raster draws only while each **grid axis** advances
@@ -183,35 +195,52 @@ const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 
 /// How a screen pixel picks its provider cell — **the smoothing knob**, and the whole of it.
 ///
 /// Timo's on-glass verdict on real 1 km MRMS was that the nearest-neighbour squares "look very
-/// blocky"; these are the candidates for the comparison round. Flipping [`RAIN_SAMPLING`] is the
-/// only edit any of them needs — no plumbing, no app, sim or skin participates.
+/// blocky". All four modes were rendered side by side on real MRMS and DWD radar (#1250); he
+/// picked [`Bilinear`](RainSampling::Bilinear), knowing what it costs (see below). The other three
+/// stay compiled and tested so the round can be re-run on glass by editing one line — flipping
+/// [`RAIN_SAMPLING`] is the only edit any of them needs, and no plumbing, app, sim or skin
+/// participates.
 ///
-/// Every mode is bound by the same two rules, which is what keeps smoothing from *lying*:
+/// **One rule binds all four**, and it is the one the honesty of the display rests on:
 ///
-/// 1. **No band is ever synthesised.** A painted pixel always shows [`RAIN_STYLE`] for a code some
-///    real cell within half a cell of it reports. Smoothing shifts *which* cell a pixel reads, it
-///    never averages two codes into a third (there is no third — the palette is 13 discrete bands
-///    and the dither is transparency, not blending).
-/// 2. **No-data never participates**, in either direction ([`paintable`]): if the smoothed sample
-///    or the pixel's own cell is no-data, reserved, or off-grid, the pixel falls back to plain
-///    nearest-neighbour. So a coverage edge — the "no rain vs no radar" boundary the weather
-///    screens are built on — is **pixel-identical to [`Nearest`](RainSampling::Nearest) in every
-///    mode**, and can never soften into something that reads as light rain.
+/// - **No-data never participates**, in either direction ([`paintable`]): if the smoothed sample
+///   or the pixel's own cell is no-data, reserved, or off-grid, the pixel falls back to plain
+///   nearest-neighbour. So a coverage edge — the "no rain vs no radar" boundary the weather
+///   screens are built on — is **pixel-identical to [`Nearest`](RainSampling::Nearest) in every
+///   mode**, and can never soften into something that reads as light rain.
+///
+/// **The rule that no longer binds all four**, stated plainly because it used to: *"no band is
+/// ever synthesised"*. It still holds for [`Jitter`](RainSampling::Jitter) and
+/// [`EdgeSoften`](RainSampling::EdgeSoften), which resample *position* and so always show one real
+/// cell. [`Bilinear`](RainSampling::Bilinear) interpolates the *index*, so between a dry cell and
+/// a heavy one it paints the whole intervening ladder no cell reported.
+/// `only_bilinear_paints_bands_no_cell_reports` pins exactly that difference.
+///
+/// That is a deliberate, reviewed trade, not an oversight: it buys legibility on a 1 km product,
+/// and it is confined to pixels. No claim, alert, alert-clear or DRY decision may derive from an
+/// interpolated value — those read `obc_weather`'s nearest-neighbour `intensity_at` and never
+/// enter this module (OBCW §5, OBCG §6; proven by `obc-app`'s
+/// `the_decision_path_is_identical_in_every_sampling_mode`).
 ///
 /// Costs below are steady-state per pixel on top of the shared two adds + shift + compare;
 /// `probe` is a [`RainScratch`] slot lookup, near-always the memoised-tile fast path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RainSampling {
-    /// **A — nearest neighbour.** The shipped behaviour: floor the sample point, take that cell.
-    /// Hard 1 km squares. Cost: 0 extra. The honest floor every other mode is measured against.
+    /// **A — nearest neighbour.** Floor the sample point, take that cell. Hard 1 km squares.
+    /// Cost: 0 extra. The floor every other mode is measured against, and still exactly what the
+    /// *data* path does — `obc_weather::intensity_at` is normatively this, whatever is set here.
     Nearest,
     /// **B — bilinear on the band field.** Interpolate the 4-bit code bilinearly between the four
     /// surrounding cell *centres* in Q16, then ordered-dither the fractional part back onto the
     /// two adjacent bands ([`DITHER_B`]) — the palette has no intermediate colors to land on, so
     /// the fraction is spent as a spatial mix of the two real bands rather than a fabricated one.
     /// Cost: ~4 probes + 3 muls per stencil change (≤ every 3rd pixel in regime), 1 add + 1
-    /// compare per pixel. Reaches one cell further than nearest, so it needs the wider
+    /// compare per pixel — measured +26% overlay time worst case (605 → 760 µs on a fully wet
+    /// 240 × 320 frame). Reaches one cell further than nearest, so it needs the wider
     /// [`RAIN_TILE_SLOTS`].
+    ///
+    /// **The shipped default** (#1250), and the only mode that can paint a band no cell reported
+    /// — see the trade recorded on [`RainSampling`].
     Bilinear,
     /// **C — ordered sub-cell jitter.** Offset the sample point by a stratified ±½-cell dither
     /// ([`JITTER`]) before flooring — nearest-neighbour of a jittered point. Over each 4 × 4 pixel
@@ -228,8 +257,12 @@ pub enum RainSampling {
     EdgeSoften,
 }
 
-/// **The smoothing switch.** One line, one file: everything the comparison round turns.
-pub const RAIN_SAMPLING: RainSampling = RainSampling::Nearest;
+/// **The smoothing switch.** One line, one file: everything a tuning round turns.
+///
+/// [`Bilinear`](RainSampling::Bilinear) since #1250 (Timo's pick from the four-way on-glass
+/// comparison). Deliberately still a const with all four arms live, because he has asked more than
+/// once that the rain tuning surface stay trivially flippable for a re-run on glass.
+pub const RAIN_SAMPLING: RainSampling = RainSampling::Bilinear;
 
 /// Stratum indices `(x_stratum, y_stratum)` in `0..4` for [`RainSampling::Jitter`], indexed
 /// `[y & 3][x & 3]` in **panel** coordinates like [`BAYER`], and screen-anchored for the same
@@ -680,7 +713,7 @@ pub(crate) fn draw_rain<D, F>(
                     None => base,
                 }
             } else {
-                base // A: nearest neighbour, the shipped behaviour
+                base // A: nearest neighbour — the pixel's own cell, unmodified
             };
 
             let (color, coverage) = code.map_or(lut[15], |i| lut[(i & 0x0F) as usize]);

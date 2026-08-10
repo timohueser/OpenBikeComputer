@@ -182,8 +182,26 @@ col = floor((lon - west)  * width  / (east - west))
 
 Intermediates MUST be checked signed 64-bit (or wider). The north/east edges are outside the
 half-open window; drawing code may clip a pixel at that edge to the last cell, but data queries MUST
-not claim coverage outside it. Nearest-neighbour sampling uses the selected cell exactly. No
-bilinear interpolation or fabricated sub-cell precision is permitted.
+not claim coverage outside it.
+
+That same split governs interpolation:
+
+- **Data queries MUST sample nearest-neighbour**, using the selected cell exactly, with no
+  interpolation and no fabricated sub-cell precision. A data query is anything that answers *"what
+  is the intensity at this position"* for a purpose other than colouring a pixel: the intensity
+  lookup a snapshot records, corridor and dry-claim walks, alert thresholds and their clears. The
+  value such a query returns MUST be a value some single cell of the product actually holds.
+- **Display MAY interpolate** between cells for legibility, and MAY therefore paint an intensity
+  band that no cell reports.
+- **No claim, alert, alert-clear or dry decision may derive from an interpolated value.** Rendering
+  MUST NOT be able to change what the rider is *told*, only what they are *shown*.
+
+Rationale (2026-08-10): 1 km products render as visibly hard squares, and the original blanket
+prohibition on interpolation was written to protect the honesty of the *claims* — a device must
+never report rain, or report none, on the strength of a number it invented. Confining the
+prohibition to data queries keeps that protection intact while letting the raster be legible. The
+reference implementation ships bilinear display sampling with nearest-neighbour queries, and pins
+the separation with a test that runs the whole decision path under every display sampling mode.
 
 ### 5.1 Semantic quality flags
 

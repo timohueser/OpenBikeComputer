@@ -4,13 +4,21 @@
 //! answers for the *ride*, not the parking spot. Deterministic across firmware and simulator:
 //! everything here is the production reader/route/snapshot path over committed fixture bytes.
 
+use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::prelude::*;
 use obc_app::weather::{rain_outlook, RainOutlook, RideProjection, WeatherSnapshot};
+use obc_app::RainOverlayAdapter;
 use obc_formats::io::SliceSource;
 use obc_formats::obcw::{
     encode_format, encoded_len, BundleInput, HourlyRecord, RainFrameInput, HOURLY_COUNT, QUALITY_FORECAST, TILE_CELLS,
 };
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource as MapSliceSource};
+use obc_render::{RainOverlaySource, RainSampling, RenderConfig, Viewport};
 use obc_route::{RouteIndex, RouteReader};
 use obc_weather::{WeatherCache, WeatherReader};
+
+mod common;
+use common::{build_min_obcm, Buf};
 
 const T0: i64 = 1_800_000_000;
 const GRID: usize = 48;
@@ -320,4 +328,141 @@ fn corridor_widens_warnings_but_only_under_projection() {
         WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
     assert_eq!(riding.frames[0].intensity, 5, "the one-cell corridor reports the wet neighbour");
     assert_eq!(rain_outlook(&riding, T0), RainOutlook::RainIn { minutes: 0 });
+}
+
+// ---------------------------------------------------------------------------------------------
+// The display/decision boundary (#1250)
+// ---------------------------------------------------------------------------------------------
+
+/// **The guard that lets the renderer interpolate.** `RAIN_SAMPLING` ships
+/// [`RainSampling::Bilinear`], which paints bands no provider cell reported. OBCW §5 and OBCG §6
+/// permit that for *display only* and keep **data queries** normatively nearest-neighbour — no
+/// claim, alert, alert-clear or DRY decision may derive from an interpolated value.
+///
+/// Today that holds structurally: the decision path calls `obc_weather`'s `intensity_at` and never
+/// enters `obc-render`. Structure is not a test, so this pins the *behaviour* two ways.
+///
+/// **1. The decision reads the selected cell exactly.** The rider is parked a hair inside a DRY
+/// cell, hard against the corner it shares with three band-12 neighbours — the position where
+/// nearest and bilinear disagree most. Nearest says dry; a bilinear read of the same point lands
+/// near the ¾-weighted average of 12, far above `RAIN_MIN_INTENSITY`. The parked snapshot takes no
+/// corridor (that is the projected path's widening, exercised above), so `Dry` here is a direct
+/// assertion that the sample was the rider's own cell and nothing else. If the decision path is
+/// ever refactored onto a smoothing sampler, this flips to `RainIn` and fails.
+///
+/// **2. Running the renderer cannot move the decision.** The overlay and the decision path share
+/// one [`WeatherCache`], which is the realistic leak: a mode that populated or evicted differently
+/// could change what a later query reads. So the whole decision — snapshot frames, outlook, and
+/// the alert candidates — is recomputed after drawing a frame in **each** of the four modes and
+/// must come back identical every time, including to the pre-render baseline.
+#[test]
+fn the_decision_path_is_identical_in_every_sampling_mode() {
+    let idx = grimsel_index();
+    let src = SliceSource(GRIMSEL);
+    let route = RouteReader::new(&idx, &src);
+    let bbox = route_bbox(&route);
+    let (south, west, north, east) = bbox;
+
+    // The rider's own cell, and the µdeg span of one cell on each axis.
+    let start = route.position_at(0).unwrap();
+    let home = cell_of(bbox, start.lat, start.lon);
+    let cell_lat = (north as i64 - south as i64) / GRID as i64;
+    let cell_lon = (east as i64 - west as i64) / GRID as i64;
+    assert!(cell_lat > 8 && cell_lon > 8, "fixture sanity: cells are wide enough to sit inside");
+
+    // Park just inside `home`'s north-east corner: ~1 µdeg short of the boundary on both axes, so
+    // the point is still unambiguously in `home` for a floor, but a 2 x 2 bilinear stencil anchored
+    // there weights the three wet neighbours ~3:1 against it.
+    let corner_lat = south as i64 + (home.0 as i64 + 1) * cell_lat - 1;
+    let corner_lon = west as i64 + (home.1 as i64 + 1) * cell_lon - 1;
+    let (lat, lon) = (corner_lat as i32, corner_lon as i32);
+    assert_eq!(cell_of(bbox, lat, lon), home, "the parked point must still floor into the dry cell");
+
+    // `home` dry, its three corner-sharing neighbours torrential, on every frame.
+    let (r, c) = home;
+    let wet = vec![(r, c + 1, 12u8), (r + 1, c, 12), (r + 1, c + 1, 12)];
+    assert!(r + 1 < GRID && c + 1 < GRID, "fixture sanity: the wet neighbours are inside the grid");
+    let bytes = bundle(bbox, move |_| wet.clone());
+    let source = SliceSource(&bytes);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+
+    // Fixture teeth: the three neighbours really do read band 12 through this same reader, so the
+    // dry answer below is nearest-neighbour doing its job and not a storm accidentally encoded
+    // into the wrong tile. A step of one cell in each direction leaves `home`.
+    for (dlat, dlon) in [(0i64, cell_lon), (cell_lat, 0), (cell_lat, cell_lon)] {
+        let probe = WeatherSnapshot::sample(
+            &reader,
+            &mut cache,
+            Some(((lat as i64 + dlat) as i32, (lon as i64 + dlon) as i32)),
+        )
+        .unwrap();
+        assert_eq!(probe.frames[0].intensity, 12, "fixture sanity: the neighbour at {dlat},{dlon} must be torrential");
+    }
+
+    // 1. Nearest-neighbour is what the claim is built on, and it says dry.
+    let baseline = WeatherSnapshot::sample(&reader, &mut cache, Some((lat, lon))).unwrap();
+    assert_eq!(
+        baseline.frames[0].intensity, 0,
+        "the decision must read the rider's own cell exactly — an interpolated read here is ~9, not 0"
+    );
+    assert_eq!(
+        rain_outlook(&baseline, T0),
+        RainOutlook::Dry,
+        "surrounded by band 12 on three sides, the selected cell is dry and the claim must say so"
+    );
+    let baseline_alerts = obc_app::weather_alerts::evaluate(&baseline, T0);
+
+    // 2. Draw the overlay in all four modes over the shared cache; the decision must not budge.
+    let map = build_min_obcm(0xF800);
+    for mode in [RainSampling::Nearest, RainSampling::Bilinear, RainSampling::Jitter, RainSampling::EdgeSoften] {
+        {
+            let mut adapter = RainOverlayAdapter::current(&reader, &mut cache, T0).expect("frame 0 is current at T0");
+            draw_rain_frame(&map, &mut adapter, mode);
+        }
+        let after = WeatherSnapshot::sample(&reader, &mut cache, Some((lat, lon))).unwrap();
+        assert_eq!(after.frames, baseline.frames, "{mode:?}: rendering changed the sampled frames");
+        assert_eq!(rain_outlook(&after, T0), RainOutlook::Dry, "{mode:?}: rendering changed the outlook");
+        assert_eq!(
+            obc_app::weather_alerts::evaluate(&after, T0),
+            baseline_alerts,
+            "{mode:?}: rendering changed the alert candidates"
+        );
+    }
+}
+
+/// Render one map frame with the rain overlay forced into `mode`, purely for its side effects on
+/// the shared [`WeatherCache`]. The pixels are the subject of `obc-render`'s own mode tests; here
+/// only the cache traffic matters.
+fn draw_rain_frame(map: &[u8], rain: &mut dyn RainOverlaySource, mode: RainSampling) {
+    struct ZeroClock;
+    impl obc_render::Clock for ZeroClock {
+        fn now_us(&self) -> u64 {
+            0
+        }
+    }
+
+    let map_cache = MapCache::new();
+    let src = MapSliceSource(map);
+    let tables = MapTables::parse(&src).expect("valid map");
+    let reader = Reader::new(&src, &tables, &map_cache);
+    let mut buf = Buf::new(120, 120);
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    // 40 m/px over the grid origin: comfortably inside the overlay's zoom regime, so the rain path
+    // really runs (out of regime it returns early and would exercise nothing).
+    let vp = Viewport::new(120.0, 120.0, 0, 0, obc_render::zoom_for_mpp(40.0));
+    scratch.render_rain_sampled_timed(
+        &mut buf,
+        &reader,
+        &vp,
+        Rgb888::BLACK,
+        RenderConfig::default(),
+        Some(rain),
+        mode,
+        |c| {
+            let (r, g, b) = rgb565_to_rgb888(c);
+            Rgb888::new(r, g, b)
+        },
+        &ZeroClock,
+    );
 }
