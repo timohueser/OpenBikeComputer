@@ -73,8 +73,9 @@ A drift on any side fails that side's tests — the files are the contract.
 
 The eight positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-only dry,
 96 × 96 × nine-frame DWD shape, coarse native model times, a genuine four-hour-latent observation
-before the current hourly base, all-no-data, raw4, RLE4, and the exact 65,536-byte producer-policy
-boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
+before the current hourly base, all-no-data, raw4, RLE4, and the exact 262,144-byte
+producer-policy boundary (raised from 65,536 by WXR5 #1244; it is a phone policy, not a format
+limit). The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
 
 The thirteen `weather-invalid-*` files isolate truncation, a bad section offset, section overlap,
 nonzero hourly flags/reserved bytes, a reserved intensity nibble, RLE expansion beyond 256 cells,
