@@ -6,7 +6,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
-use obc_app::weather::{rain_outlook, RainOutlook, RideProjection, WeatherSnapshot};
+use obc_app::weather::{rain_outlook, RainOutlook, RideProjection, WeatherSnapshot, RAIN_MIN_INTENSITY};
 use obc_app::RainOverlayAdapter;
 use obc_formats::io::SliceSource;
 use obc_formats::obcw::{
@@ -418,7 +418,13 @@ fn the_decision_path_is_identical_in_every_sampling_mode() {
     for mode in [RainSampling::Nearest, RainSampling::Bilinear, RainSampling::Jitter, RainSampling::EdgeSoften] {
         {
             let mut adapter = RainOverlayAdapter::current(&reader, &mut cache, T0).expect("frame 0 is current at T0");
-            draw_rain_frame(&map, &mut adapter, mode);
+            let stats = draw_rain_frame(&map, &mut adapter, (lat, lon), mode);
+            // Without this the loop is a dead guard: aim the camera anywhere off the product and
+            // every pixel resolves off-grid before a single fetch, so the overlay touches the
+            // shared cache not at all and the assertions below hold vacuously. Demand evidence
+            // that the overlay really ran and really painted.
+            assert!(stats.rain_tiles > 0, "{mode:?}: the overlay decoded no tile — camera is off the rain grid");
+            assert!(stats.rain_px > 0, "{mode:?}: the overlay painted no pixel — nothing was exercised");
         }
         let after = WeatherSnapshot::sample(&reader, &mut cache, Some((lat, lon))).unwrap();
         assert_eq!(after.frames, baseline.frames, "{mode:?}: rendering changed the sampled frames");
@@ -431,10 +437,16 @@ fn the_decision_path_is_identical_in_every_sampling_mode() {
     }
 }
 
-/// Render one map frame with the rain overlay forced into `mode`, purely for its side effects on
-/// the shared [`WeatherCache`]. The pixels are the subject of `obc-render`'s own mode tests; here
-/// only the cache traffic matters.
-fn draw_rain_frame(map: &[u8], rain: &mut dyn RainOverlaySource, mode: RainSampling) {
+/// Render one map frame with the rain overlay forced into `mode`, camera on `cam`, for its side
+/// effects on the shared [`WeatherCache`]. The pixels are the subject of `obc-render`'s own mode
+/// tests; here only the cache traffic matters — but the returned stats are what let the caller
+/// prove the overlay was actually entered.
+fn draw_rain_frame(
+    map: &[u8],
+    rain: &mut dyn RainOverlaySource,
+    cam: (i32, i32),
+    mode: RainSampling,
+) -> obc_render::RenderStats {
     struct ZeroClock;
     impl obc_render::Clock for ZeroClock {
         fn now_us(&self) -> u64 {
@@ -448,9 +460,10 @@ fn draw_rain_frame(map: &[u8], rain: &mut dyn RainOverlaySource, mode: RainSampl
     let reader = Reader::new(&src, &tables, &map_cache);
     let mut buf = Buf::new(120, 120);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    // 40 m/px over the grid origin: comfortably inside the overlay's zoom regime, so the rain path
-    // really runs (out of regime it returns early and would exercise nothing).
-    let vp = Viewport::new(120.0, 120.0, 0, 0, obc_render::zoom_for_mpp(40.0));
+    // 40 m/px centred on the rider's **own** coordinate — the camera must sit on the rain product,
+    // which is the padded Grimsel bbox, not at (0, 0). 40 m/px is comfortably inside the overlay's
+    // zoom regime, so the rain path runs rather than returning early.
+    let vp = Viewport::new(120.0, 120.0, cam.1, cam.0, obc_render::zoom_for_mpp(40.0));
     scratch.render_rain_sampled_timed(
         &mut buf,
         &reader,
@@ -464,5 +477,97 @@ fn draw_rain_frame(map: &[u8], rain: &mut dyn RainOverlaySource, mode: RainSampl
             Rgb888::new(r, g, b)
         },
         &ZeroClock,
+    )
+}
+
+/// **The corridor arm of the same guarantee (#1250 review F3).** OBCW §5 names "corridor and
+/// dry-claim walks" as normatively nearest-neighbour, and this is the path where an interpolated
+/// value produces the epic's worst failure: not a missed warning but a **fabricated DRY claim**.
+///
+/// `the_decision_path_is_identical_in_every_sampling_mode` cannot reach it by construction — it
+/// parks the rider, and the parked snapshot takes no corridor at all. So this one projects.
+///
+/// The fixture is built so the *only* thing standing between the rider and DRY FOR 2 HOURS is one
+/// corridor probe reading a real cell exactly:
+///
+/// - The ride is stationary under projection (`speed_cms: 0`), so every frame samples the start
+///   point and only the corridor's half-width varies — one cell at the anchor, widening by one
+///   per 15-minute frame as pace uncertainty accumulates.
+/// - A single cell at **band 1** — the weakest thing that counts as rain — sits exactly **two**
+///   cells north. That is outside the one-cell warning corridor, so no frame reports rain and the
+///   headline is not a warning; and inside the pace-spread corridor from frame 1 onward, so those
+///   frames' dry claims must be refused.
+///
+/// The bbox is padded far past the widest corridor (ten cells at the +2 h frame) on purpose: with
+/// the ordinary padding the outermost probes run off the grid and refuse the claim for their own
+/// reason, which would mask exactly what this test is trying to isolate.
+///
+/// Nearest-neighbour reads that cell as 1, `corridor_is_dry` fails closed, and the outlook is
+/// `UpdateNeeded` — "I cannot promise you two dry hours". Average it with either dry neighbour and
+/// it floors to 0: the corridor reports clean and the device promises DRY FOR 2 HOURS over ground
+/// it was told is wet.
+///
+/// **Verified by mutation.** Replacing `corridor_is_dry`'s probe with a faithful two-cell
+/// interpolation — mean when both cells are real, falling back to the selected cell at a no-data
+/// or off-grid neighbour, i.e. the renderer's own rule applied to a query — flips every frame from
+/// `spread_uncertain` to clean and turns the headline into `RainOutlook::Dry`. It is also the
+/// *only* thing in the `obc-app` suite that mutation trips: everything else passes under it.
+#[test]
+fn an_interpolated_corridor_probe_would_fabricate_a_dry_claim() {
+    let idx = grimsel_index();
+    let src = SliceSource(GRIMSEL);
+    let route = RouteReader::new(&idx, &src);
+    // Padded well past the widest pace-spread corridor (10 cells at the +2 h frame) so the only
+    // thing that can refuse a dry claim is the band-1 cell, never the grid edge.
+    let bbox = padded_route_bbox(&route, 200_000);
+    let (south, _, north, _) = bbox;
+
+    let start = route.position_at(0).unwrap();
+    let home = cell_of(bbox, start.lat, start.lon);
+    let cell_lat = (north as i64 - south as i64) / GRID as i64;
+
+    // One band-1 cell two cells north of the rider, on every frame. Nothing else is wet.
+    let wet_row = home.0 + 2;
+    assert!(wet_row < GRID, "fixture sanity: the wet cell is inside the grid");
+    let wet = vec![(wet_row, home.1, RAIN_MIN_INTENSITY)];
+    let bytes = bundle(bbox, move |_| wet.clone());
+    let source = SliceSource(&bytes);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+
+    // Fixture teeth, both directions: the cell two north really is band 1, and the cell one north
+    // — the warning corridor's reach — really is dry. Without the second, the refusal below could
+    // be an ordinary rain warning rather than the corridor doing its job.
+    let two_north =
+        WeatherSnapshot::sample(&reader, &mut cache, Some((start.lat + 2 * cell_lat as i32, start.lon))).unwrap();
+    assert_eq!(two_north.frames[0].intensity, RAIN_MIN_INTENSITY, "fixture sanity: two cells north is band 1");
+    let one_north =
+        WeatherSnapshot::sample(&reader, &mut cache, Some((start.lat + cell_lat as i32, start.lon))).unwrap();
+    assert_eq!(one_north.frames[0].intensity, 0, "fixture sanity: one cell north must be dry");
+
+    // Stationary under projection: every frame samples the start, so the corridor half-width is
+    // the only thing that changes between them.
+    let proj = RideProjection { progress_m: 0, speed_cms: 0, now: T0 };
+    let riding =
+        WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
+    assert!(riding.projected);
+
+    // No frame reports rain — the wet cell is outside every frame's one-cell warning corridor.
+    assert!(
+        riding.frames.iter().all(|f| f.intensity == 0),
+        "the band-1 cell must sit outside the warning corridor, or this tests a warning and not a claim"
+    );
+    // The anchor frame's corridor is one cell wide and genuinely clean; every later frame's
+    // corridor reaches the band-1 cell and must refuse its dry claim.
+    assert!(!riding.frames[0].spread_uncertain, "the anchor's one-cell corridor is clean");
+    for (k, frame) in riding.frames.iter().enumerate().skip(1) {
+        assert!(frame.spread_uncertain, "frame {k}: a corridor reaching band 1 must refuse the dry claim");
+    }
+
+    // The headline: not dry, and not a warning either — an honest "I can't promise two dry hours".
+    assert_eq!(
+        rain_outlook(&riding, T0),
+        RainOutlook::UpdateNeeded,
+        "an interpolated corridor probe would floor band 1 to dry and fabricate DRY FOR 2 HOURS here"
     );
 }
