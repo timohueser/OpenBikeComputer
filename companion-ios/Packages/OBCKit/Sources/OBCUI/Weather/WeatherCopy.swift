@@ -34,30 +34,32 @@ public enum WeatherCopy {
 
     // MARK: Refresh interval
 
-    /// The rider-facing name of a refresh interval — the device's own Off / 15 / 30 / 60 / 120.
+    /// The rider-facing name of a refresh interval — the device's own Off / 15 / 30 / 60 / 120,
+    /// short enough to sit in a value column beside "Asks for weather" and read as one sentence.
     public static func refreshLabel(_ refresh: WeatherRefresh) -> String {
         switch refresh {
         case .off: "Off"
-        case .every15: "Every 15 minutes"
-        case .every30: "Every 30 minutes"
+        case .every15: "Every 15 min"
+        case .every30: "Every 30 min"
         case .every60: "Every hour"
         case .every120: "Every 2 hours"
         }
     }
 
-    /// The value column for the refresh row. Four genuinely different unknowns, none of them
-    /// flattened into a plausible-looking interval: nothing read yet, an interval this build does
-    /// not know, a device that is not there — and a value this phone *chose* but never got
-    /// confirmed back, which is the one that would otherwise pass itself off as device truth.
+    /// The value column of the **read-only** refresh row. Three genuinely different not-knowings,
+    /// none of them flattened into a plausible-looking interval: an interval this build cannot
+    /// name, a device that is not there to ask, and a read that has not landed yet.
+    ///
+    /// There is deliberately no state for "the rider just changed it here", because they cannot:
+    /// the interval is a device setting and the OBC's own Weather screen is its editor. Nothing in
+    /// this row is ever this phone's optimism — it is a read or it is an honest blank.
     public static func refreshValue(
-        _ refresh: WeatherRefresh?, unknownToThisBuild: Bool, hasRead: Bool,
-        unconfirmed: Bool = false
+        _ refresh: WeatherRefresh?, unknownToThisBuild: Bool, connected: Bool, hasRead: Bool
     ) -> String {
-        if let refresh {
-            return unconfirmed ? "\(refreshLabel(refresh)) · not confirmed" : refreshLabel(refresh)
-        }
-        if unknownToThisBuild { return "Set on the device" }
-        return hasRead ? "—" : "Not read yet"
+        guard connected else { return "Not connected" }
+        guard hasRead else { return "Not read yet" }
+        if let refresh { return refreshLabel(refresh) }
+        return unknownToThisBuild ? "Set on the device" : "—"
     }
 
     // MARK: Job outcomes

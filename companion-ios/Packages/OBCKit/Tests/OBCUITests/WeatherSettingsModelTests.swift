@@ -62,47 +62,32 @@ private final class FakeJobs: WeatherJobControlling, @unchecked Sendable {
     }
 }
 
-/// A transport that models the config plane only, so the interval's read-modify-write can be
-/// scripted precisely: which call fails, and how long each one takes. `MockTransport`'s
-/// `failNextOp` is a FIFO over *all* ops, which cannot express "the confirming read, and only the
-/// confirming read, never answers".
+/// A transport that models the config plane only, and counts both directions — the seam that pins
+/// "this screen reads the device and never writes to it". `MockControl` counts ops in aggregate;
+/// this separates reads from writes, which is the whole assertion.
 private final class ConfigLinkTransport: DeviceTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var _config: DeviceConfig
-    private var _writtenRefreshRaws: [UInt8?] = []
     private var _readCalls = 0
     private var _writesStarted = 0
-    private var _readBackWillFail = false
-    /// Fail the read that *follows* a successful write — the write lands, the confirmation does not.
-    var failsReadAfterWrite = false
-    var writeDelay: Duration = .zero
 
     init(config: DeviceConfig) { _config = config }
 
     var config: DeviceConfig { lock.withLock { _config } }
-    /// Every interval the device actually stored, in the order it stored them.
-    var writtenRefreshRaws: [UInt8?] { lock.withLock { _writtenRefreshRaws } }
     var readCalls: Int { lock.withLock { _readCalls } }
     var writesStarted: Int { lock.withLock { _writesStarted } }
 
     func readConfig() async throws -> DeviceConfig {
-        try lock.withLock {
+        lock.withLock {
             _readCalls += 1
-            if _readBackWillFail {
-                _readBackWillFail = false
-                throw DeviceError.readFailed
-            }
             return _config
         }
     }
 
     func writeConfig(_ config: DeviceConfig) async throws {
-        lock.withLock { _writesStarted += 1 }
-        if writeDelay > .zero { try? await Task.sleep(for: writeDelay) }
         lock.withLock {
+            _writesStarted += 1
             _config = config
-            _writtenRefreshRaws.append(config.weatherRefreshRaw)
-            if failsReadAfterWrite { _readBackWillFail = true }
         }
     }
 
@@ -236,28 +221,26 @@ private func waitFor(
 @Suite("Weather settings model")
 @MainActor
 struct WeatherSettingsModelTests {
-    // MARK: The refresh interval (device truth)
+    // MARK: The refresh interval (device truth, reported — never written)
 
-    @Test func theStoredIntervalIsReadFromTheDeviceAndEditable() async {
+    @Test func theStoredIntervalIsReadFromTheDeviceAndReported() async {
         let (model, _, _) = makeModel(refresh: .every60)
         model.start()
         await waitFor("config") { model.hasReadConfig }
         #expect(model.refresh == .every60)
-        #expect(model.canEditRefresh)
-        #expect(WeatherCopy.refreshValue(
-            model.refresh, unknownToThisBuild: false, hasRead: true) == "Every hour")
+        #expect(model.canStateRefresh)
+        #expect(model.refreshValue == "Every hour")
     }
 
-    /// Every value on the wire, including `off` — which must never be reported as "the default".
+    /// Every value on the wire, including `off` — which must never be reported as "the default",
+    /// and must not be silently rendered as some nearby interval either.
     @Test(arguments: WeatherRefresh.allCases)
-    func everyIntervalRoundTripsThroughTheDevice(_ target: WeatherRefresh) async {
-        let (model, control, _) = makeModel(refresh: target == .off ? .every30 : .off)
+    func everyIntervalTheDeviceCanHoldIsReportedAsItself(_ stored: WeatherRefresh) async {
+        let (model, _, _) = makeModel(refresh: stored)
         model.start()
         await waitFor("config") { model.hasReadConfig }
-        model.setRefresh(target)
-        await waitFor("write") { control.fixtures.config.weatherRefreshRaw == target.rawValue }
-        #expect(model.refresh == target)
-        #expect(control.fixtures.config.knownWeatherRefresh == target)
+        #expect(model.refresh == stored)
+        #expect(model.refreshValue == WeatherCopy.refreshLabel(stored))
     }
 
     /// An absent Config byte is the device's documented default (30 min) — not `off`, and not
@@ -268,148 +251,84 @@ struct WeatherSettingsModelTests {
         await waitFor("config") { model.hasReadConfig }
         #expect(model.refresh == .every30)
         #expect(!model.refreshIsUnknownToThisBuild)
+        #expect(model.refreshValue == "Every 30 min")
     }
 
     /// A newer firmware naming a fifth interval: tolerated on read (§11.8), and said out loud
-    /// rather than rendered as a plausible-looking 30 minutes.
+    /// rather than rendered as a plausible-looking 30 minutes. With no editor on this screen the
+    /// wording is now simply where the value lives — there is nothing here to "replace it with".
     @Test func anIntervalThisBuildCannotNameIsStatedNotGuessed() async {
         let (model, _, _) = makeModel(refresh: nil, refreshRawOverride: 9)
         model.start()
         await waitFor("config") { model.hasReadConfig }
         #expect(model.refresh == nil)
         #expect(model.refreshIsUnknownToThisBuild)
-        #expect(WeatherCopy.refreshValue(nil, unknownToThisBuild: true, hasRead: true)
-            == "Set on the device")
+        #expect(model.refreshValue == "Set on the device")
     }
 
-    /// Not connected: the control is dimmed and no write is attempted. The device owns the value,
-    /// so the alternative — a phone-side edit that "applies later" — would be a promise the app
-    /// cannot keep.
-    @Test func anUnreachableDeviceCannotBeEdited() async {
-        let (model, control, _) = makeModel(scenario: .outOfRange)
+    /// Not connected: the row does not claim a value. There is no phone-side mirror to fall back
+    /// on, deliberately — a remembered interval is this screen guessing at a setting it does not
+    /// own, and it would look exactly like a read.
+    @Test func anUnreachableDeviceIsNotGuessedAt() async {
+        let (model, _, _) = makeModel(scenario: .outOfRange)
         model.start()
         await waitFor("link") { model.connection != .connecting }
-        #expect(!model.canEditRefresh)
-        let before = control.fixtures.config.weatherRefreshRaw
-        model.setRefresh(.every15)
-        #expect(control.fixtures.config.weatherRefreshRaw == before)
+        #expect(!model.canStateRefresh)
+        #expect(model.refreshValue == "Not connected")
     }
 
-    /// Firmware without the weather feature bit: the screen says so once, and the control stays
-    /// shut — writing an interval to a device that schedules nothing is theatre.
-    @Test func firmwareWithoutWeatherIsReportedAndNotWrittenTo() async {
+    /// **The whole write path is gone** (Timo's rule: device settings live on the device, and the
+    /// OBC's own Weather screen is the interval's editor). This pins the absence rather than
+    /// trusting it: nothing this screen does may ever call `writeConfig`, whatever the link state.
+    /// A future "just one small setting" would have to delete this test to land, which is the
+    /// point.
+    @Test func theScreenNeverWritesToTheDevice() async {
+        let (model, transport) = makeConfigModel(refresh: .every30)
+        model.start()
+        await waitFor("config") { model.hasReadConfig }
+
+        // Everything a rider can do on this screen, plus a revisit.
+        model.setWatchEnabled(false)
+        model.setWatchEnabled(true)
+        await model.retryNow()
+        await model.appeared()
+        await model.refreshAll()
+
+        #expect(transport.writesStarted == 0, "the Weather screen has no write path at all")
+        #expect(transport.readCalls > 0, "…and it is not vacuous: it does read the device")
+    }
+
+    /// Firmware without the weather feature bit: the screen says so once, and states no interval —
+    /// reporting a schedule for a device that schedules nothing would be theatre.
+    @Test func firmwareWithoutWeatherIsReportedAndClaimsNoInterval() async {
         let (model, _, _) = makeModel(supportsWeather: false)
         model.start()
         await waitFor("capability") { model.deviceSupportsWeather != nil }
         #expect(model.deviceSupportsWeather == false)
-        #expect(!model.canEditRefresh)
+        #expect(!model.canStateRefresh)
+        // The row goes away entirely rather than reporting the Config byte such a device still
+        // happens to carry: a schedule for something that schedules nothing is theatre, and it
+        // contradicted the banner directly above it (caught on glass).
+        #expect(!model.showsRefreshRow)
         #expect(model.statusFooter.contains("doesn't include weather"))
     }
 
-    /// A failed write reverts the row and raises the toast — the screen never keeps showing a
-    /// value the device refused.
-    @Test func aFailedWriteRevertsAndSurfacesOnce() async {
-        let (model, control, _) = makeModel(refresh: .every30)
+    /// …and it *is* shown for a device that has weather, connected or not — the row's absence has
+    /// to mean "no such thing", never "not right now".
+    @Test func theScheduleRowStaysForAWeatherCapableDeviceEvenOutOfRange() async {
+        let (model, _, _) = makeModel(scenario: .outOfRange)
         model.start()
-        await waitFor("config") { model.hasReadConfig }
-        // Two armed faults, not one: the model re-reads the device when the link stream reports
-        // `.connected`, and that read would otherwise eat the single fault before the write leg
-        // ever ran. Either leg failing means the device never took the interval, which is the
-        // behaviour under test.
-        control.failNextOp(.writeFailed)
-        control.failNextOp(.writeFailed)
-        model.setRefresh(.every120)
-        await waitFor("failure surfaced") { model.refreshWriteFailed }
-        #expect(model.refresh == .every30)
+        await waitFor("link") { model.connection != .connecting }
+        #expect(model.showsRefreshRow)
     }
 
-    /// A rider scrubbing the picker fires several writes inside a second. Unsupervised those are
-    /// concurrent read-modify-writes with confirming reads landing in any order, and the row ends
-    /// up showing whichever read answered last — a value the device may no longer hold. The chain
-    /// is serial and last-writer-wins: the superseded write is never sent at all (#1198 review).
-    @Test func rapidIntervalChangesAreSerialisedAndTheLastOneWins() async {
-        let (model, transport) = makeConfigModel(refresh: .every30)
+    /// The status footer is where the rider learns the interval is changed on the OBC — the one
+    /// thing the removed picker used to answer by existing.
+    @Test func theStatusFooterSaysWhereTheIntervalIsChanged() async {
+        let (model, _, _) = makeModel(refresh: .every30)
         model.start()
         await waitFor("config") { model.hasReadConfig }
-
-        model.setRefresh(.every15)
-        model.setRefresh(.every120)
-        await waitFor("device settled") { transport.writtenRefreshRaws.count == 1 }
-        await waitFor("row settled") { model.refresh == .every120 }
-
-        #expect(transport.writtenRefreshRaws == [WeatherRefresh.every120.rawValue],
-                "the value the rider changed their mind about was never sent")
-        #expect(transport.config.knownWeatherRefresh == .every120)
-        #expect(!model.refreshIsUnconfirmed)
-    }
-
-    /// And when the first write is genuinely in flight, the second waits for it rather than
-    /// straddling it — the device sees them in tap order, and the row never snaps back to the
-    /// earlier value on the earlier read-back.
-    @Test func aSecondChangeWaitsForAWriteAlreadyInFlight() async {
-        let (model, transport) = makeConfigModel(refresh: .every30)
-        transport.writeDelay = .milliseconds(60)
-        model.start()
-        await waitFor("config") { model.hasReadConfig }
-
-        model.setRefresh(.every15)
-        await waitFor("first write in flight") { transport.writesStarted == 1 }
-        model.setRefresh(.every120)
-        await waitFor("both landed") { transport.writtenRefreshRaws.count == 2 }
-        await waitFor("row settled") { model.refresh == .every120 }
-
-        #expect(transport.writtenRefreshRaws
-            == [WeatherRefresh.every15.rawValue, WeatherRefresh.every120.rawValue])
-        #expect(model.refresh == .every120, "no read-back reverted the row")
-        #expect(!model.refreshIsUnconfirmed)
-    }
-
-    /// The same unordered read-back arriving by the other door: this screen re-reads the device on
-    /// launch and whenever the link comes up, and one of those can still be in the air when the
-    /// rider picks a new interval. Landing afterwards it would snap the row back — indistinguishable
-    /// from a rejected write (#1198 review).
-    @Test func aRoutineDeviceReReadDoesNotClobberAnInFlightChange() async {
-        let (model, transport) = makeConfigModel(refresh: .every30)
-        transport.writeDelay = .milliseconds(60)
-        model.start()
-        await waitFor("config") { model.hasReadConfig }
-
-        model.setRefresh(.every120)
-        // A re-read of the device's *old* value, deliberately raced against the write.
-        await model.refreshAll()
-        #expect(model.refresh == .every120, "the rider's choice survived the stale read")
-
-        await waitFor("settled") { transport.writtenRefreshRaws.count == 1 }
-        await waitFor("confirmed") { !model.refreshIsUnconfirmed }
-        #expect(model.refresh == .every120)
-    }
-
-    /// The write went out, the confirming read did not come back. The row may not pass this
-    /// phone's optimism off as device truth: it says *not confirmed*, and the next visit settles
-    /// it (#1198 review).
-    @Test func aWriteWhoseConfirmationNeverArrivesReadsAsUnconfirmed() async {
-        let (model, transport) = makeConfigModel(refresh: .every30)
-        transport.failsReadAfterWrite = true
-        model.start()
-        await waitFor("config") { model.hasReadConfig }
-
-        model.setRefresh(.every120)
-        await waitFor("unconfirmed") { model.refreshIsUnconfirmed }
-        #expect(model.refresh == .every120, "the write was sent; it probably landed")
-        #expect(!model.refreshWriteFailed, "…so this is not the failed-write story")
-        #expect(WeatherCopy.refreshValue(
-            model.refresh, unknownToThisBuild: false, hasRead: true, unconfirmed: true)
-            == "Every 2 hours · not confirmed")
-
-        // The next appearance re-reads and settles it — one round trip, only because the screen
-        // knew it was unsure.
-        transport.failsReadAfterWrite = false
-        await model.appeared()
-        await waitFor("settled") { !model.refreshIsUnconfirmed }
-        #expect(model.refresh == .every120, "and the device had taken it after all")
-        #expect(WeatherCopy.refreshValue(
-            model.refresh, unknownToThisBuild: false, hasRead: true, unconfirmed: false)
-            == "Every 2 hours")
+        #expect(model.statusFooter.contains("on the OBC itself"))
     }
 
     // MARK: The standing watch (phone truth)

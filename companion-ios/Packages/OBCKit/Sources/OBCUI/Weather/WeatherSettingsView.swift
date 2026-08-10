@@ -6,10 +6,15 @@ import OBCWeather
 /// The Weather screen (WX13) — pushed from Settings.
 ///
 /// It deliberately does **not** duplicate the device's forecast UI: the OBC shows the weather, this
-/// shows how the weather gets there. Four groups in the order a rider needs them — how often, what
-/// this phone is allowed to do in the background, how the last runs went, and what the service is
-/// publishing — then the two pushed pages that would drown the list: the ring, and the data-flow
-/// story.
+/// shows how the weather gets there. Three groups in the order a rider needs them — what this phone
+/// is allowed to do in the background, how the last runs went (including the device's own schedule,
+/// reported), and what the service is publishing — then the two pushed pages that would drown the
+/// list: the ring, and the data-flow story.
+///
+/// **One editable thing on this screen**, and it is the phone's: the standing background watch.
+/// The refresh interval is the *device's* setting and appears here as a status line only — the OBC's
+/// own Weather screen is where it is changed. A second editor for one value is two places to look
+/// when they disagree, and this one would be the one that is wrong.
 public struct WeatherSettingsView: View {
     @Bindable private var model: WeatherSettingsModel
     private let onOpenDiagnostics: () -> Void
@@ -30,7 +35,6 @@ public struct WeatherSettingsView: View {
         ScrollView {
             VStack(spacing: 26) {
                 if model.deviceSupportsWeather == false { unsupportedBanner }
-                refreshGroup
                 backgroundGroup
                 statusGroup
                 serviceGroup
@@ -47,12 +51,6 @@ public struct WeatherSettingsView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        .obcToast(
-            isPresented: $model.refreshWriteFailed,
-            systemImage: "exclamationmark.triangle",
-            message: "Couldn't change the interval on your OBC. It kept its current setting.",
-            duration: .seconds(4)
-        )
         .task { await model.appeared() }
     }
 
@@ -70,68 +68,6 @@ public struct WeatherSettingsView: View {
                 showsDivider: false
             )
         }
-    }
-
-    // MARK: How often (spec §7.3 / §11.8)
-
-    private var refreshGroup: some View {
-        OBCGroupedSection("How often", footer: refreshFooter) {
-            Menu {
-                ForEach(WeatherRefresh.allCases, id: \.self) { option in
-                    Button {
-                        model.setRefresh(option)
-                    } label: {
-                        if option == model.refresh {
-                            Label(WeatherCopy.refreshLabel(option), systemImage: "checkmark")
-                        } else {
-                            Text(WeatherCopy.refreshLabel(option))
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 12) {
-                    OBCIconTile(systemImage: "clock.arrow.circlepath", color: OBCTheme.water)
-                    Text("Ask for weather")
-                        .font(.system(size: 16))
-                        .foregroundStyle(model.canEditRefresh ? OBCTheme.ink : OBCTheme.inkFaint)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(WeatherCopy.refreshValue(
-                        model.refresh,
-                        unknownToThisBuild: model.refreshIsUnknownToThisBuild,
-                        hasRead: model.hasReadConfig,
-                        unconfirmed: model.refreshIsUnconfirmed))
-                        .font(.system(size: 15))
-                        .foregroundStyle(OBCTheme.inkFaint)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(OBCTheme.inkFaint)
-                }
-                .padding(.vertical, 14)
-                .padding(.horizontal, 16)
-                .frame(minHeight: 52)
-                .contentShape(Rectangle())
-            }
-            .disabled(!model.canEditRefresh)
-            .accessibilityIdentifier("weather.refresh")
-        }
-    }
-
-    private var refreshFooter: String {
-        if model.deviceSupportsWeather == false {
-            return "The interval is stored on the OBC. This one has no weather to schedule."
-        }
-        if !model.canEditRefresh {
-            return "The interval is stored on your OBC, so it can only be changed while connected."
-        }
-        if model.refreshIsUnconfirmed {
-            return "The new interval was sent, but your OBC didn't confirm what it stored. This "
-                + "screen re-reads it the next time you open it."
-        }
-        if model.refreshIsUnknownToThisBuild {
-            return "Your OBC is set to an interval this app version doesn't know — a newer "
-                + "firmware. Picking one here replaces it."
-        }
-        return "Only while you're riding. Opening Weather on the OBC always asks straight away."
     }
 
     // MARK: Background weather (this phone)
@@ -173,6 +109,19 @@ public struct WeatherSettingsView: View {
 
     private var statusGroup: some View {
         OBCGroupedSection("Status", footer: model.statusFooter) {
+            // The device's own schedule, **reported**. It sits here rather than in a group of its
+            // own because that is what it is now — a status line, one of the facts about how
+            // weather is reaching this OBC, not a control. It reads with its value as one
+            // sentence: "Asks for weather · Every 30 min".
+            if model.showsRefreshRow {
+                OBCListRow(
+                    icon: "clock.arrow.circlepath",
+                    iconColor: OBCTheme.water,
+                    label: "Asks for weather",
+                    value: model.refreshValue
+                )
+                .accessibilityIdentifier("weather.refresh")
+            }
             OBCListRow(
                 icon: "checkmark.seal",
                 iconColor: OBCTheme.forest,

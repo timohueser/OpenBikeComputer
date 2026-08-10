@@ -109,9 +109,31 @@ public final class FileWeatherJobHistoryStore: WeatherJobHistoryStore, @unchecke
         queue.sync { read() }
     }
 
+    /// Read the ring, salvaging **row by row** when the whole array will not decode.
+    ///
+    /// Decoding the array as a unit makes every row hostage to the worst one: a single entry this
+    /// build cannot read takes the other nineteen with it, and a rider who updates the app silently
+    /// loses their entire sync history. That trade is wrong for a diagnostics ring — the rows are
+    /// independent by construction, and their whole purpose is to still be there when something
+    /// needs explaining. So a failed bulk decode falls back to decoding each element on its own and
+    /// dropping only the ones that are genuinely unreadable.
+    ///
+    /// Concretely today: `noRainMapReason` was a `String` in the WX9-era ring and is a
+    /// ``NoRainMapReason`` now (#1198 review). A row written by the previous build costs that row,
+    /// not the ring.
     private func read() -> [WeatherJobHistoryEntry] {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        return (try? decoder().decode([WeatherJobHistoryEntry].self, from: data)) ?? []
+        let decoder = decoder()
+        if let all = try? decoder.decode([WeatherJobHistoryEntry].self, from: data) { return all }
+        // The outer shape still has to be an array — a file that is not one is not a ring, and
+        // there is nothing to salvage row-wise.
+        guard let elements = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else {
+            return []
+        }
+        return elements.compactMap { element in
+            guard let row = try? JSONSerialization.data(withJSONObject: element) else { return nil }
+            return try? decoder.decode(WeatherJobHistoryEntry.self, from: row)
+        }
     }
 
     private func encoder() -> JSONEncoder {
