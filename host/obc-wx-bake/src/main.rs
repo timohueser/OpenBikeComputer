@@ -121,17 +121,20 @@ fn run(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
     }
-    // The one remaining path to the live service, closed by hand until WXR3 flips these on. The
-    // `adapters.conf` rows are comments and `cycle` excludes both, so nothing automatic can
-    // publish OPERA — but `--r2` is one mistyped word away, and `run_cycle` carries every other
-    // product forward, so that one word would republish the live v1 manifest with two new tier-1
-    // European products for clients whose selection policy is mid-deletion. Deleting this guard
-    // is part of uncommenting the rows, not a separate decision.
+    // The one remaining path to the **live v1 tree**, closed by hand. The `adapters.conf` rows
+    // are comments and `cycle` excludes both, so nothing automatic can publish OPERA as a v1
+    // product — but `--r2` is one mistyped word away, and `run_cycle` carries every other product
+    // forward, so that one word would republish the live manifest with two new tier-1 European
+    // products for clients whose selection policy is mid-deletion.
+    //
+    // Deliberately scoped to the two per-source subcommands: `canonical --r2` is *not* blocked,
+    // because it writes the `wx/v2` mosaic beside the live tree and nothing reads that yet — that
+    // is where OPERA is supposed to be, and is where it already is.
     if use_r2 && OPERA_ADAPTERS.contains(&command) {
         return Err(format!(
-            "{command} must not publish to the live service yet (WXR6/#1245): it would add a tier-1 product \
-             the shipped clients would immediately select. Bake it with --store <dir>; WXR3 removes this guard \
-             together with the commented ops/weather/adapters.conf rows."
+            "{command} must not publish into the live wx/v1 tree (WXR6/#1245): it would add a tier-1 product \
+             the shipped clients would immediately select. Bake it with --store <dir>, or publish it through \
+             the mosaic with `canonical`. This guard goes when the v1 path does (WXR7 #1246)."
         ));
     }
     let mut store: Box<dyn ObjectStore> = match (store_dir, use_r2) {
