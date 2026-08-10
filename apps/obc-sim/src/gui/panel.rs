@@ -828,10 +828,27 @@ impl SimGui {
         if !report.expired.is_empty() {
             ui.weak(format!("expired (skipped): {}", report.expired.join(", ")));
         }
+        if let Some((width_km, height_km, directed)) = report.corridor_km {
+            ui.label(format!(
+                "corridor  {width_km:.0} x {height_km:.0} km, {}",
+                if directed { "projected along the fix's bearing" } else { "undirected disc" }
+            ));
+        }
+        // Two costs, never one number: the OBC half is coordinate-free Range reads, the MET half
+        // is one document that carries the rider's position. Both are *this fetch* — mixing a
+        // cumulative request count with a per-fetch byte count is how "21 requests, 146 KB" came
+        // to describe two different things at once.
         ui.label(format!(
-            "last      {} B bundle · {} requests · {} B from the service",
-            report.bundle_bytes, report.requests, report.service_bytes
+            "last      {} B bundle · service {} req / {} B · MET {} req / {} B",
+            report.bundle_bytes, report.service_requests, report.service_bytes, report.met_requests, report.met_bytes
         ));
+        if report.cached_frames > 0 {
+            ui.weak(format!(
+                "{} frame(s) came from the crop cache — immutable objects are never re-read",
+                report.cached_frames
+            ));
+        }
+        ui.weak(format!("{} request(s) since the simulator started", live.total_requests()));
         if report.failed_frames > 0 || report.dropped_incompatible_frames > 0 {
             ui.weak(format!(
                 "{} frame(s) failed, {} dropped as untileable (never resampled)",

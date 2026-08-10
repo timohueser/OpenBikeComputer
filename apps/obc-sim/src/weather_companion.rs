@@ -55,6 +55,16 @@ impl CompanionState {
     }
 }
 
+/// The active bundle as the §11.4 context describes it: the identity the A/B classifier compares
+/// **plus** the bundle CRC the context's last field carries. The board reads all three off its
+/// `obc_weather::Candidate`; the simulator reads them off the held bundle's own header, so the
+/// context it builds is the one the phone would actually receive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub identity: BundleIdentity,
+    pub crc32: u32,
+}
+
 /// The host half of the lifecycle.
 pub struct SimCompanion {
     scheduler: DueScheduler,
@@ -62,17 +72,21 @@ pub struct SimCompanion {
     /// Rising-edge detector for "the rider opened Weather" — the board's `request_weather_now()`
     /// with no board to call it.
     on_weather_screen: bool,
+    /// Whether the device has storage that could accept a bundle at all (`--no-card` clears it).
+    /// §11.7's rule: no card ⇒ no requests, urgent included, because every upload would be
+    /// answered `error` and the phone would burn its battery on the loop.
+    store_ready: bool,
 }
 
 impl Default for SimCompanion {
     fn default() -> Self {
-        Self::new()
+        Self::new(true)
     }
 }
 
 impl SimCompanion {
-    pub fn new() -> Self {
-        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), on_weather_screen: false }
+    pub fn new(store_ready: bool) -> Self {
+        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), on_weather_screen: false, store_ready }
     }
 
     /// One pass of the whole lifecycle. Returns fresh bundle bytes when an upload committed.
@@ -96,43 +110,69 @@ impl SimCompanion {
         }
         self.on_weather_screen = on_weather;
 
-        let snapshot = app.weather_snapshot();
-        let refresh = refresh_of(app);
-        let held = store.and_then(identity_of);
+        // §11.8: the *raw* byte the rider's setting encodes, exactly as the board passes it. The
+        // typed enum is only for the scheduler's own arithmetic; collapsing an unknown byte to the
+        // default before it reaches the context would misreport the rider's cadence to the phone.
+        let refresh_raw = app.settings().weather_refresh as u8;
+        let fallback = (app.state.cam_lat, app.state.cam_lon);
+        self.run(&app.weather_snapshot(), refresh_raw, store.and_then(held_of), fallback, live, now)
+    }
+
+    /// The lifecycle without the `App`: the scheduler's levels, the context fill, the fetch and
+    /// the upload verdict. Split out so the §11.7 no-storage arm is testable on its own.
+    pub fn run(
+        &mut self,
+        snapshot: &obc_app::ble::WeatherSnapshot,
+        refresh_raw: u8,
+        held: Option<Held>,
+        fallback_position: (i32, i32),
+        live: &mut LiveWeather,
+        now: i64,
+    ) -> Option<Vec<u8>> {
+        let refresh = WeatherRefresh::from_u8(refresh_raw).unwrap_or(WeatherRefresh::DEFAULT);
         let facts = match held {
-            Some(identity) => {
-                BundleFacts { held: true, age_s: u64::try_from((now - identity.generated_at).max(0)).ok() }
+            Some(bundle) => {
+                BundleFacts { held: true, age_s: u64::try_from((now - bundle.identity.generated_at).max(0)).ok() }
             }
             None => BundleFacts::NONE,
         };
         let now_s = now.max(0) as u64;
-        // The store is always "ready" in the simulator — the host filesystem is the card. The
-        // no-card case is reachable through the ordinary boot-fault controls.
-        let raise = self.scheduler.poll(now_s, refresh, snapshot.ride_active, true, facts);
+        let raise = self.scheduler.poll(now_s, refresh, snapshot.ride_active, self.store_ready, facts);
         self.state.pending_request_id = self.scheduler.pending_request_id();
-        self.state.next_wake_s = self.scheduler.next_wake_s(refresh, snapshot.ride_active, true);
+        self.state.next_wake_s = self.scheduler.next_wake_s(refresh, snapshot.ride_active, self.store_ready);
         let raise = raise?;
         self.state.raises += 1;
         self.state.last_reason = raise.reason;
 
         // 1-2. The phone reads the request context and disconnects. Building it for real is the
         //      point: the context is what tells the companion *where* and *what for*.
-        let context = build_context(&snapshot, refresh, &raise, held);
+        let context = build_context(snapshot, refresh_raw, &raise, held);
         let position = if context.has(VALID_POSITION) {
             (context.lat_udeg, context.lon_udeg)
         } else {
             // No trusted fix: the phone falls back to its own last known position. The simulator's
             // stand-in is the camera, which is what the rider is looking at.
-            (app.state.cam_lat, app.state.cam_lon)
+            fallback_position
+        };
+        // The corridor is projected from what the device actually vouched for — a cleared validity
+        // bit is an absent input, never a zero. The route ahead stays empty on purpose: §11.4
+        // carries a route *id*, not geometry, so a phone widens the corridor along a route only
+        // when it holds that route itself, and the simulator holds none.
+        let fix = obc_wx_client::select::Fix {
+            lat_udeg: position.0,
+            lon_udeg: position.1,
+            bearing_deg: context.has(VALID_BEARING).then(|| f64::from(context.bearing_deg)),
+            speed_ms: context.has(VALID_SPEED).then(|| f64::from(context.speed_deci_ms) / 10.0),
+            route_ahead: Vec::new(),
         };
 
         // 3. BLE is off while HTTP runs. Nothing here touches a radio, which is exactly the
         //    property the budget depends on.
-        let bytes = live.fetch(position, now, context.request_id)?;
+        let bytes = live.fetch(&fix, now, context.request_id)?;
 
         // 4. Reconnect and upload. The disposition is the *firmware's* verdict, not ours.
-        let incoming = identity_from_bytes(&bytes)?;
-        let disposition = classify_upload(incoming, held);
+        let incoming = held_from_bytes(&bytes)?;
+        let disposition = classify_upload(incoming.identity, held.map(|bundle| bundle.identity));
         self.state.last_disposition = Some(match disposition {
             UploadDisposition::Commit => "commit",
             UploadDisposition::DuplicateIgnored => "duplicate ignored",
@@ -156,33 +196,33 @@ impl SimCompanion {
     }
 }
 
-fn refresh_of(app: &obc_app::App) -> WeatherRefresh {
-    WeatherRefresh::from_u8(app.settings().weather_refresh as u8).unwrap_or(WeatherRefresh::DEFAULT)
+fn held_of(store: &SimWeather) -> Option<Held> {
+    held_from_bytes(store.bytes())
 }
 
-fn identity_of(store: &SimWeather) -> Option<BundleIdentity> {
-    identity_from_bytes(store.bytes())
-}
-
-fn identity_from_bytes(bytes: &[u8]) -> Option<BundleIdentity> {
+fn held_from_bytes(bytes: &[u8]) -> Option<Held> {
     let source = obc_formats::io::SliceSource(bytes);
     let reader = obc_weather::WeatherReader::open(&source).ok()?;
     let header = reader.header();
-    Some(BundleIdentity { generation: header.generation, generated_at: header.generated_at })
+    Some(Held {
+        identity: BundleIdentity { generation: header.generation, generated_at: header.generated_at },
+        crc32: header.crc32,
+    })
 }
 
 /// The §11.4 context fill, flags-not-sentinels: a field is present only when it is *true*, and
-/// the validity bit is what says so. This mirrors the board's `build_context`.
+/// the validity bit is what says so. This mirrors the board's `build_context`, `refresh_raw`
+/// included — the board hands the stored byte through untouched (§11.8).
 fn build_context(
     snapshot: &obc_app::ble::WeatherSnapshot,
-    refresh: WeatherRefresh,
+    refresh_raw: u8,
     raise: &Raise,
-    bundle: Option<BundleIdentity>,
+    bundle: Option<Held>,
 ) -> WeatherRequestContext {
     let mut context = WeatherRequestContext {
         request_id: raise.request_id,
         reason: raise.reason,
-        refresh_raw: refresh.as_u8(),
+        refresh_raw,
         ..WeatherRequestContext::EMPTY
     };
     if let Some(fix) = snapshot.position {
@@ -203,10 +243,101 @@ fn build_context(
         context.validity |= VALID_ROUTE;
         context.route_id = route;
     }
-    if let Some(identity) = bundle {
+    if let Some(bundle) = bundle {
         context.validity |= VALID_BUNDLE;
-        context.bundle_generation = identity.generation;
-        context.bundle_generated_at = identity.generated_at;
+        context.bundle_generation = bundle.identity.generation;
+        context.bundle_generated_at = bundle.identity.generated_at;
+        // The last v1 field, and the one the phone uses to tell "the bundle I already built" from
+        // "a different bundle with the same generation" — a zero here would be a claim about the
+        // held bundle that is simply false.
+        context.bundle_crc32 = bundle.crc32;
     }
     context
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::weather_live::{LiveConfig, LiveWeather};
+    use obc_ble::VALID_BUNDLE;
+    use obc_wx_client::http::FailureControls;
+
+    /// A live client that can never reach a socket: every request fails at the transport, which is
+    /// what makes "did the companion try at all?" observable in a unit test.
+    fn offline_live() -> LiveWeather {
+        LiveWeather::new(&LiveConfig {
+            controls: FailureControls { offline: true, ..FailureControls::default() },
+            ..LiveConfig::default()
+        })
+    }
+
+    fn riding() -> obc_app::ble::WeatherSnapshot {
+        obc_app::ble::WeatherSnapshot {
+            ride_active: true,
+            position: Some(obc_app::ble::WeatherFix { lat_udeg: 48_060_000, lon_udeg: 7_900_000, fix_utc: 1_800_000 }),
+            ..Default::default()
+        }
+    }
+
+    /// §11.7: a device with no storage raises **nothing** — not even the no-bundle request that
+    /// the same levels raise immediately with a card. If it did, every upload would be answered
+    /// `error` and the phone would spend its battery on the loop forever.
+    #[test]
+    fn no_card_means_no_request_and_no_http_at_all() {
+        let mut companion = SimCompanion::new(false);
+        let mut live = offline_live();
+        let bytes = companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        assert!(bytes.is_none());
+        assert_eq!(companion.state.raises, 0, "a card-less device must not raise a weather request");
+        assert_eq!(companion.state.next_wake_s, None, "…and must not schedule one either");
+        assert_eq!(live.total_requests(), 0, "no request may reach the wire");
+    }
+
+    /// The same levels *with* a card: the request is raised and the fetch is attempted. This is
+    /// what makes the test above a statement about `store_ready` rather than about the fixture.
+    #[test]
+    fn with_a_card_the_same_levels_raise_and_fetch() {
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        let bytes = companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        assert!(bytes.is_none(), "the offline client cannot produce a bundle");
+        assert_eq!(companion.state.raises, 1);
+        assert!(live.total_requests() > 0, "the companion must actually go and fetch");
+    }
+
+    /// §11.4's last field and §11.8's refresh byte, both filled from the facts rather than from a
+    /// default: the CRC identifies the bundle the device is holding, and the refresh byte is the
+    /// rider's own setting carried verbatim — including a byte this build cannot name.
+    #[test]
+    fn the_context_carries_the_bundle_crc_and_the_raw_refresh_byte() {
+        let held = Held { identity: BundleIdentity { generation: 7, generated_at: 1_799_000 }, crc32: 0xDEAD_BEEF };
+        let raise = Raise { request_id: 3, reason: REASON_SCHEDULED };
+        let context = build_context(&riding(), 9, &raise, Some(held));
+        assert_eq!(context.refresh_raw, 9, "an unknown cadence byte rides through untouched (§11.8)");
+        assert!(WeatherRefresh::from_u8(9).is_err(), "…and this build genuinely cannot name it");
+        assert!(context.has(VALID_BUNDLE));
+        assert_eq!(context.bundle_crc32, 0xDEAD_BEEF, "the held bundle's real CRC, not a zero");
+        assert_eq!(context.bundle_generation, 7);
+    }
+
+    /// The corridor is projected from what the device vouched for. A snapshot with a bearing and a
+    /// speed must produce a *directed* corridor, and one without must not.
+    #[test]
+    fn the_corridor_is_projected_from_the_context_not_from_a_fixed_disc() {
+        let mut moving = riding();
+        moving.bearing_deg = Some(90);
+        moving.speed_deci_ms = Some(80); // 8 m/s ≈ 29 km/h
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.run(&moving, 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        let directed = live.report.corridor_km.expect("a corridor was projected");
+        assert!(directed.2, "a vouched-for bearing and speed project a directed corridor");
+
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        let disc = live.report.corridor_km.expect("a corridor was projected");
+        assert!(!disc.2, "no bearing, no speed ⇒ the undirected disc");
+        assert!(directed.0 > disc.0, "the directed corridor reaches further east than the 10 km disc");
+    }
 }

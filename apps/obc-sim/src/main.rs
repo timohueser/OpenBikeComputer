@@ -125,6 +125,11 @@ struct Args {
     /// `--weather live` knobs (WX14): the service origin, the corridor radius, and the failure
     /// controls that make an outage, a corrupt tile or a cut connection reproducible on demand.
     live: weather_live::LiveConfig,
+    /// `--no-card`: the device has no storage the companion could write a bundle to. §11.7's rule
+    /// is that such a device raises **no** weather request at all — urgent included — because
+    /// every upload would be answered `error` and the phone would burn on the retry loop. This is
+    /// the control that makes that arm exercisable; `--boot-fault nocard` only draws a screen.
+    no_card: bool,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -278,6 +283,7 @@ impl Default for Args {
             weather_refreshing: false,
             weather_alert: None,
             live: weather_live::LiveConfig::default(),
+            no_card: false,
             lang: None,
             stat_fields: None,
             ble_connected: false,
@@ -498,8 +504,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--weather-radius-km" => {
                 a.live.radius_km =
-                    it.next().and_then(|s| s.parse().ok()).ok_or("--weather-radius-km needs kilometres")?;
+                    Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-radius-km needs kilometres")?);
             }
+            "--no-card" => a.no_card = true,
             "--weather-offline" => a.live.controls.offline = true,
             "--weather-latency" => {
                 let ms: u64 = it.next().and_then(|s| s.parse().ok()).ok_or("--weather-latency needs milliseconds")?;
@@ -950,7 +957,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|hourly]|live] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]] [--weather-service URL] [--weather-radius-km KM] [--weather-offline] [--weather-latency MS] [--weather-fail-from N:CODE] [--weather-corrupt-request N] [--weather-truncate-request N]\n\n  --weather live   fetch the real OpenBikeComputer weather service for the rider's position:\n                   the manifest, OBCG corridor Range reads and MET hourly — the same bytes the\n                   phone consumes — assembled into an OBCW bundle and fed through the production\n                   reader/renderer/screens. The only network path in the simulator; fixtures and\n                   CI never reach it. The service receives no coordinate (every request is a\n                   Range read of a static object); MET is the one third party that does, rounded\n                   to four decimals. The failure controls above inject latency, HTTP status,\n                   truncation, corruption and offline against that same path.\n\n  clock rules      --clock always wins. Without it, a DIR/demo store anchors the app clock on\n                   its own first frame, so fixture renders are deterministic; --weather live\n                   anchors on the real wall clock instead, because anchoring on the newest frame\n                   would hide a stalled service behind a fresh-looking nowcast. --weather-now\n                   overrides the freshness instant in every mode — the stale-scenario tool.\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|hourly]|live] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]] [--weather-service URL] [--weather-radius-km KM] [--weather-offline] [--weather-latency MS] [--weather-fail-from N:CODE] [--weather-corrupt-request N] [--weather-truncate-request N] [--no-card]\n\n  --weather live   fetch the real OpenBikeComputer weather service for the rider's position:\n                   the manifest, OBCG corridor Range reads and MET hourly — the same bytes the\n                   phone consumes — assembled into an OBCW bundle and fed through the production\n                   reader/renderer/screens. The only network path in the simulator; fixtures and\n                   CI never reach it. The service receives no coordinate (every request is a\n                   Range read of a static object); MET is the one third party that does, rounded\n                   to four decimals. The failure controls above inject latency, HTTP status,\n                   truncation, corruption and offline against that same path. The corridor is\n                   projected from the fix the way the phone projects it (bearing + speed, the\n                   two-hour reach clamped to 10..120 km); --weather-radius-km forces a fixed\n                   undirected disc instead.\n\n  --no-card        the device has no storage to write a bundle to: per §11.7 the scheduler then\n                   raises no weather request at all, urgent included, so the simulator issues no\n                   HTTP request either. (--boot-fault nocard only draws a screen.)\n\n  clock rules      --clock always wins. Without it, a DIR/demo store anchors the app clock on\n                   its own first frame, so fixture renders are deterministic; --weather live\n                   anchors on the real wall clock instead, because anchoring on the newest frame\n                   would hide a stalled service behind a fresh-looking nowcast. --weather-now\n                   overrides the freshness instant in every mode — the stale-scenario tool.\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1095,7 +1102,7 @@ fn main() {
         let wx_source = args
             .weather
             .as_ref()
-            .map(|arg| weather_live::build(arg, args.weather_now, map_bbox, &args.live, wx_seed_pos))
+            .map(|arg| weather_live::build(arg, args.weather_now, map_bbox, &args.live, wx_seed_pos, !args.no_card))
             .unwrap_or(weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
         let mut weather = wx_source.store;
         let weather_anchor = wx_source.clock_anchor;
@@ -1104,19 +1111,25 @@ fn main() {
         // into the emulated device pixels, which carry no provenance badge.
         if let Some(live) = wx_source.live.as_ref() {
             let report = &live.report;
-            match (&report.product, &report.error) {
-                (_, Some(error)) => println!("weather live: FAILED — {error}"),
-                (Some((id, tier)), None) => println!(
-                    "weather live: {id} (tier {tier}) | {} B bundle | {} requests, {} B | {}",
-                    report.bundle_bytes,
-                    report.requests,
-                    report.service_bytes,
-                    report.no_rain_map.as_deref().unwrap_or("rain map available")
-                ),
-                (None, None) => println!(
-                    "weather live: hourly only — {}",
-                    report.no_rain_map.as_deref().unwrap_or("no product selected")
-                ),
+            if args.no_card {
+                println!("weather live: no card — §11.7: no storage, no requests (nothing was fetched)");
+            } else {
+                match (&report.product, &report.error) {
+                    (_, Some(error)) => println!("weather live: FAILED — {error}"),
+                    (Some((id, tier)), None) => println!(
+                        "weather live: {id} (tier {tier}) | {} B bundle | service {} req, {} B | MET {} req, {} B | {}",
+                        report.bundle_bytes,
+                        report.service_requests,
+                        report.service_bytes,
+                        report.met_requests,
+                        report.met_bytes,
+                        report.no_rain_map.as_deref().unwrap_or("rain map available")
+                    ),
+                    (None, None) => println!(
+                        "weather live: hourly only — {}",
+                        report.no_rain_map.as_deref().unwrap_or("no product selected")
+                    ),
+                }
             }
         }
         // WX11: with a weather store and no explicit `--clock`, pin the app clock to the weather
