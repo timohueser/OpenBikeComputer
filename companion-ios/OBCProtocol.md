@@ -536,6 +536,24 @@ peripheral and iOS holds that pending connect until the device is reachable. An
 ephemeral weather connection never publishes `.connected` to the app's link
 lifecycle; the foreground screens cannot tell it happened.
 
+The watch is **standing, not a session**: armed once per launch, persisted so it
+survives a relaunch, and never disarmed — a request the device raises days later
+still wakes the app. It scans only when nothing else wants the radio, is gated to
+the known bonded peripheral (nothing bonded → no scan at all), and survives a
+Bluetooth off/on toggle as a preference while every in-flight one-shot does not.
+The foreground outranks both it and the upload leg: a raised foreground intent makes
+the upload *wait* rather than claim the radio, and the connection the foreground then
+raises is one the upload rides.
+
+**Budgets are absolute deadlines, and they belong to the connection rather than to a
+leg.** The read gets 60 s overall / 8 s connected, the upload 90 s / 25 s connected —
+and a read that hands its link to the upload does not buy the upload a second window,
+nor does a state-restoration handoff re-arm one. The single exception is the wait for
+the app's one transfer slot: that hold belongs to whichever transfer is *in* the slot,
+so it moves the connected deadline instead of consuming it, and a budget that expires
+while queued there is reported as `deviceBusy` — a "come back later", not a timeout
+the weather job counts against the request's attempts.
+
 ---
 
 ## Delta 1 — device name lives in `Config`
