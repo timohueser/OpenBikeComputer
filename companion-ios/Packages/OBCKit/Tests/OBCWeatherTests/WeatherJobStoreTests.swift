@@ -17,9 +17,10 @@ struct FileWeatherJobStoreTests {
     @Test func aFullRecordRoundTripsThroughDisk() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let store = FileWeatherJobStore(fileURL: directory.appendingPathComponent("job.json"))
-
         let readAt = Date(timeIntervalSince1970: 1_770_000_000)
+        let store = FileWeatherJobStore(
+            fileURL: directory.appendingPathComponent("job.json"), now: { readAt })
+
         let record = WeatherJobRecord(
             phase: .bundleReady,
             snapshot: WeatherDeviceRequestSnapshot(
@@ -36,7 +37,8 @@ struct FileWeatherJobStoreTests {
         store.save(record)
 
         // A second store over the same file is the relaunch.
-        let reloaded = FileWeatherJobStore(fileURL: directory.appendingPathComponent("job.json")).load()
+        let reloaded = FileWeatherJobStore(
+            fileURL: directory.appendingPathComponent("job.json"), now: { readAt }).load()
         // Dates round-trip through secondsSince1970, so compare the whole values.
         #expect(reloaded == record)
 
@@ -50,6 +52,34 @@ struct FileWeatherJobStoreTests {
         let fileURL = directory.appendingPathComponent("job.json")
         try Data("not json at all".utf8).write(to: fileURL)
         #expect(FileWeatherJobStore(fileURL: fileURL).load() == nil)
+    }
+
+    /// The rider coordinate lives in this file and nowhere else, so it must not survive the job's
+    /// own lifetime on disk waiting for an engine run that may never come.
+    @Test func aCheckpointPastItsLifetimeIsRefusedAndDeleted() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("job.json")
+        let startedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        FileWeatherJobStore(fileURL: fileURL, lifetime: 3_600, now: { startedAt }).save(
+            WeatherJobRecord(
+                phase: .bundleReady,
+                snapshot: WeatherDeviceRequestSnapshot(
+                    requestID: 9, latitudeMicrodegrees: 47_500_000,
+                    longitudeMicrodegrees: 7_600_000, readAt: startedAt),
+                startedAt: startedAt, updatedAt: startedAt))
+        #expect(FileManager.default.fileExists(atPath: fileURL.path))
+
+        // Inside the horizon it still resumes…
+        let fresh = FileWeatherJobStore(
+            fileURL: fileURL, lifetime: 3_600, now: { startedAt.addingTimeInterval(3_000) })
+        #expect(fresh.load()?.snapshot?.requestID == 9)
+
+        // …past it the load refuses *and* takes the coordinate off disk.
+        let stale = FileWeatherJobStore(
+            fileURL: fileURL, lifetime: 3_600, now: { startedAt.addingTimeInterval(3_601) })
+        #expect(stale.load() == nil)
+        #expect(!FileManager.default.fileExists(atPath: fileURL.path))
     }
 }
 

@@ -35,6 +35,11 @@ public enum WeatherJobFailure: String, Codable, Equatable, Sendable {
     case uploadFailed
     /// The device refused the bytes as not-a-bundle (§11.5 `error`) — a producer bug to surface.
     case bundleRejected
+    /// The device could not take the bundle *right now* — it answered `busy` / `storageFull` /
+    /// `notFound`, or the phone's own transfer slot was still held by a foreground transfer when
+    /// the budget ran out. Says nothing about the bytes: they are kept and the next trigger
+    /// re-uploads them, and it does not spend one of the request's attempts.
+    case deviceUnavailable
     /// The bundle could not be built (builder policy, oversize, malformed inputs).
     case buildFailed
     /// The job exceeded its attempt budget and was abandoned to the device's ladder.
@@ -65,6 +70,10 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
     public var noRainMapReason: String?
     /// Completed attempts that ended in a retryable failure.
     public var attempts: Int
+    /// Deferrals: waits the *device* (or a foreground transfer) asked for, which do not spend an
+    /// attempt. Counted anyway so a permanently-full device cannot loop for the whole job
+    /// lifetime — past the attempt budget a deferral degrades into an ordinary attempt.
+    public var deferrals: Int = 0
     public var startedAt: Date
     public var updatedAt: Date
     /// Retry cooldown: `resume()` will not act before this. A fresh device discovery overrides it —
@@ -82,6 +91,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
         precipitationProductID: String? = nil,
         noRainMapReason: String? = nil,
         attempts: Int = 0,
+        deferrals: Int = 0,
         startedAt: Date,
         updatedAt: Date,
         notBefore: Date? = nil
@@ -96,6 +106,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
         self.precipitationProductID = precipitationProductID
         self.noRainMapReason = noRainMapReason
         self.attempts = attempts
+        self.deferrals = deferrals
         self.startedAt = startedAt
         self.updatedAt = updatedAt
         self.notBefore = notBefore
@@ -121,20 +132,53 @@ public protocol WeatherJobStore: Sendable {
 
 /// The file-backed checkpoint: one JSON document in Application Support, written atomically so a
 /// crash mid-save leaves the previous checkpoint intact rather than a torn one.
+///
+/// **This file holds the rider's coordinate** — the one place in WX9 that does, and only because
+/// a relaunched process must be able to finish a fetch it already paid a connection for. Three
+/// rules follow from that, and they are the store's job, not the engine's:
+///
+/// - **Never in a backup.** The containing directory is marked excluded, so a coordinate cannot
+///   ride an iCloud/iTunes backup off the phone and outlive the job by years.
+/// - **Data protection is explicit, not inherited.** The class is
+///   `completeUntilFirstUserAuthentication`, written down here rather than taken as the platform
+///   default — and deliberately *not* `complete`: the whole point of the standing watch is a
+///   background wake with the phone **locked**, and `complete` would make the checkpoint
+///   unreadable exactly then, turning every locked-phone request into a silent failure.
+/// - **It expires on its own.** `load()` refuses (and deletes) a checkpoint past ``lifetime``, so
+///   the coordinate is gone at the horizon even if the engine never runs again. That horizon is
+///   the engine's `jobLifetime`: past it the job was going to be dropped anyway, and the trade is
+///   one diagnostics row for a coordinate that does not linger.
 public final class FileWeatherJobStore: WeatherJobStore, @unchecked Sendable {
     private let fileURL: URL
+    private let lifetime: TimeInterval
+    private let now: @Sendable () -> Date
     private let queue = DispatchQueue(label: "com.openbikecomputer.weather.jobstore")
 
-    public init(fileURL: URL) {
+    public init(
+        fileURL: URL,
+        lifetime: TimeInterval = 2 * 3_600,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
         self.fileURL = fileURL
+        self.lifetime = lifetime
+        self.now = now
     }
 
     /// The standard location: `Application Support/OBCWeather/job.json`.
     public static func standard() -> FileWeatherJobStore {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        FileWeatherJobStore(fileURL: standardDirectory().appendingPathComponent("job.json"))
+    }
+
+    /// `Application Support/OBCWeather/`, created and marked backup-excluded. Shared with the
+    /// history ring, which is coordinate-free but has no business in a backup either.
+    static func standardDirectory() -> URL {
+        var base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OBCWeather", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return FileWeatherJobStore(fileURL: base.appendingPathComponent("job.json"))
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? base.setResourceValues(values)
+        return base
     }
 
     public func load() -> WeatherJobRecord? {
@@ -142,14 +186,25 @@ public final class FileWeatherJobStore: WeatherJobStore, @unchecked Sendable {
             guard let data = try? Data(contentsOf: fileURL) else { return nil }
             // An unreadable checkpoint (schema change, torn write that somehow landed) is a fresh
             // start, not a crash loop: the device's ladder re-raises the request.
-            return try? decoder().decode(WeatherJobRecord.self, from: data)
+            guard let record = try? decoder().decode(WeatherJobRecord.self, from: data) else {
+                return nil
+            }
+            guard now().timeIntervalSince(record.startedAt) <= lifetime else {
+                try? FileManager.default.removeItem(at: fileURL)
+                return nil
+            }
+            return record
         }
     }
 
     public func save(_ record: WeatherJobRecord) {
         queue.sync {
             guard let data = try? encoder().encode(record) else { return }
-            try? data.write(to: fileURL, options: .atomic)
+            var options: Data.WritingOptions = [.atomic]
+            #if os(iOS)
+            options.insert(.completeFileProtectionUntilFirstUserAuthentication)
+            #endif
+            try? data.write(to: fileURL, options: options)
         }
     }
 

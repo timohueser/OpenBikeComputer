@@ -455,6 +455,120 @@ struct WeatherJobEngineTests {
         #expect(rig.history.entries().last?.outcome == .failed)
     }
 
+    /// A brand-new request id arriving mid-*fetch* abandons that fetch just as surely as one
+    /// arriving at `bundleReady` — the ring must show the work ending, not vanishing.
+    @Test func aNewRequestDuringTheFetchPhaseGetsItsSupersedeRow() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 7, readAt: rig.clock.now)))]
+        // The first job never gets past `.fetching`: its build fails.
+        rig.assembler.results = [
+            .failure(WeatherProviderError.unavailable),
+            .success(builtBundle(generation: 1, requestID: 8, at: rig.clock.now, bytes: Data([9]))),
+        ]
+        rig.link.uploadResults = [.success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.phase == .fetching)
+        #expect(rig.history.entries().isEmpty)
+
+        await rig.engine().kick(
+            .contextRead(snapshot(requestID: 8, readAt: rig.clock.now), readConnectedMilliseconds: nil))
+
+        let entries = rig.history.entries()
+        #expect(entries.first?.outcome == .superseded)
+        #expect(entries.first?.requestID == 7)
+        #expect(entries.first?.phaseReached == .fetching)
+        #expect(entries.last?.outcome == .committed)
+        #expect(entries.last?.requestID == 8)
+    }
+
+    /// The device's ladder re-reads the *same* request every 5/10/20 minutes. If each re-read reset
+    /// the job's birthday, `jobLifetime` could never elapse and a job could ride out a whole day.
+    @Test func aLadderReReadKeepsTheJobsOriginalBirthday() async {
+        // Attempts deliberately out of the way: what is under test is the *lifetime*, and with the
+        // default budget the job would exhaust its attempts before its birthday could matter.
+        let rig = Rig(configuration: .init(maxAttempts: 100))
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 7, readAt: rig.clock.now)))]
+        rig.assembler.results = Array(
+            repeating: .failure(WeatherProviderError.unavailable), count: 8)
+        let born = rig.clock.now
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.startedAt == born)
+
+        // 100 minutes of ladder steps on the same request id.
+        for _ in 0..<5 {
+            rig.clock.advance(20 * 60)
+            await rig.engine().kick(
+                .contextRead(snapshot(requestID: 7, readAt: rig.clock.now),
+                             readConnectedMilliseconds: nil))
+        }
+        #expect(rig.store.load()?.startedAt == born, "a re-read of the same request is not a new job")
+
+        // Past the two-hour lifetime the job is dropped — only reachable because the birthday
+        // survived the re-reads.
+        rig.clock.advance(30 * 60)
+        await rig.engine().kick(.resume)
+        #expect(rig.store.load() == nil)
+        #expect(rig.history.entries().last?.outcome == .failed)
+    }
+
+    /// `storageFull` / `notFound` / `busy` say nothing about the bytes. Binning a good bundle and
+    /// re-fetching the whole corridor for them (six times over) was the old behaviour.
+    @Test func aDeviceThatCannotTakeTheBundleNowKeepsTheBytesAndDoesNotBurnAnAttempt() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([7])))]
+        rig.link.uploadResults = [.failure(.deviceBusy), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+
+        let deferred = rig.store.load()
+        #expect(deferred?.phase == .bundleReady, "the built bytes stay owed, not re-fetched")
+        #expect(deferred?.bundleBytes == Data([7]))
+        #expect(deferred?.attempts == 0, "the device asking us to wait is not our attempt")
+        #expect(deferred?.deferrals == 1)
+        #expect(deferred?.notBefore != nil)
+
+        rig.clock.advance(rig.configuration.retryCooldown + 1)
+        await rig.engine().kick(.resume)
+        #expect(rig.assembler.calls.count == 1, "no corridor re-fetch for a 'not now'")
+        #expect(rig.link.uploadedPayloads == [Data([7]), Data([7])])
+        #expect(rig.history.entries().last?.outcome == .committed)
+    }
+
+    /// …but a device that is *permanently* unable to take it cannot loop for the job's lifetime:
+    /// past the attempt budget a deferral degrades into an ordinary attempt.
+    @Test func endlessDeferralsStillEndTheJob() async {
+        let rig = Rig(configuration: .init(maxAttempts: 2, retryCooldown: 10))
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([7])))]
+        rig.link.uploadResults = Array(repeating: .failure(.deviceBusy), count: 8)
+        await rig.engine().kick(.deviceRaisedRequest)
+        for _ in 0..<5 {
+            rig.clock.advance(11)
+            await rig.engine().kick(.resume)
+        }
+        #expect(rig.store.load() == nil, "the job is abandoned to the device's ladder in the end")
+        #expect(rig.history.entries().last?.outcome == .failed)
+        #expect(rig.history.entries().last?.failureReason == .deviceUnavailable)
+    }
+
+    /// §11.4's idle attribute (validity 0, reason 0, no nonce) is what a device with nothing due
+    /// answers a read with. Running a job for it manufactures a `noPosition` row with request id 0
+    /// at ladder rate — the diagnostics ring would fill with failures nobody caused.
+    @Test func anIdleContextIsNotARequestAndWritesNoHistoryRow() async {
+        let rig = Rig()
+        let idle = WeatherDeviceRequestSnapshot(requestID: 0, readAt: rig.clock.now)
+        #expect(!idle.carriesRequest)
+        rig.link.readResults = [.success(readReceipt(idle))]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.history.entries().isEmpty)
+        #expect(rig.store.load() == nil)
+        #expect(rig.assembler.calls.isEmpty)
+
+        // A genuinely fixless *request* still carries its nonce, and still fails honestly.
+        #expect(snapshot(requestID: 4, latitude: nil, longitude: nil, readAt: rig.clock.now)
+            .carriesRequest)
+    }
+
     @Test func serialGenerationArithmeticMatchesTheDeviceRule() {
         #expect(serialIsNewer(1, than: 0))
         #expect(!serialIsNewer(0, than: 1))

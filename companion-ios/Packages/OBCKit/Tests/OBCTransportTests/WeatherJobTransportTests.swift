@@ -45,6 +45,60 @@ struct WeatherUploadPolicyTests {
         #expect(action == .waitForCurrentConnection)
     }
 
+    /// A user who tapped Connect owns the radio. Claiming `.connecting` for the background job
+    /// from under a foreground *scan* would strand that Connect for the upload's whole 90 s
+    /// budget — the scan is the only path to `.connect(owner: .foreground)`.
+    @Test func uploadNeverHijacksAForegroundScan() {
+        var policy = BLEDiscoveryIntentPolicy()
+        let foreground = policy.requestForeground()
+        #expect(foreground == .scan)
+        #expect(policy.phase == .scanning)
+
+        let action = policy.requestWeatherUpload(knownPeripheralID: known, connectedPeripheralID: nil)
+        #expect(action == .waitForCurrentConnection)
+        #expect(policy.phase == .scanning, "the foreground scan keeps the radio")
+        #expect(policy.weatherUploadPending, "the intent is raised, it just waits its turn")
+
+        // And the connection the foreground raises is one the upload rides rather than replaces.
+        let discovered = policy.discovered(peripheralID: known, knownPeripheralID: known)
+        #expect(discovered == .connect(owner: .foreground))
+        policy.didConnect(peripheralID: known)
+        #expect(policy.connectionOwnership == .foreground)
+        let uploadDisconnects = policy.finishWeatherUpload()
+        #expect(!uploadDisconnects, "a user-owned session is never torn down by the job")
+    }
+
+    /// #1194's no-regression line: the standing watch must not change what a Bluetooth-off/on
+    /// toggle does to the foreground link. The watch survives the toggle (it is a preference), the
+    /// foreground intent does not (the transport re-raises it from `resumeLink()`), and the
+    /// re-raised foreground request still gets a both-service scan rather than parking behind the
+    /// watch.
+    @Test func aBluetoothToggleUnderTheWatchLeavesTheForegroundLinkUnchanged() {
+        var policy = BLEDiscoveryIntentPolicy()
+        policy.setWeatherWatch(true)
+        _ = policy.requestForeground()
+        _ = policy.discovered(peripheralID: known, knownPeripheralID: known)
+        policy.didConnect(peripheralID: known)
+        #expect(policy.connectionOwnership == .foreground)
+
+        // Radio off: `failRadioUnavailable` drops the foreground intent, exactly as without a watch.
+        let disconnects = policy.cancelForeground()
+        #expect(disconnects, "the foreground-owned link is still the foreground's to drop")
+        policy.didDisconnect()
+        #expect(!policy.foregroundRequested)
+        #expect(policy.weatherWatchArmed)
+        #expect(policy.scanServices == [.weatherRequest], "only the watch is left wanting the radio")
+
+        // Radio back + foreground return (`resumeLink()`): the ordinary foreground path, unchanged.
+        let rerequest = policy.requestForeground()
+        #expect(rerequest == .scan)
+        #expect(policy.scanServices == [.control, .weatherRequest])
+        let rediscovered = policy.discovered(peripheralID: known, knownPeripheralID: known)
+        #expect(rediscovered == .connect(owner: .foreground))
+        policy.didConnect(peripheralID: known)
+        #expect(policy.connectionOwnership == .foreground)
+    }
+
     @Test func aSharedWeatherConnectionDisconnectsOnlyWhenBothLegsAreDone() {
         var policy = BLEDiscoveryIntentPolicy()
         _ = policy.requestWeather(knownPeripheralID: known, connectedPeripheralID: nil)
@@ -226,11 +280,38 @@ struct WeatherSnapshotMappingTests {
         #expect(snapshot.nextGeneration == 1)
     }
 
+    /// §11.4: "Before any request is raised, the attribute holds a structurally valid v1 value with
+    /// `validity = 0` and `reason = 0`." That read is not a request — the bridge drops it rather
+    /// than spending a job (and a diagnostics row with request id 0) on it every ladder step.
+    @Test func theIdleAttributeIsNotARequest() {
+        let idle = WeatherRequestContext(
+            validity: [], reason: [], requestID: 0,
+            latitudeMicrodegrees: 0, longitudeMicrodegrees: 0)
+        #expect(!WeatherDeviceRequestSnapshot(context: idle, readAt: Date()).carriesRequest)
+
+        // Any one of the three tells — nonce, reason word, a populated group — makes it real.
+        let nonceOnly = WeatherRequestContext(validity: [], reason: [], requestID: 12)
+        #expect(WeatherDeviceRequestSnapshot(context: nonceOnly, readAt: Date()).carriesRequest)
+        let reasonOnly = WeatherRequestContext(validity: [], reason: [.urgent], requestID: 0)
+        #expect(WeatherDeviceRequestSnapshot(context: reasonOnly, readAt: Date()).carriesRequest)
+        let groupOnly = WeatherRequestContext(
+            validity: [.position], reason: [], requestID: 0,
+            latitudeMicrodegrees: 47_500_000, longitudeMicrodegrees: 7_600_000)
+        #expect(WeatherDeviceRequestSnapshot(context: groupOnly, readAt: Date()).carriesRequest)
+    }
+
     @Test func errorMappingSeparatesReproducibleFromRetryable() {
         // §11.5's `error` (arrived intact, not a bundle) must surface as the one reproducible
         // case; wire corruption must not — resending corrupted-in-flight bytes is the fix.
         #expect(WeatherDeviceLinkError(uploadError: .rejected) == .bundleRejected)
-        #expect(WeatherDeviceLinkError(uploadError: .crcMismatch) == .connectionDropped)
+        // Wire corruption is the *opposite* of `error`: the bytes were right, resend them. It gets
+        // its own case rather than hiding inside `connectionDropped` — which is what left
+        // `transferCorrupted` unreachable.
+        #expect(WeatherDeviceLinkError(uploadError: .crcMismatch) == .transferCorrupted)
+        // `storageFull` / `notFound` describe the device's situation, not a verdict on the bundle:
+        // folding them into `bundleRejected` binned good bytes and re-fetched the whole corridor.
+        #expect(WeatherDeviceLinkError(uploadError: .storageFull) == .deviceBusy)
+        #expect(WeatherDeviceLinkError(uploadError: .notFound) == .deviceBusy)
         #expect(WeatherDeviceLinkError(uploadError: .timedOut) == .timedOut)
         #expect(WeatherDeviceLinkError(uploadError: .noKnownBondedPeripheral) == .noBondedDevice)
         #expect(WeatherDeviceLinkError(readError: .truncated) == .malformedContext)

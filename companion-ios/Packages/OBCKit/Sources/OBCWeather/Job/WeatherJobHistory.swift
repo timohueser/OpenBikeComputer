@@ -75,12 +75,12 @@ public final class FileWeatherJobHistoryStore: WeatherJobHistoryStore, @unchecke
         self.capacity = max(1, capacity)
     }
 
-    /// The standard location beside the job checkpoint: `Application Support/OBCWeather/history.json`.
+    /// The standard location beside the job checkpoint: `Application Support/OBCWeather/history.json`
+    /// — same directory, so it inherits the checkpoint's backup exclusion.
     public static func standard() -> FileWeatherJobHistoryStore {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("OBCWeather", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return FileWeatherJobHistoryStore(fileURL: base.appendingPathComponent("history.json"))
+        FileWeatherJobHistoryStore(
+            fileURL: FileWeatherJobStore.standardDirectory()
+                .appendingPathComponent("history.json"))
     }
 
     public func append(_ entry: WeatherJobHistoryEntry) {

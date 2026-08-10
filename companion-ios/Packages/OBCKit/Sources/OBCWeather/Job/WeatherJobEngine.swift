@@ -194,8 +194,8 @@ public actor WeatherJobEngine {
         snapshot: WeatherDeviceRequestSnapshot, into job: inout WeatherJobRecord, at now: Date
     ) {
         job.notBefore = nil
+        let sameRequest = job.snapshot.map { $0.requestID == snapshot.requestID }
         if let existing = job.snapshot, job.phase == .bundleReady || job.phase == .uploading {
-            let sameRequest = existing.requestID == snapshot.requestID
             let stillCovered: Bool = {
                 guard let lat = snapshot.latitudeMicrodegrees, let lon = snapshot.longitudeMicrodegrees
                 else { return true }  // no fix in the new read → nothing proves the bundle wrong
@@ -212,7 +212,8 @@ public actor WeatherJobEngine {
                 else { return true }
                 return serialIsNewer(ours, than: held)
             }()
-            if sameRequest, stillCovered, freshEnough, generationStillAhead {
+            if existing.requestID == snapshot.requestID, stillCovered, freshEnough,
+               generationStillAhead {
                 job.snapshot = snapshot
                 job.phase = .bundleReady
                 persist(&job)
@@ -221,11 +222,24 @@ public actor WeatherJobEngine {
             // The old bundle is history — record why, then rebuild against the fresh snapshot.
             history.append(historyEntry(
                 for: job, outcome: .superseded, failure: .superseded, at: now))
+        } else if sameRequest == false {
+            // A *new* request id landing on a job that had not built anything yet still abandons
+            // that job — the fetch it was paying for answers a question nobody is asking any more.
+            // Without a row here the ring shows the work vanishing.
+            history.append(historyEntry(
+                for: job, outcome: .superseded, failure: .superseded, at: now))
         }
-        let attempts = job.snapshot?.requestID == snapshot.requestID ? job.attempts : 0
+        // A ladder step re-reads the *same* request: it keeps the job's attempts **and** its
+        // birthday. Resetting `startedAt` on every re-read would make `jobLifetime` decorative —
+        // a device retrying every 5 minutes would keep a two-hour job alive indefinitely. Only a
+        // genuinely new request id starts a new clock.
+        let continuing = sameRequest == true
         job = WeatherJobRecord(
             id: job.id, phase: .fetching, snapshot: snapshot,
-            attempts: attempts, startedAt: job.snapshot == nil ? job.startedAt : now, updatedAt: now)
+            attempts: continuing ? job.attempts : 0,
+            deferrals: continuing ? job.deferrals : 0,
+            startedAt: (job.snapshot == nil || continuing) ? job.startedAt : now,
+            updatedAt: now)
         persist(&job)
     }
 
@@ -237,6 +251,15 @@ public actor WeatherJobEngine {
                 do {
                     let receipt = try await link.readRequestContext()
                     readConnectedMilliseconds = Int(receipt.connectedDuration / .milliseconds(1))
+                    guard receipt.snapshot.carriesRequest else {
+                        // §11.4's idle attribute: the device has nothing due (the advertisement
+                        // was consumed by someone else, or the request was withdrawn). Nothing
+                        // owed and nothing to report — a history row here would be a failure we
+                        // invented.
+                        store.clear()
+                        readConnectedMilliseconds = nil
+                        return
+                    }
                     adopt(snapshot: receipt.snapshot, into: &job, at: now())
                 } catch {
                     recordFailure(&job, .contextReadFailed, error: error)
@@ -323,6 +346,16 @@ public actor WeatherJobEngine {
                     job.phase = .fetching
                     recordFailure(&job, .bundleRejected, error: WeatherDeviceLinkError.bundleRejected)
                     return
+                } catch WeatherDeviceLinkError.deviceBusy, WeatherDeviceLinkError.linkBusy {
+                    // "Not now" — `busy` / `storageFull` / `notFound`, or the phone's transfer slot
+                    // still held by a foreground transfer. None of these is a verdict on the bytes,
+                    // so the bundle stays on disk and the retry re-sends it; and none of them is
+                    // the *request's* fault, so it does not spend one of its attempts. Folding
+                    // these into `bundleRejected` (as `storageFull`/`notFound` used to) threw away
+                    // a good bundle and paid for a whole corridor re-fetch, six times over.
+                    job.phase = .bundleReady
+                    deferRetry(&job, .deviceUnavailable)
+                    return
                 } catch {
                     // Link-class failure: the persisted bytes stay valid, and a duplicate answers
                     // `committed` — so the retry re-uploads the same bytes safely.
@@ -335,6 +368,20 @@ public actor WeatherJobEngine {
     }
 
     // MARK: - Failure bookkeeping
+
+    /// "Come back later" — the device (or a foreground transfer) asked for the wait, so it costs a
+    /// cooldown but not an attempt. Bounded anyway: past the attempt budget a deferral degrades
+    /// into an ordinary attempt, so a permanently-full device cannot loop for the job's whole
+    /// lifetime.
+    private func deferRetry(_ job: inout WeatherJobRecord, _ failure: WeatherJobFailure) {
+        job.deferrals += 1
+        guard job.deferrals <= configuration.maxAttempts else {
+            recordFailure(&job, failure, error: WeatherDeviceLinkError.deviceBusy)
+            return
+        }
+        job.notBefore = now().addingTimeInterval(configuration.retryCooldown)
+        persist(&job)
+    }
 
     private func recordFailure(_ job: inout WeatherJobRecord, _ failure: WeatherJobFailure, error: Error) {
         job.attempts += 1

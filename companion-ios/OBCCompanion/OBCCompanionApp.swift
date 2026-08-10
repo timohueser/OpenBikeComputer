@@ -143,6 +143,19 @@ struct OBCCompanionApp: App {
     /// The bridge task that feeds transport read events into the job engine — retained here
     /// because it must live as long as the app does.
     @MainActor private static var weatherBridge: Task<Void, Never>?
+    /// The engine, retained so the foreground kick below can reach it.
+    @MainActor private static var weatherEngine: WeatherJobEngine?
+
+    /// The scene-phase foreground kick. The job's own recovery paths are the device's advertising
+    /// ladder and CoreBluetooth state restoration — both of which need the *device* to act. A job
+    /// that stalled on something neither will retry (radio off at the wrong moment, a checkpoint
+    /// written just before a suspend) would otherwise wait for the next ladder step; a user
+    /// opening the app is a perfectly good reason to try again. `.resume` honours the cooldown, so
+    /// this cannot become the retry storm the issue forbids.
+    @MainActor static func weatherJobDidEnterForeground() {
+        guard let engine = weatherEngine else { return }
+        Task { await engine.kick(.resume) }
+    }
 
     /// Wire the durable two-connection WeatherJob (#1194) onto the real transport: the standing
     /// discovery watch, the engine over its file checkpoints, and the event bridge. Everything
@@ -170,6 +183,7 @@ struct OBCCompanionApp: App {
         // scans only for the known bonded peripheral's weather advertisement and is idle
         // otherwise. A device without FEATURE_WEATHER simply never advertises the UUID.
         transport.setWeatherWatch(true)
+        weatherEngine = engine
         weatherBridge = WeatherJobBLEBridge.start(transport: transport, engine: engine)
         #if DEBUG
         // The WX9 job harness: `-OBCTransport ble -OBCWeatherJobHarness` (paired once, like the
