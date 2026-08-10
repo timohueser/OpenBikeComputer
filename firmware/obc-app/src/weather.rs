@@ -304,8 +304,8 @@ impl WeatherSnapshot {
                         // Claim corridor — only worth paying for while a dry claim is still alive.
                         if max < RAIN_MIN_INTENSITY && !past_route_end {
                             let lead_s = projection.map_or(0, |(_, p)| frame.valid_at.saturating_sub(p.now));
-                            let half = spread_half_cells(lead_s, frame.cell_size_m);
-                            spread_uncertain = !corridor_is_dry(reader, cache, index, (lat, lon), cell, half);
+                            let (half, capped) = spread_half_cells(lead_s, frame.cell_size_m);
+                            spread_uncertain = capped || !corridor_is_dry(reader, cache, index, (lat, lon), cell, half);
                         }
                         max
                     } else {
@@ -620,10 +620,15 @@ fn projected_position(route: &RouteReader<'_>, proj: RideProjection, t: i64) -> 
 /// plus whole cells of [`PACE_SPREAD_CMS`] accumulated over the lead, capped by
 /// [`CORRIDOR_MAX_HALF_CELLS`]. Frames at or before the anchor carry no pace uncertainty at all
 /// and stay at one cell.
-fn spread_half_cells(lead_s: i64, cell_size_m: u16) -> u32 {
+/// Also reports whether the cap truncated the wanted width: a corridor narrower than the pace
+/// spread demands cannot support a DRY claim, so the caller folds saturation into
+/// `spread_uncertain` — the guard fails closed instead of quietly narrowing (review #1232 delta).
+fn spread_half_cells(lead_s: i64, cell_size_m: u16) -> (u32, bool) {
     let spread_m = (PACE_SPREAD_CMS as i64).saturating_mul(lead_s.max(0)) / 100;
     let cells = spread_m / cell_size_m.max(1) as i64;
-    (1 + cells).clamp(1, CORRIDOR_MAX_HALF_CELLS as i64) as u32
+    let wanted = 1 + cells;
+    let half = wanted.clamp(1, CORRIDOR_MAX_HALF_CELLS as i64) as u32;
+    (half, wanted > CORRIDOR_MAX_HALF_CELLS as i64)
 }
 
 /// Is every cell within `half` cells of `(lat, lon)` along both axes readable, in-grid and dry?
@@ -951,15 +956,19 @@ mod tests {
     /// across the whole horizon, and the I/O cap bounds a pathological fine grid.
     #[test]
     fn spread_half_cells_ladder_covers_the_measured_uncertainty() {
-        assert_eq!(spread_half_cells(0, 1_000), 1, "no lead, no pace uncertainty");
-        assert_eq!(spread_half_cells(-900, 1_000), 1, "a past frame samples here, exactly");
-        assert_eq!(spread_half_cells(15 * 60, 1_000), 2, "measured 1.7 cells at +15 min");
-        assert_eq!(spread_half_cells(30 * 60, 1_000), 3, "measured 2.4 cells at +30 min");
-        assert_eq!(spread_half_cells(45 * 60, 1_000), 4, "measured 3.5 cells at +45 min");
+        assert_eq!(spread_half_cells(0, 1_000), (1, false), "no lead, no pace uncertainty");
+        assert_eq!(spread_half_cells(-900, 1_000), (1, false), "a past frame samples here, exactly");
+        assert_eq!(spread_half_cells(15 * 60, 1_000), (2, false), "measured 1.7 cells at +15 min");
+        assert_eq!(spread_half_cells(30 * 60, 1_000), (3, false), "measured 2.4 cells at +30 min");
+        assert_eq!(spread_half_cells(45 * 60, 1_000), (4, false), "measured 3.5 cells at +45 min");
         // A 27 km global-floor cell already swallows two hours of pace spread whole.
-        assert_eq!(spread_half_cells(2 * 3_600, 27_000), 1);
+        assert_eq!(spread_half_cells(2 * 3_600, 27_000), (1, false), "a coarse cell absorbs the spread");
         // And nothing can run the probe count away.
-        assert_eq!(spread_half_cells(2 * 3_600, 1), CORRIDOR_MAX_HALF_CELLS);
+        assert_eq!(
+            spread_half_cells(2 * 3_600, 1),
+            (CORRIDOR_MAX_HALF_CELLS, true),
+            "a truncated corridor reports saturation so the DRY claim fails closed"
+        );
     }
 
     /// F6: `pos_in_grid` ("some projected sample is covered") and `current_pos_in_grid` ("the
