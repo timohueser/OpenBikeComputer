@@ -98,8 +98,9 @@ authoritative list is [`MockLaunchOptions.swift`](Packages/OBCKit/Sources/OBCMoc
 and the scenario presets are [`Scenario.swift`](Packages/OBCKit/Sources/OBCMock/Scenario.swift).
 Common ones: `-OBCScenario <name>`, `-OBCFixtures default|empty|large|trips|website`,
 `-OBCConnection <state>`, `-OBCImportSample gpx|tcx|bad|grimsel`, `-OBCTransport ble`
-(force real BLE, device only). These names are **stable automation API** —
-XCUITests depend on them.
+(force real BLE, device only), `-OBCWeatherDemo healthy|empty|stale|failing|unsupported`
+(seed the WX13 Weather screens with a fixture job ring + service state). These names
+are **stable automation API** — XCUITests depend on them.
 
 The Debug-only, non-UI Weather Request transport harness (WX3) is
 `-OBCTransport ble -OBCWeatherRequestHarness`. Pair once in a normal BLE run first; the harness then
