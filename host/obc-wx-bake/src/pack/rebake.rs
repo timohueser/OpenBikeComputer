@@ -1,0 +1,221 @@
+//! Replay a pack's `upstream/` through the **real** baker and compare against its `service/`.
+//!
+//! This is the pack format's load-bearing property, and it is deliberately cheap to state: the
+//! replay is a [`FixtureUpstream`] — the same offline seam the checked-in fixture cycles use — and
+//! the bake is [`run_cycle`] with the production adapters. Nothing about packs leaks into the
+//! bakery, so "the pack re-bakes byte-identically" really does mean "the baker still produces
+//! these bytes from these upstream bytes".
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use crate::cycle::{run_cycle, CycleReport};
+use crate::fetch::FixtureUpstream;
+use crate::manifest;
+use crate::pack::crop::CroppedAdapter;
+use crate::pack::{archive, resolve, Event, Member, Retrieval, Role, SERVICE_DIR};
+use crate::publish::DirStore;
+use crate::source::{us::UsComposite, Adapter};
+
+/// Load the pack's stored service members into an offline upstream, keyed by the **canonical**
+/// URLs the baker asks for (never the archive URLs the bytes came from).
+pub fn replay_upstream(root: &Path, event: &Event) -> Result<FixtureUpstream, String> {
+    load(root, event.service_members())
+}
+
+/// The same, for the truth ladder's raw observations.
+pub fn truth_upstream(root: &Path, event: &Event) -> Result<FixtureUpstream, String> {
+    load(root, truth_members(event))
+}
+
+fn load<'a>(root: &Path, members: impl Iterator<Item = &'a Member>) -> Result<FixtureUpstream, String> {
+    let mut upstream = FixtureUpstream::default();
+    for member in members {
+        match &member.retrieval {
+            Retrieval::Probe { object_length } => {
+                if let Some(length) = object_length {
+                    upstream.declare(member.url.clone(), *length);
+                }
+            }
+            Retrieval::Body => {
+                upstream.insert(member.url.clone(), member_bytes(root, member)?, None);
+            }
+            Retrieval::Range { object_length, start, .. } => {
+                upstream.insert_range(member.url.clone(), *object_length, *start, member_bytes(root, member)?);
+            }
+        }
+    }
+    Ok(upstream)
+}
+
+fn member_bytes(root: &Path, member: &Member) -> Result<Vec<u8>, String> {
+    let path = member.path.as_deref().ok_or_else(|| format!("{}: a body member needs a path", member.url))?;
+    if !member.stored {
+        return Err(format!(
+            "{path} is recorded but not checked in — run `obc-wx-pack fetch` to materialize it from {}",
+            member.archive_url
+        ));
+    }
+    let bytes = std::fs::read(resolve(root, path)?).map_err(|error| format!("{path}: {error}"))?;
+    let digest = crate::pack::sha256(&bytes);
+    match member.sha256.as_deref() {
+        Some(expected) if expected == digest => Ok(bytes),
+        Some(expected) => Err(format!("{path}: sha256 {digest} != the recorded {expected}")),
+        None => Err(format!("{path}: no recorded sha256")),
+    }
+}
+
+/// Bake the pack's upstream into `destination`, exactly as the capture did.
+/// What a re-bake produced, plus the evidence that it was offline.
+pub struct RebakeReport {
+    pub cycle: CycleReport,
+    /// Every URL the replay asked for, in order, as [`FixtureUpstream`] logs them (`HEAD <url>`
+    /// for a probe, `<url>#start-end` for a range). Exposed so hermeticity can be *asserted*
+    /// rather than asserted about: a request the pack does not carry a member for would mean the
+    /// pack is incomplete, and the only reason it baked is something outside it.
+    pub requests: Vec<String>,
+}
+
+pub fn bake_into(root: &Path, event: &Event, destination: &Path) -> Result<RebakeReport, String> {
+    if event.bake.adapter != crate::source::us::ID {
+        return Err(format!(
+            "pack adapter {:?} cannot be replayed yet (supported: {})",
+            event.bake.adapter,
+            archive::SUPPORTED_ADAPTERS.join(", ")
+        ));
+    }
+    let now = manifest::parse_rfc3339(&event.bake.now)
+        .ok_or_else(|| format!("event.json: bake.now {:?} is not RFC 3339", event.bake.now))?;
+    let mut upstream = replay_upstream(root, event)?;
+    let mut store = DirStore::new(destination);
+    let base = UsComposite;
+    let cropped;
+    let adapter: &dyn Adapter = match event.bake.bbox_udeg {
+        Some(bbox) => {
+            cropped = CroppedAdapter::new(&base, bbox);
+            &cropped
+        }
+        None => &base,
+    };
+    let cycle = run_cycle(&[adapter], &mut upstream, &mut store, now, false)?;
+    Ok(RebakeReport { cycle, requests: upstream.requests })
+}
+
+/// The whole CI check: replay `upstream/`, and prove the result equals `service/` byte for byte
+/// and key for key.
+pub fn verify_rebake(root: &Path, event: &Event, scratch: &Path) -> Result<RebakeReport, String> {
+    // The comparison is over the *whole* destination tree, so it has to start empty — and an
+    // empty destination must be earned, never taken: `--out` is a user-supplied path.
+    if scratch.exists() {
+        let existing = crate::pack::read_tree(scratch)?;
+        if !existing.is_empty() {
+            return Err(format!("{} is not empty — re-bake into a fresh directory", scratch.display()));
+        }
+        std::fs::remove_dir_all(scratch).map_err(|error| format!("{}: {error}", scratch.display()))?;
+    }
+    let report = bake_into(root, event, scratch)?;
+    let rebaked = crate::pack::read_tree(scratch)?;
+    let stored = crate::pack::read_tree(&root.join(SERVICE_DIR))?;
+    compare(&stored, &rebaked)?;
+    // …and `event.json`'s own object list must be that same tree, so the document can never drift
+    // away from the bytes it describes.
+    let listed: BTreeMap<&str, u64> = event.service.iter().map(|object| (object.key.as_str(), object.bytes)).collect();
+    let actual: BTreeMap<&str, u64> = stored.iter().map(|(key, bytes)| (key.as_str(), bytes.len() as u64)).collect();
+    if listed != actual {
+        return Err("event.json's service object list disagrees with the service/ tree".into());
+    }
+    if !event.service.iter().any(|object| object.key == event.manifest_key) {
+        return Err(format!("event.json's manifest_key {} is not among its service objects", event.manifest_key));
+    }
+    // Hermeticity, as a check rather than a claim: every request the replay made must be one the
+    // pack carries a member for. `FixtureUpstream` has no network, so a request outside this set
+    // could only have been satisfied by something the pack does not describe.
+    let unaccounted: Vec<&String> = report.requests.iter().filter(|request| !accounted_for(event, request)).collect();
+    if !unaccounted.is_empty() {
+        return Err(format!("the re-bake asked for {unaccounted:?}, which no member of the pack accounts for"));
+    }
+    Ok(report)
+}
+
+/// Does some member of `event` describe the retrieval `request` names?
+///
+/// `FixtureUpstream` logs `HEAD <url>` for a probe, `<url>#start-end` for a range, and the bare
+/// URL for a body — the same three shapes [`Retrieval`] distinguishes.
+fn accounted_for(event: &Event, request: &str) -> bool {
+    event.service_members().any(|member| match &member.retrieval {
+        Retrieval::Probe { .. } => request == format!("HEAD {}", member.url),
+        Retrieval::Body => request == member.url,
+        Retrieval::Range { start, end_inclusive, .. } => request == format!("{}#{start}-{end_inclusive}", member.url),
+    })
+}
+
+fn compare(stored: &BTreeMap<String, Vec<u8>>, rebaked: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+    let missing: Vec<&String> = stored.keys().filter(|key| !rebaked.contains_key(*key)).collect();
+    let extra: Vec<&String> = rebaked.keys().filter(|key| !stored.contains_key(*key)).collect();
+    if !missing.is_empty() || !extra.is_empty() {
+        return Err(format!("re-bake tree differs: missing {missing:?}, unexpected {extra:?}"));
+    }
+    for (key, bytes) in stored {
+        let fresh = &rebaked[key];
+        if fresh != bytes {
+            return Err(format!(
+                "{key} is not byte-identical on re-bake ({} stored bytes vs {} rebaked)",
+                bytes.len(),
+                fresh.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Re-derive every truth frame from the pack's own stored MRMS bytes and byte-compare.
+///
+/// `service/` has always been a pure re-run of checked-in bytes; `truth/` only became one when the
+/// ladder's raw observations stopped being `stored: false`. That matters for the lattice and
+/// quantization work ahead: a change there must fail here loudly, not leave eight stale baked
+/// frames that can only be refreshed by going back to a single free mirror for 4.3 MB.
+///
+/// Returns the number of frames compared.
+pub fn verify_truth_rebake(root: &Path, event: &Event) -> Result<usize, String> {
+    if event.truth_frames.is_empty() {
+        return Ok(0);
+    }
+    let anchor = manifest::parse_rfc3339(&event.window_start)
+        .ok_or_else(|| format!("event.json: window_start {:?} is not RFC 3339", event.window_start))?;
+    let mut upstream = truth_upstream(root, event)?;
+    for frame in &event.truth_frames {
+        let valid_at = manifest::parse_rfc3339(&frame.valid_at)
+            .ok_or_else(|| format!("{}: valid_at {:?} is not RFC 3339", frame.path, frame.valid_at))?;
+        if valid_at - anchor != i64::from(frame.offset_min) * 60 {
+            return Err(format!("{}: offset_min disagrees with valid_at - window_start", frame.path));
+        }
+        let baked = crate::pack::capture::bake_truth_frame(
+            &mut upstream,
+            anchor,
+            frame.offset_min,
+            valid_at,
+            event.bake.bbox_udeg,
+        )?;
+        let stored = std::fs::read(crate::pack::resolve(root, &frame.path)?)
+            .map_err(|error| format!("{}: {error}", frame.path))?;
+        if baked != stored {
+            return Err(format!(
+                "{} is not byte-identical on re-bake ({} stored bytes vs {} rebaked)",
+                frame.path,
+                stored.len(),
+                baked.len()
+            ));
+        }
+    }
+    Ok(event.truth_frames.len())
+}
+
+/// Every member the pack records but has not checked in, with the archive URL that restores it.
+pub fn unmaterialized(event: &Event) -> Vec<&Member> {
+    event.members.iter().filter(|member| member.is_body_like() && !member.stored).collect()
+}
+
+/// Truth members exist for later scoring; nothing in CI decodes them.
+pub fn truth_members(event: &Event) -> impl Iterator<Item = &Member> {
+    event.members.iter().filter(|member| member.role == Role::Truth)
+}
