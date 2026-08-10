@@ -17,12 +17,12 @@
     "weather_request_context": "B3B60001-33B4-4F02-A5FF-E5954D54B5AA"
   },
   "uuid_notes": {
-    "weather_request_service": "A random 128-bit base of its own (WX3 #1188), deliberately NOT a block inside the OBC Control base: iOS matches the advertisement on this UUID alone, so the two services must be independently advertisable. Both live in GATT at all times — the device swaps which one it ADVERTISES. Advertising byte order is the display form reversed: AA B5 54 4D 95 E5 FF A5 02 4F B4 33 00 00 B6 B3",
+    "weather_request_service": "A random 128-bit base of its own (WX3 #1188), deliberately NOT a block inside the OBC Control base: iOS matches the advertisement on this UUID alone, so the two services must be independently advertisable. Both live in GATT at all times \u2014 the device swaps which one it ADVERTISES. Advertising byte order is the display form reversed: AA B5 54 4D 95 E5 FF A5 02 4F B4 33 00 00 B6 B3",
     "weather_request_context": "The read-only, authenticated request-context characteristic. Authenticated because the value says where the rider is; an unbonded peer gets an ATT security error and does not consume the pending request"
   },
   "feature_bits": {
     "weather": "0x1",
-    "_note": "The protocolVersion read's trailing feature_bits u32 (spec 1, WX3 #1188). One bit covers the whole Weather Request contract — the secondary service, the request context, object type 20 and the Config refresh field — because a phone that has only some of those can do nothing. Unknown bits are ignored; an absent word means a firmware that predates it, never a fabricated 0"
+    "_note": "The protocolVersion read's trailing feature_bits u32 (spec 1, WX3 #1188). One bit covers the whole Weather Request contract \u2014 the secondary service, the request context, object type 20 and the Config refresh field \u2014 because a phone that has only some of those can do nothing. Unknown bits are ignored; an absent word means a firmware that predates it, never a fabricated 0"
   },
   "fixtures": {
     "route-waypoints.obcr": {
@@ -67,7 +67,7 @@
       "waypoints": []
     },
     "terrain-shard.obcd": {
-      "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) — 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
+      "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) \u2014 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
       "byte_len": 6192,
       "version": 1,
       "posting_log2": 9,
@@ -81,28 +81,99 @@
       "cell_block_len": 2048,
       "tiles_per_cell_edge": 2,
       "samples_per_cell_edge": 32,
-      "absent_cell": { "di": 1, "dj": 1, "note": "directory slot 3 holds the 0 sentinel" },
-      "nodata_sample": { "di": 40, "dj": 5, "value": -32768 },
+      "absent_cell": {
+        "di": 1,
+        "dj": 1,
+        "note": "directory slot 3 holds the 0 sentinel"
+      },
+      "nodata_sample": {
+        "di": 40,
+        "dj": 5,
+        "value": -32768
+      },
       "surface": "100 + 3*di + 5*dj metres over the lattice offset from the rectangle's base sample",
-      "base_sample_udeg": { "lat": 46972928, "lon": 7979008 },
+      "base_sample_udeg": {
+        "lat": 46972928,
+        "lon": 7979008
+      },
       "worked_examples": [
-        { "lat_udeg": 46974208, "lon_udeg": 7980672, "height_m": 124, "note": "spec 5.6 — bilinear inside one tile (di 2.5, dj 3.25)" },
-        { "lat_udeg": 46989056, "lon_udeg": 7980544, "height_m": 210, "note": "half a posting below the cell seam — the upper corners come from the next cell (di 31.5, dj 3)" },
-        { "lat_udeg": 46973952, "lon_udeg": 8011520, "height_m": 421, "note": "half a posting past the east coverage edge — clamped to the last covered sample, not extrapolated to 424" }
+        {
+          "lat_udeg": 46974208,
+          "lon_udeg": 7980672,
+          "height_m": 124,
+          "note": "spec 5.6 \u2014 bilinear inside one tile (di 2.5, dj 3.25)"
+        },
+        {
+          "lat_udeg": 46989056,
+          "lon_udeg": 7980544,
+          "height_m": 210,
+          "note": "half a posting below the cell seam \u2014 the upper corners come from the next cell (di 31.5, dj 3)"
+        },
+        {
+          "lat_udeg": 46973952,
+          "lon_udeg": 8011520,
+          "height_m": 421,
+          "note": "half a posting past the east coverage edge \u2014 clamped to the last covered sample, not extrapolated to 424"
+        }
       ]
     },
     "track-log.obct": {
-      "format": "recorded track log — a flat array of 20-byte records, no header",
+      "format": "recorded track log \u2014 a flat array of 20-byte records, no header",
       "byte_len": 107,
       "record_len": 20,
       "whole_records": 5,
       "partial_tail_bytes": 7,
       "points": [
-        { "t_ms": 0, "lat_udeg": 47995000, "lon_udeg": 7842000, "ele_m": 300, "segment_start": true, "hr_bpm": 132, "cadence_rpm": 78, "power_w": 185 },
-        { "t_ms": 1000, "lat_udeg": 47996000, "lon_udeg": 7843500, "ele_m": 305, "segment_start": false, "hr_bpm": 138, "cadence_rpm": null, "power_w": 190 },
-        { "t_ms": 2000, "lat_udeg": 47997200, "lon_udeg": 7845000, "ele_m": 318, "segment_start": false, "hr_bpm": null, "cadence_rpm": null, "power_w": null },
-        { "t_ms": 63000, "lat_udeg": -37774900, "lon_udeg": -122419400, "ele_m": -12, "segment_start": true, "hr_bpm": null, "cadence_rpm": null, "power_w": 240 },
-        { "t_ms": 64000, "lat_udeg": 0, "lon_udeg": 0, "ele_m": 0, "segment_start": false, "hr_bpm": 0, "cadence_rpm": 0, "power_w": 0 }
+        {
+          "t_ms": 0,
+          "lat_udeg": 47995000,
+          "lon_udeg": 7842000,
+          "ele_m": 300,
+          "segment_start": true,
+          "hr_bpm": 132,
+          "cadence_rpm": 78,
+          "power_w": 185
+        },
+        {
+          "t_ms": 1000,
+          "lat_udeg": 47996000,
+          "lon_udeg": 7843500,
+          "ele_m": 305,
+          "segment_start": false,
+          "hr_bpm": 138,
+          "cadence_rpm": null,
+          "power_w": 190
+        },
+        {
+          "t_ms": 2000,
+          "lat_udeg": 47997200,
+          "lon_udeg": 7845000,
+          "ele_m": 318,
+          "segment_start": false,
+          "hr_bpm": null,
+          "cadence_rpm": null,
+          "power_w": null
+        },
+        {
+          "t_ms": 63000,
+          "lat_udeg": -37774900,
+          "lon_udeg": -122419400,
+          "ele_m": -12,
+          "segment_start": true,
+          "hr_bpm": null,
+          "cadence_rpm": null,
+          "power_w": 240
+        },
+        {
+          "t_ms": 64000,
+          "lat_udeg": 0,
+          "lon_udeg": 0,
+          "ele_m": 0,
+          "segment_start": false,
+          "hr_bpm": 0,
+          "cadence_rpm": 0,
+          "power_w": 0
+        }
       ]
     },
     "track-export.gpx": {
@@ -118,7 +189,7 @@
       "format": "ride object v1 (spec 7.2)",
       "byte_len": 74,
       "version": 1,
-      "name": "Höhenweg",
+      "name": "H\u00f6henweg",
       "start_time_unix": 1751450000,
       "distance_m": 42500,
       "moving_time_s": 9000,
@@ -146,7 +217,7 @@
       ]
     },
     "ride-v2.bin": {
-      "format": "ride object v2 (spec 7.2, epic #707) — BLE-sensor summary + per-point sensor fields; device may serve v1 or v2, the app must accept both",
+      "format": "ride object v2 (spec 7.2, epic #707) \u2014 BLE-sensor summary + per-point sensor fields; device may serve v1 or v2, the app must accept both",
       "byte_len": 96,
       "version": 2,
       "name": "Sensor Ride",
@@ -203,16 +274,16 @@
       "name": "OBC Tourer",
       "units": "metric (0)",
       "weather_refresh": null,
-      "_note": "No trailing refresh byte — what an app predating WX3 (#1188) writes to rename the device. A reader must take the absent field as UNSPECIFIED (device default), never as Off, or a rename silently switches weather off"
+      "_note": "No trailing refresh byte \u2014 what an app predating WX3 (#1188) writes to rename the device. A reader must take the absent field as UNSPECIFIED (device default), never as Off, or a rename silently switches weather off"
     },
     "config-weather-refresh.bin": {
-      "format": "Config (spec 7.3) with the WX3 (#1188) trailing field — name_len u16 · name · units u8 · weather_refresh u8",
+      "format": "Config (spec 7.3) with the WX3 (#1188) trailing field \u2014 name_len u16 \u00b7 name \u00b7 units u8 \u00b7 weather_refresh u8",
       "byte_len": 14,
       "name": "OBC Alpine",
       "units": "imperial (1)",
       "weather_refresh": 3,
       "weather_refresh_minutes": 60,
-      "_note": "The pair with config-v1.bin is the fixture: same object, one appended byte. The only way to get this wrong is the offset, and an off-by-one reads the shorter file correctly. Units are imperial on purpose, so the refresh byte follows a NONZERO units byte rather than a zero a misaligned reader could take for padding. Refresh enum: 0 Off · 1 15 min · 2 30 min (default) · 3 60 min · 4 120 min; an out-of-range value is malformed, not a default"
+      "_note": "The pair with config-v1.bin is the fixture: same object, one appended byte. The only way to get this wrong is the offset, and an off-by-one reads the shorter file correctly. Units are imperial on purpose, so the refresh byte follows a NONZERO units byte rather than a zero a misaligned reader could take for padding. Refresh enum: 0 Off \u00b7 1 15 min \u00b7 2 30 min (default) \u00b7 3 60 min \u00b7 4 120 min; an out-of-range value is malformed, not a default"
     },
     "config-weather-refresh-unknown.bin": {
       "format": "Config (spec 7.3) with a WX3 trailing field naming an interval no version defines",
@@ -222,10 +293,10 @@
       "weather_refresh": 200,
       "weather_refresh_minutes": null,
       "weather_refresh_known": false,
-      "_note": "The SAME blob read twice, with two right answers (spec 11.8, #1214). Phone -> device, as a Config WRITE: rejected — a device cannot honour an interval it does not know, and storing the default, Off, or the previous value would all tell the rider their choice was applied when it was discarded. Device -> phone, as a Config READ: unknown, never fatal — an unrecognised value arriving FROM a device is a NEWER device, and a direction-blind reject would mean appending a fifth interval broke every shipped app, right down to renaming the device. Unknown is its own state: not Off, not the default, and distinguishable from ABSENT, so implementations keep the raw byte and round-trip it verbatim. Units are metric on purpose: an off-by-one reader lands on that zero and decodes a perfectly KNOWN Off, so the misalignment surfaces as a wrong answer instead of another 'unknown' the tolerant path would have accepted anyway. The 11-byte name is a third distinct length across the three Config fixtures, so no reader passes all of them with one hard-coded index"
+      "_note": "The SAME blob read twice, with two right answers (spec 11.8, #1214). Phone -> device, as a Config WRITE: rejected \u2014 a device cannot honour an interval it does not know, and storing the default, Off, or the previous value would all tell the rider their choice was applied when it was discarded. Device -> phone, as a Config READ: unknown, never fatal \u2014 an unrecognised value arriving FROM a device is a NEWER device, and a direction-blind reject would mean appending a fifth interval broke every shipped app, right down to renaming the device. Unknown is its own state: not Off, not the default, and distinguishable from ABSENT, so implementations keep the raw byte and round-trip it verbatim. Units are metric on purpose: an off-by-one reader lands on that zero and decodes a perfectly KNOWN Off, so the misalignment surfaces as a wrong answer instead of another 'unknown' the tolerant path would have accepted anyway. The 11-byte name is a third distinct length across the three Config fixtures, so no reader passes all of them with one hard-coded index"
     },
     "transfer-upload-start.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 1,
       "type": 1,
       "object_id": 65535,
@@ -233,7 +304,7 @@
       "crc32": "0x1BFB6E3C"
     },
     "transfer-set-shard.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 1,
       "type": 17,
       "object_id": 2050,
@@ -241,19 +312,19 @@
       "shard_index": 2,
       "total_len": 308,
       "crc32": "0x1BFB6E3C",
-      "note": "mapShard: object_id is NOT an object id — it is (shard_count << 8) | index, so 0x0802 is shard 2 of 8 (OBCA 5.1). The count rides every shard, not just the first, so a device refuses an over-large set at shard 0"
+      "note": "mapShard: object_id is NOT an object id \u2014 it is (shard_count << 8) | index, so 0x0802 is shard 2 of 8 (OBCA 5.1). The count rides every shard, not just the first, so a device refuses an over-large set at shard 0"
     },
     "transfer-set-terrain.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 1,
       "type": 19,
       "object_id": 65535,
       "total_len": 6192,
       "crc32": "0xD86F2651",
-      "note": "terrainShard: the set's OBCT raster, MS<id>.OBD (OBCA 5.1's terrain role). New-only like the manifest — at most one per set, so there is nothing for an id to select. total_len/crc32 are terrain-shard.obcd's own, and it is sent after every mapShard and before the mapSet"
+      "note": "terrainShard: the set's OBCT raster, MS<id>.OBD (OBCA 5.1's terrain role). New-only like the manifest \u2014 at most one per set, so there is nothing for an id to select. total_len/crc32 are terrain-shard.obcd's own, and it is sent after every mapShard and before the mapSet"
     },
     "transfer-set-manifest.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 1,
       "type": 18,
       "object_id": 65535,
@@ -262,7 +333,7 @@
       "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the RECORD count, not the shard count: 72 + 56 x 9 = the eight OBCM shards plus the terrain record, because OBCA 5.2's Shard Count counts every record (#1044)"
     },
     "transfer-download-request.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 2,
       "type": 7,
       "object_id": 0,
@@ -270,7 +341,7 @@
       "crc32": "0x0"
     },
     "transfer-abort.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 3,
       "type": 1,
       "object_id": 65535,
@@ -332,7 +403,7 @@
       "retention_meaning": "2 weeks"
     },
     "update-container-v1.bin": {
-      "format": "OBCU update container (spec 1), unsigned/v1 — fwImage payload (spec 7.6)",
+      "format": "OBCU update container (spec 1), unsigned/v1 \u2014 fwImage payload (spec 7.6)",
       "byte_len": 192,
       "header_len": 64,
       "image_len": 128,
@@ -344,7 +415,7 @@
       "object_id": 0
     },
     "update-container-v2.bin": {
-      "format": "OBCU update container (spec 1), Ed25519-signed/v2 — same header table and same 128-byte image as v1, with the scheme marker in v1's reserved bytes 48..52 and a 64-byte signature trailer",
+      "format": "OBCU update container (spec 1), Ed25519-signed/v2 \u2014 same header table and same 128-byte image as v1, with the scheme marker in v1's reserved bytes 48..52 and a 64-byte signature trailer",
       "byte_len": 256,
       "header_len": 64,
       "image_len": 128,
@@ -362,7 +433,7 @@
       "object_id": 0
     },
     "route-list.bin": {
-      "format": "routeList object (spec 7.4) — 6-byte v2 header + 84-byte entries (76-byte v2 core + auto-expiry tail: expires_at u32 · retention u8 · reserved u8[3], epic #638 S4)",
+      "format": "routeList object (spec 7.4) \u2014 6-byte v2 header + 84-byte entries (76-byte v2 core + auto-expiry tail: expires_at u32 \u00b7 retention u8 \u00b7 reserved u8[3], epic #638 S4)",
       "byte_len": 258,
       "version": 2,
       "entry_len": 84,
@@ -405,48 +476,50 @@
           "crc32": "0x1557AE0B",
           "expires_at": 0,
           "retention": 0,
-          "retention_state": "never (synthetic entry — no .obcr file)"
+          "retention_state": "never (synthetic entry \u2014 no .obcr file)"
         }
       ],
       "total": 3
     },
     "version-read.bin": {
-      "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32 · obcm_version u8",
+      "format": "protocolVersion read (spec 1) \u2014 version u16 \u00b7 store_epoch u32 \u00b7 obcm_version u8",
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": 13,
       "feature_bits": null,
-      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves — the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
+      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves \u2014 the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
     },
     "version-read-features.bin": {
-      "format": "protocolVersion read (spec 1), WX3 #1188 — version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32",
+      "format": "protocolVersion read (spec 1), WX3 #1188 \u2014 version u16 \u00b7 store_epoch u32 \u00b7 obcm_version u8 \u00b7 feature_bits u32",
       "byte_len": 11,
       "version": 2,
       "store_epoch": "0xC0DEF00D",
       "obcm_version": 13,
       "feature_bits": "0x1",
-      "features": ["weather"],
-      "_note": "The only read that entitles a phone to look for the Weather Request service. The capability word is an APPEND — the protocol version underneath it does not move — and the epoch deliberately differs from the 0xA1B2C3D4 the three older identity reads share, so a consumer that opens the wrong file fails on the epoch rather than passing everything except the feature word. obcm_version is self-sourced like its siblings'. A read of 8, 9 or 10 bytes is a broken u32, not a smaller capability set: it decodes as feature_bits absent."
+      "features": [
+        "weather"
+      ],
+      "_note": "The only read that entitles a phone to look for the Weather Request service. The capability word is an APPEND \u2014 the protocol version underneath it does not move \u2014 and the epoch deliberately differs from the 0xA1B2C3D4 the three older identity reads share, so a consumer that opens the wrong file fails on the epoch rather than passing everything except the feature word. obcm_version is self-sourced like its siblings'. A read of 8, 9 or 10 bytes is a broken u32, not a smaller capability set: it decodes as feature_bits absent."
     },
     "version-read-noobcm.bin": {
-      "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
+      "format": "protocolVersion read (spec 1), pre-#911 \u2014 version u16 \u00b7 store_epoch u32",
       "byte_len": 6,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": null,
-      "_note": "A firmware that predates the obcm_version byte. Decoders take the absent field as unknown (null/nil/None), never as 0 — obcm_version 0 would read as 'supports OBCM v0' and refuse every real map."
+      "_note": "A firmware that predates the obcm_version byte. Decoders take the absent field as unknown (null/nil/None), never as 0 \u2014 obcm_version 0 would read as 'supports OBCM v0' and refuse every real map."
     },
     "version-read-nostore.bin": {
-      "format": "protocolVersion read (spec 1), no mounted store — version u16 only",
+      "format": "protocolVersion read (spec 1), no mounted store \u2014 version u16 only",
       "byte_len": 2,
       "version": 2,
       "store_epoch": null,
       "obcm_version": null,
-      "_note": "No card ⇒ no era to name, and the fields are positional, so there is no room for the obcm byte after an epoch that is not there. A reader must fail its ack closed rather than read epoch 0, which is a legal era."
+      "_note": "No card \u21d2 no era to name, and the fields are positional, so there is no room for the obcm byte after an epoch that is not there. A reader must fail its ack closed rather than read epoch 0, which is a legal era."
     },
     "status-download-announce.bin": {
-      "format": "status msg 4 downloadAnnounce (spec 4.3) — msg byte + 12-byte descriptor",
+      "format": "status msg 4 downloadAnnounce (spec 4.3) \u2014 msg byte + 12-byte descriptor",
       "byte_len": 13,
       "msg": 4,
       "op": 2,
@@ -456,18 +529,27 @@
       "crc32": "0x1BFB6E3C"
     },
     "trip-v1.bin": {
-      "format": "trip object v1 (spec 7.7) — 56-byte header + 2 bytes/stage, references route ids",
+      "format": "trip object v1 (spec 7.7) \u2014 56-byte header + 2 bytes/stage, references route ids",
       "byte_len": 62,
       "version": 1,
       "name": "Alpen Traverse",
       "stage_count": 3,
-      "stages": [7, 8, 99],
-      "resolvable_stages": [7, 8],
-      "dangling_stages": [99],
+      "stages": [
+        7,
+        8,
+        99
+      ],
+      "resolvable_stages": [
+        7,
+        8
+      ],
+      "dangling_stages": [
+        99
+      ],
       "crc32": "0xA3C5D591"
     },
     "trip-list.bin": {
-      "format": "tripList object (spec 7.4) — 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
+      "format": "tripList object (spec 7.4) \u2014 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
       "byte_len": 82,
       "version": 2,
       "entry_len": 76,
@@ -486,14 +568,22 @@
       "total": 1
     },
     "weather-request-context-full.bin": {
-      "format": "weatherRequestContext v1 (spec 11, WX3 #1188) — 52 bytes LE: version u8 · encoded_len u8 · validity u16 · reason u16 · refresh u8 · reserved0 u8 · request_id u32 · lat_udeg i32 · lon_udeg i32 · fix_utc i64 · bearing_deg u16 · speed_deci_ms u16 · route_id u16 · reserved1 u16 · bundle_generation u32 · bundle_generated_at i64 · bundle_crc32 u32",
+      "format": "weatherRequestContext v1 (spec 11, WX3 #1188) \u2014 52 bytes LE: version u8 \u00b7 encoded_len u8 \u00b7 validity u16 \u00b7 reason u16 \u00b7 refresh u8 \u00b7 reserved0 u8 \u00b7 request_id u32 \u00b7 lat_udeg i32 \u00b7 lon_udeg i32 \u00b7 fix_utc i64 \u00b7 bearing_deg u16 \u00b7 speed_deci_ms u16 \u00b7 route_id u16 \u00b7 reserved1 u16 \u00b7 bundle_generation u32 \u00b7 bundle_generated_at i64 \u00b7 bundle_crc32 u32",
       "byte_len": 52,
       "version": 1,
       "encoded_len": 52,
       "validity": "0x1F",
-      "validity_flags": ["position", "bearing", "speed", "bundle", "route"],
+      "validity_flags": [
+        "position",
+        "bearing",
+        "speed",
+        "bundle",
+        "route"
+      ],
       "reason": "0x1",
-      "reason_flags": ["scheduled"],
+      "reason_flags": [
+        "scheduled"
+      ],
       "refresh": 2,
       "refresh_minutes": 30,
       "request_id": "0x11880001",
@@ -507,10 +597,10 @@
       "bundle_generated_at": 1800000000,
       "bundle_crc32": "0xBC1E46C8",
       "held_bundle": "weather-dwd-96x96-9f.obcw",
-      "_note": "A rider mid-ride with everything the device can know. The bundle group identifies a bundle that EXISTS: generation and generated_at are read out of weather-dwd-96x96-9f.obcw's header and bundle_crc32 is that file's whole-object CRC-32 — the number an upload of it announced, not its internal header CRC (0xFBFBD2D2). fix_utc is exactly one 30-minute refresh interval past bundle_generated_at, so REASON_SCHEDULED is arithmetic the same file supports. route_id 7 is the waypoint route route-list.bin catalogs. Validity bits: 0 position · 1 bearing · 2 speed · 3 bundle · 4 route. Reason bits: 0 scheduled · 1 urgent · 2 retry · 3 no_bundle · 4 out_of_area. Reserved bytes are written zero but IGNORED on read, and unknown validity/reason bits are ignored rather than rejected"
+      "_note": "A rider mid-ride with everything the device can know. The bundle group identifies a bundle that EXISTS: generation and generated_at are read out of weather-dwd-96x96-9f.obcw's header and bundle_crc32 is that file's whole-object CRC-32 \u2014 the number an upload of it announced, not its internal header CRC (0xFBFBD2D2). fix_utc is exactly one 30-minute refresh interval past bundle_generated_at, so REASON_SCHEDULED is arithmetic the same file supports. route_id 7 is the waypoint route route-list.bin catalogs. Validity bits: 0 position \u00b7 1 bearing \u00b7 2 speed \u00b7 3 bundle \u00b7 4 route. Reason bits: 0 scheduled \u00b7 1 urgent \u00b7 2 retry \u00b7 3 no_bundle \u00b7 4 out_of_area. Reserved bytes are written zero but IGNORED on read, and unknown validity/reason bits are ignored rather than rejected"
     },
     "weather-request-context-empty.bin": {
-      "format": "weatherRequestContext v1 (spec 11) — the resting value",
+      "format": "weatherRequestContext v1 (spec 11) \u2014 the resting value",
       "byte_len": 52,
       "version": 1,
       "encoded_len": 52,
@@ -524,28 +614,39 @@
       "_note": "What the GATT attribute holds between requests, so a peer that reads it out of turn gets a structurally valid 'nothing is due' rather than the last ride's coordinates. Not all-zeroes: version 1 and the default 30-minute refresh are still stated, because an all-zero attribute would decode as layout version 0 with weather switched Off, and neither is true. Every field after the refresh byte is zero"
     },
     "weather-request-context-no-fix.bin": {
-      "format": "weatherRequestContext v1 (spec 11) — an urgent request with no fix and no bundle",
+      "format": "weatherRequestContext v1 (spec 11) \u2014 an urgent request with no fix and no bundle",
       "byte_len": 52,
       "version": 1,
       "encoded_len": 52,
       "validity": "0x0",
       "validity_flags": [],
       "reason": "0xA",
-      "reason_flags": ["urgent", "no_bundle"],
+      "reason_flags": [
+        "urgent",
+        "no_bundle"
+      ],
       "refresh": 0,
       "refresh_minutes": null,
       "request_id": "0x11880002",
-      "_note": "Cold start indoors: the rider opened Weather before the receiver has a fix and with nothing usable on the card. The phone can still fetch by its own location, so this is a well-formed request, not a suppressed one. Two things are pinned here: absence is a CLEARED FLAG, so the zero coordinates must not put a rider at 0N 0E holding generation 0; and refresh Off configures the SCHEDULE, not the right to ask — a phone that gated on the refresh byte would answer everyone except the riders who turned automatic refresh off and then asked by hand"
+      "_note": "Cold start indoors: the rider opened Weather before the receiver has a fix and with nothing usable on the card. The phone can still fetch by its own location, so this is a well-formed request, not a suppressed one. Two things are pinned here: absence is a CLEARED FLAG, so the zero coordinates must not put a rider at 0N 0E holding generation 0; and refresh Off configures the SCHEDULE, not the right to ask \u2014 a phone that gated on the refresh byte would answer everyone except the riders who turned automatic refresh off and then asked by hand"
     },
     "weather-request-context-unknown-refresh.bin": {
-      "format": "weatherRequestContext v1 (spec 11) — a refresh byte this layout version does not define",
+      "format": "weatherRequestContext v1 (spec 11) \u2014 a refresh byte this layout version does not define",
       "byte_len": 52,
       "version": 1,
       "encoded_len": 52,
       "validity": "0x1F",
-      "validity_flags": ["position", "bearing", "speed", "bundle", "route"],
+      "validity_flags": [
+        "position",
+        "bearing",
+        "speed",
+        "bundle",
+        "route"
+      ],
       "reason": "0x1",
-      "reason_flags": ["scheduled"],
+      "reason_flags": [
+        "scheduled"
+      ],
       "refresh": 9,
       "refresh_minutes": null,
       "refresh_known": false,
@@ -560,17 +661,24 @@
       "bundle_generated_at": 1800000000,
       "bundle_crc32": "0xBC1E46C8",
       "held_bundle": "weather-dwd-96x96-9f.obcw",
-      "_note": "The day a firmware appends a fifth refresh interval, this is the byte every phone already in the field receives (spec 11.8, #1214). A device -> phone read may NEVER treat it as fatal: an unrecognised value here is a newer firmware, not a malformed one, exactly as an unrecognised reason bit is. A direction-blind reject — the trap an adversarial review of PR #1214 found in the canonical Rust — would have turned an ordinary enum append into the day weather went dead on every shipped app. Readers decode it as UNKNOWN (not Off, not the default, either of which would misreport the rider's own setting) and carry the RAW byte so it round-trips verbatim. The file is weather-request-context-full.bin at every offset but two — the refresh byte at 6 and the request-id nonce at 8..12 — so the rule is checkable by byte comparison: an unknown interval costs a reader the schedule and nothing else, not the fix, the route or the bundle identity. 9 is well clear of the enum's 0..=4, so no plausible future append quietly makes this file legal"
+      "_note": "The day a firmware appends a fifth refresh interval, this is the byte every phone already in the field receives (spec 11.8, #1214). A device -> phone read may NEVER treat it as fatal: an unrecognised value here is a newer firmware, not a malformed one, exactly as an unrecognised reason bit is. A direction-blind reject \u2014 the trap an adversarial review of PR #1214 found in the canonical Rust \u2014 would have turned an ordinary enum append into the day weather went dead on every shipped app. Readers decode it as UNKNOWN (not Off, not the default, either of which would misreport the rider's own setting) and carry the RAW byte so it round-trips verbatim. The file is weather-request-context-full.bin at every offset but two \u2014 the refresh byte at 6 and the request-id nonce at 8..12 \u2014 so the rule is checkable by byte comparison: an unknown interval costs a reader the schedule and nothing else, not the fix, the route or the bundle identity. 9 is well clear of the enum's 0..=4, so no plausible future append quietly makes this file legal"
     },
     "weather-request-context-southern.bin": {
-      "format": "weatherRequestContext v1 (spec 11) — sign coverage for the four signed fields",
+      "format": "weatherRequestContext v1 (spec 11) \u2014 sign coverage for the four signed fields",
       "byte_len": 52,
       "version": 1,
       "encoded_len": 52,
       "validity": "0xF",
-      "validity_flags": ["position", "bearing", "speed", "bundle"],
+      "validity_flags": [
+        "position",
+        "bearing",
+        "speed",
+        "bundle"
+      ],
       "reason": "0x1",
-      "reason_flags": ["scheduled"],
+      "reason_flags": [
+        "scheduled"
+      ],
       "refresh": 3,
       "refresh_minutes": 60,
       "request_id": "0x11880004",
@@ -583,7 +691,7 @@
       "bundle_generation": 4294967294,
       "bundle_generated_at": -1000003600,
       "bundle_crc32": "0x80000001",
-      "_note": "Shaped for COVERAGE, NOT PLAUSIBILITY, like track-log.obct: no other fixture in the set carries a negative coordinate or a pre-1970 time, so until this file existed a mirror could read lat_udeg/lon_udeg as u32 and both timestamps as u64 and pass the whole suite. El Chalten, Patagonia — southern AND western hemisphere. Read unsigned, lat_udeg becomes 4245636407 (~4245N) and lon_udeg 4222081175; fix_utc (1938-04-24T22:13:20Z) and bundle_generated_at become ~1.8e19 seconds, a device whose clock is 585 billion years ahead. Visibly impossible rather than subtly wrong, which is what a sign fixture is for, and the two i64s sit at different offsets (20 and 40) so one correct sign extension cannot cover for the other. The bundle group runs the trap the other way: generation and crc32 both have their top bit set, so a mirror reading them SIGNED gets -2 and -2147483647 — a codec that 'fixed' signedness by flipping every field fails just as loudly. That group is synthetic (no checked-in OBCW has a pre-1970 generated_at), unlike the full context's, which names a real file. route_id is the one cleared group, so the file says something about a clear flag as well as the four it exercises. fix_utc is one 60-minute interval past bundle_generated_at, matching the refresh it reports"
+      "_note": "Shaped for COVERAGE, NOT PLAUSIBILITY, like track-log.obct: no other fixture in the set carries a negative coordinate or a pre-1970 time, so until this file existed a mirror could read lat_udeg/lon_udeg as u32 and both timestamps as u64 and pass the whole suite. El Chalten, Patagonia \u2014 southern AND western hemisphere. Read unsigned, lat_udeg becomes 4245636407 (~4245N) and lon_udeg 4222081175; fix_utc (1938-04-24T22:13:20Z) and bundle_generated_at become ~1.8e19 seconds, a device whose clock is 585 billion years ahead. Visibly impossible rather than subtly wrong, which is what a sign fixture is for, and the two i64s sit at different offsets (20 and 40) so one correct sign extension cannot cover for the other. The bundle group runs the trap the other way: generation and crc32 both have their top bit set, so a mirror reading them SIGNED gets -2 and -2147483647 \u2014 a codec that 'fixed' signedness by flipping every field fails just as loudly. That group is synthetic (no checked-in OBCW has a pre-1970 generated_at), unlike the full context's, which names a real file. route_id is the one cleared group, so the file says something about a clear flag as well as the four it exercises. fix_utc is one 60-minute interval past bundle_generated_at, matching the refresh it reports"
     }
   },
   "weather": {
@@ -598,14 +706,54 @@
     },
     "producer_policy_max_bytes": 65536,
     "positives": {
-      "weather-minimal-dry.obcw": {"byte_len": 688, "internal_crc32": "0x111A6E06", "sha256": "9c177036adcf2f9f9e3c01a319c09e3cac53c1692a71a2b611cffcdf05843b63", "shape": "24 dry hourly records; no rain frames"},
-      "weather-dwd-96x96-9f.obcw": {"byte_len": 46480, "internal_crc32": "0xFBFBD2D2", "sha256": "7dc80b4c7d1ae22da1707f03ffc368239939b622b1416c7a37b6098356601347", "shape": "96x96 at 1000 m; 9 native 15-minute frames; 36 raw4 tiles/frame"},
-      "weather-coarse-model.obcw": {"byte_len": 1008, "internal_crc32": "0xEFB6218D", "sha256": "388bc626370301c0bbf3992fa68df20c186d45886c9d5c5717d1163b399da5b1", "shape": "32x32 at 25000 m; 2 genuine 3-hour model times"},
-      "weather-nodata-tile.obcw": {"byte_len": 764, "internal_crc32": "0x08C865D8", "sha256": "61c038bc8fa678cf3bf2b42fc7c948627cba2d21943142854aad2e3d8812d3f6", "shape": "one independently compressed all-no-data tile"},
-      "weather-latent-observation.obcw": {"byte_len": 764, "internal_crc32": "0x661C6BA1", "sha256": "0d4ec0471fa2af92942722741cf938d9cd801c5f56434730350670178343a57a", "shape": "24 current-to-+24h hourly records; one observed rain frame 4h before the hourly base"},
-      "weather-raw-tile.obcw": {"byte_len": 876, "internal_crc32": "0xC0AFE59C", "sha256": "da32b2db8eddb497de5ff83ec9dd7570cab5d046bbfbe8e43c13d30b55b07f79", "shape": "one 128-byte raw4 tile"},
-      "weather-rle-tile.obcw": {"byte_len": 764, "internal_crc32": "0x69BF4912", "sha256": "30c79bfb0d0916433b744bf092a93924a7cf2176abfeb8107a657fcdc75fed91", "shape": "one 16-byte RLE4 tile"},
-      "weather-max-policy.obcw": {"byte_len": 65536, "internal_crc32": "0x5250667F", "sha256": "2a8fd0ddb6bc3b2283bacdb8debcaad0352b81c08441cd9c264004ffa7573889", "shape": "exact v1 producer-policy boundary; 462 raw tiles plus one 108-byte RLE tile"}
+      "weather-minimal-dry.obcw": {
+        "byte_len": 688,
+        "internal_crc32": "0x111A6E06",
+        "sha256": "9c177036adcf2f9f9e3c01a319c09e3cac53c1692a71a2b611cffcdf05843b63",
+        "shape": "24 dry hourly records; no rain frames"
+      },
+      "weather-dwd-96x96-9f.obcw": {
+        "byte_len": 46480,
+        "internal_crc32": "0xFBFBD2D2",
+        "sha256": "7dc80b4c7d1ae22da1707f03ffc368239939b622b1416c7a37b6098356601347",
+        "shape": "96x96 at 1000 m; 9 native 15-minute frames; 36 raw4 tiles/frame"
+      },
+      "weather-coarse-model.obcw": {
+        "byte_len": 1008,
+        "internal_crc32": "0xEFB6218D",
+        "sha256": "388bc626370301c0bbf3992fa68df20c186d45886c9d5c5717d1163b399da5b1",
+        "shape": "32x32 at 25000 m; 2 genuine 3-hour model times"
+      },
+      "weather-nodata-tile.obcw": {
+        "byte_len": 764,
+        "internal_crc32": "0x08C865D8",
+        "sha256": "61c038bc8fa678cf3bf2b42fc7c948627cba2d21943142854aad2e3d8812d3f6",
+        "shape": "one independently compressed all-no-data tile"
+      },
+      "weather-latent-observation.obcw": {
+        "byte_len": 764,
+        "internal_crc32": "0x661C6BA1",
+        "sha256": "0d4ec0471fa2af92942722741cf938d9cd801c5f56434730350670178343a57a",
+        "shape": "24 current-to-+24h hourly records; one observed rain frame 4h before the hourly base"
+      },
+      "weather-raw-tile.obcw": {
+        "byte_len": 876,
+        "internal_crc32": "0xC0AFE59C",
+        "sha256": "da32b2db8eddb497de5ff83ec9dd7570cab5d046bbfbe8e43c13d30b55b07f79",
+        "shape": "one 128-byte raw4 tile"
+      },
+      "weather-rle-tile.obcw": {
+        "byte_len": 764,
+        "internal_crc32": "0x69BF4912",
+        "sha256": "30c79bfb0d0916433b744bf092a93924a7cf2176abfeb8107a657fcdc75fed91",
+        "shape": "one 16-byte RLE4 tile"
+      },
+      "weather-max-policy.obcw": {
+        "byte_len": 65536,
+        "internal_crc32": "0x5250667F",
+        "sha256": "2a8fd0ddb6bc3b2283bacdb8debcaad0352b81c08441cd9c264004ffa7573889",
+        "shape": "exact v1 producer-policy boundary; 462 raw tiles plus one 108-byte RLE tile"
+      }
     },
     "negatives": {
       "weather-invalid-truncated.obcw": "last byte missing while total_len remains unchanged",
@@ -634,16 +782,66 @@
       "contract": "Swift independently decodes every positive to the same pinned cells; both readers reject every negative; corridor extraction touches only header + covering pages + needed tiles"
     },
     "positives": {
-      "grid-minimal-dry.obcg": {"byte_len": 228, "object_crc32": "0x2E08A044", "sha256": "ef66c865e1be84420a359795b918dab247a19b35978f6385df40ac0ef0e6ac57", "shape": "32x32 at tile edge 32: one all-zero dry sentinel entry; data_len 0"},
-      "grid-raw-tile.obcg": {"byte_len": 308, "object_crc32": "0xA1E61BAF", "sha256": "db192f22f5712a1a7a8de9d81bbcacdf65ab28bf0bd7c83f6a4acf755d5fdf27", "shape": "16x16 ICON-EU-shaped forecast frame; one 128-byte raw4 tile of pseudo-random intensities (structured fills all compress, so only random cells keep codec 0 reachable)"},
-      "grid-rle-tile.obcg": {"byte_len": 196, "object_crc32": "0x4879AADD", "sha256": "0f10c659fc1b9c9cd3afbe188e4712cabe975810286c9ec6cee5f4c2040421d6", "shape": "16x16 radar frame; one 16-byte RLE4 tile of intensity 6 — deflate4 ties at 16 bytes, so this pins the low-codec-id tie-break"},
-      "grid-rle-wins.obcg": {"byte_len": 212, "object_crc32": "0x8CDE9C28", "sha256": "1bf4eb19da6f522dc0c73cee97cba555d5a332b7944de5a2399b4168d400e38f", "shape": "16x16 of sixteen varied 8-cell runs: 32-byte RLE4 against 46-byte deflate4, so codec 1 wins outright"},
-      "grid-deflate-tile.obcg": {"byte_len": 1745, "object_crc32": "0x5389CB3F", "sha256": "201840a4f5b508655e6ae06d635dd357202d07fbfce1f29cd704a9e75208fcc8", "shape": "64x64 at tile edge 64 and 128 entries/page: coarse data upsampled in 8x8 blocks; 2,048 raw4 / 512 RLE4 / 77 deflate4 bytes"},
-      "grid-deflate-padding-bits.obcg": {"byte_len": 1745, "object_crc32": "0xBE31481F", "sha256": "fc33317a225e25593b7873b2acfdc992f426ae4686b54e8f3821be1ac584cb65", "shape": "grid-deflate-tile with bit 7 of its final payload byte flipped: a second legal byte image of the same 4,096 cells, because a deflate stream's trailing padding bits are not data and MUST NOT be validated"},
-      "grid-deflate-edge256.obcg": {"byte_len": 2178, "object_crc32": "0x60CC3040", "sha256": "036232e30c248a82f989bd18f21f73ccd4ed7f98fed2c0a4f80a688b656b59cc", "shape": "256x256 at tile edge 256 (WXR1's production geometry) and 128 entries/page: 16x16 blocks of pseudo-random intensity; 32,768 raw4 bytes against a 510-byte deflate4 payload, the only vector whose payload length exceeds a uint8"},
-      "grid-nodata-tile.obcg": {"byte_len": 195, "object_crc32": "0x47F53E9A", "sha256": "fcb06997de8f04add57edeba9129e43374ecf3dfca1ab2e660c1d8843e8be687", "shape": "16x16 all-no-data tile (deflate4, 15 bytes): unavailable is encoded, never the dry sentinel"},
-      "grid-multipage.obcg": {"byte_len": 375, "object_crc32": "0x446DC053", "sha256": "b566936b4ef53f54affadbea14725d3507c59c0a313aea0ccb3993d0b12bbfea", "shape": "40x40 at tile edge 16, 2 entries/page: 9 tiles over 5 pages with last-page padding; wet SW+NE corners; corridor request-accounting target"},
-      "grid-edge-padding.obcg": {"byte_len": 316, "object_crc32": "0x0C5E6E35", "sha256": "d271a27354d726bbe6d20edc22957db6b3572bdd3dc4f5f967a3d4fd5878ec81", "shape": "24x24 at tile edge 16: every tile edge-padded with no-data; one wet cell per quadrant"}
+      "grid-minimal-dry.obcg": {
+        "byte_len": 228,
+        "object_crc32": "0x2E08A044",
+        "sha256": "ef66c865e1be84420a359795b918dab247a19b35978f6385df40ac0ef0e6ac57",
+        "shape": "32x32 at tile edge 32: one all-zero dry sentinel entry; data_len 0"
+      },
+      "grid-raw-tile.obcg": {
+        "byte_len": 308,
+        "object_crc32": "0xA1E61BAF",
+        "sha256": "db192f22f5712a1a7a8de9d81bbcacdf65ab28bf0bd7c83f6a4acf755d5fdf27",
+        "shape": "16x16 ICON-EU-shaped forecast frame; one 128-byte raw4 tile of pseudo-random intensities (structured fills all compress, so only random cells keep codec 0 reachable)"
+      },
+      "grid-rle-tile.obcg": {
+        "byte_len": 196,
+        "object_crc32": "0x4879AADD",
+        "sha256": "0f10c659fc1b9c9cd3afbe188e4712cabe975810286c9ec6cee5f4c2040421d6",
+        "shape": "16x16 radar frame; one 16-byte RLE4 tile of intensity 6 \u2014 deflate4 ties at 16 bytes, so this pins the low-codec-id tie-break"
+      },
+      "grid-rle-wins.obcg": {
+        "byte_len": 212,
+        "object_crc32": "0x8CDE9C28",
+        "sha256": "1bf4eb19da6f522dc0c73cee97cba555d5a332b7944de5a2399b4168d400e38f",
+        "shape": "16x16 of sixteen varied 8-cell runs: 32-byte RLE4 against 46-byte deflate4, so codec 1 wins outright"
+      },
+      "grid-deflate-tile.obcg": {
+        "byte_len": 1745,
+        "object_crc32": "0x5389CB3F",
+        "sha256": "201840a4f5b508655e6ae06d635dd357202d07fbfce1f29cd704a9e75208fcc8",
+        "shape": "64x64 at tile edge 64 and 128 entries/page: coarse data upsampled in 8x8 blocks; 2,048 raw4 / 512 RLE4 / 77 deflate4 bytes"
+      },
+      "grid-deflate-padding-bits.obcg": {
+        "byte_len": 1745,
+        "object_crc32": "0xBE31481F",
+        "sha256": "fc33317a225e25593b7873b2acfdc992f426ae4686b54e8f3821be1ac584cb65",
+        "shape": "grid-deflate-tile with bit 7 of its final payload byte flipped: a second legal byte image of the same 4,096 cells, because a deflate stream's trailing padding bits are not data and MUST NOT be validated"
+      },
+      "grid-deflate-edge256.obcg": {
+        "byte_len": 2178,
+        "object_crc32": "0x60CC3040",
+        "sha256": "036232e30c248a82f989bd18f21f73ccd4ed7f98fed2c0a4f80a688b656b59cc",
+        "shape": "256x256 at tile edge 256 (WXR1's production geometry) and 128 entries/page: 16x16 blocks of pseudo-random intensity; 32,768 raw4 bytes against a 510-byte deflate4 payload, the only vector whose payload length exceeds a uint8"
+      },
+      "grid-nodata-tile.obcg": {
+        "byte_len": 195,
+        "object_crc32": "0x47F53E9A",
+        "sha256": "fcb06997de8f04add57edeba9129e43374ecf3dfca1ab2e660c1d8843e8be687",
+        "shape": "16x16 all-no-data tile (deflate4, 15 bytes): unavailable is encoded, never the dry sentinel"
+      },
+      "grid-multipage.obcg": {
+        "byte_len": 375,
+        "object_crc32": "0x446DC053",
+        "sha256": "b566936b4ef53f54affadbea14725d3507c59c0a313aea0ccb3993d0b12bbfea",
+        "shape": "40x40 at tile edge 16, 2 entries/page: 9 tiles over 5 pages with last-page padding; wet SW+NE corners; corridor request-accounting target"
+      },
+      "grid-edge-padding.obcg": {
+        "byte_len": 316,
+        "object_crc32": "0x0C5E6E35",
+        "sha256": "d271a27354d726bbe6d20edc22957db6b3572bdd3dc4f5f967a3d4fd5878ec81",
+        "shape": "24x24 at tile edge 16: every tile edge-padded with no-data; one wet cell per quadrant"
+      }
     },
     "negatives": {
       "grid-invalid-truncated.obcg": "last byte missing while total_len remains unchanged",
@@ -671,5 +869,231 @@
       "grid-invalid-reserved.obcg": "nonzero reserved header byte; all CRCs honest",
       "grid-invalid-flags.obcg": "Observed and Forecast both set; all CRCs honest"
     }
+  },
+  "wx_manifest_v2": {
+    "spec": "OBCG_Spec.md 10",
+    "format_version": 2,
+    "file": "wx-manifest-v2.json",
+    "provenance": {
+      "semantic_seed": "WXR4 issue #1243; the production CANONICAL lattice (36,000 x 18,000 at 0.01 deg, 6 x 4 shards of 6,144 x 4,608) at an invented generation 20260810T1430Z. Object lengths and CRCs are deterministic placeholders, not a recording of a live bake: this fixture pins the document contract, and the .obcg vectors pin the bytes.",
+      "shape": "obc_wx_bake::manifest_v2::Manifest exactly; the normative schema is host/obc-wx-bake/schema/manifest-v2.schema.json",
+      "deliberate_holes": "f0 omits shards (2,0) and (3,0), f120 omits (5,3), so the present/dry/out-of-domain trichotomy is exercised rather than assumed; f0 shard (3,2) is the only observed one",
+      "rust_writer_check": "host/obc-wx-bake manifest_v2::tests::the_shared_cross_language_fixture_is_a_document_this_baker_would_write (parsed through the deny_unknown_fields writer model)",
+      "rust_consumer": "host/obc-wx-client/tests/manifest_v2.rs",
+      "contract": "both clients parse this document and MUST derive the same shard key set from the same bbox; a listed-but-missing shard is an error, a bitmap-absent shard is dry, a shard off the grid is out of domain",
+      "shard_addressing": "shards are (col, row) from the lattice's south-west corner; col is west-to-east, row is south-to-north, and a shard set is always ascending by (row, col)",
+      "longitude_convention": "microdegrees in -180..180 / -90..90. west > east means the window crosses the antimeridian; any other spelling (0..360, |lon| > 180, |lat| > 90) is an error, never a clamp or a reinterpretation. OBCG_Spec.md 10.2 is normative",
+      "outcomes": "covered = fetch/dry describe it; uncovered = on the lattice but outside covered_rows; out_of_domain = off the lattice or a bbox this client refuses. Only 'covered' with an empty fetch list means no rain",
+      "swift_consumer_planned": "companion-ios/Packages/OBCKit/Tests/OBCWeatherTests/ManifestV2Tests.swift - DOES NOT EXIST YET. WXR5 #1244 writes it and must drive bbox_equivalence from this file, exactly as host/obc-wx-client/tests/manifest_v2.rs does, so a case added for one language is a case the other must answer identically. Until it exists this fixture is pinned by Rust alone and the cross-language claim is a plan, not a fact"
+    },
+    "bbox_equivalence": [
+      {
+        "name": "freiburg",
+        "why": "one shard, wholly interior",
+        "bbox_udeg": {
+          "south": 47900000,
+          "west": 7750000,
+          "north": 48100000,
+          "east": 7950000
+        },
+        "outcome": "covered",
+        "shards": [
+          {
+            "col": 3,
+            "row": 2
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s3-2.obcg"
+        ]
+      },
+      {
+        "name": "shard-seam-california",
+        "why": "straddles the col 0/1 seam at lon -118.56",
+        "bbox_udeg": {
+          "south": 33800000,
+          "west": -118760000,
+          "north": 34200000,
+          "east": -118360000
+        },
+        "outcome": "covered",
+        "shards": [
+          {
+            "col": 0,
+            "row": 2
+          },
+          {
+            "col": 1,
+            "row": 2
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s0-2.obcg",
+          "wx/v2/20260810T1430Z/f0/s1-2.obcg"
+        ]
+      },
+      {
+        "name": "four-shard-corner",
+        "why": "sits on the col 3/4 seam (65.76) and the row 2/3 seam (48.24)",
+        "bbox_udeg": {
+          "south": 47740000,
+          "west": 65260000,
+          "north": 48740000,
+          "east": 66260000
+        },
+        "outcome": "covered",
+        "shards": [
+          {
+            "col": 3,
+            "row": 2
+          },
+          {
+            "col": 4,
+            "row": 2
+          },
+          {
+            "col": 3,
+            "row": 3
+          },
+          {
+            "col": 4,
+            "row": 3
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s3-2.obcg",
+          "wx/v2/20260810T1430Z/f0/s4-2.obcg",
+          "wx/v2/20260810T1430Z/f0/s3-3.obcg",
+          "wx/v2/20260810T1430Z/f0/s4-3.obcg"
+        ]
+      },
+      {
+        "name": "shard-boundary-exact",
+        "why": "the east edge lands exactly on the col 0/1 seam; the window is half-open, so it belongs to the shard it closes and NOT to the one it opens",
+        "bbox_udeg": {
+          "south": 34000000,
+          "west": -118600000,
+          "north": 34010000,
+          "east": -118560000
+        },
+        "outcome": "covered",
+        "shards": [
+          {
+            "col": 0,
+            "row": 2
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s0-2.obcg"
+        ]
+      },
+      {
+        "name": "southern-hemisphere",
+        "why": "negative latitude, negative longitude \u2014 no sign assumption survives it",
+        "bbox_udeg": {
+          "south": -50100000,
+          "west": -73100000,
+          "north": -49900000,
+          "east": -72900000
+        },
+        "outcome": "covered",
+        "shards": [
+          {
+            "col": 1,
+            "row": 0
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s1-0.obcg"
+        ]
+      },
+      {
+        "name": "antimeridian-wrap",
+        "why": "west > east MEANS the window crosses +/-180: split into [west, 180) and [-180, east), and the result is still ascending by (row, col)",
+        "bbox_udeg": {
+          "south": -17100000,
+          "west": 179900000,
+          "north": -16900000,
+          "east": -179900000
+        },
+        "outcome": "covered",
+        "shards": [
+          {
+            "col": 0,
+            "row": 1
+          },
+          {
+            "col": 5,
+            "row": 1
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s0-1.obcg",
+          "wx/v2/20260810T1430Z/f0/s5-1.obcg"
+        ]
+      },
+      {
+        "name": "polar-band-uncovered",
+        "why": "on the lattice, but every row is past covered_rows.end: no source reaches it in any frame, so the objects exist and are entirely intensity 15. Not dry, not missing, not worth fetching",
+        "bbox_udeg": {
+          "south": 89900000,
+          "west": 0,
+          "north": 89950000,
+          "east": 50000
+        },
+        "outcome": "uncovered",
+        "shards": [
+          {
+            "col": 2,
+            "row": 3
+          }
+        ],
+        "f0_keys": [
+          "wx/v2/20260810T1430Z/f0/s2-3.obcg"
+        ]
+      },
+      {
+        "name": "fully-outside-east",
+        "why": "wholly off the lattice. It MUST NOT collapse onto the last column: an off-map rider is told there is nothing there, never served another continent's shard",
+        "bbox_udeg": {
+          "south": 33800000,
+          "west": 190000000,
+          "north": 34200000,
+          "east": 200000000
+        },
+        "outcome": "out_of_domain",
+        "error": "out_of_range",
+        "shards": [],
+        "f0_keys": []
+      },
+      {
+        "name": "zero-to-360-longitude",
+        "why": "352.15 is -7.85 in the other convention. Longitudes are -180..180, so this is an error and never a silent reinterpretation into the wrong hemisphere",
+        "bbox_udeg": {
+          "south": 47900000,
+          "west": 352100000,
+          "north": 48100000,
+          "east": 352200000
+        },
+        "outcome": "out_of_domain",
+        "error": "out_of_range",
+        "shards": [],
+        "f0_keys": []
+      },
+      {
+        "name": "past-the-pole",
+        "why": "a corridor grown past +90; a client clamps latitude when it grows one, so reaching here is a bug",
+        "bbox_udeg": {
+          "south": 89990000,
+          "west": 7750000,
+          "north": 90500000,
+          "east": 7950000
+        },
+        "outcome": "out_of_domain",
+        "error": "out_of_range",
+        "shards": [],
+        "f0_keys": []
+      }
+    ]
   }
 }

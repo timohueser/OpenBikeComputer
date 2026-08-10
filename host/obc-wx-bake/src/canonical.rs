@@ -54,13 +54,13 @@ use std::time::Instant;
 use obc_formats::obcg::{self, FrameInput};
 use obc_formats::precip4;
 use rayon::prelude::*;
-use serde::Serialize;
 
 use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
 use crate::manifest;
+use crate::manifest_v2;
 use crate::publish::{self, ObjectStore, PlannedObject};
-use crate::source::{mosaic_rank, Adapter, AdapterOutcome, BakedProduct};
+use crate::source::{mosaic_rank, Adapter, AdapterOutcome, Attribution, BakedProduct};
 
 // ---------------------------------------------------------------------------------------------
 // The lattice
@@ -231,13 +231,19 @@ impl Lattice {
         self.shard_cols() * self.shard_rows()
     }
 
+    /// The `(col, row)` of shard `index`, row-major from the south-west. `(col, row)` is the
+    /// shard's **identity** — it is what the object key and the manifest's presence bitmap are
+    /// both written in (`manifest_v2::shard_key`); the flat index is only an iteration order.
+    pub fn shard_col_row(&self, index: u32) -> (u32, u32) {
+        (index % self.shard_cols(), index / self.shard_cols())
+    }
+
     /// Shard `index` in row-major order (south-west first), or `None` past the last shard.
     pub fn shard(&self, index: u32) -> Option<LatticeWindow> {
         if index >= self.shard_count() {
             return None;
         }
-        let col = index % self.shard_cols();
-        let row = index / self.shard_cols();
+        let (col, row) = self.shard_col_row(index);
         let col0 = col * self.shard_width;
         let row0 = row * self.shard_height;
         Some(LatticeWindow {
@@ -341,6 +347,10 @@ pub struct MosaicLayer {
     pub id: &'static str,
     /// Index into [`crate::source::MOSAIC_PRIORITY`]; **lower wins**.
     pub rank: usize,
+    /// The source's licence line. There is no per-cell provenance, so every layer in the mosaic
+    /// may have painted any cell and **all** of these must be displayable together — the manifest
+    /// carries the list, not a choice.
+    pub attribution: Attribution,
     pub frames: Vec<SourceFrame>,
 }
 
@@ -352,6 +362,7 @@ impl MosaicLayer {
             .ok_or_else(|| format!("{}: no row in source::MOSAIC_PRIORITY — the mosaic cannot rank it", product.id))?;
         let anchor = product.geometry;
         let id = product.id;
+        let attribution = product.attribution;
         let mut frames = Vec::with_capacity(product.frames.len());
         for frame in product.frames {
             let window = frame.source.map_or(anchor, |source| source.geometry);
@@ -366,7 +377,7 @@ impl MosaicLayer {
             });
         }
         frames.sort_by_key(|frame| frame.valid_at);
-        Ok(Self { id, rank, frames })
+        Ok(Self { id, rank, attribution, frames })
     }
 
     /// The frame to sample for a canonical frame valid at `valid_at`.
@@ -415,6 +426,14 @@ pub struct FillOutcome {
     /// category of untruth `cell_size_m` was just retired for, and the one the device can still act
     /// on. A shard entirely inside a radar footprint at f0 still gets it, honestly.
     pub all_observed: bool,
+    /// Is every cell of this window **dry** — intensity 0, and not one no-data cell among them?
+    ///
+    /// This is the only condition under which an object is not published (WXR4 #1243): the
+    /// manifest's presence bitmap says the shard is dry and there is nothing to fetch. The test is
+    /// deliberately the strictest one available — a single no-data cell publishes the object — so
+    /// that a bitmap-clear shard can never be an outage, a floor failure or the polar band wearing
+    /// a dry shard's clothes. Missing is not dry; only dry is dry.
+    pub all_dry: bool,
 }
 
 /// The priority mosaic: every source, ordered, resampled onto one lattice on demand.
@@ -456,7 +475,7 @@ impl Mosaic {
     pub fn fill(&self, lattice: &Lattice, valid_at: i64, window: LatticeWindow, out: &mut [u8]) -> FillOutcome {
         assert_eq!(out.len(), window.cells(), "fill target does not match the window");
         out.fill(precip4::INTENSITY_NODATA);
-        let mut outcome = FillOutcome { painted: false, all_observed: true };
+        let mut outcome = FillOutcome { painted: false, all_observed: true, all_dry: false };
         // One column map per layer, reused down every row: the east-west nearest-neighbour pick
         // depends only on the column, so a shard pays the division once per column, not per cell.
         let mut columns: Vec<i32> = vec![-1; window.width as usize];
@@ -500,7 +519,30 @@ impl Mosaic {
             }
         }
         outcome.all_observed &= outcome.painted;
+        // One pass, and it short-circuits on the first wet or no-data cell — so the wet case, the
+        // one that matters for bake time, pays almost nothing, and only a genuinely dry shard
+        // walks all 28 M cells to earn its omission from the published set.
+        outcome.all_dry = !out.iter().any(|&cell| cell != precip4::INTENSITY_DRY);
         outcome
+    }
+
+    /// Every source that may have painted a cell, **in priority order** — the manifest's
+    /// `attribution[]`.
+    ///
+    /// It is the whole layer set and not a subset, and that is forced rather than chosen: there is
+    /// no per-cell provenance (#1242), so any cell of any shard may have come from any layer, and
+    /// every one of these lines has to be displayable together. A source joining the mosaic
+    /// therefore joins this list by existing — WXR6's two OPERA rows needed no edit here — which is
+    /// the only arrangement where a licence cannot be silently dropped by forgetting a second place.
+    pub fn attribution(&self) -> Vec<manifest_v2::AttributionEntry> {
+        self.layers
+            .iter()
+            .map(|layer| manifest_v2::AttributionEntry {
+                source_id: layer.id.to_string(),
+                text: layer.attribution.text.to_string(),
+                url: layer.attribution.url.to_string(),
+            })
+            .collect()
     }
 
     /// Which source wins one lattice cell, for diagnostics and for the tests that prove the table
@@ -560,20 +602,24 @@ impl CycleTimes {
 pub struct CanonicalObject {
     pub key: String,
     pub shard: u32,
+    /// The shard's identity on the grid — what the key and the manifest bitmap are written in.
+    pub col: u32,
+    pub row: u32,
     pub offset_min: u32,
     pub bytes: Vec<u8>,
     pub object_crc32: u32,
-    /// What the mosaic managed to paint into this shard — the source of its flags, and what the
-    /// cycle's "nothing baked at all" gate counts.
+    /// What the mosaic managed to paint into this shard — the source of its flags, of its manifest
+    /// presence bit, and of the cycle's "nothing baked at all" gate.
     pub fill: FillOutcome,
 }
 
-/// Immutable object key for one shard of one frame. **Placeholder addressing**: WXR4 #1243 owns
-/// the published key scheme and the manifest that indexes it; this exists so WXR3 can emit and
-/// verify the dataset without pre-empting that design. It deliberately publishes under a `v2`
-/// prefix beside the live `wx/v1` tree, which is the cutover shape the epic requires.
-pub fn shard_key(reference_time: i64, offset_min: u32, shard: u32) -> String {
-    format!("wx/v2/{}/f{offset_min}/s{shard}.obcg", manifest::key_timestamp(reference_time))
+/// Immutable object key for one shard of one frame:
+/// `wx/v2/<generation>/f<offset-min>/s<col>-<row>.obcg`, normative in `OBCG_Spec.md` §10 and
+/// composed by [`manifest_v2::shard_key`] — the client computes the identical string from the
+/// manifest's `key_prefix` and `generation` plus its own bbox arithmetic.
+pub fn shard_key(lattice: &Lattice, reference_time: i64, offset_min: u32, shard: u32) -> String {
+    let (col, row) = lattice.shard_col_row(shard);
+    manifest_v2::shard_key(manifest_v2::KEY_PREFIX, &manifest_v2::generation_id(reference_time), offset_min, col, row)
 }
 
 /// Mosaic one shard of one frame and encode it, through the same `encoded length -> encode ->
@@ -598,10 +644,12 @@ pub fn emit_shard(
     let input = FrameInput {
         // The dataset has exactly one product because it *is* the product: one lattice, one cell
         // size, best available everywhere. The per-source codes stay in the registry until WXR7
-        // deletes the multi-product path. `tier` is vestigial for the same reason — nothing may
-        // select on it any more (WXR5 deletes the client policy that did).
+        // deletes the multi-product path. `tier` says `TIER_MOSAIC`, which means **no tier**
+        // (#1243): a frame that is 1 km radar over Germany and 27.75 km model over the Pacific is
+        // not "radar", and the header slot must be nonzero, so it gets a code that says so.
+        // Manifest v2 carries no tier at all and nothing may select on this byte.
         product_id: obcg::PRODUCT_MOSAIC,
-        tier: obcg::TIER_RADAR,
+        tier: obcg::TIER_MOSAIC,
         // Measured, not assumed. See `FillOutcome::all_observed`: an f0 shard over open ocean is
         // GFS model fill and says Forecast; one inside a radar footprint says Observed. The header
         // requires exactly one of the two, so an all-no-data shard says Forecast.
@@ -637,9 +685,12 @@ pub fn emit_shard(
     drop(cells);
     let header = obcg::validate(&bytes, &mut scratch)
         .map_err(|error| format!("s{shard} f{offset_min}: emitted object failed self-validation: {error:?}"))?;
+    let (col, row) = lattice.shard_col_row(shard);
     Ok(CanonicalObject {
-        key: shard_key(times.reference_time, offset_min, shard),
+        key: shard_key(lattice, times.reference_time, offset_min, shard),
         shard,
+        col,
+        row,
         offset_min,
         object_crc32: header.object_crc32,
         bytes,
@@ -694,98 +745,6 @@ pub fn bake_cycle(
 }
 
 // ---------------------------------------------------------------------------------------------
-// The placeholder manifest
-// ---------------------------------------------------------------------------------------------
-
-/// **Placeholder**, owned by WXR4 #1243.
-///
-/// The canonical dataset needs *some* document naming its objects so the publisher can prove them
-/// fetchable and a reader can find them, but manifest v2 — addressing, retention, the freshness
-/// contract, what replaces tiers and bboxes — is WXR4's design and must not be guessed at here.
-/// This is the minimum honest statement of what was published: the lattice, the time axis, and
-/// every object with its length and CRC. It is not schema-pinned and nothing consumes it yet.
-#[derive(Debug, Serialize)]
-pub struct PlaceholderManifest {
-    pub version: u32,
-    pub note: &'static str,
-    pub generated_at: String,
-    pub reference_time: String,
-    pub lattice: PlaceholderLattice,
-    pub objects: Vec<PlaceholderObject>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PlaceholderLattice {
-    pub south_lat_udeg: i32,
-    pub west_lon_udeg: i32,
-    pub cell_udeg: u32,
-    pub width: u32,
-    pub height: u32,
-    pub shard_width: u32,
-    pub shard_height: u32,
-    pub tile_edge: u16,
-    pub entries_per_page: u16,
-    pub cell_size_m: u16,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PlaceholderObject {
-    pub key: String,
-    pub shard: u32,
-    pub offset_min: u32,
-    pub valid_at: String,
-    pub bytes: u64,
-    pub object_crc32: String,
-}
-
-/// The placeholder manifest's key, beside the live `wx/v1/manifest.json` rather than over it.
-pub const PLACEHOLDER_MANIFEST_KEY: &str = "wx/v2/manifest.json";
-pub const PLACEHOLDER_MANIFEST_VERSION: u32 = 2;
-const PLACEHOLDER_NOTE: &str =
-    "placeholder: WXR4 #1243 defines the manifest for the canonical dataset; nothing consumes this document yet";
-
-impl PlaceholderManifest {
-    pub fn new(lattice: &Lattice, times: CycleTimes, generated_at: i64) -> Self {
-        Self {
-            version: PLACEHOLDER_MANIFEST_VERSION,
-            note: PLACEHOLDER_NOTE,
-            generated_at: manifest::rfc3339(generated_at),
-            reference_time: manifest::rfc3339(times.reference_time),
-            lattice: PlaceholderLattice {
-                south_lat_udeg: lattice.south_lat_udeg,
-                west_lon_udeg: lattice.west_lon_udeg,
-                cell_udeg: lattice.cell_udeg,
-                width: lattice.width,
-                height: lattice.height,
-                shard_width: lattice.shard_width,
-                shard_height: lattice.shard_height,
-                tile_edge: lattice.tile_edge,
-                entries_per_page: lattice.entries_per_page,
-                cell_size_m: lattice.cell_size_m,
-            },
-            objects: Vec::new(),
-        }
-    }
-
-    pub fn record(&mut self, times: CycleTimes, object: &CanonicalObject) {
-        self.objects.push(PlaceholderObject {
-            key: object.key.clone(),
-            shard: object.shard,
-            offset_min: object.offset_min,
-            valid_at: manifest::rfc3339(times.valid_at(object.offset_min)),
-            bytes: object.bytes.len() as u64,
-            object_crc32: format!("0x{:08X}", object.object_crc32),
-        });
-    }
-
-    pub fn to_json(&self) -> String {
-        let mut json = serde_json::to_string_pretty(self).expect("the placeholder manifest always serializes");
-        json.push('\n');
-        json
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // The cycle
 // ---------------------------------------------------------------------------------------------
 
@@ -796,6 +755,9 @@ pub struct CanonicalReport {
     pub reference_time: i64,
     pub fetched_bytes: u64,
     pub published_objects: usize,
+    /// Shards that were entirely dry and so were **not** published; their manifest presence bit is
+    /// clear. Reported because a sudden jump in it is the shape a broken source has.
+    pub dry_shards: usize,
     pub published_bytes: u64,
     pub elapsed_ms: u128,
     pub warnings: Vec<String>,
@@ -808,8 +770,8 @@ impl CanonicalReport {
             lines.push(format!("  #{rank} {id}: {frames} source frames"));
         }
         lines.push(format!(
-            "fetched {} upstream bytes; published {} objects / {} bytes; {} ms",
-            self.fetched_bytes, self.published_objects, self.published_bytes, self.elapsed_ms
+            "fetched {} upstream bytes; published {} objects / {} bytes ({} dry shards omitted); {} ms",
+            self.fetched_bytes, self.published_objects, self.published_bytes, self.dry_shards, self.elapsed_ms
         ));
         for warning in &self.warnings {
             lines.push(format!("warning: {warning}"));
@@ -853,17 +815,41 @@ pub fn run_canonical_cycle(
     let mut layers: Vec<(String, usize, usize)> =
         mosaic.layers().iter().map(|layer| (layer.id.to_string(), layer.rank, layer.frames.len())).collect();
     layers.sort_by_key(|(_, rank, _)| *rank);
+    // Every source in the mosaic may have painted any cell, so every licence line travels with the
+    // dataset, in priority order — there is no per-cell provenance to attribute more precisely.
+    let attribution = mosaic.attribution();
+    // The retention chain is read back out of the published manifest rather than kept anywhere:
+    // the baker is stateless, and its only state is the document it publishes. A manifest that is
+    // there but unreadable fails the cycle rather than publishing an empty chain — see
+    // `manifest_v2::carried_generations`, where the reasoning lives.
+    let carried = manifest_v2::carried_generations(store.get(manifest_v2::MANIFEST_KEY)?.as_deref(), &mut warnings)?;
+    let mut document = manifest_v2::Builder::new(lattice, times, now, attribution, carried);
 
-    let mut document = PlaceholderManifest::new(lattice, times, now);
     let mut published_objects = 0usize;
     let mut published_bytes = 0u64;
     let mut fetchable: Vec<(String, u64)> = Vec::new();
     let mut painted_objects = 0usize;
+    let mut dry_shards = 0usize;
     let mut total_objects = 0usize;
     bake_cycle(lattice, &mosaic, times, threads, &mut |object| {
-        document.record(times, &object);
         total_objects += 1;
         painted_objects += usize::from(object.fill.painted);
+        // A shard whose every cell is dry is not published, and the manifest's presence bitmap says
+        // so — the bit stays clear and the client reads "dry here", never a 404 it has to interpret.
+        // A shard with so much as one no-data cell *is* published, so absence can never be an
+        // outage wearing a dry shard's clothes.
+        if object.fill.all_dry {
+            dry_shards += 1;
+            return Ok(());
+        }
+        document.record(
+            object.offset_min,
+            object.col,
+            object.row,
+            object.bytes.len() as u64,
+            object.object_crc32,
+            object.fill.all_observed,
+        );
         if dry_run {
             return Ok(());
         }
@@ -908,8 +894,8 @@ pub fn run_canonical_cycle(
             }
         }
         let planned = PlannedObject {
-            key: PLACEHOLDER_MANIFEST_KEY.to_string(),
-            bytes: document.to_json().into_bytes(),
+            key: manifest_v2::MANIFEST_KEY.to_string(),
+            bytes: manifest_v2::to_json(&document.finish()).into_bytes(),
             cache_control: publish::MANIFEST_CACHE_CONTROL,
             content_type: "application/json",
         };
@@ -923,6 +909,7 @@ pub fn run_canonical_cycle(
         reference_time: times.reference_time,
         fetched_bytes: upstream.fetched_bytes(),
         published_objects,
+        dry_shards,
         published_bytes,
         elapsed_ms: started.elapsed().as_millis(),
         warnings,
@@ -983,6 +970,49 @@ mod tests {
         let last = CANONICAL.shard(CANONICAL.shard_count() - 1).expect("the last shard");
         assert_eq!(CANONICAL.geometry(last).north_lat_udeg(), 90_000_000);
         assert_eq!(CANONICAL.geometry(last).east_lon_udeg(), 180_000_000);
+    }
+
+    /// Every source in the mosaic reaches `attribution[]`, in priority order — including WXR6's two
+    /// OPERA rows, whose CC BY 4.0 terms are a licence obligation rather than a nicety. Built from
+    /// the same `Mosaic::attribution` the cycle publishes, over the real per-adapter constants, so
+    /// a source added to `MOSAIC_PRIORITY` without a licence line cannot pass.
+    #[test]
+    fn every_mosaic_source_reaches_the_manifests_attribution_in_priority_order() {
+        use crate::source::{dwd_rv, gfs, icon_eu, opera_cirrus, opera_nimbus, us, MOSAIC_PRIORITY};
+        let known: Vec<(&'static str, Attribution)> = vec![
+            (dwd_rv::ID, dwd_rv::ATTRIBUTION),
+            (us::ID, us::ATTRIBUTION),
+            (opera_cirrus::ID, opera_cirrus::ATTRIBUTION),
+            (opera_nimbus::ID, opera_nimbus::ATTRIBUTION),
+            (icon_eu::ID, icon_eu::ATTRIBUTION),
+            (gfs::ID, gfs::ATTRIBUTION),
+        ];
+        assert_eq!(known.len(), MOSAIC_PRIORITY.len(), "a source joined the table with no licence line here");
+
+        // Deliberately shuffled into the table's *reverse* order: the mosaic sorts by rank, so a
+        // list that came out right by accident of input order would not prove anything.
+        let layers = known
+            .iter()
+            .rev()
+            .map(|(id, attribution)| MosaicLayer {
+                id,
+                rank: mosaic_rank(id).expect("every known source has a row"),
+                attribution: *attribution,
+                frames: Vec::new(),
+            })
+            .collect();
+        let attribution = Mosaic::new(layers).attribution();
+        assert_eq!(
+            attribution.iter().map(|entry| entry.source_id.as_str()).collect::<Vec<_>>(),
+            MOSAIC_PRIORITY.iter().map(|source| source.id).collect::<Vec<_>>()
+        );
+        let opera: Vec<&str> = attribution
+            .iter()
+            .filter(|entry| entry.source_id.starts_with("opera-"))
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(opera.len(), 2);
+        assert!(opera.iter().all(|text| text.contains("CC BY 4.0")), "OPERA's licence must survive to the manifest");
     }
 
     #[test]

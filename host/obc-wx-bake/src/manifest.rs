@@ -166,7 +166,7 @@ pub fn schema() -> serde_json::Value {
 }
 
 /// Stable pretty schema text used to regenerate the checked-in file:
-/// `cargo run -p obc-wx-bake -- schema > host/obc-wx-bake/schema/manifest.schema.json`.
+/// `cargo run -p obc-wx-bake --bin obc-wx-bake -- schema > host/obc-wx-bake/schema/manifest.schema.json`.
 pub fn schema_json() -> String {
     let mut text = serde_json::to_string_pretty(&schema()).expect("manifest schema serializes");
     text.push('\n');
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(
             checked_in,
             schema(),
-            "schema/manifest.schema.json is stale; regenerate with `cargo run -p obc-wx-bake -- schema > host/obc-wx-bake/schema/manifest.schema.json`"
+            "schema/manifest.schema.json is stale; regenerate with `cargo run -p obc-wx-bake --bin obc-wx-bake -- schema > host/obc-wx-bake/schema/manifest.schema.json`"
         );
     }
 
