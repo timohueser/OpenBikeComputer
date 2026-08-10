@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "fixture": "met-locationforecast-non-nordic-availability",
+  "case": "Manila, Philippines",
+  "provenance": {
+    "captured_at": "2026-08-09T09:46:14Z",
+    "endpoint": "https://api.met.no/weatherapi/locationforecast/2.0/complete",
+    "latitude": 14.5995,
+    "longitude": 120.9842,
+    "altitude_m": 16,
+    "identifying_user_agent": "OpenBikeComputer/WX1 https://github.com/timohueser/OpenBikeComputer",
+    "last_modified": "2026-08-09T09:32:49Z",
+    "expires": "2026-08-09T10:03:15Z",
+    "source_response_gzip_bytes": 4437,
+    "source_response_decoded_bytes": 58745,
+    "source_response_sha256": "9e63ec334ddd7a36c33caf4a28d49b2e0ea8373317eec20e37f1e6e8c074f81d"
+  },
+  "provider_updated_at": "2026-08-09T09:16:06Z",
+  "advertised_units": {
+    "air_pressure_at_sea_level": "hPa",
+    "air_temperature": "celsius",
+    "air_temperature_max": "celsius",
+    "air_temperature_min": "celsius",
+    "cloud_area_fraction": "%",
+    "cloud_area_fraction_high": "%",
+    "cloud_area_fraction_low": "%",
+    "cloud_area_fraction_medium": "%",
+    "dew_point_temperature": "celsius",
+    "fog_area_fraction": "%",
+    "precipitation_amount": "mm",
+    "relative_humidity": "%",
+    "ultraviolet_index_clear_sky": "1",
+    "wind_from_direction": "degrees",
+    "wind_speed": "m/s"
+  },
+  "first_24_availability": {
+    "air_temperature_count": 24,
+    "wind_speed_count": 24,
+    "wind_gust_count": 0,
+    "precipitation_amount_count": 24,
+    "precipitation_probability_count": 0,
+    "symbol_code_count": 24
+  },
+  "hours": [
+    {
+      "time": "2026-08-09T09:00:00Z",
+      "air_temperature_c": 27.5,
+      "precipitation_amount_mm": 1.7,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 236.3,
+      "wind_speed_mps": 11.8
+    },
+    {
+      "time": "2026-08-09T10:00:00Z",
+      "air_temperature_c": 26.6,
+      "precipitation_amount_mm": 1.2,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 242.4,
+      "wind_speed_mps": 12.5
+    },
+    {
+      "time": "2026-08-09T11:00:00Z",
+      "air_temperature_c": 27.4,
+      "precipitation_amount_mm": 1.0,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 240.2,
+      "wind_speed_mps": 14.3
+    },
+    {
+      "time": "2026-08-09T12:00:00Z",
+      "air_temperature_c": 26.9,
+      "precipitation_amount_mm": 1.0,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 240.5,
+      "wind_speed_mps": 11.7
+    },
+    {
+      "time": "2026-08-09T13:00:00Z",
+      "air_temperature_c": 26.7,
+      "precipitation_amount_mm": 0.9,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 235.8,
+      "wind_speed_mps": 12.1
+    },
+    {
+      "time": "2026-08-09T14:00:00Z",
+      "air_temperature_c": 25.8,
+      "precipitation_amount_mm": 1.4,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 235.0,
+      "wind_speed_mps": 12.1
+    },
+    {
+      "time": "2026-08-09T15:00:00Z",
+      "air_temperature_c": 26.6,
+      "precipitation_amount_mm": 0.9,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 233.2,
+      "wind_speed_mps": 10.9
+    },
+    {
+      "time": "2026-08-09T16:00:00Z",
+      "air_temperature_c": 26.4,
+      "precipitation_amount_mm": 1.2,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 233.3,
+      "wind_speed_mps": 11.8
+    },
+    {
+      "time": "2026-08-09T17:00:00Z",
+      "air_temperature_c": 26.5,
+      "precipitation_amount_mm": 1.0,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 232.3,
+      "wind_speed_mps": 12.4
+    },
+    {
+      "time": "2026-08-09T18:00:00Z",
+      "air_temperature_c": 26.6,
+      "precipitation_amount_mm": 0.7,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 232.1,
+      "wind_speed_mps": 11.9
+    },
+    {
+      "time": "2026-08-09T19:00:00Z",
+      "air_temperature_c": 26.5,
+      "precipitation_amount_mm": 1.0,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 231.7,
+      "wind_speed_mps": 11.5
+    },
+    {
+      "time": "2026-08-09T20:00:00Z",
+      "air_temperature_c": 26.4,
+      "precipitation_amount_mm": 2.3,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 231.4,
+      "wind_speed_mps": 11.6
+    },
+    {
+      "time": "2026-08-09T21:00:00Z",
+      "air_temperature_c": 26.0,
+      "precipitation_amount_mm": 1.9,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 233.5,
+      "wind_speed_mps": 10.6
+    },
+    {
+      "time": "2026-08-09T22:00:00Z",
+      "air_temperature_c": 25.8,
+      "precipitation_amount_mm": 2.8,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 230.7,
+      "wind_speed_mps": 10.7
+    },
+    {
+      "time": "2026-08-09T23:00:00Z",
+      "air_temperature_c": 25.7,
+      "precipitation_amount_mm": 0.8,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 227.1,
+      "wind_speed_mps": 9.3
+    },
+    {
+      "time": "2026-08-10T00:00:00Z",
+      "air_temperature_c": 27.0,
+      "precipitation_amount_mm": 0.6,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 234.0,
+      "wind_speed_mps": 11.8
+    },
+    {
+      "time": "2026-08-10T01:00:00Z",
+      "air_temperature_c": 27.2,
+      "precipitation_amount_mm": 1.4,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 227.0,
+      "wind_speed_mps": 11.6
+    },
+    {
+      "time": "2026-08-10T02:00:00Z",
+      "air_temperature_c": 27.3,
+      "precipitation_amount_mm": 1.6,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 230.9,
+      "wind_speed_mps": 11.1
+    },
+    {
+      "time": "2026-08-10T03:00:00Z",
+      "air_temperature_c": 27.5,
+      "precipitation_amount_mm": 0.8,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 233.1,
+      "wind_speed_mps": 11.4
+    },
+    {
+      "time": "2026-08-10T04:00:00Z",
+      "air_temperature_c": 27.9,
+      "precipitation_amount_mm": 1.1,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 234.5,
+      "wind_speed_mps": 12.5
+    },
+    {
+      "time": "2026-08-10T05:00:00Z",
+      "air_temperature_c": 27.4,
+      "precipitation_amount_mm": 0.7,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 233.0,
+      "wind_speed_mps": 12.2
+    },
+    {
+      "time": "2026-08-10T06:00:00Z",
+      "air_temperature_c": 28.0,
+      "precipitation_amount_mm": 0.9,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 234.9,
+      "wind_speed_mps": 11.4
+    },
+    {
+      "time": "2026-08-10T07:00:00Z",
+      "air_temperature_c": 27.7,
+      "precipitation_amount_mm": 2.1,
+      "symbol_code": "heavyrain",
+      "wind_from_direction_degrees": 237.3,
+      "wind_speed_mps": 12.4
+    },
+    {
+      "time": "2026-08-10T08:00:00Z",
+      "air_temperature_c": 27.4,
+      "precipitation_amount_mm": 0.3,
+      "symbol_code": "rain",
+      "wind_from_direction_degrees": 237.2,
+      "wind_speed_mps": 11.1
+    }
+  ]
+}

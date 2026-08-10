@@ -521,12 +521,38 @@ nothing, and any other value answers `notFound`. It is not `0xFFFF`/new-only lik
 map — a bundle is *always* a replacement, landing in the inactive one of the device's
 two slots so an interrupted upload leaves the old one intact.
 
-**Discovery ownership.** One CoreBluetooth manager serves both intents
+**Discovery ownership.** One CoreBluetooth manager serves every intent
 (`BLEDiscoveryIntentPolicy`). A foreground session scans for **both** services and
-accepts any advertiser (that is how a first pairing works); a weather-owned scan
-accepts **only** the peripheral UUID persisted after a successful authenticated
-session, and only a connection the weather request itself created may be dropped when
-it completes — a read that rode an existing foreground link must never tear it down.
+accepts any advertiser (that is how a first pairing works); the weather lane accepts
+**only** the peripheral UUID persisted after a successful authenticated session, and
+only a connection the weather work itself created may be dropped when it completes —
+a leg that rode an existing foreground link must never tear it down. Since WX9
+(#1194) the lane has three shapes: the **standing watch** (a weather-only background
+scan that wakes the app on a pending request and runs the context read
+autonomously), the bounded one-shot **context read**, and the bounded one-shot
+**bundle upload** — which does not scan at all: after the served read the device
+advertises OBC Control again, so the upload leg direct-connects to the known
+peripheral and iOS holds that pending connect until the device is reachable. An
+ephemeral weather connection never publishes `.connected` to the app's link
+lifecycle; the foreground screens cannot tell it happened.
+
+The watch is **standing, not a session**: armed once per launch, persisted so it
+survives a relaunch, and never disarmed — a request the device raises days later
+still wakes the app. It scans only when nothing else wants the radio, is gated to
+the known bonded peripheral (nothing bonded → no scan at all), and survives a
+Bluetooth off/on toggle as a preference while every in-flight one-shot does not.
+The foreground outranks both it and the upload leg: a raised foreground intent makes
+the upload *wait* rather than claim the radio, and the connection the foreground then
+raises is one the upload rides.
+
+**Budgets are absolute deadlines, and they belong to the connection rather than to a
+leg.** The read gets 60 s overall / 8 s connected, the upload 90 s / 25 s connected —
+and a read that hands its link to the upload does not buy the upload a second window,
+nor does a state-restoration handoff re-arm one. The single exception is the wait for
+the app's one transfer slot: that hold belongs to whichever transfer is *in* the slot,
+so it moves the connected deadline instead of consuming it, and a budget that expires
+while queued there is reported as `deviceBusy` — a "come back later", not a timeout
+the weather job counts against the request's attempts.
 
 ---
 

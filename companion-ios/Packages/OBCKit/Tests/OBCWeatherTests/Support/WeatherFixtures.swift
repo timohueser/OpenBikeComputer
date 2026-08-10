@@ -26,10 +26,17 @@ enum WeatherFixtures {
     }
 
     /// The WX1 MET capture: deterministic hourly extracts with their provenance.
+    ///
+    /// These lived in `host/obc-wx-source-spike/tests/fixtures` until WX6 (#1223) deleted the
+    /// spike crate wholesale — orphaning the two captures this suite reads (the deletion PR
+    /// touched no `companion-ios/**` path, so the iOS gate never ran on it). They are this
+    /// target's own bundled resources now: the spike was disposable, its evidence is not.
     static func metCapture(_ name: String) throws -> METCapture {
-        let url = repositoryRoot
-            .appendingPathComponent("host/obc-wx-source-spike/tests/fixtures")
-            .appendingPathComponent(name)
+        let url = try #require(
+            Bundle.module.url(
+                forResource: (name as NSString).deletingPathExtension, withExtension: "json",
+                subdirectory: "Fixtures"),
+            "missing bundled MET capture \(name)")
         let data = try #require(FileManager.default.contents(atPath: url.path), "missing \(name)")
         return try JSONDecoder().decode(METCapture.self, from: data)
     }
