@@ -75,8 +75,8 @@ bounded — nothing in the baker ever deletes an object. Verify it for real in �
 24 h is the default (decided 2026-08-09) because nothing outlives it by contract: the longest
 staleness deadline any product carries is `gfs`'s 16 h — `dwd-rv` and `us` expire in 30 min,
 `icon-eu` in 10 h — so a frame older than a day is already unusable. It is also what keeps the cost
-guard honest: with all four products live, a 48 h window projects ≈ 1 GB and trips the probe's
-rolling-window gate on day one (§6). Do not go below 24 h — see §8's "not fetchable" row.
+guard honest: with all four products live, a 24 h window holds ≈ 0.95 GB, comfortably inside the
+probe's rolling-window gate (§6). Do not go below 24 h — see §8's "not fetchable" row.
 
 **T5 — Scoped API token.** R2 → *Manage API tokens* → *Create API token*:
 permission **Object Read & Write**, **specify bucket = `obc-wx` only** (never "all buckets"), no
@@ -251,7 +251,7 @@ infrastructure and alerts when:
 * a product named by `OBC_WX_EXPECT` is **not listed at all** (a dead timer, not a dead upstream —
   see T8), or
 * the manifest is unfetchable/unparseable, or
-* the published set or the projected 48 h rolling footprint breaks the cost guards (§6).
+* the published set or the projected 24 h rolling footprint breaks the cost guards (§6).
 
 The alert is **one GitHub issue** labelled `wx-freshness` — opened on the first bad probe (GitHub
 e-mails you), left alone while the outage lasts, then commented and closed automatically on the
@@ -314,22 +314,28 @@ Projected steady state, today's two adapters (RV 288 runs/day, ICON 4 runs/day):
 | **VPS** | CX22-class, ≈ €4–5/month gross | ≤ €7 gate |
 | **Total** | **≈ €4–5/month** | ceiling €10 → ≥ €5 margin |
 
-With WX6's two adapters added (PR #1223: the composed `us` product every 15 min at ≈ 2.3 MB/bake,
-and the `gfs` floor at ≈ 4.4 MB per 4-runs-a-day) new objects rise to ≈ 500 MB/day and writes to
-≈ 125 k/month — still $0 on R2 and still inside the ceiling. `us` is the expensive row because
-every one of its 96 daily bakes mints a fresh product reference (a newer MRMS observation), which
-rewrites its eight HRRR forward frames too; that is exactly why its cadence is the display's own
-15-minute step and not MRMS's 2-minute publication rate, which would cost 7.5x the writes to shave
-at most 13 minutes off the radar frame's age.
+With WX6's two adapters added (PR #1223: the composed `us` product, and the `gfs` floor at
+≈ 4.4 MB per 4-runs-a-day) new objects rise to ≈ 940 MB/day and writes to ≈ 177 k/month — still $0
+on R2 (its free tier covers 10 GB of storage and 1 M Class A operations a month) and still inside
+the ceiling. `us` is the expensive row because every one of its 288 daily bakes mints a fresh
+product reference (a newer MRMS observation), which rewrites its eight HRRR forward frames too:
+≈ 2.3 MB per bake, ≈ 660 MB/day.
+
+That 5-minute cadence is deliberate and it is what bounds the age of the **only radar frame in the
+US timeline** at ≈ 7 min rather than ≈ 17 min. It is the first thing to trade away if the budget
+guard fires, and the last thing to trade away if riders complain the US rain map lags.
 
 **The 24 h lifecycle rule (T4) is a prerequisite of WX6 going live, not an escalation** — and the
-probe's number is deliberately conservative about it. `freshness_probe.py` models the rolling
-bucket as *current set x runs/day x 2 days*, i.e. it still assumes a 48 h window, so it reports
-roughly **twice** the footprint a 24 h bucket actually holds. With all four products it projects
-≈ 1.0 GB against WX1's 1 GB gate where the truth is ≈ 0.5 GB. So either halve its number when you
-read it, or raise `vars.OBC_WX_PROBE_ARGS` (`--max-rolling-bytes 2000000000`) — the same 1 GB gate
-expressed in the probe's 48 h units — and only go beyond that deliberately, toward R2's actual
-10 GB free tier. Do not leave a gate firing that everyone learns to ignore.
+probe now models it directly. `freshness_probe.py` projects the rolling bucket as *current set x
+runs/day x 1 day*, matching the deployed lifecycle, so the number it prints is the footprint you
+actually pay for. It used to assume 48 h and report double, with the runbook telling you to halve
+it in your head; that is precisely the kind of number people stop reading.
+
+The gate is **3 GB**. WX1 wrote 1 GB when the model was doubled and only two adapters were live;
+four adapters at their current cadences project ≈ 0.95 GB of genuine daily churn, so 1 GB would
+now fire on healthy operation. 3 GB stays under a third of R2's 10 GB free tier. Raising it again
+should be a decision with a number behind it, not a reflex — and the EU 1 km product will force
+that decision when it lands. Do not leave a gate firing that everyone learns to ignore.
 
 Record the **actual** metered numbers here after the first full month (an epic closeout item):
 
@@ -341,7 +347,8 @@ first metered month: ____________  VPS €____  R2 $____  total €____
 24 h and not the old 48 h — nothing usable is older than 16 h anyway (the `gfs` staleness deadline,
 the longest in the table), and halving the window halves storage; (b) drop the RV cadence
 in `adapters.conf` from `*:0/5` to `*:0/10` (costs ≤ 5 min of radar freshness), or the `us` cadence
-from `*:0/15` to `*:0/30` (costs ≤ 15 min of radar-frame age, no forecast frames); (c) check that a
+from `*:0/5` to `*:0/10` or `*:0/15` (each step costs ≤ 5 min of radar-frame age and halves that
+product's writes; the forecast frames are unaffected either way); (c) check that a
 product did not accidentally grow — a full-domain wet RV frame is tens of kB, a *hundreds*-of-kB
 frame means an adapter regression, not weather.
 

@@ -18,6 +18,14 @@ have missed: MET supplied **neither** `probability_of_precipitation` nor `wind_s
 any of the 24 hours — the WX1 record's "Oslo has both, Manila has neither" geography difference, in
 a German capture. The client must represent both as *unavailable*, never as zero.
 
+`manifest-production.json` is a **recording**, so it is deliberately not edited to match later
+baker changes. It therefore still shows the `us` product's forecast frames on the pre-nesting
+27,000 x 34,000 microdegree lattice — the geometry that made a client drop the 1 km MRMS
+observation frame. That is the historical document, and the tests that read it only parse and
+select; the nesting behaviour itself is covered by
+`a_nesting_observation_frame_survives_at_its_own_resolution` and its refusal counterpart, which
+build their own crops. Re-capturing (below) will pick up the current 30,000 x 30,000 lattice.
+
 Re-capture with:
 
 ```sh

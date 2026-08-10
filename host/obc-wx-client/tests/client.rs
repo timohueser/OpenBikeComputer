@@ -493,11 +493,27 @@ fn the_met_url_rounds_the_coordinate_to_four_decimals() {
 // ── bundle ─────────────────────────────────────────────────────────────────────────────────
 
 fn crop(valid_at: i64, cell: u32, width: u32, height: u32, value: u8) -> Crop {
+    crop_at(valid_at, (47_000_000, 7_000_000), cell, width, height, value)
+}
+
+/// Mark a crop as an observation. [`crop_at`] builds forecasts, which is right for most bundle
+/// tests, but the nesting case is specifically about a 1 km *observation* under a model window —
+/// and a test whose comment says "observation" over a frame flagged `QUALITY_FORECAST` is a test
+/// that will mislead the next person to read it.
+fn observation(crop: Crop) -> Crop {
+    Crop { source_class: SourceClass::Observation, ..crop }
+}
+
+/// [`crop`] with an explicit origin, for the tests that care about lattice *alignment* rather
+/// than stride. Sharing one hardcoded origin makes congruence hold for free, which is exactly the
+/// half of the nesting rule the production pair actually turns on — HRRR sits at
+/// (21,100,000, −134,100,000) and MRMS at (20,000,000, −130,000,000).
+fn crop_at(valid_at: i64, origin: (i64, i64), cell: u32, width: u32, height: u32, value: u8) -> Crop {
     Crop {
         valid_at,
         source_class: SourceClass::Forecast,
-        south_udeg: 47_000_000,
-        west_udeg: 7_000_000,
+        south_udeg: origin.0,
+        west_udeg: origin.1,
         cell_lat_udeg: cell,
         cell_lon_udeg: cell,
         cell_size_m: 1_000,
@@ -547,6 +563,52 @@ fn a_frame_whose_lattice_cannot_tile_the_window_is_dropped_not_resampled() {
     assert_eq!(report.frames, 1, "the coarse frame tiles its own window");
     assert_eq!(report.dropped_incompatible, 1, "the fine frame is dropped rather than resampled");
     assert!(obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&bytes)).is_ok());
+}
+
+/// The companion to the drop above, and the reason the baker now treats nesting as a contract it
+/// verifies before publishing: when the coarse lattice **is** an integer multiple of the fine one,
+/// both frames survive, each at its own resolution and with nothing resampled.
+///
+/// This is the shipped US product's shape — a 1 km MRMS observation under a 3 km HRRR window. For
+/// as long as HRRR published 27,000 x 34,000 microdegree cells over MRMS's 10,000, neither stride
+/// divided, and every CONUS rider silently lost the only radar frame in the timeline.
+#[test]
+fn a_nesting_observation_frame_survives_at_its_own_resolution() {
+    let hourly = hourly();
+    let crops = [
+        // Deliberately *different* origins, congruent modulo the fine stride — the production
+        // pair's shape (HRRR at 21,100,000/-134,100,000 over MRMS at 20,000,000/-130,000,000). A
+        // shared origin satisfies the alignment half of the rule for free and would leave only
+        // the stride half under test.
+        observation(crop_at(hourly.valid_from, (47_000_000, 7_000_000), 10_000, 40, 40, 5)), // 1 km
+        crop_at(hourly.valid_from + 900, (47_030_000, 7_020_000), 30_000, 10, 10, 3),        // 3 km, 3x
+    ];
+    let (bytes, report) =
+        bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &test_corridor(), &crops, &hourly)
+            .expect("build");
+    assert_eq!(report.frames, 2, "both frames tile the window");
+    assert_eq!(report.dropped_incompatible, 0, "nothing is refused");
+    let source = obc_formats::io::SliceSource(&bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("the device must be able to open it");
+    let observation_frame = reader.frame(0).expect("observation frame");
+    let model = reader.frame(1).expect("model frame");
+    assert_eq!(
+        (observation_frame.width, observation_frame.height),
+        (30, 30),
+        "the observation keeps its own 1 km lattice — it is not coarsened onto the model's"
+    );
+    assert_eq!(
+        (model.width, model.height),
+        (10, 10),
+        "and the model keeps its own — the shared window is an extent, not a resolution"
+    );
+    // Provenance survives the shared window too: the composed product's whole point is that one
+    // timeline carries an observation and a forecast without either pretending to be the other.
+    assert_eq!(
+        observation_frame.quality_flags & obc_formats::obcw::QUALITY_KNOWN_MASK,
+        obc_formats::obcw::QUALITY_OBSERVED
+    );
+    assert_eq!(model.quality_flags & obc_formats::obcw::QUALITY_KNOWN_MASK, obc_formats::obcw::QUALITY_FORECAST);
 }
 
 /// No rain product at all still produces a bundle: the hourly half stands on its own, and the

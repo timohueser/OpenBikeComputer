@@ -20,8 +20,11 @@ Checks, in the order they are reported:
      when a human retires its adapter, so an absent one means its *timer* died — disabled,
      renamed, never installed — rather than its upstream. That failure otherwise looks exactly
      like health: everything still listed keeps publishing happily without it;
-  5. cost guardrails: the current published set, and the projected 48 h rolling bucket footprint
-     (each product's current bytes x its upstream runs/day from adapters.conf x 2 days).
+  5. cost guardrails: the current published set, and the projected rolling bucket footprint
+     (each product's current bytes x its upstream runs/day from adapters.conf), modelled over the
+     **24 h** lifecycle the bucket actually has (RUNBOOK T4). It used to assume 48 h and so
+     reported twice the truth, which meant the gate had to be read through a mental halving —
+     exactly the kind of number people learn to ignore.
 
 Exit codes: 0 fresh, 1 stale or over budget, 2 the manifest could not be read at all. 1 and 2 are
 both alerts — a manifest that cannot be fetched is an outage of exactly the thing riders read —
@@ -107,8 +110,16 @@ def main() -> int:
                              "catches a dead timer, which no freshness check can see")
     parser.add_argument("--max-set-bytes", type=int, default=50 * BYTES_PER_MB,
                         help="alert when the currently published frame set exceeds this (default: 50 MB)")
-    parser.add_argument("--max-rolling-bytes", type=int, default=1000 * BYTES_PER_MB,
-                        help="alert when the projected 48 h bucket footprint exceeds this (default: 1 GB)")
+    # 1.5 GB against a real 24 h window. WX1 wrote 1 GB when the model assumed 48 h — i.e. a real
+    # budget of 0.5 GB — and only two adapters were live. Four adapters at their current cadences
+    # project ≈ 0.95 GB of genuine daily churn, so 1 GB would now fire on healthy operation, but a
+    # gate is only worth having if it still catches the mistakes it exists for. The one that
+    # matters is a cadence fat-finger: `us` at `*:0/2` instead of `*:0/5` burns 5x the intended
+    # churn and lands at ≈ 1.95 GB, which a 3 GB gate would wave through and this one does not.
+    # 1.5 GB keeps ≈ 58 % headroom over healthy operation and stays far under R2's 10 GB free
+    # tier. Raise it deliberately, with a number, when a new product genuinely needs the room.
+    parser.add_argument("--max-rolling-bytes", type=int, default=1500 * BYTES_PER_MB,
+                        help="alert when the projected 24 h bucket footprint exceeds this (default: 1.5 GB)")
     parser.add_argument("--adapters-conf", type=Path, default=Path(__file__).with_name("adapters.conf"),
                         help="cadence table used for the rolling-storage projection")
     parser.add_argument("--timeout", type=float, default=20.0)
@@ -195,7 +206,7 @@ def main() -> int:
             continue
         set_bytes += bytes_now
         runs = runs_per_day.get(identifier)
-        rolling_bytes += bytes_now * (runs * 2 if runs else 2)
+        rolling_bytes += bytes_now * (runs if runs else 1)
         left = deadline - now
         row = {
             "id": identifier,
@@ -238,7 +249,7 @@ def main() -> int:
     # ── 5. Cost guardrails ────────────────────────────────────────────────────────────────────
     result["published_set_bytes"] = set_bytes
     result["projected_rolling_bytes"] = rolling_bytes
-    report.append(f"cost     published set {set_bytes / BYTES_PER_MB:.2f} MB; projected 48 h bucket {rolling_bytes / BYTES_PER_MB:.0f} MB")
+    report.append(f"cost     published set {set_bytes / BYTES_PER_MB:.2f} MB; projected 24 h bucket {rolling_bytes / BYTES_PER_MB:.0f} MB")
     if set_bytes > args.max_set_bytes:
         alerts.append(
             f"the published set is {set_bytes / BYTES_PER_MB:.1f} MB, over the {args.max_set_bytes / BYTES_PER_MB:.0f} MB guard — "
@@ -246,8 +257,8 @@ def main() -> int:
         )
     if rolling_bytes > args.max_rolling_bytes:
         alerts.append(
-            f"the projected 48 h bucket footprint is {rolling_bytes / BYTES_PER_MB:.0f} MB, over the "
-            f"{args.max_rolling_bytes / BYTES_PER_MB:.0f} MB budget (WX1's rolling-window gate)"
+            f"the projected 24 h bucket footprint is {rolling_bytes / BYTES_PER_MB:.0f} MB, over the "
+            f"{args.max_rolling_bytes / BYTES_PER_MB:.0f} MB budget (the rolling-window gate)"
         )
     missing_cadence = [row["id"] for row in product_rows if row["id"] not in runs_per_day]
     if missing_cadence:
