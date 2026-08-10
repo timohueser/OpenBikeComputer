@@ -5,6 +5,12 @@ These frames were rendered by `--weather live` against the **production** weathe
 reproduced byte-for-byte: the weather has moved on. They exist to show that real service bytes
 reach the production screens, and nothing pins them.
 
+They were also shot before the corridor became a *projection*: the frames that pass no
+`--weather-radius-km` used a fixed 15 km disc, where the default today is the phone's undirected
+10 km disc (and a directed corridor once the fix vouches for a bearing and a speed). What they show
+is unaffected — every product covering a 15 km disc around the Grimsel covers a 10 km one — but a
+re-run asks a slightly smaller question.
+
 ```sh
 cargo build --release -p obc-sim
 S=target/release/obc-sim; G=apps/obc-sim/assets/grimsel.obcm; M=apps/obc-sim/assets/monaco.obcm

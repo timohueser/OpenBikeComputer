@@ -174,6 +174,10 @@ struct SimGui {
     /// The §11 request/upload lifecycle, driven by the real firmware `DueScheduler` (WX14).
     /// Present with `--weather live`; it is what decides *when* the companion fetches.
     companion: crate::weather_companion::SimCompanion,
+    /// `--weather-now`: the instant weather freshness is evaluated at, in *every* mode. Kept on
+    /// the window because a live refresh adopts a new bundle mid-session and must be judged at the
+    /// same instant the first one was.
+    weather_now: Option<i64>,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -337,11 +341,13 @@ impl SimGui {
             .weather
             .as_ref()
             .map(|arg| {
-                let centre = (
-                    (map_bbox_for_weather.1 + map_bbox_for_weather.3) / 2,
-                    (map_bbox_for_weather.0 + map_bbox_for_weather.2) / 2,
-                );
-                crate::weather_live::build(arg, args.weather_now, map_bbox_for_weather, &args.live, centre)
+                // The corridor's seed is the rider's own fix when there is one — `--gpx` and
+                // `--center` have already placed it — exactly as the headless path seeds it. The
+                // map's centre is the fallback for a run with no fix at all; seeding there under a
+                // `--gpx` would fetch weather for a place the rider is not.
+                let seed =
+                    app.state.user_fix.map(|fix| (fix.lat, fix.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+                crate::weather_live::build(arg, args.weather_now, map_bbox_for_weather, &args.live, seed, !args.no_card)
             })
             .unwrap_or(crate::weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
         if let Some(now) = wx_source.clock_anchor {
@@ -374,7 +380,9 @@ impl SimGui {
             scratch: Box::new(obc_render::RenderScratch::new()),
             weather,
             live_weather,
-            companion: crate::weather_companion::SimCompanion::new(),
+            weather_now: args.weather_now,
+            // `--no-card`: §11.7's no-storage arm — the scheduler raises nothing at all.
+            companion: crate::weather_companion::SimCompanion::new(!args.no_card),
             store,
             trip_store,
             ride_store,
@@ -633,7 +641,10 @@ impl SimGui {
         if let Some(live) = self.live_weather.as_mut() {
             let now = self.app.wall_unix_now() as i64;
             if let Some(bytes) = self.companion.poll(&self.app, self.weather.as_ref(), live, now) {
-                if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, None) {
+                // `--weather-now` is the freshness instant in *every* mode, refreshes included:
+                // dropping it here left the first bundle evaluated at the pinned instant and every
+                // later one at the wall clock.
+                if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, self.weather_now) {
                     self.weather = Some(store);
                 }
             }

@@ -16,7 +16,7 @@
 //!   — a baker that stopped an hour ago would render as a fresh nowcast. Live weather must age.
 
 use obc_wx_client::http::{FailureControls, FaultyHttp, Http, UreqHttp};
-use obc_wx_client::select::Corridor;
+use obc_wx_client::select::{Corridor, Fix};
 use obc_wx_client::WeatherClient;
 
 use crate::weather_store::SimWeather;
@@ -25,7 +25,11 @@ use crate::weather_store::SimWeather;
 #[derive(Debug, Clone)]
 pub struct LiveConfig {
     pub service: String,
-    pub radius_km: f64,
+    /// `--weather-radius-km`: force an undirected disc of this radius. Absent (the default) means
+    /// the corridor is **projected** from the fix the way the phone projects it — bearing and
+    /// speed included — so the simulator and the phone can select different tiers only when they
+    /// genuinely disagree, never because the simulator asked a rounder question.
+    pub radius_km: Option<f64>,
     pub controls: FailureControls,
 }
 
@@ -33,9 +37,7 @@ impl Default for LiveConfig {
     fn default() -> Self {
         Self {
             service: obc_wx_client::DEFAULT_SERVICE_URL.to_string(),
-            // The phone's undirected disc: 10 km reach floor + the 5 km lateral margin. Small
-            // enough that a corridor read is a handful of KB, wide enough to see a front arrive.
-            radius_km: 15.0,
+            radius_km: None,
             controls: FailureControls::default(),
         }
     }
@@ -47,8 +49,19 @@ impl Default for LiveConfig {
 pub struct LiveReport {
     pub fetched_at: i64,
     pub bundle_bytes: usize,
-    pub requests: u32,
+    /// This fetch's **coordinate-free** cost: the manifest plus the corridor Range reads. MET is
+    /// counted separately below, because mixing them makes both numbers meaningless — MET's one
+    /// document dwarfs a whole corridor's worth of Range reads.
+    pub service_requests: u32,
     pub service_bytes: u64,
+    pub met_requests: u32,
+    pub met_bytes: u64,
+    /// Frames this fetch answered from the crop cache — immutable objects it did not re-read.
+    pub cached_frames: u32,
+    /// Every request this process has made, all sources, since it started.
+    pub total_requests: u32,
+    /// The corridor this fetch asked about: `(width_km, height_km, directed)`.
+    pub corridor_km: Option<(f64, f64, bool)>,
     pub product: Option<(String, u8)>,
     pub expired: Vec<String>,
     pub no_rain_map: Option<String>,
@@ -62,7 +75,8 @@ pub struct LiveReport {
 pub struct LiveWeather {
     client: WeatherClient,
     http: FaultyHttp<UreqHttp>,
-    radius_m: f64,
+    /// `--weather-radius-km`, when the rider asked for a fixed disc instead of a projection.
+    forced_radius_m: Option<f64>,
     pub report: LiveReport,
     last_fetch: Option<i64>,
     last_position: Option<(i32, i32)>,
@@ -73,27 +87,53 @@ impl LiveWeather {
         Self {
             client: WeatherClient::new(config.service.clone()),
             http: FaultyHttp::new(UreqHttp::new(), config.controls.clone()),
-            radius_m: config.radius_km * 1_000.0,
+            forced_radius_m: config.radius_km.map(|km| km * 1_000.0),
             report: LiveReport::default(),
             last_fetch: None,
             last_position: None,
         }
     }
 
+    /// Every request this process has made — the counter the §11.7 "no card, no requests" check
+    /// reads, and the panel's running total.
+    pub fn total_requests(&self) -> u32 {
+        self.http.requests()
+    }
+
+    /// The corridor for `fix`: the phone's projection, unless `--weather-radius-km` forced a disc.
+    fn corridor(&self, fix: &Fix) -> Corridor {
+        match self.forced_radius_m {
+            Some(radius) => Corridor::around(fix.lat_udeg, fix.lon_udeg, radius),
+            None => Corridor::projected(fix),
+        }
+    }
+
     /// One fetch. On failure the previous bundle stays in place — a rider keeps the weather they
     /// had, visibly aging, rather than losing the screen to an outage.
-    pub fn fetch(&mut self, position: (i32, i32), now: i64, request_id: u32) -> Option<Vec<u8>> {
-        let corridor = Corridor::around(position.0, position.1, self.radius_m);
+    pub fn fetch(&mut self, fix: &Fix, now: i64, request_id: u32) -> Option<Vec<u8>> {
+        let corridor = self.corridor(fix);
         self.last_fetch = Some(now);
-        self.last_position = Some(position);
+        self.last_position = Some((fix.lat_udeg, fix.lon_udeg));
+        let corridor_km = Some((
+            (corridor.bounds.east_udeg - corridor.bounds.west_udeg) as f64 / 1e6
+                * 111.32
+                * (f64::from(fix.lat_udeg) / 1e6).to_radians().cos().max(0.05),
+            (corridor.bounds.north_udeg - corridor.bounds.south_udeg) as f64 / 1e6 * 111.32,
+            !corridor.undirected,
+        ));
         match self.client.fetch(&mut self.http, &corridor, now, request_id) {
             Ok(bundle) => {
                 let diagnostics = &bundle.diagnostics;
                 self.report = LiveReport {
                     fetched_at: now,
                     bundle_bytes: bundle.bytes.len(),
-                    requests: self.http.requests(),
+                    service_requests: diagnostics.service_requests,
                     service_bytes: diagnostics.service_bytes,
+                    met_requests: diagnostics.met_requests,
+                    met_bytes: diagnostics.met_bytes,
+                    cached_frames: diagnostics.cached_frames,
+                    total_requests: self.http.requests(),
+                    corridor_km,
                     product: diagnostics.product.clone(),
                     expired: diagnostics.expired_products.clone(),
                     no_rain_map: diagnostics.no_rain_map.clone(),
@@ -106,7 +146,8 @@ impl LiveWeather {
             }
             Err(error) => {
                 self.report.error = Some(error.to_string());
-                self.report.requests = self.http.requests();
+                self.report.total_requests = self.http.requests();
+                self.report.corridor_km = corridor_km;
                 None
             }
         }
@@ -130,6 +171,7 @@ pub fn build(
     map_bbox: (i32, i32, i32, i32),
     config: &LiveConfig,
     position: (i32, i32),
+    store_ready: bool,
 ) -> WeatherSource {
     if arg != "live" {
         let store = SimWeather::from_arg(arg, now_override, map_bbox);
@@ -142,7 +184,16 @@ pub fn build(
     // stale-scenario tool.
     let now = now_override.unwrap_or_else(|| chrono::Utc::now().timestamp());
     let mut live = LiveWeather::new(config);
-    let store = live.fetch(position, now, 1).and_then(|bytes| SimWeather::from_bytes(bytes, now_override));
+    // §11.7: a device with no storage raises no request, so the companion never fetches — and the
+    // seed fetch is that same request. `--no-card` therefore issues no HTTP at all, which is the
+    // observable form of the rule.
+    if !store_ready {
+        return WeatherSource { store: None, live: Some(live), clock_anchor: Some(now) };
+    }
+    // The seed fetch has no ride behind it yet: no bearing, no speed, no route — so this is the
+    // undirected disc, exactly as a phone answering a device that vouches for neither.
+    let fix = Fix { lat_udeg: position.0, lon_udeg: position.1, ..Fix::default() };
+    let store = live.fetch(&fix, now, 1).and_then(|bytes| SimWeather::from_bytes(bytes, now_override));
     if store.is_none() {
         eprintln!(
             "--weather live: no bundle ({})",
