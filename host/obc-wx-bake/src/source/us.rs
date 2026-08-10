@@ -26,7 +26,7 @@ use obc_formats::obcg::{PRODUCT_MRMS, TIER_RADAR};
 use crate::fetch::Upstream;
 use crate::manifest::Product;
 use crate::source::hrrr;
-use crate::source::{mrms, Adapter, AdapterOutcome, Attribution, BakedProduct, NOAA_TERMS_URL};
+use crate::source::{mrms, verify_frames_nest, Adapter, AdapterOutcome, Attribution, BakedProduct, NOAA_TERMS_URL};
 
 pub const ID: &str = "us";
 
@@ -91,7 +91,7 @@ impl Adapter for UsComposite {
         frames.push(mrms::bake_observation(upstream, observation)?);
         frames.extend(hrrr::bake_forward_frames(upstream, run, observation, &leads)?);
 
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
+        let product = BakedProduct {
             id: ID,
             // The product-level provenance and lattice describe the anchor frame; every frame
             // carries its own (`BakedFrame::source`), and the manifest restates them per frame.
@@ -103,6 +103,44 @@ impl Adapter for UsComposite {
             attribution: ATTRIBUTION,
             upstream_etag: None,
             frames,
-        })))
+        };
+        // The composed product's whole point is that the 1 km observation and the 3 km forecast
+        // frames coexist at their own cell sizes. That only survives the client's bundle
+        // assembler if the lattices nest, so it is verified here rather than assumed.
+        verify_frames_nest(&product)?;
+        Ok(AdapterOutcome::Baked(Box::new(product)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::hrrr;
+
+    /// The constants, checked against each other with no fixtures and no network: whatever else
+    /// changes about either adapter, the observation lattice must keep tiling the window the
+    /// forecast lattice defines.
+    #[test]
+    fn us_frames_nest() {
+        assert!(
+            mrms::GEOMETRY.cell_area() < hrrr::GEOMETRY.cell_area(),
+            "the forecast lattice must be the coarsest, or the window is chosen from the observation"
+        );
+        assert!(
+            mrms::GEOMETRY.nests_under(&hrrr::GEOMETRY),
+            "the 1 km MRMS observation must nest under the HRRR window, or a client drops it: \
+             mrms={:?} hrrr={:?}",
+            mrms::GEOMETRY,
+            hrrr::GEOMETRY
+        );
+    }
+
+    /// The lattice change must not have quietly shrunk what the forecast frames cover.
+    #[test]
+    fn the_hrrr_window_still_covers_the_lambert_domain() {
+        assert_eq!(hrrr::GEOMETRY.south_lat_udeg, 21_100_000);
+        assert_eq!(hrrr::GEOMETRY.west_lon_udeg, -134_100_000);
+        assert!(hrrr::GEOMETRY.north_lat_udeg() >= 52_636_000, "north edge regressed");
+        assert!(hrrr::GEOMETRY.east_lon_udeg() >= -60_898_000, "east edge regressed");
     }
 }

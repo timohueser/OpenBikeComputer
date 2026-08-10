@@ -549,6 +549,41 @@ fn a_frame_whose_lattice_cannot_tile_the_window_is_dropped_not_resampled() {
     assert!(obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&bytes)).is_ok());
 }
 
+/// The companion to the drop above, and the reason the baker now treats nesting as a contract it
+/// verifies before publishing: when the coarse lattice **is** an integer multiple of the fine one,
+/// both frames survive, each at its own resolution and with nothing resampled.
+///
+/// This is the shipped US product's shape — a 1 km MRMS observation under a 3 km HRRR window. For
+/// as long as HRRR published 27,000 x 34,000 microdegree cells over MRMS's 10,000, neither stride
+/// divided, and every CONUS rider silently lost the only radar frame in the timeline.
+#[test]
+fn a_nesting_observation_frame_survives_at_its_own_resolution() {
+    let hourly = hourly();
+    let crops = [
+        crop(hourly.valid_from, 10_000, 30, 30, 5),       // 1 km observation
+        crop(hourly.valid_from + 900, 30_000, 10, 10, 3), // 3 km model, exactly 3x — sets the window
+    ];
+    let (bytes, report) =
+        bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &test_corridor(), &crops, &hourly)
+            .expect("build");
+    assert_eq!(report.frames, 2, "both frames tile the window");
+    assert_eq!(report.dropped_incompatible, 0, "nothing is refused");
+    let source = obc_formats::io::SliceSource(&bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("the device must be able to open it");
+    let observation = reader.frame(0).expect("observation frame");
+    let model = reader.frame(1).expect("model frame");
+    assert_eq!(
+        (observation.width, observation.height),
+        (30, 30),
+        "the observation keeps its own 1 km lattice — it is not coarsened onto the model's"
+    );
+    assert_eq!(
+        (model.width, model.height),
+        (10, 10),
+        "and the model keeps its own — the shared window is an extent, not a resolution"
+    );
+}
+
 /// No rain product at all still produces a bundle: the hourly half stands on its own, and the
 /// screens get the explicit hourly-only state rather than a guess.
 #[test]
