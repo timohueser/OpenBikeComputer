@@ -162,6 +162,85 @@ fn full_cycle_is_deterministic_byte_stable_and_valid() {
     }
 }
 
+/// **The v1 lattices are frozen until the cutover, and this is what would notice if they were
+/// not.**
+///
+/// Every other test in this file reads the adapter `GEOMETRY` consts symbolically, so by
+/// construction none of them can see a change to one — which is exactly how WXR3's first draft
+/// moved `dwd-rv` off its shipped 9,000 x 14,000 µdeg lattice with the whole suite green. That is
+/// not a cosmetic drift: the live `wx/v1/dwd-rv` product's cells would change shape, the German
+/// 90 km corridor would grow ~26 % against an unchanged 64 KiB OBCW producer cap (so `bundle.rs`
+/// would silently shrink the window and start dropping forward frames), and the `cell_size_m =
+/// 1_000` this path emits would stop being true in either axis.
+///
+/// So the numbers are written out here, once, deliberately — as literals for all five adapters and
+/// as the geometry actually **emitted** into a published object and restated in the manifest. When
+/// WXR7 #1246 deletes the v1 path, it deletes this test with it; until then, moving a lattice has
+/// to be a deliberate edit here and a re-measurement of the corridor, not a side effect.
+///
+/// Object *byte lengths* are deliberately not pinned: they move with the deflate implementation,
+/// which would make this a dependency-bump alarm rather than a geometry alarm. Byte stability
+/// across runs is `full_cycle_is_deterministic_byte_stable_and_valid`'s job.
+#[test]
+fn the_v1_product_lattices_are_frozen_until_the_cutover() {
+    use obc_wx_bake::source::{gfs, hrrr, mrms};
+    let pinned = [
+        // (id, south, west, cell_lat, cell_lon, width, height, cell_size_m, tile_edge)
+        ("dwd-rv", dwd_rv::GEOMETRY, 45_680_000, 1_460_000, 9_000, 14_000, 1_234, 1_132, 1_000, 32),
+        ("icon-eu", icon_eu::GEOMETRY, 29_468_750, -23_531_250, 62_500, 62_500, 1_377, 657, 6_500, 16),
+        ("mrms", mrms::GEOMETRY, 20_000_000, -130_000_000, 10_000, 10_000, 7_000, 3_500, 1_000, 64),
+        ("hrrr", hrrr::GEOMETRY, 21_100_000, -134_100_000, 30_000, 30_000, 2_441, 1_052, 3_000, 32),
+        ("gfs", gfs::GEOMETRY, -89_875_000, -179_875_000, 250_000, 250_000, 1_439, 719, 27_750, 16),
+    ];
+    for (id, geometry, south, west, cell_lat, cell_lon, width, height, cell_size_m, tile_edge) in pinned {
+        assert_eq!(
+            (
+                geometry.south_lat_udeg,
+                geometry.west_lon_udeg,
+                geometry.cell_lat_udeg,
+                geometry.cell_lon_udeg,
+                geometry.width,
+                geometry.height,
+                geometry.cell_size_m,
+                geometry.tile_edge
+            ),
+            (south, west, cell_lat, cell_lon, width, height, cell_size_m, tile_edge),
+            "{id}'s published lattice moved — see this test's doc comment before changing the literal"
+        );
+    }
+
+    // …and the consts are what actually reaches the object and the manifest.
+    let (dwd, icon) = adapters();
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = scratch("v1-frozen");
+    let mut fixture_upstream = upstream();
+    let mut store = DirStore::new(&dir);
+    run_cycle(&adapters, &mut fixture_upstream, &mut store, now(), false).expect("fixture cycle");
+    let published = tree(&dir);
+    let document = manifest::from_json(&published["wx/v1/manifest.json"]).expect("manifest parses");
+    let product = document.products.iter().find(|product| product.id == "dwd-rv").expect("dwd-rv is published");
+    assert_eq!((product.cell.lat_udeg, product.cell.lon_udeg, product.cell.nominal_m), (9_000, 14_000, 1_000));
+    assert_eq!(
+        (product.bbox_udeg.south_udeg, product.bbox_udeg.west_udeg),
+        (45_680_000, 1_460_000),
+        "the live product bbox moved"
+    );
+    assert_eq!(
+        (product.bbox_udeg.north_udeg, product.bbox_udeg.east_udeg),
+        (55_868_000, 18_736_000),
+        "the live product bbox moved"
+    );
+    let frame = &product.frames[0];
+    let mut scratch_buffer = vec![0u8; obc_formats::precip4::MAX_CELLS];
+    let header = obc_formats::obcg::validate(&published[&frame.key], &mut scratch_buffer).expect("valid object");
+    assert_eq!(
+        (header.south_lat_udeg, header.west_lon_udeg, header.cell_lat_udeg, header.cell_lon_udeg),
+        (45_680_000, 1_460_000, 9_000, 14_000),
+        "the emitted f0 header's lattice moved"
+    );
+    assert_eq!((header.width, header.height, header.cell_size_m), (1_234, 1_132, 1_000));
+}
+
 /// Decode one cell out of a published frame the way a corridor client would.
 fn published_cell(bytes: &[u8], col: u32, row: u32) -> u8 {
     use obc_formats::obcg;

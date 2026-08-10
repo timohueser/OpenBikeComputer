@@ -34,16 +34,24 @@ use crate::source::{dwd_rv, gfs, hrrr, icon_eu, mrms, us, Adapter, AdapterOutcom
 
 // ---------------------------------------------------------------------------------------------
 // The canonical lattice under test: global 0.01 degrees, 36,000 x 18,000 = 648 M cells.
+//
+// Since WXR3 (#1242) these are aliases of the production lattice in `crate::canonical`, so the
+// spike can never quietly measure a different grid than the one the baker publishes. What the
+// spike still keeps of its own is the *scene*: it composes fixtures captured at two different
+// wall clocks by lead offset, which the production time axis (nearest validity within
+// `canonical::MAX_FRAME_SKEW_S`) would correctly refuse to do. That fake global instant is the
+// whole point of a size measurement, and it is why this rig is not built on the production
+// mosaic. WXR7 deletes it.
 // ---------------------------------------------------------------------------------------------
 
-pub const CELL_UDEG: u32 = 10_000;
-pub const LATTICE_WIDTH: u32 = 36_000;
-pub const LATTICE_HEIGHT: u32 = 18_000;
-pub const LATTICE_SOUTH_UDEG: i32 = -90_000_000;
-pub const LATTICE_WEST_UDEG: i32 = -180_000_000;
+pub const CELL_UDEG: u32 = crate::canonical::CANONICAL.cell_udeg;
+pub const LATTICE_WIDTH: u32 = crate::canonical::CANONICAL.width;
+pub const LATTICE_HEIGHT: u32 = crate::canonical::CANONICAL.height;
+pub const LATTICE_SOUTH_UDEG: i32 = crate::canonical::CANONICAL.south_lat_udeg;
+pub const LATTICE_WEST_UDEG: i32 = crate::canonical::CANONICAL.west_lon_udeg;
 /// Nine frames, +0 .. +120 min in 15-minute steps.
-pub const CYCLE_FRAMES: u32 = 9;
-pub const FRAME_STEP_MIN: i32 = 15;
+pub const CYCLE_FRAMES: u32 = crate::canonical::CYCLE_FRAMES;
+pub const FRAME_STEP_MIN: i32 = crate::canonical::FRAME_STEP_MIN as i32;
 /// The whole point of the spike: one cycle must fit here, with fetch and publish alongside it.
 pub const CYCLE_BUDGET_SECONDS: f64 = 300.0;
 /// The production box: 4 vCPU / 8 GB KVM.

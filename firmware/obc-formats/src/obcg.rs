@@ -82,6 +82,10 @@ pub const PRODUCT_ICON_EU: u8 = 2;
 pub const PRODUCT_MRMS: u8 = 3;
 pub const PRODUCT_HRRR: u8 = 4;
 pub const PRODUCT_GFS: u8 = 5;
+/// The one canonical mosaic dataset: every source normalised onto the global 0.01 degree lattice
+/// by the baker, best available in every cell, no provenance carried (#1242). The five codes
+/// above are the per-source products it replaces.
+pub const PRODUCT_MOSAIC: u8 = 6;
 pub const PRODUCT_EXPERIMENTAL: u8 = 255;
 
 pub const TIER_RADAR: u8 = 1;

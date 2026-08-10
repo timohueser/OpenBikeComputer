@@ -14,7 +14,10 @@ pub struct GridGeometry {
     pub cell_lon_udeg: u32,
     pub width: u32,
     pub height: u32,
-    /// Nominal source ground resolution in metres (truthful UI/selection data, not the lattice).
+    /// For a **source window**: the source's nominal ground resolution in metres. For a
+    /// **published frame**: [`crate::canonical::LATTICE_CELL_SIZE_M`], a constant stating the
+    /// lattice. Under the mosaic a frame has no single source resolution to state, and the
+    /// decision (#1242) was to remove that information rather than transport it.
     pub cell_size_m: u16,
     pub tile_edge: u16,
     pub entries_per_page: u16,
