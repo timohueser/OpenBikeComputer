@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use obc_wx_client::corridor::{Corridor, CORRIDOR_RADIUS_M};
 use obc_wx_client::http::{FailureControls, FaultyHttp, Http, UreqHttp};
-use obc_wx_client::select::{Corridor, Fix};
 use obc_wx_client::{WeatherClient, DEFAULT_SERVICE_URL};
 
 const USAGE: &str = "\
@@ -20,10 +20,7 @@ usage:
 options:
   --lat DEG            rider latitude  (required)
   --lon DEG            rider longitude (required)
-  --radius-km KM       force an undirected disc of this radius instead of projecting a corridor
-  --bearing DEG        travel bearing the device vouches for (projects a directed corridor)
-  --speed-ms MS        ground speed the device vouches for; the reach is speed x 2 h, clamped
-                       to 10..120 km. Without either, the corridor is the 10 km undirected disc.
+  --radius-km KM       corridor radius; default 90 km, the one corridor there is
   --service URL        weather service origin; default https://wx.openbikecomputer.com
   --out DIR            write the bundle to DIR/WEATHER.A (creating DIR); default: none, report only
   --now UNIX           evaluate freshness at this instant instead of the system clock
@@ -52,8 +49,6 @@ struct Args {
     lat: Option<f64>,
     lon: Option<f64>,
     radius_km: Option<f64>,
-    bearing_deg: Option<f64>,
-    speed_ms: Option<f64>,
     service: String,
     out: Option<PathBuf>,
     now: Option<i64>,
@@ -81,8 +76,6 @@ fn run() -> Result<(), String> {
             "--lat" => args.lat = Some(value()?.parse().map_err(|_| "--lat: not a number")?),
             "--lon" => args.lon = Some(value()?.parse().map_err(|_| "--lon: not a number")?),
             "--radius-km" => args.radius_km = Some(value()?.parse().map_err(|_| "--radius-km: not a number")?),
-            "--bearing" => args.bearing_deg = Some(value()?.parse().map_err(|_| "--bearing: not a number")?),
-            "--speed-ms" => args.speed_ms = Some(value()?.parse().map_err(|_| "--speed-ms: not a number")?),
             "--service" => args.service = value()?,
             "--out" => args.out = Some(PathBuf::from(value()?)),
             "--now" => args.now = Some(value()?.parse().map_err(|_| "--now: not unix seconds")?),
@@ -119,18 +112,9 @@ fn run() -> Result<(), String> {
     };
     let now = args.now.unwrap_or_else(|| chrono::Utc::now().timestamp());
     let (lat_udeg, lon_udeg) = ((lat * 1e6).round() as i32, (lon * 1e6).round() as i32);
-    // `--radius-km` is the deliberate override (a fixed disc, for reproducing a capture); without
-    // it the corridor is projected exactly as the phone projects it.
-    let corridor = match args.radius_km {
-        Some(km) => Corridor::around(lat_udeg, lon_udeg, km * 1_000.0),
-        None => Corridor::projected(&Fix {
-            lat_udeg,
-            lon_udeg,
-            bearing_deg: args.bearing_deg,
-            speed_ms: args.speed_ms,
-            route_ahead: Vec::new(),
-        }),
-    };
+    // One corridor shape: a disc around the rider. `--radius-km` narrows or widens it for a
+    // capture; nothing about the answer changes with it except how many shards are read.
+    let corridor = Corridor::around(lat_udeg, lon_udeg, args.radius_km.map_or(CORRIDOR_RADIUS_M, |km| km * 1_000.0));
 
     let mut http = FaultyHttp::new(UreqHttp::new(), args.controls);
     let mut client = WeatherClient::new(&args.service);
@@ -140,8 +124,8 @@ fn run() -> Result<(), String> {
     if args.json {
         println!(
             "{{\"bytes\":{},\"service_requests\":{},\"service_bytes\":{},\"met_requests\":{},\"met_bytes\":{},\
-             \"cached_frames\":{},\"total_requests\":{},\"product\":{},\"tier\":{},\"expired\":{},\
-             \"failed_frames\":{},\"dropped_incompatible\":{},\"no_rain_map\":{}}}",
+             \"cached_frames\":{},\"total_requests\":{},\"generation\":{},\"dry_shards\":{},\
+             \"failed_frames\":{},\"skipped_manifest_frames\":{},\"no_rain_map\":{}}}",
             bundle.bytes.len(),
             diagnostics.service_requests,
             diagnostics.service_bytes,
@@ -149,24 +133,23 @@ fn run() -> Result<(), String> {
             diagnostics.met_bytes,
             diagnostics.cached_frames,
             http.requests(),
-            diagnostics.product.as_ref().map_or("null".into(), |(id, _)| format!("{id:?}")),
-            diagnostics.product.as_ref().map_or(0, |(_, tier)| *tier),
-            serde_json::to_string(&diagnostics.expired_products).unwrap_or_default(),
+            diagnostics.generation.as_ref().map_or("null".into(), |id| format!("{id:?}")),
+            diagnostics.dry_shards,
             diagnostics.failed_frames,
-            diagnostics.dropped_incompatible_frames,
-            diagnostics.no_rain_map.as_ref().map_or("null".into(), |why| format!("{why:?}")),
+            diagnostics.skipped_manifest_frames,
+            diagnostics.no_rain_map.as_ref().map_or("null".into(), |why| format!("{:?}", why.to_string())),
         );
     } else {
         println!("bundle      {} bytes", bundle.bytes.len());
-        match &diagnostics.product {
-            Some((id, tier)) => println!("product     {id} (tier {tier})"),
-            None => println!("product     none"),
+        match &diagnostics.generation {
+            Some(generation) => println!("generation  {generation}"),
+            None => println!("generation  none"),
         }
         if let Some(why) = &diagnostics.no_rain_map {
             println!("no rain map {why}");
         }
-        if !diagnostics.expired_products.is_empty() {
-            println!("expired     {}", diagnostics.expired_products.join(", "));
+        if diagnostics.dry_shards > 0 {
+            println!("dry         {} shard(s) the baker measured as rain-free", diagnostics.dry_shards);
         }
         // Two lines, because they are two different disclosures: the service half is
         // coordinate-free and the MET half is the one request that carries the position.
@@ -182,13 +165,10 @@ fn run() -> Result<(), String> {
         );
         println!("met         {} request(s), {} bytes", diagnostics.met_requests, diagnostics.met_bytes);
         if diagnostics.failed_frames > 0 {
-            println!("failed      {} frame(s)", diagnostics.failed_frames);
+            println!("failed      {} shard(s) — an object the manifest promised", diagnostics.failed_frames);
         }
-        if diagnostics.dropped_incompatible_frames > 0 {
-            println!(
-                "dropped     {} frame(s) whose lattice could not tile the window",
-                diagnostics.dropped_incompatible_frames
-            );
+        if diagnostics.dropped_oversize_frames > 0 {
+            println!("dropped     {} frame(s) to fit the producer cap", diagnostics.dropped_oversize_frames);
         }
         for line in &diagnostics.attribution {
             println!("attribution {line}");
