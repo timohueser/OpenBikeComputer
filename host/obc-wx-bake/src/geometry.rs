@@ -83,8 +83,8 @@ impl GridGeometry {
     /// timeline. The US product shipped a 27,000 x 34,000 forecast lattice over a 10,000 x 10,000
     /// observation, and every rider in CONUS lost the radar frame.
     pub fn nests_under(&self, coarser: &GridGeometry) -> bool {
-        coarser.cell_lat_udeg % self.cell_lat_udeg == 0
-            && coarser.cell_lon_udeg % self.cell_lon_udeg == 0
+        coarser.cell_lat_udeg.is_multiple_of(self.cell_lat_udeg)
+            && coarser.cell_lon_udeg.is_multiple_of(self.cell_lon_udeg)
             && (i64::from(coarser.south_lat_udeg) - i64::from(self.south_lat_udeg))
                 .rem_euclid(i64::from(self.cell_lat_udeg))
                 == 0
