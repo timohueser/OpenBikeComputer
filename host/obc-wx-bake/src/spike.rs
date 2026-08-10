@@ -48,6 +48,8 @@ pub const FRAME_STEP_MIN: i32 = 15;
 pub const CYCLE_BUDGET_SECONDS: f64 = 300.0;
 /// The production box: 4 vCPU / 8 GB KVM.
 pub const BOX_RAM_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// 96 cycles a day for 30 days: the R2 class-A write multiplier.
+pub const CYCLES_PER_MONTH: u64 = 96 * 30;
 
 // ---------------------------------------------------------------------------------------------
 // CLI
@@ -230,9 +232,20 @@ pub struct Mosaic {
 impl Mosaic {
     /// Bake the four production adapters off the checked-in fixtures, coarsest layer first.
     ///
-    /// Two wall clocks: the European fixtures were captured at 14:20Z and the American ones at
-    /// 16:58Z, so each pair is baked against its own `now`. The composed scene is therefore a
-    /// realistic global *shape*, not a real instant.
+    /// Three honest caveats about the scene this produces, none of which move a byte count:
+    ///
+    /// - **Two wall clocks.** The European fixtures were captured at 14:20Z and the American ones
+    ///   at 16:58Z, so each pair is baked against its own `now`. The composed scene is a realistic
+    ///   global *shape*, not a real instant.
+    /// - **The nine frames are not nine independent global scenes.** The GFS floor is hourly, so
+    ///   `Layer::nearest` maps canonical leads 0..90 min onto one +60 min field and 105/120 onto
+    ///   +120. Since the floor covers ~96 % of the lattice, seven of nine frames share one floor.
+    ///   Tiles are encoded independently with no cross-frame coding, so sizes are unaffected — but
+    ///   nothing here supports a claim about inter-frame variability.
+    /// - **GFS does not quite close the globe.** Its window is 1439 x 719 cells spanning
+    ///   +/-179.875 / +/-89.875 degrees, so ~1.4 M canonical cells (0.2 %) at the poles and the
+    ///   antimeridian have no source at all and stay at intensity 15. Those tiles are therefore
+    ///   permanently non-dry, which very slightly inflates the non-dry tile fraction.
     fn from_fixtures(dir: &Path) -> Result<Self, String> {
         let mut products = Vec::new();
         let mut european = european_upstream(dir)?;
@@ -615,7 +628,7 @@ fn encode_shard(mosaic: &Mosaic, job: ShardJob, lead_min: i32, scene: Scene) -> 
             gather_tile(&cells, &geometry, tile_col, tile_row, &mut scratch);
             let packed = raw4_pack(&scratch);
             let started = Instant::now();
-            stats.lz_bytes += deflate(&packed, 6) as u64;
+            stats.lz_bytes += deflate(&packed, 6).len() as u64;
             stats.lz_time += started.elapsed();
         }
         if (tile_col + 1) * edge > geometry.width || (tile_row + 1) * edge > geometry.height {
@@ -651,7 +664,14 @@ fn run_cycle_matrix(
     (stats, started.elapsed())
 }
 
-fn report_cycle(label: &str, shard: (u32, u32), tile_edge: u16, stats: &ObjectStats, wall: Duration) {
+fn report_cycle(
+    label: &str,
+    shard: (u32, u32),
+    tile_edge: u16,
+    stats: &ObjectStats,
+    wall: Duration,
+    memory: MemoryShape,
+) {
     let windows = shard_windows(shard).len();
     println!(
         "  {label:18} tile {tile_edge:3}  shard {}x{} ({windows} shards)  wall {:7.2} s  objects {:5}  \
@@ -676,7 +696,8 @@ fn report_cycle(label: &str, shard: (u32, u32), tile_edge: u16, stats: &ObjectSt
         bytes(stats.dry_shard_bytes)
     );
     println!(
-        "  {:18} cpu-seconds: fill {:.1}, encode {:.1}, self-validate {:.1}; publishable (skipping dry shards) {}",
+        "  {:18} thread-occupancy s (sum of per-task elapsed, ~5% over real CPU): fill {:.1}, encode {:.1}, \
+         self-validate {:.1}; bytes excluding all-dry shards {}",
         "",
         stats.fill.as_secs_f64(),
         stats.encode.as_secs_f64(),
@@ -686,7 +707,8 @@ fn report_cycle(label: &str, shard: (u32, u32), tile_edge: u16, stats: &ObjectSt
     if stats.lz_time > Duration::ZERO {
         let lz_total = stats.directory_bytes + stats.lz_bytes + u64::from(obcg::HEADER_LEN as u32) * stats.objects;
         println!(
-            "  {:18} per-tile deflate6 instead of raw4/RLE4: total {} ({:.2}x smaller), payload {} -> {},              +{:.1} cpu-seconds",
+            "  {:18} per-tile deflate6 instead of raw4/RLE4: total {} ({:.2}x smaller), payload {} -> {}, \
+         +{:.1} thread-occupancy s",
             "",
             bytes(lz_total),
             stats.bytes as f64 / lz_total.max(1) as f64,
@@ -694,6 +716,42 @@ fn report_cycle(label: &str, shard: (u32, u32), tile_edge: u16, stats: &ObjectSt
             bytes(stats.lz_bytes),
             stats.lz_time.as_secs_f64()
         );
+    }
+    println!(
+        "  {:18} memory shape: {} resident upstream layers + {} threads x {} per-shard working set \
+         = {} steady state (a materialised global mosaic would be {} of cells alone)",
+        "",
+        bytes(memory.resident_layers),
+        memory.threads,
+        bytes(memory.per_shard),
+        bytes(memory.resident_layers + memory.threads as u64 * memory.per_shard),
+        bytes(u64::from(LATTICE_WIDTH) * u64::from(LATTICE_HEIGHT))
+    );
+}
+
+/// The working set the GO verdict is conditional on: the spike streams **one shard per thread**
+/// and never materialises the global mosaic. Deliverable 1 of #1240 asked for peak RSS "per
+/// shard"; `ru_maxrss` is a monotonic process-wide high-water mark and structurally cannot give
+/// that, so this is the honest answer — the shape, computed from the sizes actually allocated.
+#[derive(Clone, Copy)]
+struct MemoryShape {
+    resident_layers: u64,
+    per_shard: u64,
+    threads: usize,
+}
+
+impl MemoryShape {
+    fn of(mosaic: &Mosaic, shard: (u32, u32), tile_edge: u16, threads: usize) -> Self {
+        let resident_layers = mosaic
+            .layers
+            .iter()
+            .map(|layer| layer.frames.iter().map(|(_, frame)| frame.cells.len() as u64).sum::<u64>())
+            .sum();
+        // Per shard: the cell buffer, the encode output (bounded by raw4 of every tile), one
+        // tile scratch, and the deflate scratch the LZ pass uses.
+        let cells = u64::from(shard.0) * u64::from(shard.1);
+        let tile = u64::from(tile_edge) * u64::from(tile_edge);
+        Self { resident_layers, per_shard: cells + cells / 2 + tile + tile, threads }
     }
 }
 
@@ -707,12 +765,15 @@ fn phase_cycle(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
     for &tile_edge in &options.tile_edges {
         for scene in [Scene::Wet, Scene::Dry] {
             let (stats, wall) = run_cycle_matrix(mosaic, shard, tile_edge, options.entries_per_page, scene, true);
-            report_cycle(scene.label(), shard, tile_edge, &stats, wall);
+            let memory = MemoryShape::of(mosaic, shard, tile_edge, options.threads);
+            report_cycle(scene.label(), shard, tile_edge, &stats, wall, memory);
             let verdict = if wall.as_secs_f64() <= CYCLE_BUDGET_SECONDS { "WITHIN" } else { "OVER" };
             println!(
-                "  {:18} => {verdict} the {CYCLE_BUDGET_SECONDS:.0} s budget ({:.1}x), peak RSS {} of {} box RAM",
+                "  {:18} => {verdict} the {CYCLE_BUDGET_SECONDS:.0} s **wall** budget ({:.1}x on {} threads); \
+         process peak RSS so far {} of {} box RAM (ru_maxrss is a running high-water mark, not a per-row figure)",
                 "",
                 CYCLE_BUDGET_SECONDS / wall.as_secs_f64(),
+                options.threads,
                 bytes(peak_rss_bytes()),
                 bytes(BOX_RAM_BYTES)
             );
@@ -722,7 +783,9 @@ fn phase_cycle(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
 }
 
 fn phase_shard(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
-    let tile_edge = *options.tile_edges.first().expect("checked non-empty");
+    // The largest edge under test, not the first: this table is read alongside the recommended
+    // tile edge, and heading it with whatever happened to be first in --tile-edges is a trap.
+    let tile_edge = *options.tile_edges.iter().max().expect("checked non-empty");
     println!("\n## Phase 2 — shard size sweep (wet mosaic, tile edge {tile_edge})");
     println!("  a 90 km disc is 2.516 deg x 1.617 deg at 50 N; E[objects] = (1 + 2.516/deg_w)(1 + 1.617/deg_h)");
     for &shard in &options.shards {
@@ -731,13 +794,16 @@ fn phase_shard(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
         let degrees_w = f64::from(shard.0) / 100.0;
         let degrees_h = f64::from(shard.1) / 100.0;
         let expected = (1.0 + 2.516 / degrees_w) * (1.0 + 1.617 / degrees_h);
-        report_cycle("wet (real mosaic)", shard, tile_edge, &stats, wall);
+        let memory = MemoryShape::of(mosaic, shard, tile_edge, options.threads);
+        report_cycle("wet (real mosaic)", shard, tile_edge, &stats, wall, memory);
         println!(
             "  {:18} {cells} cells/shard ({:.0}% of the 30 M ceiling), {degrees_w:.1} deg x {degrees_h:.1} deg, \
-             E[objects per corridor frame] {expected:.2}, R2 class-A writes/month {}",
+             E[objects per corridor frame] {expected:.2}, R2 class-A writes/month {} (every shard + the manifest PUT; \
+             {} of those objects were all-dry)",
             "",
             100.0 * cells as f64 / obcg::MAX_GRID_CELLS as f64,
-            thousands((stats.objects - stats.dry_shard_objects) * 2_880)
+            thousands((stats.objects + 1) * CYCLES_PER_MONTH),
+            stats.dry_shard_objects
         );
     }
     Ok(())
@@ -815,6 +881,21 @@ struct CodecTotals {
     deflate_time: Duration,
 }
 
+impl CodecTotals {
+    fn merge(&mut self, other: &CodecTotals) {
+        self.tiles += other.tiles;
+        self.cells += other.cells;
+        self.raw4 += other.raw4;
+        self.rle4 += other.rle4;
+        self.canonical += other.canonical;
+        self.deflate_nibbles += other.deflate_nibbles;
+        self.deflate_bytes_input += other.deflate_bytes_input;
+        self.deflate_fast += other.deflate_fast;
+        self.canonical_time += other.canonical_time;
+        self.deflate_time += other.deflate_time;
+    }
+}
+
 /// The tile a `tile_edge`-tiled OBCG object would encode at `(tile_col, tile_row)`, with the
 /// north/east padding cells at no-data exactly as `OBCG_Spec` §5 requires.
 fn gather_tile(cells: &[u8], geometry: &GridGeometry, tile_col: u32, tile_row: u32, out: &mut [u8]) {
@@ -836,10 +917,16 @@ fn raw4_pack(cells: &[u8]) -> Vec<u8> {
     cells.chunks_exact(2).map(|pair| pair[0] | (pair[1] << 4)).collect()
 }
 
-fn deflate(data: &[u8], level: u32) -> usize {
+fn deflate(data: &[u8], level: u32) -> Vec<u8> {
     let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(level));
     encoder.write_all(data).expect("deflate into a Vec cannot fail");
-    encoder.finish().expect("deflate finish").len()
+    encoder.finish().expect("deflate finish")
+}
+
+fn inflate(data: &[u8]) -> Vec<u8> {
+    let mut decoder = flate2::write::DeflateDecoder::new(Vec::new());
+    decoder.write_all(data).expect("inflate into a Vec cannot fail");
+    decoder.finish().expect("inflate finish")
 }
 
 fn phase_codec(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
@@ -852,13 +939,14 @@ fn phase_codec(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
             u32::from(tile_edge).pow(2) / 2
         );
         println!(
-            "  {:14} {:>7} {:>11} {:>11} {:>11} {:>11} {:>11}  {:>7} {:>7}",
-            "region", "tiles", "raw4", "RLE4", "canonical", "deflate6", "deflate1", "vs canon", "MB/s"
+            "  {:14} {:>7} {:>11} {:>11} {:>11} {:>11} {:>11}  {:>8} {:>13}",
+            "region", "tiles", "raw4", "RLE4", "canonical", "deflate6", "deflate1", "vs canon", "deflate6(1B/cell)"
         );
+        let mut all = CodecTotals::default();
         for region in &REGIONS {
             let totals = measure_region(mosaic, region, tile_edge, options)?;
             println!(
-                "  {:14} {:>7} {:>11} {:>11} {:>11} {:>11} {:>11}  {:>6.2}x {:>7.0}",
+                "  {:14} {:>7} {:>11} {:>11} {:>11} {:>11} {:>11}  {:>7.2}x {:>13}",
                 region.name,
                 totals.tiles,
                 bytes(totals.raw4),
@@ -867,17 +955,21 @@ fn phase_codec(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
                 bytes(totals.deflate_nibbles),
                 bytes(totals.deflate_fast),
                 totals.canonical as f64 / totals.deflate_nibbles.max(1) as f64,
-                (totals.raw4 as f64 / 1e6) / totals.deflate_time.as_secs_f64().max(1e-9)
+                bytes(totals.deflate_bytes_input)
             );
-            println!(
-                "  {:14} {}   deflate6 over 1-byte-per-cell input {} ({:.2}x canonical); canonical encode {:.0} MB/s",
-                "",
-                region.note,
-                bytes(totals.deflate_bytes_input),
-                totals.canonical as f64 / totals.deflate_bytes_input.max(1) as f64,
-                (totals.raw4 as f64 / 1e6) / totals.canonical_time.as_secs_f64().max(1e-9)
-            );
+            println!("  {:14} {}", "", region.note);
+            all.merge(&totals);
         }
+        println!(
+            "  {:14} aggregate over all four regions ({} tiles, {} of raw4): canonical encode {:.0} MB/s, \
+             deflate6 {:.0} MB/s — one timing over the whole block, because per-region timings of a \
+             handful of tiles are noise",
+            "",
+            all.tiles,
+            bytes(all.raw4),
+            (all.raw4 as f64 / 1e6) / all.canonical_time.as_secs_f64().max(1e-9),
+            (all.raw4 as f64 / 1e6) / all.deflate_time.as_secs_f64().max(1e-9)
+        );
         let dry = dry_tile_totals(tile_edge);
         println!(
             "  {:14} {:>7} {:>11} {:>11} {:>11} {:>11} {:>11}",
@@ -904,8 +996,8 @@ fn dry_tile_totals(tile_edge: u16) -> CodecTotals {
         raw4: (cells.len() / 2) as u64,
         rle4: (cells.len() / 16) as u64,
         canonical: precip4::encoded_cells_len(&cells).expect("dry tile") as u64,
-        deflate_nibbles: deflate(&packed, 6) as u64,
-        deflate_fast: deflate(&packed, 1) as u64,
+        deflate_nibbles: deflate(&packed, 6).len() as u64,
+        deflate_fast: deflate(&packed, 1).len() as u64,
         ..CodecTotals::default()
     }
 }
@@ -948,10 +1040,10 @@ fn measure_region(mosaic: &Mosaic, region: &Region, tile_edge: u16, options: &Op
         totals.canonical_time += started.elapsed();
         totals.canonical += u64::from(encoding.encoded_len);
         let started = Instant::now();
-        totals.deflate_nibbles += deflate(&packed, 6) as u64;
+        totals.deflate_nibbles += deflate(&packed, 6).len() as u64;
         totals.deflate_time += started.elapsed();
-        totals.deflate_bytes_input += deflate(tile, 6) as u64;
-        totals.deflate_fast += deflate(&packed, 1) as u64;
+        totals.deflate_bytes_input += deflate(tile, 6).len() as u64;
+        totals.deflate_fast += deflate(&packed, 1).len() as u64;
     }
     if let Some(root) = &options.dump_tiles {
         dump(root, region.name, tile_edge, &sample)?;
@@ -994,27 +1086,34 @@ fn dump(root: &Path, region: &str, tile_edge: u16, tiles: &[&Vec<u8>]) -> Result
 
 const CORRIDOR_RADIUS_M: f64 = 90_000.0;
 /// The site phase 4b measures the OBCG fetch cost at: mid-latitude, inside 1 km radar coverage.
-const CORRIDOR_FETCH_SITE: Site = Site { name: "Frankfurt 50.1N", lat_deg: 50.11, lon_deg: 8.68 };
+const CORRIDOR_FETCH_SITE: Site =
+    Site { name: "Frankfurt 50.1N", lat_deg: 50.11, lon_deg: 8.68, source: "DWD RV 1 km, all 9" };
 const METRES_PER_DEGREE_LAT: f64 = 111_320.0;
 /// `OBCW_Spec` §2's current producer policy, and WXR5's proposed replacement.
 const OBCW_PRODUCER_CAP: u64 = 65_536;
 const OBCW_PROPOSED_CAP: u64 = 262_144;
+/// `OBCW_Spec` §2's fixed sections for a nine-frame bundle: header + hourly + frame descriptors.
+const OBCW_FIXED: u64 = 112 + 24 * 24 + 48 * CYCLE_FRAMES as u64;
 
 struct Site {
     name: &'static str,
     lat_deg: f64,
     lon_deg: f64,
+    /// Which fixture source actually paints this corridor. It is the difference between a
+    /// measured bundle that means something and one that is 6.5 km model fill replicated 7x7 —
+    /// the most RLE4-friendly shape that exists. Only Frankfurt is 1 km radar in all nine frames.
+    source: &'static str,
 }
 
 /// Ordered by latitude: a 90 km disc costs *more* columns the further **north** a rider is,
 /// because a degree of longitude shrinks. The worst case is the top of the list, not 50 N.
 const SITES: [Site; 6] = [
-    Site { name: "Tromso 69.6N", lat_deg: 69.65, lon_deg: 18.96 },
-    Site { name: "Reykjavik 64.1N", lat_deg: 64.13, lon_deg: -21.90 },
-    Site { name: "Oslo 59.9N", lat_deg: 59.91, lon_deg: 10.75 },
-    Site { name: "Frankfurt 50.1N", lat_deg: 50.11, lon_deg: 8.68 },
-    Site { name: "Chicago 41.9N", lat_deg: 41.88, lon_deg: -87.63 },
-    Site { name: "Bogota 4.7N", lat_deg: 4.71, lon_deg: -74.07 },
+    Site { name: "Tromso 69.6N", lat_deg: 69.65, lon_deg: 18.96, source: "ICON-EU 6.5 km fill" },
+    Site { name: "Reykjavik 64.1N", lat_deg: 64.13, lon_deg: -21.90, source: "ICON-EU 6.5 km fill" },
+    Site { name: "Oslo 59.9N", lat_deg: 59.91, lon_deg: 10.75, source: "ICON-EU 6.5 km fill" },
+    Site { name: "Frankfurt 50.1N", lat_deg: 50.11, lon_deg: 8.68, source: "DWD RV 1 km, all 9" },
+    Site { name: "Chicago 41.9N", lat_deg: 41.88, lon_deg: -87.63, source: "MRMS 1 km f0, HRRR 3 km" },
+    Site { name: "Bogota 4.7N", lat_deg: 4.71, lon_deg: -74.07, source: "GFS 27.75 km floor" },
 ];
 
 fn corridor_window(site: &Site) -> Window {
@@ -1027,20 +1126,48 @@ fn corridor_window(site: &Site) -> Window {
     Window { col0: col0.floor() as u32, row0: row0.floor() as u32, width, height }
 }
 
+/// How many lattice columns the phone merges to reach ~1 km **physical** cells at `lat_deg`.
+///
+/// A 0.01 degree column is `111.32 x cos(lat)` km wide, so the degree lattice oversamples
+/// east-west by `1/cos(lat)` — 1.6x at 50 N, 2.9x at Tromso. Merging that many columns is
+/// information-lossless (no source is finer than ~1 km) and makes a fixed-radius corridor cost
+/// the same number of cells at every latitude. `1` at the equator, i.e. a no-op.
+fn column_group(lat_deg: f64) -> u32 {
+    (1.0 / lat_deg.to_radians().cos()).round().max(1.0) as u32
+}
+
 /// Exact OBCW v1 byte cost of a nine-frame bundle over `window`, per `OBCW_Spec` §§2-6.
 /// OBCW has no dry sentinel: a dry 256-cell tile still costs 16 RLE4 bytes.
-fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, worst_case: bool) -> (u64, u64, u64) {
-    let tile_cols = window.width.div_ceil(16) as usize;
+///
+/// `group` merges that many lattice columns into one bundle column, taking the **maximum**
+/// intensity of the group — the only safe reduction for precipitation, because it can never turn
+/// rain into dry, and no-data (15) only survives where every source column was no-data.
+fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, group: u32, worst_case: bool) -> (u64, u64, u64) {
+    let width = window.width.div_ceil(group);
+    let tile_cols = width.div_ceil(16) as usize;
     let tile_rows = window.height.div_ceil(16) as usize;
     let tile_count = (tile_cols * tile_rows) as u64;
     let mut payload = 0u64;
     let mut cells = vec![precip4::INTENSITY_NODATA; window.cells()];
+    let mut reduced = vec![precip4::INTENSITY_NODATA; width as usize * window.height as usize];
     for frame in 0..CYCLE_FRAMES as i32 {
         if worst_case {
             payload += tile_count * 128;
             continue;
         }
         mosaic.fill(frame * FRAME_STEP_MIN, window, &mut cells);
+        for row in 0..window.height as usize {
+            let source = &cells[row * window.width as usize..(row + 1) * window.width as usize];
+            let destination = &mut reduced[row * width as usize..(row + 1) * width as usize];
+            for (index, cell) in destination.iter_mut().enumerate() {
+                let first = index * group as usize;
+                let last = (first + group as usize).min(source.len());
+                // No-data must not win over a real reading, and rain must not lose to dry.
+                let span = &source[first..last];
+                let strongest = span.iter().copied().filter(|&value| value != precip4::INTENSITY_NODATA).max();
+                *cell = strongest.unwrap_or(precip4::INTENSITY_NODATA);
+            }
+        }
         for tile_row in 0..tile_rows {
             for tile_col in 0..tile_cols {
                 let mut tile = [precip4::INTENSITY_NODATA; 256];
@@ -1051,10 +1178,10 @@ fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, worst_case: bool) -> (u64,
                     }
                     for column in 0..16 {
                         let global_col = tile_col * 16 + column;
-                        if global_col >= window.width as usize {
+                        if global_col >= width as usize {
                             continue;
                         }
-                        tile[row * 16 + column] = cells[global_row * window.width as usize + global_col];
+                        tile[row * 16 + column] = reduced[global_row * width as usize + global_col];
                     }
                 }
                 payload += precip4::encoded_tile_len(&tile).expect("corridor tile") as u64;
@@ -1062,30 +1189,73 @@ fn obcw_bundle_bytes(mosaic: &Mosaic, window: Window, worst_case: bool) -> (u64,
         }
     }
     let directory = tile_count * 12 * u64::from(CYCLE_FRAMES);
-    let fixed = 112 + 24 * 24 + 48 * u64::from(CYCLE_FRAMES);
-    (fixed + directory + payload, tile_count, directory)
+    (OBCW_FIXED + directory + payload, tile_count, directory)
 }
 
 fn phase_corridor(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
     println!("\n## Phase 4a — the OBCW corridor bundle: 90 km disc, 1 km lattice, {CYCLE_FRAMES} frames");
     println!("  OBCW has no dry sentinel, so a dry 16x16 tile still costs 16 RLE4 bytes.");
     println!(
-        "  {:18} {:>11} {:>7} {:>10} {:>12} {:>12}  verdict",
-        "site", "cells/frame", "tiles", "dir/frame", "measured", "raw4 worst"
+        "  {:18} {:24} {:>11} {:>7} {:>10} {:>12} {:>12}  {:>13}  verdict",
+        "site", "what paints it", "cells/frame", "tiles", "dir/frame", "measured", "raw4 worst", "radar-scaled"
+    );
+    let reference = corridor_window(&CORRIDOR_FETCH_SITE);
+    let (reference_bytes, reference_tiles, reference_directory) = obcw_bundle_bytes(mosaic, reference, 1, false);
+    let frankfurt_payload_per_tile =
+        (reference_bytes - reference_directory - OBCW_FIXED) / (reference_tiles * u64::from(CYCLE_FRAMES));
+    println!(
+        "  radar-scaled = the same tile count priced at Frankfurt's measured {frankfurt_payload_per_tile} B/tile \
+         of genuine 1 km radar."
     );
     for site in &SITES {
         let window = corridor_window(site);
-        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, false);
-        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, true);
+        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, 1, false);
+        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, 1, true);
+        // What the site would measure under genuine 1 km radar texture, priced from Frankfurt's
+        // own per-tile payload — the only site in the table that is radar-covered in all nine
+        // frames. Without this the northern rows read as reassurance they have not earned.
+        let radar_scaled = OBCW_FIXED + directory + tiles * u64::from(CYCLE_FRAMES) * frankfurt_payload_per_tile;
         println!(
-            "  {:18} {:>4} x {:<4} {:>7} {:>10} {:>12} {:>12}  {} / {}",
+            "  {:18} {:24} {:>4} x {:<4} {:>7} {:>10} {:>12} {:>12}  {:>13}  {} / {}",
             site.name,
+            site.source,
             window.width,
             window.height,
             tiles,
             bytes(directory / u64::from(CYCLE_FRAMES)),
             bytes(measured),
             bytes(worst),
+            bytes(radar_scaled),
+            if measured <= OBCW_PRODUCER_CAP { "fits 64 KiB" } else { "OVER 64 KiB" },
+            if radar_scaled <= OBCW_PROPOSED_CAP { "radar-scaled fits 256 KiB" } else { "radar-scaled OVER 256 KiB" }
+        );
+    }
+
+    println!("\n## Phase 4a-norm — the same bundles after the phone normalises columns to ~1 km physical");
+    println!(
+        "  The degree lattice oversamples east-west by 1/cos(lat). Merging that many columns is \
+         lossless (no source is finer than ~1 km) and makes the bundle latitude-independent."
+    );
+    println!(
+        "  {:18} {:>6} {:>11} {:>7} {:>12} {:>12} {:>13}  verdict",
+        "site", "merge", "cells/frame", "tiles", "measured", "raw4 worst", "radar-scaled"
+    );
+    for site in &SITES {
+        let window = corridor_window(site);
+        let group = column_group(site.lat_deg);
+        let (measured, tiles, directory) = obcw_bundle_bytes(mosaic, window, group, false);
+        let (worst, _, _) = obcw_bundle_bytes(mosaic, window, group, true);
+        let radar_scaled = OBCW_FIXED + directory + tiles * u64::from(CYCLE_FRAMES) * frankfurt_payload_per_tile;
+        println!(
+            "  {:18} {:>5}x {:>4} x {:<4} {:>7} {:>12} {:>12} {:>13}  {} / {}",
+            site.name,
+            group,
+            window.width.div_ceil(group),
+            window.height,
+            tiles,
+            bytes(measured),
+            bytes(worst),
+            bytes(radar_scaled),
             if measured <= OBCW_PRODUCER_CAP { "fits 64 KiB" } else { "OVER 64 KiB" },
             if worst <= OBCW_PROPOSED_CAP { "worst fits 256 KiB" } else { "worst OVER 256 KiB" }
         );
@@ -1097,98 +1267,139 @@ fn phase_corridor(options: &Options, mosaic: &Mosaic) -> Result<(), String> {
         CORRIDOR_FETCH_SITE.name, options.shards[0].0, options.shards[0].1
     );
     println!(
-        "  {:>5} {:>6} {:>7} {:>12} {:>10} {:>12} {:>14} {:>14}",
-        "tile", "epp", "tiles", "over-fetch", "pages", "page bytes", "fetched RLE4", "fetched LZ"
+        "  {:>5} {:>6} {:>8} {:>7} {:>11} {:>7} {:>12} {:>14} {:>14} {:>13}",
+        "tile",
+        "epp",
+        "objects",
+        "tiles",
+        "over-fetch",
+        "pages",
+        "page bytes",
+        "fetched RLE4",
+        "fetched LZ",
+        "inflate+scan"
     );
     let window = corridor_window(&CORRIDOR_FETCH_SITE);
-    let shard = shard_of(options.shards[0], window);
     for &tile_edge in &options.tile_edges {
         for entries_per_page in [128u16, 512, obcg::MAX_ENTRIES_PER_PAGE] {
-            let job = ShardJob { window: shard, tile_edge, entries_per_page, lz: false };
-            let cost = corridor_fetch_cost(mosaic, shard, window, job);
+            let cost = corridor_fetch_cost(mosaic, options.shards[0], window, tile_edge, entries_per_page);
             println!(
-                "  {tile_edge:>5} {entries_per_page:>6} {:>7} {:>11.1}x {:>10} {:>12} {:>14} {:>14}",
+                "  {tile_edge:>5} {entries_per_page:>6} {:>8} {:>7} {:>10.1}x {:>7} {:>12} {:>14} {:>14} {:>10.2} ms",
+                cost.objects_per_frame * u64::from(CYCLE_FRAMES),
                 cost.tiles,
                 (cost.tiles * u64::from(tile_edge).pow(2)) as f64
                     / (u64::from(window.width) * u64::from(window.height) * u64::from(CYCLE_FRAMES)) as f64,
                 cost.pages,
                 bytes(cost.page_bytes),
                 bytes(cost.fetched),
-                bytes(cost.fetched_lz)
+                bytes(cost.fetched_lz),
+                cost.inflate_scan.as_secs_f64() * 1000.0
             );
         }
     }
+    println!(
+        "  inflate+scan is the whole nine-frame bundle on one core of this box; a phone core is \
+         slower, but the ratio between tile edges is what the tile-edge decision turns on."
+    );
     Ok(())
 }
 
 #[derive(Default)]
 struct FetchCost {
+    /// OBCG objects the corridor touches per frame — the WXR4 #1243 tradeoff, measured rather
+    /// than taken from the E[objects] formula.
+    objects_per_frame: u64,
     tiles: u64,
     pages: u64,
     page_bytes: u64,
     fetched: u64,
     /// The same fetch if the tile payloads were per-tile deflate6 instead of raw4/RLE4.
     fetched_lz: u64,
+    /// Phone-side cost of the over-fetch: inflating every fetched tile and unpacking its nibbles
+    /// into cells, for the whole nine-frame bundle. This is the number the tile-edge decision
+    /// was otherwise being made without.
+    inflate_scan: Duration,
 }
 
-/// What nine Range-read frames of one corridor cost out of the OBCG shard that contains it.
-fn corridor_fetch_cost(mosaic: &Mosaic, shard: Window, window: Window, job: ShardJob) -> FetchCost {
-    let geometry = geometry_for(shard, job.tile_edge, job.entries_per_page);
-    let mut cost = FetchCost::default();
-    let mut cells = vec![precip4::INTENSITY_NODATA; shard.cells()];
-    let mut scratch = vec![0u8; usize::from(job.tile_edge) * usize::from(job.tile_edge)];
-    for lead in 0..CYCLE_FRAMES as i32 {
-        mosaic.fill(lead * FRAME_STEP_MIN, shard, &mut cells);
-        let input = frame_input(&geometry, &cells, lead * FRAME_STEP_MIN);
-        let length = obcg::encoded_len(&input, &mut scratch).expect("corridor shard length") as usize;
-        let mut object = vec![0u8; length];
-        obcg::encode_format(&input, &mut scratch, &mut object).expect("corridor shard encode");
-        let header = obcg::validate(&object, &mut scratch).expect("corridor shard validation");
-        let edge = u32::from(job.tile_edge);
-        let first_col = (window.col0 - shard.col0) / edge;
-        let last_col = (window.col0 + window.width - 1 - shard.col0) / edge;
-        let first_row = (window.row0 - shard.row0) / edge;
-        let last_row = (window.row0 + window.height - 1 - shard.row0) / edge;
-        let mut page_set = std::collections::BTreeSet::new();
-        cost.fetched += obcg::HEADER_LEN as u64;
-        for tile_row in first_row..=last_row {
-            for tile_col in first_col..=last_col {
-                let index = tile_row * header.tile_cols() + tile_col;
-                let page = header.page_of_entry(index);
-                page_set.insert(page);
-                let offset = header.page_offset(page).expect("page offset") as usize;
-                let page_slice = &object[offset..offset + header.page_bytes() as usize];
-                let entry =
-                    obcg::decode_entry(page_slice, (index - page * u32::from(header.entries_per_page)) as usize)
-                        .expect("corridor entry");
-                cost.tiles += 1;
-                cost.fetched += u64::from(entry.encoded_len);
-                if entry.is_dry() {
-                    continue;
-                }
-                gather_tile(&cells, &geometry, tile_col, tile_row, &mut scratch);
-                cost.fetched_lz += deflate(&raw4_pack(&scratch), 6) as u64;
-            }
-        }
-        cost.pages += page_set.len() as u64;
-        cost.page_bytes += page_set.len() as u64 * u64::from(header.page_bytes());
-        cost.fetched += page_set.len() as u64 * u64::from(header.page_bytes());
-        cost.fetched_lz += page_set.len() as u64 * u64::from(header.page_bytes()) + obcg::HEADER_LEN as u64;
-    }
-    cost
-}
-
-/// The shard containing a window's south-west corner (corridors here never straddle one).
-fn shard_of(shard: (u32, u32), window: Window) -> Window {
+/// Every shard of the grid the corridor window overlaps. A corridor near a shard seam legitimately
+/// straddles two or four objects; refusing to model that would hide the exact cost #1243 asks about.
+fn shards_covering(shard: (u32, u32), window: Window) -> Vec<Window> {
     shard_windows(shard)
         .into_iter()
-        .find(|candidate| {
-            window.col0 >= candidate.col0
-                && window.col0 + window.width <= candidate.col0 + candidate.width
-                && window.row0 >= candidate.row0
-                && window.row0 + window.height <= candidate.row0 + candidate.height
+        .filter(|candidate| {
+            window.col0 < candidate.col0 + candidate.width
+                && candidate.col0 < window.col0 + window.width
+                && window.row0 < candidate.row0 + candidate.height
+                && candidate.row0 < window.row0 + window.height
         })
-        .expect("the spike's corridor sites sit inside one shard")
+        .collect()
+}
+
+/// What nine Range-read frames of one corridor cost out of the OBCG shards that cover it.
+fn corridor_fetch_cost(mosaic: &Mosaic, shard: (u32, u32), window: Window, tile_edge: u16, epp: u16) -> FetchCost {
+    let covering = shards_covering(shard, window);
+    let mut cost = FetchCost { objects_per_frame: covering.len() as u64, ..FetchCost::default() };
+    let edge = u32::from(tile_edge);
+    let mut scratch = vec![0u8; usize::from(tile_edge) * usize::from(tile_edge)];
+    for shard_window in covering {
+        let geometry = geometry_for(shard_window, tile_edge, epp);
+        let mut cells = vec![precip4::INTENSITY_NODATA; shard_window.cells()];
+        // The corridor clipped to this shard: a straddling corridor pays for its slice of each.
+        let clip_col0 = window.col0.max(shard_window.col0);
+        let clip_col1 = (window.col0 + window.width).min(shard_window.col0 + shard_window.width);
+        let clip_row0 = window.row0.max(shard_window.row0);
+        let clip_row1 = (window.row0 + window.height).min(shard_window.row0 + shard_window.height);
+        let first_col = (clip_col0 - shard_window.col0) / edge;
+        let last_col = (clip_col1 - 1 - shard_window.col0) / edge;
+        let first_row = (clip_row0 - shard_window.row0) / edge;
+        let last_row = (clip_row1 - 1 - shard_window.row0) / edge;
+        for lead in 0..CYCLE_FRAMES as i32 {
+            mosaic.fill(lead * FRAME_STEP_MIN, shard_window, &mut cells);
+            let input = frame_input(&geometry, &cells, lead * FRAME_STEP_MIN);
+            let length = obcg::encoded_len(&input, &mut scratch).expect("corridor shard length") as usize;
+            let mut object = vec![0u8; length];
+            obcg::encode_format(&input, &mut scratch, &mut object).expect("corridor shard encode");
+            let header = obcg::validate(&object, &mut scratch).expect("corridor shard validation");
+            let mut page_set = std::collections::BTreeSet::new();
+            cost.fetched += obcg::HEADER_LEN as u64;
+            for tile_row in first_row..=last_row {
+                for tile_col in first_col..=last_col {
+                    let index = tile_row * header.tile_cols() + tile_col;
+                    let page = header.page_of_entry(index);
+                    page_set.insert(page);
+                    let offset = header.page_offset(page).expect("page offset") as usize;
+                    let page_slice = &object[offset..offset + header.page_bytes() as usize];
+                    let entry =
+                        obcg::decode_entry(page_slice, (index - page * u32::from(header.entries_per_page)) as usize)
+                            .expect("corridor entry");
+                    cost.tiles += 1;
+                    cost.fetched += u64::from(entry.encoded_len);
+                    if entry.is_dry() {
+                        continue;
+                    }
+                    gather_tile(&cells, &geometry, tile_col, tile_row, &mut scratch);
+                    let compressed = deflate(&raw4_pack(&scratch), 6);
+                    cost.fetched_lz += compressed.len() as u64;
+                    // What the phone pays for the over-fetch: inflate, then unpack the nibbles
+                    // into one byte per cell, which is what a corridor crop reads.
+                    let started = Instant::now();
+                    let packed = inflate(&compressed);
+                    let mut unpacked = vec![0u8; packed.len() * 2];
+                    for (pair, byte) in unpacked.chunks_exact_mut(2).zip(&packed) {
+                        pair[0] = byte & 0x0f;
+                        pair[1] = byte >> 4;
+                    }
+                    cost.inflate_scan += started.elapsed();
+                    std::hint::black_box(&unpacked);
+                }
+            }
+            cost.pages += page_set.len() as u64;
+            cost.page_bytes += page_set.len() as u64 * u64::from(header.page_bytes());
+            cost.fetched += page_set.len() as u64 * u64::from(header.page_bytes());
+            cost.fetched_lz += page_set.len() as u64 * u64::from(header.page_bytes()) + obcg::HEADER_LEN as u64;
+        }
+    }
+    cost
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1294,8 +1505,50 @@ mod tests {
     /// The corridor window is the number WXR5 #1244 re-derived: 252 x 162 cells at 50 N.
     #[test]
     fn the_ninety_kilometre_disc_matches_the_re_derived_corridor() {
-        let window = corridor_window(&Site { name: "50 N", lat_deg: 50.0, lon_deg: 0.0 });
+        let window = corridor_window(&Site { name: "50 N", lat_deg: 50.0, lon_deg: 0.0, source: "n/a" });
         assert_eq!((window.width, window.height), (252, 162));
+    }
+
+    /// Timo's decision, as arithmetic: merging `round(1/cos lat)` columns bounds a fixed-radius
+    /// disc at every latitude, where the raw degree lattice grows without bound.
+    ///
+    /// It is a **bound**, not a constant — the merge factor is an integer, so rounding leaves up
+    /// to ~1.5x residual oversampling (Reykjavik's exact factor is 2.29 and it merges 2x, so it
+    /// keeps 186 columns rather than 162). That residual is what the 256 KiB cap absorbs.
+    #[test]
+    fn column_normalisation_bounds_the_corridor_at_every_latitude() {
+        let disc_columns = corridor_window(&Site { name: "eq", lat_deg: 0.0, lon_deg: 0.0, source: "n/a" }).width;
+        let ceiling = disc_columns * 3 / 2 + 1;
+        let mut widest_raw = 0;
+        for latitude in [0.0, 20.0, 40.0, 50.11, 59.91, 64.13, 69.65, 75.0, 80.0] {
+            let site = Site { name: "sweep", lat_deg: latitude, lon_deg: 0.0, source: "n/a" };
+            let window = corridor_window(&site);
+            widest_raw = widest_raw.max(window.width);
+            let normalised = window.width.div_ceil(column_group(latitude));
+            assert!(
+                normalised <= ceiling,
+                "{latitude} N normalises to {normalised} columns, over the {ceiling} the rounding allows"
+            );
+        }
+        assert!(widest_raw > 900, "the raw lattice must be the thing that runs away: {widest_raw}");
+        assert_eq!(column_group(0.0), 1, "the equator is a no-op");
+        assert_eq!(column_group(50.11), 2);
+        assert_eq!(column_group(69.65), 3);
+    }
+
+    /// A corridor that straddles a shard seam must be priced across every shard it overlaps, not
+    /// refused. This replaced an `.expect()` that aborted the whole rig on a plausible flag
+    /// combination.
+    #[test]
+    fn a_straddling_corridor_is_priced_across_every_shard_it_overlaps() {
+        let shard = (6_144u32, 4_608u32);
+        let inside = Window { col0: 100, row0: 100, width: 252, height: 162 };
+        assert_eq!(shards_covering(shard, inside).len(), 1);
+        // Straddling the first vertical seam, and then the first corner.
+        let seam = Window { col0: 6_144 - 100, row0: 100, width: 252, height: 162 };
+        assert_eq!(shards_covering(shard, seam).len(), 2);
+        let corner = Window { col0: 6_144 - 100, row0: 4_608 - 100, width: 252, height: 162 };
+        assert_eq!(shards_covering(shard, corner).len(), 4);
     }
 
     /// A dry OBCW tile costs 16 bytes and a dry OBCG tile costs nothing: the sentinel asymmetry
