@@ -16,7 +16,7 @@
 //! **Expiry is handled uniformly and it is never a deletion.** A carried product past its own
 //! `staleness_deadline` stays in the manifest — clients already refuse to use it, so it is
 //! visibly, honestly expired rather than quietly absent — but its frames are *exempt from the
-//! pre-swap fetchability proof*, because nothing may fetch them any more and the bucket's 48 h
+//! pre-swap fetchability proof*, because nothing may fetch them any more and the bucket's 24 h
 //! lifecycle rule is entitled to have deleted them. Both halves matter:
 //!
 //! * dropping an expired entry instead would make the product's own next tick find no previous
@@ -154,7 +154,7 @@ pub fn run_cycle(
 
     // What the publisher must prove fetchable before it swears the manifest is true: every frame
     // of every carried product that a client is still allowed to read. An expired product's
-    // frames are deliberately exempt — no client may fetch them, and the 48 h lifecycle rule is
+    // frames are deliberately exempt — no client may fetch them, and the 24 h lifecycle rule is
     // entitled to have collected them, so demanding they still exist would let one dead product
     // block every live one. Freshly baked frames are proven by `publish` itself.
     let mut carried_frames: Vec<(String, u64)> = Vec::new();

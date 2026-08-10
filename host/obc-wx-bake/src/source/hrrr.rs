@@ -24,16 +24,51 @@ use crate::source::{BakedFrame, FrameSource};
 
 pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
 
-/// The published window: a regular lat/lon cover of the Lambert domain at native ~3 km cells
-/// (27,000 x 34,000 microdegrees — 3.00 km north-south, 2.96 km east-west at the domain's 38.5 N
+/// The published window: a regular lat/lon cover of the Lambert domain at ~3 km cells
+/// (30,000 x 30,000 microdegrees — 3.34 km north-south, 2.61 km east-west at the domain's 38.5 N
 /// standard parallel). Cells outside the projected raster are no-data.
+///
+/// **The strides are deliberately multiples of MRMS's 10,000, and so is the origin.** These
+/// frames share a product with a 1 km MRMS observation ([`crate::source::us`]), and a client
+/// assembles a bundle by laying every frame onto one common window — the *coarsest* frame's
+/// extent — accepting a frame only if that window is a whole number of the frame's own cells and
+/// its origin sits on the frame's lattice (`obc-wx-client`'s `bundle::rain_frame`, mirroring the
+/// phone). The old 27,000 x 34,000 lattice divided neither, so the window these frames defined
+/// could not be tiled by the observation and **the 1 km frame was silently refused**: riders in
+/// CONUS saw model forecast frames and no radar at all. Nesting is therefore a contract, not a
+/// preference — see `nests_under` and the `us_frames_nest` test.
+///
+/// 30,000 in both axes is the choice that keeps the byte cost flat: 2,441 x 1,052 cells against
+/// the old 2,153 x 1,168, +2 %. The alternative that undersamples least (20,000 x 30,000) costs
+/// +50 % cells on every forward frame, which the corridor budget pays for by shrinking the
+/// window — and a shrunken window hurts the 1 km observation this change exists to preserve.
+///
+/// The trade is paid in resolution, and it is worth stating as a number rather than a shrug.
+/// Measured through [`crate::lcc::native_index`] over both lattices: of the 1,905,141 native 3 km
+/// cells, **123,789 (6.50 %) reached no output cell on 27,000 x 34,000, and 204,758 (10.75 %)
+/// reach none on 30,000 x 30,000**. So roughly one native cell in nine is now invisible in the
+/// forward frames, against one in fifteen before. What makes that acceptable rather than alarming
+/// is *how* the misses fall: the Lambert curvature scatters them across the **source** raster,
+/// where no row and no column of the 1,799 x 1,059 native grid is fully unsampled on either
+/// lattice, and no source cell is duplicated more than twice. (On the *output* side 2 of 1,052
+/// rows and 1 of 2,441 columns resolve to no source index at all — but those lie wholly outside
+/// the projected domain and emit NODATA, which is the correct answer rather than a gap: output
+/// row 0's centre is 21.115 N, south of the domain's southernmost point at 21.138 N.) An isolated
+/// convective cell can still be the one that vanishes — that is the honest residual risk of
+/// nearest-neighbour resampling at this ratio, and it applies to the model frames only, never to
+/// the radar observation.
+///
+/// Cell size in metres varies with latitude and the "~3 km" above is the standard parallel's
+/// figure: the longitude cell is 2.61 km at 38.5 N, 2.03 km at the 52.6 N bulge and 3.12 km at
+/// 21.1 N. `cell_size_m` stays 3,000 throughout: it states the *source's* ground resolution,
+/// never the lattice.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 21_100_000,
     west_lon_udeg: -134_100_000,
-    cell_lat_udeg: 27_000,
-    cell_lon_udeg: 34_000,
-    width: 2_153,
-    height: 1_168,
+    cell_lat_udeg: 30_000,
+    cell_lon_udeg: 30_000,
+    width: 2_441,
+    height: 1_052,
     cell_size_m: 3_000,
     tile_edge: 32,
     entries_per_page: 512,

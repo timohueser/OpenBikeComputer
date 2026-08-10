@@ -12,6 +12,18 @@ multi-frame table — the frame set, its keys and its policy metadata live in th
 (§10), so a product whose frames have heterogeneous geometry (a 1 km radar observation followed
 by 3 km model forward frames) composes with **no resampling, by construction**.
 
+That composition carries one normative obligation on the *publisher*. A consumer assembling a
+multi-frame bundle (OBCW) states one geographic window for the whole timeline and takes it from
+the coarsest frame; every other frame is laid onto that window at its own cell size, and a frame
+the window cannot tile exactly is **refused, never resampled**. A publisher MUST therefore ensure
+that within one product, every frame's lattice nests under every coarser frame's: each coarser
+frame's `cell_lat_udeg` and `cell_lon_udeg` MUST be integer multiples of the finer frame's, and
+the two grid origins MUST be congruent modulo the finer frame's cell size in each axis. A product
+violating this is not malformed OBCG — each object is individually valid — but consumers will
+silently drop frames from it, and the frame most likely to be dropped is the finest one, which is
+normally the radar observation. Publishers SHOULD verify this before publishing and fail the
+cycle rather than emit such a product.
+
 The consumer is an HTTP Range client that must never download a whole frame to answer a corridor
 question. The layout is therefore three sections — a fixed self-CRC'd header, a paged tile
 directory whose pages verify independently, and tightly packed tile payloads each carrying its
