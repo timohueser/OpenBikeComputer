@@ -1608,17 +1608,29 @@ impl App {
     /// never covered — the upload-popup family's rule). Alert *generation* — thresholds, dedup,
     /// cooldown persistence — is WX12's; this is only the presentation seam it (and the sim's
     /// injection flag) drives.
-    pub fn show_weather_alert(&mut self, kind: crate::screen::WeatherAlertKind, minutes: u16) {
+    ///
+    /// **Returns whether the alert actually reached the rider** — updated in place, or pushed.
+    /// `false` means it was refused (a passkey prompt on top, or a screen stack already at
+    /// [`MAX_DEPTH`](crate::screen::MAX_DEPTH)), and the caller must *not* record it as fired:
+    /// writing a dedup mark for a card nobody saw would sit on the storm for a whole persisted
+    /// cooldown in silence (review F4).
+    pub fn show_weather_alert(&mut self, kind: crate::screen::WeatherAlertKind, minutes: u16) -> bool {
         for scr in self.ui.stack.iter_mut() {
             if let Screen::WeatherAlert(alert) = scr {
                 if alert.update(kind, minutes) {
                     self.ui.map_dirty = true;
                 }
-                return;
+                return true;
             }
         }
         if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
-            return;
+            return false;
+        }
+        // The stack's own capacity, checked here rather than left to `apply`'s push: an overflow
+        // there no-ops silently in release (and trips a debug assert in test builds), so the one
+        // caller that must *know* asks first.
+        if self.ui.stack.len() >= crate::screen::MAX_DEPTH {
+            return false;
         }
         // Whether the card lands over an already-open rain map — its VIEW RAIN MAP action then
         // pops back to it instead of stacking a second one (review F4).
@@ -1632,6 +1644,7 @@ impl App {
             ))),
         );
         self.ui.map_dirty = true;
+        true
     }
 
     /// The rider's current travel direction (degrees CW from north) for route-relative wind — the
@@ -1643,10 +1656,16 @@ impl App {
 
     /// The WX12 ride projection for [`WeatherSnapshot::sample_along`](crate::weather::WeatherSnapshot::sample_along),
     /// or `None` when there is no matched active route (the host then samples at the fixed rider
-    /// position). Pace = the recent moving median, capped, with the documented touring fallback
-    /// while stopped; anchored at this instant's wall clock.
+    /// position — WX11's behaviour). Pace = the recent moving median, capped, with the documented
+    /// touring fallback while stopped; anchored at this instant's wall clock.
+    ///
+    /// **Off-route is `None`**, for the same reason [`travel_deg`](Self::travel_deg) switches to
+    /// the GPS course there: `progress_m` is the last match on a line the rider has left, so
+    /// projecting along it would answer the two-hour question about a route they aren't riding —
+    /// 20 km away, in the wrong weather. Falling back to rider-position sampling is the honest,
+    /// less-informative answer (review F1).
     pub fn ride_projection(&self) -> Option<crate::weather::RideProjection> {
-        if self.activity.active_route.is_none() || !self.ride.started() {
+        if self.activity.active_route.is_none() || !self.ride.started() || self.activity.off_route {
             return None;
         }
         let speed_cms = self
@@ -1669,13 +1688,14 @@ impl App {
     /// refreshes an already-open card's countdown in place. Call at fix/frame cadence with the
     /// same snapshot the screens render — cheap (a bounded scan), idempotent, deterministic.
     /// `None` (no snapshot) never alerts, and neither does expired data (the engine's law).
+    ///
+    /// **A mark is written only for a card the rider actually saw.** `show_weather_alert` can
+    /// refuse — a passkey prompt outranks it, and so does a screen stack already at `MAX_DEPTH` —
+    /// and marking a refused alert would suppress that storm for a whole *persisted* cooldown with
+    /// no card ever shown. So the refusal is read back, not assumed away (review F4); the next
+    /// tick, once the stack has room again, re-fires.
     pub fn weather_alert_tick(&mut self, snap: Option<&crate::weather::WeatherSnapshot>) {
         let Some(snap) = snap else { return };
-        // The passkey card outranks the alert (`show_weather_alert` would refuse the push) — so
-        // don't *mark* an alert the rider will never see; the next tick after pairing re-fires it.
-        if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
-            return;
-        }
         let now = self.wall_unix_now() as i64;
         let candidates = crate::weather_alerts::evaluate(snap, now);
         let open_card = self.ui.stack.iter().find_map(|s| match s {
@@ -1684,11 +1704,12 @@ impl App {
         });
         match crate::weather_alerts::govern(&candidates, &self.settings.weather_alert_marks, open_card) {
             crate::weather_alerts::AlertAction::Fire(c) => {
-                self.settings.weather_alert_marks[c.class.slot()] = Some(crate::weather_alerts::mark_of(&c));
-                // The mark must survive the next boot: arm the #810 persistence handshake exactly
-                // like a rider edit (alert-fire rate, so the store write cost is negligible).
-                self.host.note_settings_edited();
-                self.show_weather_alert(c.class.kind(), c.minutes);
+                if self.show_weather_alert(c.class.kind(), c.minutes) {
+                    self.settings.weather_alert_marks[c.class.slot()] = Some(crate::weather_alerts::mark_of(&c));
+                    // The mark must survive the next boot: arm the #810 persistence handshake
+                    // exactly like a rider edit (alert-fire rate, so the write cost is negligible).
+                    self.host.note_settings_edited();
+                }
             }
             crate::weather_alerts::AlertAction::Update(c) => {
                 self.show_weather_alert(c.class.kind(), c.minutes);
@@ -6736,6 +6757,40 @@ mod tests {
         assert_eq!(app.travel_deg(), None, "route unload → neutral until re-derived");
     }
 
+    /// The other half of the same off-route switch (review F1): when `travel_deg` stops trusting
+    /// the route tangent, `ride_projection` must stop trusting the route *position* too. A rider
+    /// 20 km off the line still has a `progress_m` — the last match — and projecting the two-hour
+    /// decision along it would answer for a route they aren't on. `None` there falls the host back
+    /// to WX11's rider-position sampling, and re-matching restores the projection.
+    #[test]
+    fn ride_projection_refuses_to_project_along_a_route_the_rider_left() {
+        let idx = grimsel_index();
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.active_route = Some(0);
+
+        // On the route: a projection, anchored at the matched progress.
+        let p = route.position_at(1_000).unwrap();
+        let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
+        tick_route_fix(&mut app, &route, on_route, 1_000);
+        assert!(!app.activity.off_route);
+        let progress = app.activity.progress_m;
+        assert_eq!(app.ride_projection().map(|p| p.progress_m), Some(progress));
+
+        // 20 km off it: the matcher keeps the stale progress, the projection refuses to use it.
+        let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
+        tick_route_fix(&mut app, &route, far, 2_000);
+        assert!(app.activity.off_route);
+        assert_eq!(app.travel_deg(), Some(123.0), "the wind arrow already switched to the GPS course…");
+        assert_eq!(app.ride_projection(), None, "…and the ride decision must switch off the route too");
+
+        // Back on the line: the projection returns.
+        tick_route_fix(&mut app, &route, on_route, 3_000);
+        assert!(!app.activity.off_route);
+        assert!(app.ride_projection().is_some(), "re-matching restores the projection");
+    }
+
     /// `ride_projection` bundles the matched progress with the recent moving **median** pace —
     /// capped against GPS teleports, with the documented touring fallback while stopped — and
     /// exists only once the matcher has locked onto an active route.
@@ -6782,6 +6837,8 @@ mod tests {
                     intensity,
                     lat: 47_000_000,
                     lon: 8_000_000,
+                    past_route_end: false,
+                    spread_uncertain: false,
                 })
                 .unwrap();
         }
@@ -6804,6 +6861,7 @@ mod tests {
             frame_cap_s: 900,
             sampled_at: Some((47_000_000, 8_000_000)),
             pos_in_grid: true,
+            current_pos_in_grid: true,
             projected: true,
             frames_truncated: false,
             rain_grid: None,
@@ -6865,12 +6923,48 @@ mod tests {
         rebooted.settings.weather_alert_marks[crate::weather_alerts::AlertClass::HeavyRain.slot()] =
             Some(crate::weather_alerts::AlertMark {
                 onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
-                lat: 47_000_000,
-                lon: 8_000_000,
+                pos: Some((47_000_000, 8_000_000)),
                 severity: 12,
             });
         rebooted.weather_alert_tick(Some(&escalated));
         assert!(matches!(rebooted.top_screen(), Screen::WeatherAlert(_)), "an event past the cooldown is a new alert");
+    }
+
+    /// A card the rider never saw is never marked as fired (review F4). `show_weather_alert`
+    /// refuses at two seams — a passkey prompt on top, and a screen stack already at `MAX_DEPTH` —
+    /// and either refusal used to still write the persisted dedup mark, sitting on the storm for a
+    /// whole cooldown *across reboots* with nothing ever shown.
+    #[test]
+    fn a_refused_alert_card_writes_no_cooldown_mark() {
+        use crate::weather_alerts::AlertClass;
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]); // band 10 at +15 min
+
+        // Seam 1 — the pairing prompt outranks the card (the check `weather_alert_tick` used to
+        // duplicate, now read back from the one place that decides).
+        let _ = app.ui.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(123_456)));
+        app.weather_alert_tick(Some(&snap));
+        assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the passkey prompt is never covered");
+        assert!(drain_persist(&mut app).is_none());
+        assert_eq!(app.settings().weather_alert_marks[AlertClass::HeavyRain.slot()], None, "unseen ⇒ unmarked");
+        app.ui.stack.pop();
+
+        // Seam 2 — a full screen stack. The push has nowhere to go, so the card silently doesn't
+        // open; the mark must not be written behind it.
+        while app.ui.stack.len() < crate::screen::MAX_DEPTH {
+            let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
+        }
+        app.weather_alert_tick(Some(&snap));
+        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)), "no room on the stack: no card");
+        assert!(drain_persist(&mut app).is_none(), "and no persist for it");
+        assert_eq!(app.settings().weather_alert_marks[AlertClass::HeavyRain.slot()], None);
+
+        // Room again: the very same storm still fires — it was never recorded as delivered.
+        app.ui.stack.pop();
+        app.weather_alert_tick(Some(&snap));
+        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the storm re-fires once there is room");
+        assert!(drain_persist(&mut app).is_some(), "…and only now does it cost a mark");
+        assert!(app.settings().weather_alert_marks[AlertClass::HeavyRain.slot()].is_some());
     }
 
     /// The travel direction reaches the hourly rows' ink: with a tailwind-making `travel_deg`

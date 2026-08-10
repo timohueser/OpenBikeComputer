@@ -1031,7 +1031,7 @@ impl Settings {
 /// of it costing one appended byte); v15 appended the `weather_refresh` byte (weather epic #1185
 /// — WX8 #1193's scheduler field and WX11 #1196's settings screen, one byte carrying the BLE
 /// §11.8 discriminants); v16 appended the 54-byte `weather_alert_marks` block (WX12 #1197) —
-/// 3 classes × 18 B (`present · onset i64 · lat i32 · lon i32 · severity`), the persisted alert
+/// 3 classes × 18 B (`flags · onset i64 · lat i32 · lon i32 · severity`), the persisted alert
 /// dedup/cooldown anchors.
 pub const VERSION: u8 = 16;
 
@@ -1045,9 +1045,17 @@ pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 const PAYLOAD_LEN: usize = ALERT_MARKS_OFF + crate::weather_alerts::ALERT_CLASSES * ALERT_MARK_LEN;
 /// Byte offset of the `weather_alert_marks` block (the v16 tail, right after `weather_refresh`).
 const ALERT_MARKS_OFF: usize = WEATHER_REFRESH_OFF + 1;
-/// Bytes per persisted alert mark: `present(1) · onset i64 LE(8) · lat i32 LE(4) · lon i32 LE(4)
-/// · severity(1)`.
+/// Bytes per persisted alert mark: `flags(1) · onset i64 LE(8) · lat i32 LE(4) · lon i32 LE(4)
+/// · severity(1)`. The leading byte is a flag *pair*, not a bool: bit 0 = the slot holds a mark,
+/// bit 1 = that mark has a position. Position presence has to survive the write — a mark fired
+/// before the first GPS fix has no coordinate, and dedup must compare it by time alone rather
+/// than by ground distance to a fabricated `(0, 0)` (see [`crate::weather_alerts::same_event`]).
+/// Both bits fit the byte that was already there, so the record and the blob keep their size.
 const ALERT_MARK_LEN: usize = 18;
+/// `flags` bit 0: this slot holds a mark at all.
+const ALERT_MARK_PRESENT: u8 = 1 << 0;
+/// `flags` bit 1: the stored `lat`/`lon` are a real position (else the mark has none).
+const ALERT_MARK_HAS_POS: u8 = 1 << 1;
 /// Byte offset of the `weather_refresh` byte (the v15 tail, right after `map_contours`).
 const WEATHER_REFRESH_OFF: usize = CONTOURS_OFF + 1;
 /// Byte offset of the `map_contours` flag (the v14 tail, right after `up_ahead_source`).
@@ -1141,14 +1149,17 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[CONTOURS_OFF] = s.map_contours as u8;
     // v15 tail: the weather-refresh interval — the enum discriminant IS the §11.8 wire byte.
     b[WEATHER_REFRESH_OFF] = s.weather_refresh as u8;
-    // v16 tail: the per-class weather-alert marks (WX12) — `present · onset · lat · lon · severity`.
+    // v16 tail: the per-class weather-alert marks (WX12) — `flags · onset · lat · lon · severity`.
     for (slot, mark) in s.weather_alert_marks.iter().enumerate() {
         let off = ALERT_MARKS_OFF + slot * ALERT_MARK_LEN;
         if let Some(mark) = mark {
-            b[off] = 1;
+            b[off] = ALERT_MARK_PRESENT;
             b[off + 1..off + 9].copy_from_slice(&mark.onset.to_le_bytes());
-            b[off + 9..off + 13].copy_from_slice(&mark.lat.to_le_bytes());
-            b[off + 13..off + 17].copy_from_slice(&mark.lon.to_le_bytes());
+            if let Some((lat, lon)) = mark.pos {
+                b[off] |= ALERT_MARK_HAS_POS;
+                b[off + 9..off + 13].copy_from_slice(&lat.to_le_bytes());
+                b[off + 13..off + 17].copy_from_slice(&lon.to_le_bytes());
+            }
             b[off + 17] = mark.severity;
         }
     }
@@ -1235,21 +1246,24 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
     Some(s)
 }
 
-/// Decode the v11 saved-sensor block: 3 slots × `present(1) · addr_kind(1) · addr[6]`. An absent slot
-/// (`present == 0`) reads as [`SavedSensor::EMPTY`] regardless of the stored address; a present slot
-/// keeps its address and normalises `addr_kind` to `0`/`1` (`!= 0` = random), matching how the board
-/// maps it to `AddrKind`.
-/// Decode the v16 weather-alert-mark block: 3 slots × `present(1) · onset(8) · lat(4) · lon(4) ·
-/// severity(1)`. An absent slot reads as `None` regardless of the stored payload.
+/// Decode the v16 weather-alert-mark block: 3 slots × `flags(1) · onset(8) · lat(4) · lon(4) ·
+/// severity(1)`. An absent slot ([`ALERT_MARK_PRESENT`] clear) reads as `None` regardless of the
+/// stored payload; a present slot without [`ALERT_MARK_HAS_POS`] keeps its position *absent*
+/// rather than reading the zeroed coordinate bytes as null island.
 fn decode_alert_marks(b: &[u8]) -> crate::weather_alerts::AlertMarks {
     let mut marks: crate::weather_alerts::AlertMarks = [None; crate::weather_alerts::ALERT_CLASSES];
     for (slot, mark) in marks.iter_mut().enumerate() {
         let off = ALERT_MARKS_OFF + slot * ALERT_MARK_LEN;
-        if b[off] != 0 {
+        if b[off] & ALERT_MARK_PRESENT != 0 {
+            let pos = (b[off] & ALERT_MARK_HAS_POS != 0).then(|| {
+                (
+                    i32::from_le_bytes(b[off + 9..off + 13].try_into().unwrap()),
+                    i32::from_le_bytes(b[off + 13..off + 17].try_into().unwrap()),
+                )
+            });
             *mark = Some(crate::weather_alerts::AlertMark {
                 onset: i64::from_le_bytes(b[off + 1..off + 9].try_into().unwrap()),
-                lat: i32::from_le_bytes(b[off + 9..off + 13].try_into().unwrap()),
-                lon: i32::from_le_bytes(b[off + 13..off + 17].try_into().unwrap()),
+                pos,
                 severity: b[off + 17],
             });
         }
@@ -1257,6 +1271,10 @@ fn decode_alert_marks(b: &[u8]) -> crate::weather_alerts::AlertMarks {
     marks
 }
 
+/// Decode the v11 saved-sensor block: 3 slots × `present(1) · addr_kind(1) · addr[6]`. An absent slot
+/// (`present == 0`) reads as [`SavedSensor::EMPTY`] regardless of the stored address; a present slot
+/// keeps its address and normalises `addr_kind` to `0`/`1` (`!= 0` = random), matching how the board
+/// maps it to `AddrKind`.
 fn decode_saved_sensors(b: &[u8]) -> [SavedSensor; SENSOR_SLOTS] {
     let mut slots = [SavedSensor::EMPTY; SENSOR_SLOTS];
     for (q, slot) in slots.iter_mut().enumerate() {
@@ -1276,19 +1294,26 @@ mod tests {
 
     /// `Settings::DEFAULT` (the const the board's `.rodata` store image is built from, #1197)
     /// names every per-type default variant literally — pin each against its type's own
-    /// `Default`, so a retuned default can't silently fork the two.
+    /// `Default`, so a retuned default can't silently fork the two. **Every** field whose type
+    /// has its own `Default` belongs here, including the ones the const spells as a plain literal
+    /// (`Units`, `DeviceName`, `SavedSensor`): those are exactly the ones that fork silently.
     #[test]
     fn const_default_matches_every_field_default() {
         let d = Settings::DEFAULT;
+        assert_eq!(d.units, Units::default());
         assert_eq!(d.clock, DateTime::default());
         assert_eq!(d.stat_fields, StatFieldList::default());
+        assert_eq!(d.device_name, DeviceName::default());
         assert_eq!(d.climb_mode, ClimbMode::default());
         assert_eq!(d.idle_return, IdleReturn::default());
         assert_eq!(d.waypoint_mode, WaypointMode::default());
         assert_eq!(d.language, Language::default());
+        assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
         assert_eq!(d.ride_retention, RideRetention::default());
         assert_eq!(d.up_ahead_source, UpAheadSource::default());
         assert_eq!(d.weather_refresh, WeatherRefresh::default());
+        // And the whole const is its type's `Default` — the property the field list guards.
+        assert_eq!(d, Settings::default());
     }
 
     /// A non-default settings value — including a customised, reordered field selection with a
@@ -1327,12 +1352,11 @@ mod tests {
             weather_alert_marks: [
                 Some(crate::weather_alerts::AlertMark {
                     onset: 1_800_000_900,
-                    lat: 47_123_456,
-                    lon: 8_654_321,
+                    pos: Some((47_123_456, 8_654_321)),
                     severity: 11,
                 }),
                 None,
-                Some(crate::weather_alerts::AlertMark { onset: -1, lat: -47_000_000, lon: -8_000_000, severity: 0 }),
+                Some(crate::weather_alerts::AlertMark { onset: -1, pos: Some((-47_000_000, -8_000_000)), severity: 0 }),
             ],
         };
         assert_eq!(decode(&encode(&s)), Some(s));
@@ -1341,17 +1365,31 @@ mod tests {
     /// The v16 tail (WX12 #1197): the per-class weather-alert marks round-trip (present and
     /// absent slots, negative onsets/coordinates — asserted field-precisely on top of
     /// `codec_round_trips`' whole-struct pass), an absent slot stores all-zeros gated by the
-    /// `present` byte, and the block is **device-local state** — a BLE Config adopt never
-    /// clobbers it.
+    /// `flags` byte, a **positionless** mark survives as positionless (never as null island), and
+    /// the block is **device-local state** — a BLE Config adopt never clobbers it.
     #[test]
     fn weather_alert_marks_round_trip_and_are_device_only() {
         use crate::weather_alerts::AlertMark;
-        let mark = AlertMark { onset: 1_800_123_456, lat: -12_345, lon: 9_876_543, severity: 7 };
+        let mark = AlertMark { onset: 1_800_123_456, pos: Some((-12_345, 9_876_543)), severity: 7 };
         let s = Settings { weather_alert_marks: [None, Some(mark), None], ..Settings::default() };
         let b = encode(&s);
         assert_eq!(decode(&b), Some(s), "marks round-trip through the v16 tail");
         assert_eq!(b[ALERT_MARKS_OFF], 0, "slot 0 absent");
-        assert_eq!(b[ALERT_MARKS_OFF + ALERT_MARK_LEN], 1, "slot 1 present");
+        assert_eq!(
+            b[ALERT_MARKS_OFF + ALERT_MARK_LEN],
+            ALERT_MARK_PRESENT | ALERT_MARK_HAS_POS,
+            "slot 1 present, with a position"
+        );
+
+        // A mark fired before the first GPS fix: present, positionless. The zeroed coordinate
+        // bytes must decode back to `None`, not to `(0, 0)` — that fabricated place is exactly
+        // what would re-fire the same storm once the receiver locks.
+        let blind = AlertMark { onset: 1_800_123_456, pos: None, severity: 7 };
+        let s = Settings { weather_alert_marks: [Some(blind), None, None], ..Settings::default() };
+        let b = encode(&s);
+        assert_eq!(b[ALERT_MARKS_OFF], ALERT_MARK_PRESENT, "present, no position bit");
+        assert_eq!(&b[ALERT_MARKS_OFF + 9..ALERT_MARKS_OFF + 17], &[0; 8], "no coordinate is written");
+        assert_eq!(decode(&b).unwrap().weather_alert_marks[0], Some(blind), "and it decodes back positionless");
 
         // Adopting a BLE settings write (units/name/refresh) must not clear the local marks.
         let mut device = Settings { weather_alert_marks: [Some(mark), None, None], ..Settings::default() };

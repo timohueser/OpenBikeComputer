@@ -7,6 +7,12 @@
 //! - **Expired data never alerts.** Every candidate derives from samples whose honest windows are
 //!   current under the snapshot's fail-closed cap (the rain classes) or from hourly records inside
 //!   the bundle's validity (the forecast classes) — the same freshness arithmetic the screens use.
+//!   Note what that rests on: "expired" is `now` measured against the bundle's own timestamps, so
+//!   the law is only as good as the device's clock. That is the epic's existing trust model (the
+//!   #638 rule: GPS or BLE set the clock, never the rider), and the same one the screens' freshness
+//!   line already leans on — an untrusted clock is a *device-wide* honesty problem, not a weather
+//!   one. Dedup deliberately does **not** share the dependency: it compares event onsets to each
+//!   other, so a mark still suppresses its storm across a boot with no clock at all.
 //! - **Deterministic**: the same snapshot + instant always evaluates to the same candidates, on
 //!   firmware and simulator alike (no randomness, no host clocks other than `now`).
 //! - **Deduplicated + cooldown-persisted**: one weather event fires at most one alert per
@@ -125,9 +131,12 @@ pub struct AlertCandidate {
 pub struct AlertMark {
     /// The fired event's onset (UTC unix).
     pub onset: i64,
-    /// The fired event's position (µdeg).
-    pub lat: i32,
-    pub lon: i32,
+    /// The fired event's position (µdeg), or `None` when the event had none — a thunder/gust
+    /// candidate evaluated before the receiver's first fix has no coordinate at all. Position
+    /// **presence is carried, never flattened**: collapsing it to `(0, 0)` would measure ground
+    /// distance to null island and re-fire the very same storm the moment the fix arrives, which
+    /// is reachable on any ride that starts indoors.
+    pub pos: Option<(i32, i32)>,
     /// The fired event's class-scaled severity.
     pub severity: u8,
 }
@@ -248,20 +257,22 @@ fn minutes_until(now: i64, at: i64) -> u16 {
 
 /// Is `candidate` the **same event** as `mark` (its class's last fired alert)? Same iff its onset
 /// lies within [`COOLDOWN_S`] of the marked onset *and* its position within [`DEDUP_DIST_M`] of
-/// the marked one (a candidate or mark without usable geometry compares by time alone — the
-/// conservative read: fewer repeat pop-ups). A same-event candidate is suppressed unless it
-/// [`escalated`](AlertClass::escalated).
+/// the marked one. When **either side** lacks a position the comparison is by time alone — the
+/// conservative read (fewer repeat pop-ups), and the only correct one: a mark written before the
+/// first GPS fix has no place to be measured from, and pretending it sat at `(0, 0)` would make
+/// every real position "far away" and re-fire the same storm the instant the receiver locks.
+/// A same-event candidate is suppressed unless it [`escalated`](AlertClass::escalated).
 pub fn same_event(class: AlertClass, candidate: &AlertCandidate, mark: &AlertMark) -> bool {
     let _ = class;
     if (candidate.onset - mark.onset).abs() > COOLDOWN_S {
         return false;
     }
-    match candidate.pos {
-        Some((lat, lon)) => {
+    match (candidate.pos, mark.pos) {
+        (Some((lat, lon)), Some((mark_lat, mark_lon))) => {
             let cl = obc_map_scene::cos_lat(lat);
-            obc_map_scene::ground_dist_m_cl((lon, lat), (mark.lon, mark.lat), cl) <= DEDUP_DIST_M
+            obc_map_scene::ground_dist_m_cl((lon, lat), (mark_lon, mark_lat), cl) <= DEDUP_DIST_M
         }
-        None => true,
+        _ => true,
     }
 }
 
@@ -303,10 +314,9 @@ pub fn govern(
     AlertAction::None
 }
 
-/// The mark a fired candidate persists.
+/// The mark a fired candidate persists — the candidate's own position *including its absence*.
 pub fn mark_of(candidate: &AlertCandidate) -> AlertMark {
-    let (lat, lon) = candidate.pos.unwrap_or((0, 0));
-    AlertMark { onset: candidate.onset, lat, lon, severity: candidate.severity }
+    AlertMark { onset: candidate.onset, pos: candidate.pos, severity: candidate.severity }
 }
 
 #[cfg(test)]
@@ -323,7 +333,16 @@ mod tests {
         assert!(intensities.len() <= SNAPSHOT_MAX_FRAMES);
         let mut frames = heapless::Vec::new();
         for (i, &intensity) in intensities.iter().enumerate() {
-            frames.push(FrameSample { valid_at: T0 + i as i64 * 900, intensity, lat: POS.0, lon: POS.1 }).unwrap();
+            frames
+                .push(FrameSample {
+                    valid_at: T0 + i as i64 * 900,
+                    intensity,
+                    lat: POS.0,
+                    lon: POS.1,
+                    past_route_end: false,
+                    spread_uncertain: false,
+                })
+                .unwrap();
         }
         WeatherSnapshot {
             generated_at: T0,
@@ -344,6 +363,7 @@ mod tests {
             frame_cap_s: 900,
             sampled_at: Some(POS),
             pos_in_grid: true,
+            current_pos_in_grid: true,
             projected: true,
             frames_truncated: false,
             rain_grid: None,
@@ -463,6 +483,49 @@ mod tests {
         // …while a re-detection a couple of km on is the same storm.
         let near = AlertCandidate { pos: Some((POS.0 + 20_000, POS.1)), ..c }; // ~2 km north
         assert_eq!(govern(&[near], &marks, None), AlertAction::None);
+    }
+
+    /// A mark written before the first GPS fix carries **no position**, and dedup then compares by
+    /// time alone — in both directions. Collapsing the absence to `(0, 0)` used to make every real
+    /// coordinate ~5000 km from the mark, so the same storm re-fired the moment the receiver
+    /// locked (reachable on any ride that starts indoors).
+    #[test]
+    fn a_positionless_mark_dedups_by_time_alone_in_both_directions() {
+        let mut s = snap(&[0; 9]);
+        s.sampled_at = None; // no fix yet: the forecast classes have nowhere to anchor
+        s.hourly[hour_of(T0)].wind_gust_deci_ms = 250;
+        let blind = evaluate_gust(&s, T0).unwrap();
+        assert_eq!(blind.pos, None, "no fix, no position — and none is invented");
+
+        // Fired blind, then the receiver locks and the *same* forecast hour re-evaluates with a
+        // real coordinate: still the same event, still suppressed.
+        let mut marks: AlertMarks = [None; ALERT_CLASSES];
+        marks[AlertClass::Gust.slot()] = Some(mark_of(&blind));
+        assert_eq!(mark_of(&blind).pos, None, "the mark carries the absence, not null island");
+        let located = AlertCandidate { pos: Some(POS), ..blind };
+        assert_eq!(govern(&[located], &marks, None), AlertAction::None, "the fix must not re-fire the same gust");
+
+        // And the mirror: a *located* mark against a candidate that lost its position (the fix
+        // dropped out) also compares by time alone.
+        let mut marks: AlertMarks = [None; ALERT_CLASSES];
+        marks[AlertClass::Gust.slot()] = Some(mark_of(&located));
+        assert_eq!(govern(&[blind], &marks, None), AlertAction::None, "a lost fix must not re-fire it either");
+
+        // Time still governs: past the cooldown it is a new event however positions line up.
+        let later = AlertCandidate { onset: blind.onset + COOLDOWN_S + 1, ..located };
+        assert!(matches!(govern(&[later], &marks, None), AlertAction::Fire(_)));
+    }
+
+    /// Carrying position *presence* is free — and then some. `Option<(i32, i32)>` lands in the
+    /// padding the flat `lat`/`lon` pair already had (`AlertMark` stays 24 B), and its own
+    /// discriminant gives the **outer** `Option<AlertMark>` a niche it previously lacked, so the
+    /// three-slot table drops 96 → 72 B. Pinned because `Settings` — and through it `App`, the
+    /// decoded BLE copy and the resource baseline — is sized by exactly this.
+    #[test]
+    fn the_mark_table_costs_no_extra_resident_bytes() {
+        assert_eq!(core::mem::size_of::<AlertMark>(), 24);
+        assert_eq!(core::mem::size_of::<Option<AlertMark>>(), 24, "the position's discriminant is the niche");
+        assert_eq!(core::mem::size_of::<AlertMarks>(), 72);
     }
 
     #[test]
