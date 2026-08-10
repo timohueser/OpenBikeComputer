@@ -45,6 +45,27 @@ use sha2::{Digest, Sha256};
 /// compatibility shim (the repo has no released packs to keep working).
 pub const FORMAT: &str = "obc-wx-event/1";
 
+/// The basemap every US event pack is rendered over — one line in
+/// [`regions.toml`](../../../obc-bake/regions.toml), and deliberately only one.
+///
+/// The bakery is DACH-first; this is the single exception, and it exists because a frozen storm
+/// with no map under it is not something the simulator can show. The condition attached to it is
+/// a convention, not a mechanism: **US event packs crop to ground Iowa covers**, so one state map
+/// serves all of them. A pack that wants Kansas is a conversation about a second basemap, not a
+/// quiet second entry. Every pack records the ground it actually covers ([`Event::coverage_udeg`])
+/// so drift is visible in the document rather than discovered when a map turns up blank.
+pub const US_BASEMAP_REGION: &str = "north-america/us/iowa";
+
+/// Iowa's bounding box (40.3755-43.5012 N, 96.6397-90.1401 W), the reference the convention above
+/// is measured against.
+///
+/// A pack's coverage is *not* required to sit exactly inside it: crops are aligned outward to
+/// whole tiles of each frame's own lattice, so the retained window overshoots the request by up to
+/// one tile — 0.64 degrees on the 1 km observation. That overshoot is a property of the format,
+/// not a choice, so the tolerance is derived from the tile stride rather than guessed.
+pub const US_BASEMAP_BBOX: BboxUdeg =
+    BboxUdeg { south_udeg: 40_375_501, west_udeg: -96_639_704, north_udeg: 43_501_196, east_udeg: -90_140_061 };
+
 pub const EVENT_FILE: &str = "event.json";
 pub const UPSTREAM_DIR: &str = "upstream";
 pub const SERVICE_DIR: &str = "service";
@@ -209,6 +230,13 @@ pub struct Event {
     pub window_start: String,
     pub window_end: String,
     pub bake: BakeParams,
+    /// The ground the pack's baked frames actually answer for — the published product's bbox,
+    /// which is the intersection of its frames' windows after the crop. Stated rather than
+    /// inferred so a later pack drifting off the basemap is visible in the document.
+    pub coverage_udeg: BboxUdeg,
+    /// The `regions.toml` id of the map a simulator needs under this pack. See
+    /// [`US_BASEMAP_REGION`].
+    pub basemap_region: String,
     pub truth: TruthParams,
     pub members: Vec<Member>,
     /// The manifest key inside `service/`.
@@ -394,6 +422,8 @@ mod tests {
                     east_udeg: -90_000_000,
                 }),
             },
+            coverage_udeg: US_BASEMAP_BBOX,
+            basemap_region: US_BASEMAP_REGION.into(),
             truth: TruthParams { requested_offsets_min: vec![15, 30], cadence_seconds: 120 },
             members: vec![Member {
                 role: Role::Service,
