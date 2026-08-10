@@ -62,6 +62,10 @@ pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
 /// figure: the longitude cell is 2.61 km at 38.5 N, 2.03 km at the 52.6 N bulge and 3.12 km at
 /// 21.1 N. `cell_size_m` stays 3,000 throughout: it states the *source's* ground resolution,
 /// never the lattice.
+///
+/// This is a **source window**, not an output lattice (WXR3 #1242). Its 30,000 udeg cells are an
+/// exact 3 x 3 block of canonical cells and its origin is lattice-aligned, so the mosaic's cell
+/// replication onto the canonical lattice is exact — no third rounding on top of the two above.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 21_100_000,
     west_lon_udeg: -134_100_000,

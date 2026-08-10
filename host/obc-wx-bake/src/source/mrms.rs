@@ -23,9 +23,11 @@ use crate::source::{BakedFrame, FrameSource};
 
 pub const BUCKET: &str = "https://noaa-mrms-pds.s3.amazonaws.com";
 
-/// The published window, stated as OBCG geometry: 7,000 x 3,500 cells of 0.01 degrees whose
-/// **edges** are the clean multiples 20 N/55 N and 130 W/60 W, so the GRIB's first point
-/// (54.995 N, 230.005 E) is the centre of the north-west cell. MRMS is CONUS-only in WX1's
+/// The **source window**, and already a window of the canonical 0.01 degree lattice: 7,000 x
+/// 3,500 cells whose **edges** are the clean multiples 20 N/55 N and 130 W/60 W, so the GRIB's
+/// first point (54.995 N, 230.005 E) is the centre of the north-west cell — and every cell is
+/// exactly one canonical cell, so the mosaic copies rather than resamples. MRMS is CONUS-only in
+/// WX1's
 /// contract: Alaska, Hawaii and Puerto Rico are separate measured decisions, never a clamp of
 /// this grid.
 pub const GEOMETRY: GridGeometry = GridGeometry {

@@ -4,7 +4,8 @@
 //! five-minute steps). Every member is validated against the WX1-pinned contract before the
 //! nine published leads (+0, +15, ..., +120) are selected; the discarded intermediate frames are
 //! never interpolated. Reprojection is nearest-neighbour from the pinned polar-stereographic
-//! raster onto a fixed regular lat/lon window at native ~1 km cell size — no smoothing.
+//! raster **straight onto the canonical 0.01 degree lattice** ([`GEOMETRY`] is the window of it
+//! this source covers) — one hop, no smoothing.
 
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File as Hdf5File};
@@ -23,15 +24,24 @@ use crate::stereo;
 pub const ID: &str = "dwd-rv";
 pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
 
-/// The fixed publication window: a regular lat/lon cover of the composite's trapezoid at native
-/// ~1 km cells (9,000 x 14,000 microdegrees). Cells outside the projected raster are no-data.
+/// The **source window**: where this source has data, expressed on the canonical lattice.
+///
+/// WXR3 (#1242) moved this from 9,000 x 14,000 microdegree cells of its own onto the canonical
+/// 0.01 degree lattice, covering the same trapezoid. Both origins were already lattice-aligned,
+/// so the window is the same patch of Germany at the same ~1 km scale — but the reprojection
+/// below now lands on canonical cells directly, which means a published cell is **one**
+/// nearest-neighbour hop from the native polar-stereographic raster instead of a
+/// nearest-neighbour of a nearest-neighbour. Cells outside the projected raster are no-data, and
+/// the mosaic reads that as "not covered" and falls through to the next-priority source.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 45_680_000,
     west_lon_udeg: 1_460_000,
-    cell_lat_udeg: 9_000,
-    cell_lon_udeg: 14_000,
-    width: 1_234,
-    height: 1_132,
+    cell_lat_udeg: crate::canonical::CELL_UDEG,
+    cell_lon_udeg: crate::canonical::CELL_UDEG,
+    // 1,132 x 9,000 udeg of latitude and 1,234 x 14,000 udeg of longitude, rounded up to whole
+    // canonical cells: the old window's trapezoid, none of it lost.
+    width: 1_728,
+    height: 1_019,
     cell_size_m: 1_000,
     tile_edge: 32,
     entries_per_page: 512,

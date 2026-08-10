@@ -12,6 +12,18 @@ multi-frame table — the frame set, its keys and its policy metadata live in th
 (§10), so a product whose frames have heterogeneous geometry (a 1 km radar observation followed
 by 3 km model forward frames) composes with **no resampling, by construction**.
 
+> **Superseded 2026-08-10 by #1242; to be deleted by #1246.** The publisher no longer works this
+> way. It normalises every source onto **one** canonical global 0.01 degree lattice at bake time
+> — coarse sources cell-replicated, overlaps resolved per cell by a fixed priority table that is
+> baker configuration and never client policy — and publishes one provider-agnostic dataset
+> sharded across objects. So "no resampling, by construction" describes the shape this format was
+> designed around, not the shape it now carries: the resampling happens once, in the baker,
+> nearest-neighbour as §6 has always required, instead of being pushed onto every consumer as a
+> selection policy. The nesting obligation in the next paragraph and the product/selection model
+> in §10 are superseded with it — a single-lattice dataset trivially satisfies both — and #1246
+> removes all three together with the multi-product path. Nothing about the *bytes* changes; this
+> is framing prose only.
+
 That composition carries one normative obligation on the *publisher*. A consumer assembling a
 multi-frame bundle (OBCW) states one geographic window for the whole timeline and takes it from
 the coarsest frame; every other frame is laid onto that window at its own cell size, and a frame
@@ -95,7 +107,7 @@ are invalid.
 | 44 | Cell Lon Stride | 4 | `uint32` | Microdegrees per cell eastward; nonzero |
 | 48 | Width | 4 | `uint32` | Cells west-to-east; §1 bounds |
 | 52 | Height | 4 | `uint32` | Cells south-to-north; §1 bounds |
-| 56 | Cell Size | 2 | `uint16` | Nominal source ground resolution in metres; nonzero |
+| 56 | Cell Size | 2 | `uint16` | The lattice's cell size in metres; nonzero |
 | 58 | Tile Edge | 2 | `uint16` | Power of two, `16...256` |
 | 60 | Entries Per Page | 2 | `uint16` | `1...1365` |
 | 62 | Reserved | 2 | - | Zero |
@@ -120,8 +132,18 @@ page_count     = ceil(tile_count / entries_per_page)
 
 The window is half-open `[south, north) x [west, east)`. Rows advance north and columns advance
 east: cell `(col=0, row=0)` has its south-west corner at `(south, west)` — the same orientation
-as OBCW. `cell_size_m` is the source's nominal ground resolution for truthful UI and selection;
-the exact lattice is the microdegree strides.
+as OBCW. The exact lattice is the microdegree strides; `cell_size_m` is a **metric restatement of
+that lattice**, not a claim about any source.
+
+> **Amended 2026-08-10 by #1242.** `cell_size_m` used to be "the source's nominal ground
+> resolution for truthful UI and selection". Under the mosaic a frame has no single source
+> resolution — its German cells come from 1 km radar and its Italian cells from 6.5 km model — so
+> the field states the lattice instead, and the information is *removed* rather than transported:
+> there is no per-cell resolution plane, no per-tile source label and no coverage channel. That is
+> honest because the mosaic always has a global floor source, so every cell always carries a
+> best-available value; "no radar coverage" renders as model fill, not as dry. Intensity code 15
+> remains the only "we do not know", per §4.1. For the canonical 0.01 degree lattice the publisher
+> emits `1113` — 0.01 degrees of latitude, in metres.
 
 `entries_per_page <= 1365` keeps every directory page (and the header) inside one 16 KiB Range
 request: `1365 x 12 + 4 = 16,384` bytes.
@@ -141,7 +163,8 @@ unknown nonzero code and MUST NOT use it for selection policy.
 | 3 | `mrms` | NOAA MRMS `PrecipRate` (CONUS radar observation) |
 | 4 | `hrrr` | NOAA HRRR subhourly `PRATE` (CONUS model) |
 | 5 | `gfs` | NOAA GFS `APCP` (worldwide floor) |
-| 6...254 | - | Reserved for future registry additions |
+| 6 | (the one dataset) | Canonical mosaic: every source normalised onto the global lattice, best available per cell, no provenance carried (#1242) |
+| 7...254 | - | Reserved for future registry additions |
 | 255 | - | Experimental / private products |
 
 ### 3.2 Flags
@@ -420,6 +443,13 @@ only sizes it may act on are the header's, and for a codec-2 tile that is `tile_
 The manifest is the mutable JSON document `wx/v1/manifest.json` beside the immutable frame
 objects; its JSON Schema is checked in at `host/obc-wx-bake/schema/manifest.schema.json` and
 pinned by tests. It is delivery metadata, not a byte format, but its contract is normative:
+
+> **Superseded 2026-08-10 by #1242; replaced by #1243, deleted by #1246.** The product/selection
+> model below — `products[]`, tiers, per-product bboxes and the client-side choice between them —
+> describes the multi-product service. The baker now publishes one dataset on one lattice, so
+> there is nothing to select between. #1243 defines the manifest that replaces this section; until
+> it lands, the canonical dataset publishes a placeholder document beside the `wx/v1` tree that no
+> client reads.
 
 - Frame objects are published under immutable keys
   `wx/v1/<product>/<generated-utc>/f<offset-min>.obcg`, where `<generated-utc>` is the upstream
