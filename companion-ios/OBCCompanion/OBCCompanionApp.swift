@@ -4,6 +4,7 @@ import UserNotifications
 import OBCDomain
 import OBCTransport
 import OBCUI
+import OBCWeather
 #if DEBUG
 import OBCMock
 #endif
@@ -110,11 +111,12 @@ struct OBCCompanionApp: App {
     /// (or Release, always) wires the real `BLETransport`. This is the **only**
     /// place a concrete transport is chosen — everything below sees
     /// `any DeviceTransport`.
-    static func makeTransport() -> any DeviceTransport {
+    @MainActor static func makeTransport() -> any DeviceTransport {
         #if DEBUG
         if let mockControl { return MockTransport(control: mockControl) }
         #endif
         let transport = BLETransport()
+        Self.startWeatherJob(for: transport)
         #if DEBUG
         // The WX3 Weather Request transport harness. Pair normally once so BLETransport has an
         // authenticated peripheral UUID, then launch the real BLE path with
@@ -134,6 +136,84 @@ struct OBCCompanionApp: App {
         }
         #endif
         return transport
+    }
+
+    // MARK: The WX9 background weather job (composition only — the machinery lives in OBCKit)
+
+    /// The bridge task that feeds transport read events into the job engine — retained here
+    /// because it must live as long as the app does.
+    @MainActor private static var weatherBridge: Task<Void, Never>?
+    /// The engine, retained so the foreground kick below can reach it.
+    @MainActor private static var weatherEngine: WeatherJobEngine?
+
+    /// The scene-phase foreground kick. The job's own recovery paths are the device's advertising
+    /// ladder and CoreBluetooth state restoration — both of which need the *device* to act. A job
+    /// that stalled on something neither will retry (radio off at the wrong moment, a checkpoint
+    /// written just before a suspend) would otherwise wait for the next ladder step; a user
+    /// opening the app is a perfectly good reason to try again. `.resume` honours the cooldown, so
+    /// this cannot become the retry storm the issue forbids.
+    @MainActor static func weatherJobDidEnterForeground() {
+        guard let engine = weatherEngine else { return }
+        Task { await engine.kick(.resume) }
+    }
+
+    /// Wire the durable two-connection WeatherJob (#1194) onto the real transport: the standing
+    /// discovery watch, the engine over its file checkpoints, and the event bridge. Everything
+    /// below the seams is host-tested in OBCKit; this is the one place the concrete pieces meet.
+    @MainActor private static func startWeatherJob(for transport: BLETransport) {
+        guard weatherBridge == nil else { return }
+        let appVersion =
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0"
+        let http = URLSessionWeatherHTTPClient(
+            userAgent: METLocationforecastAdapter.userAgent(appVersion: appVersion))
+        let cacheDirectory = FileManager.default
+            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("OBCWeatherFrames", isDirectory: true)
+        let assembler = WeatherAssembler(
+            hourlyProvider: METLocationforecastAdapter(client: http),
+            precipitationProvider: OBCWeatherServiceClient(
+                baseURL: Self.weatherServiceURL(), client: http,
+                cache: FileWeatherFrameCache(directory: cacheDirectory)))
+        let engine = WeatherJobEngine(
+            link: WeatherBLEDeviceLink(transport: transport),
+            assembler: assembler,
+            store: FileWeatherJobStore.standard(),
+            history: FileWeatherJobHistoryStore.standard())
+        // The watch is what makes the device's request *reach* the phone in the background; it
+        // scans only for the known bonded peripheral's weather advertisement and is idle
+        // otherwise. A device without FEATURE_WEATHER simply never advertises the UUID.
+        transport.setWeatherWatch(true)
+        weatherEngine = engine
+        weatherBridge = WeatherJobBLEBridge.start(transport: transport, engine: engine)
+        #if DEBUG
+        // The WX9 job harness: `-OBCTransport ble -OBCWeatherJobHarness` (paired once, like the
+        // WX3 harness) runs the *whole* job — discovery → context read → fetch/build → upload —
+        // against the live weather service, kicks it immediately, and dumps the diagnostics ring
+        // so an on-glass session has its evidence in the console.
+        if useWeatherJobHarness {
+            Task {
+                let history = FileWeatherJobHistoryStore.standard()
+                print("[OBC weather job harness] history at launch:")
+                for entry in history.entries().suffix(5) { print("  \(entry)") }
+                await engine.kick(.deviceRaisedRequest)
+                print("[OBC weather job harness] kick finished; history now:")
+                for entry in history.entries().suffix(5) { print("  \(entry)") }
+            }
+        }
+        #endif
+    }
+
+    /// The OBC weather service origin (WX18's `wx.` host). Debug builds may point elsewhere with
+    /// `-OBCWeatherServiceURL <origin>` (a staging bucket, a local server); Release always ships
+    /// the real one.
+    private static func weatherServiceURL() -> URL {
+        #if DEBUG
+        if let override = UserDefaults.standard.string(forKey: "OBCWeatherServiceURL"),
+           let url = URL(string: override) {
+            return url
+        }
+        #endif
+        return URL(string: "https://wx.openbikecomputer.com")!
     }
 
     /// The `-OBCImportSample [gpx|tcx|bad|grimsel]` hook: hand a bundled sample file to
@@ -232,7 +312,7 @@ struct OBCCompanionApp: App {
     static func makeBondStore() -> any BondStore {
         #if DEBUG
         if let mockControl { return MockBondStore(control: mockControl) }
-        if useWeatherRequestHarness { return WeatherRequestHarnessBondStore() }
+        if useWeatherRequestHarness || useWeatherJobHarness { return WeatherRequestHarnessBondStore() }
         #endif
         return UserDefaultsBondStore()
     }
@@ -240,6 +320,10 @@ struct OBCCompanionApp: App {
     #if DEBUG
     private static var useWeatherRequestHarness: Bool {
         ProcessInfo.processInfo.arguments.contains("-OBCWeatherRequestHarness")
+    }
+
+    private static var useWeatherJobHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("-OBCWeatherJobHarness")
     }
     #endif
 
