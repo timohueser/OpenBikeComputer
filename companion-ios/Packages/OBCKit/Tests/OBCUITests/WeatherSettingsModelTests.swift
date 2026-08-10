@@ -24,23 +24,125 @@ private final class FakeHistory: WeatherJobHistoryStore, @unchecked Sendable {
     func entries() -> [WeatherJobHistoryEntry] { lock.withLock { stored } }
 }
 
+/// A one-shot rendezvous so a test can hold a retry mid-flight and look at the spinner.
+actor RetryGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !opened else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
+    }
+}
+
 private final class FakeJobs: WeatherJobControlling, @unchecked Sendable {
     private let lock = NSLock()
     private var job: WeatherJobPending?
     private(set) var retryCount = 0
     /// What the retry does to the checkpoint — the engine clears it on success.
     var clearsOnRetry = true
+    /// When set, `retryNow()` parks here until the test opens it — the engine's real contract is
+    /// that this call returns on *completion*, so a test of the spinner needs a slow one.
+    var gate: RetryGate?
 
     init(_ job: WeatherJobPending?) { self.job = job }
 
     func pendingJob() async -> WeatherJobPending? { lock.withLock { job } }
 
     func retryNow() async {
-        lock.withLock {
-            retryCount += 1
-            if clearsOnRetry { job = nil }
+        lock.withLock { retryCount += 1 }
+        if let gate = lock.withLock({ gate }) { await gate.wait() }
+        lock.withLock { if clearsOnRetry { job = nil } }
+    }
+}
+
+/// A transport that models the config plane only, so the interval's read-modify-write can be
+/// scripted precisely: which call fails, and how long each one takes. `MockTransport`'s
+/// `failNextOp` is a FIFO over *all* ops, which cannot express "the confirming read, and only the
+/// confirming read, never answers".
+private final class ConfigLinkTransport: DeviceTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _config: DeviceConfig
+    private var _writtenRefreshRaws: [UInt8?] = []
+    private var _readCalls = 0
+    private var _writesStarted = 0
+    private var _readBackWillFail = false
+    /// Fail the read that *follows* a successful write — the write lands, the confirmation does not.
+    var failsReadAfterWrite = false
+    var writeDelay: Duration = .zero
+
+    init(config: DeviceConfig) { _config = config }
+
+    var config: DeviceConfig { lock.withLock { _config } }
+    /// Every interval the device actually stored, in the order it stored them.
+    var writtenRefreshRaws: [UInt8?] { lock.withLock { _writtenRefreshRaws } }
+    var readCalls: Int { lock.withLock { _readCalls } }
+    var writesStarted: Int { lock.withLock { _writesStarted } }
+
+    func readConfig() async throws -> DeviceConfig {
+        try lock.withLock {
+            _readCalls += 1
+            if _readBackWillFail {
+                _readBackWillFail = false
+                throw DeviceError.readFailed
+            }
+            return _config
         }
     }
+
+    func writeConfig(_ config: DeviceConfig) async throws {
+        lock.withLock { _writesStarted += 1 }
+        if writeDelay > .zero { try? await Task.sleep(for: writeDelay) }
+        lock.withLock {
+            _config = config
+            _writtenRefreshRaws.append(config.weatherRefreshRaw)
+            if failsReadAfterWrite { _readBackWillFail = true }
+        }
+    }
+
+    func deviceInfo() async throws -> DeviceInfo {
+        DeviceInfo(
+            name: "Trailhead", firmwareVersion: "0.4.2",
+            featureBits: OBCProtocol.featureWeather)
+    }
+
+    // Inert remainder — a connected link, nothing else modelled.
+    var state: AsyncStream<ConnectionState> {
+        AsyncStream { $0.yield(.connected); $0.finish() }
+    }
+    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
+    func connect() async throws {}
+    func disconnect() async {}
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
+    func uploadRoute(_ route: RouteBlob) -> TransferHandle {
+        .immediatelyFinished(.failed(.notConnected))
+    }
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
+    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
+    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
+    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
+    func readDiagnostics() async throws -> Data { Data() }
+}
+
+@MainActor
+private func makeConfigModel(
+    refresh: WeatherRefresh = .every30
+) -> (WeatherSettingsModel, ConfigLinkTransport) {
+    var config = DeviceConfig(name: "Trailhead")
+    config.weatherRefreshRaw = refresh.rawValue
+    let transport = ConfigLinkTransport(config: config)
+    let model = WeatherSettingsModel(
+        transport: transport, historyStore: FakeHistory(), jobs: nil,
+        statusProvider: FakeStatus(status: nil), now: { clock })
+    return (model, transport)
 }
 
 private struct FakeStatus: WeatherServiceStatusProviding {
@@ -221,6 +323,95 @@ struct WeatherSettingsModelTests {
         #expect(model.refresh == .every30)
     }
 
+    /// A rider scrubbing the picker fires several writes inside a second. Unsupervised those are
+    /// concurrent read-modify-writes with confirming reads landing in any order, and the row ends
+    /// up showing whichever read answered last — a value the device may no longer hold. The chain
+    /// is serial and last-writer-wins: the superseded write is never sent at all (#1198 review).
+    @Test func rapidIntervalChangesAreSerialisedAndTheLastOneWins() async {
+        let (model, transport) = makeConfigModel(refresh: .every30)
+        model.start()
+        await waitFor("config") { model.hasReadConfig }
+
+        model.setRefresh(.every15)
+        model.setRefresh(.every120)
+        await waitFor("device settled") { transport.writtenRefreshRaws.count == 1 }
+        await waitFor("row settled") { model.refresh == .every120 }
+
+        #expect(transport.writtenRefreshRaws == [WeatherRefresh.every120.rawValue],
+                "the value the rider changed their mind about was never sent")
+        #expect(transport.config.knownWeatherRefresh == .every120)
+        #expect(!model.refreshIsUnconfirmed)
+    }
+
+    /// And when the first write is genuinely in flight, the second waits for it rather than
+    /// straddling it — the device sees them in tap order, and the row never snaps back to the
+    /// earlier value on the earlier read-back.
+    @Test func aSecondChangeWaitsForAWriteAlreadyInFlight() async {
+        let (model, transport) = makeConfigModel(refresh: .every30)
+        transport.writeDelay = .milliseconds(60)
+        model.start()
+        await waitFor("config") { model.hasReadConfig }
+
+        model.setRefresh(.every15)
+        await waitFor("first write in flight") { transport.writesStarted == 1 }
+        model.setRefresh(.every120)
+        await waitFor("both landed") { transport.writtenRefreshRaws.count == 2 }
+        await waitFor("row settled") { model.refresh == .every120 }
+
+        #expect(transport.writtenRefreshRaws
+            == [WeatherRefresh.every15.rawValue, WeatherRefresh.every120.rawValue])
+        #expect(model.refresh == .every120, "no read-back reverted the row")
+        #expect(!model.refreshIsUnconfirmed)
+    }
+
+    /// The same unordered read-back arriving by the other door: this screen re-reads the device on
+    /// launch and whenever the link comes up, and one of those can still be in the air when the
+    /// rider picks a new interval. Landing afterwards it would snap the row back — indistinguishable
+    /// from a rejected write (#1198 review).
+    @Test func aRoutineDeviceReReadDoesNotClobberAnInFlightChange() async {
+        let (model, transport) = makeConfigModel(refresh: .every30)
+        transport.writeDelay = .milliseconds(60)
+        model.start()
+        await waitFor("config") { model.hasReadConfig }
+
+        model.setRefresh(.every120)
+        // A re-read of the device's *old* value, deliberately raced against the write.
+        await model.refreshAll()
+        #expect(model.refresh == .every120, "the rider's choice survived the stale read")
+
+        await waitFor("settled") { transport.writtenRefreshRaws.count == 1 }
+        await waitFor("confirmed") { !model.refreshIsUnconfirmed }
+        #expect(model.refresh == .every120)
+    }
+
+    /// The write went out, the confirming read did not come back. The row may not pass this
+    /// phone's optimism off as device truth: it says *not confirmed*, and the next visit settles
+    /// it (#1198 review).
+    @Test func aWriteWhoseConfirmationNeverArrivesReadsAsUnconfirmed() async {
+        let (model, transport) = makeConfigModel(refresh: .every30)
+        transport.failsReadAfterWrite = true
+        model.start()
+        await waitFor("config") { model.hasReadConfig }
+
+        model.setRefresh(.every120)
+        await waitFor("unconfirmed") { model.refreshIsUnconfirmed }
+        #expect(model.refresh == .every120, "the write was sent; it probably landed")
+        #expect(!model.refreshWriteFailed, "…so this is not the failed-write story")
+        #expect(WeatherCopy.refreshValue(
+            model.refresh, unknownToThisBuild: false, hasRead: true, unconfirmed: true)
+            == "Every 2 hours · not confirmed")
+
+        // The next appearance re-reads and settles it — one round trip, only because the screen
+        // knew it was unsure.
+        transport.failsReadAfterWrite = false
+        await model.appeared()
+        await waitFor("settled") { !model.refreshIsUnconfirmed }
+        #expect(model.refresh == .every120, "and the device had taken it after all")
+        #expect(WeatherCopy.refreshValue(
+            model.refresh, unknownToThisBuild: false, hasRead: true, unconfirmed: false)
+            == "Every 2 hours")
+    }
+
     // MARK: The standing watch (phone truth)
 
     @Test func theWatchSwitchPersistsAndReachesTheTransport() async {
@@ -289,10 +480,53 @@ struct WeatherSettingsModelTests {
         #expect(WeatherCopy.failureExplanation(fetchFailure)
             == "The forecast never reached the phone.")
         #expect(WeatherCopy.failureExplanation(historyEntry(outcome: .committed)) == nil)
-        // A job that ran out of time is not a send that failed, whatever phase it died in.
+        // A job that ran out of time is not a send that failed, whatever phase it died in — and it
+        // is not even `.failed`: it carries its own calm outcome (#1198 review).
         #expect(WeatherCopy.failureExplanation(historyEntry(
-            outcome: .failed, failure: .agedOut, phase: .bundleReady))
-            == "It expired before it reached the OBC.")
+            outcome: .agedOut, failure: .agedOut, phase: .bundleReady))
+            == "It went out of date before it reached the OBC.")
+    }
+
+    /// Aged out is its own outcome with its own word, and it is not painted as a failure: the same
+    /// job usually carries on and delivers moments later, so the row is information rather than an
+    /// alarm. The status line proves it — a last run that aged out does not make the screen say
+    /// something failed.
+    @Test func anAgedOutRunIsItsOwnCalmOutcomeNotAFailure() async {
+        #expect(WeatherCopy.outcomeLabel(.agedOut) == "Expired")
+        #expect(Set([
+            WeatherCopy.outcomeLabel(.committed), WeatherCopy.outcomeLabel(.failed),
+            WeatherCopy.outcomeLabel(.superseded), WeatherCopy.outcomeLabel(.agedOut),
+        ]).count == 4)
+
+        let (model, _, _) = makeModel(history: [
+            historyEntry(outcome: .committed, minutesAgo: 40),
+            historyEntry(outcome: .agedOut, failure: .agedOut, phase: .bundleReady, minutesAgo: 3),
+        ])
+        model.start()
+        await waitFor("history") { model.lastAttempt != nil }
+        #expect(!model.showsStatusRow, "an expired run is not a failure to shout about")
+        #expect(model.statusLine == "Delivered 40 min ago")
+    }
+
+    /// The no-rain-map reason is copy, not Swift's debug spelling. `String(describing:)` used to
+    /// put `allCoveringProductsExpired(latestDeadline: …)` on a diagnostics row, complete with a
+    /// UTC debug date (#1198 review).
+    @Test func theNoRainMapReasonRendersInPlainWordsWithARealTime() {
+        let deadline = clock.addingTimeInterval(-1_800)
+        let expired = WeatherCopy.noRainMapReasonLabel(
+            .allCoveringProductsExpired(latestDeadline: deadline))
+        #expect(expired == "rain maps for this area expired at \(WeatherCopy.absolute(deadline))")
+        #expect(!expired.contains("latestDeadline"))
+        #expect(!expired.contains("("))
+
+        let all: [NoRainMapReason] = [
+            .corridorNotCovered, .allCoveringProductsExpired(latestDeadline: deadline),
+            .serviceUnavailable, .framesUnavailable, .noFramesInWindow,
+        ]
+        let labels = all.map { WeatherCopy.noRainMapReasonLabel($0) }
+        #expect(Set(labels).count == labels.count, "every case reads as itself")
+        // No case name survives into the copy — the tell that a `String(describing:)` crept back.
+        #expect(!labels.contains { $0.contains("corridorNotCovered") || $0.contains("Unavailable") })
     }
 
     /// The two source-level splits this issue landed, read at the screen: a drop and a corruption
@@ -325,6 +559,35 @@ struct WeatherSettingsModelTests {
         #expect(jobs.retryCount == 1)
         #expect(model.pending == nil, "a finished job leaves no owed work behind")
         #expect(!model.canRetry)
+    }
+
+    /// The spinner is bound to the whole retry, not to its scheduling. The engine's `retryNow()`
+    /// returns on completion (a tap that only queues behind a run in flight still waits), and the
+    /// model must not undo that by finishing early — nor let a second tap start a second one
+    /// (#1198 review).
+    @Test func theRetryRowStaysBusyUntilTheJobIsActuallyDone() async {
+        let pending = WeatherJobPending(
+            phase: .bundleReady, requestID: 42, startedAt: clock.addingTimeInterval(-90),
+            updatedAt: clock.addingTimeInterval(-30), attempts: 1, deferrals: 0,
+            bundleByteCount: 40_000)
+        let (model, _, jobs) = makeModel(pending: pending)
+        let gate = RetryGate()
+        jobs.gate = gate
+        model.start()
+        await waitFor("pending") { model.pending != nil }
+
+        let tap = Task { await model.retryNow() }
+        await waitFor("in flight") { model.isRetrying }
+        // A rider pressing again while it spins must not start a second run.
+        await model.retryNow()
+        #expect(jobs.retryCount == 1)
+        #expect(model.isRetrying, "still going")
+
+        await gate.open()
+        await tap.value
+        #expect(!model.isRetrying)
+        #expect(model.pending == nil)
+        #expect(jobs.retryCount == 1)
     }
 
     /// A cooldown is a rider staring at a screen where nothing happens; say what is going on.
@@ -421,5 +684,44 @@ struct WeatherSettingsModelTests {
         #expect(copy.notSent.contains { $0.contains("No account") })
         #expect(copy.sent.contains { $0.contains("corridor") })
         #expect(all.contains("excluded from backups"))
+    }
+
+    /// One thing, one name. The three surfaces used to call it "the weather service", "OBC's file
+    /// storage" and "OBC's own service" — on pages that link to each other, in the exact place a
+    /// reader is counting how many parties there are (#1198 review).
+    @Test func theWeatherServiceHasOneNameOnEverySurface() async {
+        let name = WeatherCopy.serviceName
+        let privacy = WeatherPrivacyCopy.standard
+        let privacyText = (privacy.steps.map(\.body) + privacy.sent + privacy.notSent)
+            .joined(separator: " ")
+        #expect(privacyText.contains(name))
+        #expect(WeatherCopy.aboutFooter.contains(name))
+
+        let (model, _, _) = makeModel(status: nil)
+        model.start()
+        await waitFor("service") { model.service != .loading }
+        #expect(model.serviceFooter.contains(name))
+
+        // The old spellings are gone, not merely joined by a fourth.
+        let everySurface = privacyText + " " + WeatherCopy.aboutFooter + " " + model.serviceFooter
+        for stale in ["OBC's file storage", "OBC's own file storage", "OBC's own service"] {
+            #expect(!everySurface.contains(stale), "stale name still on glass: \(stale)")
+        }
+    }
+
+    /// The main screen's footer makes the same claim the privacy page does, in the same words: the
+    /// corridor names a region, and the position goes to MET alone. It used to say only "the
+    /// weather service never receives your position", which is true but leaves the reader to
+    /// discover on another page that *something* about where they are does leave (#1198 review).
+    @Test func theMainScreenFooterCarriesTheCorridorNuance() {
+        let footer = WeatherCopy.aboutFooter
+        #expect(footer.contains("corridor"))
+        #expect(footer.contains("region"))
+        #expect(footer.contains("MET Norway"))
+        #expect(footer.contains("never your position"))
+        // The privacy page's own corridor sentence says the same thing at length.
+        #expect(WeatherPrivacyCopy.standard.sent.contains {
+            $0.contains("corridor") && $0.contains("region")
+        })
     }
 }

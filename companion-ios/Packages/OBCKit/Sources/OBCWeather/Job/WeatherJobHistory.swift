@@ -15,6 +15,14 @@ public struct WeatherJobHistoryEntry: Codable, Equatable, Sendable {
         case failed
         /// A newer device request replaced this job before it finished.
         case superseded
+        /// Time ended it, and nothing else did: a checkpoint past the engine's `jobLifetime`, or a
+        /// built bundle the app slept past `bundleMaxAge`.
+        ///
+        /// Its own outcome rather than ``failed`` because it is not a failure the rider can act
+        /// on — in the bundle case the *same* request is still being answered under the same job
+        /// id, usually delivered moments later, and painting that row in failure ink would make a
+        /// working sync look broken. Calm ink, honest reason (#1198 review).
+        case agedOut
     }
 
     public var startedAt: Date
@@ -32,14 +40,18 @@ public struct WeatherJobHistoryEntry: Codable, Equatable, Sendable {
     public var uploadConnectedMilliseconds: Int?
     /// The manifest product that answered the corridor, when one did — a product id, never a place.
     public var precipitationProductID: String?
-    public var noRainMapReason: String?
+    /// Why the bundle carried no rain map, kept as the *reason* rather than a rendered string.
+    /// `String(describing:)` here used to hand the diagnostics screen Swift's own debug spelling —
+    /// `allCoveringProductsExpired(latestDeadline: 2026-08-10 12:00:00 +0000)` on glass — and threw
+    /// away the deadline's type on the way (#1198 review). The screen formats it now.
+    public var noRainMapReason: NoRainMapReason?
 
     public init(
         startedAt: Date, finishedAt: Date, requestID: UInt32, outcome: Outcome,
         failureReason: WeatherJobFailure? = nil, phaseReached: WeatherJobPhase, attempts: Int,
         bundleByteCount: Int? = nil, readConnectedMilliseconds: Int? = nil,
         uploadConnectedMilliseconds: Int? = nil, precipitationProductID: String? = nil,
-        noRainMapReason: String? = nil
+        noRainMapReason: NoRainMapReason? = nil
     ) {
         self.startedAt = startedAt
         self.finishedAt = finishedAt

@@ -33,10 +33,10 @@ public struct WeatherPrivacyCopy: Equatable, Sendable {
                 id: 2,
                 title: "The phone fetches",
                 body: "The hourly forecast comes from MET Norway, which receives that position — "
-                    + "it is the only third party that ever does. The rain map comes from OBC's "
-                    + "own file storage: the app downloads pieces of ready-made map files. No "
-                    + "account, no request the server can tie to you, and no position in any "
-                    + "address it asks for."),
+                    + "it is the only third party that ever does. The rain map comes from the "
+                    + "\(WeatherCopy.serviceName): the app downloads pieces of ready-made map "
+                    + "files. No account, no request the server can tie to you, and no position "
+                    + "in any address it asks for."),
             Step(
                 id: 3,
                 title: "The phone sends it back",
@@ -46,15 +46,15 @@ public struct WeatherPrivacyCopy: Equatable, Sendable {
         sent: [
             "To MET Norway: the position your OBC reported, so it can answer with that place's "
                 + "hourly forecast.",
-            "To OBC's file storage: which pieces of a rain-map file to send — a corridor around "
-                + "your route, which tells the network you are somewhere in that region and "
-                + "nothing finer.",
+            "To the \(WeatherCopy.serviceName): which pieces of a rain-map file to send — a "
+                + "corridor around your route, which tells the network you are somewhere in that "
+                + "region and nothing finer.",
         ],
         notSent: [
             "No account, no sign-in and no identifier: the weather files are the same files for "
                 + "everyone, served like any other static download.",
-            "No position to OBC's own service — it has nothing to receive one with, and no "
-                + "per-request processing at all.",
+            "No position to the \(WeatherCopy.serviceName) — it has nothing to receive one with, "
+                + "and no per-request processing at all.",
             "No location permission from this phone: the app never asks iOS where you are. The "
                 + "position comes from your OBC's own GPS.",
             "No ride history, no route contents and no coordinate in the sync diagnostics.",

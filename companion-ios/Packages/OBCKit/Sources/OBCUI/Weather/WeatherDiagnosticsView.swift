@@ -119,15 +119,21 @@ public struct WeatherDiagnosticsView: View {
             parts.append("send \(WeatherCopy.seconds(milliseconds: upload))")
         }
         if let product = entry.precipitationProductID { parts.append(product) }
-        if let reason = entry.noRainMapReason { parts.append("no rain map: \(reason)") }
+        if let reason = entry.noRainMapReason {
+            parts.append("no rain map: \(WeatherCopy.noRainMapReasonLabel(reason))")
+        }
         return parts.joined(separator: " · ")
     }
 
+    /// Warning ink is reserved for something that went wrong. A superseded or expired job did not:
+    /// the request moved on, or time did, usually with the next run delivering moments later — so
+    /// both read in the calm ink the rest of the row uses (#1198 review).
     private func outcomeColor(_ outcome: WeatherJobHistoryEntry.Outcome) -> Color {
         switch outcome {
         case .committed: OBCTheme.forest
         case .failed: OBCTheme.warning
         case .superseded: OBCTheme.inkFaint
+        case .agedOut: OBCTheme.inkFaint
         }
     }
 
