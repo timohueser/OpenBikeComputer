@@ -48,8 +48,12 @@ pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
 /// cells, **123,789 (6.50 %) reached no output cell on 27,000 x 34,000, and 204,758 (10.75 %)
 /// reach none on 30,000 x 30,000**. So roughly one native cell in nine is now invisible in the
 /// forward frames, against one in fifteen before. What makes that acceptable rather than alarming
-/// is *how* the misses fall: the Lambert curvature scatters them, so no output row and no output
-/// column is fully unsampled, and no source cell is duplicated more than twice. An isolated
+/// is *how* the misses fall: the Lambert curvature scatters them across the **source** raster,
+/// where no row and no column of the 1,799 x 1,059 native grid is fully unsampled on either
+/// lattice, and no source cell is duplicated more than twice. (On the *output* side 2 of 1,052
+/// rows and 1 of 2,441 columns resolve to no source index at all — but those lie wholly outside
+/// the projected domain and emit NODATA, which is the correct answer rather than a gap: output
+/// row 0's centre is 21.115 N, south of the domain's southernmost point at 21.138 N.) An isolated
 /// convective cell can still be the one that vanishes — that is the honest residual risk of
 /// nearest-neighbour resampling at this ratio, and it applies to the model frames only, never to
 /// the radar observation.

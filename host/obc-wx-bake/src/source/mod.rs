@@ -130,11 +130,15 @@ mod nesting_tests {
     use super::*;
 
     fn geometry(cell: u32, south: i32, west: i32) -> GridGeometry {
+        anisotropic(cell, cell, south, west)
+    }
+
+    fn anisotropic(cell_lat: u32, cell_lon: u32, south: i32, west: i32) -> GridGeometry {
         GridGeometry {
             south_lat_udeg: south,
             west_lon_udeg: west,
-            cell_lat_udeg: cell,
-            cell_lon_udeg: cell,
+            cell_lat_udeg: cell_lat,
+            cell_lon_udeg: cell_lon,
             width: 10,
             height: 10,
             cell_size_m: 1_000,
@@ -178,6 +182,22 @@ mod nesting_tests {
     #[test]
     fn a_non_nesting_pair_masked_by_a_coarser_frame_is_still_refused() {
         let error = verify_frames_nest(&product(&[20_000, 30_000, 60_000])).expect_err("must refuse");
+        assert!(error.contains("does not nest"), "{error}");
+    }
+
+    /// Equal cell *area*, transposed strides: neither lattice nests under the other, and the
+    /// pairwise loop only sees the pair at all because it skips on `coarse < fine` rather than
+    /// `coarse <= fine`. Without this case that comparison can be relaxed to `<=` — which reads
+    /// like a harmless "skip equal areas" tidy-up — with the entire workspace suite still green,
+    /// while `bundle::build` drops a frame for this pair in most corridors.
+    #[test]
+    fn equal_area_lattices_with_transposed_strides_are_refused() {
+        let mut product = product(&[20_000, 20_000]);
+        product.frames[0].source.as_mut().expect("source").geometry =
+            anisotropic(20_000, 60_000, 20_000_000, -130_000_000);
+        product.frames[1].source.as_mut().expect("source").geometry =
+            anisotropic(60_000, 20_000, 20_000_000, -130_000_000);
+        let error = verify_frames_nest(&product).expect_err("neither nests under the other");
         assert!(error.contains("does not nest"), "{error}");
     }
 
