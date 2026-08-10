@@ -1196,7 +1196,7 @@ not wrap and the floor has no polar points, so the 25 lattice rows beyond ±89.8
 no source: they publish as 15, which is the truth, and the covered domain is named in the code and
 the spec rather than left to be found in a rendered frame.
 
-Beneath the regional tiers a
+Beneath every regional source a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
 on purpose, never smoothed into looking better than it is. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
 intensities and the same raw4/RLE4 tile codecs, generalized to a per-product power-of-two tile
@@ -1220,10 +1220,21 @@ Around that sits what an HTTP Range client needs and a device never does: a self
 fixed header carrying exact integer geometry, a **paged** tile directory whose pages carry their
 own CRCs, per-tile CRCs, and a len-0 sentinel for all-dry tiles — so fetching a corridor is a
 header read, a few directory-page reads and only the wet tiles, each independently verifiable.
-The mutable `manifest.json` beside the frames carries tiers, coverage, staleness deadlines and
-attribution; selection policy is manifest data, never code. The byte-level contract is
-[`OBCG_Spec.md`](src:specs/OBCG_Spec.md); OBCG never reaches the device, which continues to see
-only OBCW.
+The mutable `manifest.json` beside the objects is what selection became once there was nothing to
+select. It names the current generation and the two before it that are still fetchable, states the
+grid — origin, pitch, extent, shard size, tile edge, paging, and the polar rows no source reaches —
+so no client hardcodes any of it, gives its own deadlines as absolute timestamps rather than leaving
+a client to hold durations, and lists every source that may have painted a cell, because without
+per-cell provenance every attribution line has to be displayable together. Which objects a rider
+needs is then arithmetic: divide the corridor's bounding box by the shard size, and compose the key.
+
+The one thing the document must still *say* is what exists. Each frame carries a presence bitmap,
+one bit per shard, and that bit is the difference between two things a bare 404 cannot tell apart:
+a shard the bitmap names must exist, so a missing object is an error to retry, while a shard it does
+not name is dry everywhere and there is nothing to fetch. A shard the mosaic could not paint at all
+is *published*, full of code 15 — only genuinely dry shards are omitted, so an absence can never be
+an outage in disguise. The byte-level contract is [`OBCG_Spec.md`](src:specs/OBCG_Spec.md); OBCG
+never reaches the device, which continues to see only OBCW.
 
 ## Streaming: resident vs on-demand
 
@@ -1598,7 +1609,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The OBCW byte contract and reader: spec [`OBCW_Spec.md`](src:specs/OBCW_Spec.md), authority [`obc-formats/src/obcw.rs`](src:firmware/obc-formats/src/obcw.rs), allocation-free traversal [`obc-weather`](src:firmware/obc-weather), and independent Swift mirror [`OBCWeatherWire`](src:companion-ios/Packages/OBCKit/Sources/OBCWeatherWire)
-- The published weather grid objects the phone crops from: spec [`OBCG_Spec.md`](src:specs/OBCG_Spec.md), authority [`obc-formats/src/obcg.rs`](src:firmware/obc-formats/src/obcg.rs), producer [`obc-wx-bake`](src:host/obc-wx-bake) with its pinned manifest schema [`manifest.schema.json`](src:host/obc-wx-bake/schema/manifest.schema.json), and the host client that crops the same objects for the simulator [`obc-wx-client`](src:host/obc-wx-client)
+- The published weather grid objects the phone crops from: spec [`OBCG_Spec.md`](src:specs/OBCG_Spec.md), authority [`obc-formats/src/obcg.rs`](src:firmware/obc-formats/src/obcg.rs), producer [`obc-wx-bake`](src:host/obc-wx-bake) with its pinned manifest schema [`manifest-v2.schema.json`](src:host/obc-wx-bake/schema/manifest-v2.schema.json), the shared parse fixture both clients read [`wx-manifest-v2.json`](src:specs/vectors/wx-manifest-v2.json), and the host client that crops the same objects for the simulator [`obc-wx-client`](src:host/obc-wx-client)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
