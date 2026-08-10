@@ -156,37 +156,44 @@ mod tests {
         assert!(((tiepoint_y - model_y) / 1_000.0 - 2_100.5).abs() < 1e-6);
     }
 
-    /// OPERA's ODIM `where` attributes give the composite's **outer** corners: `LL` is the
-    /// south-west corner of the south-west pixel and `UR` the north-east corner of the north-east
-    /// one. That is not an interpretation, it is arithmetic — `LL` to `UR` spans exactly
-    /// 3,800,000 x 4,400,000 m, which is exactly 3,800 x 4,400 cells of 1 km, and corners read as
-    /// pixel *centres* would need a 3,801 x 4,401 raster to span the same distance. The corners
-    /// also land on model (0, -4,400,000) and (3,800,000, 0), which is what OPERA's false origin
-    /// is for.
+    /// OPERA's ODIM `where` attributes give the composite's **outer** corners, and all four of
+    /// them are asserted here because that is what makes this test self-defending against the
+    /// mistake that was actually made (#1267 review round 1).
     ///
-    /// PROJ itself produced those lat/lons, so reproducing them to well under a millimetre pins
-    /// this implementation against the reference one — the ellipsoidal form, the authalic
+    /// `LL` and `UR` alone are not enough: read as corner-*pixel centres* they stay numerically
+    /// plausible, which is exactly how a half-pixel error shipped. Two things break that reading.
+    /// First the arithmetic — `LL` to `UR` spans exactly 3,800,000 x 4,400,000 m, which is exactly
+    /// 3,800 x 4,400 cells of the `xscale = 1000.0` OPERA also states, and centres would need a
+    /// 3,801 x 4,401 raster to span the same distance. Second, and decisively, **`UL` names the
+    /// grid's north-west corner directly**: it projects to model (0, 0), the corner the adapters
+    /// pin, to within 0.09 mm. Under the discarded registration that corner sits at model
+    /// (-500, +500) and `UL_lat` would be wrong by ~4.5e-3 degrees — six orders of magnitude out.
+    /// There is no reading of these four numbers left in which the grid is anywhere else.
+    ///
+    /// PROJ itself produced these lat/lons, so reproducing them to well under a millimetre also
+    /// pins this implementation against the reference one — the ellipsoidal form, the authalic
     /// latitude, `R_q`, `D` and the oblique rotation all at once. The spherical approximation
     /// misses these corners by kilometres.
     #[test]
     fn the_odim_corner_coordinates_pin_the_projection_and_the_registration() {
-        // ODIM: LL_lat/LL_lon and UR_lat/UR_lon of `OPERA@...@0@DBZH.h5`.
+        // The `where` group of `OPERA@20260810T0000@0@DBZH.h5`, and the model coordinates of the
+        // grid corner each one names. The pinned grid is model (0, 0) … (3,800,000, -4,400,000).
         let corners = [
-            (31.746_215_318_3, -10.434_576_838_6, -1_950_000.0, -2_300_000.0), // LL
-            (67.621_037_107_2, 57.811_964_750_1, 1_850_000.0, 2_100_000.0),    // UR
+            ("UL", 67.022_832_762_437_2, -39.535_786_412_503_4, 0.0, 0.0),
+            ("UR", 67.621_037_107_163_1, 57.811_964_750_149_9, 3_800_000.0, 0.0),
+            ("LL", 31.746_215_318_267_5, -10.434_576_838_640_4, 0.0, -4_400_000.0),
+            ("LR", 31.987_650_276_733_0, 29.421_038_635_578_0, 3_800_000.0, -4_400_000.0),
         ];
-        for (lat, lon, expected_x, expected_y) in corners {
-            let (x, y) = forward(lat, lon).expect("a corner projects");
-            assert!((x - expected_x).abs() < 0.002, "x for {lat},{lon}: {x} != {expected_x}");
-            assert!((y - expected_y).abs() < 0.002, "y for {lat},{lon}: {y} != {expected_y}");
+        for (name, lat, lon, expected_x, expected_y) in corners {
+            let (x, y) = forward_model(lat, lon).expect("a corner projects");
+            assert!((x - expected_x).abs() < 0.002, "{name} model x: {x} != {expected_x}");
+            assert!((y - expected_y).abs() < 0.002, "{name} model y: {y} != {expected_y}");
         }
-        // The decisive arithmetic: the span is a whole number of cells, so these are edges.
-        let (ll_x, ll_y) = forward(31.746_215_318_3, -10.434_576_838_6).expect("LL");
-        let (ur_x, ur_y) = forward(67.621_037_107_2, 57.811_964_750_1).expect("UR");
+        // The span is a whole number of `xscale`/`yscale` cells, so these are edges, not centres.
+        let (ll_x, ll_y) = forward(31.746_215_318_267_5, -10.434_576_838_640_4).expect("LL");
+        let (ur_x, ur_y) = forward(67.621_037_107_163_1, 57.811_964_750_149_9).expect("UR");
         assert!(((ur_x - ll_x) / 1_000.0 - 3_800.0).abs() < 1e-5, "x span {}", (ur_x - ll_x) / 1_000.0);
         assert!(((ur_y - ll_y) / 1_000.0 - 4_400.0).abs() < 1e-5, "y span {}", (ur_y - ll_y) / 1_000.0);
-        // …and they are the corners the false origin names: model (0, -4,400,000) / (3,800,000, 0).
-        assert!((ll_x + FALSE_EASTING_M).abs() < 0.002 && (ur_y + FALSE_NORTHING_M).abs() < 0.002);
     }
 
     /// Equal-area, oblique and centred: the mapping is monotone in both axes near the origin,
