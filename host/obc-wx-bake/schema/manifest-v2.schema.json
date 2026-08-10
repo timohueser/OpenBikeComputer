@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "type": "object",
+  "properties": {
+    "version": {
+      "description": "Manifest document version; readers reject an unknown value.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "generation": {
+      "description": "The current generation: `YYYYMMDD'T'HHMM'Z'`, and the second segment of every object key.",
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{4}Z$"
+    },
+    "generated_at": {
+      "description": "Wall-clock UTC time this manifest was produced (RFC 3339 seconds).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "reference_time": {
+      "description": "The cycle anchor: frame `f<offset>` is valid at `reference_time + offset` minutes.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "key_prefix": {
+      "description": "The prefix every object key of this dataset starts with.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$"
+    },
+    "previous_generations": {
+      "description": "Superseded generations whose objects are still fetchable, **newest first**, at most\n[`RETAINED_PREVIOUS_GENERATIONS`]. A client holding a stale manifest may finish reading\nfrom one of these; a sweep may delete anything not named here or by `generation`.\n\nThe cap is normative, not advisory (§10.4): a reader rejects a longer list rather than\ntruncating it, because a sweep that keeps fewer generations than the document names is the\noutage retention exists to prevent, and raising the cap is a manifest version bump.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{8}T[0-9]{4}Z$"
+      },
+      "maxItems": 2
+    },
+    "lattice": {
+      "$ref": "#/$defs/LatticeDescriptor"
+    },
+    "cadence": {
+      "$ref": "#/$defs/Cadence"
+    },
+    "freshness": {
+      "$ref": "#/$defs/Freshness"
+    },
+    "attribution": {
+      "description": "Every source that may have painted a cell of this generation, in mosaic priority order.\nThere is no per-cell provenance (#1242), so attribution is stated for the dataset as a\nwhole and every one of these lines must be displayable together.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AttributionEntry"
+      }
+    },
+    "frames": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Frame"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "generation",
+    "generated_at",
+    "reference_time",
+    "key_prefix",
+    "previous_generations",
+    "lattice",
+    "cadence",
+    "freshness",
+    "attribution",
+    "frames"
+  ],
+  "$defs": {
+    "LatticeDescriptor": {
+      "description": "The grid, stated so no client hardcodes it.",
+      "type": "object",
+      "properties": {
+        "south_lat_udeg": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "west_lon_udeg": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "cell_udeg": {
+          "description": "Cell pitch in microdegrees, both axes; the lattice is square in degrees, not in metres.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "shard_width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "shard_height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "shard_cols": {
+          "description": "Shard columns west-to-east and rows south-to-north. The bitmap bit of shard `(col, row)`\nis at index `row * shard_cols + col`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "shard_rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "tile_edge": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "entries_per_page": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "cell_size_m": {
+          "description": "The `cell_size_m` every object of this dataset declares.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "covered_rows": {
+          "description": "The lattice rows at least one source reaches, `[start, end)`. Rows outside it have no\nsource at all and are published as intensity 15 in every frame, forever — a permanent\nproperty of the dataset rather than an outage, so it is stated once here instead of being\ninferred from cells (#1242's polar band).",
+          "$ref": "#/$defs/RowRange"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "south_lat_udeg",
+        "west_lon_udeg",
+        "cell_udeg",
+        "width",
+        "height",
+        "shard_width",
+        "shard_height",
+        "shard_cols",
+        "shard_rows",
+        "tile_edge",
+        "entries_per_page",
+        "cell_size_m",
+        "covered_rows"
+      ]
+    },
+    "RowRange": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ]
+    },
+    "Cadence": {
+      "type": "object",
+      "properties": {
+        "frame_step_min": {
+          "description": "Minutes between consecutive frames, and between consecutive generations.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "frames": {
+          "description": "Frames per generation; offsets are `0, step, 2*step, ...`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_source_skew_s": {
+          "description": "How far a source frame may sit from a canonical frame's validity and still have painted it\n(`canonical::MAX_FRAME_SKEW_S`). A bake-time property of the data, stated because it bounds\nhow much older than its `valid_at` a cell's underlying observation can be — a client that\nwants to caveat \"radar, up to N minutes old\" reads it here rather than assuming a number.",
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frame_step_min",
+        "frames",
+        "max_source_skew_s"
+      ]
+    },
+    "Freshness": {
+      "description": "Deadlines, absolute. Every \"how old is too old\" decision a client used to make from its own\nconstants is one of these fields — a client compares timestamps and never counts minutes.",
+      "type": "object",
+      "properties": {
+        "manifest_max_age_s": {
+          "description": "How long a fetched copy of *this document* may be reused before re-reading it.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "next_generation_expected_at": {
+          "description": "When the next generation should exist. Past it with no new manifest, the service is late;\nthe data is not yet unusable. This is the probe's alarm, not the client's.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "stale_after": {
+          "description": "When this generation stops being usable at all: the validity of its **last** frame. Past\nit every frame describes the past, so there is nothing left to answer with. Derived, not\nchosen. Expiry never turns into a dry claim — a client past this deadline has *no* weather,\nwhich is a different thing from no rain.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "manifest_max_age_s",
+        "next_generation_expected_at",
+        "stale_after"
+      ]
+    },
+    "AttributionEntry": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "description": "The mosaic source id this line belongs to (`dwd-rv`, `gfs`, ...). Display metadata: a\nclient MUST NOT branch on it, and it is not a selectable product.",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "text",
+        "url"
+      ]
+    },
+    "Frame": {
+      "type": "object",
+      "properties": {
+        "offset_min": {
+          "description": "`(valid_at - reference_time)` in minutes; the `f<offset-min>` key segment.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "valid_at": {
+          "description": "The frame's UTC validity (RFC 3339) — never a re-stamped bake time.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "present": {
+          "description": "Shard presence, one bit per shard, `ceil(shard_count / 8)` bytes as lowercase hex, first\nbyte first, least-significant bit first inside each byte. Bit `row * shard_cols + col` set\nmeans the object exists; clear means that shard is entirely dry. Bits past `shard_count` in\nthe final byte are zero.",
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})+$"
+        },
+        "shards": {
+          "description": "One entry per present shard, ascending by `(row, col)`. Exactly the shards `present` names:\na reader MUST reject a frame where the two disagree.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Shard"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "offset_min",
+        "valid_at",
+        "present",
+        "shards"
+      ]
+    },
+    "Shard": {
+      "type": "object",
+      "properties": {
+        "col": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "row": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "description": "Exact object length; a client may use it to bound Range arithmetic.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "object_crc32": {
+          "description": "The OBCG whole-object CRC-32 (`0x` + 8 uppercase hex digits).",
+          "type": "string",
+          "pattern": "^0x[0-9A-F]{8}$"
+        },
+        "observed": {
+          "description": "Was **every** cell of this shard painted by an observation? Per shard rather than per\nframe, because a mosaic frame is radar over Germany and model over the Atlantic at the same\ninstant — this mirrors the object's own `FLAG_OBSERVED`, which the baker measures.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "col",
+        "row",
+        "bytes",
+        "object_crc32",
+        "observed"
+      ]
+    }
+  }
+}

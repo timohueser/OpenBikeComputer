@@ -95,6 +95,13 @@ pub const PRODUCT_EXPERIMENTAL: u8 = 255;
 pub const TIER_RADAR: u8 = 1;
 pub const TIER_MODEL: u8 = 2;
 pub const TIER_FLOOR: u8 = 3;
+/// The canonical mosaic's tier, and the honest answer to "which tier is a global mosaic?" —
+/// **none of them** (#1243). A mosaic frame is 1 km radar over Germany and 27.75 km model over the
+/// Pacific in the same object, so `TIER_RADAR` would be the same category of untruth `cell_size_m`
+/// was retired for in #1242. The header slot is fixed and must be nonzero, so the field gets a code
+/// that means "this object is not a member of any tier"; nothing may branch on it, and manifest v2
+/// carries no tier at all.
+pub const TIER_MOSAIC: u8 = 4;
 
 /// Tile codec ids (spec §4.1/§5). `0` and `1` are [`crate::precip4`]'s shared raw4/RLE4 pair —
 /// the identical two bytes OBCW uses. `2` is OBCG-only: raw DEFLATE (RFC 1951, no wrapper) over

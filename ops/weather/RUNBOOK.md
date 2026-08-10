@@ -269,9 +269,18 @@ Run it by hand any time:
 ```sh
 python3 ops/weather/freshness_probe.py --url https://wx.openbikecomputer.com --expect dwd-rv,icon-eu,us,gfs
 python3 ops/weather/freshness_probe.py --manifest ./manifest.json --now 2026-08-09T18:00:00Z
+python3 ops/weather/freshness_probe.py --url https://wx.openbikecomputer.com --mosaic
 ```
 
 Exit codes: `0` fresh, `1` stale / missing / over budget, `2` unreachable.
+
+`--mosaic` probes the canonical sharded dataset at `wx/v2/manifest.json` instead of the v1 product list
+(WXR4 #1243). It has no products, so `--expect` does not apply: the checks become the document's own
+deadlines (`freshness.next_generation_expected_at` — the service is late; `freshness.stale_after` —
+the generation can no longer answer anything), a count of published shards against the grid the
+manifest states, and a retained-bytes figure taken from the retention chain (`generation` plus
+`previous_generations`), which is exactly the set a lifecycle sweep is allowed to keep. Both trees
+are live until #1246 deletes v1, so run both.
 
 ### Drill it (WX15 gate, epic closeout)
 

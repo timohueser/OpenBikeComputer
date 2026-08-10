@@ -31,12 +31,12 @@ use obc_wx_bake::canonical::{
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
 use obc_wx_bake::grib::{decode_bzip2_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
-use obc_wx_bake::manifest;
 use obc_wx_bake::publish::DirStore;
 use obc_wx_bake::source::{
     dwd_rv, gfs, hrrr, icon_eu, mrms, us, Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct,
 };
 use obc_wx_bake::stereo;
+use obc_wx_bake::{manifest, manifest_v2};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -665,13 +665,35 @@ fn every_published_frame_states_the_lattice_cell_size_and_pitch() {
 // The whole cycle, end to end
 // ---------------------------------------------------------------------------------------------
 
-/// One canonical cycle against the fixture upstreams and a directory store: every shard of every
-/// frame is published, every object self-validates, and the run is deterministic. The lattice is a
-/// sub-window (the full 648 M-cell one takes 12 s in a release build and minutes in a debug one),
-/// but the orchestration, the streaming shape, the fetchability proof and the placeholder manifest
-/// are the production ones.
+/// Read a published directory store back as `key -> bytes`.
+fn published_tree(dir: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    let mut tree = BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let key = path.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+                tree.insert(key, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    tree
+}
+
+/// One canonical cycle against the fixture upstreams and a directory store: the run is
+/// deterministic, every object self-validates, and — the WXR4 (#1243) property — **the manifest and
+/// the tree are the same statement**. Every present bit names an object that is there, at the key
+/// the client computes and at the length and CRC the manifest promised; every clear bit names one
+/// that is not, and nothing exists that the manifest did not name.
+///
+/// The lattice is a sub-window (the full 648 M-cell one takes 12 s in a release build and minutes
+/// in a debug one), but the orchestration, the streaming shape, the fetchability proof and the
+/// manifest are the production ones.
 #[test]
-fn a_canonical_cycle_publishes_every_shard_of_every_frame_and_repeats_itself() {
+fn a_canonical_cycle_publishes_exactly_what_its_manifest_says_and_repeats_itself() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 256, 192);
     let now = ts("2026-08-09T14:30:00Z");
     let dwd = dwd_rv::DwdRv;
@@ -687,47 +709,176 @@ fn a_canonical_cycle_publishes_every_shard_of_every_frame_and_repeats_itself() {
         let mut upstream = european_upstream();
         let report = run_canonical_cycle(&lattice, &adapters, &mut upstream, &mut store, now, BAKE_THREADS, false)
             .expect("the canonical cycle publishes");
-        let objects = usize::try_from(lattice.shard_count()).unwrap() * usize::try_from(CYCLE_FRAMES).unwrap();
-        assert_eq!(report.published_objects, objects + 1, "every shard of every frame, plus the manifest");
+        let baked = usize::try_from(lattice.shard_count()).unwrap() * usize::try_from(CYCLE_FRAMES).unwrap();
+        assert_eq!(
+            report.published_objects + report.dry_shards,
+            baked + 1,
+            "every shard of every frame is either published or accounted for as dry, plus the manifest"
+        );
         // The report names its sources in priority order, and only sources that have a row.
         assert_eq!(
             report.layers.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>(),
             vec![dwd_rv::ID, icon_eu::ID]
         );
 
-        let mut tree = BTreeMap::new();
-        let mut stack = vec![dir.clone()];
-        while let Some(path) = stack.pop() {
-            for entry in std::fs::read_dir(&path).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else {
-                    let key = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
-                    tree.insert(key, std::fs::read(&path).unwrap());
+        let tree = published_tree(&dir);
+        assert_eq!(tree.len(), report.published_objects);
+        let document = manifest_v2::from_json(tree.get(manifest_v2::MANIFEST_KEY).expect("the manifest")).expect("v2");
+        assert_eq!(document.version, 2);
+        assert_eq!(document.generation, "20260809T1430Z");
+        assert_eq!(document.lattice.cell_size_m, LATTICE_CELL_SIZE_M);
+        assert_eq!(document.frames.len(), usize::try_from(CYCLE_FRAMES).unwrap());
+        assert_eq!(
+            document.attribution.iter().map(|entry| entry.source_id.as_str()).collect::<Vec<_>>(),
+            vec![dwd_rv::ID, icon_eu::ID],
+            "every source that may have painted a cell, in priority order"
+        );
+
+        // The manifest is the tree, and the tree is the manifest.
+        let mut named = std::collections::BTreeSet::from([manifest_v2::MANIFEST_KEY.to_string()]);
+        let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+        for frame in &document.frames {
+            for shard_row in 0..lattice.shard_rows() {
+                for shard_col in 0..lattice.shard_cols() {
+                    let key = manifest_v2::shard_key(
+                        &document.key_prefix,
+                        &document.generation,
+                        frame.offset_min,
+                        shard_col,
+                        shard_row,
+                    );
+                    let listed = frame.shards.iter().find(|s| (s.col, s.row) == (shard_col, shard_row));
+                    let bit = shard_row * lattice.shard_cols() + shard_col;
+                    let byte = u8::from_str_radix(&frame.present[(bit as usize / 8) * 2..][..2], 16).unwrap();
+                    let present = byte & (1 << (bit % 8)) != 0;
+                    assert_eq!(present, listed.is_some(), "{key}: bitmap and shards[] disagree");
+                    let Some(listed) = listed else {
+                        assert!(!tree.contains_key(&key), "{key}: bitmap says dry, an object exists");
+                        continue;
+                    };
+                    let bytes = tree.get(&key).unwrap_or_else(|| panic!("{key}: the manifest names it, it is missing"));
+                    assert_eq!(bytes.len() as u64, listed.bytes, "{key}: length");
+                    let header = obcg::validate(bytes, &mut scratch).unwrap_or_else(|e| panic!("{key}: {e:?}"));
+                    assert_eq!(format!("0x{:08X}", header.object_crc32), listed.object_crc32, "{key}: CRC");
+                    assert_eq!(header.cell_size_m, LATTICE_CELL_SIZE_M);
+                    assert_eq!(header.product_id, obcg::PRODUCT_MOSAIC);
+                    assert_eq!(header.tier, obcg::TIER_MOSAIC, "the mosaic is not a tier");
+                    assert_eq!(listed.observed, header.flags & obcg::FLAG_OBSERVED != 0, "{key}: observed");
+                    named.insert(key);
                 }
             }
         }
-        assert_eq!(tree.len(), objects + 1);
-        // Every published object is a valid OBCG frame on the canonical lattice — read back from
-        // disk, through the same fail-closed validator the phone uses.
-        let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
-        for (key, bytes) in &tree {
-            if key.ends_with(".json") {
-                let json: serde_json::Value = serde_json::from_slice(bytes).expect("the manifest is JSON");
-                assert_eq!(json["version"], 2);
-                assert_eq!(json["lattice"]["cell_size_m"], u64::from(LATTICE_CELL_SIZE_M));
-                assert_eq!(json["objects"].as_array().expect("objects").len(), objects);
-                continue;
-            }
-            let header = obcg::validate(bytes, &mut scratch).unwrap_or_else(|e| panic!("{key}: {e:?}"));
-            assert_eq!(header.cell_size_m, LATTICE_CELL_SIZE_M);
-            assert_eq!(header.product_id, obcg::PRODUCT_MOSAIC);
-        }
+        assert_eq!(named.into_iter().collect::<Vec<_>>(), tree.keys().cloned().collect::<Vec<_>>());
+
         let _ = std::fs::remove_dir_all(&dir);
         trees.push(tree);
     }
     assert_eq!(trees[0], trees[1], "same upstream bytes, byte-identical published tree");
+}
+
+/// **Missing is not dry, and dry is not missing** (#1243). A source that covers the western half of
+/// the lattice with dry cells and nothing at all in the east must produce two different answers:
+/// the western shards are *omitted* with a clear presence bit, and the eastern ones are *published*
+/// full of intensity 15. Conflating them is the exact failure the epic forbids, and it is the one a
+/// "skip anything with nothing in it" shortcut walks straight into.
+#[test]
+fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 32, 32);
+    let frames: Vec<(i64, u16)> =
+        (0..CYCLE_FRAMES).map(|frame| (t0 + i64::from(frame) * 900, obcg::FLAG_FORECAST)).collect();
+    // The western 16 columns, entirely dry. The eastern 16 have no source at all.
+    let west =
+        synthetic_frames(gfs::ID, window(45_680_000, 1_460_000, CELL_UDEG, 16, 32), &frames, |_, _| INTENSITY_DRY);
+    let mosaic = Mosaic::from_products(vec![west]).expect("ranked");
+    let times = CycleTimes { reference_time: t0 };
+    let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+    let mut seen = 0usize;
+    // The manifest is built here too, so the outage travels the whole way to a **set** presence bit
+    // rather than being proved at the bake layer and asserted at the document layer separately.
+    let mut document = manifest_v2::Builder::new(&lattice, times, t0, Vec::new(), Vec::new());
+    bake_cycle(&lattice, &mosaic, times, 2, &mut |object| {
+        seen += 1;
+        if !object.fill.all_dry {
+            document.record(
+                object.offset_min,
+                object.col,
+                object.row,
+                object.bytes.len() as u64,
+                object.object_crc32,
+                object.fill.all_observed,
+            );
+        }
+        if object.col == 0 {
+            assert!(object.fill.all_dry, "s0-{}: dry everywhere, so it is omitted", object.row);
+            assert!(object.fill.painted, "the dry source did paint it");
+        } else {
+            assert!(!object.fill.all_dry, "s1-{}: no source reaches it — that is no-data, not dry", object.row);
+            assert!(!object.fill.painted);
+            let header = obcg::validate(&object.bytes, &mut scratch).expect("a valid no-data object");
+            assert_eq!(header.width, 16);
+            assert_eq!(
+                published_cell(&object.bytes, 0, 0),
+                INTENSITY_NODATA,
+                "an unreachable shard publishes 'we do not know', it does not vanish"
+            );
+        }
+        Ok(())
+    })
+    .expect("bakes");
+    assert_eq!(seen, usize::try_from(lattice.shard_count()).unwrap() * usize::try_from(CYCLE_FRAMES).unwrap());
+
+    // Every frame: the two dry western shards are bit-clear and unlisted; the two no-data eastern
+    // ones are bit-set and listed. A source outage is a published object the client must fetch —
+    // it can never reach a rider as "no rain".
+    let manifest = document.finish();
+    assert_eq!(manifest.frames.len(), usize::try_from(CYCLE_FRAMES).unwrap());
+    for frame in &manifest.frames {
+        assert_eq!(frame.present, "0a", "bits 1 and 3 — the (1,0) and (1,1) shards — and nothing else");
+        assert_eq!(
+            frame.shards.iter().map(|shard| (shard.col, shard.row)).collect::<Vec<_>>(),
+            vec![(1, 0), (1, 1)],
+            "f{}: only the no-data shards are published",
+            frame.offset_min
+        );
+        assert!(frame.shards.iter().all(|shard| !shard.observed));
+    }
+}
+
+/// The retention contract WXR8's sweep derives its delete set from: a generation names the two
+/// before it, newest first, and nothing older. The baker keeps no state, so this is read back out
+/// of the manifest it published last time and nowhere else.
+#[test]
+fn each_generation_names_the_two_before_it() {
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
+    let dwd = dwd_rv::DwdRv;
+    let icon = icon_eu::IconEu;
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = std::env::temp_dir().join(format!("obc-wx-generations-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store = DirStore::new(&dir);
+
+    let mut chains = Vec::new();
+    for step in 0..4 {
+        let now = ts("2026-08-09T14:30:00Z") + step * 900;
+        let mut upstream = european_upstream();
+        run_canonical_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 2, false).expect("publishes");
+        let raw = std::fs::read(dir.join(manifest_v2::MANIFEST_KEY)).expect("the manifest");
+        let document = manifest_v2::from_json(&raw).expect("v2");
+        chains.push((document.generation, document.previous_generations));
+    }
+    assert_eq!(
+        chains,
+        vec![
+            ("20260809T1430Z".to_string(), vec![]),
+            ("20260809T1445Z".to_string(), vec!["20260809T1430Z".to_string()]),
+            ("20260809T1500Z".to_string(), vec!["20260809T1445Z".to_string(), "20260809T1430Z".to_string()]),
+            ("20260809T1515Z".to_string(), vec!["20260809T1500Z".to_string(), "20260809T1445Z".to_string()]),
+        ],
+        "current plus exactly two, newest first"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------------------------

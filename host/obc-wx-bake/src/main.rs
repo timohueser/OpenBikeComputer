@@ -10,16 +10,16 @@
 //! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
 //! obc-wx-bake opera-cirrus  [...]                                          Europe 1 km radar, tier 1
 //! obc-wx-bake opera-nimbus  [...]                                          Europe 2 km radar, tier 1
-//! obc-wx-bake schema                                                       print the manifest JSON Schema
+//! obc-wx-bake schema [--mosaic]                                            print a manifest JSON Schema
 //! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
 //!
 //! `canonical` is the WXR3 (#1242) path and the one the service is moving to: it bakes **every**
 //! adapter, mosaics them onto the canonical global 0.01 degree lattice by the ordered
 //! `source::MOSAIC_PRIORITY` table, and publishes one provider-agnostic dataset of 24 shards x 9
-//! frames under `wx/v2/` — beside the live `wx/v1` tree, never over it. Its manifest is a
-//! deliberate placeholder until WXR4 #1243 designs the real one. Everything else below is the
-//! multi-product path WXR7 #1246 deletes.
+//! frames under `wx/v2/` — beside the live `wx/v1` tree, never over it, indexed by the v2 manifest
+//! (WXR4 #1243: one generation, one grid, a shard presence bitmap, nothing selectable). Everything
+//! else below is the multi-product path WXR7 #1246 deletes.
 //!
 //! The two OPERA adapters (WXR6, #1245) sit **only** on that side of the line: they are in
 //! `canonical`, which writes `wx/v2` and which nothing reads yet, and deliberately **not** in
@@ -45,6 +45,7 @@ use obc_wx_bake::canonical::{run_canonical_cycle, BAKE_THREADS, CANONICAL};
 use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
+use obc_wx_bake::manifest_v2;
 use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
 use obc_wx_bake::source::{
     dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, opera_cirrus::OperaCirrus, opera_nimbus::OperaNimbus,
@@ -68,7 +69,10 @@ const OPERA_ADAPTERS: [&str; 2] = [obc_wx_bake::source::opera_cirrus::ID, obc_wx
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
-        print!("{}", manifest::schema_json());
+        // Named for the dataset rather than for a version number: it outlives #1246, which
+        // deletes the multi-product path and would leave a `v` flag naming the only thing left.
+        let mosaic = args[1..].iter().any(|arg| arg == "--mosaic");
+        print!("{}", if mosaic { manifest_v2::schema_json() } else { manifest::schema_json() });
         return Ok(());
     }
     // The WXR1 (#1240) measurement spike: fixtures in, numbers out, nothing published.
@@ -157,6 +161,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs|opera-cirrus|opera-nimbus> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema"
+    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs|opera-cirrus|opera-nimbus> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema [--mosaic]   (the multi-product manifest by default; --mosaic is the canonical dataset's)"
         .to_string()
 }
