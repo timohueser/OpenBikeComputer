@@ -6,12 +6,12 @@ import OBCWeather
 /// The ring is the only record of what the background job did — the job itself is invisible by
 /// design (two short connections, no foreground state). Twenty rows, newest first, each one a
 /// finished exchange: when, how it ended, why, how long the radio was actually held, and which
-/// manifest product answered.
+/// dataset generation answered.
 ///
 /// **Coordinate-free, by construction rather than by redaction.** ``WeatherJobHistoryEntry`` has no
 /// field a position could ride in, so this screen cannot leak one however it is read, copied or
-/// screenshotted. The one field with any geography at all is the product id, and its grain is a
-/// radar region — stated in the footer rather than left for a reader to work out.
+/// screenshotted. Since #1244 not even a product id survives: the one provenance field is a bake
+/// timestamp, which is the same for every rider on the planet.
 public struct WeatherDiagnosticsView: View {
     private let entries: [WeatherJobHistoryEntry]
     private let now: Date
@@ -106,7 +106,7 @@ public struct WeatherDiagnosticsView: View {
         }
     }
 
-    /// The machine line: phase, attempts, bytes, both connected times, product. Everything a
+    /// The machine line: phase, attempts, bytes, both connected times, generation. Everything a
     /// support thread needs and nothing a location could hide in.
     private func detailLine(_ entry: WeatherJobHistoryEntry) -> String {
         var parts = [WeatherCopy.phaseLabel(entry.phaseReached).lowercased()]
@@ -118,7 +118,7 @@ public struct WeatherDiagnosticsView: View {
         if let upload = entry.uploadConnectedMilliseconds {
             parts.append("send \(WeatherCopy.seconds(milliseconds: upload))")
         }
-        if let product = entry.precipitationProductID { parts.append(product) }
+        if let generation = entry.precipitationGeneration { parts.append(generation) }
         if let reason = entry.noRainMapReason {
             parts.append("no rain map: \(WeatherCopy.noRainMapReasonLabel(reason))")
         }
@@ -166,8 +166,8 @@ public struct WeatherDiagnosticsView: View {
     }
 
     private var footer: String {
-        "Times are when each exchange finished. The product name (dwd-rv, mrms, …) says which "
-            + "published rain product answered — a radar region, never a place. No coordinate is "
-            + "recorded here."
+        "Times are when each exchange finished. The code at the end of a row is the rain map's "
+            + "publication time — the same for everyone, never a place. No coordinate is recorded "
+            + "here."
     }
 }

@@ -884,7 +884,7 @@
       "shard_addressing": "shards are (col, row) from the lattice's south-west corner; col is west-to-east, row is south-to-north, and a shard set is always ascending by (row, col)",
       "longitude_convention": "microdegrees in -180..180 / -90..90. west > east means the window crosses the antimeridian; any other spelling (0..360, |lon| > 180, |lat| > 90) is an error, never a clamp or a reinterpretation. OBCG_Spec.md 10.2 is normative",
       "outcomes": "covered = fetch/dry describe it; uncovered = on the lattice but outside covered_rows; out_of_domain = off the lattice or a bbox this client refuses. Only 'covered' with an empty fetch list means no rain",
-      "swift_consumer_planned": "companion-ios/Packages/OBCKit/Tests/OBCWeatherTests/ManifestV2Tests.swift - DOES NOT EXIST YET. WXR5 #1244 writes it and must drive bbox_equivalence from this file, exactly as host/obc-wx-client/tests/manifest_v2.rs does, so a case added for one language is a case the other must answer identically. Until it exists this fixture is pinned by Rust alone and the cross-language claim is a plan, not a fact"
+      "swift_consumer": "companion-ios/Packages/OBCKit/Tests/OBCWeatherTests/ManifestV2Tests.swift (WXR5 #1244). It decodes bbox_equivalence out of THIS file and answers every case, exactly as host/obc-wx-client/tests/manifest_v2.rs does, so a case added for one language is a case the other must answer identically. The cross-language claim is now a fact rather than a plan: this is the first manifest both clients are pinned to"
     },
     "bbox_equivalence": [
       {

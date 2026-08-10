@@ -356,7 +356,7 @@ public actor WeatherJobEngine {
                         Int64(built.bundle.bounds.eastLongitudeMicrodegrees),
                     ]
                     job.bundleBuiltAt = now()
-                    job.precipitationProductID = built.state.precipitation?.productID
+                    job.precipitationGeneration = built.state.precipitation?.generation
                     job.noRainMapReason = built.state.noRainMapReason
                     job.phase = .bundleReady
                     persist(&job)
@@ -507,7 +507,7 @@ public actor WeatherJobEngine {
             outcome: outcome, failureReason: failure, phaseReached: job.phase,
             attempts: job.attempts, bundleByteCount: job.bundleBytes?.count,
             readConnectedMilliseconds: readConnectedMilliseconds,
-            precipitationProductID: job.precipitationProductID,
+            precipitationGeneration: job.precipitationGeneration,
             noRainMapReason: job.noRainMapReason)
     }
 }
