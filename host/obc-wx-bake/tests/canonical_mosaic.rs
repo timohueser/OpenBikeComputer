@@ -462,7 +462,7 @@ fn the_floor_covers_every_column_once_the_antimeridian_wraps() {
     let interior_row = CANONICAL.covered_rows().start;
     let uncovered: Vec<u32> =
         (0..CANONICAL.width).filter(|&col| !source_reaches(&floor, &CANONICAL, col, interior_row)).collect();
-    assert!(uncovered.is_empty(), "the floor leaves {} columns unpainted: {:?}", uncovered.len(), &uncovered);
+    assert!(uncovered.is_empty(), "the floor leaves {} columns unpainted: {uncovered:?}", uncovered.len());
 
     // …and the wrap is nearest-neighbour on the circle, not a modulo that shifts by a cell. The
     // westmost lattice column (centre 179.995 W) is nearer to the floor's first grid point
