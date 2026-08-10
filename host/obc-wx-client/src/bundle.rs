@@ -18,7 +18,7 @@ use obc_formats::obcw::{
 use obc_formats::precip4::{INTENSITY_NODATA, TILE_EDGE};
 
 use crate::corridor::Crop;
-use crate::manifest::SourceClass;
+use crate::manifest::{Bbox, SourceClass};
 use crate::met::Hourly;
 
 /// The OBCW v1 producer cap (`OBCW_Spec.md` §2). The window shrinks until the bundle fits.
@@ -31,6 +31,9 @@ pub enum BuildError {
     /// Even one frame over a one-cell window would not fit — structurally impossible, but the
     /// builder refuses rather than emitting a bundle that violates the cap.
     TooLarge,
+    /// An hourly-only bundle whose corridor has no positive extent: there is no region to state,
+    /// and inventing one would put the forecast somewhere it was not asked about.
+    InvalidCorridor,
     Encode(String),
 }
 
@@ -38,6 +41,7 @@ impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuildError::TooLarge => write!(f, "no window small enough fits the OBCW producer cap"),
+            BuildError::InvalidCorridor => write!(f, "the corridor has no positive extent"),
             BuildError::Encode(why) => write!(f, "OBCW encode: {why}"),
         }
     }
@@ -78,12 +82,15 @@ impl Window {
 
 /// Build the bundle. `anchor` is the rider's `(lat, lon)` in microdegrees — a shrunken window
 /// re-centres on it, because a window that shrinks toward the corridor midpoint walks off the
-/// back of a fast rider.
+/// back of a fast rider. `corridor` is the region the job asked about, and is what an
+/// **hourly-only** bundle declares: the screens then say *hourly only here* over the area the
+/// question was actually about, exactly as the phone's builder does.
 pub fn build(
     generation: u32,
     request_id: u32,
     generated_at: i64,
     anchor: (i32, i32),
+    corridor: &Bbox,
     crops: &[Crop],
     hourly: &Hourly,
 ) -> Result<(Vec<u8>, BuildReport), BuildError> {
@@ -97,15 +104,23 @@ pub fn build(
     let mut window = match initial_window(&usable) {
         Some(window) => window,
         // No rain at all: an hourly-only bundle still states a region, so the screens can say
-        // *hourly only here* instead of guessing. One cell spanning the anchor's degree.
-        None => Window {
-            south: i64::from(anchor.0) - 500_000,
-            west: i64::from(anchor.1) - 500_000,
-            lat_stride: 1_000_000,
-            lon_stride: 1_000_000,
-            cols: 1,
-            rows: 1,
-        },
+        // *hourly only here* instead of guessing. One cell spanning the **corridor** — the region
+        // the job asked about — rather than an invented degree around the anchor.
+        None => {
+            let (lat_span, lon_span) =
+                (corridor.north_udeg - corridor.south_udeg, corridor.east_udeg - corridor.west_udeg);
+            if lat_span <= 0 || lon_span <= 0 {
+                return Err(BuildError::InvalidCorridor);
+            }
+            Window {
+                south: corridor.south_udeg,
+                west: corridor.west_udeg,
+                lat_stride: lat_span,
+                lon_stride: lon_span,
+                cols: 1,
+                rows: 1,
+            }
+        }
     };
 
     let mut attempt = 0u32;
@@ -187,10 +202,16 @@ pub fn build(
 }
 
 /// The coarsest crop's own extent: the only lattice every other crop has a chance of tiling.
+///
+/// Ties on cell area are broken by the **latest** `valid_at`, the phone's rule: among lattices
+/// that cost the same to represent, the window is stated over the most recent one, so the frames
+/// most likely to survive the tiling test are the ones nearest the rider's now. (The inverse — an
+/// earliest-first tie-break — silently anchors the window on the oldest of the equal frames and
+/// can drop a different set than the phone drops for the same manifest.)
 fn initial_window(crops: &[&Crop]) -> Option<Window> {
-    let coarsest = crops.iter().max_by_key(|crop| {
-        (u64::from(crop.cell_lat_udeg) * u64::from(crop.cell_lon_udeg), std::cmp::Reverse(crop.valid_at))
-    })?;
+    let coarsest = crops
+        .iter()
+        .max_by_key(|crop| (u64::from(crop.cell_lat_udeg) * u64::from(crop.cell_lon_udeg), crop.valid_at))?;
     Some(Window {
         south: coarsest.south_udeg,
         west: coarsest.west_udeg,
@@ -282,7 +303,8 @@ pub fn hourly_only(
     request_id: u32,
     generated_at: i64,
     anchor: (i32, i32),
+    corridor: &Bbox,
     hourly: &Hourly,
 ) -> Result<Vec<u8>, BuildError> {
-    build(generation, request_id, generated_at, anchor, &[], hourly).map(|(bytes, _)| bytes)
+    build(generation, request_id, generated_at, anchor, corridor, &[], hourly).map(|(bytes, _)| bytes)
 }

@@ -40,9 +40,17 @@ pub const DEFAULT_SERVICE_URL: &str = "https://wx.openbikecomputer.com";
 /// Evidence about one fetch. Counters only — never control flow, and never rendered as weather.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Diagnostics {
+    /// What the **coordinate-free** half of the job cost: the manifest plus the corridor Range
+    /// reads, this fetch only. MET is deliberately not in here — it is a different party seeing a
+    /// different thing, and folding its 200 KB document into "service bytes" would make the number
+    /// mean nothing (it was ~96 % of the figure before this was split).
     pub service_requests: u32,
     pub service_bytes: u64,
+    /// What MET cost, this fetch — the one request that carries the rider's coordinate.
     pub met_requests: u32,
+    pub met_bytes: u64,
+    /// Frames answered from the in-process crop cache, costing no request at all.
+    pub cached_frames: u32,
     pub skipped_manifest_products: usize,
     /// Covering products that were past their staleness deadline when we looked.
     pub expired_products: Vec<String>,
@@ -88,6 +96,9 @@ pub struct WeatherClient {
     origin: String,
     met: met::MetClient,
     manifest_cache: Option<CachedManifest>,
+    /// Cropped frames, keyed on `(object key, window)`. Frame objects are immutable by the
+    /// publishing contract, so a hit is served without a request of any kind.
+    frames: corridor::FrameCache,
     generation: u32,
 }
 
@@ -100,7 +111,13 @@ struct CachedManifest {
 
 impl WeatherClient {
     pub fn new(origin: impl Into<String>) -> Self {
-        Self { origin: origin.into(), met: met::MetClient::new(), manifest_cache: None, generation: 0 }
+        Self {
+            origin: origin.into(),
+            met: met::MetClient::new(),
+            manifest_cache: None,
+            frames: corridor::FrameCache::default(),
+            generation: 0,
+        }
     }
 
     /// Point the MET half at a stand-in endpoint (fixtures, a local capture).
@@ -170,6 +187,7 @@ impl WeatherClient {
     ) -> Result<Bundle, FetchError> {
         let mut diagnostics = Diagnostics::default();
         let (before_requests, before_bytes) = (http.requests(), http.bytes());
+        let cache_hits_before = self.frames.hits;
 
         let crops = match self.manifest(http, now) {
             Ok(manifest) => {
@@ -195,28 +213,42 @@ impl WeatherClient {
             }
         };
 
+        // Everything above this line was addressed to the OBC service and carried no coordinate.
+        // The counters are closed *here*, before MET, so "service cost" keeps meaning exactly
+        // that — the manifest and the corridor's Range reads, nothing else.
+        diagnostics.service_requests = http.requests().saturating_sub(before_requests);
+        diagnostics.service_bytes = http.bytes().saturating_sub(before_bytes);
+        diagnostics.cached_frames = self.frames.hits.saturating_sub(cache_hits_before);
+        let (before_met_requests, before_met_bytes) = (http.requests(), http.bytes());
+
         // MET is the only request that carries the rider's coordinate — by design, and only ever
         // rounded to four decimals.
         let hourly = self.met.hourly(http, corridor.lat_udeg, corridor.lon_udeg, now).map_err(FetchError::Hourly)?;
-        diagnostics.met_requests = self.met.requests;
+        diagnostics.met_requests = http.requests().saturating_sub(before_met_requests);
+        diagnostics.met_bytes = http.bytes().saturating_sub(before_met_bytes);
         diagnostics.attribution.push(met::ATTRIBUTION_TEXT.to_string());
 
         self.generation = self.generation.wrapping_add(1).max(1);
-        let (bytes, report) =
-            bundle::build(self.generation, request_id, now, (corridor.lat_udeg, corridor.lon_udeg), &crops, &hourly)
-                .map_err(FetchError::Build)?;
+        let (bytes, report) = bundle::build(
+            self.generation,
+            request_id,
+            now,
+            (corridor.lat_udeg, corridor.lon_udeg),
+            &corridor.bounds,
+            &crops,
+            &hourly,
+        )
+        .map_err(FetchError::Build)?;
         diagnostics.dropped_incompatible_frames = report.dropped_incompatible;
         diagnostics.dropped_oversize_frames = report.dropped_oversize;
         if report.frames == 0 && diagnostics.no_rain_map.is_none() {
             diagnostics.no_rain_map = Some(NoRainMap::FramesUnavailable.to_string());
         }
-        diagnostics.service_requests = http.requests().saturating_sub(before_requests);
-        diagnostics.service_bytes = http.bytes().saturating_sub(before_bytes);
         Ok(Bundle { bytes, diagnostics })
     }
 
     fn read_corridor<H: Http>(
-        &self,
+        &mut self,
         http: &mut H,
         product: &manifest::Product,
         corridor: &Corridor,
@@ -224,8 +256,9 @@ impl WeatherClient {
         diagnostics: &mut Diagnostics,
     ) -> Vec<Crop> {
         let mut crops = Vec::new();
+        let origin = self.origin.clone();
         for frame in select::usable_frames(product, now) {
-            match corridor::crop_frame(http, &self.origin, frame, &corridor.bounds) {
+            match corridor::crop_frame_cached(http, &origin, frame, &corridor.bounds, &mut self.frames) {
                 Ok(crop) => crops.push(crop),
                 // One bad frame is one missing timestamp, not a failed job. Only losing every
                 // frame becomes "frames unavailable".

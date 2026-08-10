@@ -107,9 +107,48 @@ fn a_baker_written_manifest_round_trips_through_the_client_model() {
     for (client, baker) in parsed.products.iter().zip(&source.products) {
         assert_eq!(client.id, baker.id);
         assert_eq!(client.tier, baker.tier);
-        assert_eq!(client.frames.len(), baker.frames.len());
-        assert_eq!(client.bounds.south_udeg, baker.bbox_udeg.south_udeg);
+        // All four edges: a bbox that agreed on one corner and not the others would still pick the
+        // wrong product for a corridor, and containment is the whole selection rule.
+        assert_eq!(client.bounds.south_udeg, baker.bbox_udeg.south_udeg, "{}", baker.id);
+        assert_eq!(client.bounds.west_udeg, baker.bbox_udeg.west_udeg, "{}", baker.id);
+        assert_eq!(client.bounds.north_udeg, baker.bbox_udeg.north_udeg, "{}", baker.id);
+        assert_eq!(client.bounds.east_udeg, baker.bbox_udeg.east_udeg, "{}", baker.id);
+        assert_eq!(client.cell_lat_udeg, baker.cell.lat_udeg);
+        assert_eq!(client.cell_lon_udeg, baker.cell.lon_udeg);
+        assert_eq!(client.nominal_m, baker.cell.nominal_m);
+        assert_eq!(client.reference_time, baked::parse_rfc3339(&baker.reference_time).unwrap());
+        assert_eq!(client.generated_at, baked::parse_rfc3339(&baker.generated_at).unwrap());
         assert_eq!(client.staleness_deadline, baked::parse_rfc3339(&baker.staleness_deadline).unwrap());
+        assert_eq!(client.attribution.text, baker.attribution.text);
+        assert_eq!(client.attribution.url, baker.attribution.url);
+        assert_eq!(client.frames.len(), baker.frames.len());
+        for (frame, baked_frame) in client.frames.iter().zip(&baker.frames) {
+            // The key and the CRC are what a Range read is planned and verified against; the
+            // valid_at is what freshness is judged on; the geometry is what the fetched header must
+            // agree with before a cell is trusted. A drift in any one of them is a silent outage.
+            assert_eq!(frame.key, baked_frame.key);
+            assert_eq!(frame.offset_min, baked_frame.offset_min);
+            assert_eq!(frame.bytes, baked_frame.bytes);
+            assert_eq!(format!("0x{:08X}", frame.object_crc32), baked_frame.object_crc32);
+            assert_eq!(frame.valid_at, baked::parse_rfc3339(&baked_frame.valid_at).unwrap());
+            assert_eq!(
+                frame.source_class,
+                match baked_frame.source_class {
+                    baked::SourceClass::Observation => manifest::SourceClass::Observation,
+                    baked::SourceClass::Forecast => manifest::SourceClass::Forecast,
+                }
+            );
+            let (geometry, baked_geometry) = (&frame.geometry, &baked_frame.geometry);
+            assert_eq!(geometry.south_udeg, baked_geometry.south_udeg);
+            assert_eq!(geometry.west_udeg, baked_geometry.west_udeg);
+            assert_eq!(geometry.cell_lat_udeg, baked_geometry.cell_lat_udeg);
+            assert_eq!(geometry.cell_lon_udeg, baked_geometry.cell_lon_udeg);
+            assert_eq!(geometry.width, baked_geometry.width);
+            assert_eq!(geometry.height, baked_geometry.height);
+            assert_eq!(geometry.cell_size_m, baked_geometry.cell_size_m);
+            assert_eq!(geometry.tile_edge, baked_geometry.tile_edge);
+            assert_eq!(geometry.entries_per_page, baked_geometry.entries_per_page);
+        }
     }
 }
 
@@ -162,6 +201,7 @@ fn three_tier_manifest(now: i64) -> (manifest::Manifest, Corridor) {
         },
         lat_udeg: mid_lat,
         lon_udeg: mid_lon,
+        undirected: true,
     };
     (parsed, corridor)
 }
@@ -468,6 +508,11 @@ fn crop(valid_at: i64, cell: u32, width: u32, height: u32, value: u8) -> Crop {
     }
 }
 
+/// The corridor the bundle tests describe: the crops' own region, generously boxed.
+fn test_corridor() -> manifest::Bbox {
+    manifest::Bbox { south_udeg: 47_000_000, west_udeg: 7_000_000, north_udeg: 47_500_000, east_udeg: 7_500_000 }
+}
+
 fn hourly() -> met::Hourly {
     met::decode(&fixture("met-freiburg-24h.json"), 0).expect("MET decode")
 }
@@ -477,7 +522,8 @@ fn a_built_bundle_opens_through_the_production_reader() {
     let hourly = hourly();
     let crops = [crop(hourly.valid_from, 9_000, 32, 32, 4), crop(hourly.valid_from + 900, 9_000, 32, 32, 6)];
     let (bytes, report) =
-        bundle::build(1, 0xABCD, hourly.valid_from, (47_100_000, 7_100_000), &crops, &hourly).expect("build");
+        bundle::build(1, 0xABCD, hourly.valid_from, (47_100_000, 7_100_000), &test_corridor(), &crops, &hourly)
+            .expect("build");
     assert_eq!(report.frames, 2);
     assert!(bytes.len() <= bundle::PRODUCER_CAP);
     let source = obc_formats::io::SliceSource(&bytes);
@@ -496,7 +542,8 @@ fn a_frame_whose_lattice_cannot_tile_the_window_is_dropped_not_resampled() {
         crop(hourly.valid_from + 900, 27_000, 11, 11, 3), // 3 km model — the coarsest, so it sets the window
     ];
     let (bytes, report) =
-        bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &crops, &hourly).expect("build");
+        bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &test_corridor(), &crops, &hourly)
+            .expect("build");
     assert_eq!(report.frames, 1, "the coarse frame tiles its own window");
     assert_eq!(report.dropped_incompatible, 1, "the fine frame is dropped rather than resampled");
     assert!(obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&bytes)).is_ok());
@@ -507,7 +554,8 @@ fn a_frame_whose_lattice_cannot_tile_the_window_is_dropped_not_resampled() {
 #[test]
 fn an_hourly_only_bundle_is_still_a_valid_bundle() {
     let hourly = hourly();
-    let bytes = bundle::hourly_only(1, 1, hourly.valid_from, (48_060_000, 7_900_000), &hourly).expect("build");
+    let bytes = bundle::hourly_only(1, 1, hourly.valid_from, (48_060_000, 7_900_000), &test_corridor(), &hourly)
+        .expect("build");
     let source = obc_formats::io::SliceSource(&bytes);
     let reader = obc_weather::WeatherReader::open(&source).expect("valid");
     assert_eq!(reader.header().frame_count, 0);
@@ -530,7 +578,8 @@ fn an_oversized_corridor_shrinks_its_window_before_dropping_a_frame() {
         })
         .collect();
     let (bytes, report) =
-        bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &crops, &hourly).expect("build");
+        bundle::build(1, 1, hourly.valid_from, (47_100_000, 7_100_000), &test_corridor(), &crops, &hourly)
+            .expect("build");
     assert!(bytes.len() <= bundle::PRODUCER_CAP);
     assert!(report.shrinks > 0);
     assert_eq!(report.dropped_oversize, 0, "every timestamp survives; only the window gives ground");
@@ -556,6 +605,7 @@ fn wired_client(now: i64) -> (FixtureHttp, WeatherClient, Corridor) {
         },
         lat_udeg: 0,
         lon_udeg: 0,
+        undirected: true,
     };
     let http = FixtureHttp::new()
         .with_object(MANIFEST_URL, document.into_bytes())
@@ -603,4 +653,368 @@ fn the_manifest_is_not_refetched_inside_its_sixty_second_window() {
     assert_eq!(http.ledger.len(), after_first);
     client.manifest(&mut http, now + 61).expect("revalidated");
     assert_eq!(http.ledger.len(), after_first + 1);
+}
+
+// ── the manifest's revalidation window ─────────────────────────────────────────────────────
+
+/// OBCG §10 in full: reuse for 60 s without asking, then **revalidate with the stored ETag** — and
+/// a `304` restarts the window rather than leaving the client asking again a second later. A
+/// revalidation that did not re-anchor `fetched_at` would turn one request per minute into one per
+/// poll for every rider on the service.
+#[test]
+fn the_manifest_revalidates_with_its_etag_and_a_304_restarts_the_window() {
+    let now = 1_800_000_000;
+    let (http, mut client, _) = wired_client(now);
+    let mut http = http.with_headers(MANIFEST_URL, Some("\"bake-42\""), None, None);
+
+    client.manifest(&mut http, now).expect("first fetch");
+    let after_first = http.ledger.len();
+    client.manifest(&mut http, now + 30).expect("inside the window");
+    assert_eq!(http.ledger.len(), after_first, "no request at all inside the 60 s window");
+
+    // Past the window: one conditional request, answered 304 because the ETag still matches.
+    client.manifest(&mut http, now + 61).expect("revalidated");
+    assert_eq!(http.ledger.len(), after_first + 1);
+    let (_, _) = http.ledger.last().expect("a request was made");
+
+    // The 304 re-anchored the window: the next 60 s are free again.
+    client.manifest(&mut http, now + 100).expect("inside the restarted window");
+    assert_eq!(http.ledger.len(), after_first + 1, "a 304 must restart the freshness window");
+    client.manifest(&mut http, now + 122).expect("revalidated again");
+    assert_eq!(http.ledger.len(), after_first + 2);
+}
+
+// ── the privacy contract ───────────────────────────────────────────────────────────────────
+
+/// **The epic's headline invariant, as an assertion.** Every request to the OBC service is a
+/// key-addressed read of an immutable object: no query string, no coordinate, nothing derived from
+/// one. The corridor decides *which* objects — and that is all the service ever learns. MET is the
+/// single third party that receives a position, and it receives it rounded to four decimals.
+#[test]
+fn the_service_never_receives_a_coordinate() {
+    let now = 1_800_000_000;
+    let (mut http, mut client, corridor) = wired_client(now);
+    client.fetch(&mut http, &corridor, now, 7).expect("fetch");
+
+    let mut met_seen = 0;
+    for (url, _) in &http.ledger {
+        if url.starts_with(MET_ENDPOINT) {
+            met_seen += 1;
+            continue;
+        }
+        assert!(url.starts_with(ORIGIN), "an OBC request must address the service origin: {url}");
+        assert!(!url.contains('?'), "an OBC request must carry no query string at all: {url}");
+        for forbidden in ["lat", "lon", "coord", "="] {
+            assert!(!url.contains(forbidden), "{url} contains {forbidden:?} — the service must learn no position");
+        }
+        // Not even the digits: a corridor edge smuggled into a key would defeat the whole design.
+        for udeg in [corridor.lat_udeg, corridor.lon_udeg, corridor.bounds.south_udeg as i32] {
+            let digits = udeg.abs().to_string();
+            assert!(!url.contains(&digits), "{url} contains the coordinate {digits}");
+        }
+    }
+    assert_eq!(met_seen, 1, "exactly one request carries the rider's position, and it goes to MET");
+    let met_url = http.ledger.iter().find(|(url, _)| url.starts_with(MET_ENDPOINT)).map(|(url, _)| url.clone());
+    assert_eq!(met_url.as_deref(), Some(format!("{MET_ENDPOINT}?lat=0.0000&lon=0.0000").as_str()));
+}
+
+// ── partial content ────────────────────────────────────────────────────────────────────────
+
+/// A server that ignores `Range` and streams the whole object is answering lawfully; the client
+/// slices it itself rather than reading the head of a file as if it were the middle. The proof is
+/// that the crop is **identical** to the one an honest 206 origin produces.
+#[test]
+fn a_200_to_a_range_request_is_sliced_and_produces_the_same_crop() {
+    let (mut honest, frame, bounds) = multipage_setup();
+    let expected = corridor::crop_frame(&mut honest, ORIGIN, &frame, &bounds).expect("crop over 206");
+
+    let (whole_object, frame, bounds) = multipage_setup();
+    let mut whole_object = whole_object.ignoring_ranges();
+    let sliced = corridor::crop_frame(&mut whole_object, ORIGIN, &frame, &bounds).expect("crop over 200");
+    assert_eq!(sliced, expected, "the same bytes must decode to the same crop, whatever status carried them");
+}
+
+/// An origin that lies about partial content: `206` with more bytes than were asked for, or a
+/// `Content-Range` naming other bytes. Both are refusals — slicing an over-long "partial" answer
+/// would silently accept a server contradicting itself, and every CRC below would then blame the
+/// producer for it.
+#[test]
+fn a_206_that_does_not_match_the_request_is_refused() {
+    use obc_wx_client::http::{Http, HttpError, Request, Response};
+
+    struct Lying {
+        object: Vec<u8>,
+        honest_content_range: bool,
+    }
+    impl Http for Lying {
+        fn perform(&mut self, request: &Request, _cap: u64) -> Result<Response, HttpError> {
+            let (start, end) = request.range.expect("a corridor read is always a Range read");
+            Ok(Response {
+                status: 206,
+                body: self.object.clone(), // the whole object, under a partial-content status
+                content_range: Some(if self.honest_content_range {
+                    format!("bytes 0-{}/{}", self.object.len() - 1, self.object.len())
+                } else {
+                    format!("bytes {start}-{end}/{}", self.object.len())
+                }),
+                ..Response::empty()
+            })
+        }
+    }
+
+    let bytes = vector("grid-multipage.obcg");
+    let (_, frame, bounds) = multipage_setup();
+    for honest_content_range in [true, false] {
+        let mut http = Lying { object: bytes.clone(), honest_content_range };
+        let error = corridor::crop_frame(&mut http, ORIGIN, &frame, &bounds).expect_err("must be refused");
+        assert!(
+            matches!(error, corridor::CropError::Http(HttpError::RangeNotHonoured(_))),
+            "an over-long 206 is a range that was not honoured, not something to slice: {error:?}"
+        );
+    }
+}
+
+/// 2xx is not a licence. Only `200` and `206` describe the bytes a corridor read asked for; a
+/// `204`/`203`/`205` answer is refused rather than decoded (the phone refuses them too).
+#[test]
+fn only_200_and_206_are_acted_on() {
+    use obc_wx_client::http::{Http, HttpError, Request, Response};
+
+    struct Status(u16);
+    impl Http for Status {
+        fn perform(&mut self, _request: &Request, _cap: u64) -> Result<Response, HttpError> {
+            Ok(Response { status: self.0, ..Response::empty() })
+        }
+    }
+    let (_, frame, bounds) = multipage_setup();
+    for status in [201u16, 202, 203, 204, 205, 226] {
+        let mut http = Status(status);
+        let error = corridor::crop_frame(&mut http, ORIGIN, &frame, &bounds).expect_err("must be refused");
+        assert!(
+            matches!(error, corridor::CropError::Http(HttpError::Status { code, .. }) if code == status),
+            "status {status} must be refused as a status, not decoded"
+        );
+    }
+}
+
+// ── the frame cache ────────────────────────────────────────────────────────────────────────
+
+/// Frame objects are immutable by the publishing contract, so a corridor already cropped out of
+/// one is knowledge, not a guess. At a 30-minute cadence most of a product's timeline carries over
+/// between fetches; re-reading it would be bytes spent to learn what the client already knows.
+#[test]
+fn an_immutable_frame_is_cropped_once_and_then_served_from_the_cache() {
+    let now = 1_800_000_000;
+    let (mut http, mut client, corridor) = wired_client(now);
+    let first = client.fetch(&mut http, &corridor, now, 1).expect("first fetch");
+    assert_eq!(first.diagnostics.cached_frames, 0, "the first fetch has nothing to reuse");
+    let frame_url = corridor::join(ORIGIN, "wx/v1/fixtures/multipage");
+    let frame_reads = |http: &FixtureHttp| http.ledger.iter().filter(|(url, _)| *url == frame_url).count();
+    let after_first = frame_reads(&http);
+    assert!(after_first > 1, "the first fetch really did read header, pages and tiles");
+
+    let second = client.fetch(&mut http, &corridor, now + 1, 2).expect("second fetch");
+    assert_eq!(frame_reads(&http), after_first, "an immutable frame must not be fetched twice");
+    assert_eq!(second.diagnostics.cached_frames, 1);
+    assert_eq!(second.diagnostics.service_requests, 0, "nothing at all was needed from the service");
+}
+
+/// The window is half the key: a wider corridor asks a different question and must be a miss, not
+/// a smaller crop stretched to fit.
+#[test]
+fn a_wider_corridor_misses_the_cache() {
+    let now = 1_800_000_000;
+    let (mut http, mut client, corridor) = wired_client(now);
+    client.fetch(&mut http, &corridor, now, 1).expect("first fetch");
+    let wider = Corridor {
+        bounds: manifest::Bbox {
+            south_udeg: corridor.bounds.south_udeg - 50_000,
+            north_udeg: corridor.bounds.north_udeg + 50_000,
+            west_udeg: corridor.bounds.west_udeg - 50_000,
+            east_udeg: corridor.bounds.east_udeg + 50_000,
+        },
+        ..corridor.clone()
+    };
+    let second = client.fetch(&mut http, &wider, now + 1, 2).expect("second fetch");
+    assert_eq!(second.diagnostics.cached_frames, 0, "a different window is a miss");
+    assert!(second.diagnostics.service_requests > 0);
+}
+
+// ── failure controls ───────────────────────────────────────────────────────────────────────
+
+/// `--weather-fail-from`: the service starts answering an error mid-job. The cached manifest and
+/// the cached hourly forecast both stand — neither is an outage — but the rain half is dropped
+/// with a stated reason rather than half-drawn.
+#[test]
+fn a_service_that_starts_failing_keeps_the_caches_and_states_why_there_is_no_rain() {
+    let now = 1_800_000_000;
+    let (http, mut client, corridor) = wired_client(now);
+    let mut warm = http.clone();
+    client.fetch(&mut warm, &corridor, now, 1).expect("warm fetch");
+
+    // A corridor one cell wider misses the frame cache, so the failing reads are actually
+    // attempted; the rider's position is unchanged, so MET's cache still answers.
+    let shifted = Corridor {
+        bounds: manifest::Bbox { north_udeg: corridor.bounds.north_udeg + 20_000, ..corridor.bounds },
+        ..corridor.clone()
+    };
+    let mut failing = FaultyHttp::new(http, FailureControls { fail_from: Some((0, 503)), ..Default::default() });
+    let bundle = client.fetch(&mut failing, &shifted, now + 61, 2).expect("still a bundle");
+    assert!(bundle.diagnostics.service_requests > 0, "the failing reads were genuinely attempted");
+    assert!(bundle.diagnostics.no_rain_map.is_some(), "the reason must be stated");
+    let source = obc_formats::io::SliceSource(&bundle.bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("valid");
+    assert_eq!(reader.header().frame_count, 0, "a failing service produces no frames, never invented ones");
+    assert_ne!(reader.header().valid_from, 0, "…while the cached hourly forecast still ships");
+}
+
+// ── the corridor projection ────────────────────────────────────────────────────────────────
+
+fn span_km(corridor: &Corridor) -> (f64, f64) {
+    let lat = (corridor.bounds.north_udeg - corridor.bounds.south_udeg) as f64 / 1e6 * 111.32;
+    let cos = (f64::from(corridor.lat_udeg) / 1e6).to_radians().cos();
+    let lon = (corridor.bounds.east_udeg - corridor.bounds.west_udeg) as f64 / 1e6 * 111.32 * cos;
+    (lon, lat)
+}
+
+/// No bearing and no speed vouched for: a disc of the floor radius. A rider who might go any
+/// direction gets a disc, never a fabricated heading.
+#[test]
+fn a_fix_with_nothing_vouched_for_is_the_undirected_floor_disc() {
+    let corridor =
+        Corridor::projected(&select::Fix { lat_udeg: 48_060_000, lon_udeg: 7_900_000, ..Default::default() });
+    assert!(corridor.undirected);
+    let (width, height) = span_km(&corridor);
+    assert!((height - 20.0).abs() < 0.5, "10 km each way: {height}");
+    assert!((width - 20.0).abs() < 0.5, "10 km each way: {width}");
+}
+
+/// The reach ceiling is the documented 120 km, not 125: the lateral margin is the radius of each
+/// sampled disc, never something added to the reach.
+#[test]
+fn an_implausible_speed_clamps_the_reach_at_the_documented_ceiling() {
+    assert_eq!(Corridor::reach_m(Some(1_000.0)), Some(select::MAX_REACH_M));
+    assert_eq!(Corridor::reach_m(Some(0.0)), Some(select::MIN_REACH_M));
+    assert_eq!(Corridor::reach_m(None), None, "an absent speed is absent, not a floor in disguise");
+    assert_eq!(Corridor::reach_m(Some(f64::NAN)), None, "a NaN speed is not a speed");
+    // Undirected (no bearing): the disc is the reach itself, so 120 km each way and not 125.
+    let corridor =
+        Corridor::projected(&select::Fix { lat_udeg: 0, lon_udeg: 0, speed_ms: Some(1_000.0), ..Default::default() });
+    let (_, height) = span_km(&corridor);
+    assert!((height - 240.0).abs() < 1.0, "2 x 120 km: {height}");
+}
+
+/// A bearing the device vouches for reaches *ahead*: the corridor is long along the course and
+/// stays margin-wide across it. This is the shape that makes containment pick a different tier
+/// than a same-radius disc would.
+#[test]
+fn a_vouched_for_bearing_and_speed_project_a_directed_corridor() {
+    let east = Corridor::projected(&select::Fix {
+        lat_udeg: 48_060_000,
+        lon_udeg: 7_900_000,
+        bearing_deg: Some(90.0),
+        speed_ms: Some(10.0), // 20 km in two hours → the 10 km floor is not what is being measured
+        ..Default::default()
+    });
+    assert!(!east.undirected);
+    let (width, height) = span_km(&east);
+    assert!(width > height, "the corridor must be longer along the course than across it: {width} x {height}");
+    assert!(east.bounds.east_udeg - i64::from(east.lon_udeg) > i64::from(east.lon_udeg) - east.bounds.west_udeg);
+}
+
+/// A NaN course is not a course. Taking the directed branch with one produces no forward reach at
+/// all and collapses the corridor *below* the undirected floor — so it must fall through to the
+/// reach-sized disc, exactly like an absent bearing.
+#[test]
+fn a_non_finite_bearing_falls_through_to_the_disc() {
+    let broken = Corridor::projected(&select::Fix {
+        lat_udeg: 48_060_000,
+        lon_udeg: 7_900_000,
+        bearing_deg: Some(f64::NAN),
+        speed_ms: Some(10.0),
+        ..Default::default()
+    });
+    let honest = Corridor::projected(&select::Fix {
+        lat_udeg: 48_060_000,
+        lon_udeg: 7_900_000,
+        speed_ms: Some(10.0),
+        ..Default::default()
+    });
+    assert!(broken.undirected);
+    assert_eq!(broken.bounds, honest.bounds, "an unusable heading must read as no heading");
+}
+
+/// The route the rider is on beats any projection of it — but only the stretch inside the reach: a
+/// 300 km route must not become a 300 km corridor.
+#[test]
+fn the_route_ahead_widens_the_corridor_only_as_far_as_the_reach() {
+    let base = select::Fix {
+        lat_udeg: 48_000_000,
+        lon_udeg: 7_000_000,
+        speed_ms: Some(5.0), // 36 km reach
+        ..Default::default()
+    };
+    // A route running due north, a point every ~11 km, far past the reach.
+    let route: Vec<(i32, i32)> = (1..=30).map(|step| (48_000_000 + step * 100_000, 7_000_000)).collect();
+    let with_route = Corridor::projected(&select::Fix { route_ahead: route, ..base.clone() });
+    let without = Corridor::projected(&base);
+    assert!(with_route.bounds.north_udeg > without.bounds.north_udeg, "the route must widen the corridor");
+    let reach_north = i64::from(base.lat_udeg) + (36_000.0 / 111_320.0 * 1e6) as i64 + 50_000;
+    assert!(
+        with_route.bounds.north_udeg < reach_north + (select::LATERAL_MARGIN_M / 111_320.0 * 1e6) as i64,
+        "…and must stop at the reach, not follow the whole route"
+    );
+}
+
+// ── the common window ──────────────────────────────────────────────────────────────────────
+
+/// Two lattices of equal cell area: the window is stated over the **latest** of them, the phone's
+/// tie-break. Picking the earliest instead silently anchors the bundle on the oldest of the equal
+/// frames and drops a different set than the phone drops for the same manifest.
+#[test]
+fn equal_lattices_break_the_tie_on_the_latest_frame() {
+    let hourly = hourly();
+    let early = crop(hourly.valid_from, 9_000, 16, 16, 2);
+    // Same stride, half a cell off — the two can never tile each other, so whichever wins the tie
+    // is the one that survives, and the loser is dropped rather than resampled.
+    let late = Crop {
+        valid_at: hourly.valid_from + 900,
+        south_udeg: early.south_udeg + 4_500,
+        west_udeg: early.west_udeg + 4_500,
+        ..crop(hourly.valid_from + 900, 9_000, 16, 16, 6)
+    };
+    let (bytes, report) = bundle::build(
+        1,
+        1,
+        hourly.valid_from,
+        (47_100_000, 7_100_000),
+        &test_corridor(),
+        &[early, late.clone()],
+        &hourly,
+    )
+    .expect("build");
+    assert_eq!(report.frames, 1);
+    assert_eq!(report.dropped_incompatible, 1);
+    let source = obc_formats::io::SliceSource(&bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("valid");
+    assert_eq!(reader.frame(0).expect("frame").valid_at, late.valid_at, "the later of two equal lattices wins");
+}
+
+/// An hourly-only bundle states the **corridor** it answers, not an invented degree around the
+/// rider: the screens then say *hourly only here* over the region the question was about.
+#[test]
+fn an_hourly_only_bundle_declares_the_corridor_it_answered() {
+    let hourly = hourly();
+    let corridor =
+        manifest::Bbox { south_udeg: 47_950_000, west_udeg: 7_850_000, north_udeg: 48_170_000, east_udeg: 7_950_000 };
+    let bytes =
+        bundle::hourly_only(1, 1, hourly.valid_from, (48_060_000, 7_900_000), &corridor, &hourly).expect("build");
+    let source = obc_formats::io::SliceSource(&bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("valid");
+    let header = reader.header();
+    assert_eq!(i64::from(header.south_lat_udeg), corridor.south_udeg);
+    assert_eq!(i64::from(header.west_lon_udeg), corridor.west_udeg);
+    assert_eq!(i64::from(header.north_lat_udeg), corridor.north_udeg);
+    assert_eq!(i64::from(header.east_lon_udeg), corridor.east_udeg);
+    assert_eq!(header.frame_count, 0);
 }

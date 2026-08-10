@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use obc_wx_client::http::{FailureControls, FaultyHttp, Http, UreqHttp};
-use obc_wx_client::select::Corridor;
+use obc_wx_client::select::{Corridor, Fix};
 use obc_wx_client::{WeatherClient, DEFAULT_SERVICE_URL};
 
 const USAGE: &str = "\
@@ -20,7 +20,10 @@ usage:
 options:
   --lat DEG            rider latitude  (required)
   --lon DEG            rider longitude (required)
-  --radius-km KM       corridor radius; default 15 (the phone's undirected disc: 10 km + 5 km margin)
+  --radius-km KM       force an undirected disc of this radius instead of projecting a corridor
+  --bearing DEG        travel bearing the device vouches for (projects a directed corridor)
+  --speed-ms MS        ground speed the device vouches for; the reach is speed x 2 h, clamped
+                       to 10..120 km. Without either, the corridor is the 10 km undirected disc.
   --service URL        weather service origin; default https://wx.openbikecomputer.com
   --out DIR            write the bundle to DIR/WEATHER.A (creating DIR); default: none, report only
   --now UNIX           evaluate freshness at this instant instead of the system clock
@@ -48,7 +51,9 @@ fn main() {
 struct Args {
     lat: Option<f64>,
     lon: Option<f64>,
-    radius_km: f64,
+    radius_km: Option<f64>,
+    bearing_deg: Option<f64>,
+    speed_ms: Option<f64>,
     service: String,
     out: Option<PathBuf>,
     now: Option<i64>,
@@ -68,14 +73,16 @@ fn run() -> Result<(), String> {
             Err(format!("unknown command {command:?}"))
         };
     }
-    let mut args = Args { radius_km: 15.0, service: DEFAULT_SERVICE_URL.to_string(), ..Default::default() };
+    let mut args = Args { service: DEFAULT_SERVICE_URL.to_string(), ..Default::default() };
     let mut it = raw;
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value"));
         match flag.as_str() {
             "--lat" => args.lat = Some(value()?.parse().map_err(|_| "--lat: not a number")?),
             "--lon" => args.lon = Some(value()?.parse().map_err(|_| "--lon: not a number")?),
-            "--radius-km" => args.radius_km = value()?.parse().map_err(|_| "--radius-km: not a number")?,
+            "--radius-km" => args.radius_km = Some(value()?.parse().map_err(|_| "--radius-km: not a number")?),
+            "--bearing" => args.bearing_deg = Some(value()?.parse().map_err(|_| "--bearing: not a number")?),
+            "--speed-ms" => args.speed_ms = Some(value()?.parse().map_err(|_| "--speed-ms: not a number")?),
             "--service" => args.service = value()?,
             "--out" => args.out = Some(PathBuf::from(value()?)),
             "--now" => args.now = Some(value()?.parse().map_err(|_| "--now: not unix seconds")?),
@@ -111,7 +118,19 @@ fn run() -> Result<(), String> {
         return Err("fetch needs --lat and --lon".into());
     };
     let now = args.now.unwrap_or_else(|| chrono::Utc::now().timestamp());
-    let corridor = Corridor::around((lat * 1e6).round() as i32, (lon * 1e6).round() as i32, args.radius_km * 1_000.0);
+    let (lat_udeg, lon_udeg) = ((lat * 1e6).round() as i32, (lon * 1e6).round() as i32);
+    // `--radius-km` is the deliberate override (a fixed disc, for reproducing a capture); without
+    // it the corridor is projected exactly as the phone projects it.
+    let corridor = match args.radius_km {
+        Some(km) => Corridor::around(lat_udeg, lon_udeg, km * 1_000.0),
+        None => Corridor::projected(&Fix {
+            lat_udeg,
+            lon_udeg,
+            bearing_deg: args.bearing_deg,
+            speed_ms: args.speed_ms,
+            route_ahead: Vec::new(),
+        }),
+    };
 
     let mut http = FaultyHttp::new(UreqHttp::new(), args.controls);
     let mut client = WeatherClient::new(&args.service);
@@ -120,11 +139,16 @@ fn run() -> Result<(), String> {
 
     if args.json {
         println!(
-            "{{\"bytes\":{},\"requests\":{},\"service_bytes\":{},\"product\":{},\"tier\":{},\"expired\":{},\
+            "{{\"bytes\":{},\"service_requests\":{},\"service_bytes\":{},\"met_requests\":{},\"met_bytes\":{},\
+             \"cached_frames\":{},\"total_requests\":{},\"product\":{},\"tier\":{},\"expired\":{},\
              \"failed_frames\":{},\"dropped_incompatible\":{},\"no_rain_map\":{}}}",
             bundle.bytes.len(),
-            http.requests(),
+            diagnostics.service_requests,
             diagnostics.service_bytes,
+            diagnostics.met_requests,
+            diagnostics.met_bytes,
+            diagnostics.cached_frames,
+            http.requests(),
             diagnostics.product.as_ref().map_or("null".into(), |(id, _)| format!("{id:?}")),
             diagnostics.product.as_ref().map_or(0, |(_, tier)| *tier),
             serde_json::to_string(&diagnostics.expired_products).unwrap_or_default(),
@@ -144,12 +168,19 @@ fn run() -> Result<(), String> {
         if !diagnostics.expired_products.is_empty() {
             println!("expired     {}", diagnostics.expired_products.join(", "));
         }
+        // Two lines, because they are two different disclosures: the service half is
+        // coordinate-free and the MET half is the one request that carries the position.
         println!(
-            "requests    {} ({} bytes from the service), {} to MET",
-            http.requests(),
+            "service     {} request(s), {} bytes (coordinate-free){}",
+            diagnostics.service_requests,
             diagnostics.service_bytes,
-            diagnostics.met_requests
+            if diagnostics.cached_frames > 0 {
+                format!(" — {} frame(s) served from cache", diagnostics.cached_frames)
+            } else {
+                String::new()
+            }
         );
+        println!("met         {} request(s), {} bytes", diagnostics.met_requests, diagnostics.met_bytes);
         if diagnostics.failed_frames > 0 {
             println!("failed      {} frame(s)", diagnostics.failed_frames);
         }
