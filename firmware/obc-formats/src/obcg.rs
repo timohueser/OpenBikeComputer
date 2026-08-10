@@ -482,6 +482,12 @@ mod deflate4 {
 
     /// Producer knob, not a format parameter: a decoder accepts any conforming stream. Level 6 is
     /// what WXR1 #1240 measured the published sizes at.
+    ///
+    /// Because the format does not pin compressed bytes, *this compressor at this level* is what
+    /// every byte-for-byte pin downstream actually rests on — the checked-in vectors, the event
+    /// pack, and the bakery's own re-bake self-check. `miniz_oxide` is therefore pinned to an
+    /// exact version in `Cargo.toml`; changing either it or this constant is a fixture
+    /// regeneration, not a tidy-up.
     pub const LEVEL: u8 = 6;
 
     /// The raw4 nibble image the codec compresses: two row-major cells per byte, earlier cell in
@@ -726,8 +732,33 @@ fn encode_tile_payload(scratch: &[u8], out: &mut [u8]) -> Result<TilePlan, Encod
     Ok(TilePlan { codec: encoding.codec, encoded_len: usize::from(encoding.encoded_len) })
 }
 
+/// An upper bound on the encoded object length, computed from the geometry alone — no cells are
+/// read and nothing is compressed.
+///
+/// This is what a producer sizing an output buffer should use. [`encoded_len`] is exact but has
+/// to run the whole per-tile codec choice to get there (codec 2's length is only knowable by
+/// compressing), so a caller that sizes with it and then calls [`encode_format`] compresses every
+/// tile twice. Sizing with the bound and truncating to `encode_format`'s return value costs one
+/// pass and at most `width * height / 2` bytes of slack — the raw4 image the frame could not
+/// exceed anyway.
+pub fn max_encoded_len(input: &FrameInput<'_>) -> Result<u32, EncodeError> {
+    let header = frame_header(input)?;
+    let directory_len = u64::from(header.page_count())
+        .checked_mul(u64::from(header.page_bytes()))
+        .ok_or(EncodeError::LengthOverflow)?;
+    let payload_bound = u64::from(header.tile_count())
+        .checked_mul(header.tile_cells() as u64 / 2)
+        .ok_or(EncodeError::LengthOverflow)?;
+    let total = (HEADER_LEN as u64)
+        .checked_add(directory_len)
+        .and_then(|value| value.checked_add(payload_bound))
+        .ok_or(EncodeError::LengthOverflow)?;
+    u32::try_from(total).map_err(|_| EncodeError::LengthOverflow)
+}
+
 /// Total encoded object length for `input`, using a caller-provided `tile_cells()`-sized scratch
-/// buffer. Two-pass with [`encode_format`]; both passes are deterministic.
+/// buffer. Exact, but it runs the full per-tile codec choice to get there — see
+/// [`max_encoded_len`] for the cheap bound a producer should size with.
 pub fn encoded_len(input: &FrameInput<'_>, scratch: &mut [u8]) -> Result<u32, EncodeError> {
     let header = frame_header(input)?;
     if scratch.len() != header.tile_cells() {
@@ -1179,6 +1210,17 @@ mod tests {
         let unknown = entry_for(&payload, 3);
         assert_eq!(decode_tile_cells(&header, &unknown, &payload, &mut out), Err(DecodeError::TileCodec));
 
+        // §5: the tile's history starts empty. A fixed-Huffman stream that emits one literal and
+        // then matches 127 bytes at distance 4 reaches before the start of the raw4 image; a
+        // decoder that zero-filled instead of failing would decode different cells from these
+        // same bytes, which is the one divergence a two-language format cannot survive.
+        let early = [0x63u8, 0x18, 0x60, 0x0C, 0x00];
+        assert_eq!(
+            decode_tile_cells(&header, &entry_for(&early, CODEC_DEFLATE4), &early, &mut out),
+            Err(DecodeError::TileCodec),
+            "a match distance before the tile image must be refused"
+        );
+
         // A perfectly valid deflate stream is still refused where it does not beat the canonical
         // raw4/RLE4 length: 16 varied 8-cell runs are 32 RLE4 bytes and 46 deflate bytes.
         let runs: Vec<u8> = (0..256).map(|index| ((index / 8) % 13) as u8).collect();
@@ -1197,6 +1239,68 @@ mod tests {
             Err(DecodeError::TileCodec),
             "codec 2 must beat the canonical raw4/RLE4 length"
         );
+    }
+
+    /// §5: a DEFLATE stream ends on a bit boundary, so the leftover bits of the payload's last
+    /// byte are padding, not data. A decoder MUST NOT reject on them — six of this stream's eight
+    /// last-byte bit patterns are the same object, and a reader that disagreed would refuse
+    /// conforming published frames.
+    #[cfg(feature = "obcg-deflate")]
+    #[test]
+    fn padding_bits_of_the_final_byte_are_not_data() {
+        let cells: Vec<u8> = (0..4_096)
+            .map(|index| {
+                let (row, col) = (index / 64, index % 64);
+                (((row / 8) * 8 + (col / 8)) % 13) as u8
+            })
+            .collect();
+        let bytes = frame(64, 64, 64, 8, &cells);
+        let header = validated(&bytes).unwrap();
+        let page_offset = header.page_offset(0).unwrap() as usize;
+        let page = &bytes[page_offset..page_offset + header.page_bytes() as usize];
+        let good = decode_entry(page, 0).unwrap();
+        let payload =
+            bytes[good.data_offset as usize..good.data_offset as usize + usize::from(good.encoded_len)].to_vec();
+
+        let mut accepted = 0usize;
+        let mut out = vec![0u8; header.tile_cells()];
+        for bit in 0..8u32 {
+            let mut flipped = payload.clone();
+            let last = flipped.len() - 1;
+            flipped[last] ^= 1 << bit;
+            let entry = TileEntry { crc32: Crc32::checksum(&flipped), encoded_len: flipped.len() as u16, ..good };
+            if decode_tile_cells(&header, &entry, &flipped, &mut out).is_ok() {
+                assert_eq!(out, cells, "an accepted variant must decode to the same cells");
+                accepted += 1;
+            }
+        }
+        assert!(accepted >= 2, "the padding bits of the last byte must not be validated");
+
+        // The cheap producer-side bound is a real bound, and slack enough to hold the object.
+        let input = FrameInput {
+            product_id: PRODUCT_DWD_RV,
+            tier: TIER_RADAR,
+            flags: FLAG_OBSERVED,
+            valid_at: 1_800_000_000,
+            reference_time: 1_800_000_000,
+            south_lat_udeg: 45_000_000,
+            west_lon_udeg: 5_000_000,
+            cell_lat_udeg: 9_000,
+            cell_lon_udeg: 14_000,
+            width: 64,
+            height: 64,
+            cell_size_m: 1_000,
+            tile_edge: 64,
+            entries_per_page: 8,
+            cells: &cells,
+        };
+        let mut scratch = vec![0u8; header.tile_cells()];
+        let exact = encoded_len(&input, &mut scratch).unwrap();
+        let bound = max_encoded_len(&input).unwrap();
+        assert_eq!(exact as usize, bytes.len());
+        assert!(bound >= exact, "{bound} must bound {exact}");
+        let mut sized = vec![0u8; bound as usize];
+        assert_eq!(encode_format(&input, &mut scratch, &mut sized).unwrap(), exact as usize);
     }
 
     /// Without the host feature this crate has no inflate — the device build's shape. A codec-2

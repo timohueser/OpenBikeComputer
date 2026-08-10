@@ -109,10 +109,72 @@ pub fn rle_wins() -> Vec<u8> {
     radar_frame(16, 16, 16, 4, &cells)
 }
 
+/// A second legal byte image of [`deflate_tile`], differing only in the **padding bits** of its
+/// final payload byte (§5). A DEFLATE stream ends on a bit boundary and the leftover bits of the
+/// last byte are not data; a decoder that rejected this object — or that treated the bits as
+/// signal — would be wrong, so this is a *positive* whose whole job is to be accepted and to
+/// decode to `deflate_tile`'s cells exactly.
+pub fn deflate_padding_bits() -> Vec<u8> {
+    let mut bytes = deflate_tile();
+    let h = header(&bytes);
+    let entry = entry_offset(&h, 0);
+    let offset = rd_u32(&bytes, entry + obcg::ENTRY_DATA_OFFSET) as usize;
+    let len = usize::from(rd_u16(&bytes, entry + obcg::ENTRY_ENCODED_LEN));
+    assert_eq!(bytes[entry + obcg::ENTRY_CODEC], obcg::CODEC_DEFLATE4);
+    // Bit 7 of this stream's last byte is padding; bits 0 and 1 are the tail of the final block.
+    // The assertion below is the guard: if a compressor change moves the boundary, the fixture
+    // fails to build rather than shipping a vector that pins the wrong claim.
+    let last = offset + len - 1;
+    bytes[last] ^= 0x80;
+    let payload = bytes[offset..offset + len].to_vec();
+    let crc = Crc32::checksum(&payload);
+    let probe = obcg::TileEntry {
+        data_offset: offset as u32,
+        encoded_len: len as u16,
+        codec: obcg::CODEC_DEFLATE4,
+        crc32: crc,
+    };
+    let mut cells = vec![0u8; h.tile_cells()];
+    obcg::decode_tile_cells(&h, &probe, &payload, &mut cells).expect("the padding-bit flip is still one legal stream");
+    put_u32(&mut bytes, entry + obcg::ENTRY_CRC32, crc);
+    refresh_page_crc(&mut bytes, &h, 0);
+    refresh_object_and_header_crc(&mut bytes);
+    bytes
+}
+
+/// The production geometry WXR1 recommends: `tile_edge = 256`, 65,536 cells in one tile. It is
+/// the only vector where a payload can exceed 255 bytes (so the directory's `uint16` length is
+/// exercised) and where §5's pre-inflate ceiling reaches 32,767. The field is 16 x 16 blocks of
+/// pseudo-random intensity — coarse enough for deflate4 to win, varied enough not to collapse to
+/// nothing.
+pub fn deflate_edge256() -> Vec<u8> {
+    let mut state = 0x0BC5_1256u32;
+    let blocks: Vec<u8> = (0..16 * 16)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let candidate = (state & 0x0F) as u8;
+            if candidate <= 12 {
+                candidate
+            } else {
+                INTENSITY_NODATA
+            }
+        })
+        .collect();
+    let cells: Vec<u8> = (0..256 * 256)
+        .map(|index| {
+            let (row, col) = (index / 256, index % 256);
+            blocks[(row / 16) * 16 + col / 16]
+        })
+        .collect();
+    radar_frame(256, 256, 256, 128, &cells)
+}
+
 /// A 64 x 64 tile of coarse data upsampled onto a fine lattice — 8 x 8 blocks of one value, the
 /// exact shape the baker publishes. raw4 is 2,048 bytes and RLE4 512; deflate4 is 77, because it
-/// has the back-reference RLE4 lacks. Also the only vector at `entries_per_page = 128`, WXR1's
-/// recommended paging.
+/// has the back-reference RLE4 lacks. Paged at WXR1's recommended `entries_per_page = 128`, like
+/// [`deflate_edge256`].
 pub fn deflate_tile() -> Vec<u8> {
     let cells: Vec<u8> = (0..64 * 64)
         .map(|index| {
@@ -370,8 +432,9 @@ pub fn invalid_deflate_truncated() -> Vec<u8> {
     with_single_tile_payload(bytes, obcg::CODEC_DEFLATE4, &payload)
 }
 
-/// A well-formed stream that inflates to four times the tile's raw4 image: the bomb the decoder
-/// must refuse *before* it allocates, because the only legal output size is `tile_edge^2 / 2`.
+/// A well-formed stream that inflates to 8,192 bytes — four times the tile's 2,048-byte raw4
+/// image: the bomb the decoder must refuse *before* it allocates, because the only legal output
+/// size is `tile_edge^2 / 2`.
 pub fn invalid_deflate_bomb() -> Vec<u8> {
     let bytes = deflate_tile();
     let h = header(&bytes);
@@ -386,6 +449,15 @@ pub fn invalid_deflate_short_output() -> Vec<u8> {
     let h = header(&bytes);
     let payload = deflate(&vec![0u8; h.tile_cells() / 2 - 1]);
     with_single_tile_payload(bytes, obcg::CODEC_DEFLATE4, &payload)
+}
+
+/// A stream whose match distance reaches before the first byte of the tile's raw4 image: one
+/// fixed-Huffman literal, then a length-127 match at distance 4 with only one byte of history.
+/// RFC 1951 forbids it and §5 says so explicitly, because a decoder that zero-filled the
+/// out-of-range distance instead of failing would decode *different cells* from these same bytes
+/// — the one class of divergence a two-language format cannot tolerate.
+pub fn invalid_deflate_back_reference() -> Vec<u8> {
+    with_single_tile_payload(deflate_tile(), obcg::CODEC_DEFLATE4, &[0x63, 0x18, 0x60, 0x0C, 0x00])
 }
 
 /// A perfectly valid codec-2 stream of the `rle_wins` cells — 46 bytes against RLE4's 32. §5
@@ -494,6 +566,8 @@ pub fn positives() -> Vec<(&'static str, Vec<u8>)> {
         ("grid-rle-tile.obcg", rle_tile()),
         ("grid-rle-wins.obcg", rle_wins()),
         ("grid-deflate-tile.obcg", deflate_tile()),
+        ("grid-deflate-padding-bits.obcg", deflate_padding_bits()),
+        ("grid-deflate-edge256.obcg", deflate_edge256()),
         ("grid-nodata-tile.obcg", nodata_tile()),
         ("grid-multipage.obcg", multipage()),
         ("grid-edge-padding.obcg", edge_padding()),
@@ -518,6 +592,7 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("grid-invalid-deflate-truncated.obcg", invalid_deflate_truncated()),
         ("grid-invalid-deflate-bomb.obcg", invalid_deflate_bomb()),
         ("grid-invalid-deflate-short-output.obcg", invalid_deflate_short_output()),
+        ("grid-invalid-deflate-back-reference.obcg", invalid_deflate_back_reference()),
         ("grid-invalid-deflate-noncanonical.obcg", invalid_deflate_noncanonical()),
         ("grid-invalid-dry-encoded.obcg", invalid_dry_encoded()),
         ("grid-invalid-dry-sentinel-nonzero.obcg", invalid_dry_sentinel_nonzero()),
