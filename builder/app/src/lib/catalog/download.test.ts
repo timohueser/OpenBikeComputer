@@ -218,9 +218,69 @@ describe("downloadCells", () => {
         const { plan } = await fixtures();
         const victim = plan.items[3];
         const impl = serving({ [victim.cell.url]: new TextEncoder().encode("something else entirely") });
-        await expect(downloadCells(plan, { fetchImpl: impl, onCell: () => {} })).rejects.toThrow(
-            BytesVerificationError,
-        );
+        // A wrong body that is also *shorter* is indistinguishable from a torn
+        // one, so it earns the retries before it is refused. The sleep is stubbed
+        // rather than the attempts pinned, so the refusal still has to survive
+        // them.
+        await expect(
+            downloadCells(plan, { fetchImpl: impl, sleep: () => Promise.resolve(), onCell: () => {} }),
+        ).rejects.toThrow(BytesVerificationError);
+    });
+
+    it("survives a connection dropped mid-cell, which is the failure that ends real runs", async () => {
+        // The one observed on 2026-08-09: the CDN closes the connection part-way
+        // through a multi-megabyte cell, the reader ends clean and short, and a
+        // run of hundreds of cells throws away everything it had. Retrying is
+        // safe because the object is digest-pinned — the second attempt cannot
+        // slip past the check that the first one failed.
+        const { plan } = await fixtures();
+        const victim = plan.items[2];
+        const whole = bodyFor("fine/18/1204/1052");
+        let seen = 0;
+        const impl = serving({}, () => {}) as unknown as typeof fetch;
+        const dropping = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input) === victim.cell.url && seen++ < 2) {
+                // Half the body, then a clean close — a torn download.
+                return new Response(whole.slice(0, whole.byteLength >> 1) as unknown as BodyInit);
+            }
+            return impl(input, init);
+        }) as unknown as typeof fetch;
+
+        const delivered: string[] = [];
+        const result = await downloadCells(plan, {
+            fetchImpl: dropping,
+            concurrency: 1,
+            sleep: () => Promise.resolve(),
+            onCell: (item) => void delivered.push(item.cell.id),
+        });
+        expect(seen).toBe(3); // two torn bodies, then the whole one
+        expect(result.cells).toBe(plan.items.length);
+        expect(delivered).toHaveLength(plan.items.length);
+    });
+
+    it("gives up on a cell the origin simply does not have, without retrying it", async () => {
+        // A 404 is the catalog and the store disagreeing. Another attempt neither
+        // fixes that nor tells the rider anything they did not already know.
+        const { plan } = await fixtures();
+        const victim = plan.items[1];
+        let hits = 0;
+        const base = serving({}) as unknown as typeof fetch;
+        const missing = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input) === victim.cell.url) {
+                hits += 1;
+                return new Response("nope", { status: 404, statusText: "Not Found" });
+            }
+            return base(input, init);
+        }) as unknown as typeof fetch;
+        await expect(
+            downloadCells(plan, {
+                fetchImpl: missing,
+                concurrency: 1,
+                sleep: () => Promise.resolve(),
+                onCell: () => {},
+            }),
+        ).rejects.toThrow(/404/);
+        expect(hits).toBe(1);
     });
 
     it("stops the rest of the run on the first failure", async () => {
@@ -230,7 +290,10 @@ describe("downloadCells", () => {
             started += 1;
         });
         await expect(
-            downloadCells(plan, { fetchImpl: impl, concurrency: 1, onCell: () => {} }),
+            // `attempts: 1` — this is about the *plan* stopping, so the retry
+            // that a torn body would otherwise earn is not in the way of counting
+            // how many cells were started.
+            downloadCells(plan, { fetchImpl: impl, concurrency: 1, attempts: 1, onCell: () => {} }),
         ).rejects.toThrow();
         // Concurrency 1 and the first item bad: nothing after it is attempted.
         expect(started).toBe(1);
@@ -289,6 +352,9 @@ describe("downloadCells", () => {
             downloadCells(plan, {
                 fetchImpl: impl,
                 concurrency: 2,
+                // The failure has to land while the other slot's body is still
+                // arriving; a retried short body would move it past that.
+                attempts: 1,
                 onCell: (item) => void delivered.push(item.cell.id),
             }),
         ).rejects.toThrow(BytesVerificationError);
@@ -320,6 +386,9 @@ describe("downloadCells", () => {
             downloadCells(plan, {
                 fetchImpl: impl,
                 concurrency: 2,
+                // One attempt, so the truncated slot's partial bytes are released
+                // at the same point in the run this test was written around.
+                attempts: 1,
                 onCell: () => {},
                 onProgress: (p) => reports.push(p.receivedBytes),
             }),

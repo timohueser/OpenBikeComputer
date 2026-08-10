@@ -2,7 +2,7 @@
 // length and digest; matching content-addressed satellites are memoized, while
 // failed loads never alter the accepted root.
 
-import { fetchVerified, type DownloadOptions } from "../download";
+import { fetchVerified, HttpStatusError, withRetry, type DownloadOptions } from "../download";
 import {
     cellIndexRef,
     parseRoot,
@@ -32,6 +32,10 @@ export interface CatalogClientOptions {
     /** Injected by the tests; defaults to `crypto.subtle`. */
     digest?: (bytes: Uint8Array) => Promise<ArrayBuffer>;
     signal?: AbortSignal;
+    /** Per-object retry, forwarded to `fetchVerified`. Set to 1 by the tests that
+     *  assert a refusal, so they do not sit through the backoff. */
+    attempts?: number;
+    sleep?: (ms: number) => Promise<void>;
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -94,11 +98,17 @@ export class CatalogClient {
             return fail(`catalog: ${JSON.stringify(url)} is not an absolute URL`);
         }
         const doFetch = opts.fetchImpl ?? globalThis.fetch;
-        const res = await doFetch(base, { signal: opts.signal });
-        if (!res.ok) throw new Error(`${base}: ${res.status} ${res.statusText}`);
-        // §7 spelled out: the entire body, then one parse. Nothing here consumes
-        // the response incrementally.
-        return new CatalogClient(parseRoot(await res.text()), base, opts);
+        // Retried like every other object in the tree. There is nothing to pin the
+        // root against, but a connection dropped while it arrives is a transport
+        // failure either way — and one that leaves the app with no catalog at all.
+        const body = await withRetry(async () => {
+            const res = await doFetch(base, { signal: opts.signal });
+            if (!res.ok) throw new HttpStatusError(base, res.status, res.statusText);
+            // §7 spelled out: the entire body, then one parse. Nothing here consumes
+            // the response incrementally.
+            return res.text();
+        }, opts);
+        return new CatalogClient(parseRoot(body), base, opts);
     }
 
     /**
@@ -235,6 +245,12 @@ export class CatalogClient {
     }
 
     private downloadOptions(): DownloadOptions {
-        return { fetchImpl: this.fetchImpl, digest: this.opts.digest, signal: this.opts.signal };
+        return {
+            fetchImpl: this.fetchImpl,
+            digest: this.opts.digest,
+            signal: this.opts.signal,
+            attempts: this.opts.attempts,
+            sleep: this.opts.sleep,
+        };
     }
 }

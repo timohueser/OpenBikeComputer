@@ -7,13 +7,34 @@ export interface BytePin {
     sha256: string;
 }
 
+/**
+ * Why the bytes were refused. The distinction is not cosmetic: `short` is what a
+ * connection dropped mid-body looks like once the reader has ended cleanly, and
+ * that is worth another attempt. `long` and `checksum` mean the origin served
+ * *something else* — retrying only serves it again.
+ */
+export type VerificationFault = "short" | "long" | "checksum";
+
 export class BytesVerificationError extends Error {
     constructor(
         readonly url: string,
         readonly detail: string,
+        readonly fault: VerificationFault = "checksum",
     ) {
         super(`${url}: ${detail}`);
         this.name = "BytesVerificationError";
+    }
+}
+
+/** A response that came back, but not with a body worth reading. */
+export class HttpStatusError extends Error {
+    constructor(
+        readonly url: string,
+        readonly status: number,
+        statusText: string,
+    ) {
+        super(`${url}: ${status} ${statusText}`);
+        this.name = "HttpStatusError";
     }
 }
 
@@ -27,6 +48,63 @@ export interface DownloadOptions {
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
     digest?: (bytes: Uint8Array) => Promise<ArrayBuffer>;
+    /** How many times one object is fetched before the failure is the answer.
+     *  1 disables retrying. */
+    attempts?: number;
+    /** Injected by tests, so a retry costs no wall clock. */
+    sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Four attempts, ~1.75 s of backoff in total. The failure this exists for is a
+ * connection the CDN drops part-way through a multi-megabyte cell — intermittent
+ * and uncorrelated, so a second attempt almost always lands. A cell set is
+ * hundreds of objects, and without this a single drop anywhere in the run throws
+ * the whole download away.
+ */
+const DEFAULT_ATTEMPTS = 4;
+const RETRY_BASE_MS = 250;
+
+/**
+ * Whether another attempt could plausibly answer differently.
+ *
+ * Deliberately narrow on the response side: a 404 or a 403 is the catalog and
+ * the store disagreeing, and hammering it neither fixes that nor tells the user
+ * anything new. The open-ended `true` at the end is for what `fetch` throws —
+ * a dropped connection, a DNS blip, a reset — which is the whole point.
+ */
+function worthRetrying(cause: unknown): boolean {
+    if (cause instanceof BytesVerificationError) return cause.fault === "short";
+    if (cause instanceof HttpStatusError) {
+        return cause.status >= 500 || cause.status === 408 || cause.status === 429;
+    }
+    // An abort is the caller's decision, not a transport failure.
+    if (cause instanceof DOMException && cause.name === "AbortError") return false;
+    if (cause instanceof Error && cause.name === "AbortError") return false;
+    return true;
+}
+
+/**
+ * Run `attempt` until it succeeds, refuses in a way another try cannot mend, or
+ * runs out of attempts.
+ *
+ * Exported because the catalog root is fetched before there is anything to pin
+ * it against, and a dropped connection there is just as fatal to the run as one
+ * in the middle of a cell.
+ */
+export async function withRetry<T>(attempt: () => Promise<T>, opts: DownloadOptions = {}): Promise<T> {
+    const attempts = Math.max(1, opts.attempts ?? DEFAULT_ATTEMPTS);
+    const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    for (let n = 1; ; n++) {
+        try {
+            return await attempt();
+        } catch (cause) {
+            // The signal is checked as well as the error: an aborted run must not
+            // spend its backoff sleeping before it agrees to stop.
+            if (n >= attempts || opts.signal?.aborted || !worthRetrying(cause)) throw cause;
+            await sleep(RETRY_BASE_MS * 2 ** (n - 1));
+        }
+    }
 }
 
 async function subtleDigest(bytes: Uint8Array): Promise<ArrayBuffer> {
@@ -43,13 +121,27 @@ function toHex(digest: ArrayBuffer): string {
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * One digest-pinned object, fetched again if the first answer was a torn body
+ * rather than a different one.
+ *
+ * Retrying is safe *because* every object is pinned: an attempt that returns the
+ * wrong bytes cannot be mistaken for the right ones, so the only thing a second
+ * attempt can do is succeed or fail again. Progress is reported per attempt and
+ * therefore restarts from zero on a retry — callers track the in-flight figure
+ * as an absolute, not a running sum.
+ */
 export async function fetchVerified(
     url: string,
     pin: BytePin,
     opts: DownloadOptions = {},
 ): Promise<Uint8Array> {
+    return withRetry(() => fetchOnce(url, pin, opts), opts);
+}
+
+async function fetchOnce(url: string, pin: BytePin, opts: DownloadOptions): Promise<Uint8Array> {
     const response = await (opts.fetchImpl ?? globalThis.fetch)(url, { signal: opts.signal });
-    if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
+    if (!response.ok) throw new HttpStatusError(url, response.status, response.statusText);
 
     const total = pin.bytes;
     let bytes: Uint8Array;
@@ -67,6 +159,7 @@ export async function fetchVerified(
                 throw new BytesVerificationError(
                     url,
                     `the download is longer than the catalog's ${total} bytes`,
+                    "long",
                 );
             }
             opts.onProgress?.({ received, total });
@@ -83,7 +176,7 @@ export async function fetchVerified(
     }
 
     if (bytes.byteLength !== total) {
-        throw new BytesVerificationError(url, `expected ${total} bytes, got ${bytes.byteLength}`);
+        throw new BytesVerificationError(url, `expected ${total} bytes, got ${bytes.byteLength}`, "short");
     }
     const actual = toHex(await (opts.digest ?? subtleDigest)(bytes));
     if (actual !== pin.sha256) {
