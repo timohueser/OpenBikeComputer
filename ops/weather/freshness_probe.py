@@ -5,7 +5,7 @@
     ops/weather/freshness_probe.py --manifest ./manifest.json --now 2026-08-09T18:00:00Z
 
 It fetches (or reads) the service manifest — `wx/v1/manifest.json`, or `wx/v2/manifest.json`
-with `--v2` — and answers one question: **is what the service is serving right now still usable?**
+with `--mosaic` — and answers one question: **is what the service is serving right now still usable?**
 Nothing about the VPS is consulted — that is the whole point.
 The baker is a stateless publisher; if it dies, R2 keeps serving the last objects and the product
 degrades honestly through staleness. So the heartbeat is the published manifest, and the alarm
@@ -235,8 +235,9 @@ def main() -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--url", help="service base URL (or a full manifest URL)")
     source.add_argument("--manifest", type=Path, help="read a local manifest instead of fetching")
-    parser.add_argument("--v2", action="store_true",
-                        help=f"probe the canonical sharded dataset at {MANIFEST_PATH_V2} instead of v1")
+    parser.add_argument("--mosaic", action="store_true",
+                        help=f"probe the canonical sharded dataset at {MANIFEST_PATH_V2} instead of the "
+                             "multi-product tree")
     parser.add_argument("--now", help="RFC 3339 override for the current time (drills and tests)")
     parser.add_argument("--max-manifest-age-min", type=int, default=30,
                         help="alert when generated_at is older than this (default: 30)")
@@ -278,7 +279,7 @@ def main() -> int:
             return 2
         cache_control = ""
     else:
-        where = manifest_url(args.url, MANIFEST_PATH_V2 if args.v2 else MANIFEST_PATH)
+        where = manifest_url(args.url, MANIFEST_PATH_V2 if args.mosaic else MANIFEST_PATH)
         try:
             raw, cache_control = fetch_manifest(where, args.timeout)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as error:
