@@ -414,11 +414,11 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 # Rain overlay (WX10, epic #1185): the deterministic `--weather demo` scenarios over the map's own
 # bbox, through the production adapter -> renderer path, on the one screen the raster belongs to --
 # the WX11 rain map ("$WXRAIN" walks Home -> Menu -> Weather -> RAIN MAP). Two scenes the WX11 block
-# below doesn't already cover: a hard frontal edge (nearest-neighbour, no smoothing; rendered
-# heading-up so the rotated fixed-point walk is pinned too) and a violet storm core (the
-# high-coverage end; roads/route stay above the rain). The scattered-shower scene lives there as
-# `weather-rainmap.png` -- same screen, same scenario -- so it isn't shot twice here. Byte-stable:
-# the demo bundle and the Bayer matrix are both deterministic.
+# below doesn't already cover: a frontal edge (rendered heading-up so the rotated fixed-point walk
+# is pinned too) and a violet storm core (the high-coverage end; roads/route stay above the rain).
+# The scattered-shower scene lives there as `weather-rainmap.png` -- same screen, same scenario --
+# so it isn't shot twice here. Byte-stable: the demo bundle, the Bayer matrix and the sampler are
+# all deterministic -- but the frames move whenever `RAIN_SAMPLING` does (bilinear since #1250).
 #
 # Every one of these walks a menu, so it states its destination with --expect-screen: insert a
 # station and the sweep fails loudly instead of saving a different screen under the old filename.

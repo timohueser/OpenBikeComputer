@@ -74,7 +74,8 @@ The scattered-shower scene is deliberately absent: it is the same screen and sce
 `../wx11-weather-previews/rainmap-now.png`, and one copy of a frame is enough.
 
 Re-render — and commit the refreshed frames with the change — after anything that can move these
-bytes: the rain tuning surface (`firmware/obc-render/src/rain.rs`), the rain-map screen
+bytes: the rain tuning surface (`firmware/obc-render/src/rain.rs`, the sampler `RAIN_SAMPLING`
+included — bilinear since #1250), the rain-map screen
 (`firmware/obc-app/src/screen/weather_map.rs`), the shared map scene it draws through
 (`screen/map.rs`), the demo bundles (`apps/obc-sim/src/weather_store.rs`), or the navigation the
 recipes walk (a new main-menu station changes what `$R` reaches — `--expect-screen` turns that into
