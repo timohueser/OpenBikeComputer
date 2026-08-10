@@ -218,6 +218,13 @@ the natural sub-grid of §3's cell order. A partial tile at the north or east gr
 decodes to the full `tile_edge^2` cells; cells outside the declared width/height MUST be the
 no-data intensity `15`, and a consumer MUST clip them.
 
+**Nothing is ever nibble-padded.** `tile_edge` is a power of two in `[16, 256]`, so `N` is always
+even and the raw4 image is exactly `N / 2` bytes: no row pads to a byte boundary and no image ends
+on a half-byte, at any tile size. An odd grid *width* or *height* changes none of that — it
+produces partial edge tiles, and a partial edge tile is still a full `N`-cell square whose
+out-of-grid cells carry no-data. The declared width and height clip the decoded square; they never
+truncate the encoding.
+
 Three codecs are defined, with the decoded cell count `N = tile_edge^2`. Codecs 0 and 1 are the
 canonical WX2 pair of `OBCW_Spec.md` §6.1/§6.2 generalized from 256 cells to `N`; codec 2 is
 OBCG's own and does not exist in OBCW.
@@ -238,7 +245,25 @@ OBCG's own and does not exist in OBCW.
   bytes, so a zlib header plus Adler-32 would add six bytes of duplicated integrity to every
   tile; raw DEFLATE is also what both reference implementations speak natively (miniz_oxide's
   `compress_to_vec` / `inflate::core` on the Rust side, Apple's `COMPRESSION_ZLIB` — which is RFC
-  1951 despite the name — on the Swift side).
+  1951 despite the name — on the Swift side). Two RFC 1951 details are called out because a
+  decoder can get them wrong quietly:
+
+  - **The tile's history starts empty.** A match distance MUST NOT reach before the first byte of
+    that tile's own raw4 image — every tile is compressed and decompressed independently, with no
+    preset dictionary and nothing carried over from the previous tile. A stream that reaches back
+    further is invalid and MUST be rejected; a decoder MUST NOT substitute zeros, the previous
+    tile's bytes, or any other fill for the out-of-range distance. (Both reference decoders
+    already fail such a stream, and §11 pins one.)
+  - **The padding bits of the final byte are not data.** A DEFLATE stream ends on a bit boundary,
+    so the bits after the final block's last bit exist only to pad the payload's last byte. They
+    are **unconstrained**, and a decoder **MUST NOT** reject a stream on their value. A producer
+    SHOULD emit them as zero (both reference compressors do), but that is unverifiable: neither
+    reference inflate primitive reports the ending *bit* position, so a "MUST be zero" rule could
+    not be enforced by any conforming implementation — it would only fork readers into those that
+    check and those that cannot. Six of the eight bit patterns of a real vector's last byte are
+    therefore the same object; §11 pins one of them as a positive vector so that a reader which
+    rejects it is provably wrong rather than arguably strict. This is the same reasoning as the
+    unverifiable half of the codec-choice rule below: a rule no reader can apply is not a rule.
 
 **Why an LZ codec is here at all.** RLE4 caps runs at 16 cells and has no back-reference, so a
 uniform field costs one byte per 16 cells however uniform it is, and 25 identical rows cost 25x
@@ -362,10 +387,19 @@ fetched; a full-object consumer applies all of them:
 5. For each entry used: validate the §4.1 field rules — a dry sentinel is all-zero; a non-dry
    entry's offset/length lie inside the data section and respect canonical packing.
 6. For each tile payload used: verify the tile CRC over the stored bytes **before** decoding or
-   decompressing them, then the §5 codec rules — a known codec id, reserved intensities, maximal
-   runs, exact cell count, the checkable half of the canonical codec choice, the bounded
-   decompressed size and full input consumption for codec 2, the all-dry noncanonicality rule,
-   and no-data edge padding.
+   decompressing them, then the §5 rules the payload alone decides — a known codec id, reserved
+   intensities, maximal runs, exact cell count, the checkable half of the canonical codec choice,
+   and for codec 2 the bounded decompressed size, full input consumption and in-range match
+   distances.
+7. For a full object only: the §5 rules that are properties of the *frame* rather than of one
+   payload — the all-dry noncanonicality rule and no-data edge padding, each of which needs the
+   tile's grid position to judge.
+
+Step 7 is deliberately not a corridor obligation, and that costs a corridor consumer nothing: an
+all-dry payload decodes to the same dry cells the sentinel would have produced, and an edge tile's
+out-of-grid cells are clipped by §5 before they can be read. Both are producer mistakes a
+full-object validator — the baker's self-check, a mirror, `obc-vectors` — must catch, not
+corrections a Range reader has to make mid-ride.
 
 A decoder MUST NOT allocate or reserve memory in proportion to any length a payload claims. The
 only sizes it may act on are the header's, and for a codec-2 tile that is `tile_edge^2 / 2` bytes.
@@ -418,10 +452,16 @@ all-no-data tile; edge-tile no-data padding; and a multi-page directory with las
 Negative vectors isolate truncation, bad payload offsets, overlapping/non-canonically packed
 payloads, impossible dimensions, a non-power-of-two tile edge, bad paging parameters, an unknown
 codec id, overlong RLE, noncanonical RLE, a compressible raw4 tile, a truncated deflate stream, a
-deflate stream that over-inflates past the tile's raw4 size, one that under-inflates, a deflate
-payload that fails to beat the canonical raw4/RLE4 length, a noncanonical encoded all-dry tile, a
-nonzero dry sentinel, a dry sentinel on a partial edge tile, header CRC, object CRC, page CRC and
-tile CRC mismatches, and nonzero reserved bytes.
+deflate stream that over-inflates past the tile's raw4 size, one that under-inflates, one whose
+match distance reaches before the start of the tile's raw4 image, a deflate payload that fails to
+beat the canonical raw4/RLE4 length, a noncanonical encoded all-dry tile, a nonzero dry sentinel,
+a dry sentinel on a partial edge tile, header CRC, object CRC, page CRC and tile CRC mismatches,
+and nonzero reserved bytes.
+
+Two positives exist to pin what a decoder must **not** reject: a second legal byte image of the
+deflate4 tile, differing only in the padding bits of its final byte, and a `tile_edge = 256` frame
+— the production geometry, the only one where a tile payload can exceed 255 bytes and where the
+pre-inflate ceiling reaches 32,767.
 
 Rust builds and validates them through the `obc-formats` authority; Swift independently decodes
 the same positives to the same cells and rejects every negative. Vector provenance is recorded

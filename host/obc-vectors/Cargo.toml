@@ -21,7 +21,8 @@ obc-dfu = { path = "../../firmware/obc-dfu" }
 # Only for the OBCG codec-2 negatives: a *malformed* deflate stream (truncated, over-inflating,
 # under-inflating) cannot be produced by the byte authority, which only ever emits valid ones.
 # Positives still go through `obc_formats::obcg::encode_format` like every other fixture.
-miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+# Pinned exactly for the same reason obc-formats pins it: these fixtures' bytes are the contract.
+miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
 
 [dev-dependencies]
 heapless = "0.8"
