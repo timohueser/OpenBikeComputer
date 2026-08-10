@@ -24,16 +24,33 @@ use crate::source::{BakedFrame, FrameSource};
 
 pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
 
-/// The published window: a regular lat/lon cover of the Lambert domain at native ~3 km cells
-/// (27,000 x 34,000 microdegrees — 3.00 km north-south, 2.96 km east-west at the domain's 38.5 N
+/// The published window: a regular lat/lon cover of the Lambert domain at ~3 km cells
+/// (30,000 x 30,000 microdegrees — 3.34 km north-south, 2.61 km east-west at the domain's 38.5 N
 /// standard parallel). Cells outside the projected raster are no-data.
+///
+/// **The strides are deliberately multiples of MRMS's 10,000, and so is the origin.** These
+/// frames share a product with a 1 km MRMS observation ([`crate::source::us`]), and a client
+/// assembles a bundle by laying every frame onto one common window — the *coarsest* frame's
+/// extent — accepting a frame only if that window is a whole number of the frame's own cells and
+/// its origin sits on the frame's lattice (`obc-wx-client`'s `bundle::rain_frame`, mirroring the
+/// phone). The old 27,000 x 34,000 lattice divided neither, so the window these frames defined
+/// could not be tiled by the observation and **the 1 km frame was silently refused**: riders in
+/// CONUS saw model forecast frames and no radar at all. Nesting is therefore a contract, not a
+/// preference — see `nests_under` and the `us_frames_nest` test.
+///
+/// 30,000 in both axes is the choice that keeps the byte cost flat (2,441 x 1,052 cells against
+/// the old 2,153 x 1,168, +2 %) while staying within ~11 % of the native 3 km in both directions.
+/// A lattice fine enough to never undersample (20,000 x 30,000) would have cost +53 % cells on
+/// every forward frame, which the corridor budget pays for by shrinking the window — and a
+/// shrunken window hurts the 1 km observation this change exists to preserve. `cell_size_m`
+/// stays 3,000 throughout: it states the *source's* ground resolution, never the lattice.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 21_100_000,
     west_lon_udeg: -134_100_000,
-    cell_lat_udeg: 27_000,
-    cell_lon_udeg: 34_000,
-    width: 2_153,
-    height: 1_168,
+    cell_lat_udeg: 30_000,
+    cell_lon_udeg: 30_000,
+    width: 2_441,
+    height: 1_052,
     cell_size_m: 3_000,
     tile_edge: 32,
     entries_per_page: 512,

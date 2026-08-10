@@ -66,4 +66,88 @@ impl GridGeometry {
         }
         Ok(())
     }
+
+    /// Can a frame on `self`'s lattice be laid onto any window a frame on `coarser`'s lattice
+    /// defines?
+    ///
+    /// This is the assembly contract for a **composed** product. A client builds one bundle by
+    /// choosing the coarsest frame's crop as the common window and then tiling every other frame
+    /// onto it, refusing any frame the window is not a whole number of cells of, aligned to that
+    /// frame's own origin (`obc-wx-client`'s `bundle::rain_frame`, mirroring the phone). Crops
+    /// only ever start on their product's lattice and span a whole number of its cells, so that
+    /// per-corridor test succeeds for *every* corridor exactly when the coarse strides are
+    /// integer multiples of the fine ones and the two origins are congruent modulo the fine
+    /// strides. Anything less is a lattice that drops frames for some corridors and not others.
+    ///
+    /// Getting this wrong is not a rounding artefact — the refused frame vanishes from the
+    /// timeline. The US product shipped a 27,000 x 34,000 forecast lattice over a 10,000 x 10,000
+    /// observation, and every rider in CONUS lost the radar frame.
+    pub fn nests_under(&self, coarser: &GridGeometry) -> bool {
+        coarser.cell_lat_udeg % self.cell_lat_udeg == 0
+            && coarser.cell_lon_udeg % self.cell_lon_udeg == 0
+            && (i64::from(coarser.south_lat_udeg) - i64::from(self.south_lat_udeg))
+                .rem_euclid(i64::from(self.cell_lat_udeg))
+                == 0
+            && (i64::from(coarser.west_lon_udeg) - i64::from(self.west_lon_udeg))
+                .rem_euclid(i64::from(self.cell_lon_udeg))
+                == 0
+    }
+
+    /// Cell area in square microdegrees — the key a client picks the common window by, so the
+    /// nesting invariant has to agree with it about which lattice is "coarsest".
+    pub fn cell_area(&self) -> u64 {
+        u64::from(self.cell_lat_udeg) * u64::from(self.cell_lon_udeg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FINE: GridGeometry = GridGeometry {
+        south_lat_udeg: 20_000_000,
+        west_lon_udeg: -130_000_000,
+        cell_lat_udeg: 10_000,
+        cell_lon_udeg: 10_000,
+        width: 7_000,
+        height: 3_500,
+        cell_size_m: 1_000,
+        tile_edge: 64,
+        entries_per_page: 512,
+    };
+
+    fn coarse(cell_lat: u32, cell_lon: u32, south: i32, west: i32) -> GridGeometry {
+        GridGeometry {
+            south_lat_udeg: south,
+            west_lon_udeg: west,
+            cell_lat_udeg: cell_lat,
+            cell_lon_udeg: cell_lon,
+            width: 100,
+            height: 100,
+            cell_size_m: 3_000,
+            tile_edge: 32,
+            entries_per_page: 512,
+        }
+    }
+
+    #[test]
+    fn integer_multiples_with_congruent_origins_nest() {
+        assert!(FINE.nests_under(&coarse(30_000, 30_000, 21_100_000, -134_100_000)));
+    }
+
+    /// The exact lattice the US product shipped before this was a contract: neither 27,000 nor
+    /// 34,000 is a multiple of 10,000, so the observation frame could not tile the window the
+    /// forecast frames defined.
+    #[test]
+    fn the_shipped_hrrr_lattice_did_not_nest() {
+        assert!(!FINE.nests_under(&coarse(27_000, 34_000, 21_100_000, -134_100_000)));
+    }
+
+    /// Multiples alone are not enough: an origin off the fine lattice shifts every window by a
+    /// fraction of a cell.
+    #[test]
+    fn an_incongruent_origin_does_not_nest() {
+        assert!(!FINE.nests_under(&coarse(30_000, 30_000, 21_105_000, -134_100_000)));
+        assert!(!FINE.nests_under(&coarse(30_000, 30_000, 21_100_000, -134_103_000)));
+    }
 }

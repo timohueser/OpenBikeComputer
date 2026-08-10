@@ -81,6 +81,40 @@ pub struct BakedProduct {
     pub frames: Vec<BakedFrame>,
 }
 
+/// Refuse a composed product whose frames cannot all be laid onto one bundle window.
+///
+/// A client assembles a bundle on the coarsest frame's lattice and drops any frame that lattice
+/// cannot tile ([`crate::geometry::GridGeometry::nests_under`]). A dropped frame is not a
+/// degraded frame — it is a hole in the two-hour timeline, and the frame most likely to be
+/// dropped is the fine-grained radar observation, because it is the one that differs. So this is
+/// checked at bake time and fails the cycle closed: publishing a product the client will
+/// silently dismantle is worse than publishing nothing and carrying the previous one forward.
+pub fn verify_frames_nest(product: &BakedProduct) -> Result<(), String> {
+    let geometries: Vec<GridGeometry> = product.frames.iter().map(|frame| frame.geometry(product)).collect();
+    let Some(coarsest) = geometries.iter().copied().max_by_key(GridGeometry::cell_area) else {
+        return Ok(());
+    };
+    for (frame, geometry) in product.frames.iter().zip(&geometries) {
+        if !geometry.nests_under(&coarsest) {
+            return Err(format!(
+                "{}: frame f{} on a {} x {} lattice at ({}, {}) does not nest under the coarsest \
+                 frame's {} x {} lattice at ({}, {}) — a client would drop it",
+                product.id,
+                frame.offset_min,
+                geometry.cell_lat_udeg,
+                geometry.cell_lon_udeg,
+                geometry.south_lat_udeg,
+                geometry.west_lon_udeg,
+                coarsest.cell_lat_udeg,
+                coarsest.cell_lon_udeg,
+                coarsest.south_lat_udeg,
+                coarsest.west_lon_udeg,
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum AdapterOutcome {
     /// A fresh product to emit and publish.
