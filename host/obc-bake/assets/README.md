@@ -7,7 +7,8 @@ It is never published itself.
 
 Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
 snapshot `2026-08-03`, packed as OBCM v13 with
-`builder/presets/schema.json` (Bikepacking v6) and this padded crop:
+`builder/presets/schema.json` (Bikepacking v6 — the 7-tier ladder, before the two
+far-zoom tiers) and this padded crop:
 
 ```text
 obc pack freiburg-regbez-260803.osm.pbf builder/presets/schema.json \
@@ -31,7 +32,7 @@ The crop is wider than the initial frame, while the packer's relation-complete
 selection also pulls in every member of a land-cover multipolygon reached from
 inside it. That keeps residential, forest, and farmland fills whole even when a
 ring segment lies outside the crop. It is already large enough for the
-interactive preview to select all seven LODs, so no second browser fixture is
+interactive preview to select every LOD on the ladder, so no second browser fixture is
 needed.
 
 Size log: 472 061 B at OBCM v11 → **481 517 B at v12** (#1073). The +9 456 B is

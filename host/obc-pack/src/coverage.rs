@@ -47,6 +47,29 @@
 //! per-tier knob rather than a global one — the coarse tiers, where the tolerance is metres wide
 //! and the tearing is what you actually see, hold a fraction of the fills the fine ones do.
 //!
+//! # Eliminating small faces instead of dropping them
+//!
+//! A coarse tier has to shed detail, and the ordinary way to do that is
+//! [`crate::geom::footprint_below`]: a polygon under the tier's `min_area_px` is dropped. On a
+//! *coverage* tier that is the wrong operator. The fills there tile the ground, so dropping one
+//! punches a hole in the tiling and the backdrop shows through — the same failure as tearing,
+//! arrived at deliberately. Worse, the low-`z` base fill (`natural.land`) ends up owning every
+//! scrap of ground no landuse claims, so a coarse tier renders as lace.
+//!
+//! So on a coverage tier `min_area_px` is an **elimination** threshold rather than a drop
+//! threshold — the cartographic operator of the same name. A face below it is not deleted; it is
+//! given to the neighbouring face it shares the **longest boundary** with, and the per-class
+//! dissolve below then swallows it whole. Coverage stays complete, the class that was too small
+//! to see disappears into the one around it, and both the face count and the vertex count fall,
+//! because an absorbed face's boundary stops existing instead of being simplified. It runs to a
+//! **fixed point**: absorbing grows the survivor, so a cluster of specks coalesces outward step by
+//! step and the pass ends with nothing under the threshold left — where one sweep would leave every
+//! speck settled on the speck next door and the threshold binding nothing at all.
+//!
+//! The caller's cull is then skipped for everything this pass produced (see
+//! [`coverage_simplify_fills_with`]'s return contract) — it has already been applied, in the one
+//! form a coverage can survive.
+//!
 //! # Never drop map content
 //!
 //! Any GEOS failure — a boundary that will not node, a polygonize that returns nothing, a
@@ -62,9 +85,11 @@ use std::collections::{BTreeMap, HashMap};
 use geos::{Geom as _, Geometry, PreparedGeometry, STRtree, SpatialIndex};
 use rayon::prelude::*;
 
+use obc_map_scene::M_PER_DEG;
+
 use crate::geom::{
-    box_polygon, collect_polygons, coverage_is_valid, coverage_simplify_vw, from_geos, try_polygon_to_geos, Bounds,
-    Geom,
+    box_polygon, collect_polygons, coverage_is_valid, coverage_simplify_vw, footprint_area_px, from_geos,
+    try_polygon_to_geos, Bounds, Geom,
 };
 use crate::merge::ClassKey;
 use crate::progress::Progress;
@@ -82,8 +107,31 @@ pub struct CoverageStats {
     pub faces: usize,
     /// Faces no fill covered — genuine gaps, dropped rather than invented.
     pub dropped_faces: usize,
+    /// Faces below the tier's threshold that were absorbed into a neighbour (see the module docs).
+    pub eliminated: usize,
+    /// Class groups whose `GEOSCoverageUnion` refused, leaving that class's faces undissolved.
+    pub dissolve_failures: usize,
     /// Components that hit a GEOS failure and fell back to the per-feature path.
     pub fallbacks: usize,
+}
+
+/// The tier's small-face elimination threshold: `min_area_px` square pixels at `mpp`
+/// meters-per-pixel — the same pair [`crate::geom::footprint_below`] culls with, applied as the
+/// absorb-into-a-neighbour operator the module docs describe.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Eliminate {
+    /// The scale the threshold is measured at (the next-finer tier's `max_mpp`).
+    pub mpp: f64,
+    /// Faces below this many square pixels are absorbed.
+    pub min_area_px: f64,
+}
+
+impl Eliminate {
+    /// The pair, if both halves are usable — `None` disables elimination entirely.
+    pub fn new(mpp: Option<f64>, min_area_px: f64) -> Option<Self> {
+        let mpp = mpp?;
+        (mpp > 0.0 && min_area_px > 0.0).then_some(Eliminate { mpp, min_area_px })
+    }
 }
 
 /// A participating fill: one polygon of one plain-fill feature.
@@ -134,8 +182,9 @@ pub fn coverage_simplify_fills(
     features: Vec<(u8, Geom)>,
     classes: &HashMap<u8, (ClassKey, u8)>,
     tol: f64,
+    eliminate: Option<Eliminate>,
 ) -> (Vec<(u8, Geom, bool)>, CoverageStats) {
-    coverage_simplify_fills_with(features, classes, tol, &Progress::silent())
+    coverage_simplify_fills_with(features, classes, tol, eliminate, &Progress::silent())
 }
 
 /// [`coverage_simplify_fills`], abandonable.
@@ -149,6 +198,7 @@ pub fn coverage_simplify_fills_with(
     features: Vec<(u8, Geom)>,
     classes: &HashMap<u8, (ClassKey, u8)>,
     tol: f64,
+    eliminate: Option<Eliminate>,
     progress: &Progress,
 ) -> (Vec<(u8, Geom, bool)>, CoverageStats) {
     // --- Phase 1: lay out slots and collect the participants, both in input order. ---
@@ -195,7 +245,7 @@ pub fn coverage_simplify_fills_with(
     // `!Send`); only plain `Geom` crosses a thread boundary. ---
     let results: Vec<Option<ComponentOut>> = components
         .par_iter()
-        .map(|comp| if progress.is_cancelled() { None } else { coverage_component(&fills, comp, tol) })
+        .map(|comp| if progress.is_cancelled() { None } else { coverage_component(&fills, comp, tol, eliminate) })
         .collect();
 
     // --- Phase 4: emit in slot order, each class's polygons at its first member's position. ---
@@ -205,6 +255,8 @@ pub fn coverage_simplify_fills_with(
             Some(out) => {
                 stats.faces += out.faces;
                 stats.dropped_faces += out.dropped_faces;
+                stats.eliminated += out.eliminated;
+                stats.dissolve_failures += out.dissolve_failures;
                 stats.outputs += out.polys.len();
                 for (style_id, g, simplified) in out.polys {
                     let canonical = classes.get(&style_id).map(|&(_, c)| c).unwrap_or(style_id);
@@ -261,6 +313,8 @@ struct ComponentOut {
     polys: Vec<(u8, Geom, bool)>,
     faces: usize,
     dropped_faces: usize,
+    eliminated: usize,
+    dissolve_failures: usize,
 }
 
 /// Partition fills into connected components under **bounding-box intersection**.
@@ -339,7 +393,7 @@ fn bbox_components(fills: &[Fill]) -> Vec<Vec<usize>> {
 /// out of the arrangement and passed through to the ordinary per-feature path. Its valid
 /// neighbours still get glued to each other; the worst case is that the broken shape overlaps a
 /// face it used to own, which is exactly what the packer stores today.
-fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64) -> Option<ComponentOut> {
+fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64, eliminate: Option<Eliminate>) -> Option<ComponentOut> {
     // The members as GEOS polygons — also the inputs of the point-in-polygon assignment.
     let mut members: Vec<Geometry> = Vec::with_capacity(comp.len());
     let mut member_of: Vec<usize> = Vec::with_capacity(comp.len());
@@ -364,7 +418,7 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64) -> Option<Compon
     // of thousands of live GEOS polygons, and the dissolve and simplify below have no use for
     // them. Freeing them here keeps the component's two heavy phases from overlapping in peak
     // memory. ---
-    let (faces, winners) = {
+    let (faces, mut winners) = {
         let members = members; // moved in, so the block's end frees them
         if members.len() == 1 {
             (vec![fills[comp[member_of[0]]].geom.clone()], vec![Some(0usize)])
@@ -377,6 +431,13 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64) -> Option<Compon
     let n_faces = faces.len();
     let dropped = winners.iter().filter(|w| w.is_none()).count();
 
+    // --- Elimination: a face under the tier's threshold joins the neighbour it shares the most
+    // boundary with, so the dissolve below absorbs it instead of the cull deleting it. ---
+    let eliminated = match eliminate {
+        Some(e) => eliminate_small_faces(&faces, &mut winners, e),
+        None => 0,
+    };
+
     // --- Per-class dissolve, classes in key order so emission is deterministic. ---
     let mut by_class: BTreeMap<ClassKey, (u8, Vec<Geom>)> = BTreeMap::new();
     for (face, winner) in faces.into_iter().zip(&winners) {
@@ -386,8 +447,17 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64) -> Option<Compon
     }
     let mut elements: Vec<Geom> = Vec::new();
     let mut owner: Vec<u8> = Vec::new();
+    let mut dissolve_failures = 0;
     for (_key, (canonical, group)) in by_class {
-        let dissolved = dissolve_class(&group).unwrap_or(group);
+        let dissolved = match dissolve_class(&group) {
+            Some(d) => d,
+            None => {
+                if group.len() > 1 {
+                    dissolve_failures += 1;
+                }
+                group
+            }
+        };
         for g in dissolved {
             if g.is_empty() {
                 continue;
@@ -397,7 +467,13 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64) -> Option<Compon
         }
     }
     if elements.is_empty() {
-        return Some(ComponentOut { polys: sat_out, faces: n_faces, dropped_faces: dropped });
+        return Some(ComponentOut {
+            polys: sat_out,
+            faces: n_faces,
+            dropped_faces: dropped,
+            eliminated,
+            dissolve_failures,
+        });
     }
 
     // --- One coverage simplify over every class at once: the shared edges are simplified once
@@ -428,7 +504,7 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64) -> Option<Compon
         }
     }
     polys.extend(sat_out);
-    Some(ComponentOut { polys, faces: n_faces, dropped_faces: dropped })
+    Some(ComponentOut { polys, faces: n_faces, dropped_faces: dropped, eliminated, dissolve_failures })
 }
 
 /// Node every member's boundary into one planar arrangement and polygonize it into faces.
@@ -499,6 +575,196 @@ fn assign_faces(
         out.push(best);
     }
     Some(out)
+}
+
+/// Absorb faces under the tier's threshold into their neighbours until nothing under it is left,
+/// returning how many faces changed hands (see the module docs for why this replaces the cull).
+///
+/// This is the cartographic **eliminate** operator, run to a fixed point rather than in one sweep.
+/// Faces are grouped into clusters (each face starts as its own); the smallest cluster still under
+/// the threshold is merged into the neighbouring cluster it shares the **longest boundary** with,
+/// taking that neighbour's class, and its area is added to it. Repeat. Because a merge grows the
+/// survivor, a cluster of specks coalesces outward step by step and the loop ends with every
+/// cluster at or above the threshold — which is the property a one-pass version cannot have: there,
+/// specks whose longest neighbour is another speck settle on each other and the threshold stops
+/// binding altogether.
+///
+/// Adjacency is read straight off the arrangement rather than recomputed with GEOS. Polygonize
+/// emits faces that already share their edges vertex for vertex, so an undirected segment keyed by
+/// its two endpoints' exact bit patterns identifies the (at most two) faces on either side of it —
+/// `O(total vertices)`, exact, and with no geometry predicate anywhere near it. Shared length sums
+/// those segments with longitude foreshortened at the segment's own latitude, so "longest" means
+/// longest on the ground.
+///
+/// Deterministic throughout: the merge order is (area, cluster id) and the target is (shared
+/// length, cluster id), both total orders, so the pass cannot depend on hash or thread order.
+///
+/// Only covered faces take part in either role: a face nobody covers is a genuine gap
+/// ([`assign_faces`]), and absorbing one — or into one — would invent fill or destroy it. A cluster
+/// with no covered neighbour left simply stays under the threshold.
+fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Eliminate) -> usize {
+    let n = faces.len();
+    // --- adjacency: undirected segment -> the face(s) carrying it ---
+    //
+    // A **sorted list**, not a hash map. A country-scale arrangement carries millions of segments,
+    // and a `HashMap<Key, Vec<_>>` over them spends more on its buckets and its per-key `Vec`
+    // headers than on the coordinates — enough, measured, to push a whole-extract pack past the
+    // 4 GB ceiling on its own. One flat `Vec` sorted in place costs 40 bytes per segment and
+    // nothing else, and after the sort the two faces sharing an edge are simply adjacent entries.
+    let mut edges: Vec<(u64, u64, u64, u64, u32)> = Vec::new();
+    {
+        let bits = |(x, y): (f64, f64)| (x.to_bits(), y.to_bits());
+        let push_ring = |ring: &[(f64, f64)], fi: u32, edges: &mut Vec<_>| {
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                if a == b {
+                    continue;
+                }
+                let (ka, kb) = (bits(a), bits(b));
+                let ((x0, y0), (x1, y1)) = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                edges.push((x0, y0, x1, y1, fi));
+            }
+        };
+        for (fi, face) in faces.iter().enumerate() {
+            if let Geom::Polygon { exterior, interiors } = face {
+                push_ring(exterior, fi as u32, &mut edges);
+                for hole in interiors {
+                    push_ring(hole, fi as u32, &mut edges);
+                }
+            }
+        }
+        edges.sort_unstable();
+    }
+
+    // Shared ground length per unordered face pair — both sides covered, or it is not a merge
+    // candidate. A run of one is an outer edge; a run of more than two is non-manifold and the
+    // arrangement should not produce it, so both are skipped rather than guessed at.
+    let mut adj: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n];
+    let mut k = 0;
+    while k < edges.len() {
+        let (x0, y0, x1, y1, _) = edges[k];
+        let mut end = k + 1;
+        while end < edges.len() && edges[end].0 == x0 && edges[end].1 == y0 && edges[end].2 == x1 && edges[end].3 == y1
+        {
+            end += 1;
+        }
+        let run = &edges[k..end];
+        k = end;
+        let owners: Vec<usize> = {
+            let mut o: Vec<usize> = run.iter().map(|r| r.4 as usize).collect();
+            o.dedup();
+            o
+        };
+        if owners.len() != 2 {
+            continue;
+        }
+        let (i, j) = (owners[0], owners[1]);
+        if winners[i].is_none() || winners[j].is_none() {
+            continue;
+        }
+        let (ax, ay, bx, by) = (f64::from_bits(x0), f64::from_bits(y0), f64::from_bits(x1), f64::from_bits(y1));
+        let cos_lat = (0.5 * (ay + by)).to_radians().cos().abs().max(0.01);
+        let (dx, dy) = ((bx - ax) * cos_lat * M_PER_DEG, (by - ay) * M_PER_DEG);
+        let len = (dx * dx + dy * dy).sqrt();
+        *adj[i].entry(j).or_insert(0.0) += len;
+        *adj[j].entry(i).or_insert(0.0) += len;
+    }
+    drop(edges);
+
+    // --- clusters: a union-find whose representative also carries the class and the running area ---
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]]; // path halving
+            x = parent[x];
+        }
+        x
+    }
+    let mut area: Vec<f64> = faces.iter().map(|f| footprint_area_px(f, e.mpp)).collect();
+    // A min-heap over (area, id) with lazy invalidation: a cluster is re-pushed whenever it grows,
+    // and a pop whose area no longer matches the live one is a stale entry and is discarded.
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(OrdF64, usize)>> = faces
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| winners[*i].is_some() && area[*i] < e.min_area_px)
+        .map(|(i, _)| std::cmp::Reverse((OrdF64(area[i]), i)))
+        .collect();
+
+    while let Some(std::cmp::Reverse((OrdF64(a), small))) = heap.pop() {
+        if find(&mut parent, small) != small || a != area[small] {
+            continue; // stale: already absorbed, or re-pushed with a bigger area
+        }
+        if area[small] >= e.min_area_px {
+            continue; // grew past the threshold while it waited
+        }
+        // The neighbour cluster sharing the most boundary; ties by lowest id so the choice is
+        // stable however the map iterated.
+        let mut best: Option<(usize, f64)> = None;
+        for (&other, &len) in &adj[small] {
+            let root = find(&mut parent, other);
+            if root == small {
+                continue;
+            }
+            if best.is_none_or(|(bi, bl)| len > bl || (len == bl && root < bi)) {
+                best = Some((root, len));
+            }
+        }
+        let Some((into, _)) = best else {
+            continue; // an island with nothing covered beside it: it stays as it is
+        };
+        // `small` joins `into` and takes its class; the survivor keeps its own id so the heap's
+        // other entries for it stay meaningful.
+        parent[small] = into;
+        area[into] += area[small];
+        let moved: Vec<(usize, f64)> = adj[small].drain().collect();
+        for (other, len) in moved {
+            if find(&mut parent, other) == into {
+                continue; // the edge between the two is interior now
+            }
+            *adj[into].entry(other).or_insert(0.0) += len;
+            // The neighbour's own entry has to follow, or it would keep pointing at a dead cluster.
+            if let Some(l) = adj[other].remove(&small) {
+                *adj[other].entry(into).or_insert(0.0) += l;
+            }
+        }
+        if area[into] < e.min_area_px {
+            heap.push(std::cmp::Reverse((OrdF64(area[into]), into)));
+        }
+    }
+
+    // --- every face takes its cluster's owner ---
+    let mut moved = 0;
+    for fi in 0..n {
+        if winners[fi].is_none() {
+            continue;
+        }
+        let root = find(&mut parent, fi);
+        if root != fi && winners[root] != winners[fi] {
+            winners[fi] = winners[root];
+            moved += 1;
+        }
+    }
+    moved
+}
+
+/// A total order over the `f64` areas the heap sorts by. Every value here is a finite,
+/// non-negative projected area, so `total_cmp` is an ordinary comparison — the wrapper exists
+/// only because `f64` is not `Ord`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OrdF64(f64);
+
+impl Eq for OrdF64 {}
+
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrdF64 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 
 /// Dissolve one class's faces with `GEOSCoverageUnion` — the cheap union that assumes what is
@@ -634,7 +900,7 @@ mod tests {
     #[test]
     fn a_shared_boundary_is_identical_on_both_sides() {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 0, 0x0002)]);
-        let (out, stats) = coverage_simplify_fills(vec![(1, seam_west()), (2, seam_east())], &classes, 0.2);
+        let (out, stats) = coverage_simplify_fills(vec![(1, seam_west()), (2, seam_east())], &classes, 0.2, None);
         assert_eq!(stats.fallbacks, 0, "no GEOS failure: {stats:?}");
         assert_eq!(out.len(), 2, "one polygon per class: {out:?}");
         assert!(out.iter().all(|(_, _, simplified)| *simplified), "both carry the coverage tolerance");
@@ -668,7 +934,7 @@ mod tests {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
         let under = rect(0.0, 0.0, 2.0, 2.0); // 4 deg²
         let over = rect(1.0, 0.0, 3.0, 2.0); // 4 deg², overlapping the right half of `under`
-        let (out, stats) = coverage_simplify_fills(vec![(1, under), (2, over)], &classes, 0.0);
+        let (out, stats) = coverage_simplify_fills(vec![(1, under), (2, over)], &classes, 0.0, None);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
         assert!((area(&out) - 6.0).abs() < 1e-9, "the 2 deg² overlap is stored once, not twice: {out:?}");
         let by_style = |sid: u8| area(&out.iter().filter(|(s, _, _)| *s == sid).cloned().collect::<Vec<_>>());
@@ -690,7 +956,7 @@ mod tests {
                 feats.push((1u8, rect(gx as f64, gy as f64, gx as f64 + 1.0, gy as f64 + 1.0)));
             }
         }
-        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0);
+        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, None);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
         assert!(stats.dropped_faces >= 1, "the centre face belongs to nobody: {stats:?}");
         assert!((area(&out) - 8.0).abs() < 1e-9, "eight squares in, eight squares of area out");
@@ -702,6 +968,146 @@ mod tests {
             })
             .sum();
         assert_eq!(holes, 1, "the unmapped centre survives as a hole, not as fill");
+    }
+
+    // --- elimination ---------------------------------------------------------------------------
+
+    /// A threshold in the units the pass takes: `px²` at `mpp`. One square degree at the equator is
+    /// `(M_PER_DEG / mpp)²` pixels, so this converts an area in square degrees into the
+    /// `min_area_px` that sits exactly on it — the tests then ask for a multiple of a known face.
+    fn threshold_for(deg2: f64, mpp: f64) -> Eliminate {
+        Eliminate { mpp, min_area_px: deg2 * (M_PER_DEG / mpp) * (M_PER_DEG / mpp) }
+    }
+
+    /// **The elimination test.** A speck of one class inside a wall of another does not leave a
+    /// hole when it is too small to draw — it is absorbed by the neighbour it shares the most
+    /// boundary with, and comes back as that class's ground. Area is conserved exactly: this is a
+    /// relabelling, not a cull.
+    #[test]
+    fn a_small_face_is_absorbed_by_its_longest_neighbour() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        // A 1x1 host with a 0.1x0.1 speck of another class biting into its left edge.
+        let host = rect(0.0, 0.0, 1.0, 1.0);
+        let speck = rect(0.0, 0.4, 0.1, 0.5); // 0.01 deg², on top (z 5) so it wins its own face
+        let mpp = 100.0;
+        // Threshold above the speck and below the host.
+        let e = Some(threshold_for(0.5, mpp));
+        let (out, stats) = coverage_simplify_fills(vec![(1, host), (2, speck)], &classes, 0.0, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.eliminated, 1, "exactly the speck moved: {stats:?}");
+        assert!((area(&out) - 1.0).abs() < 1e-9, "the ground is conserved, not culled: {out:?}");
+        assert!(out.iter().all(|(sid, _, _)| *sid == 1), "and all of it belongs to the host class: {out:?}");
+    }
+
+    /// Without a threshold nothing moves — the pass is the one it always was, and the parameter is
+    /// what turns elimination on.
+    #[test]
+    fn no_threshold_eliminates_nothing() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let host = rect(0.0, 0.0, 1.0, 1.0);
+        let speck = rect(0.0, 0.4, 0.1, 0.5);
+        let (out, stats) = coverage_simplify_fills(vec![(1, host), (2, speck)], &classes, 0.0, None);
+        assert_eq!(stats.eliminated, 0, "{stats:?}");
+        assert!(out.iter().any(|(sid, _, _)| *sid == 2), "the speck keeps its own class");
+        assert!((area(&out) - 1.0).abs() < 1e-9);
+    }
+
+    /// **Longest boundary decides**, not proximity or index order. A sliver wedged between two
+    /// classes shares a long edge with one and a short one with the other, and joins the long one.
+    #[test]
+    fn absorption_follows_the_longest_shared_boundary() {
+        let classes = [fill_style(1, 0, 0x0001), fill_style(2, 1, 0x0002), fill_style(3, 5, 0x0003)].map(|s| s);
+        let classes = merge_classes(&classes);
+        // West block 0..1, east block 1.1..2, and a 0.1-wide sliver between them whose long side
+        // (height 1) faces west and whose short side (height 1, but only 0.02 of it) faces east.
+        let west = poly(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+        let east = poly(&[(1.1, 0.0), (2.0, 0.0), (2.0, 1.0), (1.1, 1.0)]);
+        // The sliver touches west along its whole height and east along a stub only.
+        let sliver = poly(&[(1.0, 0.0), (1.1, 0.0), (1.1, 0.02), (1.1, 1.0), (1.0, 1.0)]);
+        let mpp = 100.0;
+        let e = Some(threshold_for(0.5, mpp));
+        let (out, stats) = coverage_simplify_fills(vec![(1, west), (2, east), (3, sliver)], &classes, 0.0, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.eliminated, 1, "{stats:?}");
+        let by = |sid: u8| area(&out.iter().filter(|(s, _, _)| *s == sid).cloned().collect::<Vec<_>>());
+        assert!((by(1) - 1.1).abs() < 1e-9, "west swallowed the sliver: {out:?}");
+        assert!((by(2) - 0.9).abs() < 1e-9, "east is untouched: {out:?}");
+        assert!(by(3) < 1e-12, "and the sliver's class is gone from the tier: {out:?}");
+    }
+
+    /// A face nobody covers is still a gap after elimination: it is neither absorbed (that would
+    /// invent fill) nor absorbed *into* (that would destroy the gap).
+    #[test]
+    fn elimination_never_fills_an_uncovered_face() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001)]);
+        let mut feats = Vec::new();
+        for gx in 0..3 {
+            for gy in 0..3 {
+                if gx == 1 && gy == 1 {
+                    continue;
+                }
+                feats.push((1u8, rect(gx as f64, gy as f64, gx as f64 + 1.0, gy as f64 + 1.0)));
+            }
+        }
+        let mpp = 100.0;
+        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, Some(threshold_for(4.0, mpp)));
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert!(stats.dropped_faces >= 1, "the centre still belongs to nobody: {stats:?}");
+        assert!((area(&out) - 8.0).abs() < 1e-9, "eight squares in, eight squares of ground out");
+        let holes: usize = out
+            .iter()
+            .map(|(_, g, _)| match g {
+                Geom::Polygon { interiors, .. } => interiors.len(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(holes, 1, "the unmapped centre survives as a hole rather than being invented into fill");
+    }
+
+    /// **The fixed point.** A long chain of equal specks, each other's nearest neighbour, has no
+    /// face big enough to be a root anywhere in it — a single absorption sweep would pair them off
+    /// and stop, leaving the threshold binding nothing. Run to a fixed point they coalesce all the
+    /// way into one class instead.
+    #[test]
+    fn a_chain_of_equal_specks_coalesces_completely() {
+        let styles: Vec<Style> = (1..=8).map(|i| fill_style(i, i as i8, 0x0001 + i as u16)).collect();
+        let classes = merge_classes(&styles);
+        // Eight 1x1 tiles in a row, each its own class, each far below the threshold.
+        let feats: Vec<(u8, Geom)> = (0..8).map(|i| (i as u8 + 1, rect(i as f64, 0.0, i as f64 + 1.0, 1.0))).collect();
+        let mpp = 100.0;
+        // Threshold above the whole row, so nothing can ever satisfy it.
+        let e = Some(threshold_for(100.0, mpp));
+        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert!((area(&out) - 8.0).abs() < 1e-9, "all eight tiles of ground survive: {out:?}");
+        let live: std::collections::BTreeSet<u8> = out.iter().map(|(sid, _, _)| *sid).collect();
+        assert_eq!(live.len(), 1, "the row coalesced into a single class, not four pairs: {live:?}");
+        assert_eq!(out.len(), 1, "and into a single polygon: {out:?}");
+    }
+
+    /// Determinism with elimination on: the absorption order (ascending area, then face index) and
+    /// the neighbour choice (longest edge, then lowest index) are both total, so the parallel pass
+    /// cannot leak into the bytes.
+    #[test]
+    fn elimination_is_deterministic() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 3, 0x0002), fill_style(3, 5, 0x0003)]);
+        let build = || {
+            let mut v: Vec<(u8, Geom)> = vec![(1, rect(0.0, 0.0, 12.0, 2.0))];
+            for i in 0..12 {
+                let x = i as f64;
+                v.push((2, rect(x + 0.1, 0.1, x + 0.2, 0.2)));
+                v.push((3, rect(x + 0.4, 0.4, x + 0.45, 0.9)));
+            }
+            v
+        };
+        let mpp = 100.0;
+        let e = Some(threshold_for(1.0, mpp));
+        let (a, sa) = coverage_simplify_fills(build(), &classes, 0.05, e);
+        let (b, sb) = coverage_simplify_fills(build(), &classes, 0.05, e);
+        assert_eq!(sa, sb, "same counters");
+        assert!(sa.eliminated >= 24, "every speck was absorbed: {sa:?}");
+        let key = |v: &[(u8, Geom, bool)]| v.iter().map(|(s, g, done)| (*s, verts(g), *done)).collect::<Vec<_>>();
+        assert_eq!(key(&a), key(&b), "same style ids, same vertices, same order");
     }
 
     /// Geometry GEOS will not touch — a 3-position ring, a self-intersecting bow-tie — **sits the
@@ -717,7 +1123,7 @@ mod tests {
         let bowtie = poly(&[(0.1, 0.1), (0.9, 0.9), (0.9, 0.1), (0.1, 0.9)]);
         let neighbour = rect(0.0, 0.0, 1.0, 1.0); // same bbox ⇒ same component as both
         let (out, stats) =
-            coverage_simplify_fills(vec![(1, stub.clone()), (1, bowtie.clone()), (1, neighbour)], &classes, 0.2);
+            coverage_simplify_fills(vec![(1, stub.clone()), (1, bowtie.clone()), (1, neighbour)], &classes, 0.2, None);
         assert_eq!(stats.fallbacks, 0, "the component itself was fine: {stats:?}");
         assert_eq!(out.len(), 3, "every feature is still there");
         for broken in [&stub, &bowtie] {
@@ -741,7 +1147,7 @@ mod tests {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001)]);
         let stub = Geom::Polygon { exterior: vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)], interiors: vec![] };
         let far = rect(10.0, 10.0, 11.0, 11.0); // its own component, unaffected
-        let (out, stats) = coverage_simplify_fills(vec![(1, stub.clone()), (1, far)], &classes, 0.2);
+        let (out, stats) = coverage_simplify_fills(vec![(1, stub.clone()), (1, far)], &classes, 0.2, None);
         assert_eq!(stats.fallbacks, 1, "exactly the broken component fell back: {stats:?}");
         assert_eq!(out.len(), 2, "nothing was dropped");
         assert!(out.iter().any(|(s, g, done)| (*s, verts(g), *done) == (1, verts(&stub), false)));
@@ -760,6 +1166,7 @@ mod tests {
             vec![(2, cased.clone()), (1, line.clone()), (1, rect(0.0, 0.0, 1.0, 1.0))],
             &classes,
             0.2,
+            None,
         );
         assert_eq!(stats.inputs, 1, "only the plain fill participates: {stats:?}");
         let cased_out = out.iter().find(|(s, _, _)| *s == 2).expect("the cased polygon survives");
@@ -784,8 +1191,8 @@ mod tests {
             }
             v
         };
-        let (a, sa) = coverage_simplify_fills(build(), &classes, 0.05);
-        let (b, sb) = coverage_simplify_fills(build(), &classes, 0.05);
+        let (a, sa) = coverage_simplify_fills(build(), &classes, 0.05, None);
+        let (b, sb) = coverage_simplify_fills(build(), &classes, 0.05, None);
         assert_eq!(sa, sb, "same counters");
         let key = |v: &[(u8, Geom, bool)]| v.iter().map(|(s, g, done)| (*s, verts(g), *done)).collect::<Vec<_>>();
         assert_eq!(key(&a), key(&b), "same style ids, same vertices, same order");
@@ -802,7 +1209,7 @@ mod tests {
             (9u8, rect(0.0, 5.0, 1.0, 6.0)), // B, no class
             (1u8, rect(1.0, 0.0, 2.0, 1.0)), // C, class 1, abuts A
         ];
-        let (out, _) = coverage_simplify_fills(feats, &classes, 0.0);
+        let (out, _) = coverage_simplify_fills(feats, &classes, 0.0, None);
         assert_eq!(out.len(), 2, "A+C dissolved into one, B passthrough: {out:?}");
         assert_eq!(out[0].0, 1, "the class block sits at A's position");
         assert_eq!(out[1].0, 9, "B keeps its place after it");

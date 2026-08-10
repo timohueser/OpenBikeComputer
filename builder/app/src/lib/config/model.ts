@@ -12,6 +12,13 @@ export interface LodTier {
     // culled. Ignored by the packer on the finest tier (no coarser fallback).
     // Optional so a config without it stays byte-identical when submitted.
     min_area_px?: number;
+    // Simplify this tier's plain fills (polygons with no color2) as one shared
+    // coverage rather than feature by feature, so a boundary two fills share is cut
+    // once and neighbours stay glued instead of tearing open into backdrop slivers,
+    // and min_area_px becomes an elimination threshold rather than a drop (obc-pack
+    // `coverage_simplify`). Costs bake time; the shipped preset turns it on for its
+    // two coarsest tiers. Absent/false ⇒ byte-identical to before.
+    coverage_simplify?: boolean;
 }
 
 export interface StyleDef {
@@ -122,6 +129,7 @@ export function normalizeConfig(raw: Record<string, unknown>): {
         max_mpp: i === 0 ? null : (l.max_mpp ?? null),
         simplify: l.simplify ?? 0,
         ...(l.min_area_px ? { min_area_px: l.min_area_px } : {}),
+        ...(l.coverage_simplify ? { coverage_simplify: true } : {}),
     }));
     cfg.features = cfg.features ?? {};
     cfg.marker = cfg.marker ?? { color: "0xF800" };
@@ -161,6 +169,9 @@ export function buildConfigForSubmit(
             // Emit only a positive footprint floor; the finest tier's value is ignored
             // by the packer, so leaving it off keeps the submitted config clean.
             if (l.min_area_px && i < n - 1) tier.min_area_px = l.min_area_px;
+            // Same rule: emit the coverage pass only where it is on, so a config that
+            // never asked for it submits exactly the bytes it always did.
+            if (l.coverage_simplify) tier.coverage_simplify = true;
             return tier;
         }),
         features: {},

@@ -27,6 +27,16 @@ export function editLodTier(
 }
 
 /**
+ * Turn the shared-coverage fill simplify on or off for one tier. Off is stored as
+ * absence, not `false`: a config that never asked for the pass submits the bytes it
+ * always did.
+ */
+export function setLodCoverageSimplify(config: PackConfig, i: number, on: boolean) {
+    if (on) config.lods[i].coverage_simplify = true;
+    else delete config.lods[i].coverage_simplify;
+}
+
+/**
  * Append a finer tier at half the previous ceiling, with full detail. The
  * old finest tier is no longer finest: unless it was hand-set, its simplify
  * moves from 0 to the new pixel-accurate default.

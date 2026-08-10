@@ -9,7 +9,7 @@
 //!   alignment theorem (§2) needs the box to *be* the cell.
 //! - **The complete ladder is written, with out-of-band levels empty** (§3.1), so band membership
 //!   never appears in the bytes. A `network` cell carries no geometry at all and a `fine` cell no
-//!   nav graph, but both list all seven levels.
+//!   nav graph, but both list every level on the ladder.
 //! - **Geometry is clipped at the exact cell edge** (§3.3), and the per-LOD sub-pixel cull runs on
 //!   the *clipped* geometry, so a polygon may survive in one cell and be culled in its neighbour.
 //! - **The nav graph is cut with deterministic boundary junctions on the edge line** (§3.4), which
@@ -59,7 +59,7 @@ use obc_formats::obcm::VERSION as OBCM_VERSION;
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
-use crate::coverage::coverage_simplify_fills_with;
+use crate::coverage::{coverage_simplify_fills_with, Eliminate};
 use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
@@ -469,7 +469,11 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
             owned = merged;
         }
         if l.coverage_simplify {
-            let (covered, c) = coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, progress);
+            // The elimination threshold is the tier's own cull pair, resolved exactly as `cull_mpp`
+            // below resolves it — on a coverage tier `min_area_px` absorbs a small face into its
+            // neighbour instead of deleting it (see [`crate::coverage`]).
+            let eliminate = Eliminate::new(config.lods.get(lod + 1).and_then(|n| n.max_mpp), l.min_area_px);
+            let (covered, c) = coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, eliminate, progress);
             crate::pipeline::report_coverage(progress, c);
             let mut kept = Vec::with_capacity(covered.len());
             let mut pre = Vec::with_capacity(covered.len());
@@ -533,7 +537,11 @@ impl LodSet<'_> {
             } else {
                 clip_to_box(&simplified, square)
             };
-            flatten_culled(*style_id, clipped, self.cull_mpp, self.min_area_px, &mut out);
+            // A coverage-produced feature carries this tier's `min_area_px` already, as elimination
+            // rather than a drop; culling the clipped result again would re-open the gaps the pass
+            // closed. Its holes are trimmed harder instead (`COVERAGE_HOLE_FACTOR`).
+            let from_coverage = self.presimplified[k as usize];
+            flatten_culled(*style_id, clipped, self.cull_mpp, self.min_area_px, from_coverage, &mut out);
         }
         build_lod_with(out, square, chunk_size, progress)
     }
@@ -541,20 +549,29 @@ impl LodSet<'_> {
 
 /// Append `geom`'s simple parts to `out`, dropping the ones the sub-pixel footprint cull rejects and
 /// trimming sub-pixel holes from the survivors — the pipeline's cull, applied to clipped geometry.
-fn flatten_culled(style_id: u8, geom: Geom, cull_mpp: Option<f64>, min_area_px: f64, out: &mut Vec<(u8, Geom)>) {
+fn flatten_culled(
+    style_id: u8,
+    geom: Geom,
+    cull_mpp: Option<f64>,
+    min_area_px: f64,
+    from_coverage: bool,
+    out: &mut Vec<(u8, Geom)>,
+) {
     match geom {
         Geom::Empty => {}
         Geom::Multi(parts) => {
             for p in parts {
-                flatten_culled(style_id, p, cull_mpp, min_area_px, out);
+                flatten_culled(style_id, p, cull_mpp, min_area_px, from_coverage, out);
             }
         }
         mut simple => {
             if let Some(mpp) = cull_mpp {
-                if footprint_below(&simple, mpp, min_area_px) {
+                if !from_coverage && footprint_below(&simple, mpp, min_area_px) {
                     return;
                 }
-                strip_small_holes(&mut simple, mpp, min_area_px);
+                let hole_floor =
+                    if from_coverage { min_area_px * crate::pipeline::COVERAGE_HOLE_FACTOR } else { min_area_px };
+                strip_small_holes(&mut simple, mpp, hole_floor);
             }
             out.push((style_id, simple));
         }

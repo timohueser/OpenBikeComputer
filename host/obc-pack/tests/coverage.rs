@@ -140,7 +140,7 @@ fn seam_band(verts: &[(i32, i32)]) -> Vec<(i32, i32)> {
 fn a_shared_seam_reaches_the_device_glued() {
     let styles = [fill(1, 0x0001), fill(2, 0x0002)];
     let classes = merge_classes(&styles);
-    let (covered, stats) = coverage_simplify_fills(vec![(1, west()), (2, east())], &classes, TOL);
+    let (covered, stats) = coverage_simplify_fills(vec![(1, west()), (2, east())], &classes, TOL, None);
     assert_eq!(stats.fallbacks, 0, "no GEOS failure: {stats:?}");
     let bytes = serialize(covered.into_iter().map(|(s, g, _)| (s, g)).collect(), &styles);
 
@@ -181,7 +181,7 @@ fn a_tier_with_no_candidates_is_byte_identical() {
         (2u8, poly(&[(0.0, 2.0), (1.0, 2.0), (1.0, 3.0), (0.0, 3.0)])),
     ];
     let off = serialize(feats.clone(), &styles);
-    let (covered, stats) = coverage_simplify_fills(feats, &classes, TOL);
+    let (covered, stats) = coverage_simplify_fills(feats, &classes, TOL, None);
     assert_eq!(stats.inputs, 0, "nothing participated: {stats:?}");
     assert!(covered.iter().all(|(_, _, simplified)| !*simplified), "everything still needs the per-feature path");
     let on = serialize(covered.into_iter().map(|(s, g, _)| (s, g)).collect(), &styles);

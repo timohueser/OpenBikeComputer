@@ -595,7 +595,10 @@ mod tests {
     fn reports_the_production_lod_at_every_exact_threshold() {
         let mut preview = opened();
         let thresholds = [(31.0, 0), (30.0, 1), (16.0, 2), (10.0, 3), (5.0, 4), (3.0, 5), (1.2, 6), (0.5, 6)];
-        assert_eq!(preview.tables.lods().len(), 7, "fixture must exercise the complete shipped ladder");
+        // The committed fixture was packed at the 7-rung ladder and has not been repacked since
+        // the schema gained its two far-zoom tiers, so these are the fixture's own ranges, not the
+        // current preset's. What is under test is the dispatch policy, which reads the map's table.
+        assert_eq!(preview.tables.lods().len(), 7, "the fixture's authored ladder");
         for (mpp, expected) in thresholds {
             preview.camera.meters_per_pixel = mpp;
             assert_eq!(preview.stats().lod_index, expected, "wrong LOD at {mpp} m/px");
@@ -726,8 +729,9 @@ mod tests {
         let mut preview = SchemaMapPreview::open(MAP.to_vec()).expect("packed map opens without restamping");
         assert_eq!((SCHEMA_FRAME_W, SCHEMA_FRAME_H), (240, 320));
 
-        // These are representative m/px values for the fixture's seven authored
-        // ranges. Selection is the production Reader policy, not a UI formula.
+        // These are representative m/px values for the fixture's seven authored ranges (it predates
+        // the schema's two far-zoom tiers). Selection is the production Reader policy, not a UI
+        // formula.
         for (mpp, expected) in [(40.0, 0), (30.0, 1), (16.0, 2), (10.0, 3), (5.0, 4), (3.0, 5), (1.2, 6)] {
             preview.set_meters_per_pixel(mpp);
             assert_eq!(preview.lod_index(), expected, "{mpp} m/px");

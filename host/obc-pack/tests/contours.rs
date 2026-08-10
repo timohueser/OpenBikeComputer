@@ -202,21 +202,24 @@ fn each_class_costs_only_what_it_is_asked_for() {
 
 // --- the ladder reach, through the cutter (#1104) ----------------------------------------------
 
-/// The shipped ladder's shape (7 tiers) with the shipped reach: **both** classes from LOD 2. Only
+/// The shipped ladder's shape (9 tiers) with the shipped reach: **both** classes from LOD 4. Only
 /// the numbers this test is about are the shipped ones — the styles are the minimum a contour class
 /// needs to be packed at all.
 const SHIPPED_REACH: &str = r#", "contour": {
-    "major": {"color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "line_style": "dashed"},
-    "index": {"color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4}
+    "major": {"color": "0xAD55", "weight": 1, "min_lod": 4, "priority": 4, "line_style": "dashed"},
+    "index": {"color": "0xAD55", "weight": 1, "min_lod": 4, "priority": 4}
 }"#;
 
-/// A 7-tier config the recommended band table partitions (`coarse` = LOD 0–2, `mid` = 3–4,
-/// `fine` = 5–6), so the cut this test drives is the one the bakery drives.
+/// A 9-tier config the recommended band table partitions (`coarse` = LOD 0–4, `mid` = 5–6,
+/// `fine` = 7–8), so the cut this test drives is the one the bakery drives. The two far-zoom
+/// tiers in front are the shipped ladder's, coverage pass and all.
 fn ladder_config(contour_styles: &str) -> Config {
     let text = format!(
         r#"{{
             "lods": [
-                {{"max_mpp": null, "simplify": 200}},
+                {{"max_mpp": null, "simplify": 1000, "coverage_simplify": true}},
+                {{"max_mpp": 400, "simplify": 300, "coverage_simplify": true}},
+                {{"max_mpp": 120, "simplify": 200}},
                 {{"max_mpp": 30, "simplify": 100}},
                 {{"max_mpp": 16, "simplify": 40}},
                 {{"max_mpp": 10, "simplify": 15}},
@@ -265,11 +268,11 @@ fn features_per_lod(bytes: &[u8]) -> BTreeMap<usize, BTreeMap<u8, usize>> {
 /// preset said. It does not — contours are traced once over the extract and then filtered by the
 /// ordinary `min_lod <= lod` ladder rule — and this is the test that keeps it that way:
 ///
-/// - LOD 2 (coarse band) carries **both** classes, each with a positive count. The two travel
-///   together on purpose: index-only at LOD 2 was tried and rejected on glass, because a solid grey
-///   line with no dashes around it reads as a path (#1104).
-/// - LODs 0–1 carry neither: the two coarsest tiers stay terrain-free.
-/// - LOD 3 (mid band) keeps both, so the tier below is not accidentally emptied either.
+/// - LOD 4 (coarse band) carries **both** classes, each with a positive count. The two travel
+///   together on purpose: index-only at that tier was tried and rejected on glass, because a solid
+///   grey line with no dashes around it reads as a path (#1104).
+/// - LODs 0–3 carry neither: the four coarsest tiers stay terrain-free.
+/// - LOD 5 (mid band) keeps both, so the tier below is not accidentally emptied either.
 #[test]
 fn the_coarse_band_carries_both_contour_classes() {
     let dir = scratch("reach");
@@ -291,7 +294,7 @@ fn the_coarse_band_carries_both_contour_classes() {
         match artifact.band.as_str() {
             "coarse" => {
                 coarse_cells += 1;
-                for lod in [0, 1] {
+                for lod in [0, 1, 2, 3] {
                     assert_eq!(n(lod, index), 0, "{}: LOD {lod} is below every contour's reach", artifact.path);
                     assert_eq!(n(lod, major), 0, "{}: LOD {lod} is below every contour's reach", artifact.path);
                 }
@@ -316,10 +319,10 @@ fn the_coarse_band_carries_both_contour_classes() {
             })
             .sum()
     };
-    assert!(total("coarse", 2, index) > 0, "the coarse band must actually trace the index contours");
-    assert!(total("coarse", 2, major) > 0, "and the major ones beside them — LOD 2 is the full set");
-    assert!(total("mid", 3, index) > 0, "the tier below keeps them both");
-    assert!(total("mid", 3, major) > 0, "…major included");
+    assert!(total("coarse", 4, index) > 0, "the coarse band must actually trace the index contours");
+    assert!(total("coarse", 4, major) > 0, "and the major ones beside them — LOD 4 is the full set");
+    assert!(total("mid", 5, index) > 0, "the tier below keeps them both");
+    assert!(total("mid", 5, major) > 0, "…major included");
 }
 
 /// The clamp is what keeps the fine tiers from storing interpolation noise: relaxing it to zero has

@@ -122,6 +122,30 @@ fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
 /// Degrees convert to meters with [`M_PER_DEG`] and the `cos(lat)` longitude
 /// foreshortening at the feature's mid-latitude. `min_area_px <= 0`, a
 /// non-positive `mpp`, and empty/line geometry never cull.
+/// A geometry's projected area in **square pixels** at `mpp` — the quantity
+/// [`footprint_below`] compares against a threshold, exposed for the callers that need the
+/// number rather than the verdict (the coverage pass ranks faces by it). Lines and empties
+/// have no area; a `Multi` sums its parts. Same mid-latitude foreshortening basis, so a face
+/// and a whole feature are measured on the same scale.
+pub fn footprint_area_px(g: &Geom, mpp: f64) -> f64 {
+    if mpp <= 0.0 || g.is_empty() {
+        return 0.0;
+    }
+    match g {
+        Geom::Empty | Geom::Line(_) => 0.0,
+        Geom::Multi(parts) => parts.iter().map(|p| footprint_area_px(p, mpp)).sum(),
+        Geom::Polygon { exterior, interiors } => {
+            let (_, miny, _, maxy) = g.bounds();
+            let (lon_ppd, lat_ppd) = px_per_deg(0.5 * (miny + maxy), mpp);
+            let mut area = ring_area_deg2(exterior);
+            for hole in interiors {
+                area -= ring_area_deg2(hole);
+            }
+            area.max(0.0) * lon_ppd * lat_ppd
+        }
+    }
+}
+
 pub fn footprint_below(g: &Geom, mpp: f64, min_area_px: f64) -> bool {
     if min_area_px <= 0.0 || mpp <= 0.0 || g.is_empty() {
         return false;

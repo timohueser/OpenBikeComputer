@@ -1686,12 +1686,12 @@ mod tests {
                 Band {
                     id: "coarse".into(),
                     cell_log2: 22,
-                    lods: vec![0, 1, 2],
+                    lods: vec![0, 1, 2, 3, 4],
                     sections: vec![],
                     role: BandRole::Coarse,
                 },
-                Band { id: "mid".into(), cell_log2: 22, lods: vec![3, 4], sections: vec![], role: BandRole::Geometry },
-                Band { id: "fine".into(), cell_log2: 22, lods: vec![5, 6], sections: vec![], role: BandRole::Geometry },
+                Band { id: "mid".into(), cell_log2: 22, lods: vec![5, 6], sections: vec![], role: BandRole::Geometry },
+                Band { id: "fine".into(), cell_log2: 22, lods: vec![7, 8], sections: vec![], role: BandRole::Geometry },
                 Band {
                     id: "network".into(),
                     cell_log2: 22,

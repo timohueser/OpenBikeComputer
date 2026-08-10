@@ -171,20 +171,26 @@ it **does not wrap**. Three consequences are normative:
 ### 1.5 The v1 band table (schema `bikepacking`, revision 1)
 
 These values are the measured recommendation of epic #1016 D1, taken over whole-extract bakes of
-`switzerland`, `austria`, and `freiburg-regbez` with the shipped 7-LOD bikepacking ladder
+`switzerland`, `austria`, and `freiburg-regbez` with the then-shipped 7-LOD bikepacking ladder
 ([`builder/presets/schema.json`](../builder/presets/schema.json)). They are **schema data**: a
 catalog states them (§6), a producer reads them from the catalog, and retuning them is a re-bake
 rather than a change to this document.
 
 | Band | Cell size | ≈ at 47°N | Carries | Assembly role (§5.1) |
 | :-- | :-- | :-- | :-- | :-- |
-| `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2 | **coarse shard** |
-| `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 3, 4 | geometry shard |
-| `fine` | `2^18` µdeg (0.262144°) | 29 × 20 km | ladder LOD 5, 6 | geometry shard |
+| `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2, 3, 4 | **coarse shard** |
+| `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 5, 6 | geometry shard |
+| `fine` | `2^18` µdeg (0.262144°) | 29 × 20 km | ladder LOD 7, 8 | geometry shard |
 | `network` | `2^18` µdeg (0.262144°) | 29 × 20 km | nav graph (OBCM §8), POIs (OBCM §7), hours pool (OBCM §7.5) | **core file** |
 
 The largest cell size in the table, `S_MAX = 2^20`, is the assembly bbox's alignment modulus
 (§2.1).
+
+The ladder later grew two far-zoom rungs in front (LOD 0 and 1, out to ~400 m/px and beyond), and
+they joined `coarse`: the band still ends at exactly the content it was measured with — the tiers
+now numbered 2, 3, 4 — and the two additions are the most aggressively culled levels on the map, so
+they land in the shard whose budget can absorb them. The measured densities below predate them and
+are therefore a slight under-count of `coarse` at the current ladder, not of any other band.
 
 **Measured density**, in MiB per 1000 km² of covered ground — a latitude-free unit, unlike bytes
 per square degree. Three whole-extract bakes at this schema: `switzerland` (41 285 km²),
@@ -193,9 +199,9 @@ German average — the Rhine plain carries more road and more building than the 
 
 | Band | switzerland | austria | freiburg-regbez | one cell: fully covered / CH p90 / CH max |
 | :-- | --: | --: | --: | :-- |
-| `coarse` — LOD 0,1,2 | 0.45 | 0.54 | 0.65 | 4.2 / 2.9 / 3.9 MiB |
-| `mid` — LOD 3,4 | 2.32 | 2.34 | 3.05 | 5.4 / 5.9 / 9.5 MiB |
-| `fine` — LOD 5,6 | 7.66 | 6.73 | 9.54 | 4.4 / 5.5 / 12.1 MiB |
+| `coarse` — LOD 0–4 | 0.45 | 0.54 | 0.65 | 4.2 / 2.9 / 3.9 MiB |
+| `mid` — LOD 5,6 | 2.32 | 2.34 | 3.05 | 5.4 / 5.9 / 9.5 MiB |
+| `fine` — LOD 7,8 | 7.66 | 6.73 | 9.54 | 4.4 / 5.5 / 12.1 MiB |
 | `network` — nav + POI | 6.30 | 3.80 | 7.06 | 3.7 / 5.3 / 19.5 MiB |
 | **whole map** | **16.7** | **13.4** | **20.3** | |
 
@@ -207,10 +213,11 @@ German average — the Rhine plain carries more road and more building than the 
 >
 > **Fetch-unit uniformity.** Cell size scales inversely with band density, so a fully covered cell
 > of every band is 3.7–5.4 MiB and one fetch costs about the same wherever it comes from. That is
-> what keeps LOD 3 in `mid`: a `2^20` cell carrying LOD 0–3 measures **10.4–11.7 MiB** fully
-> covered, two and a half times every other band's object. The boundary is not a knife edge from the
-> other side — moving LOD 2 down into `mid` would add only 1.1–1.4 MiB to a `2^19` cell — so
-> `coarse` = LOD 0–2 is the cheap end of a shallow optimum, chosen rather than forced.
+> what keeps the 30 m/px tier (LOD 5) in `mid`: a `2^20` cell carrying it as well measures
+> **10.4–11.7 MiB** fully covered, two and a half times every other band's object. The boundary is
+> not a knife edge from the other side — moving LOD 4 down into `mid` would add only 1.1–1.4 MiB to
+> a `2^19` cell — so `coarse` ending where it does is the cheap end of a shallow optimum, chosen
+> rather than forced.
 >
 > **The coarse shard is one file spanning the whole assembly** (§5.1), which is what keeps a
 > zoomed-out viewport a single-file read. Its band's content must therefore stay small enough that
@@ -759,7 +766,7 @@ that can be is moved out of it.** The fourth is the raster, which is not an OBCM
   schema `role` is `core`, the `network` band at the v1 table. It carries **no ladder LOD at all**
   (every LOD region is written empty, §3.1), except in the single-file fast path (§5.5), where the
   one shard is the core and carries everything. Its bbox is the whole assembly bbox.
-- **Coarse shards** carry the LODs of the band whose schema `role` is `coarse` — LOD 0, 1, 2 at the
+- **Coarse shards** carry the LODs of the band whose schema `role` is `coarse` — LOD 0–4 at the
   v1 table — and nothing else: empty nav directory, empty POI categories, every other LOD empty.
   There is **exactly one** by default, its bbox the whole assembly bbox, because a zoomed-out
   viewport covers the whole map and should be a single-file read. It MAY be split by bbox in the
@@ -808,8 +815,8 @@ At the v1 schema and DACH densities (§1.5), the shape of the largest set v1 sup
 | DACH (482 760 km²), v1 schema | bytes | files |
 | :-- | --: | :-- |
 | core — nav + POI + style table | **2.8–3.0 GiB** | 1 |
-| coarse shard — LOD 0–2 | 225–296 MiB | 1 |
-| geometry shards — LOD 3–6 | 4.6–5.5 GiB | ~6 at a ~1 GiB target |
+| coarse shard — LOD 0–4 | 225–296 MiB | 1 |
+| geometry shards — LOD 5–8 | 4.6–5.5 GiB | ~6 at a ~1 GiB target |
 | **the set** | **7.6–8.9 GiB** | **~8** |
 
 Two consequences shape the firmware work (P3b) and are worth stating as contract:
@@ -1133,7 +1140,7 @@ id per feature type, in one order — and a skin may change only the other seven
 record plus the header's `Marker Color`. That is the byte-level meaning of the schema/skin split,
 and it is what makes a restyle free (§4.7).
 
-The hosted catalog has **exactly one** schema: the 7-LOD bikepacking ladder. It is the ladder
+The hosted catalog has **exactly one** schema: the 9-LOD bikepacking ladder. It is the ladder
 tested to render inside the device's RAM and map-complexity budget; a superset schema was rejected
 because it would make every map carry complexity the device cannot honour. Hosted "presets" are
 therefore skins. Custom schemas remain a local-bake affair for the desktop app, which packs from
