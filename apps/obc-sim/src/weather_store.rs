@@ -221,6 +221,25 @@ impl SimWeather {
         obc_app::WeatherSnapshot::sample(&reader, &mut self.cache, pos).ok()
     }
 
+    /// The held bundle's bytes — the companion reads its generation/timestamp for the §11.4
+    /// context and the A/B comparison.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Adopt an in-memory bundle (the `--weather live` path, and the companion's commit): the
+    /// bytes must still be a valid OBCW object, so a service that answered with nonsense produces
+    /// `None` rather than a store the screens would have to defend against.
+    ///
+    /// No `demo_recipe`, deliberately — a live bundle is a real observation and must **age**.
+    /// Re-stamping it onto the clock the way a demo bundle is re-anchored would turn a stalled
+    /// baker into a permanently fresh-looking nowcast, which is the exact lie the epic forbids.
+    pub fn from_bytes(bytes: Vec<u8>, now_override: Option<i64>) -> Option<Self> {
+        let source = obc_formats::io::SliceSource(&bytes);
+        obc_weather::WeatherReader::open(&source).ok()?;
+        Some(Self { bytes, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
+    }
+
     /// Load the newest valid generation from a WEATHER.A/WEATHER.B root, exactly as boot selection
     /// does. `None` when neither slot holds a valid bundle.
     pub fn load(root: &Path, now_override: Option<i64>) -> Option<Self> {

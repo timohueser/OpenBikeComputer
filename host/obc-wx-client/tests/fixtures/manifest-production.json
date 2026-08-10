@@ -1,0 +1,255 @@
+{
+ "version": 1,
+ "generated_at": "2026-08-09T22:55:28Z",
+ "products": [
+  {
+   "id": "dwd-rv",
+   "tier": 1,
+   "bbox_udeg": {
+    "south_udeg": 45680000,
+    "west_udeg": 1460000,
+    "north_udeg": 55868000,
+    "east_udeg": 18736000
+   },
+   "cell": {
+    "lat_udeg": 9000,
+    "lon_udeg": 14000,
+    "nominal_m": 1000
+   },
+   "reference_time": "2026-08-09T22:50:00Z",
+   "generated_at": "2026-08-09T22:55:28Z",
+   "staleness_deadline": "2026-08-09T23:20:00Z",
+   "attribution": {
+    "text": "Source: Deutscher Wetterdienst (DWD), radar composite RV; modified/quantized by OpenBikeComputer",
+    "url": "https://www.dwd.de/EN/service/copyright/copyright_artikel.html"
+   },
+   "upstream_etag": "\"6a7904d9-32c800\"",
+   "frames": [
+    {
+     "offset_min": 0,
+     "valid_at": "2026-08-09T22:50:00Z",
+     "source_class": "observation",
+     "key": "wx/v1/dwd-rv/20260809T2250Z/f0.obcg",
+     "bytes": 107104,
+     "object_crc32": "0x938AF752",
+     "geometry": {
+      "south_udeg": 45680000,
+      "west_udeg": 1460000,
+      "cell_lat_udeg": 9000,
+      "cell_lon_udeg": 14000,
+      "width": 1234,
+      "height": 1132,
+      "cell_size_m": 1000,
+      "tile_edge": 32,
+      "entries_per_page": 512
+     }
+    },
+    {
+     "offset_min": 15,
+     "valid_at": "2026-08-09T23:05:00Z",
+     "source_class": "forecast",
+     "key": "wx/v1/dwd-rv/20260809T2250Z/f15.obcg",
+     "bytes": 105919,
+     "object_crc32": "0xBBA72AE9",
+     "geometry": {
+      "south_udeg": 45680000,
+      "west_udeg": 1460000,
+      "cell_lat_udeg": 9000,
+      "cell_lon_udeg": 14000,
+      "width": 1234,
+      "height": 1132,
+      "cell_size_m": 1000,
+      "tile_edge": 32,
+      "entries_per_page": 512
+     }
+    }
+   ]
+  },
+  {
+   "id": "gfs",
+   "tier": 3,
+   "bbox_udeg": {
+    "south_udeg": -89875000,
+    "west_udeg": -179875000,
+    "north_udeg": 89875000,
+    "east_udeg": 179875000
+   },
+   "cell": {
+    "lat_udeg": 250000,
+    "lon_udeg": 250000,
+    "nominal_m": 27750
+   },
+   "reference_time": "2026-08-09T18:00:00Z",
+   "generated_at": "2026-08-09T22:27:53Z",
+   "staleness_deadline": "2026-08-10T10:00:00Z",
+   "attribution": {
+    "text": "Source: NOAA/NCEP GFS; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+    "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+   },
+   "frames": [
+    {
+     "offset_min": 60,
+     "valid_at": "2026-08-09T19:00:00Z",
+     "source_class": "forecast",
+     "key": "wx/v1/gfs/20260809T1800Z/f60.obcg",
+     "bytes": 229798,
+     "object_crc32": "0x163B60F8",
+     "geometry": {
+      "south_udeg": -89875000,
+      "west_udeg": -179875000,
+      "cell_lat_udeg": 250000,
+      "cell_lon_udeg": 250000,
+      "width": 1439,
+      "height": 719,
+      "cell_size_m": 27750,
+      "tile_edge": 16,
+      "entries_per_page": 512
+     }
+    },
+    {
+     "offset_min": 120,
+     "valid_at": "2026-08-09T20:00:00Z",
+     "source_class": "forecast",
+     "key": "wx/v1/gfs/20260809T1800Z/f120.obcg",
+     "bytes": 258799,
+     "object_crc32": "0xFCB77DC5",
+     "geometry": {
+      "south_udeg": -89875000,
+      "west_udeg": -179875000,
+      "cell_lat_udeg": 250000,
+      "cell_lon_udeg": 250000,
+      "width": 1439,
+      "height": 719,
+      "cell_size_m": 27750,
+      "tile_edge": 16,
+      "entries_per_page": 512
+     }
+    }
+   ]
+  },
+  {
+   "id": "icon-eu",
+   "tier": 2,
+   "bbox_udeg": {
+    "south_udeg": 29468750,
+    "west_udeg": -23531250,
+    "north_udeg": 70531250,
+    "east_udeg": 62531250
+   },
+   "cell": {
+    "lat_udeg": 62500,
+    "lon_udeg": 62500,
+    "nominal_m": 6500
+   },
+   "reference_time": "2026-08-09T18:00:00Z",
+   "generated_at": "2026-08-09T21:36:45Z",
+   "staleness_deadline": "2026-08-10T04:00:00Z",
+   "attribution": {
+    "text": "Source: Deutscher Wetterdienst (DWD), ICON-EU; modified/quantized by OpenBikeComputer",
+    "url": "https://www.dwd.de/EN/service/copyright/copyright_artikel.html"
+   },
+   "frames": [
+    {
+     "offset_min": 60,
+     "valid_at": "2026-08-09T19:00:00Z",
+     "source_class": "forecast",
+     "key": "wx/v1/icon-eu/20260809T1800Z/f60.obcg",
+     "bytes": 112464,
+     "object_crc32": "0xF723FDEE",
+     "geometry": {
+      "south_udeg": 29468750,
+      "west_udeg": -23531250,
+      "cell_lat_udeg": 62500,
+      "cell_lon_udeg": 62500,
+      "width": 1377,
+      "height": 657,
+      "cell_size_m": 6500,
+      "tile_edge": 16,
+      "entries_per_page": 512
+     }
+    },
+    {
+     "offset_min": 120,
+     "valid_at": "2026-08-09T20:00:00Z",
+     "source_class": "forecast",
+     "key": "wx/v1/icon-eu/20260809T1800Z/f120.obcg",
+     "bytes": 113880,
+     "object_crc32": "0xE1E956C5",
+     "geometry": {
+      "south_udeg": 29468750,
+      "west_udeg": -23531250,
+      "cell_lat_udeg": 62500,
+      "cell_lon_udeg": 62500,
+      "width": 1377,
+      "height": 657,
+      "cell_size_m": 6500,
+      "tile_edge": 16,
+      "entries_per_page": 512
+     }
+    }
+   ]
+  },
+  {
+   "id": "us",
+   "tier": 1,
+   "bbox_udeg": {
+    "south_udeg": 21100000,
+    "west_udeg": -130000000,
+    "north_udeg": 52636000,
+    "east_udeg": -60898000
+   },
+   "cell": {
+    "lat_udeg": 10000,
+    "lon_udeg": 10000,
+    "nominal_m": 1000
+   },
+   "reference_time": "2026-08-09T22:42:00Z",
+   "generated_at": "2026-08-09T22:45:55Z",
+   "staleness_deadline": "2026-08-09T23:12:00Z",
+   "attribution": {
+    "text": "Source: NOAA/NCEP MRMS PrecipRate (observation) and HRRR (forecast); modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+    "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+   },
+   "frames": [
+    {
+     "offset_min": 0,
+     "valid_at": "2026-08-09T22:42:00Z",
+     "source_class": "observation",
+     "key": "wx/v1/us/20260809T2242Z/f0.obcg",
+     "bytes": 1175842,
+     "object_crc32": "0x39DB92B3",
+     "geometry": {
+      "south_udeg": 20000000,
+      "west_udeg": -130000000,
+      "cell_lat_udeg": 10000,
+      "cell_lon_udeg": 10000,
+      "width": 7000,
+      "height": 3500,
+      "cell_size_m": 1000,
+      "tile_edge": 64,
+      "entries_per_page": 512
+     }
+    },
+    {
+     "offset_min": 3,
+     "valid_at": "2026-08-09T22:45:00Z",
+     "source_class": "forecast",
+     "key": "wx/v1/us/20260809T2242Z/f3.obcg",
+     "bytes": 137827,
+     "object_crc32": "0x44C79B93",
+     "geometry": {
+      "south_udeg": 21100000,
+      "west_udeg": -134100000,
+      "cell_lat_udeg": 27000,
+      "cell_lon_udeg": 34000,
+      "width": 2153,
+      "height": 1168,
+      "cell_size_m": 3000,
+      "tile_edge": 32,
+      "entries_per_page": 512
+     }
+    }
+   ]
+  }
+ ]
+}

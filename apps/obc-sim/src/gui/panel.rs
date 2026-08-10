@@ -233,6 +233,13 @@ impl SimGui {
                         egui::CollapsingHeader::new("Altimeter")
                             .default_open(false)
                             .show(ui, |ui| self.show_altimeter(ui));
+
+                        if self.live_weather.is_some() {
+                            separator_above(ui);
+                            egui::CollapsingHeader::new("Weather (live)")
+                                .default_open(true)
+                                .show(ui, |ui| self.show_live_weather(ui));
+                        }
                     });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
@@ -789,5 +796,90 @@ impl SimGui {
         kind_bar(ui, "Spans", s.line_spans, s.poly_spans, obc_render::MAX_SPANS);
         kind_bar(ui, "Points", s.line_points, s.poly_points, obc_render::MAX_FRAME_POINTS);
         kind_bar(ui, "Rings", s.line_rings, s.poly_rings, obc_render::MAX_FRAME_RINGS);
+    }
+}
+
+impl SimGui {
+    /// The live-weather diagnostics (WX14): which product answered, how many bytes it cost, and
+    /// where the §11 request/upload machine currently is.
+    ///
+    /// This lives **outside** the emulated device pixels on purpose. The device is forbidden a
+    /// provider badge — tier differences may reach the rider only through real frame timestamps
+    /// and freshness — so every provenance fact belongs here, in the developer's window, and
+    /// nowhere on the glass.
+    fn show_live_weather(&mut self, ui: &mut egui::Ui) {
+        let Some(live) = self.live_weather.as_ref() else { return };
+        let report = &live.report;
+        match (&report.product, &report.error) {
+            (_, Some(error)) => {
+                ui.colored_label(ERROR_RED, format!("fetch failed: {error}"));
+                ui.weak("The previous bundle stays in place and keeps aging — an outage never blanks the screen.");
+            }
+            (Some((id, tier)), None) => {
+                ui.label(format!("product   {id} (tier {tier})"));
+            }
+            (None, None) => {
+                ui.label("product   none — hourly only");
+            }
+        }
+        if let Some(why) = &report.no_rain_map {
+            ui.weak(format!("no rain map: {why}"));
+        }
+        if !report.expired.is_empty() {
+            ui.weak(format!("expired (skipped): {}", report.expired.join(", ")));
+        }
+        if let Some((width_km, height_km, directed)) = report.corridor_km {
+            ui.label(format!(
+                "corridor  {width_km:.0} x {height_km:.0} km, {}",
+                if directed { "projected along the fix's bearing" } else { "undirected disc" }
+            ));
+        }
+        // Two costs, never one number: the OBC half is coordinate-free Range reads, the MET half
+        // is one document that carries the rider's position. Both are *this fetch* — mixing a
+        // cumulative request count with a per-fetch byte count is how "21 requests, 146 KB" came
+        // to describe two different things at once.
+        ui.label(format!(
+            "last      {} B bundle · service {} req / {} B · MET {} req / {} B",
+            report.bundle_bytes, report.service_requests, report.service_bytes, report.met_requests, report.met_bytes
+        ));
+        if report.cached_frames > 0 {
+            ui.weak(format!(
+                "{} frame(s) came from the crop cache — immutable objects are never re-read",
+                report.cached_frames
+            ));
+        }
+        ui.weak(format!("{} request(s) since the simulator started", live.total_requests()));
+        if report.failed_frames > 0 || report.dropped_incompatible_frames > 0 {
+            ui.weak(format!(
+                "{} frame(s) failed, {} dropped as untileable (never resampled)",
+                report.failed_frames, report.dropped_incompatible_frames
+            ));
+        }
+        if report.fetched_at > 0 {
+            let age = (self.app.wall_unix_now() as i64 - report.fetched_at).max(0);
+            ui.weak(format!("fetched {age} s ago"));
+        }
+        ui.separator();
+        let state = &self.companion.state;
+        ui.label(format!(
+            "request   {} · {}",
+            state.pending_request_id.map_or("none pending".to_string(), |id| format!("#{id}")),
+            state.reason_text()
+        ));
+        ui.label(format!(
+            "uploads   {} committed, {} refused{}",
+            state.commits,
+            state.rejected,
+            state.last_disposition.map_or(String::new(), |d| format!(" (last: {d})"))
+        ));
+        if let Some(wake) = state.next_wake_s {
+            let now = self.app.wall_unix_now() as u64;
+            ui.weak(format!("next due in {} s", wake.saturating_sub(now)));
+        } else {
+            ui.weak("nothing scheduled (refresh Off, or no ride in progress)");
+        }
+        for line in &report.attribution {
+            ui.weak(line);
+        }
     }
 }
