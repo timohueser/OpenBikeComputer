@@ -808,8 +808,10 @@ pub fn run_canonical_cycle(
         })
         .collect();
     // The retention chain is read back out of the published manifest rather than kept anywhere:
-    // the baker is stateless, and its only state is the document it publishes.
-    let carried = manifest_v2::carried_generations(store.get(manifest_v2::MANIFEST_KEY)?.as_deref());
+    // the baker is stateless, and its only state is the document it publishes. A manifest that is
+    // there but unreadable fails the cycle rather than publishing an empty chain — see
+    // `manifest_v2::carried_generations`, where the reasoning lives.
+    let carried = manifest_v2::carried_generations(store.get(manifest_v2::MANIFEST_KEY)?.as_deref(), &mut warnings)?;
     let mut document = manifest_v2::Builder::new(lattice, times, now, attribution, carried);
 
     let mut published_objects = 0usize;

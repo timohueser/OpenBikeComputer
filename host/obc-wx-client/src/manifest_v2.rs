@@ -4,9 +4,15 @@
 //! staleness. None of that survives here, because there is nothing to choose between. This module
 //! answers exactly two questions, and neither is a policy:
 //!
-//! 1. **which shards cover my bbox** — [`Grid::shards_for`], four divisions;
+//! 1. **which shards cover my bbox** — [`Grid::shards_for`], a handful of divisions;
 //! 2. **what is at that shard** — [`Frame::state_of`]: an object to fetch, a dry shard, or a shard
 //!    off the lattice entirely.
+//!
+//! [`Manifest::plan`] is those two joined for a whole timeline, and it is the function WXR5 calls.
+//! It returns a [`PlanOutcome`] rather than a bare list, because "no objects to fetch" is four
+//! different sentences to a rider — no rain, off the map, no source here ever, or no weather at all
+//! because the generation expired — and only the first is about rain. An empty `Vec` cannot say
+//! which, so it is not what this module hands back.
 //!
 //! The object key is composed, never read: [`Grid::shard_key`] builds
 //! `<key_prefix>/<generation>/f<offset>/s<col>-<row>.obcg`, which is why the manifest does not
@@ -28,6 +34,12 @@
 //! A shard that is entirely **no-data** is `Present` with an object full of intensity 15, because
 //! "we do not know" is data the rider is owed. Only genuinely dry shards are absent.
 //!
+//! Two conditions sit above the per-shard answer and are reported by [`Manifest::plan`] rather than
+//! left to a caller to remember: a generation past its `stale_after` is
+//! [`PlanOutcome::Expired`] — no weather, which is not no rain — and a bbox whose every lattice row
+//! is outside `covered_rows` is [`PlanOutcome::Uncovered`], where objects exist but are intensity 15
+//! in every frame, forever.
+//!
 //! Strictness splits the way the phone splits it and for the same reason: the document is strict
 //! (bad JSON, an unknown `version` or an unusable grid is a hard failure), an entry is lenient (a
 //! malformed frame is skipped and counted, never fatal).
@@ -36,6 +48,9 @@ use serde::Deserialize;
 
 pub const MANIFEST_KEY: &str = "wx/v2/manifest.json";
 pub const MANIFEST_VERSION: u32 = 2;
+
+/// OBCG 10.4's retention cap, mirrored here because the reader enforces it.
+pub const RETAINED_PREVIOUS_GENERATIONS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
@@ -55,10 +70,27 @@ impl std::fmt::Display for ManifestError {
 // ── validated model ────────────────────────────────────────────────────────────────────────
 
 /// One shard's identity: its column and row on the fixed global shard grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShardId {
     pub col: u32,
     pub row: u32,
+}
+
+/// Ordered by **`(row, col)`** — the order the manifest states for `shards[]`, the order
+/// `shards_for` returns, and the order the presence bit index `row * shard_cols + col` counts in.
+/// Written out rather than derived because the derive would order by `(col, row)`, and one
+/// ordering silently disagreeing with the document is exactly how a binary search over the shard
+/// list starts answering `Dry` for shards that exist.
+impl Ord for ShardId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.row, self.col).cmp(&(other.row, other.col))
+    }
+}
+
+impl PartialOrd for ShardId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// What the manifest says is at one shard of one frame.
@@ -110,48 +142,127 @@ impl Grid {
         format!("{}/{}/f{offset_min}/s{}-{}.obcg", self.key_prefix, self.generation, shard.col, shard.row)
     }
 
-    /// Every shard covering `bbox`, ascending by `(row, col)` — **the whole of what used to be
-    /// product selection**, and it is four divisions.
+    /// Do any of the lattice rows this bbox touches have a **source** behind them?
     ///
-    /// The lattice window is half-open in both axes, so a bbox edge landing exactly on a shard
-    /// boundary belongs to the shard it opens, not the one it closes; a bbox reaching past the
-    /// lattice is clipped to it rather than refused, because a corridor at the edge of the domain
-    /// is a real thing and the shards it does reach are still answerable. A bbox entirely off the
-    /// lattice yields nothing, which [`Frame::state_of`] reports as
-    /// [`ShardState::OutOfDomain`] shard by shard.
-    pub fn shards_for(&self, bbox: &Bbox) -> Vec<ShardId> {
-        let cell = i64::from(self.cell_udeg);
-        // Cell index of a coordinate, in the axis's own units, unclamped.
-        let cell_of = |value: i64, origin: i64| (value - origin).div_euclid(cell);
-        // The last cell an edge touches: an edge exactly on a cell boundary closes the cell before
-        // it (half-open), which `ceil - 1` gives and a plain floor does not.
-        let last_cell = |value: i64, origin: i64| (value - origin + cell - 1).div_euclid(cell) - 1;
+    /// `covered_rows` is not decoration: rows outside it are published as intensity 15 in every
+    /// frame, forever, because no source we ingest reaches them (#1242's polar band). A corridor
+    /// wholly inside that band has objects it *could* fetch, and they would all decode to "we do
+    /// not know" — so [`Manifest::plan`] answers [`PlanOutcome::Uncovered`] instead of issuing nine
+    /// Range reads to learn a permanent fact the manifest already stated.
+    pub fn any_row_has_a_source(&self, bbox: &Bbox) -> bool {
+        let Some((row0, row1)) = self.cell_span(bbox.south_udeg, bbox.north_udeg, self.south_lat_udeg, self.height)
+        else {
+            return false;
+        };
+        row0 < self.covered_rows.end && row1 >= self.covered_rows.start
+    }
 
-        let west = i64::from(self.west_lon_udeg);
-        let south = i64::from(self.south_lat_udeg);
-        let col0 = cell_of(bbox.west_udeg, west).clamp(0, i64::from(self.width) - 1) as u32;
-        let col1 = last_cell(bbox.east_udeg, west).clamp(0, i64::from(self.width) - 1) as u32;
-        let row0 = cell_of(bbox.south_udeg, south).clamp(0, i64::from(self.height) - 1) as u32;
-        let row1 = last_cell(bbox.north_udeg, south).clamp(0, i64::from(self.height) - 1) as u32;
-        if col1 < col0 || row1 < row0 {
-            return Vec::new();
+    /// The half-open cell interval `[lo, hi)` of one axis, intersected with the lattice — or `None`
+    /// if the two do not overlap.
+    ///
+    /// **The intersection is tested on the unclamped interval.** Clamping first is the bug this
+    /// spells out: an interval lying wholly east of the lattice collapses onto its last column
+    /// instead of vanishing, and a rider off the map is served another continent's shard rather
+    /// than told there is nothing there. An edge landing exactly on a cell boundary closes the cell
+    /// before it, which `ceil - 1` gives and a plain floor does not.
+    fn cell_span(&self, lo: i64, hi: i64, origin: i32, extent: u32) -> Option<(u32, u32)> {
+        let cell = i64::from(self.cell_udeg);
+        let origin = i64::from(origin);
+        let first = (lo - origin).div_euclid(cell).max(0);
+        let last = ((hi - origin + cell - 1).div_euclid(cell) - 1).min(i64::from(extent) - 1);
+        (first <= last).then_some((first as u32, last as u32))
+    }
+
+    /// Every shard covering `bbox`, ascending by `(row, col)` — **the whole of what used to be
+    /// product selection**, and it is a handful of divisions.
+    ///
+    /// Coordinates are microdegrees in the **-180..180 / -90..90** convention, and that is checked
+    /// rather than assumed: a longitude in the 0..360 form (352,150,000 meaning -7.85 degrees) is
+    /// [`BboxError::OutOfRange`], never silently reinterpreted, because the alternative is a
+    /// corridor answered from the wrong hemisphere with no error anywhere. `west > east` is not
+    /// malformed — it **means the window crosses the antimeridian**, and it is served by splitting
+    /// into `[west, 180)` and `[-180, east)`. See `OBCG_Spec.md` §10.2, which is normative for all
+    /// of this, and note that an empty result is *not* "everywhere dry": [`Manifest::plan`] reports
+    /// it as [`PlanOutcome::OutOfDomain`], which is the whole reason this returns a `Result` and a
+    /// possibly-empty `Vec` rather than folding both into one.
+    pub fn shards_for(&self, bbox: &Bbox) -> Result<Vec<ShardId>, BboxError> {
+        bbox.validate()?;
+        let Some((row0, row1)) = self.cell_span(bbox.south_udeg, bbox.north_udeg, self.south_lat_udeg, self.height)
+        else {
+            return Ok(Vec::new());
+        };
+        // One interval normally; two when the window crosses the antimeridian.
+        let spans: [(i64, i64); 2] = if bbox.west_udeg < bbox.east_udeg {
+            [(bbox.west_udeg, bbox.east_udeg), (0, 0)]
+        } else {
+            [(bbox.west_udeg, 180_000_000), (-180_000_000, bbox.east_udeg)]
+        };
+        let mut cols = std::collections::BTreeSet::new();
+        for (lo, hi) in spans {
+            if lo >= hi {
+                continue;
+            }
+            if let Some((col0, col1)) = self.cell_span(lo, hi, self.west_lon_udeg, self.width) {
+                cols.extend(col0 / self.shard_width..=col1 / self.shard_width);
+            }
         }
         let mut shards = Vec::new();
         for row in row0 / self.shard_height..=row1 / self.shard_height {
-            for col in col0 / self.shard_width..=col1 / self.shard_width {
-                shards.push(ShardId { col, row });
-            }
+            shards.extend(cols.iter().map(|&col| ShardId { col, row }));
         }
-        shards
+        Ok(shards)
     }
 }
 
+/// Why a bbox is not a window this client will answer.
+///
+/// Both are caller bugs rather than weather, and both are reported rather than repaired: a client
+/// that clamps a malformed corridor answers the wrong question confidently, which is worse than
+/// answering none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BboxError {
+    /// A coordinate outside ±90° latitude or ±180° longitude. Longitudes are **-180..180**; the
+    /// 0..360 spelling is this error.
+    OutOfRange,
+    /// A window with no area: `south >= north`, or `west == east`.
+    Empty,
+}
+
+impl std::fmt::Display for BboxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BboxError::OutOfRange => write!(f, "bbox coordinates are outside +/-90 lat, +/-180 lon"),
+            BboxError::Empty => write!(f, "bbox has no area"),
+        }
+    }
+}
+
+/// A geographic window in microdegrees, in the **-180..180 / -90..90** convention.
+///
+/// `west > east` means the window crosses the antimeridian; every other spelling of that idea —
+/// 0..360 longitudes, a west below -180, an east above 180 — is [`BboxError::OutOfRange`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bbox {
     pub south_udeg: i64,
     pub west_udeg: i64,
     pub north_udeg: i64,
     pub east_udeg: i64,
+}
+
+impl Bbox {
+    pub fn validate(&self) -> Result<(), BboxError> {
+        if !(-90_000_000..=90_000_000).contains(&self.south_udeg)
+            || !(-90_000_000..=90_000_000).contains(&self.north_udeg)
+            || !(-180_000_000..=180_000_000).contains(&self.west_udeg)
+            || !(-180_000_000..=180_000_000).contains(&self.east_udeg)
+        {
+            return Err(BboxError::OutOfRange);
+        }
+        if self.south_udeg >= self.north_udeg || self.west_udeg == self.east_udeg {
+            return Err(BboxError::Empty);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,17 +309,33 @@ pub struct Shard {
     pub observed: bool,
 }
 
+/// One frame of the timeline.
+///
+/// `present` and `shards` are **private**, and that is load-bearing rather than tidy. They are two
+/// spellings of one fact, proved equal exactly once by [`validate_frame`]; leaving them public
+/// would let a caller desync them after parsing and get a silent `Dry` for a shard the manifest
+/// says exists — the forbidden answer, reached through the one defaulting branch in the module.
+/// With them private there is no defaulting branch at all: [`Frame::state_of`] looks the shard up
+/// in the sorted list, and *that lookup is* the bitmap read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub offset_min: u32,
     pub valid_at: i64,
     /// Presence, one bit per shard, `row * shard_cols + col`.
     present: Vec<u8>,
-    /// Exactly the shards `present` names.
-    pub shards: Vec<Shard>,
+    /// Exactly the shards `present` names, ascending by `(row, col)`.
+    shards: Vec<Shard>,
 }
 
 impl Frame {
+    /// Every published shard of this frame, ascending by `(row, col)`.
+    pub fn shards(&self) -> &[Shard] {
+        &self.shards
+    }
+
+    /// The presence bit as the document spells it. Equal to `state_of(..) == Present` by
+    /// construction; kept because a probe or a diagnostics panel wants the bitmap's own answer, and
+    /// `the_bitmap_and_the_lookup_are_the_same_answer` pins that they cannot diverge.
     pub fn is_present(&self, grid: &Grid, shard: ShardId) -> bool {
         let Some(bit) = grid.bit_of(shard) else { return false };
         self.present.get((bit / 8) as usize).is_some_and(|byte| byte & (1 << (bit % 8)) != 0)
@@ -219,19 +346,17 @@ impl Frame {
         if grid.bit_of(shard).is_none() {
             return ShardState::OutOfDomain;
         }
-        if !self.is_present(grid, shard) {
-            return ShardState::Dry;
-        }
-        match self.shards.iter().find(|entry| entry.id == shard) {
-            Some(entry) => ShardState::Present {
-                key: grid.shard_key(self.offset_min, shard),
-                bytes: entry.bytes,
-                object_crc32: entry.object_crc32,
-                observed: entry.observed,
-            },
-            // Unreachable for a manifest this module parsed — `validate_frame` rejects a frame
-            // whose bitmap and list disagree — and stated rather than unwrapped so it stays so.
-            None => ShardState::Dry,
+        match self.shards.binary_search_by_key(&shard, |entry| entry.id) {
+            Ok(index) => {
+                let entry = &self.shards[index];
+                ShardState::Present {
+                    key: grid.shard_key(self.offset_min, shard),
+                    bytes: entry.bytes,
+                    object_crc32: entry.object_crc32,
+                    observed: entry.observed,
+                }
+            }
+            Err(_) => ShardState::Dry,
         }
     }
 }
@@ -252,26 +377,98 @@ pub struct Manifest {
     pub skipped_frames: usize,
 }
 
+/// Why a plan has no objects in it — or that it does.
+///
+/// **Every one of these is a different thing to show a rider, and only one of them is rain.** An
+/// empty `Vec` cannot say which, so it is not what [`Manifest::plan`] returns: WXR5 must match on
+/// this, and the compiler will not let it render "off the map" or "no weather" as "no rain".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanOutcome {
+    /// The dataset answers this bbox. `fetch` and `dry` describe it — and `fetch` being empty with
+    /// `dry` populated is the *real* "no rain anywhere near you".
+    Covered,
+    /// The bbox is off the lattice, or is not a window this client will interpret (see
+    /// [`BboxError`]). There is no answer here — which is not an answer of "no rain".
+    OutOfDomain,
+    /// On the lattice, but every row it touches is outside `covered_rows`: no source reaches it in
+    /// any frame, ever. The objects exist and are entirely intensity 15, so fetching them would buy
+    /// nine round trips and the word "unknown".
+    Uncovered,
+    /// This generation is past its `stale_after` and no fresher manifest replaced it. **No
+    /// weather** — the rider is owed that sentence, and never a dry map.
+    Expired,
+}
+
 impl Manifest {
     pub fn frame(&self, offset_min: u32) -> Option<&Frame> {
         self.frames.iter().find(|frame| frame.offset_min == offset_min)
     }
 
-    /// Every object this client would fetch to cover `bbox` across the whole timeline, in fetch
-    /// order. Dry and out-of-domain shards produce nothing, which is the point.
-    pub fn plan(&self, bbox: &Bbox) -> Vec<(u32, ShardId, ShardState)> {
-        let shards = self.grid.shards_for(bbox);
-        let mut plan = Vec::new();
+    /// What this client should do to cover `bbox` at `now`, across the whole timeline.
+    ///
+    /// **The WXR5-facing contract.** Read [`PlanOutcome`] first and the vectors second: outside
+    /// [`PlanOutcome::Covered`] both vectors are empty *and mean nothing*, and rendering that as a
+    /// dry map is the failure this whole issue exists to make impossible. Inside `Covered`, `fetch`
+    /// names objects that MUST exist — a 404, a short body or a CRC mismatch is an error to retry
+    /// and then surface — and `dry` names shards the baker measured as dry, which need no request
+    /// and report no failure.
+    ///
+    /// Expiry is checked here rather than left to a caller's discipline, because "did anyone
+    /// remember to call `is_usable` first" is exactly the kind of contract that holds until the one
+    /// call site that forgets.
+    pub fn plan(&self, bbox: &Bbox, now: i64) -> Plan {
+        let empty = |outcome| Plan { outcome, fetch: Vec::new(), dry: Vec::new() };
+        if !self.freshness.is_usable(now) {
+            return empty(PlanOutcome::Expired);
+        }
+        let Ok(shards) = self.grid.shards_for(bbox) else { return empty(PlanOutcome::OutOfDomain) };
+        if shards.is_empty() {
+            return empty(PlanOutcome::OutOfDomain);
+        }
+        if !self.grid.any_row_has_a_source(bbox) {
+            return empty(PlanOutcome::Uncovered);
+        }
+        let mut plan = Plan { outcome: PlanOutcome::Covered, fetch: Vec::new(), dry: Vec::new() };
         for frame in &self.frames {
             for shard in &shards {
-                let state = frame.state_of(&self.grid, *shard);
-                if matches!(state, ShardState::Present { .. }) {
-                    plan.push((frame.offset_min, *shard, state));
+                match frame.state_of(&self.grid, *shard) {
+                    ShardState::Present { key, bytes, object_crc32, observed } => plan.fetch.push(PlannedRead {
+                        offset_min: frame.offset_min,
+                        shard: *shard,
+                        key,
+                        bytes,
+                        object_crc32,
+                        observed,
+                    }),
+                    ShardState::Dry => plan.dry.push((frame.offset_min, *shard)),
+                    // `shards_for` only ever yields shards of this grid.
+                    ShardState::OutOfDomain => {}
                 }
             }
         }
         plan
     }
+}
+
+/// One object to fetch, with everything needed to verify it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedRead {
+    pub offset_min: u32,
+    pub shard: ShardId,
+    pub key: String,
+    pub bytes: u64,
+    pub object_crc32: u32,
+    pub observed: bool,
+}
+
+/// The three outcomes of a corridor, kept apart by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub outcome: PlanOutcome,
+    /// Objects that MUST exist. Empty outside [`PlanOutcome::Covered`].
+    pub fetch: Vec<PlannedRead>,
+    /// `(offset_min, shard)` the baker measured as dry everywhere. Empty outside `Covered`.
+    pub dry: Vec<(u32, ShardId)>,
 }
 
 // ── wire model ─────────────────────────────────────────────────────────────────────────────
@@ -312,7 +509,7 @@ struct WireLattice {
 
 #[derive(Deserialize)]
 struct WireRowRange {
-    first: u32,
+    start: u32,
     end: u32,
 }
 
@@ -372,7 +569,12 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     if !is_safe_segment(&wire.generation) || !is_safe_prefix(&wire.key_prefix) {
         return Err(field("generation/key_prefix"));
     }
-    if wire.previous_generations.iter().any(|generation| !is_safe_segment(generation)) {
+    // 10.4 caps the chain at two, normatively: a longer list means this client and the service's
+    // sweep disagree about which generations exist, and guessing which of them is right is how a
+    // client ends up reading an object a sweep already collected. Raising the cap is a version bump.
+    if wire.previous_generations.len() > RETAINED_PREVIOUS_GENERATIONS
+        || wire.previous_generations.iter().any(|generation| !is_safe_segment(generation))
+    {
         return Err(field("previous_generations"));
     }
     let grid = validate_grid(wire.lattice, wire.key_prefix, wire.generation.clone())?;
@@ -382,6 +584,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
             .ok_or_else(|| field("freshness.next_generation_expected_at"))?,
         stale_after: parse_rfc3339(&wire.freshness.stale_after).ok_or_else(|| field("freshness.stale_after"))?,
     };
+    let wire_frame_count = wire.frames.len();
     let mut frames = Vec::new();
     let mut skipped_frames = 0usize;
     for value in wire.frames {
@@ -394,6 +597,20 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     // (which requires strictly increasing `valid_at`) unbuildable later, so refuse now.
     if frames.windows(2).any(|pair| pair[1].valid_at <= pair[0].valid_at) {
         return Err(field("frames are not a strictly increasing timeline"));
+    }
+    // `offset_min` alone names the object, so two frames sharing one would name the same object at
+    // two validities — and `frame()` would silently answer with whichever came first.
+    if frames.windows(2).any(|pair| pair[1].offset_min == pair[0].offset_min) {
+        return Err(field("two frames share an offset_min"));
+    }
+    // Both cheap, both derivable, both catching a mis-derived cycle rather than a hostile one: the
+    // frame count the cadence promises, and a deadline ordering that says the generation expires
+    // before its own replacement is due.
+    if wire_frame_count != wire.cadence.frames as usize {
+        return Err(field("cadence.frames disagrees with the frame list"));
+    }
+    if freshness.stale_after < freshness.next_generation_expected_at {
+        return Err(field("stale_after is before the next generation is due"));
     }
     Ok(Manifest {
         generation: wire.generation,
@@ -445,7 +662,7 @@ fn validate_grid(wire: WireLattice, key_prefix: String, generation: String) -> R
     {
         return Err(bad("a shard would not be an addressable OBCG object"));
     }
-    if wire.covered_rows.first > wire.covered_rows.end || wire.covered_rows.end > wire.height {
+    if wire.covered_rows.start > wire.covered_rows.end || wire.covered_rows.end > wire.height {
         return Err(bad("covered_rows is not a range of the lattice"));
     }
     Ok(Grid {
@@ -461,7 +678,7 @@ fn validate_grid(wire: WireLattice, key_prefix: String, generation: String) -> R
         tile_edge: wire.tile_edge,
         entries_per_page: wire.entries_per_page,
         cell_size_m: wire.cell_size_m,
-        covered_rows: wire.covered_rows.first..wire.covered_rows.end,
+        covered_rows: wire.covered_rows.start..wire.covered_rows.end,
         key_prefix,
         generation,
     })

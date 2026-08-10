@@ -70,6 +70,14 @@ pub const MANIFEST_MAX_AGE_S: u32 = 60;
 /// 60-second manifest cache.
 pub const RETAINED_PREVIOUS_GENERATIONS: usize = 2;
 
+/// Every string shape the schema pins, so a third implementer validates against the same rules the
+/// prose states rather than against prose. They are constants because the derive and the runtime
+/// checks must not be able to disagree.
+pub const GENERATION_PATTERN: &str = r"^[0-9]{8}T[0-9]{4}Z$";
+pub const KEY_PREFIX_PATTERN: &str = r"^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$";
+pub const PRESENT_PATTERN: &str = r"^([0-9a-f]{2})+$";
+pub const CRC32_PATTERN: &str = r"^0x[0-9A-F]{8}$";
+
 /// The generation identifier: the cycle's reference time to the minute, `YYYYMMDD'T'HHMM'Z'`.
 /// It is the immutable key segment as well as the identity, so re-baking a reference time
 /// overwrites its objects with identical bytes rather than creating a second generation.
@@ -100,16 +108,25 @@ pub struct Manifest {
     /// Manifest document version; readers reject an unknown value.
     pub version: u32,
     /// The current generation: `YYYYMMDD'T'HHMM'Z'`, and the second segment of every object key.
+    #[schemars(pattern(GENERATION_PATTERN))]
     pub generation: String,
     /// Wall-clock UTC time this manifest was produced (RFC 3339 seconds).
+    #[schemars(extend("format" = "date-time"))]
     pub generated_at: String,
     /// The cycle anchor: frame `f<offset>` is valid at `reference_time + offset` minutes.
+    #[schemars(extend("format" = "date-time"))]
     pub reference_time: String,
     /// The prefix every object key of this dataset starts with.
+    #[schemars(pattern(KEY_PREFIX_PATTERN))]
     pub key_prefix: String,
     /// Superseded generations whose objects are still fetchable, **newest first**, at most
     /// [`RETAINED_PREVIOUS_GENERATIONS`]. A client holding a stale manifest may finish reading
     /// from one of these; a sweep may delete anything not named here or by `generation`.
+    ///
+    /// The cap is normative, not advisory (§10.4): a reader rejects a longer list rather than
+    /// truncating it, because a sweep that keeps fewer generations than the document names is the
+    /// outage retention exists to prevent, and raising the cap is a manifest version bump.
+    #[schemars(length(max = 2), inner(pattern(GENERATION_PATTERN)))]
     pub previous_generations: Vec<String>,
     pub lattice: LatticeDescriptor,
     pub cadence: Cadence,
@@ -141,7 +158,7 @@ pub struct LatticeDescriptor {
     pub entries_per_page: u16,
     /// The `cell_size_m` every object of this dataset declares.
     pub cell_size_m: u16,
-    /// The lattice rows at least one source reaches, `[first, end)`. Rows outside it have no
+    /// The lattice rows at least one source reaches, `[start, end)`. Rows outside it have no
     /// source at all and are published as intensity 15 in every frame, forever — a permanent
     /// property of the dataset rather than an outage, so it is stated once here instead of being
     /// inferred from cells (#1242's polar band).
@@ -151,7 +168,7 @@ pub struct LatticeDescriptor {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RowRange {
-    pub first: u32,
+    pub start: u32,
     pub end: u32,
 }
 
@@ -178,7 +195,9 @@ pub struct Freshness {
     pub manifest_max_age_s: u32,
     /// When the next generation should exist. Past it with no new manifest, the service is late;
     /// the data is not yet unusable. This is the probe's alarm, not the client's.
+    #[schemars(extend("format" = "date-time"))]
     pub next_generation_expected_at: String,
+    #[schemars(extend("format" = "date-time"))]
     /// When this generation stops being usable at all: the validity of its **last** frame. Past
     /// it every frame describes the past, so there is nothing left to answer with. Derived, not
     /// chosen. Expiry never turns into a dry claim — a client past this deadline has *no* weather,
@@ -202,11 +221,13 @@ pub struct Frame {
     /// `(valid_at - reference_time)` in minutes; the `f<offset-min>` key segment.
     pub offset_min: u32,
     /// The frame's UTC validity (RFC 3339) — never a re-stamped bake time.
+    #[schemars(extend("format" = "date-time"))]
     pub valid_at: String,
     /// Shard presence, one bit per shard, `ceil(shard_count / 8)` bytes as lowercase hex, first
     /// byte first, least-significant bit first inside each byte. Bit `row * shard_cols + col` set
     /// means the object exists; clear means that shard is entirely dry. Bits past `shard_count` in
     /// the final byte are zero.
+    #[schemars(pattern(PRESENT_PATTERN))]
     pub present: String,
     /// One entry per present shard, ascending by `(row, col)`. Exactly the shards `present` names:
     /// a reader MUST reject a frame where the two disagree.
@@ -221,6 +242,7 @@ pub struct Shard {
     /// Exact object length; a client may use it to bound Range arithmetic.
     pub bytes: u64,
     /// The OBCG whole-object CRC-32 (`0x` + 8 uppercase hex digits).
+    #[schemars(pattern(CRC32_PATTERN))]
     pub object_crc32: String,
     /// Was **every** cell of this shard painted by an observation? Per shard rather than per
     /// frame, because a mosaic frame is radar over Germany and model over the Atlantic at the same
@@ -273,6 +295,11 @@ pub struct Builder {
     manifest: Manifest,
     shard_cols: u32,
     shard_count: u32,
+    /// One bitmap per frame, in `manifest.frames` order, kept as bytes for the whole bake and
+    /// rendered to hex exactly once in [`Builder::finish`]. Round-tripping hex on every shard was
+    /// not just wasted work: its `unhex(..).unwrap_or_else(zeroed)` would have silently discarded
+    /// every bit accumulated so far on a failure it treated as impossible.
+    bitmaps: Vec<Vec<u8>>,
 }
 
 impl Builder {
@@ -289,15 +316,16 @@ impl Builder {
         let shard_count = lattice.shard_count();
         let bitmap_bytes = shard_count.div_ceil(8) as usize;
         let last_offset = times.offsets_min().last().unwrap_or(0);
+        let frame_count = times.offsets_min().count();
         let frames = times
             .offsets_min()
             .map(|offset_min| Frame {
                 offset_min,
                 valid_at: rfc3339(times.valid_at(offset_min)),
-                present: hex(&vec![0u8; bitmap_bytes]),
+                present: String::new(),
                 shards: Vec::new(),
             })
-            .collect();
+            .collect::<Vec<_>>();
         let previous_generations = previous_generations
             .into_iter()
             // A re-bake of the same reference time is the *same* generation, not its own
@@ -326,7 +354,7 @@ impl Builder {
                     tile_edge: lattice.tile_edge,
                     entries_per_page: lattice.entries_per_page,
                     cell_size_m: lattice.cell_size_m,
-                    covered_rows: RowRange { first: covered.start, end: covered.end },
+                    covered_rows: RowRange { start: covered.start, end: covered.end },
                 },
                 cadence: Cadence {
                     frame_step_min: canonical::FRAME_STEP_MIN,
@@ -345,6 +373,7 @@ impl Builder {
             },
             shard_cols,
             shard_count,
+            bitmaps: vec![vec![0u8; bitmap_bytes]; frame_count],
         }
     }
 
@@ -353,47 +382,83 @@ impl Builder {
     pub fn record(&mut self, offset_min: u32, col: u32, row: u32, bytes: u64, object_crc32: u32, observed: bool) {
         let index = row * self.shard_cols + col;
         debug_assert!(index < self.shard_count, "shard ({col},{row}) is not on this lattice");
-        let Some(frame) = self.manifest.frames.iter_mut().find(|frame| frame.offset_min == offset_min) else {
+        let Some(slot) = self.manifest.frames.iter().position(|frame| frame.offset_min == offset_min) else {
             debug_assert!(false, "f{offset_min} is not a frame of this cycle");
             return;
         };
-        let mut bitmap = unhex(&frame.present).unwrap_or_else(|| vec![0u8; self.shard_count.div_ceil(8) as usize]);
-        bitmap[(index / 8) as usize] |= 1 << (index % 8);
-        frame.present = hex(&bitmap);
-        frame.shards.push(Shard { col, row, bytes, object_crc32: format!("0x{object_crc32:08X}"), observed });
-        frame.shards.sort_by_key(|shard| (shard.row, shard.col));
+        self.bitmaps[slot][(index / 8) as usize] |= 1 << (index % 8);
+        self.manifest.frames[slot].shards.push(Shard {
+            col,
+            row,
+            bytes,
+            object_crc32: format!("0x{object_crc32:08X}"),
+            observed,
+        });
     }
 
-    pub fn finish(self) -> Manifest {
+    /// Render the bitmaps and put every frame's shard list in `(row, col)` order — once, here,
+    /// rather than on every one of the cycle's 216 records.
+    pub fn finish(mut self) -> Manifest {
+        for (frame, bitmap) in self.manifest.frames.iter_mut().zip(&self.bitmaps) {
+            frame.present = hex(bitmap);
+            frame.shards.sort_by_key(|shard| (shard.row, shard.col));
+        }
         self.manifest
-    }
-
-    pub fn manifest(&self) -> &Manifest {
-        &self.manifest
     }
 }
 
 /// The previous manifest's generation chain, newest first: what the one about to be published must
-/// promise to keep. An absent or unreadable document is a first publish, not an error — the
-/// retention contract can only shrink the keep-set to the current generation, which is safe.
-pub fn carried_generations(previous: Option<&[u8]>) -> Vec<String> {
-    let Some(bytes) = previous else { return Vec::new() };
-    let Ok(manifest) = from_json(bytes) else { return Vec::new() };
-    let mut chain = vec![manifest.generation];
-    chain.extend(manifest.previous_generations);
+/// promise to keep.
+///
+/// **Three states, and conflating two of them deletes live data.** `previous_generations: []` is not
+/// a shrug — §10.4 makes it a normative instruction to the sweep that no previous generation exists,
+/// so publishing it deletes the generations in-flight clients are still Range-reading, and a 404 on
+/// a set presence bit is an error. One torn `rclone cat` body would be enough, and R2 tearing bodies
+/// mid-stream in bursts is a thing this repo has actually seen.
+///
+/// So:
+///
+/// * **absent** (`None`) — genuine bootstrap. Nothing was ever promised, so `[]` promises nothing
+///   away.
+/// * **present but not valid JSON** — a torn or truncated read. `Err`, which **fails the cycle**:
+///   the previous manifest stands, its objects stand, and the next tick tries again. A publisher
+///   that cannot read what it promised last time has no business writing a new promise.
+/// * **valid JSON that names no `generation`** — a foreign document, which is what the WXR3
+///   placeholder at this key is. It named no generations, so there is nothing to keep and this is a
+///   bootstrap; it is warned about rather than silently accepted, because after the first WXR4 cycle
+///   it should never happen again.
+/// * **a v2 manifest** — carry `generation` plus its own chain, newest first, capped.
+///
+/// The lenient sub-parse is deliberate: recovering the chain must not depend on every *other* field
+/// still being one this binary understands, or a forward-compatible field addition by a newer baker
+/// would turn into the deletion this function exists to prevent.
+pub fn carried_generations(previous: Option<&[u8]>, warnings: &mut Vec<String>) -> Result<Vec<String>, String> {
+    let Some(bytes) = previous else { return Ok(Vec::new()) };
+    let document: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+        format!(
+            "{MANIFEST_KEY} exists but did not parse as JSON ({error}) — refusing to publish, because \
+             a manifest with an empty `previous_generations` tells the sweep to delete the generations \
+             clients are still reading. The previous manifest stands; retry next cycle"
+        )
+    })?;
+    let Some(generation) = document.get("generation").and_then(serde_json::Value::as_str) else {
+        warnings.push(format!(
+            "{MANIFEST_KEY} is valid JSON but names no generation — treating it as a bootstrap. It \
+             promised no retention, so nothing is being dropped; this is expected exactly once, on the \
+             first canonical cycle after WXR3's placeholder"
+        ));
+        return Ok(Vec::new());
+    };
+    let mut chain = vec![generation.to_string()];
+    if let Some(previous) = document.get("previous_generations").and_then(serde_json::Value::as_array) {
+        chain.extend(previous.iter().filter_map(serde_json::Value::as_str).map(str::to_string));
+    }
     chain.truncate(RETAINED_PREVIOUS_GENERATIONS);
-    chain
+    Ok(chain)
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len() / 2).map(|index| u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()).collect()
 }
 
 #[cfg(test)]
@@ -472,18 +537,48 @@ mod tests {
             vec!["20260810T1430Z".into(), "20260810T1415Z".into()],
         )
         .finish();
-        let carried = carried_generations(Some(to_json(&previous).as_bytes()));
+        let mut warnings = Vec::new();
+        let carried = carried_generations(Some(to_json(&previous).as_bytes()), &mut warnings).expect("parses");
         assert_eq!(carried, vec!["20260810T1445Z", "20260810T1430Z"]);
         let current = Builder::new(&CANONICAL, times, 0, Vec::new(), carried).finish();
         assert_eq!(current.previous_generations, vec!["20260810T1445Z", "20260810T1430Z"]);
 
         // Re-baking 15:00 must not carry 15:00 as its own predecessor.
-        let repeat =
-            Builder::new(&CANONICAL, times, 0, Vec::new(), carried_generations(Some(to_json(&current).as_bytes())))
-                .finish();
+        let chain = carried_generations(Some(to_json(&current).as_bytes()), &mut warnings).expect("parses");
+        let repeat = Builder::new(&CANONICAL, times, 0, Vec::new(), chain).finish();
         assert_eq!(repeat.previous_generations, vec!["20260810T1445Z"]);
-        assert_eq!(carried_generations(None), Vec::<String>::new());
-        assert_eq!(carried_generations(Some(b"not json")), Vec::<String>::new());
+        assert!(warnings.is_empty());
+    }
+
+    /// **A torn read must never become a deletion set.** `previous_generations: []` is a normative
+    /// instruction to the sweep that nothing older exists, so the difference between "there is no
+    /// manifest" and "I could not read the manifest" is the difference between a first publish and
+    /// deleting the generations in-flight clients are still reading.
+    #[test]
+    fn an_absent_manifest_bootstraps_and_an_unreadable_one_fails_the_cycle() {
+        let mut warnings = Vec::new();
+        assert_eq!(carried_generations(None, &mut warnings).expect("bootstrap"), Vec::<String>::new());
+        assert!(warnings.is_empty(), "an absent manifest is the normal first publish, not a warning");
+
+        // A truncated body — the shape R2 tearing a response actually produces.
+        let good = to_json(&Builder::new(&CANONICAL, CycleTimes { reference_time: 0 }, 0, vec![], vec![]).finish());
+        let torn = &good.as_bytes()[..good.len() / 2];
+        let error = carried_generations(Some(torn), &mut warnings).expect_err("a torn read fails the cycle");
+        assert!(error.contains("refusing to publish"), "{error}");
+        assert!(carried_generations(Some(b"not json"), &mut warnings).is_err());
+
+        // WXR3's placeholder: valid JSON, no generation, promised no retention. Bootstrap, loudly.
+        let placeholder = br#"{"version":2,"note":"placeholder","objects":[]}"#;
+        assert_eq!(carried_generations(Some(placeholder), &mut warnings).expect("bootstrap"), Vec::<String>::new());
+        assert_eq!(warnings.len(), 1, "the one-time placeholder case is warned about, not silent");
+
+        // A newer baker adding a field must not cost the chain: the sub-parse is lenient.
+        let forward =
+            br#"{"version":2,"generation":"20260810T1430Z","previous_generations":["20260810T1415Z"],"unknown":1}"#;
+        assert_eq!(
+            carried_generations(Some(forward), &mut warnings).expect("lenient"),
+            vec!["20260810T1430Z", "20260810T1415Z"]
+        );
     }
 
     /// The shared cross-language fixture is a document **this binary would write**: parsed back
@@ -518,7 +613,7 @@ mod tests {
         assert_eq!((lattice.shard_width, lattice.shard_height), (6_144, 4_608));
         assert_eq!(lattice.cell_size_m, canonical::LATTICE_CELL_SIZE_M);
         let covered = CANONICAL.covered_rows();
-        assert_eq!((lattice.covered_rows.first, lattice.covered_rows.end), (covered.start, covered.end));
-        assert!(lattice.covered_rows.first > 0 && lattice.covered_rows.end < lattice.height);
+        assert_eq!((lattice.covered_rows.start, lattice.covered_rows.end), (covered.start, covered.end));
+        assert!(lattice.covered_rows.start > 0 && lattice.covered_rows.end < lattice.height);
     }
 }
