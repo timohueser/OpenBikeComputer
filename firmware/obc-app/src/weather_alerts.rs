@@ -264,7 +264,9 @@ fn minutes_until(now: i64, at: i64) -> u16 {
 /// A same-event candidate is suppressed unless it [`escalated`](AlertClass::escalated).
 pub fn same_event(class: AlertClass, candidate: &AlertCandidate, mark: &AlertMark) -> bool {
     let _ = class;
-    if (candidate.onset - mark.onset).abs() > COOLDOWN_S {
+    // Saturating: a corrupt-but-CRC-valid mark can carry any i64 (i64::MIN included) and the
+    // dedup verdict must stay defined, never overflow (review #1232 delta).
+    if candidate.onset.saturating_sub(mark.onset).unsigned_abs() > COOLDOWN_S.unsigned_abs() {
         return false;
     }
     match (candidate.pos, mark.pos) {
@@ -321,6 +323,7 @@ pub fn mark_of(candidate: &AlertCandidate) -> AlertMark {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::weather::{FrameSample, WeatherSnapshot, SNAPSHOT_MAX_FRAMES};
     use obc_formats::obcw::{HourlyRecord, CONDITION_RAIN, HOURLY_COUNT};
@@ -483,6 +486,21 @@ mod tests {
         // …while a re-detection a couple of km on is the same storm.
         let near = AlertCandidate { pos: Some((POS.0 + 20_000, POS.1)), ..c }; // ~2 km north
         assert_eq!(govern(&[near], &marks, None), AlertAction::None);
+    }
+
+    /// A corrupt-but-CRC-valid mark can carry any i64 onset (i64::MIN included): the dedup
+    /// verdict must stay defined — never overflow, never wrap (review #1232 delta).
+    #[test]
+    fn a_corrupt_extreme_onset_never_overflows_the_dedup_verdict() {
+        let candidate =
+            AlertCandidate { class: AlertClass::HeavyRain, minutes: 10, onset: T0, pos: Some(POS), severity: 9 };
+        let mark = AlertMark { onset: i64::MIN, pos: None, severity: 9 };
+        assert!(
+            !same_event(AlertClass::HeavyRain, &candidate, &mark),
+            "an impossibly distant onset is a different event"
+        );
+        let mirrored = AlertMark { onset: i64::MAX, pos: None, severity: 9 };
+        assert!(!same_event(AlertClass::HeavyRain, &candidate, &mirrored));
     }
 
     /// A mark written before the first GPS fix carries **no position**, and dedup then compares by
