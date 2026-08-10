@@ -1,7 +1,7 @@
 //! `--weather live`: real weather, from the real service, through the production device path.
 //!
 //! The simulator does not learn a second way to draw rain. It fetches the **same bytes the phone
-//! consumes** — `wx/v1/manifest.json` plus OBCG corridor Range reads plus MET hourly — assembles
+//! consumes** — `wx/v2/manifest.json` plus OBCG corridor Range reads plus MET hourly — assembles
 //! the **same OBCW bundle** the phone would upload, and hands it to the same [`SimWeather`] the
 //! deterministic fixtures use. Everything downstream of the bundle is untouched production code:
 //! the WX7 reader, the A/B selector, the WX10 renderer, the WX11 screens.
@@ -15,8 +15,8 @@
 //!   own first frame so previews are deterministic; doing that live would silently *hide staleness*
 //!   — a baker that stopped an hour ago would render as a fresh nowcast. Live weather must age.
 
+use obc_wx_client::corridor::{Corridor, CORRIDOR_RADIUS_M};
 use obc_wx_client::http::{FailureControls, FaultyHttp, Http, UreqHttp};
-use obc_wx_client::select::{Corridor, Fix};
 use obc_wx_client::WeatherClient;
 
 use crate::weather_store::SimWeather;
@@ -25,10 +25,9 @@ use crate::weather_store::SimWeather;
 #[derive(Debug, Clone)]
 pub struct LiveConfig {
     pub service: String,
-    /// `--weather-radius-km`: force an undirected disc of this radius. Absent (the default) means
-    /// the corridor is **projected** from the fix the way the phone projects it — bearing and
-    /// speed included — so the simulator and the phone can select different tiers only when they
-    /// genuinely disagree, never because the simulator asked a rounder question.
+    /// `--weather-radius-km`: a corridor of this radius instead of the 90 km disc the phone asks
+    /// for. There is nothing to select any more, so this only changes how many shards are read —
+    /// it is a capture knob, not a policy one.
     pub radius_km: Option<f64>,
     pub controls: FailureControls,
 }
@@ -60,14 +59,14 @@ pub struct LiveReport {
     pub cached_frames: u32,
     /// Every request this process has made, all sources, since it started.
     pub total_requests: u32,
-    /// The corridor this fetch asked about: `(width_km, height_km, directed)`.
-    pub corridor_km: Option<(f64, f64, bool)>,
-    pub product: Option<(String, u8)>,
-    pub expired: Vec<String>,
+    /// The corridor this fetch asked about: `(width_km, height_km)`.
+    pub corridor_km: Option<(f64, f64)>,
+    /// The generation this bundle was built from. The device never learns it; the panel does.
+    pub generation: Option<String>,
+    pub dry_shards: u32,
     pub no_rain_map: Option<String>,
     pub attribution: Vec<String>,
     pub failed_frames: u32,
-    pub dropped_incompatible_frames: u32,
     pub error: Option<String>,
 }
 
@@ -75,7 +74,7 @@ pub struct LiveReport {
 pub struct LiveWeather {
     client: WeatherClient,
     http: FaultyHttp<UreqHttp>,
-    /// `--weather-radius-km`, when the rider asked for a fixed disc instead of a projection.
+    /// `--weather-radius-km`, when the rider asked for a corridor other than the 90 km disc.
     forced_radius_m: Option<f64>,
     pub report: LiveReport,
     last_fetch: Option<i64>,
@@ -100,26 +99,22 @@ impl LiveWeather {
         self.http.requests()
     }
 
-    /// The corridor for `fix`: the phone's projection, unless `--weather-radius-km` forced a disc.
-    fn corridor(&self, fix: &Fix) -> Corridor {
-        match self.forced_radius_m {
-            Some(radius) => Corridor::around(fix.lat_udeg, fix.lon_udeg, radius),
-            None => Corridor::projected(fix),
-        }
+    /// The corridor for a position: the phone's 90 km disc, unless `--weather-radius-km` set one.
+    fn corridor(&self, position: (i32, i32)) -> Corridor {
+        Corridor::around(position.0, position.1, self.forced_radius_m.unwrap_or(CORRIDOR_RADIUS_M))
     }
 
     /// One fetch. On failure the previous bundle stays in place — a rider keeps the weather they
     /// had, visibly aging, rather than losing the screen to an outage.
-    pub fn fetch(&mut self, fix: &Fix, now: i64, request_id: u32) -> Option<Vec<u8>> {
-        let corridor = self.corridor(fix);
+    pub fn fetch(&mut self, position: (i32, i32), now: i64, request_id: u32) -> Option<Vec<u8>> {
+        let corridor = self.corridor(position);
         self.last_fetch = Some(now);
-        self.last_position = Some((fix.lat_udeg, fix.lon_udeg));
+        self.last_position = Some(position);
         let corridor_km = Some((
             (corridor.bounds.east_udeg - corridor.bounds.west_udeg) as f64 / 1e6
                 * 111.32
-                * (f64::from(fix.lat_udeg) / 1e6).to_radians().cos().max(0.05),
+                * (f64::from(position.0) / 1e6).to_radians().cos().max(0.05),
             (corridor.bounds.north_udeg - corridor.bounds.south_udeg) as f64 / 1e6 * 111.32,
-            !corridor.undirected,
         ));
         match self.client.fetch(&mut self.http, &corridor, now, request_id) {
             Ok(bundle) => {
@@ -134,12 +129,11 @@ impl LiveWeather {
                     cached_frames: diagnostics.cached_frames,
                     total_requests: self.http.requests(),
                     corridor_km,
-                    product: diagnostics.product.clone(),
-                    expired: diagnostics.expired_products.clone(),
-                    no_rain_map: diagnostics.no_rain_map.clone(),
+                    generation: diagnostics.generation.clone(),
+                    dry_shards: diagnostics.dry_shards,
+                    no_rain_map: diagnostics.no_rain_map.as_ref().map(ToString::to_string),
                     attribution: diagnostics.attribution.clone(),
                     failed_frames: diagnostics.failed_frames,
-                    dropped_incompatible_frames: diagnostics.dropped_incompatible_frames,
                     error: None,
                 };
                 Some(bundle.bytes)
@@ -190,10 +184,7 @@ pub fn build(
     if !store_ready {
         return WeatherSource { store: None, live: Some(live), clock_anchor: Some(now) };
     }
-    // The seed fetch has no ride behind it yet: no bearing, no speed, no route — so this is the
-    // undirected disc, exactly as a phone answering a device that vouches for neither.
-    let fix = Fix { lat_udeg: position.0, lon_udeg: position.1, ..Fix::default() };
-    let store = live.fetch(&fix, now, 1).and_then(|bytes| SimWeather::from_bytes(bytes, now_override));
+    let store = live.fetch(position, now, 1).and_then(|bytes| SimWeather::from_bytes(bytes, now_override));
     if store.is_none() {
         eprintln!(
             "--weather live: no bundle ({})",

@@ -749,10 +749,10 @@
         "shape": "one 16-byte RLE4 tile"
       },
       "weather-max-policy.obcw": {
-        "byte_len": 65536,
-        "internal_crc32": "0x5250667F",
-        "sha256": "2a8fd0ddb6bc3b2283bacdb8debcaad0352b81c08441cd9c264004ffa7573889",
-        "shape": "exact v1 producer-policy boundary; 462 raw tiles plus one 108-byte RLE tile"
+        "byte_len": 262144,
+        "internal_crc32": "0x73FDE7F7",
+        "sha256": "b08924a8bd34fc6d50908c856fabe9435030482ada08153a9307ac895ce4928e",
+        "shape": "exact producer-policy boundary at the 256 KiB cap (WXR5 #1244); 1,866 raw tiles plus two 72-run RLE tiles"
       }
     },
     "negatives": {

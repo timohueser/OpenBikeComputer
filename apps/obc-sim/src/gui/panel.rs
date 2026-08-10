@@ -800,39 +800,37 @@ impl SimGui {
 }
 
 impl SimGui {
-    /// The live-weather diagnostics (WX14): which product answered, how many bytes it cost, and
+    /// The live-weather diagnostics (WX14): which generation answered, how many bytes it cost, and
     /// where the §11 request/upload machine currently is.
     ///
-    /// This lives **outside** the emulated device pixels on purpose. The device is forbidden a
-    /// provider badge — tier differences may reach the rider only through real frame timestamps
-    /// and freshness — so every provenance fact belongs here, in the developer's window, and
-    /// nowhere on the glass.
+    /// This lives **outside** the emulated device pixels on purpose. The device is forbidden any
+    /// provenance badge — how fresh the data is may reach the rider only through real frame
+    /// timestamps — so every such fact belongs here, in the developer's window, and nowhere on the
+    /// glass. There is no product and no tier to name any more: one dataset, one lattice, and the
+    /// only identity worth printing is the generation the objects came from.
     fn show_live_weather(&mut self, ui: &mut egui::Ui) {
         let Some(live) = self.live_weather.as_ref() else { return };
         let report = &live.report;
-        match (&report.product, &report.error) {
+        match (&report.generation, &report.error) {
             (_, Some(error)) => {
                 ui.colored_label(ERROR_RED, format!("fetch failed: {error}"));
                 ui.weak("The previous bundle stays in place and keeps aging — an outage never blanks the screen.");
             }
-            (Some((id, tier)), None) => {
-                ui.label(format!("product   {id} (tier {tier})"));
+            (Some(generation), None) => {
+                ui.label(format!("dataset   generation {generation}"));
             }
             (None, None) => {
-                ui.label("product   none — hourly only");
+                ui.label("dataset   none — hourly only");
             }
         }
         if let Some(why) = &report.no_rain_map {
             ui.weak(format!("no rain map: {why}"));
         }
-        if !report.expired.is_empty() {
-            ui.weak(format!("expired (skipped): {}", report.expired.join(", ")));
+        if report.dry_shards > 0 {
+            ui.weak(format!("{} shard(s) measured dry — no object to fetch, and not a failure", report.dry_shards));
         }
-        if let Some((width_km, height_km, directed)) = report.corridor_km {
-            ui.label(format!(
-                "corridor  {width_km:.0} x {height_km:.0} km, {}",
-                if directed { "projected along the fix's bearing" } else { "undirected disc" }
-            ));
+        if let Some((width_km, height_km)) = report.corridor_km {
+            ui.label(format!("corridor  {width_km:.0} x {height_km:.0} km disc"));
         }
         // Two costs, never one number: the OBC half is coordinate-free Range reads, the MET half
         // is one document that carries the rider's position. Both are *this fetch* — mixing a
@@ -849,10 +847,10 @@ impl SimGui {
             ));
         }
         ui.weak(format!("{} request(s) since the simulator started", live.total_requests()));
-        if report.failed_frames > 0 || report.dropped_incompatible_frames > 0 {
+        if report.failed_frames > 0 {
             ui.weak(format!(
-                "{} frame(s) failed, {} dropped as untileable (never resampled)",
-                report.failed_frames, report.dropped_incompatible_frames
+                "{} shard(s) the manifest promised failed to fetch or verify — an error, never dry",
+                report.failed_frames
             ));
         }
         if report.fetched_at > 0 {

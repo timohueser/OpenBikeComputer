@@ -142,6 +142,28 @@ impl Grid {
         format!("{}/{}/f{offset_min}/s{}-{}.obcg", self.key_prefix, self.generation, shard.col, shard.row)
     }
 
+    /// The geometry of one shard's OBCG object. `None` for a shard off the grid.
+    ///
+    /// Interior shards are exactly `shard_width x shard_height`; the last column and row are
+    /// **short**, because the lattice is not required to be a whole number of shards. Rounding that
+    /// up instead would make the client expect an object bigger than the one the baker published,
+    /// and the header check would then refuse every edge shard on the planet.
+    pub fn shard_geometry(&self, shard: ShardId) -> Option<ShardGeometry> {
+        self.bit_of(shard)?;
+        let first_col = shard.col * self.shard_width;
+        let first_row = shard.row * self.shard_height;
+        Some(ShardGeometry {
+            south_udeg: self.south_lat_udeg + (i64::from(first_row) * i64::from(self.cell_udeg)) as i32,
+            west_udeg: self.west_lon_udeg + (i64::from(first_col) * i64::from(self.cell_udeg)) as i32,
+            cell_udeg: self.cell_udeg,
+            width: self.shard_width.min(self.width - first_col),
+            height: self.shard_height.min(self.height - first_row),
+            cell_size_m: self.cell_size_m,
+            tile_edge: self.tile_edge,
+            entries_per_page: self.entries_per_page,
+        })
+    }
+
     /// Do any of the lattice rows this bbox touches have a **source** behind them?
     ///
     /// `covered_rows` is not decoration: rows outside it are published as intensity 15 in every
@@ -218,6 +240,49 @@ impl Grid {
             shards.extend(cols.iter().map(|&col| ShardId { col, row }));
         }
         Ok(shards)
+    }
+}
+
+/// One shard's OBCG geometry, **derived** from the stated lattice rather than carried per object.
+///
+/// This is what replaces v1's per-frame `geometry` block: 216 objects a cycle cannot each restate a
+/// grid that is a division away, so the manifest states the lattice once and the client computes.
+/// The check it feeds is unchanged — the fetched header must agree with this before a cell is
+/// trusted (see [`ShardGeometry::agrees_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardGeometry {
+    pub south_udeg: i32,
+    pub west_udeg: i32,
+    pub cell_udeg: u32,
+    pub width: u32,
+    pub height: u32,
+    pub cell_size_m: u16,
+    pub tile_edge: u16,
+    pub entries_per_page: u16,
+}
+
+impl ShardGeometry {
+    pub fn bounds(&self) -> Bbox {
+        Bbox {
+            south_udeg: i64::from(self.south_udeg),
+            west_udeg: i64::from(self.west_udeg),
+            north_udeg: i64::from(self.south_udeg) + i64::from(self.height) * i64::from(self.cell_udeg),
+            east_udeg: i64::from(self.west_udeg) + i64::from(self.width) * i64::from(self.cell_udeg),
+        }
+    }
+
+    /// Does the fetched OBCG header say what the lattice promised? A manifest that mis-states the
+    /// grid, or an object published against a different one, is caught here rather than decoded.
+    pub fn agrees_with(&self, header: &obc_formats::obcg::Header) -> bool {
+        self.south_udeg == header.south_lat_udeg
+            && self.west_udeg == header.west_lon_udeg
+            && self.cell_udeg == header.cell_lat_udeg
+            && self.cell_udeg == header.cell_lon_udeg
+            && self.width == header.width
+            && self.height == header.height
+            && self.cell_size_m == header.cell_size_m
+            && self.tile_edge == header.tile_edge
+            && self.entries_per_page == header.entries_per_page
     }
 }
 
