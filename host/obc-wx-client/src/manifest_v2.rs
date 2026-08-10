@@ -149,7 +149,14 @@ impl Grid {
     /// wholly inside that band has objects it *could* fetch, and they would all decode to "we do
     /// not know" — so [`Manifest::plan`] answers [`PlanOutcome::Uncovered`] instead of issuing nine
     /// Range reads to learn a permanent fact the manifest already stated.
-    pub fn any_row_has_a_source(&self, bbox: &Bbox) -> bool {
+    ///
+    /// **Private on purpose.** It answers with a bare `bool` and does not validate its bbox, so a
+    /// caller handing it a 0..360 longitude or a latitude past a pole would get a confident wrong
+    /// answer with nowhere to report the problem. Its one call site is [`Manifest::plan`], which
+    /// reaches it only after [`Grid::shards_for`] has already accepted the window; anything a
+    /// consumer needs from it arrives as [`PlanOutcome::Uncovered`], which cannot be silently
+    /// misread as "no rain".
+    fn any_row_has_a_source(&self, bbox: &Bbox) -> bool {
         let Some((row0, row1)) = self.cell_span(bbox.south_udeg, bbox.north_udeg, self.south_lat_udeg, self.height)
         else {
             return false;

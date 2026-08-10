@@ -605,15 +605,23 @@ because only the current generation's presence and integrity data is in the docu
 consumer that saw more would disagree with the publisher's sweep about which generations exist, and
 raising it is a manifest version bump, not a configuration change.
 
-**The sweep's precondition, and it is the important sentence in this section.** An empty
+**The publisher's obligation, and it is the important paragraph in this section.** An empty
 `previous_generations` is a positive claim that no superseded generation exists — it is what makes a
-sweep delete. A publisher therefore MUST NOT write one unless it *knows* that: it may write an empty
-chain only when the manifest key genuinely held no document, and it MUST fail the cycle when a
-document is there but cannot be read. A torn or truncated read must never be turned into a deletion
-set; leaving the previous manifest in place costs one cycle of freshness, while publishing an empty
-chain from a torn read deletes the objects in-flight clients are still Range-reading, and a 404 on a
-set presence bit is an error by §10.3. A sweep MAY act only on a manifest whose chain was carried
-forward from a successfully parsed predecessor.
+sweep delete. A sweep cannot check that claim: it sees a document, not how the document came to say
+what it says. So the guarantee is the **publisher's**, and it is stated as one:
+
+> A publisher MUST write `previous_generations` as the chain carried forward from the manifest
+> previously at this key: that manifest's `generation`, followed by its own `previous_generations`,
+> truncated to two. It MUST write an empty chain **only** when the key genuinely held no document.
+> If a document is present but cannot be read — a torn body, a truncated read, unparseable JSON, or
+> a chain entry that is not a generation identifier — the publisher MUST fail the cycle and write
+> nothing, leaving the previous manifest and its objects in place.
+
+A torn read must never become a deletion set. Failing the cycle costs one cycle of freshness and the
+next tick recovers; publishing an empty chain from a torn read deletes objects in-flight clients are
+still Range-reading, and a 404 on a set presence bit is an error by §10.3 — an outage, not a
+degradation. A sweep MAY therefore treat any published manifest as authoritative about what exists,
+because a publisher that could not honour the paragraph above did not publish one.
 
 ### 10.5 Freshness: deadlines, not client constants
 
