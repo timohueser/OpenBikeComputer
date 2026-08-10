@@ -230,8 +230,15 @@ pub struct CaptureRequest {
     /// [`crate::pack::US_BASEMAP_REGION`], the one non-DACH region the bakery carries.
     pub basemap_region: String,
     pub truth_offsets_min: Vec<u32>,
-    /// Check the truth ladder's raw upstream bodies into the pack too. Off by default: they are
-    /// ~400 KB each and nothing in CI decodes them, so they ship as provenance plus a sha256.
+    /// Check the truth ladder's raw upstream bodies into the pack too — **use it for any pack that
+    /// ships.**
+    ///
+    /// Off by default only because a full-domain multi-cycle pack could not carry them. For a
+    /// cropped one the arithmetic is not close: ~450 KB per observation against a `truth/` that
+    /// would otherwise be eight baked artifacts whose sources live on one free mirror, so a later
+    /// lattice or quantization change could only be absorbed by going back for them. With this on,
+    /// [`crate::pack::rebake::verify_truth_rebake`] re-derives the ladder offline and
+    /// byte-compares, exactly as `service/` already was.
     pub store_truth_upstream: bool,
 }
 
@@ -391,7 +398,11 @@ pub fn snap_truth_offset(anchor: i64, requested_offset_min: u32) -> (u32, i64) {
 }
 
 /// One observed frame, baked through the same MRMS path the service product's frame 0 uses.
-fn bake_truth_frame(
+///
+/// Public because [`crate::pack::rebake`] re-derives the truth ladder from the pack's own stored
+/// bytes and byte-compares — the same promise `service/` carries, which only became keepable once
+/// the truth ladder's raw observations were checked in.
+pub fn bake_truth_frame(
     upstream: &mut dyn Upstream,
     anchor: i64,
     offset_min: u32,

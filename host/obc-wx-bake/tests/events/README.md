@@ -28,12 +28,20 @@ cargo run --release --bin obc-wx-pack -- fetch  <pack-dir>   # materialize recor
 
 ## The three rules that make a pack trustworthy
 
-**`service/` is not a hand-made artifact.** It is what `cycle::run_cycle` writes when its
-`Upstream` is a `FixtureUpstream` loaded from `upstream/` — the same offline seam `tests/cycle.rs`
-and `tests/us_gfs_cycle.rs` already use. `tests/event_pack.rs` re-bakes every checked-in pack and
-byte-compares, so a pack that stops reproducing is a baker regression, loudly. It also checks the
-converse both ways: no request the replay makes is unaccounted for by a member, and no member goes
-unread.
+**Nothing in a pack is a hand-made artifact, and nothing has to be fetched.** `service/` is what
+`cycle::run_cycle` writes when its `Upstream` is a `FixtureUpstream` loaded from `upstream/` — the
+same offline seam `tests/cycle.rs` and `tests/us_gfs_cycle.rs` already use. `truth/` is the same
+deal through `mrms::bake_observation`. `tests/event_pack.rs` re-derives **both** from the pack's
+own bytes and byte-compares, so a pack that stops reproducing is a baker regression, loudly. It
+also checks the converse both ways: no request the replay makes is unaccounted for by a member,
+and no member goes unread.
+
+That second half only became true once the truth ladder's raw MRMS observations were checked in
+(`--store-truth-upstream`, +4.3 MB). Before that, `truth/` was eight *baked artifacts* whose
+sources lived on a single free mirror — so a change to the observation lattice or the quantization
+table would have meant going back to MTArchive to re-derive them. For a fixture whose whole purpose
+is durability that was the wrong trade, and 4.3 MB in git is the cheaper half of it by a wide
+margin. **Ship US packs with `--store-truth-upstream`.**
 
 **The archive is not the upstream.** The baker asks for
 `https://noaa-mrms-pds.s3.amazonaws.com/...`, a bucket that retains days rather than years. A 2020
@@ -48,9 +56,30 @@ could not have had. `AsOf` (in `src/pack/capture.rs`) makes any object whose *ow
 not published yet a 404 for discovery, so the production `discover_latest` / `select_run` fallback
 paths reach the honest answer with no adapter change. It needs no response header, which matters:
 MTArchive reports its own 2020-08-11 ingest time for a 2020-08-10 object, and NOAA's HRRR bucket
-reports a 2021 re-upload. The lags are measured constants in `src/pack/archive.rs`
-(MRMS +180 s, HRRR run complete +65 min), and the guard covers the **service** half only —
-`truth/` is by definition what happened afterwards.
+reports a 2021 re-upload. The guard covers the **service** half only — `truth/` is by definition
+what happened afterwards.
+
+The two lag constants in `src/pack/archive.rs` are this guard's **axiom**, and they deserve the
+scrutiny: the guard reads them and so does the leakage test, so a constant that is too small is
+invisible to CI by construction. They are therefore *worst observed plus margin*, never calibrated
+to a measurement — a ceiling equal to the worst sample is a coincidence, not a ceiling.
+
+| source | worst observed | constant | why the margin |
+|---|---|---|---|
+| MRMS `PrecipRate` | +3:01 over 73 consecutive objects (2026-08-10) | **240 s** | an earlier 180 s "rounded up" past a real sample |
+| HRRR subhourly set | +62:56 over 13 runs (2026-08-09/10) | **75 min** | 2 of 13 runs past +62, and in both the *last* file written was a middle one — the tail is non-monotonic write order, with no reason to stop just past the worst sample. These are 2026 numbers applied to 2020 HRRRv3 runs whose latency is unrecoverable. |
+
+The asymmetry decides the direction: treating an object as unpublished too long only makes a
+capture more conservative — it falls back to an older observation or run, which the real service
+does whenever an upstream is late. Treating one as published too early is the whole failure mode.
+
+The margins are **compile-time assertions** in `src/pack/archive.rs`, not tests, because a test
+could not catch this: the leakage test calls the same `published_at` the guard does, so it keeps
+passing while a shaved constant quietly lets data in. Trimming `MRMS_PUBLICATION_LAG_SECONDS` back
+to 180 fails the build with *"must clear the worst observed publication by a real margin, not equal
+it"* — which is feedback that arrives before a capture does. (The constants also have an upper
+bound: both must stay inside the adapters' own backwards-discovery reach, or the guard would turn
+every capture into "nothing was ever published".)
 
 Provenance discipline is `tests/fixtures/README.md`'s, applied per member inside `event.json`:
 exact retrieval URL, byte range where one was used, length, sha256, and licence.
@@ -66,7 +95,13 @@ Full-domain packs are hundreds of megabytes, so two things keep a checked-in pac
   The crop also re-verifies the composed product's lattice nesting, since it moves every origin.
 * Members with `"stored": false` are recorded with full provenance but not checked in.
   `obc-wx-pack fetch` materializes them from `archive_url` and refuses anything whose sha256 has
-  moved.
+  moved. **The shipped pack has none** — durability beat 4.3 MB, see above — but the mechanism
+  stays for a pack that is genuinely too large to carry.
+
+`--bbox` is validated for magnitude as well as ordering, because `(degrees * 1e6).round() as i64`
+*saturates*: `--bbox 40.5,-96.5,1e30,-90` used to crop half of CONUS silently instead of being
+refused. (`crop::window` is also independently overflow-free — it works in `i128` — since a release
+build has `overflow-checks` off.)
 
 ## The basemap convention — US packs stay on one map
 
@@ -80,9 +115,18 @@ convention, held by three things rather than by hope:
 * every pack records `coverage_udeg` — what its baked frames actually answer for — and
   `basemap_region`, the map that ground needs;
 * `obc-wx-pack capture` prints the coverage and how far it reaches past the basemap;
-* `tests/event_pack.rs` fails if a pack's coverage reaches more than one observation tile
-  (0.64 degrees) past Iowa's bounding box, which is the honest tolerance: crops align outward to
-  whole tiles, so a window hugging a state border always overshoots it a little.
+* `tests/event_pack.rs` holds the **requested** `--bbox` to within one observation tile
+  (0.64 degrees) of Iowa's box, and the resulting coverage to *that request plus one tile*.
+
+The two-part budget is deliberate, because coverage exceeds the state for two independent reasons
+and it would be dishonest to blame both on tiling. Of this pack's worst overhang — +0.200 degrees
+east — **+0.140 is the requested window itself** (its east edge is 90.000 W against Iowa's
+90.140 W) and only ~0.060 is tile alignment. Holding the request directly is what actually catches
+drift; the tile term only forgives what the format forces.
+
+`US_BASEMAP_BBOX` is hand-copied from the published state bounds and **nothing ties it to the
+Geofabrik extract** — this crate never fetches the `.poly`. It is a tripwire for "did a pack wander
+to another state", not a survey marker.
 
 A pack that wants Kansas is a conversation about a second basemap, not a second line added quietly.
 `--basemap <id>` exists for that conversation's outcome, not to route around it.
@@ -93,7 +137,7 @@ A pack that wants Kansas is a conversation about a second basemap, not a second 
 
 The 2020-08-10 derecho crossing Iowa, captured at its peak. One cycle of the composed US product
 (MRMS observation + HRRR subhourly forecast), cropped to Iowa and the Mississippi valley, plus a
-two-hour observed ladder. 1,245,380 bytes on disk.
+two-hour observed ladder. **5,505,817 bytes on disk, and nothing to fetch.**
 
 | | |
 |---|---|
@@ -104,20 +148,21 @@ two-hour observed ladder. 1,245,380 bytes on disk.
 | coverage | 40.480 N, 96.660 W .. 43.680 N, 89.940 W — basemap `north-america/us/iowa` |
 | service | 9 frames + manifest, 108,242 bytes |
 | truth | 8 observed frames, 245,673 bytes |
-| upstream checked in | 12 members, 865,861 bytes |
-| upstream recorded only | 8 members, 4,260,445 bytes |
+| upstream | 20 members, 5,126,306 bytes, **all checked in** |
 
 ### Why 18:48 and 17Z, when the capture is clocked at 18:52
 
 Because that is what the service would have had, and the pack is worthless if it is not.
 
-* **MRMS** takes about three minutes to publish (measured against the live bucket on 2026-08-10:
-  +2:49, +2:52, +2:58, +3:01 for four consecutive objects). At 18:52:00Z the 18:52 and 18:50
-  observations were still in the pipeline; 18:48 was the newest one out.
-* **HRRR** subhourly runs complete around the top of the following hour — the 2026-08-10 11Z set
-  landed at +53:38, +55:49, +56:51, +58:53, and 2026-08-09's 18Z run wrote `wrfsubhf01`'s index at
-  **+62:21**, *after* `wrfsubhf04`'s. `select_run` requires all four, so at 18:52 the 18Z run was
-  still incomplete and the newest complete one was 17Z.
+* **MRMS** takes about three minutes to publish, so the guard's 240 s puts the newest available
+  observation at 18:48. The 18:52 and 18:50 objects were still in the pipeline.
+* **HRRR** subhourly runs complete around the top of the following hour, and the guard's 75 min
+  puts the 18Z run out of reach at 18:52. `select_run` requires all four `wrfsubhf` objects, so the
+  newest complete run was 17Z.
+
+Both selections are stable under the margins rather than balanced on them: raising the constants
+from 180 s / 65 min to 240 s / 75 min left the baked bytes **byte-identical**, which is what a
+conservative guard should do.
 
 Both facts are visible in `event.json` rather than asserted here: three HEAD probes are recorded
 with `"object_length": null` — MRMS 18:52, MRMS 18:50, and `hrrr.t18z.wrfsubhf04.grib2.idx` — and
@@ -170,10 +215,10 @@ retrieved from
 `https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-HHMMSS.grib2.gz`.
 
 - `upstream/mrms/MRMS_PrecipRate_00.00_20200810-184800.grib2.gz` — 448,150 bytes,
-  sha256 `fb78ef1e5baf…` (the cycle's anchor; **checked in**).
+  sha256 `fb78ef1e5baf…` (the cycle's anchor).
 - the eight truth observations at 190200, 191800, 193200, 194800, 200200, 201800, 203200 and
   204800 — 464,823 / 488,065 / 512,256 / 539,054 / 547,051 / 559,673 / 570,840 / 578,683 bytes,
-  **recorded only**. `obc-wx-pack fetch` restores them; their sha256s are in `event.json`.
+  4,260,445 in total. All checked in, so `truth/` re-derives offline.
 
 **HRRR subhourly PRATE (CONUS forecast, 3 km / 15 min).** Objects
 `https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhfFF.grib2`
@@ -204,7 +249,7 @@ Each file name states its own byte window, and `event.json` carries every sha256
 ```sh
 cargo run --release --bin obc-wx-pack -- capture us-derecho-2020-08-10 \
   --at 2020-08-10T18:52:00Z --title "2020-08-10 Midwest derecho" --region conus \
-  --bbox 40.5,-96.5,43.5,-90.0 --out wx-events
+  --bbox 40.5,-96.5,43.5,-90.0 --store-truth-upstream --out wx-events
 ```
 
 Both archives serve immutable objects, so a fresh capture reproduces these exact digests — the

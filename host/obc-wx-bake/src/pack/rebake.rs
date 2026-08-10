@@ -20,8 +20,17 @@ use crate::source::{us::UsComposite, Adapter};
 /// Load the pack's stored service members into an offline upstream, keyed by the **canonical**
 /// URLs the baker asks for (never the archive URLs the bytes came from).
 pub fn replay_upstream(root: &Path, event: &Event) -> Result<FixtureUpstream, String> {
+    load(root, event.service_members())
+}
+
+/// The same, for the truth ladder's raw observations.
+pub fn truth_upstream(root: &Path, event: &Event) -> Result<FixtureUpstream, String> {
+    load(root, truth_members(event))
+}
+
+fn load<'a>(root: &Path, members: impl Iterator<Item = &'a Member>) -> Result<FixtureUpstream, String> {
     let mut upstream = FixtureUpstream::default();
-    for member in event.service_members() {
+    for member in members {
         match &member.retrieval {
             Retrieval::Probe { object_length } => {
                 if let Some(length) = object_length {
@@ -157,6 +166,48 @@ fn compare(stored: &BTreeMap<String, Vec<u8>>, rebaked: &BTreeMap<String, Vec<u8
         }
     }
     Ok(())
+}
+
+/// Re-derive every truth frame from the pack's own stored MRMS bytes and byte-compare.
+///
+/// `service/` has always been a pure re-run of checked-in bytes; `truth/` only became one when the
+/// ladder's raw observations stopped being `stored: false`. That matters for the lattice and
+/// quantization work ahead: a change there must fail here loudly, not leave eight stale baked
+/// frames that can only be refreshed by going back to a single free mirror for 4.3 MB.
+///
+/// Returns the number of frames compared.
+pub fn verify_truth_rebake(root: &Path, event: &Event) -> Result<usize, String> {
+    if event.truth_frames.is_empty() {
+        return Ok(0);
+    }
+    let anchor = manifest::parse_rfc3339(&event.window_start)
+        .ok_or_else(|| format!("event.json: window_start {:?} is not RFC 3339", event.window_start))?;
+    let mut upstream = truth_upstream(root, event)?;
+    for frame in &event.truth_frames {
+        let valid_at = manifest::parse_rfc3339(&frame.valid_at)
+            .ok_or_else(|| format!("{}: valid_at {:?} is not RFC 3339", frame.path, frame.valid_at))?;
+        if valid_at - anchor != i64::from(frame.offset_min) * 60 {
+            return Err(format!("{}: offset_min disagrees with valid_at - window_start", frame.path));
+        }
+        let baked = crate::pack::capture::bake_truth_frame(
+            &mut upstream,
+            anchor,
+            frame.offset_min,
+            valid_at,
+            event.bake.bbox_udeg,
+        )?;
+        let stored = std::fs::read(crate::pack::resolve(root, &frame.path)?)
+            .map_err(|error| format!("{}: {error}", frame.path))?;
+        if baked != stored {
+            return Err(format!(
+                "{} is not byte-identical on re-bake ({} stored bytes vs {} rebaked)",
+                frame.path,
+                stored.len(),
+                baked.len()
+            ));
+        }
+    }
+    Ok(event.truth_frames.len())
 }
 
 /// Every member the pack records but has not checked in, with the archive URL that restores it.

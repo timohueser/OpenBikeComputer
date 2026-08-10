@@ -322,7 +322,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-190200.grib2.gz",
       "length": 464823,
       "sha256": "ee4b731ebf07710c743b4595c2da04cb63a096efb63fddc67c3717991bd0881b",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -334,7 +334,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-191800.grib2.gz",
       "length": 488065,
       "sha256": "261611724e3a0e5415df7123334007b0aee125ae498c33940bd837c33d1bb058",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -346,7 +346,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-193200.grib2.gz",
       "length": 512256,
       "sha256": "10807fdabbee6f57818872a24c2a16cbda3a932be80c0d1f40a780b04d933239",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -358,7 +358,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-194800.grib2.gz",
       "length": 539054,
       "sha256": "c9858662a92e8e7cf8fac44c1f4b62b6753077d301d8619a50ab7ae826729d16",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -370,7 +370,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-200200.grib2.gz",
       "length": 547051,
       "sha256": "9ffc0e6fb95f586f1806899c430fa346ad9115ea7903f839ed917ba249c4b1f9",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -382,7 +382,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-201800.grib2.gz",
       "length": 559673,
       "sha256": "1c23b7c6c5f79f9f122b0565544332bde170388a724655757cf29dbc4be87000",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -394,7 +394,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-203200.grib2.gz",
       "length": 570840,
       "sha256": "934f8d888bd775d06ff9c64225950486799555abcdd85604390bdf400f1a8489",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
@@ -406,7 +406,7 @@
       "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-204800.grib2.gz",
       "length": 578683,
       "sha256": "cfc66e870a027d964c0f7f808d95113e8f800fc59f7cd623c15049256bccbe6d",
-      "stored": false,
+      "stored": true,
       "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     }

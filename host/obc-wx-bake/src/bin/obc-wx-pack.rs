@@ -176,11 +176,17 @@ fn run_capture(args: &[String]) -> Result<(), String> {
         eprintln!("{} recorded members are not checked in; `obc-wx-pack fetch` restores them", deferred.len());
     }
 
-    // A pack that cannot re-bake itself is not a pack. Prove it before the tool exits.
+    // A pack that cannot re-bake itself is not a pack. Prove it before the tool exits — both
+    // halves, when the truth ladder's sources were stored.
     let scratch = std::env::temp_dir().join(format!("obc-wx-pack-selfcheck-{}", std::process::id()));
     rebake::verify_rebake(&root, &report.event, &scratch)?;
     let _ = std::fs::remove_dir_all(&scratch);
-    eprintln!("self-check: the pack re-bakes byte-identically");
+    if request.store_truth_upstream {
+        let truth = rebake::verify_truth_rebake(&root, &report.event)?;
+        eprintln!("self-check: service + {truth} truth frames re-bake byte-identically, offline");
+    } else {
+        eprintln!("self-check: the pack re-bakes byte-identically");
+    }
     Ok(())
 }
 
@@ -258,8 +264,9 @@ fn run_verify(args: &[String]) -> Result<(), String> {
     let scratch = std::env::temp_dir().join(format!("obc-wx-pack-verify-{}", std::process::id()));
     rebake::verify_rebake(&root, &event, &scratch)?;
     let _ = std::fs::remove_dir_all(&scratch);
+    let truth = rebake::verify_truth_rebake(&root, &event)?;
     println!(
-        "{}: {} digests verified, {} recorded but not checked in, re-bakes byte-identically",
+        "{}: {} digests verified, {} recorded but not checked in, service + {truth} truth frames re-bake byte-identically",
         event.id,
         digests.verified,
         digests.unmaterialized.len()
