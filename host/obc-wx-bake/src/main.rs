@@ -8,6 +8,8 @@
 //! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
 //! obc-wx-bake us      [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   CONUS MRMS+HRRR, tier 1
 //! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
+//! obc-wx-bake opera-cirrus  [...]                                          Europe 1 km radar, tier 1
+//! obc-wx-bake opera-nimbus  [...]                                          Europe 2 km radar, tier 1
 //! obc-wx-bake schema                                                       print the manifest JSON Schema
 //! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
@@ -18,6 +20,13 @@
 //! frames under `wx/v2/` — beside the live `wx/v1` tree, never over it. Its manifest is a
 //! deliberate placeholder until WXR4 #1243 designs the real one. Everything else below is the
 //! multi-product path WXR7 #1246 deletes.
+//!
+//! The two OPERA adapters (WXR6, #1245) sit **only** on that side of the line: they are in
+//! `canonical`, which writes `wx/v2` and which nothing reads yet, and deliberately **not** in
+//! `cycle`, whose `wx/v1` manifest the shipped clients do read. Publishing them there today
+//! would add two tier-1 products over Europe for clients whose selection policy WXR3/WXR5/WXR7
+//! are in the middle of deleting. Their `ops/weather/adapters.conf` rows are commented out and
+//! `--r2` is refused for the two per-source subcommands for the same reason.
 //!
 //! One product's failure never blocks another's: run the per-product subcommands from separate
 //! timers when that isolation matters more than a single-manifest cycle.
@@ -37,7 +46,10 @@ use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
 use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
-use obc_wx_bake::source::{dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, us::UsComposite, Adapter};
+use obc_wx_bake::source::{
+    dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, opera_cirrus::OperaCirrus, opera_nimbus::OperaNimbus,
+    us::UsComposite, Adapter,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -49,6 +61,9 @@ fn main() {
         }
     }
 }
+
+/// The adapters that exist but must not reach the live service yet (WXR6, #1245).
+const OPERA_ADAPTERS: [&str; 2] = [obc_wx_bake::source::opera_cirrus::ID, obc_wx_bake::source::opera_nimbus::ID];
 
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
@@ -64,12 +79,21 @@ fn run(args: &[String]) -> Result<(), String> {
     let icon = IconEu;
     let us = UsComposite;
     let gfs = GfsFloor;
+    let cirrus = OperaCirrus;
+    let nimbus = OperaNimbus;
     let adapters: Vec<&dyn Adapter> = match command {
-        "canonical" | "cycle" => vec![&dwd, &icon, &us, &gfs],
+        // The mosaic takes every source, OPERA included: `canonical` writes `wx/v2`, which is
+        // beside the live tree and which nothing reads yet.
+        "canonical" => vec![&dwd, &icon, &us, &gfs, &cirrus, &nimbus],
+        // `cycle` is the live `wx/v1` multi-product set, and OPERA stays out of it until the
+        // client-side tier policy is gone — see the module comment.
+        "cycle" => vec![&dwd, &icon, &us, &gfs],
         "dwd-rv" => vec![&dwd],
         "icon-eu" => vec![&icon],
         "us" => vec![&us],
         "gfs" => vec![&gfs],
+        "opera-cirrus" => vec![&cirrus],
+        "opera-nimbus" => vec![&nimbus],
         _ => return Err(usage()),
     };
 
@@ -97,6 +121,22 @@ fn run(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
     }
+    // The one remaining path to the **live v1 tree**, closed by hand. The `adapters.conf` rows
+    // are comments and `cycle` excludes both, so nothing automatic can publish OPERA as a v1
+    // product — but `--r2` is one mistyped word away, and `run_cycle` carries every other product
+    // forward, so that one word would republish the live manifest with two new tier-1 European
+    // products for clients whose selection policy is mid-deletion.
+    //
+    // Deliberately scoped to the two per-source subcommands: `canonical --r2` is *not* blocked,
+    // because it writes the `wx/v2` mosaic beside the live tree and nothing reads that yet — that
+    // is where OPERA is supposed to be, and is where it already is.
+    if use_r2 && OPERA_ADAPTERS.contains(&command) {
+        return Err(format!(
+            "{command} must not publish into the live wx/v1 tree (WXR6/#1245): it would add a tier-1 product \
+             the shipped clients would immediately select. Bake it with --store <dir>, or publish it through \
+             the mosaic with `canonical`. This guard goes when the v1 path does (WXR7 #1246)."
+        ));
+    }
     let mut store: Box<dyn ObjectStore> = match (store_dir, use_r2) {
         (Some(dir), false) => Box::new(DirStore::new(dir)),
         (None, true) => Box::new(RcloneStore::from_env()?),
@@ -117,6 +157,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema"
+    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs|opera-cirrus|opera-nimbus> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema"
         .to_string()
 }

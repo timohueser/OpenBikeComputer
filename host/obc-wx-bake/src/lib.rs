@@ -9,8 +9,8 @@
 //! Layer map (WX1's prescribed boundaries):
 //! - [`source`] — one adapter per upstream; the only provider-aware code, and the ordered
 //!   `MOSAIC_PRIORITY` table that says which source wins a cell where two overlap.
-//! - [`grib`], [`idx`], [`stereo`], [`lcc`] — pinned decode/selection/projection primitives the
-//!   adapters share.
+//! - [`grib`], [`idx`], [`tiff`], [`stereo`], [`lcc`], [`laea`] — pinned decode/selection/
+//!   projection primitives the adapters share.
 //! - [`canonical`] — the canonical lattice, the priority mosaic and the sharded emit (WXR3
 //!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions.
 //! - [`emit`] — cell grids → OBCG bytes through the `obc-formats` byte authority.
@@ -31,6 +31,7 @@ pub mod fetch;
 pub mod geometry;
 pub mod grib;
 pub mod idx;
+pub mod laea;
 pub mod lcc;
 pub mod manifest;
 pub mod pack;
@@ -38,3 +39,4 @@ pub mod publish;
 pub mod source;
 pub mod spike;
 pub mod stereo;
+pub mod tiff;
