@@ -107,7 +107,7 @@ are invalid.
 | 44 | Cell Lon Stride | 4 | `uint32` | Microdegrees per cell eastward; nonzero |
 | 48 | Width | 4 | `uint32` | Cells west-to-east; §1 bounds |
 | 52 | Height | 4 | `uint32` | Cells south-to-north; §1 bounds |
-| 56 | Cell Size | 2 | `uint16` | The lattice's cell size in metres; nonzero |
+| 56 | Cell Size | 2 | `uint16` | Ground resolution in metres; nonzero. See the note below: per-source for the multi-product path, the lattice's own cell size for the canonical dataset |
 | 58 | Tile Edge | 2 | `uint16` | Power of two, `16...256` |
 | 60 | Entries Per Page | 2 | `uint16` | `1...1365` |
 | 62 | Reserved | 2 | - | Zero |
@@ -140,10 +140,21 @@ that lattice**, not a claim about any source.
 > resolution — its German cells come from 1 km radar and its Italian cells from 6.5 km model — so
 > the field states the lattice instead, and the information is *removed* rather than transported:
 > there is no per-cell resolution plane, no per-tile source label and no coverage channel. That is
-> honest because the mosaic always has a global floor source, so every cell always carries a
-> best-available value; "no radar coverage" renders as model fill, not as dry. Intensity code 15
-> remains the only "we do not know", per §4.1. For the canonical 0.01 degree lattice the publisher
-> emits `1113` — 0.01 degrees of latitude, in metres.
+> honest because the mosaic always has a global floor source, so every cell **in the covered
+> domain** carries a best-available value; "no radar coverage" renders as model fill, not as dry.
+> Intensity code 15 remains the only "we do not know", per §4.1. For the canonical 0.01 degree
+> lattice the publisher emits `1113` — 0.01 degrees of latitude, in metres.
+>
+> The **covered domain** is stated rather than assumed, because the floor's grid is periodic in
+> longitude but finite in latitude. The publisher wraps the antimeridian — a global source's column
+> east of its last is its first — so every column is covered; it cannot invent the two polar grid
+> points the floor does not have, so lattice rows whose centres fall outside ±89.875° have no source
+> at all and are published as intensity 15 in every frame. On the canonical lattice that is rows
+> 0..11 and 17,987..17,999, 25 of 18,000. A consumer needs no new field for this: those cells are
+> already, correctly, "we do not know".
+>
+> **While the two paths coexist**, the multi-product publisher still emits per-source values in
+> this field (1,000 / 3,000 / 6,500 / 27,750). #1246 removes that path and with it the ambiguity.
 
 `entries_per_page <= 1365` keeps every directory page (and the header) inside one 16 KiB Range
 request: `1365 x 12 + 4 = 16,384` bytes.
@@ -163,7 +174,7 @@ unknown nonzero code and MUST NOT use it for selection policy.
 | 3 | `mrms` | NOAA MRMS `PrecipRate` (CONUS radar observation) |
 | 4 | `hrrr` | NOAA HRRR subhourly `PRATE` (CONUS model) |
 | 5 | `gfs` | NOAA GFS `APCP` (worldwide floor) |
-| 6 | (the one dataset) | Canonical mosaic: every source normalised onto the global lattice, best available per cell, no provenance carried (#1242) |
+| 6 | `mosaic` | Canonical mosaic: every source normalised onto the global lattice, best available per cell, no provenance carried (#1242) |
 | 7...254 | - | Reserved for future registry additions |
 | 255 | - | Experimental / private products |
 

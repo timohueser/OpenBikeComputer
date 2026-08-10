@@ -1,7 +1,8 @@
 //! `obc-wx-bake` — the weather bakery CLI.
 //!
 //! ```text
-//! obc-wx-bake canonical [--store <dir>|--r2] [--now <rfc3339>] [--dry-run] the one mosaic dataset
+//! obc-wx-bake canonical [--store <dir>|--r2] [--now <rfc3339>] [--threads n] [--dry-run]
+//!                                                                          the one mosaic dataset
 //! obc-wx-bake cycle   [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   every adapter
 //! obc-wx-bake dwd-rv  [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Germany radar, tier 1
 //! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
@@ -31,7 +32,7 @@
 //! publishes into a directory (any static host can serve it); `--r2` uses the `OBC_WX_R2_*`
 //! environment (bucket `obc-wx` by default).
 
-use obc_wx_bake::canonical::{run_canonical_cycle, CANONICAL};
+use obc_wx_bake::canonical::{run_canonical_cycle, BAKE_THREADS, CANONICAL};
 use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
@@ -76,6 +77,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut use_r2 = false;
     let mut now: Option<i64> = None;
     let mut dry_run = false;
+    let mut threads = BAKE_THREADS;
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -86,6 +88,10 @@ fn run(args: &[String]) -> Result<(), String> {
             "--now" => {
                 let text = rest.next().ok_or("--now needs an RFC 3339 timestamp")?;
                 now = Some(manifest::parse_rfc3339(text).ok_or_else(|| format!("--now: {text} is not RFC 3339"))?);
+            }
+            "--threads" => {
+                let text = rest.next().ok_or("--threads needs a count")?;
+                threads = text.parse().map_err(|_| format!("--threads: {text} is not a count"))?;
             }
             "--dry-run" => dry_run = true,
             other => return Err(format!("unknown argument {other}\n{}", usage())),
@@ -102,7 +108,7 @@ fn run(args: &[String]) -> Result<(), String> {
     eprintln!("publishing to {}", store.describe());
     let mut upstream = HttpUpstream::new();
     let summary = if command == "canonical" {
-        run_canonical_cycle(&CANONICAL, &adapters, &mut upstream, store.as_mut(), now, dry_run)?.summary()
+        run_canonical_cycle(&CANONICAL, &adapters, &mut upstream, store.as_mut(), now, threads, dry_run)?.summary()
     } else {
         run_cycle(&adapters, &mut upstream, store.as_mut(), now, dry_run)?.summary()
     };
@@ -111,6 +117,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema"
+    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema"
         .to_string()
 }

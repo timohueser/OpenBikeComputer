@@ -33,8 +33,10 @@ pub struct MosaicSource {
 ///
 /// Ordered best first: a lattice cell is painted by the first source in this list that both
 /// covers it and has data there. Everything below it is fill for cells it does not answer, and
-/// the last row is the global floor that guarantees every cell always carries a best-available
-/// value (which is what makes the no-provenance decision honest — see [`crate::canonical`]).
+/// the last row is the global floor that guarantees every cell **in the covered domain** always
+/// carries a best-available value (which is what makes the no-provenance decision honest — see
+/// [`crate::canonical`], and [`crate::canonical::Lattice::covered_rows`] for what the floor does
+/// not reach).
 ///
 /// The ordering rule, locked 2026-08-10 (#1242): **radar beats model, finer radar beats coarser,
 /// national beats pan-European.** It is baker configuration and never client policy — nothing
