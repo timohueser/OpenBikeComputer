@@ -46,10 +46,19 @@ public enum WeatherUploadError: Error, Equatable, Sendable {
     case connectionDropped
     /// The wire corrupted the bytes (`crcMismatch`) — resend the same bytes.
     case crcMismatch
-    /// The device answered `busy` — another exchange holds its transfer machinery.
+    /// The device answered `busy` — another exchange holds its transfer machinery. Also reported
+    /// when a budget expired while this exchange was queued behind another transfer: the link was
+    /// busy with someone else's bytes, which is the device/foreground being busy, not this leg
+    /// running long.
     case deviceBusy
-    /// CRC passed and the device refused the content (`error`, or `notFound` for a non-zero id) —
-    /// reproducible; the fix is the producer's, not a retry.
+    /// The device has no room for the bundle right now (`storageFull`). Says nothing about the
+    /// bytes — they stay valid and the retry re-sends them once the device has space.
+    case storageFull
+    /// The device answered `notFound` for the singleton id `0` (§11.5). Also not a verdict on the
+    /// bytes: the object slot was unavailable, so the retry re-sends the same bundle.
+    case notFound
+    /// CRC passed and the device refused the content (§11.5's `error`) — reproducible; the fix is
+    /// the producer's, not a retry.
     case rejected
     case cancelled
 }

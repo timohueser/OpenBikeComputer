@@ -125,6 +125,12 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
     /// The upload leg (WX9). From idle *or* a scanning wait it claims the phase for a direct
     /// connect — a scan cannot find a device that has stopped advertising the weather UUID, and
     /// CoreBluetooth holds the pending connect until the peripheral advertises anything.
+    ///
+    /// **Never over a foreground request.** A user who tapped Connect owns the radio: claiming
+    /// `.connecting` for the background job would stop the foreground scan's only path to a
+    /// `.connect(owner: .foreground)` and park the user's link behind an upload for up to the
+    /// upload's 90 s budget. With a foreground intent raised the upload waits instead — and the
+    /// connection the foreground raises is one it can ride (`beginWeatherUploadIfReady`).
     mutating func requestWeatherUpload(
         knownPeripheralID: UUID, connectedPeripheralID: UUID?
     ) -> UploadAction {
@@ -134,6 +140,7 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
         }
         switch phase {
         case .idle, .scanning:
+            guard !foregroundRequested else { return .waitForCurrentConnection }
             phase = .connecting(peripheralID: knownPeripheralID, owner: .weatherRequest)
             return .connectDirect
         case .connecting, .connected:

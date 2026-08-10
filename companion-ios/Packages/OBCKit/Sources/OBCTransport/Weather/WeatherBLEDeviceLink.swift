@@ -48,7 +48,10 @@ extension WeatherDeviceLinkError {
         }
     }
 
-    /// The upload leg's — same split. `rejected` is the one reproducible case (§11.5 `error`).
+    /// The upload leg's — same split. `rejected` is the one reproducible case (§11.5 `error`);
+    /// `crcMismatch` is its explicit opposite (the wire corrupted correct bytes — resend them),
+    /// and `storageFull` / `notFound` are the device's situation rather than a verdict on the
+    /// bundle, so they keep the bytes and come back later.
     public init(uploadError: WeatherUploadError) {
         switch uploadError {
         case .emptyPayload, .rejected: self = .bundleRejected
@@ -56,8 +59,9 @@ extension WeatherDeviceLinkError {
         case .bluetoothUnavailable: self = .bluetoothUnavailable
         case .busy: self = .linkBusy
         case .timedOut: self = .timedOut
-        case .connectionDropped, .crcMismatch: self = .connectionDropped
-        case .deviceBusy: self = .deviceBusy
+        case .connectionDropped: self = .connectionDropped
+        case .crcMismatch: self = .transferCorrupted
+        case .deviceBusy, .storageFull, .notFound: self = .deviceBusy
         case .cancelled: self = .cancelled
         }
     }
@@ -115,6 +119,11 @@ public enum WeatherJobBLEBridge {
             for await event in transport.weatherRequestEvents {
                 guard case .completed(let read) = event else { continue }
                 let snapshot = WeatherDeviceRequestSnapshot(context: read.context, readAt: Date())
+                // §11.4's idle attribute (validity 0, reason 0, no nonce) is what a device with
+                // nothing pending answers — including the replayed *latest* event this stream
+                // hands every new subscriber. Feeding it to the engine would spend a job, and a
+                // diagnostics row, on a request nobody made.
+                guard snapshot.carriesRequest else { continue }
                 await engine.kick(.contextRead(
                     snapshot,
                     readConnectedMilliseconds: Int(read.connectedDuration / .milliseconds(1))

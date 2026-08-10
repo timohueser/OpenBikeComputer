@@ -85,6 +85,20 @@ public struct WeatherDeviceRequestSnapshot: Codable, Equatable, Sendable {
     public var nextGeneration: UInt32 {
         (heldBundleGeneration ?? 0) &+ 1
     }
+
+    /// Whether this read is a *request* at all.
+    ///
+    /// §11.4: "Before any request is raised, the attribute holds a structurally valid v1 value
+    /// with `validity = 0` and `reason = 0`" — so an idle device answers a read with an empty
+    /// context rather than refusing it. That is "nothing is due", not a request the phone failed
+    /// to answer, and running a job for it manufactures a `noPosition` diagnostics row (request id
+    /// `0`) every time the watch matches. A request the device *did* raise carries a nonzero
+    /// nonce, a reason word, or at least one populated validity group.
+    public var carriesRequest: Bool {
+        requestID != 0 || reasonRawValue != 0 || latitudeMicrodegrees != nil
+            || longitudeMicrodegrees != nil || bearingDegrees != nil
+            || speedMetresPerSecond != nil || routeID != nil || heldBundleGeneration != nil
+    }
 }
 
 /// Why one leg of the device conversation failed, in the job engine's vocabulary.

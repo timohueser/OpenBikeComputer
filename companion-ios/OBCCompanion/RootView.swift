@@ -220,7 +220,11 @@ struct RootView: View {
             // is deliberately neither: it's the shade/app-switcher flicker the link policy ignores
             // too.
             switch newPhase {
-            case .active: updateSurfaceModel.appBecameActive()
+            case .active:
+                updateSurfaceModel.appBecameActive()
+                // WX9 (#1194): finish whatever the weather checkpoint still owes. Cooldown-honouring
+                // and a no-op with nothing persisted, so a user who checked a text pays nothing.
+                OBCCompanionApp.weatherJobDidEnterForeground()
             case .background: BackgroundUpdateRefresh.schedule()
             default: break
             }
