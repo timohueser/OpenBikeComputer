@@ -18,9 +18,15 @@
 
 use std::io::Read;
 
-/// Ceiling on the pixel count of one image — comfortably above OPERA's 3,800 x 4,400 while
-/// keeping a hostile header from asking for a 40 GB allocation.
-pub const MAX_PIXELS: u64 = 64_000_000;
+/// Ceiling on the pixel count of one image. OPERA's largest raster is 16.72 M pixels, so this is
+/// a 2x headroom rather than the 4x it was: the value buffer is allocated from the header, before
+/// any tile is touched, so it is the one number that decides how much a twelve-byte lie costs
+/// (here 128 MB, and the tile pre-pass below has to agree the tiles exist first).
+pub const MAX_PIXELS: u64 = 32_000_000;
+/// Cap on how much an out-of-line tag's declared count may reserve up front. A `GeoKeyDirectory`
+/// typed BYTE with a 32 M count is a legal-looking header and a 128 MB `Vec<u32>`; the values are
+/// still read, the allocation just grows as they arrive.
+const MAX_RESERVED_VALUES: usize = 4_096;
 /// Ceiling on one decompressed tile: 1,024 x 1,024 pixels x 4 samples x 4 bytes.
 pub const MAX_TILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Ceiling on the compressed object itself.
@@ -157,7 +163,7 @@ impl<'a> Ifd<'a> {
     fn integers(&self, tag: u16) -> Result<Vec<u32>, String> {
         let Some(entry) = self.get(tag) else { return Ok(Vec::new()) };
         let size = type_size(entry.field_type).ok_or_else(|| format!("TIFF: tag {tag} has an unknown type"))?;
-        let mut values = Vec::with_capacity(entry.count as usize);
+        let mut values = Vec::with_capacity((entry.count as usize).min(MAX_RESERVED_VALUES));
         for index in 0..entry.count as usize {
             let at = entry.values_at + index * size;
             values.push(match entry.field_type {
@@ -319,6 +325,18 @@ pub fn decode_band0(bytes: &[u8]) -> Result<Cog, String> {
         nodata_text.trim().parse().map_err(|_| format!("TIFF: GDAL_NODATA {nodata_text:?} is not a number"))?;
     if !nodata.is_finite() {
         return Err("TIFF: GDAL_NODATA must be a finite sentinel".into());
+    }
+
+    // Prove every tile is really there before reserving the image. A header can claim 32 M pixels
+    // in twelve bytes; it cannot claim them without also pointing at `tile_count` payloads inside
+    // an object that is itself capped, so this pre-pass is what stops a small hostile object from
+    // costing a large allocation.
+    for (index, (start, length)) in offsets.iter().zip(&counts).enumerate() {
+        let (start, length) = (*start as usize, *length as usize);
+        let end = start.checked_add(length).ok_or("TIFF: tile extent overflows")?;
+        if length == 0 || end > bytes.len() {
+            return Err(format!("TIFF: tile {index} is outside the object"));
+        }
     }
 
     // One tile at a time into a reused scratch buffer; only band 0 is kept.

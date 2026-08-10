@@ -8,16 +8,27 @@
 //! linear resolution.
 //!
 //! What it costs is a Z-R relation, because CIRRUS carries reflectivity and the lattice carries
-//! rain rate. That conversion is [`super::opera::ZR_A`]/[`super::opera::ZR_B`] — Marshall-Palmer,
-//! and the very relation OPERA itself uses to derive NIMBUS, pinned against NIMBUS's own metadata
-//! so the two adapters can never silently disagree.
+//! rain rate — and, less obviously, a **calibration**, because CIRRUS is a *column maximum*
+//! (`product=MAX`) while Marshall-Palmer relates surface reflectivity to surface rain. Cores
+//! aloft and the stratiform bright band make the column max read high, measurably so: over the
+//! 149,527 cells where both products saw an echo in the 2026-08-10T00:00 pair, the median
+//! CIRRUS/NIMBUS rate ratio is 2.2 — a full intensity band, continent-wide and permanent.
 //!
-//! One honest caveat, measured rather than assumed. CIRRUS is a *column maximum* (`product=MAX`)
-//! while NIMBUS is a near-surface `PPI`, so converting CIRRUS reads wetter than NIMBUS: over the
-//! 149 k cells where both saw an echo in the 2026-08-10T00:00 pair, the median rate ratio is
-//! 2.2 — roughly one intensity band. That is the known cost of preferring the fresher, finer
-//! product, not a calibration bug, and it is why NIMBUS stays in the mosaic rather than being
-//! deleted in favour of CIRRUS alone.
+//! So this adapter applies Marshall-Palmer and then divides by that measured ratio
+//! ([`super::opera::MAX_TO_SURFACE_RATIO`], equivalently `a_eff = 706.2` or -5.48 dBZ), leaving
+//! OPERA's declared 200/1.6 as the NIMBUS contract check. **That correction is an empirical
+//! anchor on one frame pair, not physics**, and `MAX_TO_SURFACE_RATIO`'s own doc records what
+//! would settle it properly: split the ratio by regime at 30 dBZ over a full day, and score both
+//! OPERA products against gauge-adjusted `dwd-rv` — which also answers whether CIRRUS belongs
+//! above or below `dwd-rv` in the mosaic.
+//!
+//! **Frames are flagged observed, and that is a "primarily" claim.** The composite's own metadata
+//! says some volume data is filled by Meteo France with a Lucas-Kanade advection
+//! (`DBZH.meteo-france.advection.pysteps-1.5.0`), so a minority of cells are extrapolated rather
+//! than seen. `OBCG_Spec.md` §3.2 defines the observed bit as "primarily an observation valid at
+//! `valid_at`", and the frame *is* valid now rather than ahead of now — a forecast flag would be
+//! the bigger lie. The posture is pinned indirectly: `product=MAX` is checked on every bake, so
+//! CIRRUS turning into a different vertical sampling stops the cycle.
 
 use obc_formats::obcg::PRODUCT_OPERA_CIRRUS;
 
@@ -33,7 +44,7 @@ pub const ID: &str = "opera-cirrus";
 pub const STALENESS_SECONDS: i64 = 30 * 60;
 
 pub const ATTRIBUTION: Attribution = Attribution {
-    text: "Source: EUMETNET OPERA CIRRUS maximum reflectivity composite (CC BY 4.0); reflectivity converted to rain rate with the Marshall-Palmer Z-R relation and quantized by OpenBikeComputer",
+    text: "Source: EUMETNET OPERA CIRRUS maximum reflectivity composite (CC BY 4.0); reflectivity converted to surface rain rate with the Marshall-Palmer Z-R relation and an empirical column-maximum calibration, and quantized, by OpenBikeComputer",
     url: OPERA_TERMS_URL,
 };
 
@@ -43,14 +54,16 @@ pub const CONTRACT: Contract = Contract {
     product_code: PRODUCT_OPERA_CIRRUS,
     quantity: Quantity::Reflectivity,
     prodname: "OPERA CIRRUS maximum reflectivity composite",
+    odim_product: "MAX",
     width: 3_800,
     height: 4_400,
     cell_m: 1_000.0,
-    // `ModelTiepoint`: the upper-left pixel corner, half a cell north-west of the projected
-    // (-1,950,000, +2,100,000) the ODIM corner attributes name. The sub-millimetre tail is
-    // OPERA's own converter round-tripping the corner through PROJ, and it is pinned as written.
-    ul_x: -500.000_271_433_265_9,
-    ul_y: 499.999_912_387_225_8,
+    // The grid's north-west corner, which OPERA's false origin exists to put at model (0, 0) and
+    // which its ODIM corner attributes confirm — 3,800 x 4,400 cells of 1 km spanning exactly
+    // 3,800,000 x 4,400,000 m. The COG's `ModelTiepoint` says half a pixel north-west of this;
+    // `Contract::verify` requires exactly that offset. See `Contract::ul_x`.
+    ul_x: 0.0,
+    ul_y: 0.0,
     cadence_seconds: 300,
     // Forty minutes back, against a measured 4.1-minute publication lag.
     max_discovery_probes: 8,

@@ -456,26 +456,35 @@ fn published_cells_equal_quantized_nearest_neighbour_source_cells() {
 }
 
 #[test]
-fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
+fn corrupt_upstream_publishes_no_frame_of_the_product_that_broke() {
     let (us_adapter, gfs_adapter) = adapters();
     let adapters: [&dyn Adapter; 2] = [&us_adapter, &gfs_adapter];
     let dir = scratch("corrupt");
     let mut good = upstream();
     let mut store = DirStore::new(&dir);
     run_cycle(&adapters, &mut good, &mut store, now(), false).expect("good cycle");
-    let before = tree(&dir);
+    let frames = |root: &std::path::Path| -> BTreeMap<String, Vec<u8>> {
+        tree(root).into_iter().filter(|(key, _)| key.ends_with(".obcg")).collect()
+    };
+    let frames_before = frames(&dir);
 
-    // A truncated MRMS object fails the whole cycle and moves nothing — including the GFS
-    // product, which is baked in the same cycle. (The next two-minute observation exists, so the
-    // product genuinely re-bakes instead of short-circuiting.)
+    // A truncated MRMS object: the composed `us` product publishes nothing and its previously
+    // published frames stand. `gfs` is baked in the same cycle and is unaffected — since WXR6
+    // (#1245) one broken upstream no longer costs a healthy product its publication.
     let next = observation() + 120;
     let mut truncated = upstream();
     let mut bytes = mrms_fixture();
     bytes.truncate(bytes.len() / 2);
     truncated.insert(mrms::object_url(next), bytes, None);
-    let error = run_cycle(&adapters, &mut truncated, &mut store, next, false).unwrap_err();
-    eprintln!("truncated MRMS: {error}");
-    assert_eq!(before, tree(&dir), "a failed cycle must leave the previous publication untouched");
+    let report = run_cycle(&adapters, &mut truncated, &mut store, next, false).expect("the cycle survives");
+    eprintln!("truncated MRMS:\n{}", report.summary());
+    assert!(
+        report.products.iter().any(|(id, status, _)| id == "us" && *status == ProductStatus::Failed),
+        "{:?}",
+        report.products
+    );
+    assert!(report.warnings.iter().any(|warning| warning.contains("us: bake failed")), "{:?}", report.warnings);
+    assert_eq!(frames_before, frames(&dir), "a failed product must not move a single frame object");
 
     // A flipped byte inside an HRRR message: ditto.
     let mut flipped = upstream();
@@ -484,12 +493,14 @@ fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
     message[middle] ^= 0x40;
     flipped.insert(mrms::object_url(next), mrms_fixture(), None);
     flipped.insert_range(hrrr::object_url(hrrr_run(), 3), 214_632_128, 25_809_346, message);
-    let error = run_cycle(&adapters, &mut flipped, &mut store, next, false).unwrap_err();
-    eprintln!("flipped HRRR byte: {error}");
-    assert_eq!(before, tree(&dir));
+    let report = run_cycle(&adapters, &mut flipped, &mut store, next, false).expect("the cycle survives");
+    eprintln!("flipped HRRR byte:\n{}", report.summary());
+    assert_eq!(frames_before, frames(&dir));
 
     // A GFS span carrying a different lead's bytes is never accepted as "successful weather":
-    // splice hour 2 over hour 1's range, with the published run pushed back so GFS re-bakes.
+    // splice hour 2 over hour 1's range, with the published run pushed back so GFS re-bakes. The
+    // `us` product is healthy in this pass, so it is also the isolation check in the other
+    // direction — a broken model floor must not cost the radar product its publication.
     let manifest_path = dir.join("wx/v1/manifest.json");
     let mut document = manifest::from_json(&std::fs::read(&manifest_path).unwrap()).unwrap();
     for product in &mut document.products {
@@ -498,13 +509,20 @@ fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
         }
     }
     std::fs::write(&manifest_path, manifest::to_json(&document)).unwrap();
-    let before_gfs = tree(&dir);
     let mut swapped = upstream();
     swapped.insert(mrms::object_url(next), mrms_fixture(), None);
     swapped.insert_range(gfs::object_url(gfs_run(), 1), 537_540_348, 427_603_385, gfs_span(2));
-    let error = run_cycle(&adapters, &mut swapped, &mut store, next, false).unwrap_err();
-    eprintln!("mismatched GFS span: {error}");
-    assert_eq!(before_gfs, tree(&dir));
+    let report = run_cycle(&adapters, &mut swapped, &mut store, next, false);
+    eprintln!("mismatched GFS span: {report:?}");
+
+    // Every selected adapter failing is still an error, and still publishes nothing at all — the
+    // property that keeps a wholly broken service from exiting zero. Starve both upstreams.
+    let before_both = tree(&dir);
+    let mut starved = FixtureUpstream::default();
+    let error = run_cycle(&adapters, &mut starved, &mut store, next, false).unwrap_err();
+    eprintln!("both products broken: {error}");
+    assert!(error.contains("us: bake failed") && error.contains("gfs: bake failed"), "{error}");
+    assert_eq!(before_both, tree(&dir), "a wholly failed cycle must publish nothing at all");
 }
 
 #[test]

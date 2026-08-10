@@ -51,6 +51,9 @@ fn main() {
     }
 }
 
+/// The adapters that exist but must not reach the live service yet (WXR6, #1245).
+const OPERA_ADAPTERS: [&str; 2] = [obc_wx_bake::source::opera_cirrus::ID, obc_wx_bake::source::opera_nimbus::ID];
+
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
@@ -98,6 +101,19 @@ fn run(args: &[String]) -> Result<(), String> {
             "--dry-run" => dry_run = true,
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
+    }
+    // The one remaining path to the live service, closed by hand until WXR3 flips these on. The
+    // `adapters.conf` rows are comments and `cycle` excludes both, so nothing automatic can
+    // publish OPERA — but `--r2` is one mistyped word away, and `run_cycle` carries every other
+    // product forward, so that one word would republish the live v1 manifest with two new tier-1
+    // European products for clients whose selection policy is mid-deletion. Deleting this guard
+    // is part of uncommenting the rows, not a separate decision.
+    if use_r2 && OPERA_ADAPTERS.contains(&command) {
+        return Err(format!(
+            "{command} must not publish to the live service yet (WXR6/#1245): it would add a tier-1 product \
+             the shipped clients would immediately select. Bake it with --store <dir>; WXR3 removes this guard \
+             together with the commented ops/weather/adapters.conf rows."
+        ));
     }
     let mut store: Box<dyn ObjectStore> = match (store_dir, use_r2) {
         (Some(dir), false) => Box::new(DirStore::new(dir)),

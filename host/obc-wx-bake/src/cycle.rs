@@ -13,6 +13,14 @@
 //! is the whole service's state, so products this invocation did not select are carried forward
 //! from the previous manifest verbatim, exactly like an unchanged one.
 //!
+//! A **failing** adapter is treated the same way (WXR6, #1245): it publishes nothing, its
+//! previous entry is carried forward, the failure is a warning in the report, and the other
+//! selected products still publish. Before that, one adapter's error propagated out of the loop
+//! and blocked every healthy product in the same invocation — the coupling the per-adapter timers
+//! exist to work around, which is a deployment mitigating a code decision. Fail-closed is
+//! unchanged where it means something: the failing product publishes no bytes and expires on its
+//! own deadline, and a cycle in which every selected adapter failed is still an error.
+//!
 //! **Expiry is handled uniformly and it is never a deletion.** A carried product past its own
 //! `staleness_deadline` stays in the manifest — clients already refuse to use it, so it is
 //! visibly, honestly expired rather than quietly absent — but its frames are *exempt from the
@@ -45,6 +53,9 @@ pub enum ProductStatus {
     Unchanged,
     /// Not selected by this invocation; the previous entry was carried forward untouched.
     NotSelected,
+    /// The adapter failed; nothing of its was published and its previous entry stands. Only a
+    /// cycle in which *every* selected adapter failed is itself an error.
+    Failed,
 }
 
 #[derive(Debug)]
@@ -65,6 +76,7 @@ impl CycleReport {
                 ProductStatus::Baked => format!("{id}: baked {frames} frames"),
                 ProductStatus::Unchanged => format!("{id}: upstream unchanged ({frames} published frames stand)"),
                 ProductStatus::NotSelected => format!("{id}: not selected ({frames} published frames carried forward)"),
+                ProductStatus::Failed => format!("{id}: FAILED ({frames} published frames left standing)"),
             });
         }
         lines.push(format!(
@@ -108,9 +120,34 @@ pub fn run_cycle(
     let mut frame_objects: Vec<PlannedObject> = Vec::new();
     let mut baked_ids: Vec<String> = Vec::new();
     let mut statuses = Vec::new();
+    let mut failed = 0usize;
     for adapter in adapters {
         let id = adapter.id();
-        match adapter.bake(upstream, previous_product(id), now, &mut warnings)? {
+        // A failing adapter costs its own product's freshness and nothing else. Propagating the
+        // error instead — which is what this did until WXR6 (#1245) — means one upstream in
+        // trouble takes every *healthy* product's publication down with it whenever more than one
+        // adapter is selected, which is the coupling the per-adapter timers exist to work around.
+        // Fail-closed is preserved where it matters: the product publishes nothing, its previous
+        // entry is carried forward untouched below, and its own staleness deadline expires on
+        // schedule. A cycle in which *every* selected adapter failed is still an error, so a
+        // wholly broken service cannot exit zero.
+        let baked = match adapter.bake(upstream, previous_product(id), now, &mut warnings) {
+            Ok(baked) => baked,
+            Err(error) => {
+                failed += 1;
+                warnings.push(format!("{id}: bake failed, previous product left standing — {error}"));
+                statuses.push((
+                    id.to_string(),
+                    ProductStatus::Failed,
+                    previous_product(id).map_or(0, |product| product.frames.len()),
+                ));
+                if let Some(carried) = previous_product(id) {
+                    products.push(carried.clone());
+                }
+                continue;
+            }
+        };
+        match baked {
             AdapterOutcome::Unchanged => {
                 let carried = previous_product(id)
                     .ok_or_else(|| format!("{id}: adapter reported unchanged with no published entry"))?
@@ -134,6 +171,11 @@ pub fn run_cycle(
                 products.push(emit::product_entry(&baked, entries, now));
             }
         }
+    }
+    // Nothing worked. A single-adapter invocation is the common case, so this is also how one
+    // broken upstream still fails its own systemd unit loudly instead of exiting zero.
+    if failed > 0 && failed == adapters.len() {
+        return Err(warnings.join("; "));
     }
 
     // Products no adapter in this invocation owns: carry the previous entry forward untouched.
