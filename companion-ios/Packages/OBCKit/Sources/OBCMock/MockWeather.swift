@@ -14,7 +14,7 @@ public enum WeatherDemoState: String, Sendable, Equatable, CaseIterable {
     case healthy
     /// A rider who has never had a successful sync — nothing in the ring at all.
     case empty
-    /// The baker is behind: a covering product past its staleness deadline, plus a delivery that
+    /// The baker is behind: a published generation past its staleness deadline, plus a delivery that
     /// still landed (stale rain is refused on the device, not hidden here).
     case stale
     /// A job that keeps failing, with a mixture of ring outcomes and one owed job to retry.
@@ -46,7 +46,7 @@ public struct MockWeatherFixtures: Sendable {
         func entry(
             _ outcome: WeatherJobHistoryEntry.Outcome, _ failure: WeatherJobFailure?,
             phase: WeatherJobPhase, minutesAgo: Double, requestID: UInt32 = 4_182,
-            attempts: Int = 1, product: String? = "dwd-rv",
+            attempts: Int = 1, generation: String? = "20260810T1430Z",
             readMS: Int? = 1_700, uploadMS: Int? = 2_400, bytes: Int? = 43_800,
             noRainMap: NoRainMapReason? = nil
         ) -> WeatherJobHistoryEntry {
@@ -56,38 +56,31 @@ public struct MockWeatherFixtures: Sendable {
                 requestID: requestID, outcome: outcome, failureReason: failure,
                 phaseReached: phase, attempts: attempts, bundleByteCount: bytes,
                 readConnectedMilliseconds: readMS, uploadConnectedMilliseconds: uploadMS,
-                precipitationProductID: product, noRainMapReason: noRainMap)
+                precipitationGeneration: generation, noRainMapReason: noRainMap)
         }
 
-        let radar = WeatherServiceProductStatus(
-            id: "dwd-rv", tier: .radar, nominalCellMetres: 1_000,
-            referenceTime: now.addingTimeInterval(-360), generatedAt: now.addingTimeInterval(-200),
-            stalenessDeadline: now.addingTimeInterval(900),
-            attribution: WeatherAttribution(
+        // Every source that may have painted a cell of the mosaic. There is no per-cell provenance
+        // to narrow it to, so all four are credited on every screen that shows any of them.
+        let credits = [
+            WeatherAttribution(
                 text: "Source: Deutscher Wetterdienst (DWD), CC BY 4.0",
-                url: "https://creativecommons.org/licenses/by/4.0/"),
-            frameCount: 9, latestFrameValidAt: now.addingTimeInterval(7_200))
-        let model = WeatherServiceProductStatus(
-            id: "icon-eu", tier: .model, nominalCellMetres: 6_500,
-            referenceTime: now.addingTimeInterval(-2_700), generatedAt: now.addingTimeInterval(-600),
-            stalenessDeadline: now.addingTimeInterval(5_400),
-            attribution: WeatherAttribution(
-                text: "Source: Deutscher Wetterdienst (DWD), CC BY 4.0",
-                url: "https://creativecommons.org/licenses/by/4.0/"),
-            frameCount: 3, latestFrameValidAt: now.addingTimeInterval(7_200))
-        let floor = WeatherServiceProductStatus(
-            id: "gfs-imerg", tier: .floor, nominalCellMetres: 27_000,
-            referenceTime: now.addingTimeInterval(-9_000), generatedAt: now.addingTimeInterval(-800),
-            stalenessDeadline: now.addingTimeInterval(10_800),
-            attribution: WeatherAttribution(
+                url: "https://creativecommons.org/licenses/by/4.0/", sourceID: "dwd-rv"),
+            WeatherAttribution(
+                text: "Source: NOAA/NWS MRMS (U.S. Government open data)",
+                url: "https://www.nesdis.noaa.gov/about/open-data", sourceID: "us"),
+            WeatherAttribution(
                 text: "Source: NOAA GFS and NASA GPM IMERG (U.S. Government open data)",
-                url: "https://www.nesdis.noaa.gov/about/open-data"),
-            frameCount: 4, latestFrameValidAt: now.addingTimeInterval(7_200))
+                url: "https://www.nesdis.noaa.gov/about/open-data", sourceID: "gfs"),
+        ]
 
-        func status(_ products: [WeatherServiceProductStatus], age: TimeInterval) -> WeatherServiceStatus {
+        func status(age: TimeInterval, staleBy: TimeInterval? = nil) -> WeatherServiceStatus {
             WeatherServiceStatus(
-                generatedAt: now.addingTimeInterval(-age), observedAt: now,
-                products: products, skippedProducts: 0)
+                generation: "20260810T1430Z", generatedAt: now.addingTimeInterval(-age),
+                observedAt: now, referenceTime: now.addingTimeInterval(-age - 160),
+                staleAfter: now.addingTimeInterval(staleBy ?? 5_400),
+                nextGenerationExpectedAt: now.addingTimeInterval(900), cellSizeMetres: 1_113,
+                frameCount: 9, latestFrameValidAt: now.addingTimeInterval(7_200),
+                attributions: credits, skippedFrames: 0)
         }
 
         switch state {
@@ -101,48 +94,41 @@ public struct MockWeatherFixtures: Sendable {
                     entry(.committed, nil, phase: .uploading, minutesAgo: 12),
                 ],
                 pending: nil,
-                status: status([radar, model, floor], age: 200))
+                status: status(age: 200))
         case .empty, .unsupported:
             // A device that never asks has never been answered: an `unsupported` run with delivery
             // rows in it would contradict its own banner.
-            return MockWeatherFixtures(
-                history: [], pending: nil, status: status([radar, model, floor], age: 200))
+            return MockWeatherFixtures(history: [], pending: nil, status: status(age: 200))
         case .stale:
-            let expired = WeatherServiceProductStatus(
-                id: radar.id, tier: radar.tier, nominalCellMetres: radar.nominalCellMetres,
-                referenceTime: now.addingTimeInterval(-4_200),
-                generatedAt: now.addingTimeInterval(-4_000),
-                stalenessDeadline: now.addingTimeInterval(-1_500),
-                attribution: radar.attribution, frameCount: 9,
-                latestFrameValidAt: now.addingTimeInterval(3_000))
             return MockWeatherFixtures(
                 history: [
-                    entry(.committed, nil, phase: .uploading, minutesAgo: 78, product: "dwd-rv"),
-                    entry(.committed, nil, phase: .uploading, minutesAgo: 26, product: "icon-eu"),
+                    entry(.committed, nil, phase: .uploading, minutesAgo: 78),
+                    entry(.committed, nil, phase: .uploading, minutesAgo: 26,
+                          generation: "20260810T1400Z"),
                 ],
                 pending: nil,
-                status: status([expired, model, floor], age: 4_000))
+                status: status(age: 4_000, staleBy: -1_500))
         case .failing:
             return MockWeatherFixtures(
                 history: [
                     entry(.committed, nil, phase: .uploading, minutesAgo: 140, requestID: 4_179),
                     entry(.failed, .fetchFailed, phase: .fetching, minutesAgo: 46,
-                          requestID: 4_181, attempts: 6, product: nil, uploadMS: nil, bytes: nil),
+                          requestID: 4_181, attempts: 6, generation: nil, uploadMS: nil,
+                          bytes: nil),
                     entry(.failed, .transferCorrupted, phase: .uploading, minutesAgo: 21,
                           requestID: 4_182, attempts: 3, uploadMS: 4_100),
                     // Its own calm outcome, not a failure: the job continued and the row is there
                     // to be readable, not alarming (#1198 review).
                     entry(.agedOut, .agedOut, phase: .bundleReady, minutesAgo: 8,
                           requestID: 4_183, attempts: 2, uploadMS: nil,
-                          noRainMap: .allCoveringProductsExpired(
-                              latestDeadline: now.addingTimeInterval(-2_400))),
+                          noRainMap: .expired(staleAfter: now.addingTimeInterval(-2_400))),
                 ],
                 pending: WeatherJobPending(
                     phase: .bundleReady, requestID: 4_184,
                     startedAt: now.addingTimeInterval(-190), updatedAt: now.addingTimeInterval(-40),
                     attempts: 2, deferrals: 1, retryNotBefore: now.addingTimeInterval(18),
                     bundleByteCount: 42_100),
-                status: status([radar, model, floor], age: 200))
+                status: status(age: 200))
         }
     }
 }
@@ -188,7 +174,7 @@ public final class MockWeatherJobControl: WeatherJobControlling, @unchecked Send
             outcome: .committed, failureReason: nil, phaseReached: .uploading,
             attempts: finished.attempts, bundleByteCount: finished.bundleByteCount,
             readConnectedMilliseconds: 1_600, uploadConnectedMilliseconds: 2_300,
-            precipitationProductID: "dwd-rv"))
+            precipitationGeneration: "20260810T1430Z"))
     }
 }
 

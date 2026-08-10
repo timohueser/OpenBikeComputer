@@ -38,19 +38,21 @@ public struct WeatherJobHistoryEntry: Codable, Equatable, Sendable {
     /// Radio-held time of the two legs, for the ≤ 5 s median / ≤ 10 s p95 target.
     public var readConnectedMilliseconds: Int?
     public var uploadConnectedMilliseconds: Int?
-    /// The manifest product that answered the corridor, when one did — a product id, never a place.
-    public var precipitationProductID: String?
+    /// The dataset generation that answered the corridor, when one did — a bake timestamp, never a
+    /// place. It replaced the manifest product id when selection died (#1244): with one dataset the
+    /// only provenance worth recording is *which bake*.
+    public var precipitationGeneration: String?
     /// Why the bundle carried no rain map, kept as the *reason* rather than a rendered string.
-    /// `String(describing:)` here used to hand the diagnostics screen Swift's own debug spelling —
-    /// `allCoveringProductsExpired(latestDeadline: 2026-08-10 12:00:00 +0000)` on glass — and threw
-    /// away the deadline's type on the way (#1198 review). The screen formats it now.
+    /// `String(describing:)` here used to hand the diagnostics screen Swift's own debug spelling on
+    /// glass and threw away the associated value's type on the way (#1198 review). The screen
+    /// formats it now.
     public var noRainMapReason: NoRainMapReason?
 
     public init(
         startedAt: Date, finishedAt: Date, requestID: UInt32, outcome: Outcome,
         failureReason: WeatherJobFailure? = nil, phaseReached: WeatherJobPhase, attempts: Int,
         bundleByteCount: Int? = nil, readConnectedMilliseconds: Int? = nil,
-        uploadConnectedMilliseconds: Int? = nil, precipitationProductID: String? = nil,
+        uploadConnectedMilliseconds: Int? = nil, precipitationGeneration: String? = nil,
         noRainMapReason: NoRainMapReason? = nil
     ) {
         self.startedAt = startedAt
@@ -63,7 +65,7 @@ public struct WeatherJobHistoryEntry: Codable, Equatable, Sendable {
         self.bundleByteCount = bundleByteCount
         self.readConnectedMilliseconds = readConnectedMilliseconds
         self.uploadConnectedMilliseconds = uploadConnectedMilliseconds
-        self.precipitationProductID = precipitationProductID
+        self.precipitationGeneration = precipitationGeneration
         self.noRainMapReason = noRainMapReason
     }
 }

@@ -256,10 +256,12 @@ struct WeatherSnapshotMappingTests {
         #expect(snapshot.heldBundleGeneratedAtUnixSeconds == 1_769_000_000)
         #expect(snapshot.reasonRawValue == 0b101)
         #expect(snapshot.readAt == readAt)
-        // And the assembler-facing view carries the coordinate as degrees.
+        // And the assembler-facing view carries the coordinate as degrees. Bearing and speed stay on
+        // the snapshot and stop there: the corridor is a 90 km disc (#1244), so nothing downstream
+        // of here has a use for them, and `WeatherRequest` no longer carries what it cannot use.
         let request = snapshot.weatherRequest
         #expect(request.position?.latitude == -49.330889)
-        #expect(request.bearingDegrees == 271)
+        #expect(request.fixTime == Date(timeIntervalSince1970: 1_769_999_990))
     }
 
     @Test func clearedGroupsMapToNilNeverToZeroWithMeaning() {

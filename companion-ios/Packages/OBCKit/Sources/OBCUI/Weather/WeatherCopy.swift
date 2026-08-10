@@ -118,23 +118,25 @@ public enum WeatherCopy {
 
     /// Why a delivered bundle carried no rain map, in words rather than in Swift's.
     ///
-    /// The engine used to flatten this to `String(describing:)`, which put
-    /// `allCoveringProductsExpired(latestDeadline: 2026-08-10 12:00:00 +0000)` on a diagnostics row
-    /// — a case name, a label and a UTC debug date, none of which is copy. Each case gets its own
+    /// The engine used to flatten this to `String(describing:)`, which put a case name, a label and
+    /// a UTC debug date on a diagnostics row, none of which is copy. Each case gets its own
     /// sentence, and the one associated value gets rendered as the time it is.
+    ///
+    /// **None of these sentences says "no rain".** A genuinely dry corridor is a rain map full of
+    /// zeroes, not the absence of one, so it never reaches this function at all.
     public static func noRainMapReasonLabel(_ reason: NoRainMapReason, locale: Locale = .current)
         -> String {
         switch reason {
-        case .corridorNotCovered:
-            return "no rain map covers this area"
-        case .allCoveringProductsExpired(let latestDeadline):
-            return "rain maps for this area expired at \(absolute(latestDeadline, locale: locale))"
+        case .outOfDomain:
+            return "the rain map doesn't reach this area"
+        case .uncovered:
+            return "no rain-map source covers this area"
+        case .expired(let staleAfter):
+            return "the rain map expired at \(absolute(staleAfter, locale: locale))"
         case .serviceUnavailable:
             return "the \(serviceName) couldn't be reached"
         case .framesUnavailable:
             return "the rain-map frames couldn't be downloaded"
-        case .noFramesInWindow:
-            return "no rain-map frame for the hours ahead"
         }
     }
 
@@ -157,37 +159,29 @@ public enum WeatherCopy {
         return phaseLabel(pending.phase)
     }
 
-    // MARK: Service products
+    // MARK: The dataset
 
-    /// Radar / model / worldwide, from the manifest's tier number. An unknown tier is named by its
-    /// number rather than guessed at — a new tier must not need an app release to render.
-    public static func tierLabel(_ tier: WeatherTier) -> String {
-        switch tier {
-        case .radar: "Radar"
-        case .model: "Model"
-        case .floor: "Worldwide"
-        default: "Tier \(tier.rawValue)"
-        }
-    }
-
-    /// "Radar · 1 km · 9 frames" — the truthful shape of a product, with the source's own cell
+    /// "1 km · 9 frames" — the truthful shape of the published dataset, with the lattice's own cell
     /// size and no claim of resolution it does not have.
-    public static func productSummary(_ product: WeatherServiceProductStatus) -> String {
-        var parts = [tierLabel(product.tier), cellSize(metres: product.nominalCellMetres)]
-        parts.append("\(product.frameCount) frame\(product.frameCount == 1 ? "" : "s")")
-        return parts.joined(separator: " · ")
+    ///
+    /// There is no tier word here any more, and that is the point: a tier was a *ranking*, and with
+    /// one mosaic dataset there is nothing to rank. Naming one on this screen would invite a rider to
+    /// wonder which one they got (#1244).
+    public static func datasetSummary(_ status: WeatherServiceStatus) -> String {
+        [
+            cellSize(metres: status.cellSizeMetres),
+            "\(status.frameCount) frame\(status.frameCount == 1 ? "" : "s")",
+        ].joined(separator: " · ")
     }
 
     public static func cellSize(metres: UInt16) -> String {
         metres >= 1_000 ? "\(Int((Double(metres) / 1_000).rounded())) km" : "\(metres) m"
     }
 
-    /// A product's freshness line: its upstream run, or the deadline it has already passed.
-    public static func productFreshness(_ product: WeatherServiceProductStatus, now: Date) -> String {
-        guard product.isFresh(at: now) else {
-            return "Stale since \(absolute(product.stalenessDeadline))"
-        }
-        return "Source run \(relative(product.referenceTime, now: now))"
+    /// The dataset's freshness line: its upstream run, or the deadline it has already passed.
+    public static func datasetFreshness(_ status: WeatherServiceStatus, now: Date) -> String {
+        guard status.isFresh(at: now) else { return "Stale since \(absolute(status.staleAfter))" }
+        return "Source run \(relative(status.referenceTime, now: now))"
     }
 
     // MARK: Times and sizes
@@ -229,7 +223,7 @@ public enum WeatherCopy {
         return formatter.string(from: date)
     }
 
-    /// "18.4 kB" — bundle sizes are always kilobytes at the 64 KiB producer cap.
+    /// "18.4 kB" — bundle sizes are always kilobytes under the 256 KiB producer cap.
     public static func kilobytes(_ bytes: Int) -> String {
         String(format: "%.1f kB", Double(max(0, bytes)) / 1_000)
     }
