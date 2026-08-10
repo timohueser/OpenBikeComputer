@@ -563,8 +563,8 @@ pub enum WindClass {
 /// Classify the wind route-relatively, or `None` when there is no trustworthy travel direction —
 /// the arrows then render in neutral ink, never a false head/tail claim (the locked fallback).
 ///
-/// `travel_deg` is the WX12 chain's output (active-route tangent at the matched position, else
-/// the moving GPS course — [`crate::App::travel_deg`], threaded to the rows as
+/// `travel_deg` is the WX12 chain's output (the active route's general heading ahead of the
+/// matched position, and nothing else — [`crate::App::travel_deg`], threaded to the rows as
 /// `Render::travel_deg`). The classification: the wind's *to*-direction within 60° of travel is
 /// a tailwind, within 60° of dead-opposite a headwind, everything between a crosswind.
 pub fn wind_class(wind_from_deg: u16, travel_deg: Option<f32>) -> Option<WindClass> {
@@ -672,20 +672,22 @@ pub fn bearing_deg(a: (i32, i32), b: (i32, i32)) -> Option<f32> {
     Some(if deg < 0.0 { deg + 360.0 } else { deg })
 }
 
-/// Along-route step over which the travel tangent is measured. Short enough to follow bends,
-/// long enough that µdeg quantization can't swing the angle.
-pub const TANGENT_STEP_M: u32 = 30;
+/// Along-route chord over which the travel direction is measured — a *general* heading, not a
+/// local tangent (owner tuning round). The wind question is about the ride ahead, so the chord is
+/// long enough that switchbacks, a river path's meanders and roundabouts can't swing the arrows'
+/// colour, and short enough that it still describes the leg the rider is actually on.
+pub const TRAVEL_CHORD_M: u32 = 1_000;
 
-/// The active route's travel direction (degrees CW from north) at `progress_m`: the forward
-/// tangent over a [`TANGENT_STEP_M`] step, stepped back at the route end so the last metres keep
-/// a direction. `None` when the route has no usable geometry — the caller then falls through the
-/// locked chain (GPS course while moving, else neutral).
-pub fn route_tangent_deg(route: &RouteReader<'_>, progress_m: u32) -> Option<f32> {
+/// The active route's general travel direction (degrees CW from north) at `progress_m`: the
+/// bearing of the [`TRAVEL_CHORD_M`] chord ahead, stepped back at the route end so the last
+/// kilometre keeps a direction. `None` when the route has no usable geometry — the arrows are then
+/// neutral, never a fabricated head/tail.
+pub fn route_heading_deg(route: &RouteReader<'_>, progress_m: u32) -> Option<f32> {
     let total = route.total_distance_m;
     if total < 2 {
         return None;
     }
-    let step = TANGENT_STEP_M.min(total);
+    let step = TRAVEL_CHORD_M.min(total);
     let (from_m, to_m) =
         if progress_m.saturating_add(step) <= total { (progress_m, progress_m + step) } else { (total - step, total) };
     let from = route.position_at(from_m)?;
