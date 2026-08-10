@@ -243,9 +243,18 @@ cell     = decoded_tile[local_row x tile_edge + local_col]
 ```
 
 Intermediates MUST be checked signed 64-bit (or wider). The north/east edges are outside the
-half-open window. Nearest-neighbour sampling uses the selected cell exactly; no bilinear
-interpolation or fabricated sub-cell precision is permitted, matching the epic's no-smoothing
-rule end to end.
+half-open window.
+
+Interpolation follows `OBCW_Spec.md` §5 exactly, so a cell means the same thing on both sides of
+the bakery: **data queries MUST sample nearest-neighbour**, using the selected cell exactly, with
+no interpolation and no fabricated sub-cell precision; **display MAY interpolate** for legibility;
+and **no claim, alert, alert-clear or dry decision may derive from an interpolated value**. Every
+corridor extraction in §7 is a data query and is bound by the first rule.
+
+Rationale (2026-08-10): the epic's original rule was no smoothing anywhere, which made 1 km
+products render as hard squares. The rule that was actually load-bearing — that a device never
+reports rain, or reports none, on the strength of an invented number — is preserved verbatim for
+queries; only the pixels were released.
 
 ## 7. Corridor extraction
 
