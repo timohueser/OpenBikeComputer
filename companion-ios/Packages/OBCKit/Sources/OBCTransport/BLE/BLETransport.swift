@@ -814,8 +814,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// never restarted.
     private func creditWeatherUploadSlotWait(_ nanoseconds: UInt64, token: UUID) {
         dispatchPrecondition(condition: .onQueue(queue))
+        // Token-guarded even for the flag: a dead exchange finally reaching the slot must not
+        // clear the *current* attempt's "still queued" state.
+        guard weatherUploadToken == token else { return }
         weatherUploadAwaitingSlot = false
-        guard weatherUploadToken == token, nanoseconds > 0 else { return }
+        guard nanoseconds > 0 else { return }
         guard let deadline = weatherUploadConnectedDeadlineAt else { return }
         weatherUploadConnectedDeadlineAt = deadline + .nanoseconds(Int(min(nanoseconds, UInt64(Int.max))))
         weatherUploadConnectedDeadline?.cancel()
