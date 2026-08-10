@@ -21,6 +21,9 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// OBCG §10: the manifest caches for at most 60 s.
 pub const FRESHNESS_WINDOW_S: i64 = 60;
 
+/// One degree of latitude, in metres — the corridor arithmetic's only constant.
+pub(crate) const METRES_PER_DEGREE_LAT: f64 = 111_320.0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     Malformed(String),
@@ -54,6 +57,33 @@ impl Bbox {
             && (-90_000_000..=90_000_000).contains(&self.north_udeg)
             && (-180_000_000..=180_000_000).contains(&self.west_udeg)
             && (-180_000_000..=180_000_000).contains(&self.east_udeg)
+    }
+
+    /// The box around one coordinate, grown by `metres` on every side. Longitude degrees shrink
+    /// with latitude, so the east/west growth divides by `cos(lat)` — clamped, because near the
+    /// poles that blows up. Being a little generous costs one more tile read; being short would
+    /// drop rain the rider is about to ride into.
+    pub fn around(lat_udeg: i64, lon_udeg: i64, metres: f64) -> Self {
+        let lat_deg = lat_udeg as f64 / 1e6;
+        let lat_span = (metres / METRES_PER_DEGREE_LAT * 1e6).ceil() as i64;
+        let cos = lat_deg.to_radians().cos().max(0.05);
+        let lon_span = (metres / (METRES_PER_DEGREE_LAT * cos) * 1e6).ceil() as i64;
+        Self {
+            south_udeg: (lat_udeg - lat_span).max(-90_000_000),
+            west_udeg: (lon_udeg - lon_span).max(-180_000_000),
+            north_udeg: (lat_udeg + lat_span).min(90_000_000),
+            east_udeg: (lon_udeg + lon_span).min(180_000_000),
+        }
+    }
+
+    /// The smallest box containing both.
+    pub fn union(&self, other: &Bbox) -> Self {
+        Self {
+            south_udeg: self.south_udeg.min(other.south_udeg),
+            west_udeg: self.west_udeg.min(other.west_udeg),
+            north_udeg: self.north_udeg.max(other.north_udeg),
+            east_udeg: self.east_udeg.max(other.east_udeg),
+        }
     }
 
     /// Closed containment on all four edges — an exact fit counts as covered. Partial overlap

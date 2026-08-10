@@ -19,6 +19,10 @@ pub struct Response {
     pub last_modified: Option<String>,
     pub expires: Option<String>,
     pub retry_after: Option<String>,
+    /// The `Content-Range` a `206` must carry (RFC 9110 §14.4). Checked against what was asked
+    /// for: a server that answers a partial status while describing *different* bytes is refused,
+    /// because every CRC below would then blame the producer for a transport lie.
+    pub content_range: Option<String>,
 }
 
 impl Response {
@@ -28,6 +32,30 @@ impl Response {
 
     pub fn is_not_modified(&self) -> bool {
         self.status == 304
+    }
+
+    /// The `(first, last)` byte positions a `Content-Range: bytes first-last/complete` names.
+    /// `None` when the header is absent or is anything else (`bytes */1234`, a unit we did not
+    /// ask for, garbage) — the caller treats "not the range we asked for" as a refusal.
+    /// A header-only answer, before any status-specific field is filled in.
+    pub fn empty() -> Self {
+        Self {
+            status: 0,
+            body: Vec::new(),
+            etag: None,
+            last_modified: None,
+            expires: None,
+            retry_after: None,
+            content_range: None,
+        }
+    }
+
+    pub fn content_range_bytes(&self) -> Option<(u64, u64)> {
+        let value = self.content_range.as_deref()?.trim();
+        let spec = value.strip_prefix("bytes")?.trim_start();
+        let (range, _complete) = spec.split_once('/')?;
+        let (first, last) = range.trim().split_once('-')?;
+        Some((first.trim().parse().ok()?, last.trim().parse().ok()?))
     }
 }
 
@@ -93,8 +121,11 @@ pub trait Http {
 /// Per-call byte caps. A weather client that streams an unbounded body is a bug, not a slow day.
 pub const MANIFEST_CAP: u64 = 4 * 1024 * 1024;
 pub const MET_CAP: u64 = 4 * 1024 * 1024;
-/// One corridor read. Generous next to the ~6 KiB directory pages and ~512 B tiles the launch
-/// products emit, tight enough that a mis-planned range can never pull a whole 100 KB frame.
+/// One corridor read. It is **not** a "never fetch a whole frame" guard — it cannot be: a server
+/// may lawfully answer a Range request with the whole object (`200`), and the client then slices
+/// that body itself rather than mis-reading its head as the middle, so the cap has to be larger
+/// than the objects the launch products publish (~100 KB). What it does buy is a hard ceiling on
+/// any single body: an unbounded stream is refused before it is read, whatever status it carried.
 pub const RANGE_CAP: u64 = 512 * 1024;
 
 // ── the real client ────────────────────────────────────────────────────────────────────────
@@ -141,16 +172,7 @@ impl Http for UreqHttp {
         }
         let response = match call.call() {
             Ok(response) => response,
-            Err(ureq::Error::StatusCode(304)) => {
-                return Ok(Response {
-                    status: 304,
-                    body: Vec::new(),
-                    etag: None,
-                    last_modified: None,
-                    expires: None,
-                    retry_after: None,
-                })
-            }
+            Err(ureq::Error::StatusCode(304)) => return Ok(Response { status: 304, ..Response::empty() }),
             Err(ureq::Error::StatusCode(code)) => return Err(HttpError::Status { code, retry_after: None }),
             Err(error) => return Err(HttpError::Transport(error.to_string())),
         };
@@ -159,21 +181,15 @@ impl Http for UreqHttp {
         let header = |name: &str| parts.headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
         let retry_after = header("retry-after");
         if status == 304 {
-            return Ok(Response {
-                status,
-                body: Vec::new(),
-                etag: None,
-                last_modified: None,
-                expires: None,
-                retry_after,
-            });
+            return Ok(Response { status, retry_after, ..Response::empty() });
         }
         if !(200..300).contains(&status) {
             return Err(HttpError::Status { code: status, retry_after });
         }
         // A range request answered 200 means the server ignored `Range` and is streaming the
         // whole object. Legal HTTP — but reading the head as if it were the middle would be
-        // silent corruption, so the caller slices it (below) after proving the length.
+        // silent corruption, so the corridor reader slices it itself, and only after the cap
+        // below has bounded how much it is willing to hold.
         let mut bytes = Vec::new();
         let mut reader = body.into_reader().take(cap + 1);
         if let Err(error) = reader.read_to_end(&mut bytes) {
@@ -190,6 +206,7 @@ impl Http for UreqHttp {
             last_modified: header("last-modified"),
             expires: header("expires"),
             retry_after,
+            content_range: header("content-range"),
         })
     }
 
@@ -217,6 +234,10 @@ pub struct FixtureHttp {
     pub ledger: Vec<(String, Option<(u64, u64)>)>,
     /// Per-URL headers handed back with a 200.
     headers: BTreeMap<String, FixtureHeaders>,
+    /// Answer every `Range` request with `200` and the **whole** object, the way a proxy or an
+    /// origin with ranges disabled does. Legal HTTP the client has to survive, so it is a fixture
+    /// mode rather than a story in a comment.
+    whole_object_on_range: bool,
 }
 
 impl FixtureHttp {
@@ -243,13 +264,23 @@ impl FixtureHttp {
         self
     }
 
+    /// Ignore `Range` and answer the whole object with `200` — see [`Self::whole_object_on_range`].
+    pub fn ignoring_ranges(mut self) -> Self {
+        self.whole_object_on_range = true;
+        self
+    }
+
     /// Total bytes the ledger's reads would move.
     pub fn fetched_bytes(&self) -> u64 {
         self.ledger
             .iter()
-            .map(|(url, range)| match range {
-                Some((start, end)) => end.saturating_sub(*start) + 1,
-                None => self.objects.get(url).map(|o| o.len() as u64).unwrap_or(0),
+            .map(|(url, range)| {
+                let whole = self.objects.get(url).map(|object| object.len() as u64).unwrap_or(0);
+                match range {
+                    Some(_) if self.whole_object_on_range => whole,
+                    Some((start, end)) => end.saturating_sub(*start) + 1,
+                    None => whole,
+                }
             })
             .sum()
     }
@@ -261,15 +292,19 @@ impl Http for FixtureHttp {
         let Some(object) = self.objects.get(&request.url) else {
             return Err(HttpError::Status { code: 404, retry_after: None });
         };
-        let body = match request.range {
-            None => object.clone(),
+        let complete = object.len() as u64;
+        // A real origin answers a satisfied `Range` with `206` + `Content-Range`; the fixture does
+        // too, so the client's partial-content checks are exercised on every corridor read in CI.
+        let (status, body, content_range) = match request.range {
+            None => (200u16, object.clone(), None),
+            Some(_) if self.whole_object_on_range => (200, object.clone(), None),
             Some((start, end)) => {
                 let start = usize::try_from(start).map_err(|_| HttpError::RangeNotHonoured("offset".into()))?;
                 let end = usize::try_from(end).map_err(|_| HttpError::RangeNotHonoured("offset".into()))?;
                 if start > end || end >= object.len() {
                     return Err(HttpError::RangeNotHonoured(format!("bytes={start}-{end} outside the object")));
                 }
-                object[start..=end].to_vec()
+                (206, object[start..=end].to_vec(), Some(format!("bytes {start}-{end}/{complete}")))
             }
         };
         if body.len() as u64 > cap {
@@ -279,17 +314,10 @@ impl Http for FixtureHttp {
         // ETag revalidation, so the manifest's 304 path is reachable from fixtures.
         if let (Some(sent), Some(have)) = (&request.if_none_match, &etag) {
             if sent == have {
-                return Ok(Response {
-                    status: 304,
-                    body: Vec::new(),
-                    etag: None,
-                    last_modified: None,
-                    expires: expires.clone(),
-                    retry_after: None,
-                });
+                return Ok(Response { status: 304, expires: expires.clone(), ..Response::empty() });
             }
         }
-        Ok(Response { status: 200, body, etag, last_modified, expires, retry_after: None })
+        Ok(Response { status, body, etag, last_modified, expires, content_range, ..Response::empty() })
     }
 
     fn requests(&self) -> u32 {

@@ -95,13 +95,46 @@ fn floor_div(numerator: i64, denominator: i64) -> i64 {
 
 /// The cell window covering `corridor` inside a frame's grid, clamped to the grid.
 pub fn window(header: &obcg::Header, corridor: &Bbox) -> Option<Window> {
-    let south = i64::from(header.south_lat_udeg);
-    let west = i64::from(header.west_lon_udeg);
-    let lat_stride = i64::from(header.cell_lat_udeg);
-    let lon_stride = i64::from(header.cell_lon_udeg);
-    if corridor.south_udeg >= header.north_lat_udeg()
+    window_on_lattice(
+        i64::from(header.south_lat_udeg),
+        i64::from(header.west_lon_udeg),
+        i64::from(header.cell_lat_udeg),
+        i64::from(header.cell_lon_udeg),
+        header.width,
+        header.height,
+        corridor,
+    )
+}
+
+/// The same window from the **manifest's** geometry, before a byte is fetched — what lets a cache
+/// lookup be keyed on the exact crop a frame would produce without paying for its header first.
+/// The header is still checked against this geometry before any cell is trusted.
+pub fn window_of(geometry: &crate::manifest::Geometry, corridor: &Bbox) -> Option<Window> {
+    window_on_lattice(
+        i64::from(geometry.south_udeg),
+        i64::from(geometry.west_udeg),
+        i64::from(geometry.cell_lat_udeg),
+        i64::from(geometry.cell_lon_udeg),
+        geometry.width,
+        geometry.height,
+        corridor,
+    )
+}
+
+fn window_on_lattice(
+    south: i64,
+    west: i64,
+    lat_stride: i64,
+    lon_stride: i64,
+    grid_width: u32,
+    grid_height: u32,
+    corridor: &Bbox,
+) -> Option<Window> {
+    let north = south + i64::from(grid_height) * lat_stride;
+    let east = west + i64::from(grid_width) * lon_stride;
+    if corridor.south_udeg >= north
         || corridor.north_udeg <= south
-        || corridor.west_udeg >= header.east_lon_udeg()
+        || corridor.west_udeg >= east
         || corridor.east_udeg <= west
     {
         return None;
@@ -111,9 +144,9 @@ pub fn window(header: &obcg::Header, corridor: &Bbox) -> Option<Window> {
     let row_min_raw = floor_div(corridor.south_udeg - south, lat_stride);
     let row_max_raw = floor_div(corridor.north_udeg - south, lat_stride);
     let col_min = col_min_raw.max(0);
-    let col_max = col_max_raw.min(i64::from(header.width) - 1);
+    let col_max = col_max_raw.min(i64::from(grid_width) - 1);
     let row_min = row_min_raw.max(0);
-    let row_max = row_max_raw.min(i64::from(header.height) - 1);
+    let row_max = row_max_raw.min(i64::from(grid_height) - 1);
     if col_min > col_max || row_min > row_max {
         return None;
     }
@@ -124,8 +157,8 @@ pub fn window(header: &obcg::Header, corridor: &Bbox) -> Option<Window> {
         height: (row_max - row_min + 1) as u32,
         clipped: col_min_raw < 0
             || row_min_raw < 0
-            || col_max_raw > i64::from(header.width) - 1
-            || row_max_raw > i64::from(header.height) - 1,
+            || col_max_raw > i64::from(grid_width) - 1
+            || row_max_raw > i64::from(grid_height) - 1,
     })
 }
 
@@ -307,24 +340,166 @@ pub fn crop_frame<H: Http>(http: &mut H, origin: &str, frame: &Frame, corridor: 
     })
 }
 
+/// One Range read, with the two statuses a corridor read may act on and nothing else.
+///
+/// `206` is the answer we asked for: its `Content-Range` must name the bytes we asked for and its
+/// body must be exactly that long — an over-long "partial" answer is a server contradicting
+/// itself, never something to slice. `200` means the server ignored `Range` and streamed the whole
+/// object, which is lawful, so we slice it ourselves rather than read its head as the middle.
+/// **Every other 2xx is a refusal**: a `204` or a `203` to a Range request describes something
+/// other than the bytes this reader is about to CRC, and guessing which is how a transport lie
+/// gets blamed on the producer.
 fn read<H: Http>(http: &mut H, url: &str, start: u64, end: u64) -> Result<Vec<u8>, CropError> {
     let wanted = (end - start + 1) as usize;
     let response = http.perform(&Request::range(url, start, end), RANGE_CAP).map_err(CropError::Http)?;
-    if !response.is_success() {
-        return Err(CropError::Http(crate::http::HttpError::Status { code: response.status, retry_after: None }));
+    let not_honoured = |why: String| CropError::Http(crate::http::HttpError::RangeNotHonoured(why));
+    match response.status {
+        206 => {
+            if let Some((first, last)) = response.content_range_bytes() {
+                if (first, last) != (start, end) {
+                    return Err(not_honoured(format!("Content-Range bytes {first}-{last}, asked {start}-{end}")));
+                }
+            }
+            if response.body.len() != wanted {
+                return Err(not_honoured(format!("{} bytes for a {wanted}-byte range", response.body.len())));
+            }
+            Ok(response.body)
+        }
+        200 => {
+            let start = start as usize;
+            response
+                .body
+                .get(start..start + wanted)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| not_honoured(format!("whole-object answer of {} bytes", response.body.len())))
+        }
+        code => Err(CropError::Http(crate::http::HttpError::Status { code, retry_after: response.retry_after })),
     }
-    // A server may lawfully answer a Range request with the whole object. Slicing it ourselves
-    // is the only safe reading — treating the head as if it were the middle would be silent
-    // corruption that every CRC below would then blame on the producer.
-    if response.body.len() == wanted {
-        return Ok(response.body);
-    }
-    let start = start as usize;
-    response.body.get(start..start + wanted).map(<[u8]>::to_vec).ok_or_else(|| {
-        CropError::Http(crate::http::HttpError::RangeNotHonoured(format!("{} bytes", response.body.len())))
-    })
 }
 
 pub fn join(origin: &str, key: &str) -> String {
     format!("{}/{}", origin.trim_end_matches('/'), key.trim_start_matches('/'))
+}
+
+// ── the frame cache ────────────────────────────────────────────────────────────────────────
+
+/// One cropped frame's identity: the immutable object key plus the exact cell window taken out of
+/// it. Both halves matter. The key is immutable by the publishing contract, which is why a hit is
+/// **never revalidated** — the bytes behind `wx/v1/dwd-rv/20260809T1130Z/f15.obcg` cannot change,
+/// so a conditional request against them would be pure latency. The window makes an entry answer
+/// only the question it was stored for: a wider corridor is a miss, not a wrong answer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FrameKey {
+    pub object_key: String,
+    pub col_min: u32,
+    pub row_min: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl FrameKey {
+    pub fn new(object_key: &str, window: &Window) -> Self {
+        Self {
+            object_key: object_key.to_string(),
+            col_min: window.col_min,
+            row_min: window.row_min,
+            width: window.width,
+            height: window.height,
+        }
+    }
+}
+
+/// A bounded, process-lifetime cache of cropped frames, FIFO by insertion — the phone's
+/// `InMemoryWeatherFrameCache`, same capacity, same key.
+///
+/// This is what makes a 30-minute cadence cheap: at a 15-minute frame stride, seven or eight of
+/// DWD's nine frames are the *same immutable objects* the previous fetch already cropped, and
+/// re-reading them would be bytes spent to learn what the client already knows.
+///
+/// The phone also has a file cache that survives suspension between two BLE connections; the
+/// simulator deliberately has no on-disk half — a `--weather live` process is one session, and a
+/// disk cache would add a second place a stale crop could come from.
+#[derive(Debug, Clone)]
+pub struct FrameCache {
+    entries: std::collections::HashMap<FrameKey, Crop>,
+    order: std::collections::VecDeque<FrameKey>,
+    capacity: usize,
+    pub hits: u32,
+    pub misses: u32,
+}
+
+/// The phone's in-memory capacity: 64 crops, comfortably more than one product's timeline.
+pub const FRAME_CACHE_CAPACITY: usize = 64;
+
+impl Default for FrameCache {
+    fn default() -> Self {
+        Self::new(FRAME_CACHE_CAPACITY)
+    }
+}
+
+impl FrameCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            capacity: capacity.max(1),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    pub fn get(&mut self, key: &FrameKey) -> Option<Crop> {
+        match self.entries.get(key) {
+            Some(crop) => {
+                self.hits += 1;
+                Some(crop.clone())
+            }
+            None => {
+                self.misses += 1;
+                None
+            }
+        }
+    }
+
+    pub fn insert(&mut self, key: FrameKey, crop: Crop) {
+        if self.entries.insert(key.clone(), crop).is_none() {
+            self.order.push_back(key);
+            while self.order.len() > self.capacity {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// [`crop_frame`] through a [`FrameCache`]: a hit costs no request at all.
+pub fn crop_frame_cached<H: Http>(
+    http: &mut H,
+    origin: &str,
+    frame: &Frame,
+    corridor: &Bbox,
+    cache: &mut FrameCache,
+) -> Result<Crop, CropError> {
+    // The window comes from the manifest's geometry, so the lookup happens before the header read
+    // it would otherwise have to pay for. `crop_frame` still re-derives it from the fetched header
+    // and refuses any disagreement, so a manifest cannot steer a crop it does not match.
+    let Some(window) = window_of(&frame.geometry, corridor) else {
+        return crop_frame(http, origin, frame, corridor);
+    };
+    let key = FrameKey::new(&frame.key, &window);
+    if let Some(crop) = cache.get(&key) {
+        return Ok(crop);
+    }
+    let crop = crop_frame(http, origin, frame, corridor)?;
+    cache.insert(key, crop.clone());
+    Ok(crop)
 }
