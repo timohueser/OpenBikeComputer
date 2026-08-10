@@ -199,6 +199,9 @@ struct LodDocument {
     #[serde(default = "default_zero_f64_document")]
     #[schemars(default = "default_zero_f64_document")]
     min_area_px: Option<f64>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    coverage_simplify: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -264,7 +267,12 @@ fn default_features_document() -> Option<IndexMap<String, IndexMap<String, Style
 }
 
 fn default_lods_document() -> Option<Vec<LodDocument>> {
-    Some(vec![LodDocument { max_mpp: None, simplify: Some(0.0), min_area_px: Some(0.0) }])
+    Some(vec![LodDocument {
+        max_mpp: None,
+        simplify: Some(0.0),
+        min_area_px: Some(0.0),
+        coverage_simplify: Some(false),
+    }])
 }
 
 fn default_marker_document() -> Option<MarkerDocument> {
@@ -584,6 +592,13 @@ pub struct Lod {
     /// tier is never culled (no finer fallback), so its value is ignored. See
     /// [`crate::geom::footprint_below`].
     pub min_area_px: f64,
+    /// Simplify this tier's **plain fills** as one polygonal coverage instead of feature by
+    /// feature ([`crate::coverage`]): every boundary two fills share is cut **once**, so
+    /// neighbouring classes stay glued at any `simplify_m` instead of drifting apart into
+    /// backdrop slivers. Only polygons whose style carries no `color2` take part; lines,
+    /// outlined polygons and every downstream stage are untouched. Default `false` ⇒ the tier
+    /// packs byte-identically to before.
+    pub coverage_simplify: bool,
 }
 
 /// The parsed `contours` config section (EL10a, #1094): what [`crate::contour`] traces out of the
@@ -719,7 +734,7 @@ impl Config {
                 .enumerate()
                 .map(|(index, lod)| lod.normalize(index))
                 .collect::<Result<Vec<_>, _>>()?,
-            _ => vec![Lod { max_mpp: None, simplify_m: 0.0, min_area_px: 0.0 }],
+            _ => vec![Lod { max_mpp: None, simplify_m: 0.0, min_area_px: 0.0, coverage_simplify: false }],
         };
 
         // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
@@ -817,7 +832,12 @@ impl LodDocument {
         if min_area_px < 0.0 {
             return Err(format!("config lods[{index}].min_area_px: {min_area_px} must be >= 0"));
         }
-        Ok(Lod { max_mpp: self.max_mpp, simplify_m, min_area_px })
+        Ok(Lod {
+            max_mpp: self.max_mpp,
+            simplify_m,
+            min_area_px,
+            coverage_simplify: self.coverage_simplify.unwrap_or(false),
+        })
     }
 }
 
@@ -952,6 +972,12 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
         "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.".into(),
     );
     lod_props["min_area_px"]["minimum"] = Value::from(0.0);
+    lod_props["coverage_simplify"]["description"] = Value::String(
+        "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by \
+         feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open \
+         into backdrop slivers. Costs bake time; false (the default) packs byte-identically to before."
+            .into(),
+    );
 
     let profile = defs.get_mut("profile").expect("profile schema");
     profile["description"] = Value::String(
@@ -1355,7 +1381,27 @@ mod tests {
         assert_eq!((cfg.marker_color, cfg.chunk_size), (DEFAULT_MARKER_COLOR, DEFAULT_CHUNK_SIZE));
         assert_eq!(cfg.lods.len(), 1);
         assert_eq!((cfg.lods[0].max_mpp, cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (None, 0.0, 0.0));
+        assert!(!cfg.lods[0].coverage_simplify, "the coverage pass is opt-in per tier");
         assert!(!cfg.merge_fills && !cfg.merge_lines);
+    }
+
+    /// The per-tier `coverage_simplify` knob: absent and `null` are both off (so every config
+    /// written before the pass existed still packs byte-identically), `true` reaches the parsed
+    /// ladder, and the schema's advertised default is the parser's.
+    #[test]
+    fn lod_coverage_simplify_defaults_off_and_parses() {
+        let ladder = |json: &str| Config::parse(json).expect("ladder parses").lods;
+        assert!(!ladder(r#"{"lods":[{"simplify":10}]}"#)[0].coverage_simplify, "absent ⇒ off");
+        assert!(!ladder(r#"{"lods":[{"simplify":10,"coverage_simplify":null}]}"#)[0].coverage_simplify, "null ⇒ off");
+        let mixed = ladder(r#"{"lods":[{"simplify":200,"coverage_simplify":true},{"max_mpp":30,"simplify":10}]}"#);
+        assert!(mixed[0].coverage_simplify, "on for the coarse tier");
+        assert!(!mixed[1].coverage_simplify, "and off for the next one — it is per tier, not global");
+        assert!(
+            Config::parse(r#"{"lods":[{"coverage_simplify":"yes"}]}"#).is_err(),
+            "a non-boolean must error rather than read as true"
+        );
+        let lod_props = &embedded_schema()["$defs"]["lod"]["properties"];
+        assert_eq!(lod_props["coverage_simplify"]["default"], Value::Bool(false), "the editor must not offer it on");
     }
 
     #[test]

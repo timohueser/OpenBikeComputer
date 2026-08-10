@@ -334,7 +334,7 @@ fn read_coords<G: geos::Geom>(g: &G) -> Vec<(f64, f64)> {
     out
 }
 
-fn from_geos<G: Geom_>(g: &G) -> Geom {
+pub(crate) fn from_geos<G: Geom_>(g: &G) -> Geom {
     if g.is_empty().unwrap_or(true) {
         return Geom::Empty;
     }
@@ -361,7 +361,7 @@ fn from_geos<G: Geom_>(g: &G) -> Geom {
 
 /// Lets `from_geos` accept both owned `Geometry` and the borrowed `ConstGeometry`
 /// that ring/sub-geometry accessors return.
-trait Geom_: geos::Geom {}
+pub(crate) trait Geom_: geos::Geom {}
 impl Geom_ for Geometry {}
 impl Geom_ for geos::ConstGeometry<'_> {}
 
@@ -482,7 +482,7 @@ pub(crate) fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Res
 /// any ring that won't assemble into a valid `LinearRing`/`Polygon` yields `None`.
 /// A non-polygon geometry is also `None`. Used by [`union_polygons`], where a GEOS
 /// failure must fall back to passthrough, never panic the pack.
-fn try_polygon_to_geos(g: &Geom) -> Option<Geometry> {
+pub(crate) fn try_polygon_to_geos(g: &Geom) -> Option<Geometry> {
     let Geom::Polygon { exterior, interiors } = g else {
         return None;
     };
@@ -687,6 +687,361 @@ pub(crate) fn collect_lines(g: Geom, out: &mut Vec<Geom>) {
         _ => {}
     }
 }
+
+// --- the GEOS polygonal-coverage API, via `geos-sys` -----------------------
+//
+// The two entry points [`crate::coverage`] needs that the safe `geos` crate does not wrap.
+
+/// `GEOSCoverageSimplifyVW` / `GEOSCoverageIsValid`, spoken to directly.
+///
+/// `geos` 11.1 wraps `GEOSCoverageUnion` but neither of these two, and its `Geometry` keeps
+/// its raw pointer private (the `AsRaw` trait is crate-private), so a wrapped geometry cannot
+/// be handed to a C entry point the crate does not already cover. This module therefore talks
+/// to `geos::sys` — the same `geos-sys` the safe crate itself is built on, so no new
+/// dependency and no second version of libGEOS — and takes [`Geom`] in and out.
+///
+/// # Safety story
+///
+/// Every raw pointer is created, used and destroyed **inside one call on one thread**, under a
+/// context handle created first and dropped last, and the RAII guards below free their
+/// geometry on every exit path (early return, `?`, panic). Nothing GEOS-owned escapes: results
+/// are copied into owned Rust [`Geom`]s before the guards run, and no pointer is ever shared
+/// between threads or stored. Every `unsafe` block in the packer's coverage path is in here.
+mod coverage_api {
+    use std::ffi::c_int;
+    use std::ptr;
+
+    use geos::sys::{
+        GEOSContextHandle_t, GEOSCoordSeq_create_r, GEOSCoordSeq_destroy_r, GEOSCoordSeq_getSize_r,
+        GEOSCoordSeq_getXY_r, GEOSCoordSeq_setXY_r, GEOSCoordSequence, GEOSCoverageIsValid_r, GEOSCoverageSimplifyVW_r,
+        GEOSGeomTypeId_r, GEOSGeomTypes_GEOS_GEOMETRYCOLLECTION, GEOSGeomTypes_GEOS_LINEARRING,
+        GEOSGeomTypes_GEOS_LINESTRING, GEOSGeomTypes_GEOS_MULTIPOLYGON, GEOSGeomTypes_GEOS_POLYGON,
+        GEOSGeom_createCollection_r, GEOSGeom_createLinearRing_r, GEOSGeom_createPolygon_r, GEOSGeom_destroy_r,
+        GEOSGeom_getCoordSeq_r, GEOSGeometry, GEOSGetExteriorRing_r, GEOSGetGeometryN_r, GEOSGetInteriorRingN_r,
+        GEOSGetNumGeometries_r, GEOSGetNumInteriorRings_r, GEOS_finish_r, GEOS_init_r, GEOSisEmpty_r,
+    };
+
+    use super::Geom;
+
+    // GEOS type ids, renamed to Rust casing so they can be matched on.
+    const TYPE_LINESTRING: u32 = GEOSGeomTypes_GEOS_LINESTRING;
+    const TYPE_LINEARRING: u32 = GEOSGeomTypes_GEOS_LINEARRING;
+    const TYPE_POLYGON: u32 = GEOSGeomTypes_GEOS_POLYGON;
+    const TYPE_MULTIPOLYGON: u32 = GEOSGeomTypes_GEOS_MULTIPOLYGON;
+    const TYPE_COLLECTION: u32 = GEOSGeomTypes_GEOS_GEOMETRYCOLLECTION;
+
+    /// A GEOS context handle, freed on drop. Declared before every geometry that uses it, so
+    /// Rust's reverse-declaration drop order destroys the geometries first.
+    struct Context(GEOSContextHandle_t);
+
+    impl Context {
+        fn new() -> Option<Context> {
+            // SAFETY: `GEOS_init_r` takes no arguments and returns an owned handle or null.
+            let handle = unsafe { GEOS_init_r() };
+            (!handle.is_null()).then_some(Context(handle))
+        }
+
+        fn raw(&self) -> GEOSContextHandle_t {
+            self.0
+        }
+    }
+
+    impl Drop for Context {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is a non-null handle from `GEOS_init_r`, freed exactly once
+            // (`Context` is neither `Copy` nor `Clone`), after every geometry built under it.
+            unsafe { GEOS_finish_r(self.0) };
+        }
+    }
+
+    /// An owned GEOS geometry, destroyed on drop.
+    struct Owned<'c> {
+        ctx: &'c Context,
+        ptr: *mut GEOSGeometry,
+    }
+
+    impl<'c> Owned<'c> {
+        /// Adopt a freshly created geometry; `None` (nothing to free) if GEOS returned null.
+        fn new(ctx: &'c Context, ptr: *mut GEOSGeometry) -> Option<Owned<'c>> {
+            (!ptr.is_null()).then_some(Owned { ctx, ptr })
+        }
+    }
+
+    impl Drop for Owned<'_> {
+        fn drop(&mut self) {
+            // SAFETY: `ptr` is non-null (checked in `new`), owned by this guard alone, and
+            // destroyed exactly once — the guard is consumed by drop and never copied.
+            unsafe { GEOSGeom_destroy_r(self.ctx.raw(), self.ptr) };
+        }
+    }
+
+    /// The children of a collection under construction: freed on drop until
+    /// [`Nursery::release`] hands them to GEOS.
+    struct Nursery<'c> {
+        ctx: &'c Context,
+        ptrs: Vec<*mut GEOSGeometry>,
+    }
+
+    impl<'c> Nursery<'c> {
+        fn new(ctx: &'c Context, capacity: usize) -> Nursery<'c> {
+            Nursery { ctx, ptrs: Vec::with_capacity(capacity) }
+        }
+
+        fn push(&mut self, ptr: *mut GEOSGeometry) -> Option<()> {
+            if ptr.is_null() {
+                return None;
+            }
+            self.ptrs.push(ptr);
+            Some(())
+        }
+
+        /// Give up ownership: the returned pointers are GEOS's problem from here on.
+        fn release(&mut self) -> Vec<*mut GEOSGeometry> {
+            std::mem::take(&mut self.ptrs)
+        }
+    }
+
+    impl Drop for Nursery<'_> {
+        fn drop(&mut self) {
+            for &p in &self.ptrs {
+                // SAFETY: every pointer in `ptrs` is a non-null geometry this nursery owns
+                // (`push` rejects null) and has not been released to GEOS.
+                unsafe { GEOSGeom_destroy_r(self.ctx.raw(), p) };
+            }
+        }
+    }
+
+    /// One closed ring as a GEOS `LinearRing`, or null. A ring that does not repeat its first
+    /// vertex is closed here rather than rejected — GEOS refuses an open ring outright.
+    fn build_ring(ctx: &Context, coords: &[(f64, f64)]) -> *mut GEOSGeometry {
+        if coords.len() < 3 {
+            return ptr::null_mut();
+        }
+        let closed = coords.first() == coords.last();
+        let n = coords.len() + usize::from(!closed);
+        if n < 4 {
+            return ptr::null_mut();
+        }
+        // SAFETY: `n` fits the sequence created immediately below, every index written is
+        // `< n`, and the sequence is either handed to `GEOSGeom_createLinearRing_r` (which
+        // takes ownership) or destroyed here.
+        unsafe {
+            let seq: *mut GEOSCoordSequence = GEOSCoordSeq_create_r(ctx.raw(), n as u32, 2);
+            if seq.is_null() {
+                return ptr::null_mut();
+            }
+            for (i, &(x, y)) in coords.iter().enumerate() {
+                if GEOSCoordSeq_setXY_r(ctx.raw(), seq, i as u32, x, y) == 0 {
+                    GEOSCoordSeq_destroy_r(ctx.raw(), seq);
+                    return ptr::null_mut();
+                }
+            }
+            if !closed {
+                let (x, y) = coords[0];
+                if GEOSCoordSeq_setXY_r(ctx.raw(), seq, (n - 1) as u32, x, y) == 0 {
+                    GEOSCoordSeq_destroy_r(ctx.raw(), seq);
+                    return ptr::null_mut();
+                }
+            }
+            GEOSGeom_createLinearRing_r(ctx.raw(), seq)
+        }
+    }
+
+    /// One [`Geom::Polygon`] as a GEOS polygon, or null (a non-polygon, or a ring GEOS
+    /// rejects).
+    fn build_polygon(ctx: &Context, g: &Geom) -> *mut GEOSGeometry {
+        let Geom::Polygon { exterior, interiors } = g else {
+            return ptr::null_mut();
+        };
+        let shell = build_ring(ctx, exterior);
+        if shell.is_null() {
+            return ptr::null_mut();
+        }
+        let mut holes = Nursery::new(ctx, interiors.len());
+        for r in interiors {
+            if holes.push(build_ring(ctx, r)).is_none() {
+                // SAFETY: `shell` is a live, unshared ring this function owns; the nursery
+                // frees the holes built so far.
+                unsafe { GEOSGeom_destroy_r(ctx.raw(), shell) };
+                return ptr::null_mut();
+            }
+        }
+        let mut raw = holes.release();
+        // SAFETY: `shell` and every hole are live rings owned here; `GEOSGeom_createPolygon_r`
+        // takes ownership of all of them (the `raw` *array* stays ours) and returns null on
+        // failure — the documented C-API leak on that path is accepted rather than risking a
+        // double free.
+        unsafe { GEOSGeom_createPolygon_r(ctx.raw(), shell, raw.as_mut_ptr(), raw.len() as u32) }
+    }
+
+    /// The polygons as one GEOS `GeometryCollection` — the shape both coverage entry points
+    /// take. Element order is the input order, which is what carries class identity back.
+    fn build_collection<'c>(ctx: &'c Context, polys: &[&Geom]) -> Option<Owned<'c>> {
+        let mut nursery = Nursery::new(ctx, polys.len());
+        for g in polys {
+            nursery.push(build_polygon(ctx, g))?;
+        }
+        let mut raw = nursery.release();
+        // SAFETY: every element is a live polygon owned here; `GEOSGeom_createCollection_r`
+        // takes ownership of them (the array stays ours). Same accepted-leak note as above on
+        // the null path.
+        let ptr = unsafe {
+            GEOSGeom_createCollection_r(ctx.raw(), TYPE_COLLECTION as c_int, raw.as_mut_ptr(), raw.len() as u32)
+        };
+        Owned::new(ctx, ptr)
+    }
+
+    /// Read a `LineString`/`LinearRing`'s coordinates into owned pairs.
+    ///
+    /// # Safety
+    /// `g` must be a live geometry created under `ctx` whose type carries a coordinate
+    /// sequence (line string or linear ring).
+    unsafe fn read_ring(ctx: &Context, g: *const GEOSGeometry) -> Option<Vec<(f64, f64)>> {
+        let seq = GEOSGeom_getCoordSeq_r(ctx.raw(), g);
+        if seq.is_null() {
+            return None;
+        }
+        let mut size: u32 = 0;
+        if GEOSCoordSeq_getSize_r(ctx.raw(), seq, &mut size) == 0 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(size as usize);
+        for i in 0..size {
+            let (mut x, mut y) = (0.0, 0.0);
+            if GEOSCoordSeq_getXY_r(ctx.raw(), seq, i, &mut x, &mut y) == 0 {
+                return None;
+            }
+            out.push((x, y));
+        }
+        Some(out)
+    }
+
+    /// Read a GEOS result into a [`Geom`]; anything non-areal and non-linear reads as
+    /// [`Geom::Empty`], exactly like the safe path's `from_geos`.
+    ///
+    /// # Safety
+    /// `g` must be a live geometry created under `ctx`. Sub-geometry accessors return
+    /// pointers *borrowed* from `g`, which stays alive for the whole walk, and are never
+    /// destroyed here.
+    unsafe fn read_geom(ctx: &Context, g: *const GEOSGeometry) -> Option<Geom> {
+        if GEOSisEmpty_r(ctx.raw(), g) != 0 {
+            // 1 = empty, 2 = exception; neither carries geometry.
+            return Some(Geom::Empty);
+        }
+        let type_id = GEOSGeomTypeId_r(ctx.raw(), g);
+        if type_id < 0 {
+            return None;
+        }
+        match type_id as u32 {
+            TYPE_POLYGON => {
+                let ext = GEOSGetExteriorRing_r(ctx.raw(), g);
+                if ext.is_null() {
+                    return None;
+                }
+                let exterior = read_ring(ctx, ext)?;
+                let nholes = GEOSGetNumInteriorRings_r(ctx.raw(), g);
+                if nholes < 0 {
+                    return None;
+                }
+                let mut interiors = Vec::with_capacity(nholes as usize);
+                for i in 0..nholes {
+                    let hole = GEOSGetInteriorRingN_r(ctx.raw(), g, i);
+                    if hole.is_null() {
+                        return None;
+                    }
+                    interiors.push(read_ring(ctx, hole)?);
+                }
+                Some(Geom::Polygon { exterior, interiors })
+            }
+            TYPE_LINESTRING | TYPE_LINEARRING => Some(Geom::Line(read_ring(ctx, g)?)),
+            TYPE_MULTIPOLYGON | TYPE_COLLECTION => {
+                let n = GEOSGetNumGeometries_r(ctx.raw(), g);
+                if n < 0 {
+                    return None;
+                }
+                let mut parts = Vec::with_capacity(n as usize);
+                for i in 0..n {
+                    let child = GEOSGetGeometryN_r(ctx.raw(), g, i);
+                    if child.is_null() {
+                        return None;
+                    }
+                    parts.push(read_geom(ctx, child)?);
+                }
+                Some(Geom::Multi(parts))
+            }
+            _ => Some(Geom::Empty),
+        }
+    }
+
+    /// Simplify a polygonal **coverage** with `GEOSCoverageSimplifyVW`: every edge shared by
+    /// two elements is simplified **once**, so neighbours stay glued at any tolerance — the
+    /// whole reason this pass exists (per-feature simplify moves each copy of a shared
+    /// boundary independently and tears the seam open).
+    ///
+    /// `tol` is in degrees, like [`super::topology_preserve_simplify`]. `preserve_boundary`
+    /// pins the coverage's outer edge; the packer passes `false`, because the outer edge of a
+    /// tier's fills is a coastline or a landuse rim like any other line and must simplify at
+    /// the tier's tolerance too — pinning it would leave un-simplified vertex noise around
+    /// every cluster at the coarsest zooms.
+    ///
+    /// Returns one [`Geom`] per input element **in input order** (GEOS preserves it, which is
+    /// how the caller keeps each element's style), or `None` on any GEOS failure or a
+    /// element-count mismatch — the caller then falls back to the per-feature path and drops
+    /// nothing.
+    pub fn coverage_simplify_vw(polys: &[&Geom], tol: f64, preserve_boundary: bool) -> Option<Vec<Geom>> {
+        if polys.is_empty() {
+            return None;
+        }
+        let ctx = Context::new()?;
+        let input = build_collection(&ctx, polys)?;
+        // SAFETY: `input.ptr` is a live collection built under `ctx`; the result is adopted by
+        // an `Owned` guard (or is null, which `Owned::new` reports as `None`).
+        let simplified = unsafe {
+            let ptr = GEOSCoverageSimplifyVW_r(ctx.raw(), input.ptr, tol, c_int::from(preserve_boundary));
+            Owned::new(&ctx, ptr)?
+        };
+        // SAFETY: `simplified.ptr` is live for the whole read; child pointers are borrowed
+        // from it and never freed here.
+        unsafe {
+            let n = GEOSGetNumGeometries_r(ctx.raw(), simplified.ptr);
+            if n < 0 || n as usize != polys.len() {
+                return None;
+            }
+            let mut out = Vec::with_capacity(polys.len());
+            for i in 0..n {
+                let child = GEOSGetGeometryN_r(ctx.raw(), simplified.ptr, i);
+                if child.is_null() {
+                    return None;
+                }
+                out.push(read_geom(&ctx, child)?);
+            }
+            Some(out)
+        }
+    }
+
+    /// Whether these polygons form a **valid coverage** (`GEOSCoverageIsValid`): interiors
+    /// disjoint and every shared edge vertex-for-vertex identical on both sides. `gap_width`
+    /// is the narrow-gap width to also report as invalid; `0.0` checks overlaps and mismatched
+    /// edges only. A GEOS failure reads as invalid — the caller's fallback is the safe answer.
+    pub fn coverage_is_valid(polys: &[&Geom], gap_width: f64) -> bool {
+        if polys.is_empty() {
+            return false;
+        }
+        let Some(ctx) = Context::new() else { return false };
+        let Some(input) = build_collection(&ctx, polys) else { return false };
+        let mut invalid_edges: *mut GEOSGeometry = ptr::null_mut();
+        // SAFETY: `input.ptr` is a live collection under `ctx`; `invalid_edges` is a valid
+        // out-pointer, and the geometry GEOS may write into it is owned by us and freed here.
+        let rc = unsafe { GEOSCoverageIsValid_r(ctx.raw(), input.ptr, gap_width, &mut invalid_edges) };
+        if !invalid_edges.is_null() {
+            // SAFETY: a live geometry GEOS just handed us, destroyed exactly once.
+            unsafe { GEOSGeom_destroy_r(ctx.raw(), invalid_edges) };
+        }
+        rc == 1
+    }
+}
+
+pub use coverage_api::{coverage_is_valid, coverage_simplify_vw};
 
 /// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
 /// `intersection`.
