@@ -331,6 +331,19 @@ pub fn decode_band0(bytes: &[u8]) -> Result<Cog, String> {
     // in twelve bytes; it cannot claim them without also pointing at `tile_count` payloads inside
     // an object that is itself capped, so this pre-pass is what stops a small hostile object from
     // costing a large allocation.
+    //
+    // A zero byte count is refused here, and that is a deliberate choice rather than an oversight.
+    // GDAL uses `offset = 0, count = 0` as a **sparse block**: a tile every pixel of which is the
+    // nodata value, written by omission. No OPERA composite has ever emitted one — all 72 CIRRUS
+    // and 20 NIMBUS counts are non-zero — and until one does, the honest reading of a zero count
+    // is a corrupt tile table, which is indistinguishable from a sparse block by inspection. Given
+    // that ambiguity, failing closed beats silently materialising a 512 x 512 hole in a radar
+    // frame from what may be a flipped byte. **If an upstream ever does go sparse, the fix is to
+    // fill that tile's region with `nodata` and continue — not to keep rejecting it, and not to
+    // leave it as the `NaN` the buffer is initialised with**, because in this format `NaN` means
+    // "covered, nothing detected" and the sparse block means "no coverage" (see
+    // [`crate::source::opera`]). That distinction is load-bearing and a sparse tile must land on
+    // the right side of it.
     for (index, (start, length)) in offsets.iter().zip(&counts).enumerate() {
         let (start, length) = (*start as usize, *length as usize);
         let end = start.checked_add(length).ok_or("TIFF: tile extent overflows")?;
