@@ -217,6 +217,38 @@ struct LinkLifecycleModelTests {
         #expect(transport.count("connect") == 0)
     }
 
+    /// WX9 (#1194) no-regression: the standing weather watch keeps the radio after the foreground
+    /// link goes away, which is exactly what a Bluetooth off/on toggle looks like from here — the
+    /// transport publishes `.disconnected` on the way down. The link policy must be unmoved by it:
+    /// a foreground return with no link at suspend time still starts nothing (the watch's scan is
+    /// the transport's business, not this model's), and once a link exists again the ordinary
+    /// suspend → `resumeLink()` round trip is unchanged.
+    @Test func aBluetoothToggleUnderTheWeatherWatchDoesNotChangeTheForegroundPolicy() async {
+        let (model, transport, _, _) = make()
+        await startConnected(model, transport)
+
+        // Radio off: the transport reports the link gone while the app is still foregrounded.
+        transport.setState(.disconnected)
+        await eventually("link mirror down") { model.connection == .disconnected }
+
+        model.scenePhaseChanged(to: .background)
+        await eventually("suspended") { model.phase == .suspended }
+        model.scenePhaseChanged(to: .active)
+        await settle()
+        #expect(
+            transport.count("resumeLink") == 0,
+            "no link at suspend time — the watch keeping the radio is not a reason to re-raise one")
+
+        // Radio back and connected again: the normal policy, untouched.
+        transport.setState(.connected)
+        await eventually("link mirror up") { model.connection == .connected }
+        model.scenePhaseChanged(to: .background)
+        await eventually("suspended again") { model.phase == .suspended }
+        #expect(transport.count("suspendLink") == 2)
+        model.scenePhaseChanged(to: .active)
+        await eventually("resumed") { transport.count("resumeLink") == 1 }
+    }
+
     // MARK: The mock transport's default seam round-trips
 
     @Test func mockTransportSuspendResumeRoundTrip() async throws {

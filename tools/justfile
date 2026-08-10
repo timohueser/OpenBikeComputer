@@ -17,18 +17,31 @@ default:
 
 # ── Simulator ────────────────────────────────────────────────────────────────
 
-# Run the simulator (always --physical). Args: [MAP.obcm] [TRACK.gpx] [-- extra sim flags].
+# Run the simulator (always --physical). Args: [MAP.obcm|MS<id>.OBS] [TRACK.gpx] [-- sim flags].
 # MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK to $OBC_GPX
 # or the bundled grimsel-climb.gpx. Pass `none` as the track to run without a GPS.
+# A MAP ending in .OBS is an OBCA volume set and rides the sim's --set flag; passing
+# --set through `--` also works and suppresses the default positional map.
+# Live weather needs no task of its own — it is a sim flag:
+#   obc sim -- --weather live            (real service + MET for the rider's position)
+#   obc sim -- --weather live --weather-offline   (and the WX14 failure controls)
 # Run the simulator on a map + GPX, always at physical size. Args: [MAP] [TRACK.gpx] [-- sim flags]
 sim *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     split_args "$@"
-    mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
     gpxf="$(resolve_gpx "${_POS[1]:-}")"
-    cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
+    if [[ " ${_EXTRA[*]:-} " == *" --set "* ]]; then
+        # An explicit --set names the whole map; injecting the default positional
+        # map alongside it would trip the sim's mutual-exclusion check.
+        cmd=(cargo run --release -p obc-sim -- --physical)
+    elif [[ "${_POS[0]:-}" == *.OBS || "${_POS[0]:-}" == *.obs ]]; then
+        cmd=(cargo run --release -p obc-sim -- --set "${_POS[0]}" --physical)
+    else
+        mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
+        cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
+    fi
     [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     cd "$OBC_ROOT"; _run "${cmd[@]}"

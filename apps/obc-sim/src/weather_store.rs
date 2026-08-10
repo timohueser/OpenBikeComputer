@@ -176,7 +176,31 @@ pub struct SimWeather {
     /// `--weather-now` override; `None` treats the bundle's own first frame as current — the
     /// deterministic-fixture default that makes `--weather <dir> --png` render rain out of the box.
     now_override: Option<i64>,
+    /// The `--weather demo` recipe, retained so [`sync_clock`](Self::sync_clock) can re-anchor
+    /// the bundle onto the app's real clock: the screens compare frame timestamps against that
+    /// clock, and a bundle pinned to the deterministic fixture instant is months stale (or
+    /// future) in a live GUI session — every honest state then reads WEATHER UPDATE NEEDED.
+    /// `None` for a store loaded from disk (real bundles must age truthfully).
+    demo_recipe: Option<DemoRecipe>,
+    /// The instant the demo bundle is currently stamped at (`GENERATED_AT` until re-anchored).
+    anchor: i64,
 }
+
+/// The deterministic fixture instant demo bundles are born at (2027-01-15T08:00Z): headless
+/// commands pin the app clock here (the `weather_clock` rule in `main`), so previews and
+/// snapshot sweeps are byte-stable. A live session re-anchors away from it via `sync_clock`.
+const DEMO_GENERATED_AT: i64 = 1_800_000_000;
+/// Live-clock drift beyond which `sync_clock` re-stamps the demo bundle (5 min — the tightest
+/// real refresh cadence the phone offers, safely inside the ~900 s window after which the dry
+/// scenario honestly expires).
+const DEMO_REANCHOR_LIVE_S: i64 = 300;
+/// Scripted-clock threshold: a headless script can elapse synthetic minutes (`I` alone is
+/// 301 s), and a re-anchor inside a scripted run would silently change preview bytes — so a
+/// non-live clock only re-stamps for a jump no script can produce (review #1230 F1).
+const DEMO_REANCHOR_SCRIPTED_S: i64 = 86_400;
+
+/// The `--weather demo` shape retained for re-anchoring: `(scenario, map bbox)`.
+type DemoRecipe = (Option<DemoScenario>, (i32, i32, i32, i32));
 
 impl SimWeather {
     /// Resolve `--weather`'s argument: `demo` / `demo:<scenario>` synthesizes a deterministic
@@ -235,13 +259,32 @@ impl SimWeather {
         obc_app::WeatherSnapshot::sample_along(&reader, &mut self.cache, pos, projection).ok()
     }
 
+    /// The held bundle's bytes — the companion reads its generation/timestamp for the §11.4
+    /// context and the A/B comparison.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Adopt an in-memory bundle (the `--weather live` path, and the companion's commit): the
+    /// bytes must still be a valid OBCW object, so a service that answered with nonsense produces
+    /// `None` rather than a store the screens would have to defend against.
+    ///
+    /// No `demo_recipe`, deliberately — a live bundle is a real observation and must **age**.
+    /// Re-stamping it onto the clock the way a demo bundle is re-anchored would turn a stalled
+    /// baker into a permanently fresh-looking nowcast, which is the exact lie the epic forbids.
+    pub fn from_bytes(bytes: Vec<u8>, now_override: Option<i64>) -> Option<Self> {
+        let source = obc_formats::io::SliceSource(&bytes);
+        obc_weather::WeatherReader::open(&source).ok()?;
+        Some(Self { bytes, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
+    }
+
     /// Load the newest valid generation from a WEATHER.A/WEATHER.B root, exactly as boot selection
     /// does. `None` when neither slot holds a valid bundle.
     pub fn load(root: &Path, now_override: Option<i64>) -> Option<Self> {
         let selection = inspect_root(root);
         let (candidate, _) = open_active(root, selection).ok().flatten()?;
         let bytes = std::fs::read(root.join(candidate.slot.root_file_name())).ok()?;
-        Some(Self { bytes, cache: obc_weather::WeatherCache::new(), now_override })
+        Some(Self { bytes, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
     }
 
     /// A deterministic in-memory demo bundle over `(west, south, east, north)` microdegrees: a
@@ -252,12 +295,25 @@ impl SimWeather {
     /// stay hard (nearest-neighbour, no smoothing), so the scenarios double as look-tuning
     /// material for the WX10/WX11 review rounds.
     pub fn demo(scenario: Option<DemoScenario>, bbox: (i32, i32, i32, i32), now_override: Option<i64>) -> Self {
+        let bytes = Self::demo_bundle(scenario, bbox, DEMO_GENERATED_AT);
+        Self {
+            bytes,
+            cache: obc_weather::WeatherCache::new(),
+            now_override,
+            demo_recipe: Some((scenario, bbox)),
+            anchor: DEMO_GENERATED_AT,
+        }
+    }
+
+    /// Encode the demo bundle with every timestamp anchored at `generated_at` — the pure half of
+    /// [`demo`](Self::demo), reused by [`sync_clock`](Self::sync_clock)'s re-anchor.
+    fn demo_bundle(scenario: Option<DemoScenario>, bbox: (i32, i32, i32, i32), generated_at: i64) -> Vec<u8> {
         use obc_formats::obcw::{
             encode_format, encoded_len, BundleInput, HourlyRecord, RainFrameInput, CONDITION_MOSTLY_CLEAR,
             CONDITION_PARTLY_CLOUDY, CONDITION_RAIN, CONDITION_SHOWERS, CONDITION_THUNDERSTORM, HOURLY_COUNT,
             HOURLY_INTERVAL_SECONDS, QUALITY_FORECAST, TILE_CELLS,
         };
-        const GENERATED_AT: i64 = 1_800_000_000;
+        let generated: i64 = generated_at;
         const GRID: usize = 48; // 3 × 3 tiles
         let (west, south, east, north) = bbox;
         // Hourly rows consistent with the chosen rain scenario (WX11 reads them on the
@@ -307,7 +363,7 @@ impl SimWeather {
             .iter()
             .enumerate()
             .map(|(i, tiles)| RainFrameInput {
-                valid_at: GENERATED_AT + i as i64 * 900,
+                valid_at: generated + i as i64 * 900,
                 width: GRID as u16,
                 height: GRID as u16,
                 cell_size_m: 1_000,
@@ -318,9 +374,9 @@ impl SimWeather {
         let input = BundleInput {
             generation: 1,
             request_id: 0xDEED_0001,
-            generated_at: GENERATED_AT,
-            valid_from: GENERATED_AT,
-            valid_until: GENERATED_AT + 24 * 3_600,
+            generated_at: generated,
+            valid_from: generated,
+            valid_until: generated + 24 * 3_600,
             south_lat_udeg: south,
             west_lon_udeg: west,
             north_lat_udeg: north,
@@ -334,7 +390,28 @@ impl SimWeather {
         let mut bytes = vec![0u8; encoded_len(&input).expect("demo bundle length") as usize];
         let len = encode_format(&input, &mut bytes).expect("demo bundle encode");
         bytes.truncate(len);
-        Self { bytes, cache: obc_weather::WeatherCache::new(), now_override }
+        bytes
+    }
+
+    /// Re-anchor a demo bundle onto the app's clock once it drifts past the threshold — the
+    /// sim's stand-in for the phone's periodic refresh. `live` says whether `now` comes from a
+    /// real clock (the GUI's `SimClock`): live drifts re-stamp at 5 min so the honest states
+    /// stay honest; scripted/headless clocks only for a jump no script can produce, keeping
+    /// previews byte-stable. `--weather-now` always wins (the deterministic stale-scenario
+    /// tool) and disk-loaded bundles age truthfully.
+    ///
+    /// Deliberate trade (review #1230 F5): under a live clock the demo can never age into the
+    /// stale states — those stay reachable headlessly via `--weather-now`, by design; do not
+    /// "fix" the re-stamp away.
+    pub fn sync_clock(&mut self, now: i64, live: bool) {
+        let Some((scenario, bbox)) = self.demo_recipe else { return };
+        let threshold = if live { DEMO_REANCHOR_LIVE_S } else { DEMO_REANCHOR_SCRIPTED_S };
+        if self.now_override.is_some() || (now - self.anchor).abs() <= threshold {
+            return;
+        }
+        self.bytes = Self::demo_bundle(scenario, bbox, now);
+        self.anchor = now;
+        // The tile cache keys on generation + bundle CRC, so the re-anchored bytes miss cleanly.
     }
 
     /// Run `frame` with this frame's rain lease: the production
@@ -354,6 +431,7 @@ impl SimWeather {
         step: u8,
         frame: impl FnOnce(Option<&mut dyn obc_render::RainOverlaySource>) -> R,
     ) -> R {
+        // No self-sync: the caller synced this frame and knows whether its clock is live.
         let source = obc_formats::io::SliceSource(&self.bytes);
         let Ok(reader) = obc_weather::WeatherReader::open(&source) else {
             return frame(None);
@@ -416,5 +494,71 @@ mod tests {
         assert_eq!(selection.active.unwrap().slot, Slot::A);
         fs::remove_file(root.0.join(Slot::A.root_file_name())).unwrap();
         assert_eq!(inspect_root(&root.0).active, None);
+    }
+}
+
+#[cfg(test)]
+mod sync_clock_tests {
+    use super::*;
+
+    const BBOX: (i32, i32, i32, i32) = (7_000_000, 46_000_000, 9_000_000, 48_000_000);
+
+    /// A live clock months away from the fixture instant re-anchors the demo bundle, so the
+    /// production reader finds a current frame — the GUI-replay regression this exists for.
+    /// Forward and backward drifts both re-anchor, and a repeat at the same instant is a byte
+    /// no-op (the churn invariant: the anchor must actually move — review #1230 F2).
+    #[test]
+    fn a_drifted_clock_reanchors_the_demo_bundle() {
+        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, None);
+        let forward = DEMO_GENERATED_AT + 12_000_000;
+        let before = w.bytes.clone();
+        w.sync_clock(forward, true);
+        assert_ne!(w.bytes, before, "forward drift re-stamps");
+        let after_first = w.bytes.clone();
+        w.sync_clock(forward, true);
+        assert_eq!(w.bytes, after_first, "same-instant repeat is a byte no-op (no churn)");
+        w.sync_clock(forward + 1, true);
+        assert_eq!(w.bytes, after_first, "inside the live threshold from the NEW anchor");
+        let real_now = DEMO_GENERATED_AT - 12_000_000; // months before the fixture instant
+        w.sync_clock(real_now, true);
+        assert_ne!(w.bytes, before, "bundle must re-stamp onto the drifted clock");
+        let source = obc_formats::io::SliceSource(&w.bytes);
+        let reader = obc_weather::WeatherReader::open(&source).expect("re-anchored bundle valid");
+        let mut cache = obc_weather::WeatherCache::new();
+        let current = reader.current_frame(real_now, &mut cache).expect("io");
+        assert_eq!(current.map(|(index, _)| index), Some(0), "first frame current at the real clock");
+    }
+
+    /// Within the re-anchor threshold nothing changes — headless preview commands (whose clock
+    /// is pinned to the fixture instant) stay byte-identical.
+    #[test]
+    fn a_pinned_clock_keeps_the_bundle_bytes() {
+        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, None);
+        let before = w.bytes.clone();
+        w.sync_clock(DEMO_GENERATED_AT + DEMO_REANCHOR_LIVE_S, true);
+        assert_eq!(w.bytes, before, "no re-stamp inside the live threshold");
+        w.sync_clock(DEMO_GENERATED_AT + DEMO_REANCHOR_SCRIPTED_S, false);
+        assert_eq!(w.bytes, before, "a scripted clock ignores script-reachable elapse (I = 301 s)");
+        w.sync_clock(DEMO_GENERATED_AT + DEMO_REANCHOR_SCRIPTED_S + 1, false);
+        assert_ne!(w.bytes, before, "a real-world --clock jump still lands the anchor");
+    }
+
+    /// A store loaded from disk is a real bundle — it ages truthfully, never re-stamps.
+    #[test]
+    fn a_disk_loaded_bundle_never_reanchors() {
+        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, None);
+        w.demo_recipe = None; // the load() shape, without needing a fixture on disk
+        let before = w.bytes.clone();
+        w.sync_clock(DEMO_GENERATED_AT + 12_000_000, true);
+        assert_eq!(w.bytes, before, "no recipe, no re-stamp");
+    }
+
+    /// `--weather-now` is the deterministic stale-scenario tool — it must always win.
+    #[test]
+    fn a_now_override_disables_reanchoring() {
+        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, Some(DEMO_GENERATED_AT + 1_500));
+        let before = w.bytes.clone();
+        w.sync_clock(DEMO_GENERATED_AT + 12_000_000, true);
+        assert_eq!(w.bytes, before, "override pins the bundle");
     }
 }

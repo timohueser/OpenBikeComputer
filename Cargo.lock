@@ -2933,10 +2933,12 @@ dependencies = [
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "eframe",
  "embedded-graphics",
  "image",
  "obc-app",
+ "obc-ble",
  "obc-dfu",
  "obc-display",
  "obc-formats",
@@ -2947,6 +2949,7 @@ dependencies = [
  "obc-replay",
  "obc-route",
  "obc-weather",
+ "obc-wx-client",
  "obcm-testkit",
  "pollster",
  "rfd",
@@ -3077,6 +3080,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tar",
+ "ureq",
+]
+
+[[package]]
+name = "obc-wx-client"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "obc-formats",
+ "obc-weather",
+ "obc-wx-bake",
+ "serde",
+ "serde_json",
  "ureq",
 ]
 
