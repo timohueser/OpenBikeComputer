@@ -5,8 +5,9 @@
 //!
 //! The wind arrow is drawn in the wind's *to*-direction on a north-up rose; the adjacent label is
 //! the meteorological *from*-octant (`SW`) plus the speed. Route-relative coloring (green tail /
-//! orange cross / red head) flows through [`wind_class`] — until WX12 computes the travel
-//! direction every row passes `None` and the arrows stay neutral ink, never a false head/tail.
+//! orange cross / red head) flows through [`wind_class`] against the WX12 travel direction
+//! (`Render::travel_deg` — route tangent, else moving GPS course); without one the arrows stay
+//! neutral ink, never a false head/tail.
 
 use core::fmt::Write as _;
 
@@ -194,14 +195,14 @@ fn draw_row(
     cv.text(&precip, Point::new(PRECIP_X, line2), Font::Label, TextAlign::Left, precip_color);
 
     // Wind: the arrow in its own fixed box (the *to*-direction on a north-up rose;
-    // route-relative color when WX12 supplies the travel direction, neutral ink until then),
+    // route-relative color against the WX12 travel direction, neutral ink without one),
     // then the meteorological from-octant + speed right-anchored clear of it. The text is
     // bounded at 5 Label cells (see the column-geometry note), so the two can never touch.
     if record.wind_from_deg == WIND_DIRECTION_UNAVAILABLE || record.wind_speed_deci_ms == WIND_SPEED_UNAVAILABLE {
         cv.text_vcentered("--", WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Right, SUBTEXT);
         return;
     }
-    let color = match wind_class(record.wind_from_deg, None) {
+    let color = match wind_class(record.wind_from_deg, rx.travel_deg) {
         Some(WindClass::Tail) => ON,
         Some(WindClass::Cross) => AMBER,
         Some(WindClass::Head) => RED,

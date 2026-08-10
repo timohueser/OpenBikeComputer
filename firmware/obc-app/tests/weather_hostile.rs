@@ -34,6 +34,8 @@ fn base() -> WeatherSnapshot {
         frame_cap_s: 900,
         sampled_at: Some((0, 0)),
         pos_in_grid: true,
+        current_pos_in_grid: true,
+        projected: false,
         frames_truncated: false,
         rain_grid: None,
     }
@@ -42,7 +44,16 @@ fn base() -> WeatherSnapshot {
 fn with_frames(spacing_intensity: &[(i64, u8)], cap: i64) -> WeatherSnapshot {
     let mut s = base();
     for &(at, i) in spacing_intensity {
-        s.frames.push(FrameSample { valid_at: T0 + at, intensity: i }).unwrap();
+        s.frames
+            .push(FrameSample {
+                valid_at: T0 + at,
+                intensity: i,
+                lat: 0,
+                lon: 0,
+                past_route_end: false,
+                spread_uncertain: false,
+            })
+            .unwrap();
     }
     s.frame_cap_s = cap;
     s
@@ -97,7 +108,16 @@ fn gap_exactly_at_the_two_hour_boundary() {
     s.frames.clear();
     let mut at = 0;
     while at <= 6_600 {
-        s.frames.push(FrameSample { valid_at: T0 + at, intensity: 0 }).unwrap();
+        s.frames
+            .push(FrameSample {
+                valid_at: T0 + at,
+                intensity: 0,
+                lat: 0,
+                lon: 0,
+                past_route_end: false,
+                spread_uncertain: false,
+            })
+            .unwrap();
         at += 500;
     }
     s.frame_cap_s = 500;

@@ -569,6 +569,8 @@ alert_rain = "PLUIE DEVANT"
 alert_storm = "ORAGE DEVANT"
 alert_rain_body = "Pluie forte sur le parcours."
 alert_storm_body = "Orage sur le parcours."
+alert_gust = "VENT FORT"
+alert_gust_body = "Rafales dangereuses devant."
 view_rain_map = "CARTE PLUIE"
 dismiss = "FERMER"
 

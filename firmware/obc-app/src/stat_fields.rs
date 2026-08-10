@@ -541,22 +541,33 @@ pub struct StatFieldList {
     len: u8,
 }
 
+impl StatFieldList {
+    /// The [`Default`] grid as a `const` — one link in the const [`Settings::DEFAULT`]
+    /// (`crate::settings`) chain, which exists so the board can build its object store from a
+    /// `.rodata` image instead of a stack temporary (the #1197 boot-chain fix). Byte-identical to
+    /// the old push-built default: the unused tail slots keep the `Speed` fill the seed array had
+    /// (pinned by test).
+    ///
+    /// [`Settings::DEFAULT`]: crate::settings::Settings::DEFAULT
+    pub const DEFAULT: StatFieldList = StatFieldList {
+        ids: {
+            let mut ids = [StatField::Speed; MAX_STAT_FIELDS];
+            ids[1] = StatField::AvgSpeed;
+            ids[2] = StatField::DistDone;
+            ids[3] = StatField::DistToGo;
+            ids[4] = StatField::Climbed;
+            ids[5] = StatField::ToClimb;
+            ids
+        },
+        len: 6,
+    };
+}
+
 impl Default for StatFieldList {
     /// The classic six single-column tiles, in their original order — so an un-customized device
     /// (and a settings reset) shows exactly today's grid.
     fn default() -> Self {
-        let mut list = StatFieldList { ids: [StatField::Speed; MAX_STAT_FIELDS], len: 0 };
-        for f in [
-            StatField::Speed,
-            StatField::AvgSpeed,
-            StatField::DistDone,
-            StatField::DistToGo,
-            StatField::Climbed,
-            StatField::ToClimb,
-        ] {
-            let _ = list.push(f);
-        }
-        list
+        Self::DEFAULT
     }
 }
 
@@ -956,6 +967,25 @@ mod tests {
     use super::*;
     use crate::activity::Mode;
     use crate::harness::support::wpts;
+
+    /// The const default grid is byte-identical to the push-built list it replaced — the pin that
+    /// keeps `StatFieldList::DEFAULT` honest against `push`'s semantics (#1197's const chain).
+    #[test]
+    fn const_default_equals_the_push_built_grid() {
+        let mut pushed = StatFieldList { ids: [StatField::Speed; MAX_STAT_FIELDS], len: 0 };
+        for f in [
+            StatField::Speed,
+            StatField::AvgSpeed,
+            StatField::DistDone,
+            StatField::DistToGo,
+            StatField::Climbed,
+            StatField::ToClimb,
+        ] {
+            assert!(pushed.push(f));
+        }
+        assert_eq!(StatFieldList::DEFAULT, pushed);
+        assert_eq!(StatFieldList::default(), pushed);
+    }
 
     /// A list built from a slice of fields, for the layout/reorder tests.
     fn list(fields: &[StatField]) -> StatFieldList {
