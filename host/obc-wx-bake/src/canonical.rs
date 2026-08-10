@@ -526,6 +526,25 @@ impl Mosaic {
         outcome
     }
 
+    /// Every source that may have painted a cell, **in priority order** — the manifest's
+    /// `attribution[]`.
+    ///
+    /// It is the whole layer set and not a subset, and that is forced rather than chosen: there is
+    /// no per-cell provenance (#1242), so any cell of any shard may have come from any layer, and
+    /// every one of these lines has to be displayable together. A source joining the mosaic
+    /// therefore joins this list by existing — WXR6's two OPERA rows needed no edit here — which is
+    /// the only arrangement where a licence cannot be silently dropped by forgetting a second place.
+    pub fn attribution(&self) -> Vec<manifest_v2::AttributionEntry> {
+        self.layers
+            .iter()
+            .map(|layer| manifest_v2::AttributionEntry {
+                source_id: layer.id.to_string(),
+                text: layer.attribution.text.to_string(),
+                url: layer.attribution.url.to_string(),
+            })
+            .collect()
+    }
+
     /// Which source wins one lattice cell, for diagnostics and for the tests that prove the table
     /// rather than the geometry decides. `None` means no source covers it with data.
     pub fn winner_at(&self, lattice: &Lattice, valid_at: i64, col: u32, row: u32) -> Option<&'static str> {
@@ -798,15 +817,7 @@ pub fn run_canonical_cycle(
     layers.sort_by_key(|(_, rank, _)| *rank);
     // Every source in the mosaic may have painted any cell, so every licence line travels with the
     // dataset, in priority order — there is no per-cell provenance to attribute more precisely.
-    let attribution = mosaic
-        .layers()
-        .iter()
-        .map(|layer| manifest_v2::AttributionEntry {
-            source_id: layer.id.to_string(),
-            text: layer.attribution.text.to_string(),
-            url: layer.attribution.url.to_string(),
-        })
-        .collect();
+    let attribution = mosaic.attribution();
     // The retention chain is read back out of the published manifest rather than kept anywhere:
     // the baker is stateless, and its only state is the document it publishes. A manifest that is
     // there but unreadable fails the cycle rather than publishing an empty chain — see
@@ -959,6 +970,49 @@ mod tests {
         let last = CANONICAL.shard(CANONICAL.shard_count() - 1).expect("the last shard");
         assert_eq!(CANONICAL.geometry(last).north_lat_udeg(), 90_000_000);
         assert_eq!(CANONICAL.geometry(last).east_lon_udeg(), 180_000_000);
+    }
+
+    /// Every source in the mosaic reaches `attribution[]`, in priority order — including WXR6's two
+    /// OPERA rows, whose CC BY 4.0 terms are a licence obligation rather than a nicety. Built from
+    /// the same `Mosaic::attribution` the cycle publishes, over the real per-adapter constants, so
+    /// a source added to `MOSAIC_PRIORITY` without a licence line cannot pass.
+    #[test]
+    fn every_mosaic_source_reaches_the_manifests_attribution_in_priority_order() {
+        use crate::source::{dwd_rv, gfs, icon_eu, opera_cirrus, opera_nimbus, us, MOSAIC_PRIORITY};
+        let known: Vec<(&'static str, Attribution)> = vec![
+            (dwd_rv::ID, dwd_rv::ATTRIBUTION),
+            (us::ID, us::ATTRIBUTION),
+            (opera_cirrus::ID, opera_cirrus::ATTRIBUTION),
+            (opera_nimbus::ID, opera_nimbus::ATTRIBUTION),
+            (icon_eu::ID, icon_eu::ATTRIBUTION),
+            (gfs::ID, gfs::ATTRIBUTION),
+        ];
+        assert_eq!(known.len(), MOSAIC_PRIORITY.len(), "a source joined the table with no licence line here");
+
+        // Deliberately shuffled into the table's *reverse* order: the mosaic sorts by rank, so a
+        // list that came out right by accident of input order would not prove anything.
+        let layers = known
+            .iter()
+            .rev()
+            .map(|(id, attribution)| MosaicLayer {
+                id,
+                rank: mosaic_rank(id).expect("every known source has a row"),
+                attribution: *attribution,
+                frames: Vec::new(),
+            })
+            .collect();
+        let attribution = Mosaic::new(layers).attribution();
+        assert_eq!(
+            attribution.iter().map(|entry| entry.source_id.as_str()).collect::<Vec<_>>(),
+            MOSAIC_PRIORITY.iter().map(|source| source.id).collect::<Vec<_>>()
+        );
+        let opera: Vec<&str> = attribution
+            .iter()
+            .filter(|entry| entry.source_id.starts_with("opera-"))
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(opera.len(), 2);
+        assert!(opera.iter().all(|text| text.contains("CC BY 4.0")), "OPERA's licence must survive to the manifest");
     }
 
     #[test]
