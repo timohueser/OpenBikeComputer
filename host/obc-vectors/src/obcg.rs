@@ -125,17 +125,25 @@ pub fn deflate_padding_bits() -> Vec<u8> {
     // The assertion below is the guard: if a compressor change moves the boundary, the fixture
     // fails to build rather than shipping a vector that pins the wrong claim.
     let last = offset + len - 1;
+    let decode = |payload: &[u8]| -> Vec<u8> {
+        let probe = obcg::TileEntry {
+            data_offset: offset as u32,
+            encoded_len: len as u16,
+            codec: obcg::CODEC_DEFLATE4,
+            crc32: Crc32::checksum(payload),
+        };
+        let mut cells = vec![0u8; h.tile_cells()];
+        obcg::decode_tile_cells(&h, &probe, payload, &mut cells).expect("a legal deflate4 stream");
+        cells
+    };
+    let original = decode(&bytes[offset..offset + len]);
     bytes[last] ^= 0x80;
     let payload = bytes[offset..offset + len].to_vec();
+    // The guard, and it has to be this strict: a flipped bit that still *decoded* but decoded to
+    // different cells would ship a vector claiming the opposite of what §5 says. Accepting is not
+    // enough — the two byte images must be the same object.
+    assert_eq!(decode(&payload), original, "the padding-bit flip must decode to identical cells");
     let crc = Crc32::checksum(&payload);
-    let probe = obcg::TileEntry {
-        data_offset: offset as u32,
-        encoded_len: len as u16,
-        codec: obcg::CODEC_DEFLATE4,
-        crc32: crc,
-    };
-    let mut cells = vec![0u8; h.tile_cells()];
-    obcg::decode_tile_cells(&h, &probe, &payload, &mut cells).expect("the padding-bit flip is still one legal stream");
     put_u32(&mut bytes, entry + obcg::ENTRY_CRC32, crc);
     refresh_page_crc(&mut bytes, &h, 0);
     refresh_object_and_header_crc(&mut bytes);

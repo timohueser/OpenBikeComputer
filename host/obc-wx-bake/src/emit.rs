@@ -67,7 +67,11 @@ pub fn emit_product(product: &BakedProduct) -> Result<Vec<EmittedFrame>, String>
         let mut bytes = vec![0u8; bound];
         let len = obcg::encode_format(&input, &mut scratch, &mut bytes)
             .map_err(|error| format!("{} f{}: {error:?}", product.id, frame.offset_min))?;
+        // …and give the slack back. `EmittedFrame` is held until the whole product publishes, so a
+        // truncated-but-not-shrunk buffer would keep the frame's whole raw4 image resident per
+        // frame per thread — tens of megabytes a shard against WXR1's 255 MB steady-state budget.
         bytes.truncate(len);
+        bytes.shrink_to_fit();
         let header = obcg::validate(&bytes, &mut validate_scratch).map_err(|error| {
             format!("{} f{}: emitted object failed self-validation: {error:?}", product.id, frame.offset_min)
         })?;
