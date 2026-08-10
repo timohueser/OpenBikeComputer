@@ -45,3 +45,9 @@ dry claim under projection — the parked shot has no projection at all, the two
 the ring and answer with a *warning*, and the gust/hourly shots don't read the rain grid — so the
 review's conservatism lands on paths none of them exercise. That gap is itself a note for the
 on-glass round: there is no committed frame of a projected DRY FOR 2 HOURS.
+
+Re-verified again after the WX14 (#1231) merge, which rewired the plumbing underneath these
+commands (`--weather live`, the semantic companion, `SimWeather::sync_clock`). Every scene here
+is a `demo:` bundle whose recipe re-anchors onto the store's own first frame, so the re-anchor
+is a no-op for them and the bytes are unchanged. The decision path itself is source-agnostic
+now: `--weather-decide` decides over whichever bundle is loaded, `demo:` or `live`.

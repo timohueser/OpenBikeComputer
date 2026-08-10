@@ -34,6 +34,7 @@ members = [
     "host/obc-replay",
     "host/obc-usb-host",
     "host/obc-wx-bake",
+    "host/obc-wx-client",
     # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
     "apps/obc-sim",
     "apps/obc-web-demo",
