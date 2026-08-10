@@ -18,11 +18,26 @@ struct OBCGridCodecTests {
     /// `specs/vectors/manifest.json`'s `grid.positives` block: name, byte length, object CRC-32.
     private static let positives: [(name: String, byteLength: Int, objectCRC: UInt32)] = [
         ("grid-minimal-dry.obcg", 228, 0x2E08_A044),
-        ("grid-raw-tile.obcg", 308, 0x2C3F_9164),
+        ("grid-raw-tile.obcg", 308, 0xA1E6_1BAF),
         ("grid-rle-tile.obcg", 196, 0x4879_AADD),
-        ("grid-nodata-tile.obcg", 196, 0x06EE_C5E8),
-        ("grid-multipage.obcg", 406, 0x91A4_4671),
-        ("grid-edge-padding.obcg", 324, 0x065E_72F0),
+        ("grid-rle-wins.obcg", 212, 0x8CDE_9C28),
+        ("grid-deflate-tile.obcg", 1_745, 0x5389_CB3F),
+        ("grid-deflate-padding-bits.obcg", 1_745, 0xBE31_481F),
+        ("grid-deflate-edge256.obcg", 2_178, 0x60CC_3040),
+        ("grid-nodata-tile.obcg", 195, 0x47F5_3E9A),
+        ("grid-multipage.obcg", 375, 0x446D_C053),
+        ("grid-edge-padding.obcg", 316, 0x0C5E_6E35),
+    ]
+
+    /// `manifest.json`'s `grid.positives` codec column: §5's choice rule, pinned per vector.
+    private static let codecs: [(name: String, codec: UInt8)] = [
+        ("grid-raw-tile.obcg", OBCGridCodec.codecRaw4),
+        ("grid-rle-tile.obcg", OBCGridCodec.codecRLE4),
+        ("grid-rle-wins.obcg", OBCGridCodec.codecRLE4),
+        ("grid-deflate-tile.obcg", OBCGridCodec.codecDeflate4),
+        ("grid-deflate-padding-bits.obcg", OBCGridCodec.codecDeflate4),
+        ("grid-deflate-edge256.obcg", OBCGridCodec.codecDeflate4),
+        ("grid-nodata-tile.obcg", OBCGridCodec.codecDeflate4),
     ]
 
     private static let negatives = [
@@ -30,8 +45,12 @@ struct OBCGridCodecTests {
         "grid-invalid-header-crc.obcg", "grid-invalid-page-crc.obcg",
         "grid-invalid-bad-offset.obcg", "grid-invalid-overlap.obcg",
         "grid-invalid-impossible-dims.obcg", "grid-invalid-tile-edge.obcg",
-        "grid-invalid-paging.obcg", "grid-invalid-rle-overlong.obcg",
+        "grid-invalid-paging.obcg", "grid-invalid-codec-id.obcg",
+        "grid-invalid-rle-overlong.obcg",
         "grid-invalid-rle-noncanonical.obcg", "grid-invalid-raw-compressible.obcg",
+        "grid-invalid-deflate-truncated.obcg", "grid-invalid-deflate-bomb.obcg",
+        "grid-invalid-deflate-short-output.obcg", "grid-invalid-deflate-back-reference.obcg",
+        "grid-invalid-deflate-noncanonical.obcg",
         "grid-invalid-dry-encoded.obcg", "grid-invalid-dry-sentinel-nonzero.obcg",
             "grid-invalid-dry-sentinel-edge-tile.obcg",
         "grid-invalid-tile-crc.obcg", "grid-invalid-reserved.obcg", "grid-invalid-flags.obcg",
@@ -79,9 +98,9 @@ struct OBCGridCodecTests {
         #expect(try sample(multipage, column: 20, row: 20) == 0, "dry sentinel decodes as dry")
 
         let raw = try fixture("grid-raw-tile.obcg")
-        #expect(try sample(raw, column: 0, row: 0) == 0)
-        #expect(try sample(raw, column: 12, row: 0) == 12)
-        #expect(try sample(raw, column: 5, row: 3) == UInt8((3 * 16 + 5) % 13))
+        #expect(try sample(raw, column: 0, row: 0) == 11)
+        #expect(try sample(raw, column: 12, row: 0) == 9)
+        #expect(try sample(raw, column: 5, row: 3) == 12)
 
         let nodata = try fixture("grid-nodata-tile.obcg")
         #expect(try sample(nodata, column: 8, row: 8) == 15, "no-data is never dry")
@@ -89,6 +108,129 @@ struct OBCGridCodecTests {
         let padding = try fixture("grid-edge-padding.obcg")
         #expect(try sample(padding, column: 3, row: 4) == 2)
         #expect(try sample(padding, column: 20, row: 20) == 12)
+
+        let rleWins = try fixture("grid-rle-wins.obcg")
+        #expect(try sample(rleWins, column: 0, row: 0) == 0)
+        #expect(try sample(rleWins, column: 8, row: 0) == 1, "the second eight-cell run")
+
+        let deflated = try fixture("grid-deflate-tile.obcg")
+        #expect(try sample(deflated, column: 0, row: 0) == 0)
+        #expect(try sample(deflated, column: 7, row: 7) == 0, "one 8 x 8 source cell, one value")
+        #expect(try sample(deflated, column: 8, row: 8) == 9, "block (1, 1) of the upsampled source")
+        #expect(try sample(deflated, column: 63, row: 63) == UInt8((7 * 8 + 7) % 13))
+    }
+
+    /// OBCG_Spec.md §5: the codec is chosen by measured size with a low-id tie-break, so which
+    /// codec each vector carries is itself part of the contract — a Swift decoder that silently
+    /// accepted a deflate4 tile where RLE4 wins would let a producer drift.
+    @Test
+    func eachVectorCarriesTheCodecTheChoiceRuleSelects() throws {
+        for pinned in Self.codecs {
+            let bytes = try fixture(pinned.name)
+            let header = try OBCGridCodec.decodeHeader(bytes)
+            let pageOffset = try #require(header.pageOffset(0))
+            let page = try #require(bytes.readBytes(at: pageOffset, count: header.pageBytes))
+            let entry = try OBCGridCodec.decodeEntry(page: page, indexInPage: 0)
+            #expect(entry.codec == pinned.codec, "codec drift for \(pinned.name)")
+        }
+
+        // The point of codec 2: 4,096 upsampled cells are 2,048 raw4 bytes and 512 RLE4 bytes.
+        let deflated = try fixture("grid-deflate-tile.obcg")
+        let header = try OBCGridCodec.decodeHeader(deflated)
+        #expect(header.tileCells == 4_096)
+        #expect(header.entriesPerPage == 128)
+        #expect(header.dataLength < 128, "the upsampled tile compresses below 128 bytes")
+
+        // OBCG_Spec.md §5: a deflate stream ends on a bit boundary, so the leftover bits of the
+        // last payload byte are padding. This vector is `grid-deflate-tile` with one of them
+        // flipped — a different byte image of the same object, which a decoder MUST accept and
+        // MUST decode identically. Rejecting it would refuse conforming published frames.
+        let padded = try fixture("grid-deflate-padding-bits.obcg")
+        #expect(padded != deflated, "the padding-bit vector is a different byte image")
+        for (column, row) in [(UInt32(0), UInt32(0)), (8, 8), (63, 63), (17, 41)] {
+            #expect(try sample(padded, column: column, row: row)
+                == (try sample(deflated, column: column, row: row)), "cell (\(column), \(row))")
+        }
+
+        // The production geometry: one 65,536-cell tile whose payload needs the directory's
+        // uint16 length, and the only vector reaching towards §5's 32,767-byte ceiling.
+        let edge256 = try fixture("grid-deflate-edge256.obcg")
+        let edge256Header = try OBCGridCodec.decodeHeader(edge256)
+        #expect(edge256Header.tileEdge == 256)
+        #expect(edge256Header.tileCells == 65_536)
+        #expect(edge256Header.dataLength > 255, "the only payload longer than a uint8")
+        #expect(edge256Header.dataLength < 32_768, "and still under the pre-inflate ceiling")
+        #expect(try sample(edge256, column: 0, row: 0) == (try sample(edge256, column: 15, row: 15)))
+    }
+
+    /// Every codec-2 rejection the Rust authority makes, made here from the same bytes: a
+    /// truncated stream, trailing bytes after it, an over-inflating bomb bounded by the header's
+    /// cell count rather than by the payload's claim, a short output, and an unknown codec id.
+    @Test
+    func deflateTilesFailClosedWithoutTrustingThePayload() throws {
+        let bytes = try fixture("grid-deflate-tile.obcg")
+        let header = try OBCGridCodec.decodeHeader(bytes)
+        let pageOffset = try #require(header.pageOffset(0))
+        let page = try #require(bytes.readBytes(at: pageOffset, count: header.pageBytes))
+        let good = try OBCGridCodec.decodeEntry(page: page, indexInPage: 0)
+        let range = try OBCGridCodec.payloadRange(header: header, entry: good)
+        let payload = try #require(bytes.readBytes(at: range.lowerBound, count: range.count))
+
+        func entry(_ payload: Data, codec: UInt8 = OBCGridCodec.codecDeflate4) -> OBCGridTileEntry {
+            OBCGridTileEntry(
+                dataOffset: good.dataOffset, encodedLength: UInt16(payload.count), codec: codec,
+                crc32: CRC32.checksum(payload))
+        }
+
+        // The honest payload decodes, so each rejection below is about the mutation alone.
+        let cells = try OBCGridCodec.decodeTileCells(header: header, entry: good, payload: payload)
+        #expect(cells.count == header.tileCells)
+
+        var trailing = payload
+        trailing.append(0x00)
+        for mutated in [payload.dropLast(2), Data(trailing)] {
+            #expect(throws: (any Error).self) {
+                try OBCGridCodec.decodeTileCells(
+                    header: header, entry: entry(Data(mutated)), payload: Data(mutated))
+            }
+        }
+        // §5: the tile's history starts empty, so a match distance reaching before the first byte
+        // of its raw4 image is invalid. A decoder that zero-filled instead of failing would
+        // decode different cells from the same bytes — the one divergence that cannot be allowed.
+        let early = Data([0x63, 0x18, 0x60, 0x0C, 0x00])
+        #expect(throws: (any Error).self, "a back-reference before the tile image was accepted") {
+            try OBCGridCodec.decodeTileCells(header: header, entry: entry(early), payload: early)
+        }
+        // An unknown codec id is refused before any decoder is chosen.
+        #expect(throws: (any Error).self) {
+            try OBCGridCodec.decodeTileCells(
+                header: header, entry: entry(payload, codec: 3), payload: payload)
+        }
+        // A stale CRC is caught before the payload is inflated.
+        let stale = OBCGridTileEntry(
+            dataOffset: good.dataOffset, encodedLength: good.encodedLength,
+            codec: good.codec, crc32: good.crc32 ^ 1)
+        #expect(throws: OBCWeatherWireError.crcMismatch) {
+            try OBCGridCodec.decodeTileCells(header: header, entry: stale, payload: payload)
+        }
+        // The bomb and short-output streams live in the vector set; decoding them through the
+        // whole-object path is what `malformedGoldenVectorsAreRejected` covers, but the tile path
+        // must refuse them too, on the payload bytes alone.
+        for name in ["grid-invalid-deflate-bomb.obcg", "grid-invalid-deflate-short-output.obcg"] {
+            let object = try fixture(name)
+            let objectHeader = try OBCGridCodec.decodeHeader(object)
+            let objectPageOffset = try #require(objectHeader.pageOffset(0))
+            let objectPage = try #require(
+                object.readBytes(at: objectPageOffset, count: objectHeader.pageBytes))
+            let objectEntry = try OBCGridCodec.decodeEntry(page: objectPage, indexInPage: 0)
+            let objectRange = try OBCGridCodec.payloadRange(header: objectHeader, entry: objectEntry)
+            let objectPayload = try #require(
+                object.readBytes(at: objectRange.lowerBound, count: objectRange.count))
+            #expect(throws: (any Error).self, "accepted \(name)") {
+                try OBCGridCodec.decodeTileCells(
+                    header: objectHeader, entry: objectEntry, payload: objectPayload)
+            }
+        }
     }
 
     @Test
@@ -117,7 +259,7 @@ struct OBCGridCodecTests {
             let bytes = try fixture(name)
             #expect(throws: (any Error).self, "accepted \(name)") { try OBCGridCodec.validate(bytes) }
         }
-        #expect(Self.negatives.count == 18)
+        #expect(Self.negatives.count == 24)
     }
 
     /// OBCG_Spec.md §7: a corridor consumer reads the header, the covering directory pages, and

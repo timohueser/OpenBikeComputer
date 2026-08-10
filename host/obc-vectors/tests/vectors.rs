@@ -125,14 +125,67 @@ fn grid_vectors_cross_the_byte_authority_and_reject_malformed_objects() {
     assert_eq!(sample(&multipage, 39, 39), 9);
     assert_eq!(sample(&multipage, 20, 20), 0, "dry sentinel decodes as dry");
     let raw = fixture("grid-raw-tile.obcg");
-    assert_eq!(sample(&raw, 0, 0), 0);
-    assert_eq!(sample(&raw, 12, 0), 12);
-    assert_eq!(sample(&raw, 5, 3), ((3 * 16 + 5) % 13) as u8);
+    assert_eq!(sample(&raw, 0, 0), 11);
+    assert_eq!(sample(&raw, 12, 0), 9);
+    assert_eq!(sample(&raw, 5, 3), 12);
     let nodata = fixture("grid-nodata-tile.obcg");
     assert_eq!(sample(&nodata, 8, 8), obc_formats::precip4::INTENSITY_NODATA, "no-data is never dry");
     let padding = fixture("grid-edge-padding.obcg");
     assert_eq!(sample(&padding, 3, 4), 2);
     assert_eq!(sample(&padding, 20, 20), 12);
+    let rle_wins = fixture("grid-rle-wins.obcg");
+    assert_eq!(sample(&rle_wins, 0, 0), 0);
+    assert_eq!(sample(&rle_wins, 8, 0), 1, "the second eight-cell run");
+    let deflated = fixture("grid-deflate-tile.obcg");
+    assert_eq!(sample(&deflated, 0, 0), 0);
+    assert_eq!(sample(&deflated, 7, 7), 0, "the whole 8 x 8 source cell carries one value");
+    assert_eq!(sample(&deflated, 8, 8), 9, "block (1, 1) of the upsampled source");
+    assert_eq!(sample(&deflated, 63, 63), ((7 * 8 + 7) % 13) as u8);
+
+    // §5's codec choice, pinned per vector: the tie goes to RLE4, varied short runs stay RLE4,
+    // pseudo-random cells stay raw4, and only the shapes deflate genuinely beats use codec 2.
+    let codec_of = |bytes: &[u8]| -> u8 {
+        let header_bytes: &[u8; obcg::HEADER_LEN] = bytes[..obcg::HEADER_LEN].try_into().unwrap();
+        let header = obcg::decode_header(header_bytes).unwrap();
+        let page_offset = header.page_offset(0).unwrap() as usize;
+        let page_slice = &bytes[page_offset..page_offset + header.page_bytes() as usize];
+        obcg::decode_entry(page_slice, 0).unwrap().codec
+    };
+    for (name, expected) in [
+        ("grid-raw-tile.obcg", obcg::CODEC_RAW4),
+        ("grid-rle-tile.obcg", obcg::CODEC_RLE4),
+        ("grid-rle-wins.obcg", obcg::CODEC_RLE4),
+        ("grid-deflate-tile.obcg", obcg::CODEC_DEFLATE4),
+        ("grid-deflate-padding-bits.obcg", obcg::CODEC_DEFLATE4),
+        ("grid-deflate-edge256.obcg", obcg::CODEC_DEFLATE4),
+        ("grid-nodata-tile.obcg", obcg::CODEC_DEFLATE4),
+    ] {
+        assert_eq!(codec_of(&fixture(name)), expected, "codec drift: {name}");
+    }
+
+    // §5: the padding bits of a deflate stream's last byte are not data. This vector differs from
+    // `grid-deflate-tile` in exactly those bits, so a decoder that validated them would reject a
+    // conforming object — and it must decode to the identical cells.
+    let padded = fixture("grid-deflate-padding-bits.obcg");
+    assert_ne!(padded, deflated, "the padding-bit vector is a different byte image");
+    assert_eq!(padded.len(), deflated.len());
+    for (col, row) in [(0u32, 0u32), (8, 8), (63, 63), (17, 41)] {
+        assert_eq!(sample(&padded, col, row), sample(&deflated, col, row), "cell ({col}, {row})");
+    }
+
+    // The production geometry: one 65,536-cell tile whose payload needs the directory's uint16.
+    let edge256 = fixture("grid-deflate-edge256.obcg");
+    let edge256_header: &[u8; obcg::HEADER_LEN] = edge256[..obcg::HEADER_LEN].try_into().unwrap();
+    let edge256_header = obcg::decode_header(edge256_header).unwrap();
+    assert_eq!(edge256_header.tile_edge, 256);
+    assert_eq!(edge256_header.tile_cells(), 65_536);
+    assert!(edge256_header.data_len > 255, "the only payload longer than a uint8: {}", edge256_header.data_len);
+    assert!(edge256_header.data_len < 32_768, "and still under §5's pre-inflate ceiling");
+    assert_eq!(sample(&edge256, 0, 0), sample(&edge256, 15, 15), "one 16 x 16 block, one value");
+    // The whole point of codec 2: 4,096 upsampled cells cost 2,048 raw4 bytes and 512 RLE4 bytes.
+    let deflate_header: &[u8; obcg::HEADER_LEN] = deflated[..obcg::HEADER_LEN].try_into().unwrap();
+    let deflate_payload = obcg::decode_header(deflate_header).unwrap().data_len;
+    assert!(deflate_payload < 128, "the upsampled tile compresses below 128 bytes: {deflate_payload}");
 
     for (name, expected) in obc_vectors::obcg::negatives() {
         let bytes = fixture(name);

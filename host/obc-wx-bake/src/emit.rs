@@ -58,11 +58,20 @@ pub fn emit_product(product: &BakedProduct) -> Result<Vec<EmittedFrame>, String>
             entries_per_page: geometry.entries_per_page,
             cells: &frame.cells,
         };
-        let len = obcg::encoded_len(&input, &mut scratch)
+        // Size with the geometry bound rather than with `encoded_len`: the exact length is only
+        // knowable by running the codec choice, which compresses every codec-2 tile, so asking
+        // for it here would compress the whole frame twice. The slack is at most the frame's raw4
+        // image, and `encode_format` returns the true length to truncate to.
+        let bound = obcg::max_encoded_len(&input)
             .map_err(|error| format!("{} f{}: {error:?}", product.id, frame.offset_min))? as usize;
-        let mut bytes = vec![0u8; len];
-        obcg::encode_format(&input, &mut scratch, &mut bytes)
+        let mut bytes = vec![0u8; bound];
+        let len = obcg::encode_format(&input, &mut scratch, &mut bytes)
             .map_err(|error| format!("{} f{}: {error:?}", product.id, frame.offset_min))?;
+        // …and give the slack back. `EmittedFrame` is held until the whole product publishes, so a
+        // truncated-but-not-shrunk buffer would keep the frame's whole raw4 image resident per
+        // frame per thread — tens of megabytes a shard against WXR1's 255 MB steady-state budget.
+        bytes.truncate(len);
+        bytes.shrink_to_fit();
         let header = obcg::validate(&bytes, &mut validate_scratch).map_err(|error| {
             format!("{} f{}: emitted object failed self-validation: {error:?}", product.id, frame.offset_min)
         })?;

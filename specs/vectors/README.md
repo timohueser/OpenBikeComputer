@@ -90,21 +90,35 @@ decodes and re-encodes every positive byte-for-byte and rejects every negative.
 
 ### OBCG grid vectors
 
-The six positive `grid-*.obcg` files pin [`OBCG_Spec.md`](../OBCG_Spec.md): an all-dry
-sentinel-only object, raw4, RLE4, an explicit all-no-data tile (unavailable is never the dry
-sentinel), a 3 × 3-tile object across five directory pages with last-page padding (the corridor
-request-accounting target), and edge-tile no-data padding. Cells the Rust tests pin are the
-cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not re-encoded, because its
-only producer is the Rust baker.
+The ten positive `grid-*.obcg` files pin [`OBCG_Spec.md`](../OBCG_Spec.md): an all-dry
+sentinel-only object; one tile per §5 codec — raw4 on pseudo-random cells, RLE4 winning a tie
+against deflate4, RLE4 winning outright, and deflate4 on 64 × 64 upsampled coarse data; the same
+deflate4 tile again with the padding bits of its final byte flipped (a second legal byte image,
+there to prove a decoder must *not* reject it); a 256 × 256 frame at tile edge 256, WXR1's
+production geometry and the only payload longer than 255 bytes; an explicit all-no-data tile
+(unavailable is never the dry sentinel); a 3 × 3-tile object across five directory pages with
+last-page padding (the corridor request-accounting target); and edge-tile no-data padding. Cells
+the Rust tests pin are the cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not
+re-encoded, because its only producer is the Rust baker — and each positive's codec id is pinned
+too, because §5's choice rule is what keeps RLE4 alive where deflate4 loses.
 
-The eighteen `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
+The twenty-four `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
 page, tile), a shifted payload offset, an aliased/overlapping payload, impossible dimensions, a
-non-power-of-two tile edge, zero entries per page, overlong and noncanonical RLE, a compressible
-raw4 payload, an encoded all-dry full tile (the sentinel is mandatory there), a dry sentinel at
-a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry sentinel,
-reserved byte, and double source-class flag. Except for truncation and the deliberate stale-CRC
-files, every CRC covering a corrupted byte is recomputed so structural validation cannot hide
-behind an integrity check.
+non-power-of-two tile edge, zero entries per page, a codec id outside the closed set, overlong
+and noncanonical RLE, a compressible raw4 payload, five deflate4 failures (a truncated stream, a
+stream that over-inflates past the tile's raw4 size, one that under-inflates, one whose match
+distance reaches before the start of the tile's image, and a valid stream that fails to beat the
+canonical raw4/RLE4 length), an encoded all-dry full tile (the sentinel is mandatory there), a dry
+sentinel at a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry
+sentinel, reserved byte, and double source-class flag. Except for truncation and the deliberate
+stale-CRC files, every CRC covering a corrupted byte is recomputed so structural validation cannot
+hide behind an integrity check.
+
+Because §5 leaves compressed bytes to the encoder, the deflate4 fixtures' root of trust is the
+exact `miniz_oxide` version the workspace lock pins (`=0.8.9` in `firmware/obc-formats` and
+`host/obc-vectors`). Moving it is a fixture regeneration in the same commit, never a lockfile
+refresh: a different compressor produces a different — equally valid — object, which every
+sha256 here would report as a failure.
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, the service/characteristic UUIDs — including the Weather
@@ -119,7 +133,7 @@ GPX→OBCR converter; everything else is built from spec constants). After a
 **deliberate** spec change:
 
 ```bash
-cd firmware && cargo test -p obc-vectors regenerate -- --ignored
+cargo test -p obc-vectors regenerate -- --ignored
 ```
 
 …then update `manifest.json` to match and flag the app side **and** the web

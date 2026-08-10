@@ -1170,8 +1170,24 @@ silently dropped from every bundle until the forecast lattice moved to 30,000 ×
 Beneath the regional tiers a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
 on purpose, never smoothed into looking better than it is. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
-intensities and the same raw4/RLE4 tile codec, generalized to a per-product power-of-two tile
-size. Around that sits what an HTTP Range client needs and a device never does: a self-CRC'd
+intensities and the same raw4/RLE4 tile codecs, generalized to a per-product power-of-two tile
+size.
+
+OBCG has **one codec OBCW does not**, and where it lives matters more than what it is. RLE4 caps
+runs at sixteen cells and has no back-reference, so a uniform field costs one byte per sixteen
+cells however uniform it is, and twenty-five identical rows cost twenty-five times one row —
+exactly the shape of a coarse source upsampled onto a fine lattice, which is what the bakery is
+moving towards. So an OBCG tile may also be a plain DEFLATE stream over the same nibble packing,
+chosen per tile and only where it is strictly smaller than the run-length encoding of the same
+cells; on real radar frames that is roughly a quarter off the object, and on upsampled coarse data
+an order of magnitude. Two consequences are deliberate. The codec lives in the OBCG layer, above
+the [`precip4`](src:firmware/obc-formats/src/precip4.rs) authority the two formats share, so the
+device — which reads OBCW and links that authority with no decompressor at all — is untouched: the
+phone inflates the grid and re-encodes the corridor as OBCW RLE4. And a frame no longer has one
+legal byte image, because two conforming compressors need not agree; what stays canonical is the
+*decoded* frame, plus every codec choice a reader can disprove.
+
+Around that sits what an HTTP Range client needs and a device never does: a self-CRC'd
 fixed header carrying exact integer geometry, a **paged** tile directory whose pages carry their
 own CRCs, per-tile CRCs, and a len-0 sentinel for all-dry tiles — so fetching a corridor is a
 header read, a few directory-page reads and only the wet tiles, each independently verifiable.
