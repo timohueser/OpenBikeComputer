@@ -141,7 +141,9 @@ describe("cellIndex", () => {
         // A CDN hiccup must not make a band permanently unavailable for the life
         // of the page, so a rejected load is not the cached one.
         const failing = serving(allBodies({ [FINE_INDEX_URL]: "not json" }));
-        const client2 = await CatalogClient.load(ROOT_URL, { fetchImpl: failing.impl });
+        // `attempts: 1` so the count below is the number of *loads*, which is what
+        // this asserts, rather than the number of attempts each load is worth.
+        const client2 = await CatalogClient.load(ROOT_URL, { fetchImpl: failing.impl, attempts: 1 });
         await expect(client2.cellIndex("fine")).rejects.toThrow();
         await expect(client2.cellIndex("fine")).rejects.toThrow();
         expect(failing.calls.filter((u) => u === FINE_INDEX_URL)).toHaveLength(2);
