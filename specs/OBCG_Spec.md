@@ -175,7 +175,9 @@ unknown nonzero code and MUST NOT use it for selection policy.
 | 4 | `hrrr` | NOAA HRRR subhourly `PRATE` (CONUS model) |
 | 5 | `gfs` | NOAA GFS `APCP` (worldwide floor) |
 | 6 | `mosaic` | Canonical mosaic: every source normalised onto the global lattice, best available per cell, no provenance carried (#1242) |
-| 7...254 | - | Reserved for future registry additions |
+| 7 | `opera-cirrus` | EUMETNET OPERA CIRRUS `DBZH` (Europe 1 km radar reflectivity) |
+| 8 | `opera-nimbus` | EUMETNET OPERA NIMBUS `RATE` (Europe 2 km radar rain rate) |
+| 9...254 | - | Reserved for future registry additions |
 | 255 | - | Experimental / private products |
 
 ### 3.2 Flags

@@ -14,6 +14,9 @@ pub mod gfs;
 pub mod hrrr;
 pub mod icon_eu;
 pub mod mrms;
+pub mod opera;
+pub mod opera_cirrus;
+pub mod opera_nimbus;
 pub mod us;
 
 use crate::fetch::Upstream;
@@ -46,9 +49,15 @@ pub struct MosaicSource {
 /// number to keep in sync, and [`mosaic_rank`] is the only reader.
 pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
     MosaicSource { id: dwd_rv::ID, why: "national 1 km radar nowcast (Germany) — the finest radar we ingest" },
-    // WXR6 #1245 inserts the OPERA rows here: pan-European 1 km radar, below every national
-    // radar composite and above every model.
     MosaicSource { id: us::ID, why: "national CONUS composite: 1 km MRMS radar observation, 3 km HRRR model ahead" },
+    // WXR6 #1245's rows. Below every national radar composite and above every model, which is
+    // the stated rule with no exception attached: `us` covers CONUS and OPERA covers Europe, so
+    // the two never contend for a cell and nothing is lost by reading the rule literally.
+    MosaicSource { id: opera_cirrus::ID, why: "pan-European 1 km radar: 5-minute reflectivity, the finest thing over Europe" },
+    MosaicSource {
+        id: opera_nimbus::ID,
+        why: "pan-European 2 km radar rain rate — coarser and later than CIRRUS, but native mm/h and near-surface, and it covers cells CIRRUS does not",
+    },
     MosaicSource { id: icon_eu::ID, why: "pan-European 6.5 km model — fill where no radar reaches" },
     MosaicSource { id: gfs::ID, why: "global 27.75 km model floor — the last row, and the reason no cell is blank" },
 ];
@@ -184,7 +193,14 @@ mod priority_tests {
     /// "its position is its priority" ambiguous.
     #[test]
     fn every_adapter_has_exactly_one_row_and_every_row_an_adapter() {
-        let adapters: [&dyn Adapter; 4] = [&dwd_rv::DwdRv, &icon_eu::IconEu, &us::UsComposite, &gfs::GfsFloor];
+        let adapters: [&dyn Adapter; 6] = [
+            &dwd_rv::DwdRv,
+            &icon_eu::IconEu,
+            &us::UsComposite,
+            &gfs::GfsFloor,
+            &opera_cirrus::OperaCirrus,
+            &opera_nimbus::OperaNimbus,
+        ];
         for adapter in adapters {
             let rows = MOSAIC_PRIORITY.iter().filter(|source| source.id == adapter.id()).count();
             assert_eq!(rows, 1, "{} has {rows} rows in MOSAIC_PRIORITY", adapter.id());
@@ -208,6 +224,14 @@ mod priority_tests {
         assert!(rank(dwd_rv::ID) < rank(icon_eu::ID), "national radar must beat the pan-European model");
         assert!(rank(us::ID) < rank(icon_eu::ID), "a national composite must beat the pan-European model");
         assert!(rank(icon_eu::ID) < rank(gfs::ID), "the regional model must beat the global floor");
+        // WXR6 #1245: pan-European radar sits under **every** national radar composite and over
+        // every model — the rule as stated, with no exception — and the finer, fresher OPERA
+        // product outranks the coarser one.
+        for national in [dwd_rv::ID, us::ID] {
+            assert!(rank(national) < rank(opera_cirrus::ID), "{national} must beat pan-European radar");
+        }
+        assert!(rank(opera_cirrus::ID) < rank(opera_nimbus::ID), "1 km / 5 min must beat 2 km / 15 min");
+        assert!(rank(opera_nimbus::ID) < rank(icon_eu::ID), "any radar must beat the pan-European model");
         assert_eq!(
             mosaic_rank(gfs::ID),
             Some(MOSAIC_PRIORITY.len() - 1),
