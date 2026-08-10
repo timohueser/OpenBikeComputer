@@ -268,22 +268,43 @@ rather than the ODIM HDF5 twin (`openradar-archive`, which reaches back to 2012,
 carries only the HDF5s; the live 24-hour bucket carries both):
 
 - **CIRRUS `DBZH`** — 3,800 x 4,400 cells of 1 km, every 5 minutes, measured
-  publication lag 4.1 min. Column-maximum reflectivity, converted to a rate with
-  Marshall-Palmer `Z = 200 R^1.6`.
+  publication lag 4.1 min. Column-maximum reflectivity (`product = MAX`).
 - **NIMBUS `RATE`** — 1,900 x 2,200 cells of 2 km, every 15 minutes, measured lag
-  10 min. Already mm/h; its metadata declares `zr_a = 200.0`, `zr_b = 1.6`, which
-  is where the CIRRUS relation comes from and what pins it.
+  10 min. Already mm/h, near-surface (`product = PPI`); its metadata declares
+  `zr_a = 200.0`, `zr_b = 1.6`.
 
 `ACRR` is rejected: same 2 km grid, and it is a **one-hour** accumulation, which
 smears a moving shower across an hour of track.
+
+**Reflectivity to rain rate.** Marshall-Palmer `Z = 200 R^1.6` is a *surface*
+relation, and it is what OPERA itself applies to the near-surface PPI. CIRRUS is
+a column maximum, so applying it unchanged overstates surface rain: measured over
+the 149,527 cells where both products saw an echo in the 2026-08-10T00:00 pair,
+the median CIRRUS/NIMBUS rate ratio is **2.2**, a full intensity band. The
+reflectivity path therefore divides by that measured ratio — equivalently
+`a_eff = 200 x 2.2^1.6 = 706.2`, or -5.48 dBZ — as an **empirical calibration,
+not physics**. Settling it properly means splitting the ratio by regime
+(stratiform vs convective at 30 dBZ) over a full day and scoring both products
+against gauge-adjusted `dwd-rv`; that measurement is not done, and until it is,
+the scalar is one number from one frame pair.
 
 Pinned contract, verified against the live objects:
 
 - classic TIFF, `Compression = 8`, `Predictor = 1`, 512 x 512 tiles,
   `SamplesPerPixel = 2` (value + `pl.imgw.quality.qi_total`), both `float32`;
 - LAEA/WGS-84, `+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0
-  +y_0=-2100000.0 +units=m +ellps=WGS84`; (55 N, 10 E) lands on fractional pixel
-  (col 1950.5, row 2100.5) of the 1 km raster;
+  +y_0=-2100000.0 +units=m +ellps=WGS84`;
+- **the grid's north-west corner is model (0, 0)**, which is what the false origin
+  is for and what the ODIM corner attributes say: `LL` to `UR` spans exactly
+  3,800,000 x 4,400,000 m, i.e. exactly 3,800 x 4,400 cells of 1 km, so those are
+  outer corners. The COG's `ModelTiepoint` instead reports that corner *minus half
+  of each product's own pixel* (-500.0002714 / -1000.0002714, with a bit-identical
+  residual tail across the two files) — a converter that read the ODIM corners as
+  pixel centres. The baker pins the grid and requires the tiepoint to equal
+  `corner - half a pixel`, so an upstream fix fails the bake rather than moving
+  the field 500 m. Following the tiepoint instead would also put the two products'
+  rasters 500 m apart, at which point a NIMBUS cell is not an aggregate of CIRRUS
+  cells at all;
 - `GDAL_NODATA = -9999000` means **no radar coverage**; a `NaN` sample is ODIM
   `undetect`, meaning covered with nothing detected. The two are different facts
   and only the second is dry.
@@ -496,7 +517,7 @@ leaving attribution to UI guesswork:
 | --- | --- | --- |
 | DWD RV / ICON-EU | DWD Open Data, CC BY 4.0 | `Source: Deutscher Wetterdienst (DWD); modified/quantized by OpenBikeComputer` plus DWD legal and CC BY links |
 | NOAA MRMS / HRRR / GFS | NOAA NODD public-use U.S. government data | `Source: NOAA/NCEP <product>; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied` |
-| EUMETNET OPERA CIRRUS / NIMBUS | CC BY 4.0 (stated in each object's own `GDAL_METADATA`) | `Source: EUMETNET OPERA <composite> (CC BY 4.0); modified/quantized by OpenBikeComputer`, and for CIRRUS the Marshall-Palmer conversion is named in the same string |
+| EUMETNET OPERA CIRRUS / NIMBUS | CC BY 4.0 (stated in each object's own `GDAL_METADATA`) | `Source: EUMETNET OPERA <composite> (CC BY 4.0); modified/quantized by OpenBikeComputer`, and for CIRRUS the Marshall-Palmer conversion and its column-max calibration are named in the same string |
 | NASA IMERG, if later approved | NASA Earth science data policy and GPM citation rules | exact product/citation and transformation notice; not present in v1 manifests |
 | MET Locationforecast | NLOD 2.0 or CC BY 4.0 | `Data from MET Norway` (phone-side attribution, not an R2 baker source) |
 
