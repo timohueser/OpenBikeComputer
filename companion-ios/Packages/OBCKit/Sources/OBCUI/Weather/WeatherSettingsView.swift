@@ -1,6 +1,4 @@
 import SwiftUI
-import OBCDomain
-import OBCTransport
 import OBCWeather
 
 /// The Weather screen (WX13) — pushed from Settings.
@@ -16,7 +14,9 @@ import OBCWeather
 /// own Weather screen is where it is changed. A second editor for one value is two places to look
 /// when they disagree, and this one would be the one that is wrong.
 public struct WeatherSettingsView: View {
-    @Bindable private var model: WeatherSettingsModel
+    // Not `@Bindable`: with the interval editor gone there is no `$model` binding left to make —
+    // the one control on the screen drives the model through a method, not a projected value.
+    private let model: WeatherSettingsModel
     private let onOpenDiagnostics: () -> Void
     private let onOpenPrivacy: () -> Void
     @Environment(\.openURL) private var openURL
@@ -56,8 +56,8 @@ public struct WeatherSettingsView: View {
 
     // MARK: Capability
 
-    /// A device whose firmware predates weather. Stated once, at the top, instead of letting four
-    /// dimmed groups imply it.
+    /// A device whose firmware predates weather. Stated once, at the top, instead of letting a
+    /// screen full of blanks imply it.
     private var unsupportedBanner: some View {
         OBCGroupedSection(footer: "Weather arrived in a later firmware. Everything below describes "
             + "the service; nothing reaches this OBC until it's updated.") {
