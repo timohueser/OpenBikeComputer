@@ -257,13 +257,15 @@ OBCG's own and does not exist in OBCW.
   - **The padding bits of the final byte are not data.** A DEFLATE stream ends on a bit boundary,
     so the bits after the final block's last bit exist only to pad the payload's last byte. They
     are **unconstrained**, and a decoder **MUST NOT** reject a stream on their value. A producer
-    SHOULD emit them as zero (both reference compressors do), but that is unverifiable: neither
-    reference inflate primitive reports the ending *bit* position, so a "MUST be zero" rule could
-    not be enforced by any conforming implementation — it would only fork readers into those that
-    check and those that cannot. Six of the eight bit patterns of a real vector's last byte are
-    therefore the same object; §11 pins one of them as a positive vector so that a reader which
-    rejects it is provably wrong rather than arguably strict. This is the same reasoning as the
-    unverifiable half of the codec-choice rule below: a rule no reader can apply is not a rule.
+    SHOULD emit them as zero (the reference producer does), but that is not something to make a
+    reader check: an implementation built on a general inflate primitive cannot see those bits at
+    all — neither miniz_oxide's `inflate::core` nor Apple's `compression_stream` reports the
+    ending *bit* position — while one carrying its own bit-level inflater can. A "MUST be zero"
+    rule would therefore not make objects stricter, it would fork readers into two populations
+    that disagree about the same published frame, which is the one outcome a two-implementation
+    format cannot afford. Six of the eight bit patterns of a real vector's last byte are the same
+    object; §11 pins one of them as a positive vector, so a reader that rejects it is provably
+    wrong rather than arguably strict.
 
 **Why an LZ codec is here at all.** RLE4 caps runs at 16 cells and has no back-reference, so a
 uniform field costs one byte per 16 cells however uniform it is, and 25 identical rows cost 25x

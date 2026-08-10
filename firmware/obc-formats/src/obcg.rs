@@ -1274,7 +1274,11 @@ mod tests {
                 accepted += 1;
             }
         }
-        assert!(accepted >= 2, "the padding bits of the last byte must not be validated");
+        // Exactly six: this stream's final block ends two bits into its last byte, so bits 0 and 1
+        // are data and bits 2...7 are padding. Pinning the number rather than a floor means a
+        // compressor change that moved the boundary shows up here as a fact that moved, not as a
+        // test that still passes for a different reason.
+        assert_eq!(accepted, 6, "six of the eight last-byte bit patterns are the same object");
 
         // The cheap producer-side bound is a real bound, and slack enough to hold the object.
         let input = FrameInput {
