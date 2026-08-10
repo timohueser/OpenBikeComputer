@@ -66,7 +66,8 @@ struct OBCCompanionApp: App {
                 updateNotifier: SystemUpdateNotifier(),
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
-                syncTiming: Self.launchSyncTiming()
+                syncTiming: Self.launchSyncTiming(),
+                weather: Self.makeWeatherSeams()
             )
             #if DEBUG
                 .devMockOverlay(
@@ -143,8 +144,46 @@ struct OBCCompanionApp: App {
     /// The bridge task that feeds transport read events into the job engine — retained here
     /// because it must live as long as the app does.
     @MainActor private static var weatherBridge: Task<Void, Never>?
-    /// The engine, retained so the foreground kick below can reach it.
+    /// The engine, retained so the foreground kick below can reach it — and so the WX13 screen can
+    /// ask it for the owed job and a retry.
     @MainActor private static var weatherEngine: WeatherJobEngine?
+    /// The service client, retained for WX13's manifest-sourced provenance. The same instance the
+    /// job fetches with, so the screen rides its 60 s manifest cache instead of asking twice.
+    @MainActor private static var weatherStatusProvider: (any WeatherServiceStatusProviding)?
+    /// The rider's standing-watch preference. Read at launch (before any screen exists) and written
+    /// by the WX13 switch — mock runs stay in memory, the determinism rule the other stores keep.
+    static let weatherPreferences: any WeatherPreferencesStore = {
+        #if DEBUG
+        if mockControl != nil { return InMemoryWeatherPreferencesStore() }
+        #endif
+        return UserDefaultsWeatherPreferencesStore()
+    }()
+
+    /// The seams the WX13 Weather screens read (#1198).
+    ///
+    /// Real runs get the *live* pieces: the file-backed history ring the background job writes, the
+    /// engine itself, and the service client. A mock run gets fixture rings only when a
+    /// `-OBCWeatherDemo` state asks for them — otherwise it reads the same real, usually empty,
+    /// ring, because a screen that invented syncs would be the one lie this whole screen exists to
+    /// prevent.
+    @MainActor static func makeWeatherSeams() -> WeatherScreenSeams {
+        #if DEBUG
+        if mockControl != nil, let demo = launchOptions.weatherDemo {
+            let fixtures = MockWeatherFixtures.forState(demo)
+            let history = MockWeatherHistoryStore(fixtures.history)
+            return WeatherScreenSeams(
+                history: history,
+                jobs: MockWeatherJobControl(pending: fixtures.pending, history: history),
+                status: MockWeatherServiceStatus(status: fixtures.status),
+                preferences: weatherPreferences)
+        }
+        #endif
+        return WeatherScreenSeams(
+            history: FileWeatherJobHistoryStore.standard(),
+            jobs: weatherEngine,
+            status: weatherStatusProvider,
+            preferences: weatherPreferences)
+    }
 
     /// The scene-phase foreground kick. The job's own recovery paths are the device's advertising
     /// ladder and CoreBluetooth state restoration — both of which need the *device* to act. A job
@@ -169,11 +208,15 @@ struct OBCCompanionApp: App {
         let cacheDirectory = FileManager.default
             .urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OBCWeatherFrames", isDirectory: true)
+        // One client instance, two readers: the job fetches corridors through it and the WX13
+        // screen asks it for the manifest's health + credits, so the screen rides the same 60 s
+        // manifest cache instead of costing a second read.
+        let serviceClient = OBCWeatherServiceClient(
+            baseURL: Self.weatherServiceURL(), client: http,
+            cache: FileWeatherFrameCache(directory: cacheDirectory))
         let assembler = WeatherAssembler(
             hourlyProvider: METLocationforecastAdapter(client: http),
-            precipitationProvider: OBCWeatherServiceClient(
-                baseURL: Self.weatherServiceURL(), client: http,
-                cache: FileWeatherFrameCache(directory: cacheDirectory)))
+            precipitationProvider: serviceClient)
         let engine = WeatherJobEngine(
             link: WeatherBLEDeviceLink(transport: transport),
             assembler: assembler,
@@ -181,9 +224,12 @@ struct OBCCompanionApp: App {
             history: FileWeatherJobHistoryStore.standard())
         // The watch is what makes the device's request *reach* the phone in the background; it
         // scans only for the known bonded peripheral's weather advertisement and is idle
-        // otherwise. A device without FEATURE_WEATHER simply never advertises the UUID.
-        transport.setWeatherWatch(true)
+        // otherwise. A device without FEATURE_WEATHER simply never advertises the UUID. Since WX13
+        // the rider owns it: the stored preference decides, and this is the launch-time half of
+        // that switch (the screen's half writes the same store and calls the same method).
+        transport.setWeatherWatch(weatherPreferences.loadWeatherWatchEnabled())
         weatherEngine = engine
+        weatherStatusProvider = serviceClient
         weatherBridge = WeatherJobBLEBridge.start(transport: transport, engine: engine)
         #if DEBUG
         // The WX9 job harness: `-OBCTransport ble -OBCWeatherJobHarness` (paired once, like the

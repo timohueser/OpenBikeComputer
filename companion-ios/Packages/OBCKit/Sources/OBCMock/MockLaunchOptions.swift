@@ -25,12 +25,13 @@ import OBCDomain
 /// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
 /// | `-OBCDeviceRoutesFull` | (flag) | pad the device's route catalog to one below the cap so a multi-stage trip fails the whole-trip precheck (TR8 storage-precheck demo/test) |
 /// | `-OBCOldFirmware` | (flag) | model a device predating auto-expiry (epic #638): `setClock`/`setRouteRetention` answer `unsupported`, no `routeList` expiry tail — S7's capability-gated (hidden) state |
+/// | `-OBCWeatherDemo <state>` | `healthy` / `empty` / `stale` / `failing` / `unsupported` | seed the WX13 Weather screens with a fixture job ring, service manifest state and (for `failing`) an owed job; `unsupported` drops the device's weather feature bit |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
 /// `OBC_SHOW_UI_GALLERY=1`, `OBC_HIDE_MOCK_HUD=1`, `OBC_DISABLE_ANIMATIONS=1`,
 /// `OBC_HOLD_CONFIRMATIONS=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token),
-/// `OBC_NETWORK`, `OBC_FIRMWARE_DEMO=1`.
+/// `OBC_NETWORK`, `OBC_FIRMWARE_DEMO=1`, `OBC_WEATHER_DEMO`.
 /// How far the `-OBCFirmwareDemo` hook drives the S7 screen. Raw values are the
 /// launch tokens (`-OBCFirmwareDemo` bare = `staged`, `-OBCFirmwareDemo send`).
 public enum FirmwareDemoStage: String, Sendable, Equatable {
@@ -86,6 +87,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// multi-stage trip fails the whole-trip precheck **before any bytes** (TR8,
     /// issue #657) — the storage-precheck-failure XCUITest / demo hook.
     public var deviceRoutesFull: Bool
+    /// Seed the WX13 Weather screens from a fixture state (Debug only): the job history ring, the
+    /// service manifest state and any owed job. `nil` leaves the screens on the real stores, which
+    /// under the mock transport means an empty ring and no service — honest, but not photographable.
+    public var weatherDemo: WeatherDemoState?
     /// Model a device that predates auto-expiry (epic #638): `setClock` /
     /// `setRouteRetention` answer `unsupported` and `routeList` entries carry no
     /// expiry tail. `false` = the current firmware (expiry supported). Drives
@@ -106,7 +111,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         networkOnline: Bool? = nil,
         firmwareDemo: FirmwareDemoStage? = nil,
         deviceRoutesFull: Bool = false,
-        oldFirmware: Bool = false
+        oldFirmware: Bool = false,
+        weatherDemo: WeatherDemoState? = nil
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -122,6 +128,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.firmwareDemo = firmwareDemo
         self.deviceRoutesFull = deviceRoutesFull
         self.oldFirmware = oldFirmware
+        self.weatherDemo = weatherDemo
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -192,6 +199,20 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_DEVICE_ROUTES_FULL"] == "1"
         let oldFirmware = arguments.contains("-OBCOldFirmware")
             || environment["OBC_OLD_FIRMWARE"] == "1"
+        // Bare `-OBCWeatherDemo` means the healthy state; an unknown token degrades to it too
+        // (automation typo rule).
+        let weatherDemo: WeatherDemoState? = {
+            if let index = arguments.firstIndex(of: "-OBCWeatherDemo") {
+                if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
+                    return WeatherDemoState(rawValue: arguments[index + 1]) ?? .healthy
+                }
+                return .healthy
+            }
+            guard let env = environment["OBC_WEATHER_DEMO"], !env.isEmpty, env != "0" else {
+                return nil
+            }
+            return WeatherDemoState(rawValue: env) ?? .healthy
+        }()
 
         return MockLaunchOptions(
             scenario: scenario,
@@ -207,7 +228,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             networkOnline: networkOnline,
             firmwareDemo: firmwareDemo,
             deviceRoutesFull: deviceRoutesFull,
-            oldFirmware: oldFirmware
+            oldFirmware: oldFirmware,
+            weatherDemo: weatherDemo
         )
     }
 
@@ -221,6 +243,16 @@ public struct MockLaunchOptions: Equatable, Sendable {
         // The flag forces old-firmware even over a scenario that supports expiry;
         // it never re-enables it (a `.oldFirmware` scenario stays old).
         if oldFirmware { control.supportsExpiry = false }
+        // A weather-less device is a *device* property, so it belongs on the identity the mock
+        // reports rather than on the weather screen's own state — that is the bit the app gates on.
+        if let weatherDemo, !weatherDemo.deviceSupportsWeather {
+            let info = control.deviceInfo
+            control.deviceInfo = DeviceInfo(
+                name: info.name, firmwareVersion: info.firmwareVersion,
+                hardwareVersion: info.hardwareVersion, serial: info.serial,
+                protocolVersion: info.protocolVersion, storeEpoch: info.storeEpoch,
+                obcmVersion: info.obcmVersion, featureBits: 0)
+        }
         return control
     }
 }

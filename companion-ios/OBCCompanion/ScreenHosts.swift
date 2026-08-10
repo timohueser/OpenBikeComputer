@@ -2,6 +2,7 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 import OBCUI
+import OBCWeather
 
 /// The pushed/presented screen hosts `RootView` composes: each owns a stable
 /// model for its screen (a model created inline in `navigationDestination` or
@@ -14,6 +15,7 @@ import OBCUI
 struct SettingsScreen: View {
     @State private var model: SettingsModel
     private let onOpenFirmwareUpdate: () -> Void
+    private let onOpenWeather: () -> Void
     private let onOpenDevPanel: (() -> Void)?
 
     init(
@@ -24,6 +26,7 @@ struct SettingsScreen: View {
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
         onOpenFirmwareUpdate: @escaping () -> Void,
+        onOpenWeather: @escaping () -> Void,
         onOpenDevPanel: (() -> Void)?
     ) {
         _model = State(initialValue: SettingsModel(
@@ -35,6 +38,7 @@ struct SettingsScreen: View {
             onForget: onForget
         ))
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
+        self.onOpenWeather = onOpenWeather
         self.onOpenDevPanel = onOpenDevPanel
     }
 
@@ -42,8 +46,78 @@ struct SettingsScreen: View {
         SettingsView(
             model: model,
             onOpenFirmwareUpdate: onOpenFirmwareUpdate,
+            onOpenWeather: onOpenWeather,
             onOpenDevPanel: onOpenDevPanel
         )
+    }
+}
+
+/// The concrete pieces the WX13 Weather screens read, chosen by the composition root (#1198).
+///
+/// A value rather than four parameters threaded through `RootView` because they travel together
+/// and because two of them are legitimately absent: a mock run has no engine to retry with, and a
+/// build that never reached the service has no status provider. Absent is rendered as absent —
+/// there is no stand-in that would let the screen imply a job or a manifest that does not exist.
+struct WeatherScreenSeams {
+    var history: any WeatherJobHistoryStore
+    var jobs: (any WeatherJobControlling)?
+    var status: (any WeatherServiceStatusProviding)?
+    var preferences: any WeatherPreferencesStore
+
+    init(
+        history: any WeatherJobHistoryStore = FileWeatherJobHistoryStore.standard(),
+        jobs: (any WeatherJobControlling)? = nil,
+        status: (any WeatherServiceStatusProviding)? = nil,
+        preferences: any WeatherPreferencesStore = InMemoryWeatherPreferencesStore()
+    ) {
+        self.history = history
+        self.jobs = jobs
+        self.status = status
+        self.preferences = preferences
+    }
+}
+
+/// Owns a stable `WeatherSettingsModel` for the pushed WX13 screen — same rule as the other hosts.
+struct WeatherSettingsScreen: View {
+    @State private var model: WeatherSettingsModel
+    private let onOpenDiagnostics: () -> Void
+    private let onOpenPrivacy: () -> Void
+
+    init(
+        transport: any DeviceTransport,
+        seams: WeatherScreenSeams,
+        onOpenDiagnostics: @escaping () -> Void,
+        onOpenPrivacy: @escaping () -> Void
+    ) {
+        _model = State(initialValue: WeatherSettingsModel(
+            transport: transport,
+            historyStore: seams.history,
+            jobs: seams.jobs,
+            statusProvider: seams.status,
+            preferences: seams.preferences
+        ))
+        self.onOpenDiagnostics = onOpenDiagnostics
+        self.onOpenPrivacy = onOpenPrivacy
+    }
+
+    var body: some View {
+        WeatherSettingsView(
+            model: model,
+            onOpenDiagnostics: onOpenDiagnostics,
+            onOpenPrivacy: onOpenPrivacy
+        )
+    }
+}
+
+/// The pushed diagnostics page. Reads the ring once, at push time: the rows are finished exchanges,
+/// so a live-updating list would only ever redraw itself identically.
+struct WeatherDiagnosticsScreen: View {
+    let history: any WeatherJobHistoryStore
+    @State private var entries: [WeatherJobHistoryEntry] = []
+
+    var body: some View {
+        WeatherDiagnosticsView(entries: entries)
+            .task { entries = history.entries() }
     }
 }
 

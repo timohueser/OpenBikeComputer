@@ -536,11 +536,17 @@ peripheral and iOS holds that pending connect until the device is reachable. An
 ephemeral weather connection never publishes `.connected` to the app's link
 lifecycle; the foreground screens cannot tell it happened.
 
-The watch is **standing, not a session**: armed once per launch, persisted so it
-survives a relaunch, and never disarmed — a request the device raises days later
-still wakes the app. It scans only when nothing else wants the radio, is gated to
-the known bonded peripheral (nothing bonded → no scan at all), and survives a
-Bluetooth off/on toggle as a preference while every in-flight one-shot does not.
+The watch is **standing, not a session**: armed at launch, persisted so it survives a
+relaunch, and not disarmed by anything the machinery does — a request the device
+raises days later still wakes the app. It scans only when nothing else wants the
+radio, is gated to the known bonded peripheral (nothing bonded → no scan at all), and
+survives a Bluetooth off/on toggle as a preference while every in-flight one-shot
+does not. Since WX13 (#1198) the **rider** owns whether it is armed at all:
+`setWeatherWatch(_:)` is on `DeviceTransport` (default no-op for stand-ins with no
+radio), the Weather screen's *Background weather* switch is its only caller passing
+`false`, and the preference — `WeatherPreferencesStore`, defaulting to **on** —
+decides what the composition root arms at launch. Off means the device keeps asking
+and nothing answers until the app is opened; that trade is stated on the screen.
 The foreground outranks both it and the upload leg: a raised foreground intent makes
 the upload *wait* rather than claim the radio, and the connection the foreground then
 raises is one the upload rides.
@@ -579,6 +585,14 @@ means depends on the direction:
   "reset to the default". An app build predating the field round-trips `Config` to
   rename the device and writes the 3-byte-plus-name blob; a device that took that as
   a choice would reset a rider who deliberately picked `Off`.
+
+**This app never sets the refresh byte** (WX13 / #1198). The interval is a *device*
+setting and the OBC's own Weather screen is its editor; the companion reports it and
+offers no control at all, so the one place a `Config` write happens — the H3 rename —
+is a round-trip that carries `weatherRefreshRaw` back untouched, and the rule above is
+what makes that safe. §7.3 keeps the byte writable and the codec keeps both directions
+(`weatherRefreshToApply()` is the *device's* side of the contract, and stays tested);
+the app simply declines to use the write direction.
 
 **An unknown refresh byte is direction-dependent too (spec §11.8), and decoding is
 direction-blind — it never rejects.** A *read* tolerates it: `knownWeatherRefresh`

@@ -85,7 +85,9 @@ let package = Package(
         ),
         .target(
             name: "OBCMock",
-            dependencies: ["OBCTransport", "OBCDomain"],
+            // OBCWeather for the WX13 weather fixtures (job ring, service status, owed job) the
+            // Weather screens are driven and photographed against.
+            dependencies: ["OBCTransport", "OBCDomain", "OBCWeather"],
             // Editable JSON fixture sets (routes/rides/config/diagnostics) the mock
             // serves. The Swift that loads them is `#if DEBUG`; these are inert data.
             resources: [.process("Fixtures")],
@@ -93,7 +95,12 @@ let package = Package(
         ),
         .target(
             name: "OBCUI",
-            dependencies: ["OBCDomain", "OBCTransport"],
+            // OBCWeather for WX13's weather settings / diagnostics / privacy screens: they render
+            // the job history ring, the manifest-sourced attribution and the pending job's phase.
+            // No layer order changes — OBCWeather already sits *below* OBCTransport, which OBCUI
+            // depends on; naming it explicitly keeps the import legal rather than transitively
+            // lucky.
+            dependencies: ["OBCDomain", "OBCTransport", "OBCWeather"],
             swiftSettings: languageMode
         ),
         .testTarget(
@@ -134,8 +141,10 @@ let package = Package(
         .testTarget(
             name: "OBCUITests",
             // OBCMock so the launch-flow model tests drive real scenarios
-            // through MockTransport (host-side, no simulator).
-            dependencies: ["OBCUI", "OBCMock"],
+            // through MockTransport (host-side, no simulator). OBCWeather so the WX13 weather
+            // settings/diagnostics model tests build history rings and service statuses from the
+            // production types.
+            dependencies: ["OBCUI", "OBCMock", "OBCWeather"],
             swiftSettings: languageMode
         ),
     ]

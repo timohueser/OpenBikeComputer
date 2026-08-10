@@ -54,9 +54,47 @@ private final class ScriptedLink: WeatherDeviceLink, @unchecked Sendable {
     }
 }
 
+/// A one-shot rendezvous: a fetch parks inside it until the test opens it. The only way to hold a
+/// run *in flight* long enough to land a second trigger on top of it, which is what the trigger
+/// queue exists for.
+actor Gate {
+    private var opened = false
+    private var entered = false
+    private var openWaiters: [CheckedContinuation<Void, Never>] = []
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// A latch a task can raise on completion, so a test can assert something has *not* finished.
+    actor Flag {
+        private(set) var isRaised = false
+        func raise() { isRaised = true }
+    }
+
+    /// Called from inside the work: mark arrival, then wait for the test.
+    func enter() async {
+        entered = true
+        for waiter in enteredWaiters { waiter.resume() }
+        enteredWaiters = []
+        guard !opened else { return }
+        await withCheckedContinuation { openWaiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for waiter in openWaiters { waiter.resume() }
+        openWaiters = []
+    }
+}
+
 private final class ScriptedAssembler: WeatherAssembling, @unchecked Sendable {
     private let lock = NSLock()
     var results: [Result<BuiltWeatherBundle, Error>] = []
+    /// When set, the *first* assemble parks here until the test opens it.
+    var gate: Gate?
     private(set) var calls: [(requestID: UInt32, generation: UInt32)] = []
 
     func assemble(
@@ -65,6 +103,10 @@ private final class ScriptedAssembler: WeatherAssembling, @unchecked Sendable {
         let result: Result<BuiltWeatherBundle, Error>? = lock.withLock {
             calls.append((request.requestID, generation))
             return results.isEmpty ? nil : results.removeFirst()
+        }
+        if let gate {
+            self.gate = nil
+            await gate.enter()
         }
         guard let result else { throw WeatherProviderError.unavailable }
         return try result.get()
@@ -452,7 +494,261 @@ struct WeatherJobEngineTests {
         await rig.engine().kick(.resume)
         #expect(rig.store.load() == nil)
         #expect(rig.assembler.calls.count == 1, "the dead job did not fetch again")
-        #expect(rig.history.entries().last?.outcome == .failed)
+        // Its own outcome, not `.failed`: no leg failed here, a clock ran out (#1198 review).
+        #expect(rig.history.entries().last?.outcome == .agedOut)
+        // …and it says *why*: time ran out. It used to read `attemptsExhausted`, which was false
+        // twice over — one attempt was spent, and nothing was exhausted (#1227 follow-up).
+        #expect(rig.history.entries().last?.failureReason == .agedOut)
+        #expect(rig.history.entries().last?.attempts == 1)
+    }
+
+    /// The crc-vs-drop split (#1227 follow-up). Both keep the bundle and re-upload it, so the
+    /// engine's *behaviour* is identical — which is exactly why the ring is the only place the
+    /// difference can survive, and why folding them lost it.
+    @Test func aCorruptedTransferIsRecordedApartFromADroppedOne() async {
+        let rig = Rig(configuration: .init(maxAttempts: 1))
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([5])))]
+        rig.link.uploadResults = [.failure(.transferCorrupted)]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.history.entries().last?.failureReason == .transferCorrupted)
+
+        let dropped = Rig(configuration: .init(maxAttempts: 1))
+        dropped.link.readResults = [.success(readReceipt(snapshot(readAt: dropped.clock.now)))]
+        dropped.assembler.results = [
+            .success(builtBundle(generation: 1, at: dropped.clock.now, bytes: Data([5]))),
+        ]
+        dropped.link.uploadResults = [.failure(.connectionDropped)]
+        await dropped.engine().kick(.deviceRaisedRequest)
+        #expect(dropped.history.entries().last?.failureReason == .uploadFailed)
+    }
+
+    /// A corrupted transfer re-sends the *same* bytes: they were correct when they left.
+    @Test func aCorruptedTransferResendsTheSameBytes() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([5])))]
+        rig.link.uploadResults = [.failure(.transferCorrupted), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        rig.clock.advance(rig.configuration.retryCooldown + 1)
+        await rig.engine().kick(.resume)
+        #expect(rig.assembler.calls.count == 1, "corruption on the wire is not a producer bug")
+        #expect(rig.link.uploadedPayloads == [Data([5]), Data([5])])
+    }
+
+    /// A ladder re-read landing on a bundle the app slept past records *aged out*, not
+    /// *superseded*: nothing superseded it — the same request is still being answered.
+    @Test func aBundleTheAppSleptPastIsRecordedAsAgedOutNotSuperseded() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 7, readAt: rig.clock.now)))]
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([1]))),
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([2]))),
+        ]
+        rig.link.uploadResults = [.failure(.connectionDropped), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.phase == .bundleReady)
+
+        // An hour asleep (past bundleMaxAge, inside jobLifetime), then the device's ladder step —
+        // the *same* request id, re-read by the transport's standing watch.
+        rig.clock.advance(3_600)
+        await rig.engine().kick(
+            .contextRead(snapshot(requestID: 7, readAt: rig.clock.now),
+                         readConnectedMilliseconds: 1_400))
+        let rows = rig.history.entries()
+        #expect(rows.first?.failureReason == .agedOut)
+        // …and it is not painted as a failure either: the same job carried on and delivered two
+        // lines below, so the row is information, not an alarm (#1198 review).
+        #expect(rows.first?.outcome == .agedOut)
+        #expect(rows.last?.outcome == .committed)
+        #expect(rig.link.uploadedPayloads.last == Data([2]), "the rebuilt bundle, not the old one")
+    }
+
+    /// The **resume** half of the same horizon. `advance()`'s own `bundleReady` expiry check —
+    /// the app simply waking up past `bundleMaxAge`, with no re-read to trigger `adopt` — used to
+    /// bin the bundle in silence, so a paid-for corridor fetch vanished from the ring and only one
+    /// of the engine's two expiry routes was visible (#1198 review). Same event, same row.
+    @Test func aBundleThatExpiredWhileTheAppSleptIsRecordedOnTheResumePathToo() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 7, readAt: rig.clock.now)))]
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([1]))),
+            .success(builtBundle(generation: 2, at: rig.clock.now, bytes: Data([2]))),
+        ]
+        rig.link.uploadResults = [.failure(.connectionDropped), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.phase == .bundleReady)
+        #expect(rig.history.entries().isEmpty, "a retryable drop is not a finished exchange")
+
+        // An hour asleep — past bundleMaxAge, well inside jobLifetime — then a plain foreground
+        // resume. No context read: the checkpoint alone drives this.
+        rig.clock.advance(3_600)
+        await rig.engine().kick(.resume)
+
+        let rows = rig.history.entries()
+        #expect(rows.count == 2)
+        #expect(rows.first?.outcome == .agedOut)
+        #expect(rows.first?.failureReason == .agedOut)
+        #expect(rows.first?.phaseReached == .bundleReady)
+        #expect(rows.last?.outcome == .committed)
+        #expect(rig.link.readCalls == 1, "the resume finished the job without a second read leg")
+        #expect(rig.assembler.calls.count == 2, "the expired bundle was rebuilt, not sent")
+        #expect(rig.link.uploadedPayloads.last == Data([2]))
+    }
+
+    /// *Retry now* waives the cooldown a `.resume` honours — and still refuses to invent work.
+    @Test func aRiderRetryWaivesTheCooldownButNeverManufacturesARequest() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([3]))),
+        ]
+        rig.link.uploadResults = [.failure(.connectionDropped), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.notBefore != nil)
+
+        // No clock advance at all: the cooldown is still in force, and `.resume` would sit it out.
+        await rig.engine().kick(.userRetry)
+        #expect(rig.history.entries().last?.outcome == .committed)
+        #expect(rig.store.load() == nil)
+
+        // Nothing owed now — a tap must not start a read leg the device never asked for.
+        await rig.engine().kick(.userRetry)
+        #expect(rig.link.readCalls == 1)
+    }
+
+    /// The other half of "only what is owed": when the checkpoint *is* parked at the read leg, a
+    /// tap runs it. The device raised the request — its advertisement is what created the
+    /// checkpoint — so re-reading finishes an exchange rather than manufacturing one, and this is
+    /// the failure a rider is most likely to be staring at when they reach for Retry now. The
+    /// `.userRetry` doc used to claim no read leg is ever started; it is, deliberately (#1198
+    /// review).
+    @Test func aRiderRetryDoesRunTheReadLegTheDeviceAlreadyAskedFor() async {
+        let rig = Rig()
+        rig.link.readResults = [
+            .failure(.timedOut),
+            .success(readReceipt(snapshot(readAt: rig.clock.now))),
+        ]
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([9]))),
+        ]
+        rig.link.uploadResults = [.success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.phase == .readingContext, "parked at the read leg")
+        #expect(rig.link.readCalls == 1)
+
+        // No clock advance: a `.resume` here would sit out the cooldown and do nothing at all.
+        await rig.engine().kick(.userRetry)
+        #expect(rig.link.readCalls == 2, "the tap ran the owed read")
+        #expect(rig.history.entries().last?.outcome == .committed)
+    }
+
+    /// A rider's tap does not spend the attempt budget. That budget bounds what the phone does on
+    /// its own per request; if taps counted, the rider's own third press is what would abandon
+    /// their job to the device's ladder (#1198 review).
+    @Test func aRiderRetryDoesNotSpendAnAttempt() async {
+        let rig = Rig(configuration: .init(maxAttempts: 3, retryCooldown: 30))
+        rig.link.readResults = [
+            .failure(.timedOut), .failure(.timedOut), .failure(.timedOut), .failure(.timedOut),
+        ]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.attempts == 1)
+
+        // Three taps, none of them autonomous work.
+        for _ in 0..<3 { await rig.engine().kick(.userRetry) }
+        #expect(rig.link.readCalls == 4, "every tap still ran the owed leg")
+        #expect(rig.store.load()?.attempts == 1, "the budget is untouched by taps")
+        #expect(rig.store.load() != nil, "and the job is still there to finish")
+        #expect(rig.history.entries().isEmpty, "nothing was abandoned")
+    }
+
+    /// …while an autonomous `.resume` still does spend one, or the budget would be decorative.
+    @Test func aResumeStillSpendsAnAttempt() async {
+        let rig = Rig(configuration: .init(maxAttempts: 3, retryCooldown: 30))
+        rig.link.readResults = [.failure(.timedOut), .failure(.timedOut)]
+        await rig.engine().kick(.deviceRaisedRequest)
+        rig.clock.advance(31)
+        await rig.engine().kick(.resume)
+        #expect(rig.store.load()?.attempts == 2)
+    }
+
+    /// A tap that lands while a run is in flight is queued — and must survive the scene-phase
+    /// `.resume` that so often lands on top of it (open the app, tap Retry now: the foreground kick
+    /// and the press race). The merge table preferred `.resume`, which honours the very cooldown
+    /// the tap exists to waive, so the press was swallowed (#1198 review).
+    @Test func theTriggerMergeTableKeepsAQueuedRiderRetryOverAResume() async {
+        let rig = Rig()
+        let engine = rig.engine()
+        let readAt = rig.clock.now
+        #expect(await engine.merged(.userRetry, with: .resume) == .userRetry)
+        // The rows that already held, re-pinned beside it: anything carrying more than a tap still
+        // wins, and a tap never demotes them.
+        #expect(await engine.merged(.deviceRaisedRequest, with: .userRetry) == .deviceRaisedRequest)
+        #expect(await engine.merged(.userRetry, with: .deviceRaisedRequest) == .deviceRaisedRequest)
+        #expect(await engine.merged(
+            .contextRead(snapshot(readAt: readAt), readConnectedMilliseconds: 10),
+            with: .userRetry)
+            == .contextRead(snapshot(readAt: readAt), readConnectedMilliseconds: 10))
+        #expect(await engine.merged(nil, with: .userRetry) == .userRetry)
+    }
+
+    /// `retryNow()` returns when the work is **finished**, not when it is scheduled. The screen
+    /// binds its spinner to this call, so a tap that merely queues behind a run in flight used to
+    /// stop the spinner instantly while the job carried on invisibly (#1198 review).
+    @Test func retryNowReturnsOnCompletionEvenWhenItOnlyQueues() async {
+        let rig = Rig()
+        let gate = Gate()
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.gate = gate
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([7]))),
+        ]
+        rig.link.uploadResults = [.success(uploadReceipt())]
+        let engine = rig.engine()
+
+        // A run parked inside the assembler — exactly the "fetch in flight" the trigger queue
+        // exists for.
+        let firstRun = Task { await engine.kick(.deviceRaisedRequest) }
+        await gate.waitUntilEntered()
+
+        let finished = Gate.Flag()
+        let retry = Task {
+            await engine.retryNow()
+            await finished.raise()
+        }
+        // The tap can only have queued: the engine is busy. Its call must still be waiting.
+        for _ in 0..<200 { await Task.yield() }
+        #expect(await finished.isRaised == false,
+                "retryNow returned while the job it asked for was still running")
+
+        await gate.open()
+        await retry.value
+        await firstRun.value
+        #expect(await finished.isRaised)
+        #expect(rig.history.entries().last?.outcome == .committed,
+                "retryNow returned only once the exchange was actually done")
+    }
+
+    /// The screen's view of the checkpoint carries no position, by construction.
+    @Test func thePendingProjectionIsCoordinateFree() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 11, readAt: rig.clock.now)))]
+        rig.assembler.results = [.failure(WeatherProviderError.unavailable)]
+        let engine = rig.engine()
+        await engine.kick(.deviceRaisedRequest)
+
+        #expect(rig.store.load()?.snapshot?.latitudeMicrodegrees != nil, "the checkpoint holds it")
+        let pending = await engine.pendingJob()
+        #expect(pending?.requestID == 11)
+        #expect(pending?.phase == .fetching)
+        #expect(pending?.attempts == 1)
+        #expect(pending?.retryNotBefore != nil)
+        // The projection is a fixed set of scalars, and this pins the set: adding a field to the
+        // checkpoint must not quietly widen what a screen can hold.
+        #expect(Mirror(reflecting: pending!).children.compactMap(\.label).sorted() == [
+            "attempts", "bundleByteCount", "deferrals", "phase", "requestID", "retryNotBefore",
+            "startedAt", "updatedAt",
+        ])
     }
 
     /// A brand-new request id arriving mid-*fetch* abandons that fetch just as surely as one
@@ -508,7 +804,7 @@ struct WeatherJobEngineTests {
         rig.clock.advance(30 * 60)
         await rig.engine().kick(.resume)
         #expect(rig.store.load() == nil)
-        #expect(rig.history.entries().last?.outcome == .failed)
+        #expect(rig.history.entries().last?.outcome == .agedOut)
     }
 
     /// `storageFull` / `notFound` / `busy` say nothing about the bytes. Binning a good bundle and
