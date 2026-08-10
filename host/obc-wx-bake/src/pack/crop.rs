@@ -89,18 +89,28 @@ impl Window {
 /// that lies wholly past an edge back onto the boundary cell, where alignment then widens it into
 /// a plausible-looking sliver — an 8-column strip of the CONUS east edge for a bbox over Europe,
 /// which is not an empty crop but a *wrong* one.
+///
+/// The arithmetic runs in `i128` so it is **total** over every `i64` input, including the
+/// saturated `i64::MAX` an out-of-range `--bbox` used to produce. `BboxUdeg::validate` rejects
+/// those at the boundary, but this function must not depend on having been called correctly:
+/// the workspace sets no `[profile.release]`, so `overflow-checks` is off and a wrapped
+/// subtraction here would come back as a confident wrong window rather than a panic — the exact
+/// sliver class this function exists to refuse.
 fn axis(origin: i64, step: i64, limit: u32, low: i64, high: i64, edge: u32) -> Option<(u32, u32)> {
+    let (origin, step) = (i128::from(origin), i128::from(step));
     // The cell containing `low`, and the exclusive end that retains the cell containing `high`.
-    let first = (low - origin).div_euclid(step);
-    let last = (high - origin + step - 1).div_euclid(step);
+    let first = (i128::from(low) - origin).div_euclid(step);
+    let last = (i128::from(high) - origin + step - 1).div_euclid(step);
     let start = first.max(0);
-    let end = last.min(i64::from(limit));
+    let end = last.min(i128::from(limit));
     if end <= start {
         return None;
     }
+    // Both are now inside `0..=limit`, so the narrowing is exact.
+    let (start, end) = (start as u32, end as u32);
     // Only now: align outward to whole tiles of this grid.
-    let start = (start as u32 / edge) * edge;
-    let end = (end as u32).div_ceil(edge).saturating_mul(edge).min(limit);
+    let start = (start / edge) * edge;
+    let end = end.div_ceil(edge).saturating_mul(edge).min(limit);
     Some((start, end))
 }
 
@@ -301,6 +311,58 @@ mod tests {
             east_udeg: -127_000_000,
         };
         assert!(window(&GRID, &touching).is_err(), "a bbox starting exactly at the east edge covers no cell");
+    }
+
+    /// The inner of the two overflow defences: even the extreme `i64` values a saturating cast
+    /// can produce must give an honest answer, not a wrapped one.
+    ///
+    /// `BboxUdeg::validate` now rejects these at the boundary, so this is reachable only by
+    /// constructing a `BboxUdeg` directly — but the workspace sets no `[profile.release]`, so a
+    /// release build has `overflow-checks` off and a wrapped subtraction here comes back as a
+    /// confident answer rather than a panic.
+    ///
+    /// Measured against the real MRMS lattice, the old `i64` version wrapped on exactly two of the
+    /// four extremes, and they are **not** the two the review cited:
+    ///
+    /// | edge | old `i64` (wrapping) | correct |
+    /// |---|---|---|
+    /// | `west = i64::MIN` (lon origin negative) | `Some((0, 4032))` | same — no overflow |
+    /// | `north = i64::MAX` (lat origin positive) | `Some((2048, 3500))` | same — no overflow |
+    /// | `east = i64::MAX` (lon origin negative) | `None` | `Some((3328, 7000))` |
+    /// | `south = i64::MIN` (lat origin positive) | `None` | `Some((0, 2368))` |
+    ///
+    /// So the arithmetic hazard was a *false disjointness* — fail-safe, if wrong. The genuinely
+    /// dangerous half of this defect is the one `BboxUdeg::validate` fixes: `1e30` saturates to
+    /// `i64::MAX`, which does not overflow, and a fat-fingered decimal therefore cropped half of
+    /// CONUS silently instead of being refused.
+    #[test]
+    fn saturated_bbox_edges_cannot_wrap_the_axis_arithmetic() {
+        let grid = crate::source::mrms::GEOMETRY;
+        let sane =
+            BboxUdeg { south_udeg: 40_500_000, west_udeg: -96_500_000, north_udeg: 43_500_000, east_udeg: -90_000_000 };
+        let full = window(&grid, &sane).expect("the sane window crops");
+
+        // A window whose west edge is the most negative i64 still starts at the grid's west edge…
+        let west = BboxUdeg { west_udeg: i64::MIN, ..sane };
+        assert_eq!(window(&grid, &west).unwrap(), Window { col0: 0, ..full });
+        // …and one whose east edge saturates positive still stops at the grid's east edge.
+        let east = BboxUdeg { east_udeg: i64::MAX, ..sane };
+        assert_eq!(window(&grid, &east).unwrap(), Window { col1: grid.width, ..full });
+        let south = BboxUdeg { south_udeg: i64::MIN, ..sane };
+        assert_eq!(window(&grid, &south).unwrap(), Window { row0: 0, ..full });
+        let north = BboxUdeg { north_udeg: i64::MAX, ..sane };
+        assert_eq!(window(&grid, &north).unwrap(), Window { row1: grid.height, ..full });
+
+        // Wholly past an edge stays disjoint at the extremes too, in both directions.
+        let past_east =
+            BboxUdeg { south_udeg: 40_500_000, west_udeg: i64::MAX - 1, north_udeg: 43_500_000, east_udeg: i64::MAX };
+        assert!(window(&grid, &past_east).is_err());
+        let past_west =
+            BboxUdeg { south_udeg: 40_500_000, west_udeg: i64::MIN, north_udeg: 43_500_000, east_udeg: i64::MIN + 1 };
+        assert!(window(&grid, &past_west).is_err());
+        // And the whole planet is the whole grid, not an overflow.
+        let planet = BboxUdeg { south_udeg: i64::MIN, west_udeg: i64::MIN, north_udeg: i64::MAX, east_udeg: i64::MAX };
+        assert_eq!(window(&grid, &planet).unwrap(), Window { col0: 0, col1: grid.width, row0: 0, row1: grid.height });
     }
 
     /// The composite of the four: disjoint on both axes at once.

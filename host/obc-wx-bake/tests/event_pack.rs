@@ -177,20 +177,51 @@ fn the_pack_stays_on_the_basemap_it_names() {
     assert_eq!(event.basemap_region, pack::US_BASEMAP_REGION);
     let map = pack::US_BASEMAP_BBOX;
     let coverage = event.coverage_udeg;
-    // Crops are aligned outward to whole tiles, so a window hugging a state border overshoots it
-    // by up to one tile of the finest lattice. That is the honest tolerance — derived, not chosen.
+    let request = event.bake.bbox_udeg.expect("this pack is cropped");
+
+    // What this actually bounds, stated honestly. Coverage exceeds the basemap for two independent
+    // reasons, and only one of them is tile alignment:
+    //
+    //   1. the *requested* `--bbox` may already sit outside Iowa — for this pack the request's east
+    //      edge is 90.000 W against Iowa's 90.140 W, so +0.140 of the +0.200 total east overhang is
+    //      the request, before a single tile is aligned;
+    //   2. crops then align outward to whole tiles of each frame's own lattice, adding up to one
+    //      more tile stride (0.64 degrees on the 1 km observation).
+    //
+    // So the bound is `request overshoot + one tile`, not `one tile`. It is still a real tripwire —
+    // it is what fails if someone captures a Kansas storm against the Iowa basemap — but it does not
+    // claim tile alignment is the only thing being tolerated.
     let tile = i64::from(mrms::GEOMETRY.tile_edge) * i64::from(mrms::GEOMETRY.cell_lat_udeg);
     assert_eq!(tile, 640_000, "the observation's tile stride is 0.64 degrees");
+    for (edge, over, requested_over) in [
+        ("south", map.south_udeg - coverage.south_udeg, map.south_udeg - request.south_udeg),
+        ("west", map.west_udeg - coverage.west_udeg, map.west_udeg - request.west_udeg),
+        ("north", coverage.north_udeg - map.north_udeg, request.north_udeg - map.north_udeg),
+        ("east", coverage.east_udeg - map.east_udeg, request.east_udeg - map.east_udeg),
+    ] {
+        let budget = requested_over.max(0) + tile;
+        assert!(
+            over <= budget,
+            "coverage reaches {:.3} degrees past the {edge} edge of {}, beyond the {:.3} the request \
+             ({:.3}) plus one tile allows — this pack needs a basemap conversation, not a quiet capture",
+            over as f64 / 1e6,
+            pack::US_BASEMAP_REGION,
+            budget as f64 / 1e6,
+            requested_over.max(0) as f64 / 1e6,
+        );
+    }
+    // The requested window is itself the thing a human chose, so hold *it* to the basemap directly:
+    // a request that wandered off Iowa is the drift this convention exists to notice, and tile
+    // alignment is no excuse for it.
     for (edge, over) in [
-        ("south", map.south_udeg - coverage.south_udeg),
-        ("west", map.west_udeg - coverage.west_udeg),
-        ("north", coverage.north_udeg - map.north_udeg),
-        ("east", coverage.east_udeg - map.east_udeg),
+        ("south", map.south_udeg - request.south_udeg),
+        ("west", map.west_udeg - request.west_udeg),
+        ("north", request.north_udeg - map.north_udeg),
+        ("east", request.east_udeg - map.east_udeg),
     ] {
         assert!(
             over <= tile,
-            "coverage reaches {:.3} degrees past the {edge} edge of {} — more than one tile, so this pack \
-             needs a basemap conversation rather than a quiet capture",
+            "the requested --bbox reaches {:.3} degrees past the {edge} edge of {}",
             over as f64 / 1e6,
             pack::US_BASEMAP_REGION
         );
@@ -207,15 +238,49 @@ fn every_stored_byte_matches_its_recorded_digest() {
     let report = pack::verify_digests(&pack_root(), &event).expect("digests");
     eprintln!("{EVENT_ID}: {} digests verified", report.verified);
     assert!(report.verified >= event.service.len() + event.truth_frames.len());
-    // The truth ladder's raw observations are recorded but not checked in — deliberately, they
-    // are ~450 KB each and nothing here decodes them. They must still carry full provenance.
     for member in rebake::truth_members(&event) {
         assert_eq!(member.role, Role::Truth);
         assert!(member.sha256.is_some(), "{} has no digest", member.url);
         assert!(member.length.is_some_and(|length| length > 0), "{} has no length", member.url);
         assert!(member.archive_url.contains("mtarchive"), "{} is not from the archive", member.archive_url);
     }
-    assert!(!report.unmaterialized.is_empty(), "this pack ships with a recorded-only truth ladder");
+}
+
+/// **The pack has no external dependency left.** Every member's bytes are checked in — including
+/// the truth ladder's eight raw MRMS observations, which an earlier round shipped as
+/// `stored: false` provenance only.
+///
+/// That was the wrong trade for a fixture whose whole point is durability. `service/` was already
+/// a pure re-run of checked-in bytes, but `truth/` was eight *baked artifacts* whose sources lived
+/// on a single free mirror — so the lattice and quantization work ahead would have meant
+/// re-fetching 4.3 MB from MTArchive to re-derive them. 4.3 MB in git is the cheaper half of that
+/// trade by a wide margin.
+#[test]
+fn nothing_in_the_pack_has_to_be_fetched() {
+    let event = event();
+    let missing = rebake::unmaterialized(&event);
+    assert!(
+        missing.is_empty(),
+        "these members still have to come from the network: {:?}",
+        missing.iter().map(|member| member.path.as_deref().unwrap_or("?")).collect::<Vec<_>>()
+    );
+    let report = pack::verify_digests(&pack_root(), &event).expect("digests");
+    assert!(report.unmaterialized.is_empty());
+    // And the ladder's raw sources really are the checked-in half, not an empty set.
+    let truth_bytes: u64 = rebake::truth_members(&event).filter_map(|member| member.length).sum();
+    eprintln!("{EVENT_ID}: {truth_bytes} bytes of truth upstream checked in");
+    assert!(truth_bytes > 4_000_000, "the truth ladder's raw observations are ~450 KB each");
+}
+
+/// …and because they are checked in, `truth/` is now a pure re-run too: eight observed frames
+/// re-derived offline from the pack's own bytes and byte-compared. A change to the observation
+/// lattice or the quantization table fails here rather than leaving eight stale frames behind.
+#[test]
+fn the_truth_ladder_rebakes_byte_identically() {
+    let event = event();
+    let compared = rebake::verify_truth_rebake(&pack_root(), &event).expect("the truth ladder re-bakes");
+    assert_eq!(compared, event.truth_frames.len());
+    eprintln!("{EVENT_ID}: {compared} truth frames re-derived from checked-in bytes");
 }
 
 /// The archive is not the upstream: every member names both, and the *canonical* URL is what the

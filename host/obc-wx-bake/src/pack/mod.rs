@@ -9,13 +9,14 @@
 //!   truth/        the OBSERVED frames at the truth offsets — ground truth for later scoring
 //! ```
 //!
-//! The pack's central promise is **re-bakeability**: `service/` is not a hand-assembled artifact,
-//! it is what [`crate::cycle::run_cycle`] emits when its `Upstream` is
-//! [`crate::fetch::FixtureUpstream`] loaded from `upstream/` — the very seam the checked-in
-//! fixture cycles already use. A re-bake that differs by one byte is a bug in the baker, and
+//! The pack's central promise is **re-bakeability**, and it covers both halves: `service/` is what
+//! [`crate::cycle::run_cycle`] emits when its `Upstream` is [`crate::fetch::FixtureUpstream`]
+//! loaded from `upstream/` — the very seam the checked-in fixture cycles already use — and
+//! `truth/` is the same deal through [`crate::source::mrms::bake_observation`]. Neither is a
+//! hand-assembled artifact. A re-bake that differs by one byte is a bug in the baker, and
 //! [`crate::pack::rebake`] is what CI runs to say so.
 //!
-//! Two facts about historical archives shape the format, and both are recorded per member:
+//! Two facts about historical archives shape the format:
 //!
 //! * **The archive is not the upstream.** The baker asks for
 //!   `https://noaa-mrms-pds.s3.amazonaws.com/...` — a short-retention bucket that holds days, not
@@ -23,9 +24,12 @@
 //!   therefore carries *two* URLs: `url`, the canonical key the baker requests and the replay
 //!   serves it under, and `archive_url`, where the bytes were actually retrieved. Confusing the
 //!   two would make a pack unreplayable the moment the live bucket rolls over.
-//! * **Not every member is checked in.** The truth ladder's raw observations are ~400 KB each and
-//!   CI never decodes them, so they are recorded with full provenance and `stored: false`. See
-//!   [`Member::stored`]; `obc-wx-pack fetch` materializes them and `verify` proves the sha256.
+//! * **A shipped pack should depend on no archive at all.** A member may be recorded with full
+//!   provenance and `stored: false` (see [`Member::stored`]), which keeps a genuinely oversized
+//!   pack tractable — but the truth ladder's raw observations are *not* that case. They are the
+//!   inputs `truth/` is a pure function of, so leaving them on a single free mirror would put a
+//!   later lattice or quantization change one outage away from being unresolvable. Capture with
+//!   `--store-truth-upstream`.
 //!
 //! Provenance discipline follows `tests/fixtures/README.md` exactly: exact retrieval URL, byte
 //! range where one was used, length, sha256 and licence, for every member.
@@ -59,10 +63,18 @@ pub const US_BASEMAP_REGION: &str = "north-america/us/iowa";
 /// Iowa's bounding box (40.3755-43.5012 N, 96.6397-90.1401 W), the reference the convention above
 /// is measured against.
 ///
-/// A pack's coverage is *not* required to sit exactly inside it: crops are aligned outward to
-/// whole tiles of each frame's own lattice, so the retained window overshoots the request by up to
-/// one tile — 0.64 degrees on the 1 km observation. That overshoot is a property of the format,
-/// not a choice, so the tolerance is derived from the tile stride rather than guessed.
+/// **Hand-copied, and nothing ties it to the extract.** These are the published bounds of the
+/// state, transcribed here because the Geofabrik `.poly` for `north-america/us/iowa` is not
+/// fetched by anything in this crate — `obc-bake` downloads it at bake time, and this crate has no
+/// business doing so to run a unit test. The consequence is honest to state: if Geofabrik ever
+/// re-cuts the extract, this constant does not notice. It is a tripwire for "did a pack wander to
+/// another state", not a survey marker, and it should not be treated as one.
+///
+/// A pack's coverage is *not* required to sit inside it. Two things push past the border, and the
+/// test that enforces this ([`tests/event_pack.rs`]'s `the_pack_stays_on_the_basemap_it_names`)
+/// budgets for both: the requested `--bbox` may already sit outside the state, and the crop then
+/// aligns outward to whole tiles of each frame's own lattice, adding up to one more tile stride
+/// (0.64 degrees on the 1 km observation).
 pub const US_BASEMAP_BBOX: BboxUdeg =
     BboxUdeg { south_udeg: 40_375_501, west_udeg: -96_639_704, north_udeg: 43_501_196, east_udeg: -90_140_061 };
 
@@ -92,6 +104,10 @@ pub struct BboxUdeg {
     pub east_udeg: i64,
 }
 
+/// The furthest a bbox edge may sit from the equator / prime meridian, in microdegrees.
+pub const MAX_LAT_UDEG: i64 = 90_000_000;
+pub const MAX_LON_UDEG: i64 = 180_000_000;
+
 impl BboxUdeg {
     /// Parse `south,west,north,east` in decimal degrees.
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -105,13 +121,49 @@ impl BboxUdeg {
             if !degrees.is_finite() {
                 return Err(format!("--bbox: {part:?} is not a finite number"));
             }
+            // The cast is only safe *because* the magnitude is checked immediately below: an
+            // out-of-range `f64 as i64` saturates to `i64::MAX` rather than failing.
             *slot = (degrees * 1e6).round() as i64;
         }
         let bbox = Self { south_udeg: udeg[0], west_udeg: udeg[1], north_udeg: udeg[2], east_udeg: udeg[3] };
-        if bbox.south_udeg >= bbox.north_udeg || bbox.west_udeg >= bbox.east_udeg {
-            return Err(format!("--bbox {text:?} is empty (south<north and west<east are required)"));
-        }
+        bbox.validate().map_err(|error| format!("--bbox {text:?}: {error}"))?;
         Ok(bbox)
+    }
+
+    /// A bbox that is on the planet and not empty.
+    ///
+    /// The magnitude half is not decoration. `(degrees * 1e6).round() as i64` **saturates** on an
+    /// out-of-range float, so a fat-fingered `--bbox 40.5,-96.5,1e30,-90` reached the crop as
+    /// `north_udeg = i64::MAX` — and against the MRMS lattice that clamps to rows 2048..3500 and
+    /// crops half of CONUS, silently, with no error anywhere. The typo becomes a pack. That is the
+    /// dangerous half of this defect, and it is a *validation* failure, not an arithmetic one:
+    /// nothing overflowed.
+    ///
+    /// (The arithmetic could overflow too, on the other two extremes — `east = i64::MAX` and
+    /// `south = i64::MIN` wrapped into a spurious "does not intersect" in a release build, where
+    /// `overflow-checks` is off because the workspace sets no `[profile.release]`. That half is
+    /// fail-safe, and [`crate::pack::crop::window`] is now independently total: it works in
+    /// `i128`. See its `saturated_bbox_edges_cannot_wrap_the_axis_arithmetic` for the measured
+    /// table.)
+    ///
+    /// So this is the outer of two defences, and it is the one that matters: it refuses nonsense
+    /// at the boundary with a message a human can act on, and it covers a `BboxUdeg` arriving by
+    /// any route — including `serde`, out of an `event.json` nobody parsed.
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value, limit) in [
+            ("south", self.south_udeg, MAX_LAT_UDEG),
+            ("north", self.north_udeg, MAX_LAT_UDEG),
+            ("west", self.west_udeg, MAX_LON_UDEG),
+            ("east", self.east_udeg, MAX_LON_UDEG),
+        ] {
+            if !(-limit..=limit).contains(&value) {
+                return Err(format!("{name} edge {} microdegrees is off the planet (limit +/-{limit})", value));
+            }
+        }
+        if self.south_udeg >= self.north_udeg || self.west_udeg >= self.east_udeg {
+            return Err("the window is empty (south<north and west<east are required)".into());
+        }
+        Ok(())
     }
 }
 
@@ -257,6 +309,12 @@ impl Event {
         if event.format != FORMAT {
             return Err(format!("event.json declares format {:?}, expected {FORMAT}", event.format));
         }
+        // A pack document is untrusted input like any other: the bbox it carries goes straight
+        // into the crop's integer arithmetic, so it is checked here rather than where it lands.
+        if let Some(bbox) = event.bake.bbox_udeg {
+            bbox.validate().map_err(|error| format!("event.json: bake.bbox_udeg: {error}"))?;
+        }
+        event.coverage_udeg.validate().map_err(|error| format!("event.json: coverage_udeg: {error}"))?;
         Ok(event)
     }
 
@@ -393,6 +451,47 @@ mod tests {
         }
     }
 
+    /// A magnitude the planet does not have must be refused **at the boundary**.
+    ///
+    /// `(degrees * 1e6).round() as i64` saturates rather than failing, so a fat-fingered decimal
+    /// used to reach the crop as `i64::MAX` and wrap its arithmetic in a release build — coming
+    /// back as a confident, wrong, non-empty window over the wrong ground.
+    #[test]
+    fn a_bbox_off_the_planet_is_refused_before_it_can_saturate() {
+        for bad in [
+            "40.5,-96.5,1e30,-90",  // the fat-fingered decimal, verbatim
+            "-1e30,-96.5,43.5,-90", // …southward
+            "40.5,-1e30,43.5,-90",  // …westward
+            "40.5,-96.5,43.5,1e30", // …eastward
+            "40.5,-96.5,91,-90",    // just past the pole
+            "40.5,-181,43.5,-90",   // just past the antimeridian
+            "1e300,1e300,1e301,1e301",
+        ] {
+            let error = BboxUdeg::parse(bad).unwrap_err();
+            assert!(error.contains("off the planet"), "{bad}: {error}");
+        }
+        // The limits themselves are legal.
+        assert!(BboxUdeg::parse("-90,-180,90,180").is_ok());
+        // And the saturation really is what would have happened without the check.
+        assert_eq!((1e30f64 * 1e6).round() as i64, i64::MAX);
+    }
+
+    /// The same check covers a bbox that arrives through `serde` rather than the CLI — a pack
+    /// document is untrusted input like any other.
+    #[test]
+    fn an_event_document_carrying_an_impossible_bbox_is_refused() {
+        let mut event = sample_event();
+        event.bake.bbox_udeg =
+            Some(BboxUdeg { south_udeg: 0, west_udeg: 0, north_udeg: i64::MAX, east_udeg: 1_000_000 });
+        let error = Event::from_json(event.to_json().as_bytes()).unwrap_err();
+        assert!(error.contains("bake.bbox_udeg") && error.contains("off the planet"), "{error}");
+
+        let mut event = sample_event();
+        event.coverage_udeg.west_udeg = i64::MIN;
+        let error = Event::from_json(event.to_json().as_bytes()).unwrap_err();
+        assert!(error.contains("coverage_udeg") && error.contains("off the planet"), "{error}");
+    }
+
     /// Member paths are untrusted JSON: nothing may reach outside the pack directory.
     #[test]
     fn member_paths_can_never_escape_the_pack() {
@@ -403,9 +502,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_event_document_round_trips_and_pins_its_format_tag() {
-        let event = Event {
+    fn sample_event() -> Event {
+        Event {
             format: FORMAT.to_string(),
             id: "x".into(),
             title: "X".into(),
@@ -440,7 +538,12 @@ mod tests {
             manifest_key: "wx/v1/manifest.json".into(),
             service: vec![],
             truth_frames: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn the_event_document_round_trips_and_pins_its_format_tag() {
+        let event = sample_event();
         let json = event.to_json();
         assert_eq!(Event::from_json(json.as_bytes()).unwrap(), event);
         // The retrieval discriminant is flattened, so a member reads as one flat record.

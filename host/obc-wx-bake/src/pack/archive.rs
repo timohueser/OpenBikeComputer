@@ -31,26 +31,85 @@ pub const NOAA_LICENCE: &str = "NOAA Open Data Dissemination — public-use U.S.
 /// producing a pack whose `upstream/` cannot be replayed.
 pub const SUPPORTED_ADAPTERS: [&str; 1] = [us::ID];
 
+// ── The as-of lags ────────────────────────────────────────────────────────────────────────────
+//
+// These two constants are the guard's **axiom**, and they have a property worth stating before
+// either number: the guard reads them and so does the leakage test in `tests/event_pack.rs`, so a
+// constant that is too small is invisible to CI *by construction*. Nothing downstream can catch
+// it. They therefore have to be argued from measurements plus margin, not calibrated to the worst
+// sample — a ceiling that exactly equals the worst thing observed is not a ceiling, it is a
+// coincidence waiting to be exceeded.
+//
+// The asymmetry decides the direction: treating an object as unpublished for too long only makes
+// a capture more conservative (it falls back to an older observation or an older run, which the
+// service genuinely does whenever an upstream is late). Treating one as published too early is the
+// entire failure mode this guard exists to prevent. So both round *up*, generously.
+
 /// When MRMS `PrecipRate` becomes fetchable, relative to the observation instant its key names.
 ///
-/// Measured against the live bucket on 2026-08-10 (`Last-Modified` on *current* objects is the
-/// real publication time; only the 2014-2021 backfills carry a mirror's ingest time and are
-/// useless): 11:40 → +2:49, 12:00 → +2:52, 12:18 → +3:01, 12:24 → +2:58. `mrms.rs` cites WX1's
-/// 2 min 44 s, which is the fast end of that spread. **The constant here rounds up, on purpose**:
-/// treating an object as unpublished a little too long only makes a capture more conservative,
-/// while treating it as published too early is exactly the failure this guard exists to prevent.
-pub const MRMS_PUBLICATION_LAG_SECONDS: i64 = 180;
+/// `Last-Modified` on *current* objects is the real publication time; only the 2014-2021 backfills
+/// carry a mirror's ingest time and are useless. Over 73 consecutive objects on 2026-08-10 the
+/// spread was **+2:39 to +3:01** — so a 180 s constant, which an earlier round called "rounding
+/// up", was in fact *below* one real sample. `mrms.rs` cites WX1's 2 min 44 s, which is near the
+/// fast end and not a bound at all.
+///
+/// 240 s is the worst observed (181 s) plus roughly a third again. It is not a measurement, and
+/// nothing here should ever be trimmed back towards one.
+pub const MRMS_PUBLICATION_LAG_SECONDS: i64 = 240;
 
 /// When an HRRR subhourly *run* becomes usable, relative to its run hour.
 ///
 /// One constant for the whole run rather than a per-file table, because
 /// [`crate::source::hrrr::select_run`] requires all four `wrfsubhf` objects — only the slowest
-/// matters. Measured on 2026-08-09/10: the 11Z set landed at +53:38, +55:49, +56:51, +58:53, and
-/// 06Z/00Z at +55:56/+55:18. `hrrr.rs` assumes objects appear in lead order, and mostly they do —
-/// but 2026-08-09's 18Z run wrote `wrfsubhf01`'s index at **+62:21**, *after* `wrfsubhf04`'s
-/// +55:45, so the set was genuinely incomplete until past the hour. 65 minutes is the conservative
-/// ceiling over everything observed.
-pub const HRRR_RUN_COMPLETE_LAG_SECONDS: i64 = 65 * 60;
+/// matters, and *which* file is slowest is not stable.
+///
+/// Across 13 runs on 2026-08-09/10 the typical set completed around +55 to +59 (the 11Z set landed
+/// at +53:38, +55:49, +56:51, +58:53). Two runs in thirteen — 15 % — ran past +62, and in **both**
+/// the last file written was not `wrfsubhf04`: 2026-08-09's 18Z run wrote `wrfsubhf01`'s index at
+/// +62:21, and its 12Z run wrote `wrfsubhf02`'s at **+62:56** (verified independently). So
+/// `hrrr.rs`'s "objects appear in lead order" is a tendency, not a rule, and the tail is driven by
+/// non-monotonic write order — which has no reason to be bounded just past the worst sample.
+///
+/// Two further reasons to sit well clear of it: the tail is a 15 %-frequency event on a
+/// thirteen-run sample, and these are 2026 measurements being applied to 2020 HRRRv3 runs whose
+/// true latency is not recoverable from the archive. 75 minutes is the worst observed (+62:56)
+/// plus a fifth again.
+pub const HRRR_RUN_COMPLETE_LAG_SECONDS: i64 = 75 * 60;
+
+/// Worst MRMS publication observed, over 73 consecutive objects on 2026-08-10.
+pub const WORST_OBSERVED_MRMS_LAG_SECONDS: i64 = 3 * 60 + 1;
+/// Worst HRRR set completion observed, over 13 runs on 2026-08-09/10 — the 12Z run, whose last
+/// index written was `wrfsubhf02`, not `wrfsubhf04`.
+pub const WORST_OBSERVED_HRRR_LAG_SECONDS: i64 = 62 * 60 + 56;
+
+// The margin, as a **compile-time** assertion rather than a test.
+//
+// It has to be enforced somewhere that cannot be satisfied by accident: the guard reads these
+// constants and so does the leakage test in `tests/event_pack.rs`, so a constant trimmed back
+// towards its measurement is invisible to every runtime check in the suite — the leakage test
+// would keep passing while the pack quietly acquired data it could not have had. Failing the
+// build is the only feedback that arrives before a capture does.
+//
+// A future measurement above these floors is a reason to raise the constants. It is never a
+// reason to lower the margins.
+const _: () = assert!(
+    MRMS_PUBLICATION_LAG_SECONDS >= WORST_OBSERVED_MRMS_LAG_SECONDS * 5 / 4,
+    "the MRMS as-of lag must clear the worst observed publication by a real margin, not equal it"
+);
+const _: () = assert!(
+    HRRR_RUN_COMPLETE_LAG_SECONDS >= WORST_OBSERVED_HRRR_LAG_SECONDS * 9 / 8,
+    "the HRRR as-of lag must clear the worst observed run completion by a real margin"
+);
+// …and both must stay inside the reach of the adapters' own backwards discovery, or the guard
+// would turn every capture into "nothing was published, ever".
+const _: () = assert!(
+    MRMS_PUBLICATION_LAG_SECONDS < mrms::CADENCE_SECONDS * mrms::MAX_DISCOVERY_PROBES as i64,
+    "the MRMS as-of lag outruns the adapter's discovery window"
+);
+const _: () = assert!(
+    HRRR_RUN_COMPLETE_LAG_SECONDS < 3_600 * hrrr::MAX_RUN_CANDIDATES as i64,
+    "the HRRR as-of lag outruns the adapter's run-candidate window"
+);
 
 /// The instant `url`'s bytes first became fetchable, derived from the key alone.
 ///
@@ -58,7 +117,7 @@ pub const HRRR_RUN_COMPLETE_LAG_SECONDS: i64 = 65 * 60;
 /// response header — which matters, because headers cannot answer it: MTArchive reports its own
 /// 2020-08-11 ingest time for a 2020-08-10 object, and NOAA's HRRR bucket reports a 2021
 /// re-upload. The key, by contrast, states the observation instant or the run hour outright, and
-/// the lag from that to publication is a measured property of the source.
+/// the lag from that to publication is a measured-plus-margin property of the source.
 pub fn published_at(url: &str) -> Result<i64, String> {
     if let Some(rest) = url.strip_prefix(mrms::BUCKET) {
         return Ok(mrms_valid_at(rest)? + MRMS_PUBLICATION_LAG_SECONDS);
