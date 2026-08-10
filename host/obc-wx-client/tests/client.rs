@@ -387,6 +387,44 @@ fn a_no_data_tile_decodes_to_no_data_and_never_to_dry() {
     assert!(crop.partial, "unavailable cells must mark the frame partial");
 }
 
+/// OBCG §5 codec 2, end to end through the corridor path: the client inflates a deflate4 tile and
+/// gets the upsampled cells back, paying 77 payload bytes for a tile whose raw4 image is 2,048.
+/// The device is untouched by all of this — what the phone hands on is OBCW, whose codec set did
+/// not change — so this is exactly the seam WXR2 adds.
+#[test]
+fn a_deflate_tile_crops_through_the_corridor_path() {
+    let bytes = vector("grid-deflate-tile.obcg");
+    let (frame_text, header) = frame_json("wx/v1/fixtures/deflate", &bytes);
+    let product = product_json("radar", 1, &header, header.valid_at + 600, &frame_text);
+    let parsed = manifest::parse(manifest_json(header.valid_at, &[product]).as_bytes()).expect("manifest");
+    let frame = parsed.products[0].frames[0].clone();
+    // Cells (8,8)…(23,23): four 8 x 8 source blocks of the upsampled coarse field.
+    let bounds = manifest::Bbox {
+        south_udeg: i64::from(header.south_lat_udeg) + 8 * i64::from(header.cell_lat_udeg),
+        north_udeg: i64::from(header.south_lat_udeg) + 24 * i64::from(header.cell_lat_udeg) - 1,
+        west_udeg: i64::from(header.west_lon_udeg) + 8 * i64::from(header.cell_lon_udeg),
+        east_udeg: i64::from(header.west_lon_udeg) + 24 * i64::from(header.cell_lon_udeg) - 1,
+    };
+    let mut http = FixtureHttp::new().with_object(corridor::join(ORIGIN, &frame.key), bytes);
+    let crop = corridor::crop_frame(&mut http, ORIGIN, &frame, &bounds).expect("crop");
+    assert_eq!((crop.width, crop.height), (16, 16));
+    assert!(!crop.partial, "every cell of this window is inside the grid");
+    assert_eq!(crop.cells[0], 9, "block (1, 1) of the upsampled source");
+    assert_eq!(crop.cells[8 * 16 + 8], 18 % 13, "block (2, 2)");
+    // One header read, one covering page, one tile — and the tile read is the compressed payload,
+    // not the 2,048 raw4 bytes it expands to. (The object is one tile behind a 1,540-byte page, so
+    // the byte total is not the interesting number here; the read shapes are.)
+    let tile_reads: Vec<u64> = http
+        .ledger
+        .iter()
+        .filter_map(|(_, range)| range.map(|(start, end)| (start, end)))
+        .filter(|(start, _)| *start >= u64::from(header.data_offset))
+        .map(|(start, end)| end - start + 1)
+        .collect();
+    assert_eq!(tile_reads.len(), 1, "one tile read: {:?}", http.ledger);
+    assert!(tile_reads[0] < 128, "the compressed tile is {} bytes against 2,048 raw4", tile_reads[0]);
+}
+
 // ── MET ────────────────────────────────────────────────────────────────────────────────────
 
 #[test]

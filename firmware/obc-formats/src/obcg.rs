@@ -5,11 +5,18 @@
 //! an object, so heterogeneous per-frame geometry composes with no resampling by construction.
 //!
 //! The layout is built for HTTP Range consumers: a fixed self-CRC'd header, then a paged tile
-//! directory whose pages verify independently, then tightly packed canonical raw4/RLE4 tile
-//! payloads (the WX2 codec from [`crate::precip4`], generalized over the per-product tile size).
-//! Corridor extraction is: read the header, compute covering directory pages arithmetically,
-//! read those pages, read the needed tiles — every piece independently CRC-verified. The
-//! whole-object CRC stays for full-object consumers such as the baker's self-check.
+//! directory whose pages verify independently, then tightly packed tile payloads. Corridor
+//! extraction is: read the header, compute covering directory pages arithmetically, read those
+//! pages, read the needed tiles — every piece independently CRC-verified. The whole-object CRC
+//! stays for full-object consumers such as the baker's self-check.
+//!
+//! **Where the codecs live.** Codecs 0 (raw4) and 1 (RLE4) are the WX2 pair from
+//! [`crate::precip4`], the one authority OBCG and OBCW share; this module delegates them
+//! unchanged. Codec 2 (deflate over the raw4 nibbles) is **OBCG's own**, implemented here behind
+//! the non-default `obcg-deflate` feature and never reachable from [`crate::obcw`]. That
+//! placement is the whole point: the phone inflates OBCG and re-encodes the corridor as OBCW
+//! RLE4, so the device — which links this crate with default features — contains no LZ decoder
+//! and an OBCW tile can never claim a codec the firmware cannot decode.
 
 use crate::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_crc::Crc32;
@@ -80,6 +87,13 @@ pub const PRODUCT_EXPERIMENTAL: u8 = 255;
 pub const TIER_RADAR: u8 = 1;
 pub const TIER_MODEL: u8 = 2;
 pub const TIER_FLOOR: u8 = 3;
+
+/// Tile codec ids (spec §4.1/§5). `0` and `1` are [`crate::precip4`]'s shared raw4/RLE4 pair —
+/// the identical two bytes OBCW uses. `2` is OBCG-only: raw DEFLATE (RFC 1951, no wrapper) over
+/// the tile's raw4 nibble image, decoded by this module and by nothing on the device.
+pub const CODEC_RAW4: u8 = precip4::CODEC_RAW4;
+pub const CODEC_RLE4: u8 = precip4::CODEC_RLE4;
+pub const CODEC_DEFLATE4: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
@@ -452,8 +466,82 @@ pub fn validate_page(header: &Header, page: &[u8]) -> Result<(), DecodeError> {
     Ok(())
 }
 
-/// Verify one non-dry tile payload against its directory entry: CRC first, then the canonical
-/// codec including the per-product decoded cell count.
+/// OBCG codec 2: raw DEFLATE over the tile's raw4 nibble image (spec §5).
+///
+/// Host/phone only. The stream carries no zlib or gzip wrapper — the directory entry's CRC-32
+/// already covers the stored bytes, so a wrapper would only add duplicate integrity and per-tile
+/// bytes — and the decompressed image is exactly the tile's `N / 2` raw4 bytes, which is what
+/// bounds the output before a single byte is allocated.
+#[cfg(feature = "obcg-deflate")]
+mod deflate4 {
+    use super::{precip4, DecodeError};
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use miniz_oxide::inflate::core::{decompress, inflate_flags, DecompressorOxide};
+    use miniz_oxide::inflate::TINFLStatus;
+
+    /// Producer knob, not a format parameter: a decoder accepts any conforming stream. Level 6 is
+    /// what WXR1 #1240 measured the published sizes at.
+    pub const LEVEL: u8 = 6;
+
+    /// The raw4 nibble image the codec compresses: two row-major cells per byte, earlier cell in
+    /// the low nibble — codec 0's bytes, without codec 0's canonicality restriction.
+    fn pack_raw4(cells: &[u8]) -> Vec<u8> {
+        let mut packed = vec![0u8; cells.len() / 2];
+        for (index, byte) in packed.iter_mut().enumerate() {
+            *byte = cells[index * 2] | (cells[index * 2 + 1] << 4);
+        }
+        packed
+    }
+
+    /// Compress one tile. `cells` must already have been intensity-validated.
+    pub fn compress(cells: &[u8]) -> Vec<u8> {
+        miniz_oxide::deflate::compress_to_vec(&pack_raw4(cells), LEVEL)
+    }
+
+    /// Inflate one payload into `out` (`out.len()` = the tile's decoded cell count) and apply
+    /// every §5 rule the bytes have to satisfy.
+    ///
+    /// The output buffer is exactly the tile's raw4 length, sized from the *header* rather than
+    /// from anything the payload claims, so an over-inflating stream is refused by construction:
+    /// there is no allocation a bomb can grow.
+    pub fn decode(payload: &[u8], out: &mut [u8]) -> Result<(), DecodeError> {
+        if !precip4::valid_cell_count(out.len()) {
+            return Err(DecodeError::Bounds);
+        }
+        let raw4_len = out.len() / 2;
+        // Codec 2 exists only where it beats raw4; the strictly-smaller-than-canonical rule below
+        // subsumes this, but checking it first keeps an oversized payload from ever being inflated.
+        if payload.is_empty() || payload.len() >= raw4_len {
+            return Err(DecodeError::TileCodec);
+        }
+        let mut packed = vec![0u8; raw4_len];
+        let mut state = DecompressorOxide::new();
+        let (status, consumed, written) =
+            decompress(&mut state, payload, &mut packed, 0, inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+        // Exactly one complete stream, exactly the tile's raw4 image: a truncated stream, trailing
+        // bytes after it, a short output and an over-inflating one are all the same verdict.
+        if status != TINFLStatus::Done || consumed != payload.len() || written != raw4_len {
+            return Err(DecodeError::TileCodec);
+        }
+        for (index, &byte) in packed.iter().enumerate() {
+            out[index * 2] = byte & 0x0F;
+            out[index * 2 + 1] = byte >> 4;
+        }
+        // §5 canonical choice: codec 2 is legal only where it is strictly smaller than the shared
+        // raw4/RLE4 authority's canonical length for the same cells. `encoded_cells_len` validates
+        // every intensity code on the way, so reserved nibbles are rejected here too.
+        let canonical = precip4::encoded_cells_len(out).map_err(|_| DecodeError::TileCodec)?;
+        if payload.len() >= canonical {
+            return Err(DecodeError::TileCodec);
+        }
+        Ok(())
+    }
+}
+
+/// Verify one non-dry tile payload against its directory entry: CRC over the **encoded** bytes
+/// first — so a corrupt payload is refused before any decompression work — then the §5 codec
+/// rules for this product's `tile_edge^2` cells.
 pub fn validate_tile_payload(header: &Header, entry: &TileEntry, payload: &[u8]) -> Result<(), DecodeError> {
     if entry.is_dry() {
         return Err(DecodeError::Directory);
@@ -463,6 +551,17 @@ pub fn validate_tile_payload(header: &Header, entry: &TileEntry, payload: &[u8])
     }
     if Crc32::checksum(payload) != entry.crc32 {
         return Err(DecodeError::TileCrc);
+    }
+    if entry.codec == CODEC_DEFLATE4 {
+        // Codec 2 cannot be validated without expanding it; without the host feature this crate
+        // has no inflate at all and the tile is simply undecodable, which is the honest verdict.
+        #[cfg(feature = "obcg-deflate")]
+        {
+            let mut cells = alloc::vec![0u8; header.tile_cells()];
+            return deflate4::decode(payload, &mut cells);
+        }
+        #[cfg(not(feature = "obcg-deflate"))]
+        return Err(DecodeError::TileCodec);
     }
     precip4::validate_cells(entry.codec, payload, header.tile_cells()).map_err(|_| DecodeError::TileCodec)
 }
@@ -485,6 +584,18 @@ pub fn decode_tile_cells(
         }
         out.fill(INTENSITY_DRY);
         return Ok(());
+    }
+    if entry.codec == CODEC_DEFLATE4 {
+        if payload.len() != usize::from(entry.encoded_len) {
+            return Err(DecodeError::Bounds);
+        }
+        if Crc32::checksum(payload) != entry.crc32 {
+            return Err(DecodeError::TileCrc);
+        }
+        #[cfg(feature = "obcg-deflate")]
+        return deflate4::decode(payload, out);
+        #[cfg(not(feature = "obcg-deflate"))]
+        return Err(DecodeError::TileCodec);
     }
     validate_tile_payload(header, entry, payload)?;
     precip4::decode_cells(entry.codec, payload, out).map_err(|_| DecodeError::TileCodec)
@@ -564,11 +675,55 @@ fn gather_tile(input: &FrameInput<'_>, tile_col: u32, tile_row: u32, out: &mut [
     }
 }
 
-fn tile_encoded_len(scratch: &[u8]) -> Result<usize, EncodeError> {
-    if scratch.iter().all(|&cell| cell == INTENSITY_DRY) {
-        return Ok(0);
+/// The encoding §5 selects for one gathered tile. `encoded_len == 0` is the all-dry sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TilePlan {
+    codec: u8,
+    encoded_len: usize,
+}
+
+/// A full interior tile of dry cells is the §4.1 sentinel, never a payload.
+fn tile_is_all_dry(scratch: &[u8]) -> bool {
+    scratch.iter().all(|&cell| cell == INTENSITY_DRY)
+}
+
+/// Choose the tile's codec by measured size (spec §5): the smallest payload wins and ties go to
+/// the lower codec id, so a producer's choice is determined by the cells rather than by taste.
+/// Codec 2's length is only knowable by compressing, which is why the sizing pass compresses too;
+/// both passes are the same deterministic function of the same bytes.
+fn plan_tile(scratch: &[u8]) -> Result<TilePlan, EncodeError> {
+    if tile_is_all_dry(scratch) {
+        return Ok(TilePlan { codec: CODEC_RAW4, encoded_len: 0 });
     }
-    precip4::encoded_cells_len(scratch).map_err(|_| EncodeError::InvalidInput)
+    let canonical = precip4::encoded_cells_len(scratch).map_err(|_| EncodeError::InvalidInput)?;
+    let paired = if canonical < scratch.len() / 2 { CODEC_RLE4 } else { CODEC_RAW4 };
+    #[cfg(feature = "obcg-deflate")]
+    {
+        let compressed = deflate4::compress(scratch).len();
+        if compressed < canonical {
+            return Ok(TilePlan { codec: CODEC_DEFLATE4, encoded_len: compressed });
+        }
+    }
+    Ok(TilePlan { codec: paired, encoded_len: canonical })
+}
+
+/// Write one tile's payload into the front of `out`, returning the same plan [`plan_tile`] would.
+fn encode_tile_payload(scratch: &[u8], out: &mut [u8]) -> Result<TilePlan, EncodeError> {
+    #[cfg(feature = "obcg-deflate")]
+    {
+        let canonical = precip4::encoded_cells_len(scratch).map_err(|_| EncodeError::InvalidInput)?;
+        let compressed = deflate4::compress(scratch);
+        if compressed.len() < canonical {
+            let destination = out.get_mut(..compressed.len()).ok_or(EncodeError::OutputTooSmall)?;
+            destination.copy_from_slice(&compressed);
+            return Ok(TilePlan { codec: CODEC_DEFLATE4, encoded_len: compressed.len() });
+        }
+    }
+    let encoding = precip4::encode_cells(scratch, out).map_err(|error| match error {
+        precip4::Error::OutputTooSmall => EncodeError::OutputTooSmall,
+        _ => EncodeError::InvalidInput,
+    })?;
+    Ok(TilePlan { codec: encoding.codec, encoded_len: usize::from(encoding.encoded_len) })
 }
 
 /// Total encoded object length for `input`, using a caller-provided `tile_cells()`-sized scratch
@@ -585,7 +740,7 @@ pub fn encoded_len(input: &FrameInput<'_>, scratch: &mut [u8]) -> Result<u32, En
     for tile_row in 0..header.tile_rows() {
         for tile_col in 0..header.tile_cols() {
             gather_tile(input, tile_col, tile_row, scratch);
-            total += tile_encoded_len(scratch)? as u64;
+            total += plan_tile(scratch)?.encoded_len as u64;
         }
     }
     u32::try_from(total).map_err(|_| EncodeError::LengthOverflow)
@@ -594,16 +749,48 @@ pub fn encoded_len(input: &FrameInput<'_>, scratch: &mut [u8]) -> Result<u32, En
 /// Encode one complete OBCG object into `out`, returning the byte length. `out` must be at least
 /// [`encoded_len`] bytes; `scratch` is one `tile_cells()`-sized buffer.
 pub fn encode_format(input: &FrameInput<'_>, scratch: &mut [u8], out: &mut [u8]) -> Result<usize, EncodeError> {
-    let total = encoded_len(input, scratch)? as usize;
     let header = frame_header(input)?;
-    let bytes = out.get_mut(..total).ok_or(EncodeError::OutputTooSmall)?;
-    bytes.fill(0);
-
+    if scratch.len() != header.tile_cells() {
+        return Err(EncodeError::InvalidInput);
+    }
     let page_bytes = header.page_bytes() as usize;
     let page_count = header.page_count() as usize;
-    let directory_len = page_count * page_bytes;
-    let data_offset = HEADER_LEN + directory_len;
+    let directory_len = page_count.checked_mul(page_bytes).ok_or(EncodeError::LengthOverflow)?;
+    let data_offset = HEADER_LEN.checked_add(directory_len).ok_or(EncodeError::LengthOverflow)?;
+    out.get_mut(..data_offset).ok_or(EncodeError::OutputTooSmall)?.fill(0);
+
+    // One payload pass: each tile is planned and written in the same step. `encoded_len` runs the
+    // same deterministic per-tile choice, so the size it promised and the bytes written here are
+    // the same function of the same cells — nothing can drift between a sizing and a writing pass.
+    let mut payload = data_offset;
+    for tile_row in 0..header.tile_rows() {
+        for tile_col in 0..header.tile_cols() {
+            gather_tile(input, tile_col, tile_row, scratch);
+            if tile_is_all_dry(scratch) {
+                // All-dry sentinel: the entry stays twelve zero bytes and costs no payload.
+                continue;
+            }
+            let tile_index = (tile_row * header.tile_cols() + tile_col) as usize;
+            let entry_offset = HEADER_LEN
+                + (tile_index / usize::from(input.entries_per_page)) * page_bytes
+                + (tile_index % usize::from(input.entries_per_page)) * DIRECTORY_ENTRY_LEN;
+            let tail = out.get_mut(payload..).ok_or(EncodeError::OutputTooSmall)?;
+            let plan = encode_tile_payload(scratch, tail)?;
+            let end = payload.checked_add(plan.encoded_len).ok_or(EncodeError::LengthOverflow)?;
+            let encoded_len = u16::try_from(plan.encoded_len).map_err(|_| EncodeError::Internal)?;
+            let crc = Crc32::checksum(out.get(payload..end).ok_or(EncodeError::OutputTooSmall)?);
+            let offset = u32::try_from(payload).map_err(|_| EncodeError::LengthOverflow)?;
+            put_u32(out, entry_offset + ENTRY_DATA_OFFSET, offset);
+            put_u16(out, entry_offset + ENTRY_ENCODED_LEN, encoded_len);
+            out[entry_offset + ENTRY_CODEC] = plan.codec;
+            put_u32(out, entry_offset + ENTRY_CRC32, crc);
+            payload = end;
+        }
+    }
+    let total = payload;
     let data_len = total - data_offset;
+    u32::try_from(total).map_err(|_| EncodeError::LengthOverflow)?;
+    let bytes = out.get_mut(..total).ok_or(EncodeError::OutputTooSmall)?;
 
     bytes[HDR_MAGIC..HDR_MAGIC + 4].copy_from_slice(&MAGIC);
     put_u16(bytes, HDR_VERSION, VERSION);
@@ -626,34 +813,6 @@ pub fn encode_format(input: &FrameInput<'_>, scratch: &mut [u8], out: &mut [u8])
     put_u32(bytes, HDR_DIRECTORY_OFFSET, HEADER_LEN as u32);
     put_u32(bytes, HDR_DATA_OFFSET, data_offset as u32);
     put_u32(bytes, HDR_DATA_LEN, data_len as u32);
-
-    let mut payload = data_offset;
-    for tile_row in 0..header.tile_rows() {
-        for tile_col in 0..header.tile_cols() {
-            gather_tile(input, tile_col, tile_row, scratch);
-            let tile_index = (tile_row * header.tile_cols() + tile_col) as usize;
-            let entry_offset = HEADER_LEN
-                + (tile_index / usize::from(input.entries_per_page)) * page_bytes
-                + (tile_index % usize::from(input.entries_per_page)) * DIRECTORY_ENTRY_LEN;
-            let encoded = tile_encoded_len(scratch)?;
-            if encoded == 0 {
-                // All-dry sentinel: the entry stays all zero.
-                continue;
-            }
-            let encoding = precip4::encode_cells(scratch, &mut bytes[payload..payload + encoded])
-                .map_err(|_| EncodeError::Internal)?;
-            if encoding.encoded_len as usize != encoded {
-                return Err(EncodeError::Internal);
-            }
-            let crc = Crc32::checksum(&bytes[payload..payload + encoded]);
-            put_u32(bytes, entry_offset + ENTRY_DATA_OFFSET, payload as u32);
-            put_u16(bytes, entry_offset + ENTRY_ENCODED_LEN, encoding.encoded_len);
-            bytes[entry_offset + ENTRY_CODEC] = encoding.codec;
-            put_u32(bytes, entry_offset + ENTRY_CRC32, crc);
-            payload += encoded;
-        }
-    }
-    debug_assert_eq!(payload, total);
 
     for page in 0..page_count {
         let start = HEADER_LEN + page * page_bytes;
@@ -915,6 +1074,148 @@ mod tests {
         assert_eq!(decode_tile_cells(&header, &dry, &[], &mut out), Ok(()));
         assert!(out.iter().all(|&cell| cell == INTENSITY_DRY));
         assert_eq!(decode_tile_cells(&header, &dry, &[0xF0], &mut out), Err(DecodeError::Directory));
+    }
+
+    /// Codec 2 is chosen exactly where it strictly beats the shared raw4/RLE4 authority, and the
+    /// ties and losses stay with the lower codec ids. Every case round-trips to the same cells.
+    #[cfg(feature = "obcg-deflate")]
+    #[test]
+    fn codec_choice_follows_measured_size_with_the_low_id_tie_break() {
+        // (cells, tile edge, expected codec) — the shapes the vectors also pin.
+        let upsampled: Vec<u8> = (0..64 * 64)
+            .map(|index| {
+                let (row, col) = (index / 64, index % 64);
+                (((row / 8) * 8 + (col / 8)) % 13) as u8
+            })
+            .collect();
+        let mut random = 0x0BC5_1190u32;
+        let incompressible: Vec<u8> = (0..256)
+            .map(|_| {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                let candidate = (random & 0x0F) as u8;
+                if precip4::valid_intensity(candidate) {
+                    candidate
+                } else {
+                    INTENSITY_NODATA
+                }
+            })
+            .collect();
+        let runs: Vec<u8> = (0..256).map(|index| ((index / 8) % 13) as u8).collect();
+        for (cells, edge, expected) in [
+            (upsampled, 64u16, CODEC_DEFLATE4),
+            (incompressible, 16, CODEC_RAW4),
+            (runs, 16, CODEC_RLE4),           // deflate4 loses outright on short varied runs
+            (vec![6u8; 256], 16, CODEC_RLE4), // deflate4 ties at 16 bytes; the low id wins
+            (vec![INTENSITY_NODATA; 256], 16, CODEC_DEFLATE4),
+        ] {
+            let width = u32::from(edge);
+            let bytes = frame(width, width, edge, 8, &cells);
+            let header = validated(&bytes).unwrap();
+            let page_offset = header.page_offset(0).unwrap() as usize;
+            let page = &bytes[page_offset..page_offset + header.page_bytes() as usize];
+            let entry = decode_entry(page, 0).unwrap();
+            assert_eq!(entry.codec, expected, "codec for a {edge}x{edge} tile");
+            let payload =
+                &bytes[entry.data_offset as usize..entry.data_offset as usize + usize::from(entry.encoded_len)];
+            let mut out = vec![0u8; header.tile_cells()];
+            decode_tile_cells(&header, &entry, payload, &mut out).unwrap();
+            assert_eq!(out, cells, "round trip for codec {expected}");
+        }
+    }
+
+    /// Every codec-2 failure mode is one verdict, and none of them allocates on the payload's
+    /// word: truncation, trailing bytes, an over-inflating bomb, a short output, a payload that
+    /// does not beat the canonical raw4/RLE4 length, and an unknown codec id.
+    #[cfg(feature = "obcg-deflate")]
+    #[test]
+    fn deflate_tiles_fail_closed_without_trusting_the_payload() {
+        let cells: Vec<u8> = (0..4_096)
+            .map(|index| {
+                let (row, col) = (index / 64, index % 64);
+                (((row / 8) * 8 + (col / 8)) % 13) as u8
+            })
+            .collect();
+        let bytes = frame(64, 64, 64, 8, &cells);
+        let header = validated(&bytes).unwrap();
+        let page_offset = header.page_offset(0).unwrap() as usize;
+        let page = &bytes[page_offset..page_offset + header.page_bytes() as usize];
+        let good = decode_entry(page, 0).unwrap();
+        let payload =
+            bytes[good.data_offset as usize..good.data_offset as usize + usize::from(good.encoded_len)].to_vec();
+        let raw4_len = header.tile_cells() / 2;
+        let mut out = vec![0u8; header.tile_cells()];
+
+        let entry_for = |payload: &[u8], codec: u8| TileEntry {
+            data_offset: good.data_offset,
+            encoded_len: payload.len() as u16,
+            codec,
+            crc32: Crc32::checksum(payload),
+        };
+        // The honest payload still decodes, so every rejection below is about the mutation.
+        assert_eq!(decode_tile_cells(&header, &entry_for(&payload, CODEC_DEFLATE4), &payload, &mut out), Ok(()));
+
+        let truncated = payload[..payload.len() - 2].to_vec();
+        let mut trailing = payload.clone();
+        trailing.push(0x00);
+        // A stream that inflates to four times the tile's raw4 image, and one that stops short.
+        let bomb = deflate4::compress(&vec![INTENSITY_DRY; header.tile_cells() * 4]);
+        let short = miniz_oxide::deflate::compress_to_vec(&vec![0u8; raw4_len - 1], deflate4::LEVEL);
+        for (name, mutated) in
+            [("truncated", truncated), ("trailing bytes", trailing), ("bomb", bomb), ("short output", short)]
+        {
+            let entry = entry_for(&mutated, CODEC_DEFLATE4);
+            assert_eq!(
+                decode_tile_cells(&header, &entry, &mutated, &mut out),
+                Err(DecodeError::TileCodec),
+                "{name} must be refused"
+            );
+        }
+        // A stale CRC is caught before the payload is inflated at all, and an unknown codec id
+        // never reaches a decoder.
+        let stale = TileEntry { crc32: good.crc32 ^ 1, ..entry_for(&payload, CODEC_DEFLATE4) };
+        assert_eq!(decode_tile_cells(&header, &stale, &payload, &mut out), Err(DecodeError::TileCrc));
+        let unknown = entry_for(&payload, 3);
+        assert_eq!(decode_tile_cells(&header, &unknown, &payload, &mut out), Err(DecodeError::TileCodec));
+
+        // A perfectly valid deflate stream is still refused where it does not beat the canonical
+        // raw4/RLE4 length: 16 varied 8-cell runs are 32 RLE4 bytes and 46 deflate bytes.
+        let runs: Vec<u8> = (0..256).map(|index| ((index / 8) % 13) as u8).collect();
+        let small = validated(&frame(16, 16, 16, 8, &runs)).unwrap();
+        let losing = deflate4::compress(&runs);
+        assert!(losing.len() > precip4::encoded_cells_len(&runs).unwrap(), "the fixture premise");
+        let entry = TileEntry {
+            data_offset: small.data_offset,
+            encoded_len: losing.len() as u16,
+            codec: CODEC_DEFLATE4,
+            crc32: Crc32::checksum(&losing),
+        };
+        let mut small_out = vec![0u8; small.tile_cells()];
+        assert_eq!(
+            decode_tile_cells(&small, &entry, &losing, &mut small_out),
+            Err(DecodeError::TileCodec),
+            "codec 2 must beat the canonical raw4/RLE4 length"
+        );
+    }
+
+    /// Without the host feature this crate has no inflate — the device build's shape. A codec-2
+    /// tile is then simply undecodable, which is the honest verdict rather than a silent accept.
+    #[cfg(not(feature = "obcg-deflate"))]
+    #[test]
+    fn the_default_build_carries_no_inflate_and_refuses_codec_two() {
+        let bytes = frame(16, 16, 16, 4, &[6u8; 256]);
+        let header = validated(&bytes).unwrap();
+        let payload = [0x63u8, 0x60, 0x00, 0x00];
+        let entry = TileEntry {
+            data_offset: header.data_offset,
+            encoded_len: payload.len() as u16,
+            codec: CODEC_DEFLATE4,
+            crc32: Crc32::checksum(&payload),
+        };
+        let mut out = vec![0u8; header.tile_cells()];
+        assert_eq!(validate_tile_payload(&header, &entry, &payload), Err(DecodeError::TileCodec));
+        assert_eq!(decode_tile_cells(&header, &entry, &payload, &mut out), Err(DecodeError::TileCodec));
     }
 
     /// The obcw fuzz posture, applied here: arbitrary bytes and structured single-bit mutations

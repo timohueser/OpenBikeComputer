@@ -53,9 +53,29 @@ pub fn minimal_dry() -> Vec<u8> {
     radar_frame(32, 32, 32, 8, &vec![0u8; 32 * 32])
 }
 
+/// Deterministic pseudo-random intensities over the valid alphabet (0...12 plus no-data). Any
+/// *structured* fill compresses, so this is what keeps a genuine raw4 tile in the vector set:
+/// 169 distinct nibble-pair byte values defeat deflate's Huffman table on a 128-byte tile.
+fn incompressible_cells(count: usize) -> Vec<u8> {
+    let mut state = 0x0BC5_1190u32;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let candidate = (state & 0x0F) as u8;
+            if candidate <= 12 {
+                candidate
+            } else {
+                INTENSITY_NODATA
+            }
+        })
+        .collect()
+}
+
 /// One 16 x 16 incompressible tile: the raw4 codec under a model/forecast header.
 pub fn raw_tile() -> Vec<u8> {
-    let cells: Vec<u8> = (0..256).map(|index| (index % 13) as u8).collect();
+    let cells = incompressible_cells(256);
     encode(&FrameInput {
         product_id: PRODUCT_ICON_EU,
         tier: TIER_MODEL,
@@ -75,9 +95,32 @@ pub fn raw_tile() -> Vec<u8> {
     })
 }
 
-/// One uniform moderate-heavy tile: a 16-byte RLE4 payload.
+/// One uniform moderate-heavy tile: a 16-byte RLE4 payload. Deflate4 also reaches 16 bytes here,
+/// so this vector pins §5's tie-break — equal lengths go to the **lower codec id**.
 pub fn rle_tile() -> Vec<u8> {
     radar_frame(16, 16, 16, 4, &[6u8; 256])
+}
+
+/// Sixteen varied 8-cell runs: RLE4 is 32 bytes and deflate4 is 46, so RLE4 wins outright. This
+/// is the vector that proves codec 1 is still load-bearing rather than legacy — and the base for
+/// the overlong and noncanonical RLE negatives.
+pub fn rle_wins() -> Vec<u8> {
+    let cells: Vec<u8> = (0..256).map(|index| ((index / 8) % 13) as u8).collect();
+    radar_frame(16, 16, 16, 4, &cells)
+}
+
+/// A 64 x 64 tile of coarse data upsampled onto a fine lattice — 8 x 8 blocks of one value, the
+/// exact shape the baker publishes. raw4 is 2,048 bytes and RLE4 512; deflate4 is 77, because it
+/// has the back-reference RLE4 lacks. Also the only vector at `entries_per_page = 128`, WXR1's
+/// recommended paging.
+pub fn deflate_tile() -> Vec<u8> {
+    let cells: Vec<u8> = (0..64 * 64)
+        .map(|index| {
+            let (row, col) = (index / 64, index % 64);
+            (((row / 8) * 8 + (col / 8)) % 13) as u8
+        })
+        .collect();
+    radar_frame(64, 64, 64, 128, &cells)
 }
 
 /// One all-no-data tile. Unavailable is encoded, never the dry sentinel.
@@ -146,6 +189,38 @@ fn refresh_object_and_header_crc(bytes: &mut [u8]) {
 /// Absolute offset of tile `index`'s directory entry, straight from the header arithmetic.
 fn entry_offset(header: &obcg::Header, index: u32) -> usize {
     header.entry_offset(index).unwrap() as usize
+}
+
+/// Raw DEFLATE (RFC 1951, no wrapper) at the producer's level — spec §5's codec 2 stream.
+fn deflate(bytes: &[u8]) -> Vec<u8> {
+    miniz_oxide::deflate::compress_to_vec(bytes, 6)
+}
+
+/// The raw4 nibble image codec 2 compresses: two row-major cells per byte, earlier cell low.
+fn pack_raw4(cells: &[u8]) -> Vec<u8> {
+    (0..cells.len() / 2).map(|index| cells[index * 2] | (cells[index * 2 + 1] << 4)).collect()
+}
+
+/// Replace a **single-tile** object's only payload, fixing every length and CRC the change
+/// touches. The bases are one-tile frames, so the data section *is* that payload and canonical
+/// packing survives by construction — which is what leaves the codec rule as the only thing a
+/// validator can be rejecting.
+fn with_single_tile_payload(mut bytes: Vec<u8>, codec: u8, payload: &[u8]) -> Vec<u8> {
+    let h = header(&bytes);
+    assert_eq!(h.tile_count(), 1, "the payload-swap bases carry exactly one tile");
+    let entry = entry_offset(&h, 0);
+    bytes.truncate(h.data_offset as usize);
+    bytes.extend_from_slice(payload);
+    put_u32(&mut bytes, entry + obcg::ENTRY_DATA_OFFSET, h.data_offset);
+    put_u16(&mut bytes, entry + obcg::ENTRY_ENCODED_LEN, u16::try_from(payload.len()).unwrap());
+    bytes[entry + obcg::ENTRY_CODEC] = codec;
+    put_u32(&mut bytes, entry + obcg::ENTRY_CRC32, Crc32::checksum(payload));
+    put_u32(&mut bytes, obcg::HDR_DATA_LEN, payload.len() as u32);
+    let total = bytes.len() as u32;
+    put_u32(&mut bytes, obcg::HDR_TOTAL_LEN, total);
+    refresh_page_crc(&mut bytes, &h, 0);
+    refresh_object_and_header_crc(&mut bytes);
+    bytes
 }
 
 pub fn invalid_truncated() -> Vec<u8> {
@@ -236,17 +311,17 @@ pub fn invalid_paging() -> Vec<u8> {
     bytes
 }
 
-/// The multipage fixture's south-west tile payload starts with a one-cell run of intensity 6
-/// (`0x06`). Turning it into a full 16-cell run (`0xF6`) keeps the byte length but expands the
-/// decoded sum to 271 cells. Tile, page, object and header CRCs are all honest.
+/// The `rle_wins` fixture's payload is sixteen 8-cell runs (`0x7v`). Widening the first to a full
+/// 16 cells (`0xFv`) keeps the byte length but expands the decoded sum to 264 cells. Tile, page,
+/// object and header CRCs are all honest.
 pub fn invalid_rle_overlong() -> Vec<u8> {
-    let mut bytes = multipage();
+    let mut bytes = rle_wins();
     let h = header(&bytes);
     let entry = entry_offset(&h, 0);
     let offset = rd_u32(&bytes, entry + obcg::ENTRY_DATA_OFFSET) as usize;
     let len = usize::from(rd_u16(&bytes, entry + obcg::ENTRY_ENCODED_LEN));
-    assert_eq!(bytes[offset], 0x06, "the fixture's first run is one cell of intensity 6");
-    bytes[offset] = 0xF6;
+    assert_eq!(bytes[offset], 0x70, "the fixture's first run is eight cells of intensity 0");
+    bytes[offset] = 0xF0;
     let crc = Crc32::checksum(&bytes[offset..offset + len]);
     put_u32(&mut bytes, entry + obcg::ENTRY_CRC32, crc);
     refresh_page_crc(&mut bytes, &h, 0);
@@ -254,23 +329,74 @@ pub fn invalid_rle_overlong() -> Vec<u8> {
     bytes
 }
 
-/// Two adjacent equal runs where the first is shorter than 16 cells: noncanonical RLE.
+/// Two adjacent equal runs where the first is shorter than 16 cells: noncanonical RLE. Giving the
+/// `rle_wins` fixture's second run the first run's intensity leaves the length *and* the 256-cell
+/// sum intact, so only the maximal-run rule can reject it.
 pub fn invalid_rle_noncanonical() -> Vec<u8> {
-    let mut bytes = nodata_tile();
+    let mut bytes = rle_wins();
     let h = header(&bytes);
     let entry = entry_offset(&h, 0);
     let offset = rd_u32(&bytes, entry + obcg::ENTRY_DATA_OFFSET) as usize;
     let len = usize::from(rd_u16(&bytes, entry + obcg::ENTRY_ENCODED_LEN));
-    // The first full 16-cell no-data run becomes 15 + 1: the same 256-cell total and the same
-    // 16-byte length, but the equal adjacent runs no longer follow a full run.
-    assert_eq!(len, 16);
-    bytes[offset] = 0xEF;
-    bytes[offset + 1] = 0x0F;
+    assert_eq!((bytes[offset], bytes[offset + 1]), (0x70, 0x71), "eight cells of 0 then eight of 1");
+    bytes[offset + 1] = 0x70;
     let crc = Crc32::checksum(&bytes[offset..offset + len]);
     put_u32(&mut bytes, entry + obcg::ENTRY_CRC32, crc);
     refresh_page_crc(&mut bytes, &h, 0);
     refresh_object_and_header_crc(&mut bytes);
     bytes
+}
+
+/// A codec id outside §4.1's closed set `{0, 1, 2}`, with every CRC honest.
+pub fn invalid_codec_id() -> Vec<u8> {
+    let mut bytes = multipage();
+    let h = header(&bytes);
+    let entry = entry_offset(&h, 0);
+    bytes[entry + obcg::ENTRY_CODEC] = 3;
+    refresh_page_crc(&mut bytes, &h, h.page_of_entry(0));
+    refresh_object_and_header_crc(&mut bytes);
+    bytes
+}
+
+/// A codec-2 payload with its last two bytes cut off: the stream no longer terminates.
+pub fn invalid_deflate_truncated() -> Vec<u8> {
+    let bytes = deflate_tile();
+    let h = header(&bytes);
+    let entry = entry_offset(&h, 0);
+    let offset = rd_u32(&bytes, entry + obcg::ENTRY_DATA_OFFSET) as usize;
+    let len = usize::from(rd_u16(&bytes, entry + obcg::ENTRY_ENCODED_LEN));
+    assert_eq!(bytes[entry + obcg::ENTRY_CODEC], obcg::CODEC_DEFLATE4);
+    let payload = bytes[offset..offset + len - 2].to_vec();
+    with_single_tile_payload(bytes, obcg::CODEC_DEFLATE4, &payload)
+}
+
+/// A well-formed stream that inflates to four times the tile's raw4 image: the bomb the decoder
+/// must refuse *before* it allocates, because the only legal output size is `tile_edge^2 / 2`.
+pub fn invalid_deflate_bomb() -> Vec<u8> {
+    let bytes = deflate_tile();
+    let h = header(&bytes);
+    let payload = deflate(&vec![0u8; h.tile_cells() * 2]);
+    assert!(payload.len() < h.tile_cells() / 2, "the bomb must clear the pre-inflate ceiling");
+    with_single_tile_payload(bytes, obcg::CODEC_DEFLATE4, &payload)
+}
+
+/// The mirror image: a stream that stops one byte short of the tile's raw4 image.
+pub fn invalid_deflate_short_output() -> Vec<u8> {
+    let bytes = deflate_tile();
+    let h = header(&bytes);
+    let payload = deflate(&vec![0u8; h.tile_cells() / 2 - 1]);
+    with_single_tile_payload(bytes, obcg::CODEC_DEFLATE4, &payload)
+}
+
+/// A perfectly valid codec-2 stream of the `rle_wins` cells — 46 bytes against RLE4's 32. §5
+/// says codec 2 is legal only where it is strictly smaller than the canonical raw4/RLE4 length,
+/// so this is the vector that keeps a producer from compressing tiles it should have run-length
+/// encoded.
+pub fn invalid_deflate_noncanonical() -> Vec<u8> {
+    let cells: Vec<u8> = (0..256).map(|index| ((index / 8) % 13) as u8).collect();
+    let payload = deflate(&pack_raw4(&cells));
+    assert!(payload.len() > 32, "deflate must lose to RLE4 on these cells");
+    with_single_tile_payload(rle_wins(), obcg::CODEC_DEFLATE4, &payload)
 }
 
 /// A compressible payload labeled raw4: the all-no-data tile padded out to 128 raw bytes.
@@ -366,6 +492,8 @@ pub fn positives() -> Vec<(&'static str, Vec<u8>)> {
         ("grid-minimal-dry.obcg", minimal_dry()),
         ("grid-raw-tile.obcg", raw_tile()),
         ("grid-rle-tile.obcg", rle_tile()),
+        ("grid-rle-wins.obcg", rle_wins()),
+        ("grid-deflate-tile.obcg", deflate_tile()),
         ("grid-nodata-tile.obcg", nodata_tile()),
         ("grid-multipage.obcg", multipage()),
         ("grid-edge-padding.obcg", edge_padding()),
@@ -383,9 +511,14 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("grid-invalid-impossible-dims.obcg", invalid_impossible_dims()),
         ("grid-invalid-tile-edge.obcg", invalid_tile_edge()),
         ("grid-invalid-paging.obcg", invalid_paging()),
+        ("grid-invalid-codec-id.obcg", invalid_codec_id()),
         ("grid-invalid-rle-overlong.obcg", invalid_rle_overlong()),
         ("grid-invalid-rle-noncanonical.obcg", invalid_rle_noncanonical()),
         ("grid-invalid-raw-compressible.obcg", invalid_raw_compressible()),
+        ("grid-invalid-deflate-truncated.obcg", invalid_deflate_truncated()),
+        ("grid-invalid-deflate-bomb.obcg", invalid_deflate_bomb()),
+        ("grid-invalid-deflate-short-output.obcg", invalid_deflate_short_output()),
+        ("grid-invalid-deflate-noncanonical.obcg", invalid_deflate_noncanonical()),
         ("grid-invalid-dry-encoded.obcg", invalid_dry_encoded()),
         ("grid-invalid-dry-sentinel-nonzero.obcg", invalid_dry_sentinel_nonzero()),
         ("grid-invalid-dry-sentinel-edge-tile.obcg", invalid_dry_sentinel_edge_tile()),

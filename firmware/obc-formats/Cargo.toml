@@ -5,8 +5,20 @@ edition = "2021"
 publish = false
 description = "Allocator-free persistent-format constants and primitive codecs for OpenBikeComputer"
 
+[features]
+default = []
+# OBCG tile codec 2 (deflate, `OBCG_Spec.md` §5). **Host/phone only, and deliberately optional.**
+# OBCG is a published object the baker writes and the phone reads; the device never sees one — it
+# reads OBCW, whose codec set stays the shared raw4/RLE4 pair in `precip4`. Keeping the inflate
+# behind a non-default feature is what makes that structural rather than aspirational: the device
+# image links this crate with default features and therefore contains no LZ decoder at all.
+obcg-deflate = ["dep:miniz_oxide"]
+
 [dependencies]
 obc-crc = { path = "../obc-crc" }
+# The `obcg-deflate` half of the OBCG tile codec. Pure Rust, no_std + alloc (no `std` feature), and
+# already in the tree via flate2's rust_backend — so this adds a direct edge, not a dependency.
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"], optional = true }
 # Foundation-only: the recorded-track record codec is defined over `obc_ports::TrackPoint`, the
 # cross-boundary sample type. obc-ports is itself dependency-light foundation and does not depend on
 # obc-formats, so this keeps obc-formats in the foundation floor with no cycle (#812, #807).
