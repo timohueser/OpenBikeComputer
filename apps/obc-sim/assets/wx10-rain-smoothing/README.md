@@ -82,5 +82,13 @@ faithfully.
 
 ## What the sheets are for
 
-`RAIN_SAMPLING` in `firmware/obc-render/src/rain.rs` is the one-line switch that picks the mode,
-and it still ships `Nearest`. Nothing here has been decided.
+`RAIN_SAMPLING` in `firmware/obc-render/src/rain.rs` is the one-line switch that picks the mode.
+
+**Decided (#1250): `Bilinear`** — Timo's pick from these six sheets. The losing three modes stay
+compiled and covered by the same tests, so the round can be re-run on glass by editing that one
+line; these sheets are the record of how the call was made, and the binary still renders all four.
+
+Two consequences worth knowing before re-deciding it, both in `RAIN_TILE_SLOTS`' own docs:
+bilinear is the only mode that can paint an intensity band no provider cell reported (permitted for
+display, forbidden for data queries — OBCW §5, OBCG §6), and it is the mode that sizes the tile
+cache. `Nearest` or `EdgeSoften` alone would need 12 slots where the shipped configuration needs 16.
