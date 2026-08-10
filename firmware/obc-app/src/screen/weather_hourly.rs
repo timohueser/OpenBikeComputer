@@ -6,8 +6,8 @@
 //! The wind arrow is drawn in the wind's *to*-direction on a north-up rose; the adjacent label is
 //! the meteorological *from*-octant (`SW`) plus the speed. Route-relative coloring (green tail /
 //! orange cross / red head) flows through [`wind_class`] against the WX12 travel direction
-//! (`Render::travel_deg` — route tangent, else moving GPS course); without one the arrows stay
-//! neutral ink, never a false head/tail.
+//! (`Render::travel_deg` — the active route's general heading, and nothing else); without one the
+//! arrows stay neutral ink, never a false head/tail.
 
 use core::fmt::Write as _;
 
@@ -34,18 +34,27 @@ use obc_formats::obcw::{
 /// so the last row lands flush.
 const ROW_H: i32 = 64;
 
-/// Fixed column geometry, left to right. Every box is bounded at its widest legal content, so no
-/// two columns can collide at any string width in any catalog language: the time is two digits,
-/// the icon 24 px, the temperature is clamped to `-99°` (4 cells of Display), the precipitation
-/// to `99+mm` (5 cells of Label), and the wind text to octant (≤ 2 cells in every language:
-/// N/NE/... , de N/O/SO/... , fr/es N/SO/O/...) + space + speed ≤ 2 digits = 5 Label cells,
-/// right-anchored at [`WIND_TEXT_X`] so it can never reach back past [`WIND_ARROW_CX`]'s box.
+/// Fixed column geometry, left to right. Every box is bounded at its widest legal content, so the
+/// columns hold at any string width in any catalog language: the time is two digits,
+/// the icon 24 px, the temperature is clamped to `-99°` (4 cells of Display), the precipitation to
+/// `98.9mm` / `99+mm` (≤ 6 cells of Label), and the wind text to octant (≤ 2 cells in every
+/// language: N/NE/... , de N/O/SO/... , fr/es N/SO/O/...) + space + speed ≤ 2 digits = 5 Label
+/// cells.
+///
+/// The wind text is **left**-anchored at [`WIND_TEXT_X`] (owner tuning round: right-anchoring it
+/// let a short `N 8` drift a whole cell away from the arrow that describes it, so the pair read as
+/// two columns). Its left edge is now fixed, the arrow sits a half-cell before it, and the widest
+/// string still ends at `168 + 5 × 12 = 228` — clear of the `w - 8` scrollbar.
+///
+/// The one x-span two columns share is the arrow's box (`142..162`) against a 6-cell
+/// precipitation (`84..156`), and they never meet: the arrow is centred on the row's mid-line,
+/// between the two text baselines, so even a due-south arrow's tip clears the `mm` glyphs below.
 const TIME_X: i32 = 14;
 const ICON_CX: i32 = 62;
 const TEMP_X: i32 = 84;
 const PRECIP_X: i32 = 84;
-const WIND_ARROW_CX: i32 = 150;
-const WIND_TEXT_X: i32 = 228;
+const WIND_ARROW_CX: i32 = 152;
+const WIND_TEXT_X: i32 = 168;
 
 /// The eight compass-octant catalog keys, clockwise from north — indexed by
 /// [`wind_octant`](crate::weather::wind_octant).
@@ -131,8 +140,8 @@ impl WeatherHourlyScreen {
 
 /// One hourly row — two visual lines in a double-height slot (owner tuning round). Left to
 /// right: the local hour and the WX17 icon in their own columns, then a stacked temperature
-/// (Display, line 1) over the precipitation amount (Label, line 2), then the wind cluster —
-/// the direction arrow in its own fixed box, the from-octant + speed right-anchored beside it.
+/// (Display, line 1) over the precipitation amount (Label, line 2, rain-blue when wet), then the
+/// wind cluster — the direction arrow in its own fixed box, the from-octant + speed beside it.
 /// Even spacing, no separators (locked); every column degrades to `--` on its wire sentinel
 /// rather than inventing a value.
 fn draw_row(
@@ -176,8 +185,9 @@ fn draw_row(
         None => cv.text("--", Point::new(TEMP_X, line1), Font::Display, TextAlign::Left, SUBTEXT),
     };
 
-    // Precipitation over the hour, `N.Nmm`, on the second line; dry hours mute to olive so wet
-    // hours pop; the unavailable sentinel is an honest `--`.
+    // Precipitation over the hour, `N.Nmm`, on the second line; a wet hour's millimetres are
+    // rain-blue (the icons' own streak hue), dry hours mute to olive so the wet ones pop, and the
+    // unavailable sentinel is an honest `--`.
     let mut precip: heapless::String<8> = heapless::String::new();
     let precip_color = if record.precipitation_tenth_mm == PRECIP_UNAVAILABLE {
         let _ = precip.push_str("--");
@@ -187,19 +197,19 @@ fn draw_row(
         SUBTEXT
     } else if record.precipitation_tenth_mm >= 990 {
         let _ = precip.push_str("99+mm");
-        INK
+        RAIN
     } else {
         let _ = write!(precip, "{}.{}mm", record.precipitation_tenth_mm / 10, record.precipitation_tenth_mm % 10);
-        INK
+        RAIN
     };
     cv.text(&precip, Point::new(PRECIP_X, line2), Font::Label, TextAlign::Left, precip_color);
 
     // Wind: the arrow in its own fixed box (the *to*-direction on a north-up rose;
-    // route-relative color against the WX12 travel direction, neutral ink without one),
-    // then the meteorological from-octant + speed right-anchored clear of it. The text is
-    // bounded at 5 Label cells (see the column-geometry note), so the two can never touch.
+    // route-relative color against the WX12 travel direction, neutral ink without one), then the
+    // meteorological from-octant + speed starting a half-cell after it — one cluster, arrow and
+    // label. The text is bounded at 5 Label cells (see the column-geometry note).
     if record.wind_from_deg == WIND_DIRECTION_UNAVAILABLE || record.wind_speed_deci_ms == WIND_SPEED_UNAVAILABLE {
-        cv.text_vcentered("--", WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Right, SUBTEXT);
+        cv.text_vcentered("--", WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Left, SUBTEXT);
         return;
     }
     let color = match wind_class(record.wind_from_deg, rx.travel_deg) {
@@ -215,7 +225,7 @@ fn draw_row(
     };
     let mut wind: heapless::String<8> = heapless::String::new();
     let _ = write!(wind, "{} {}", rx.t(OCTANTS[wind_octant(record.wind_from_deg)]), speed.min(99));
-    cv.text_vcentered(&wind, WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Right, INK);
+    cv.text_vcentered(&wind, WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Left, INK);
 }
 
 /// A small full arrow (shaft + barbs) pointing in the wind's *to*-direction on a north-up rose —

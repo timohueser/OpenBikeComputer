@@ -210,25 +210,30 @@ pub(crate) struct RideEngine {
     /// frame — frozen solid on an indoor bench with no fix (epic #744, SR3).
     pub(crate) prev_live_sensors: (Option<u16>, Option<u16>, Option<u8>),
     /// The rider's **travel direction** (degrees CW from north) for the route-relative wind
-    /// arrows (WX12, #1197), per the locked chain: the active-route tangent at the matched
-    /// progress while on-route (held while stopped — the wind question at a rest stop is about
-    /// the ride ahead), else the GPS course while actually moving, else `None` — the arrows then
-    /// render neutral, never a fabricated head/tail. Updated per fresh fix in `App::tick`;
-    /// cleared with the rest of the route-derived state.
+    /// arrows (WX12, #1197): the active route's general heading ahead of the matched progress
+    /// while on-route (held while stopped — the wind question at a rest stop is about the ride
+    /// ahead), else `None` — the arrows then render neutral, never a fabricated head/tail.
+    ///
+    /// **Route or nothing** (owner tuning round). The momentary GPS course used to stand in
+    /// without a route, and it is not a claim the panel can keep honest: a rider stopped at a
+    /// junction, turning the bars to show a partner the screen, would repaint every arrow against
+    /// a direction they aren't going. A planned route is the one direction that survives standing
+    /// still. Updated per fresh fix in `App::tick`; cleared with the route-derived state.
     pub(crate) travel_deg: Option<f32>,
-    /// The progress the route tangent in [`travel_deg`](RideEngine::travel_deg) was computed at —
+    /// The progress the route heading in [`travel_deg`](RideEngine::travel_deg) was computed at —
     /// the recompute hysteresis key, so the two `position_at` chunk decodes run only when the
-    /// rider has actually moved along the route (≥ [`TANGENT_MOVE_M`]), not per fix.
+    /// rider has actually moved along the route (≥ [`HEADING_MOVE_M`]), not per fix.
     pub(crate) travel_at_m: Option<u32>,
     /// The bounded recent moving-speed window feeding the weather ride projection (WX12) — see
     /// [`SpeedWindow`](crate::weather::SpeedWindow). Cleared with the session.
     pub(crate) speed_win: crate::weather::SpeedWindow,
 }
 
-/// Progress the rider must cover before the route tangent is re-derived (two chunk decodes).
-/// Small enough to track a hairpin within a couple of fixes, large enough that a stationary
-/// rider's GPS jitter never re-reads the card.
-pub(crate) const TANGENT_MOVE_M: u32 = 5;
+/// Progress the rider must cover before the route heading is re-derived (two chunk decodes).
+/// Sized against [`TRAVEL_CHORD_M`](crate::weather::TRAVEL_CHORD_M): a kilometre-long chord cannot
+/// swing within a few tens of metres, so anything finer only re-reads the card — and a stationary
+/// rider's GPS jitter must never do that at all.
+pub(crate) const HEADING_MOVE_M: u32 = 50;
 
 impl RideEngine {
     /// The boot state: no route caches, no session, nothing sensed yet.
@@ -604,38 +609,29 @@ impl RideEngine {
     }
 
     /// Update the WX12 travel direction from this tick's fresh fix (see
-    /// [`travel_deg`](RideEngine::travel_deg) for the locked chain). Runs after the matcher, so
-    /// `activity` carries this fix's match. Route-tangent recomputes only when the rider moved
-    /// ≥ [`TANGENT_MOVE_M`] along the route (two `position_at` chunk decodes, fix-cadence-bounded).
-    pub(crate) fn update_travel(&mut self, activity: &Activity, fix: obc_ports::Fix, route: Option<&RouteReader>) {
+    /// [`travel_deg`](RideEngine::travel_deg) — the route's general heading, or neutral). Runs
+    /// after the matcher, so `activity` carries this fix's match. The heading recomputes only when
+    /// the rider moved ≥ [`HEADING_MOVE_M`] along the route (two `position_at` chunk decodes,
+    /// fix-cadence-bounded).
+    pub(crate) fn update_travel(&mut self, activity: &Activity, route: Option<&RouteReader>) {
         let on_route = route.is_some() && activity.active_route.is_some() && self.started() && !activity.off_route;
         if on_route {
             let route = route.unwrap();
-            let moved = self.travel_at_m.is_none_or(|at| activity.progress_m.abs_diff(at) >= TANGENT_MOVE_M);
-            if moved || self.travel_deg.is_none() {
-                if let Some(deg) = crate::weather::route_tangent_deg(route, activity.progress_m) {
-                    self.travel_deg = Some(deg);
-                    self.travel_at_m = Some(activity.progress_m);
-                    return;
-                }
-                // Undecodable geometry: fall through to the GPS-course chain below.
-            } else {
-                return; // held tangent (stopped, or sub-hysteresis creep)
+            let moved = self.travel_at_m.is_none_or(|at| activity.progress_m.abs_diff(at) >= HEADING_MOVE_M);
+            if !moved && self.travel_deg.is_some() {
+                return; // held heading (stopped, or sub-hysteresis creep)
             }
+            if let Some(deg) = crate::weather::route_heading_deg(route, activity.progress_m) {
+                self.travel_deg = Some(deg);
+                self.travel_at_m = Some(activity.progress_m);
+                return;
+            }
+            // Undecodable geometry: neutral, like having no route at all.
         }
+        // Off-route, no route, or no readable geometry: neutral — the momentary heading is not a
+        // direction the panel can stand behind (see `travel_deg`).
+        self.travel_deg = None;
         self.travel_at_m = None;
-        // Off-route / no route / no tangent: the GPS course while actually moving; else neutral.
-        let moving = fix.speed_mps.is_some_and(|s| s >= 1.0);
-        self.travel_deg = match (moving, fix.course) {
-            (true, Some(course)) => {
-                let mut deg = course % 360.0;
-                if deg < 0.0 {
-                    deg += 360.0;
-                }
-                Some(deg)
-            }
-            _ => None,
-        };
     }
 
     /// Whether the route matcher has locked onto the active route at least once this load.
