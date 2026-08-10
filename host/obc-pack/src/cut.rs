@@ -35,6 +35,13 @@
 //!    *pessimistic* case (per-cell unions, so an assembly carries slightly more features than a
 //!    single-shot bake); cutting a globally merged set is strictly better than that and never worse.
 //!
+//!    The tier-wide **coverage simplify** ([`crate::coverage`]) slots in at exactly the same place
+//!    and for exactly the same reason: it is an arrangement over the whole extract, so every cell
+//!    clips the identical glued geometry. It is also the one pass that simplifies, which is why a
+//!    feature it produced is marked and the per-cell simplify below leaves it alone — point 1's
+//!    rule ("simplify before clipping") is satisfied by the coverage pass having already done it,
+//!    globally, which is even stronger.
+//!
 //! The one thing that is *not* streamed is per-band: geometry work is organised band → LOD → cell so
 //! that a level's merged feature set is built once and every cell of the band reads it, and only that
 //! band's levels are resident. Cells within a band are cut in parallel; nothing in a cell's bytes
@@ -52,6 +59,7 @@ use obc_formats::obcm::VERSION as OBCM_VERSION;
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
+use crate::coverage::coverage_simplify_fills_with;
 use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
@@ -407,6 +415,10 @@ struct LodSet<'a> {
     /// Ladder index.
     lod: usize,
     feats: Vec<(u8, Cow<'a, Geom>)>,
+    /// Parallel to `feats`: the coverage pass already cut this feature to `tol`, so
+    /// [`LodSet::cell_tree`] must not simplify it again (that would move the shared boundaries
+    /// the pass glued). All `false` unless the tier asked for the pass.
+    presimplified: Vec<bool>,
     /// `(i, j)` → indices into `feats`. Membership is decided on **inclusive** bounds, so a feature
     /// reaching a seam line is a candidate on both sides and the two cells clip identical geometry.
     buckets: HashMap<(i64, i64), Vec<u32>>,
@@ -419,10 +431,14 @@ struct LodSet<'a> {
 }
 
 /// Build a level's feature set exactly as [`crate::pipeline`] does — `min_lod` filter, then the
-/// optional fill-dissolve and line-stitch passes — and index it by cell.
+/// optional fill-dissolve, line-stitch and coverage passes — and index it by cell.
 ///
-/// The merges run here, over the whole extract, and not per cell: see the module docs. Simplify does
-/// **not** run here, because it must run on the geometry a *cell* clips (also the module docs).
+/// All of them run here, over the whole extract, and not per cell: see the module docs. The
+/// ordinary per-feature simplify does **not** run here, because it must run on the geometry a
+/// *cell* clips. The coverage pass is the exception that proves the rule: it simplifies as part
+/// of building one global arrangement, which is *stronger* than per-cell simplify (every cell
+/// clips the identical glued geometry), so what it produced is marked in `presimplified` and
+/// [`LodSet::cell_tree`] leaves it alone.
 fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u32, progress: &Progress) -> LodSet<'a> {
     let l = &config.lods[lod];
     // `Geom::bounds` panics on an empty geometry, and a merge pass can hand one back, so empties are
@@ -433,11 +449,16 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
         .filter(|f| f.min_lod <= lod && !f.geom.is_empty())
         .map(|f| (f.style_id, Cow::Borrowed(&f.geom)))
         .collect();
-    if config.merge_fills || config.merge_lines {
+    let tol = if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 };
+    // `merge_fills` is skipped on a coverage tier: the coverage pass dissolves the same
+    // candidate set itself, per class, as part of building the arrangement (see
+    // [`crate::coverage`] and the pipeline's copy of this rule).
+    let want_merge_fills = config.merge_fills && !l.coverage_simplify;
+    let mut presimplified = vec![false; feats.len()];
+    if want_merge_fills || config.merge_lines || l.coverage_simplify {
         let styles = config.styles();
-        let owned: Vec<(u8, Geom)> = feats.into_iter().map(|(s, g)| (s, g.into_owned())).collect();
-        let mut owned = owned;
-        if config.merge_fills {
+        let mut owned: Vec<(u8, Geom)> = feats.into_iter().map(|(s, g)| (s, g.into_owned())).collect();
+        if want_merge_fills {
             let (merged, m) = merge_fills_with(owned, &merge_classes(&styles), progress);
             crate::pipeline::report_merge(progress, m, "fill polygon", "into");
             owned = merged;
@@ -447,7 +468,24 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
             crate::pipeline::report_merge(progress, m, "line fragment", "into");
             owned = merged;
         }
-        feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
+        if l.coverage_simplify {
+            let (covered, c) = coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, progress);
+            crate::pipeline::report_coverage(progress, c);
+            let mut kept = Vec::with_capacity(covered.len());
+            let mut pre = Vec::with_capacity(covered.len());
+            for (style_id, g, done) in covered {
+                if g.is_empty() {
+                    continue;
+                }
+                kept.push((style_id, Cow::Owned(g)));
+                pre.push(done);
+            }
+            feats = kept;
+            presimplified = pre;
+        } else {
+            feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
+            presimplified = vec![false; feats.len()];
+        }
     }
 
     let bounds: Vec<Bounds> = feats.iter().map(|(_, g)| g.bounds()).collect();
@@ -460,15 +498,7 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
     // The cull's reference scale is the next-finer tier's `max_mpp`; the finest tier is never culled
     // (a drop there would erase the feature at every zoom).
     let cull_mpp = (l.min_area_px > 0.0).then(|| config.lods.get(lod + 1).and_then(|n| n.max_mpp)).flatten();
-    LodSet {
-        lod,
-        feats,
-        buckets,
-        tol: if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 },
-        cull_mpp,
-        min_area_px: l.min_area_px,
-        cell_log2,
-    }
+    LodSet { lod, feats, presimplified, buckets, tol, cull_mpp, min_area_px: l.min_area_px, cell_log2 }
 }
 
 /// Degree bounds → µdeg, widened outward so a candidate is never missed to a rounding step.
@@ -487,8 +517,11 @@ impl LodSet<'_> {
         let mut out: Vec<(u8, Geom)> = Vec::new();
         for &k in candidates {
             let (style_id, geom) = &self.feats[k as usize];
-            let simplified =
-                if self.tol > 0.0 { topology_preserve_simplify(geom, self.tol) } else { geom.as_ref().clone() };
+            let simplified = if self.tol > 0.0 && !self.presimplified[k as usize] {
+                topology_preserve_simplify(geom, self.tol)
+            } else {
+                geom.as_ref().clone()
+            };
             if simplified.is_empty() {
                 continue;
             }

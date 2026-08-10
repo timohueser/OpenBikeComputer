@@ -30,7 +30,8 @@
         {
           "max_mpp": null,
           "simplify": 0.0,
-          "min_area_px": 0.0
+          "min_area_px": 0.0,
+          "coverage_simplify": false
         }
       ],
       "description": "LOD pyramid, coarsest tier first. Absent, null, or empty means a single coarsest layer.",
@@ -429,6 +430,14 @@
           "default": 0.0,
           "description": "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.",
           "minimum": 0.0
+        },
+        "coverage_simplify": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open into backdrop slivers. Costs bake time; false (the default) packs byte-identically to before."
         }
       }
     },

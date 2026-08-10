@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::config::Config;
+use crate::coverage::{coverage_simplify_fills_with, CoverageStats};
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
@@ -221,11 +222,15 @@ fn run(
             // time, and a `None` return drains the remaining rayon items in the time
             // it takes to walk them. What is left running after a cancel is at most
             // one `topology_preserve_simplify` per busy worker.
-            let simplify_cull = |style_id: u8, geom: &Geom| -> Option<(u8, Geom)> {
+            //
+            // `simplify` is `false` for a feature the coverage pass already cut to this tier's
+            // tolerance (below): simplifying it a second time would move exactly the shared
+            // boundaries that pass exists to keep glued.
+            let simplify_cull = |style_id: u8, geom: &Geom, simplify: bool| -> Option<(u8, Geom)> {
                 if progress.is_cancelled() {
                     return None;
                 }
-                let mut g = if tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                let mut g = if simplify && tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
                 if let Some(mpp) = cull_mpp {
                     if footprint_below(&g, mpp, min_area_px) {
                         culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -248,7 +253,24 @@ fn run(
             // vertex (lines: less reduction). The two passes are orthogonal (polygon
             // vs line kind), so they compose. Off ⇒ the original filter→simplify→cull
             // path, byte-identical to before.
-            let level: Vec<(u8, Geom)> = if config.merge_fills || config.merge_lines {
+            //
+            // A tier with `coverage_simplify` hands its plain fills to [`crate::coverage`]
+            // instead, which dissolves *and* simplifies them as one arrangement — so
+            // `merge_fills` is skipped there (it would be a strictly weaker version of the
+            // dissolve the coverage pass already did, over the same candidate set) while
+            // `merge_lines`, which touches only lines, still runs and runs first.
+            let level: Vec<(u8, Geom)> = if lod.coverage_simplify {
+                let mut feats: Vec<(u8, Geom)> =
+                    ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
+                if config.merge_lines {
+                    let (merged, m) = merge_lines_with(feats, &line_classes, progress);
+                    report_merge(progress, m, "line fragment", "into");
+                    feats = merged;
+                }
+                let (feats, c) = coverage_simplify_fills_with(feats, &fill_classes, tol, progress);
+                report_coverage(progress, c);
+                feats.par_iter().filter_map(|(sid, g, done)| simplify_cull(*sid, g, !*done)).collect()
+            } else if config.merge_fills || config.merge_lines {
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
                 if config.merge_fills {
@@ -261,13 +283,13 @@ fn run(
                     report_merge(progress, m, "line fragment", "into");
                     feats = merged;
                 }
-                feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g)).collect()
+                feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g, true)).collect()
             } else {
                 ingested
                     .features
                     .par_iter()
                     .filter(|f| f.min_lod <= i)
-                    .filter_map(|f| simplify_cull(f.style_id, &f.geom))
+                    .filter_map(|f| simplify_cull(f.style_id, &f.geom, true))
                     .collect()
             };
             let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
@@ -350,6 +372,26 @@ pub(crate) fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb:
     );
     if m.fallbacks > 0 {
         line.push_str(&format!(" ({} group(s) fell back unmerged)", m.fallbacks));
+    }
+    progress.log(line);
+}
+
+/// One-line per-LOD coverage report, printed only when the pass actually ran on something.
+/// Faces dropped for want of a covering fill are genuine gaps in the source data, so they are
+/// stated rather than hidden; a fallback is a GEOS failure and always worth a line.
+pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
+    if c.inputs == 0 {
+        return;
+    }
+    let mut line = format!(
+        "  coverage-simplified {} fill polygon(s) into {} across {} component(s)",
+        c.inputs, c.outputs, c.components
+    );
+    if c.dropped_faces > 0 {
+        line.push_str(&format!(" ({} uncovered face(s) dropped)", c.dropped_faces));
+    }
+    if c.fallbacks > 0 {
+        line.push_str(&format!(" ({} component(s) fell back to per-feature simplify)", c.fallbacks));
     }
     progress.log(line);
 }
