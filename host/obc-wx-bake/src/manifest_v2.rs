@@ -441,7 +441,8 @@ pub fn carried_generations(previous: Option<&[u8]>, warnings: &mut Vec<String>) 
              clients are still reading. The previous manifest stands; retry next cycle"
         )
     })?;
-    let Some(generation) = document.get("generation").and_then(serde_json::Value::as_str) else {
+    let generation = document.get("generation").and_then(serde_json::Value::as_str).filter(|id| is_generation_id(id));
+    let Some(generation) = generation else {
         warnings.push(format!(
             "{MANIFEST_KEY} is valid JSON but names no generation — treating it as a bootstrap. It \
              promised no retention, so nothing is being dropped; this is expected exactly once, on the \
@@ -451,10 +452,36 @@ pub fn carried_generations(previous: Option<&[u8]>, warnings: &mut Vec<String>) 
     };
     let mut chain = vec![generation.to_string()];
     if let Some(previous) = document.get("previous_generations").and_then(serde_json::Value::as_array) {
-        chain.extend(previous.iter().filter_map(serde_json::Value::as_str).map(str::to_string));
+        for entry in previous {
+            // This *is* one of our manifests — it named a generation — so a chain entry that is not
+            // a generation id means its promise is unreadable, and the two answers left are both
+            // bad: drop it and under-promise (the sweep deletes what clients are reading), or carry
+            // it and publish a document every client rejects at `is_safe_segment`, which is an
+            // outage for the whole service rather than for one generation. Fail the cycle instead;
+            // the previous manifest stands and the next tick tries again.
+            let entry = entry.as_str().filter(|id| is_generation_id(id)).ok_or_else(|| {
+                format!(
+                    "{MANIFEST_KEY} names a generation but its previous_generations holds {entry} — \
+                     refusing to publish a retention chain this baker cannot vouch for"
+                )
+            })?;
+            chain.push(entry.to_string());
+        }
     }
     chain.truncate(RETAINED_PREVIOUS_GENERATIONS);
     Ok(chain)
+}
+
+/// `YYYYMMDD'T'HHMM'Z'`, checked without a regex dependency — the runtime twin of
+/// [`GENERATION_PATTERN`], which the schema states and `the_generation_pattern_and_its_checker_agree`
+/// pins them together on.
+pub fn is_generation_id(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 14
+        && bytes[..8].iter().all(u8::is_ascii_digit)
+        && bytes[8] == b'T'
+        && bytes[9..13].iter().all(u8::is_ascii_digit)
+        && bytes[13] == b'Z'
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -579,6 +606,41 @@ mod tests {
             carried_generations(Some(forward), &mut warnings).expect("lenient"),
             vec!["20260810T1430Z", "20260810T1415Z"]
         );
+    }
+
+    /// A prior document must not be able to hand this baker a string that poisons the next
+    /// manifest. Every generation the chain recovers is checked against the same shape the schema
+    /// states, because carrying a bad one publishes a document *every* client rejects — an outage
+    /// for the whole service rather than for one generation.
+    #[test]
+    fn a_recovered_generation_that_is_not_a_generation_id_never_reaches_the_next_manifest() {
+        let mut warnings = Vec::new();
+        // A `generation` that is not one: this is not one of our manifests, so it promised no
+        // retention and there is nothing to drop.
+        let foreign = br#"{"version":2,"generation":"../../etc","previous_generations":["20260810T1415Z"]}"#;
+        assert_eq!(carried_generations(Some(foreign), &mut warnings).expect("bootstrap"), Vec::<String>::new());
+        assert_eq!(warnings.len(), 1);
+
+        // A good generation with a bad chain entry: it *is* ours, and its promise is unreadable.
+        for bad in [r#""wx/v2/../secret""#, r#""20260810T1430""#, r#"7"#, r#"null"#] {
+            let document = format!(r#"{{"version":2,"generation":"20260810T1430Z","previous_generations":[{bad}]}}"#);
+            let error = carried_generations(Some(document.as_bytes()), &mut warnings)
+                .expect_err("a chain this baker cannot vouch for fails the cycle");
+            assert!(error.contains("cannot vouch for"), "{error}");
+        }
+    }
+
+    /// The schema's pattern and the runtime checker are one rule stated twice; this is where they
+    /// are held to it.
+    #[test]
+    fn the_generation_pattern_and_its_checker_agree() {
+        assert_eq!(GENERATION_PATTERN, r"^[0-9]{8}T[0-9]{4}Z$");
+        for good in ["20260810T1430Z", "00000000T0000Z", &generation_id(1_800_000_000)] {
+            assert!(is_generation_id(good), "{good}");
+        }
+        for bad in ["", "20260810T1430", "20260810t1430Z", "2026081T14300Z", "20260810T1430Z ", "../../etc"] {
+            assert!(!is_generation_id(bad), "{bad}");
+        }
     }
 
     /// The shared cross-language fixture is a document **this binary would write**: parsed back

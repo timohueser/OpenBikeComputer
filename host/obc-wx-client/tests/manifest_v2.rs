@@ -302,3 +302,134 @@ fn an_expired_generation_is_no_weather_not_a_dry_map() {
         ShardState::Present { .. }
     ));
 }
+
+/// **R2-1: the unclamped intersection, pinned where it is observable.**
+///
+/// On the global lattice this fix hides: every in-range coordinate is on the lattice, so
+/// `Bbox::validate` catches the off-map cases before the arithmetic ever runs, and clamp-first and
+/// intersect-first agree on everything left. A **regional** grid is the only geometry where they
+/// disagree — and the manifest states the grid, so a regional one is a baker deploy away rather
+/// than hypothetical. This constructs one and pins the difference directly, because round 1's fix
+/// was otherwise revertible with the suite staying green.
+///
+/// The grid: 10 x 6 degrees over central Europe at the canonical pitch, cut into 2 x 2 shards.
+#[test]
+fn an_off_lattice_bbox_vanishes_rather_than_collapsing_onto_the_edge() {
+    let grid = manifest_v2::Grid {
+        south_lat_udeg: 47_000_000,
+        west_lon_udeg: 5_000_000,
+        cell_udeg: 10_000,
+        width: 1_000,
+        height: 600,
+        shard_width: 500,
+        shard_height: 300,
+        shard_cols: 2,
+        shard_rows: 2,
+        tile_edge: 256,
+        entries_per_page: 128,
+        cell_size_m: 1_113,
+        covered_rows: 0..600,
+        key_prefix: "wx/v2".into(),
+        generation: "20260810T1430Z".into(),
+    };
+
+    // Inside: the control, so a grid that answered nothing to everything cannot pass this test.
+    let inside = Bbox { south_udeg: 48_000_000, west_udeg: 7_750_000, north_udeg: 48_100_000, east_udeg: 7_950_000 };
+    assert_eq!(grid.shards_for(&inside).expect("well formed"), vec![ShardId { col: 0, row: 0 }]);
+
+    // Every direction of "wholly outside, but a perfectly legal coordinate pair". Clamp-first
+    // returns the nearest edge shard for each of these — the rider is handed a neighbouring
+    // region's weather instead of being told they are off the map. Intersect-first returns nothing.
+    let outside = [
+        ("west of it", Bbox { south_udeg: 48_000_000, west_udeg: 0, north_udeg: 48_100_000, east_udeg: 1_000_000 }),
+        (
+            "east of it",
+            Bbox { south_udeg: 48_000_000, west_udeg: 20_000_000, north_udeg: 48_100_000, east_udeg: 21_000_000 },
+        ),
+        (
+            "south of it",
+            Bbox { south_udeg: 40_000_000, west_udeg: 7_750_000, north_udeg: 41_000_000, east_udeg: 7_950_000 },
+        ),
+        (
+            "north of it",
+            Bbox { south_udeg: 60_000_000, west_udeg: 7_750_000, north_udeg: 61_000_000, east_udeg: 7_950_000 },
+        ),
+        (
+            "diagonally past the corner",
+            Bbox { south_udeg: 60_000_000, west_udeg: 20_000_000, north_udeg: 61_000_000, east_udeg: 21_000_000 },
+        ),
+    ];
+    for (where_, bbox) in outside {
+        assert_eq!(
+            grid.shards_for(&bbox).expect("a legal coordinate pair, just not on this lattice"),
+            Vec::<ShardId>::new(),
+            "{where_}: an off-lattice bbox must vanish, not collapse onto the edge shard"
+        );
+    }
+
+    // Exactly abutting the west edge from outside is still outside: the window is half-open, so an
+    // east edge on the lattice origin closes the cell before it, which is not a cell of this grid.
+    let abutting = Bbox { south_udeg: 48_000_000, west_udeg: 4_000_000, north_udeg: 48_100_000, east_udeg: 5_000_000 };
+    assert_eq!(grid.shards_for(&abutting).expect("well formed"), Vec::<ShardId>::new());
+    // One microdegree further east and it touches the first cell.
+    let touching = Bbox { south_udeg: 48_000_000, west_udeg: 4_000_000, north_udeg: 48_100_000, east_udeg: 5_000_001 };
+    assert_eq!(grid.shards_for(&touching).expect("well formed"), vec![ShardId { col: 0, row: 0 }]);
+}
+
+/// **R2-2: shard order is `(row, col)`, pinned against literals.**
+///
+/// `ShardId`'s `Ord` is written out rather than derived, because the derive would order by
+/// `(col, row)` — field order — while the document orders by `(row, col)` everywhere: `shards[]`,
+/// the result of `shards_for`, and the presence bit index `row * shard_cols + col`. That mismatch
+/// is not cosmetic: `state_of` binary-searches the shard list, so a derived `Ord` makes it answer
+/// **`Dry` for shards that exist**, which is the one answer this whole issue forbids.
+///
+/// Sorting a shuffled set and comparing against a hand-written expected order is the pin. A revert
+/// to `#[derive(Ord)]` fails here on the first pair that differs.
+#[test]
+fn shard_ids_sort_by_row_then_col_not_col_then_row() {
+    let mut shards = vec![
+        ShardId { col: 5, row: 0 },
+        ShardId { col: 0, row: 1 },
+        ShardId { col: 1, row: 0 },
+        ShardId { col: 0, row: 2 },
+        ShardId { col: 2, row: 1 },
+        ShardId { col: 0, row: 0 },
+        ShardId { col: 5, row: 3 },
+        ShardId { col: 1, row: 1 },
+    ];
+    shards.sort();
+    assert_eq!(
+        shards,
+        vec![
+            ShardId { col: 0, row: 0 },
+            ShardId { col: 1, row: 0 },
+            ShardId { col: 5, row: 0 },
+            ShardId { col: 0, row: 1 },
+            ShardId { col: 1, row: 1 },
+            ShardId { col: 2, row: 1 },
+            ShardId { col: 0, row: 2 },
+            ShardId { col: 5, row: 3 },
+        ],
+        "rows first, then columns within a row — a derived (col, row) Ord fails here"
+    );
+
+    // The pair the derive gets backwards, stated on its own so the failure names the rule.
+    assert!(
+        ShardId { col: 5, row: 0 } < ShardId { col: 0, row: 1 },
+        "the last shard of row 0 precedes the first shard of row 1"
+    );
+    assert!(ShardId { col: 0, row: 1 } > ShardId { col: 1, row: 0 });
+
+    // And the order the shared fixture is written in agrees, end to end.
+    let manifest = parsed();
+    let mut walked: Vec<ShardId> = Vec::new();
+    for row in 0..manifest.grid.shard_rows {
+        for col in 0..manifest.grid.shard_cols {
+            walked.push(ShardId { col, row });
+        }
+    }
+    let mut sorted = walked.clone();
+    sorted.sort();
+    assert_eq!(walked, sorted, "the bit index walk row-major and the sort order are the same order");
+}
