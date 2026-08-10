@@ -704,7 +704,7 @@
       "swift_consumer": "companion-ios/Packages/OBCKit/Sources/OBCWeatherWire/OBCWeatherCodec.swift",
       "contract": "Swift independently decodes and re-encodes every positive byte-identically; both readers reject every negative"
     },
-    "producer_policy_max_bytes": 65536,
+    "producer_policy_max_bytes": 262144,
     "positives": {
       "weather-minimal-dry.obcw": {
         "byte_len": 688,

@@ -169,9 +169,10 @@ fn full_cycle_is_deterministic_byte_stable_and_valid() {
 /// construction none of them can see a change to one — which is exactly how WXR3's first draft
 /// moved `dwd-rv` off its shipped 9,000 x 14,000 µdeg lattice with the whole suite green. That is
 /// not a cosmetic drift: the live `wx/v1/dwd-rv` product's cells would change shape, the German
-/// 90 km corridor would grow ~26 % against an unchanged 64 KiB OBCW producer cap (so `bundle.rs`
-/// would silently shrink the window and start dropping forward frames), and the `cell_size_m =
-/// 1_000` this path emits would stop being true in either axis.
+/// 90 km corridor would grow ~26 % against the OBCW producer cap (256 KiB since WXR5 #1244, so the
+/// shrink loop is a long way off — but the shape of the published product would still change under
+/// a live client), and the `cell_size_m = 1_000` this path emits would stop being true in either
+/// axis.
 ///
 /// So the numbers are written out here, once, deliberately — as literals for all five adapters and
 /// as the geometry actually **emitted** into a published object and restated in the manifest. When

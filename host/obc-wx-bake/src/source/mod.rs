@@ -150,7 +150,7 @@ pub struct BakedProduct {
 /// silently dismantle is worse than publishing nothing and carrying the previous one forward.
 /// Checked **pairwise**, not against the coarsest frame alone. The coarsest frame is the window
 /// only for the frame set the client actually holds, and that set is a moving subset of what was
-/// published: `select`'s freshness and horizon rules drop frames before assembly, and the
+/// published: the client's freshness and horizon rules drop frames before assembly, and the
 /// producer cap can drop the furthest-future one. So a product whose coarsest frame masks a
 /// non-nesting pair beneath it is a product that assembles correctly right up until the frame
 /// doing the masking ages out. Three lattices of 20,000 / 30,000 / 60,000 microdegrees are the

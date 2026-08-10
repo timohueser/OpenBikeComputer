@@ -31,8 +31,8 @@ pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv
 /// **This const is frozen until the cutover.** It is what the live `wx/v1/dwd-rv` product is
 /// published on, so moving it onto the canonical 0.01 degree lattice — which would buy the
 /// canonical path one nearest-neighbour hop from the stereographic raster instead of a
-/// nearest-neighbour of a nearest-neighbour — would also move the live product's lattice, shrink
-/// the German corridor against an unchanged 64 KiB OBCW producer cap, and make the
+/// nearest-neighbour of a nearest-neighbour — would also move the live product's lattice, change
+/// the shape of the German corridor under a live client, and make the
 /// `cell_size_m = 1_000` this path still emits wrong in both axes. WXR7 #1246 deletes the v1 path
 /// wholesale; the alignment belongs in the same push, not before it. Until then the mosaic pays
 /// the second hop, which is ~1 km of positional slop on a ~1 km source.
