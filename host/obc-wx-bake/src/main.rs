@@ -6,9 +6,17 @@
 //! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
 //! obc-wx-bake us      [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   CONUS MRMS+HRRR, tier 1
 //! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
+//! obc-wx-bake opera-cirrus  [...]                                          Europe 1 km radar, tier 1
+//! obc-wx-bake opera-nimbus  [...]                                          Europe 2 km radar, tier 1
 //! obc-wx-bake schema                                                       print the manifest JSON Schema
 //! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
+//!
+//! The two OPERA adapters (WXR6, #1245) are deliberately **not** in `cycle` and their
+//! `ops/weather/adapters.conf` rows are commented out. They are complete and testable against
+//! `--store <dir>`, but publishing them into the live manifest today would add two tier-1
+//! products over Europe for clients whose selection policy WXR3/WXR5/WXR7 are in the middle of
+//! deleting. Those issues flip them on, together with the mosaic that makes the choice moot.
 //!
 //! One product's failure never blocks another's: run the per-product subcommands from separate
 //! timers when that isolation matters more than a single-manifest cycle.
@@ -27,7 +35,10 @@ use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
 use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
-use obc_wx_bake::source::{dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, us::UsComposite, Adapter};
+use obc_wx_bake::source::{
+    dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, opera_cirrus::OperaCirrus, opera_nimbus::OperaNimbus,
+    us::UsComposite, Adapter,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,12 +65,18 @@ fn run(args: &[String]) -> Result<(), String> {
     let icon = IconEu;
     let us = UsComposite;
     let gfs = GfsFloor;
+    let cirrus = OperaCirrus;
+    let nimbus = OperaNimbus;
     let adapters: Vec<&dyn Adapter> = match command {
+        // `cycle` is the published set. OPERA is reachable only by name until WXR3/WXR7 — see
+        // the module comment.
         "cycle" => vec![&dwd, &icon, &us, &gfs],
         "dwd-rv" => vec![&dwd],
         "icon-eu" => vec![&icon],
         "us" => vec![&us],
         "gfs" => vec![&gfs],
+        "opera-cirrus" => vec![&cirrus],
+        "opera-nimbus" => vec![&nimbus],
         _ => return Err(usage()),
     };
 
@@ -98,6 +115,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema"
+    "usage: obc-wx-bake <cycle|dwd-rv|icon-eu|us|gfs|opera-cirrus|opera-nimbus> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema"
         .to_string()
 }

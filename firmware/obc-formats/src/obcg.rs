@@ -82,6 +82,8 @@ pub const PRODUCT_ICON_EU: u8 = 2;
 pub const PRODUCT_MRMS: u8 = 3;
 pub const PRODUCT_HRRR: u8 = 4;
 pub const PRODUCT_GFS: u8 = 5;
+pub const PRODUCT_OPERA_CIRRUS: u8 = 6;
+pub const PRODUCT_OPERA_NIMBUS: u8 = 7;
 pub const PRODUCT_EXPERIMENTAL: u8 = 255;
 
 pub const TIER_RADAR: u8 = 1;
