@@ -19,7 +19,11 @@
 //! multi-point hourly section is an OBCW/provider change). The freshness arithmetic mirrors
 //! [`WeatherReader::current_frame`]'s fail-closed rule (per-frame cap = min inter-frame spacing,
 //! bounded by [`FRAME_CURRENT_CAP_S`]) and is pinned against it by test, so what the overlay may
-//! *render* and what a screen may *say* can never disagree.
+//! *render* and what a screen may *say* can never disagree **about freshness**: both read the same
+//! frame table through the same cap. They may well disagree *spatially* — and that is intended:
+//! the map paints the cells under the camera, the card answers for the projected ride, so a card
+//! reading RAIN IN 20 over a map showing dry ground at the rider means rain 20 minutes *along the
+//! route*. (On the WX8 on-glass list: confirm that reads as informative rather than contradictory.)
 
 use obc_formats::io::ByteSource;
 use obc_formats::obcw::{HourlyRecord, HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, INTENSITY_NODATA};
@@ -57,18 +61,61 @@ pub const SPEED_CAP_CMS: u32 = 1_500;
 /// receiver's speed is noise, not riding.
 pub const MOVING_MIN_CMS: u32 = 100;
 
+/// **Tunable** (sits with the [`weather_alerts`](crate::weather_alerts) threshold table): the
+/// plausible spread of a rider's pace around the projection's median estimate, in cm/s.
+///
+/// The projection advances progress at one number; a real rider's pace over the next two hours
+/// spreads around it (a climb, a café, a tailwind). 125 cm/s = ±1.25 m/s ≈ ±4.5 km/h — measured
+/// against a plausible touring pace spread this covers the observed positional uncertainty of
+/// **1.7 / 2.4 / 3.5 cells at +15 / +30 / +45 min** on a 1 km grid: `1 + ⌊125·Δt/100 / 1000⌋`
+/// gives 2 / 3 / 4 cells there, i.e. the reviewer's `1 + k` ladder at the 15-minute radar cadence.
+/// Expressed as a speed rather than a per-frame step so a coarser product's own cadence and cell
+/// size fold in by arithmetic instead of by assumption (a 27 km floor cell stays one cell wide
+/// across the whole horizon).
+///
+/// It widens the corridor **only for the DRY/coverage claim** (see
+/// [`sample_along`](WeatherSnapshot::sample_along)); warnings keep the one-cell rule.
+pub const PACE_SPREAD_CMS: u32 = 125;
+
+/// Ceiling on the pace-spread corridor's half-width in cells — an I/O guard, not a decision. At
+/// the shipped 1 km radar cell the ladder reaches 10 at the +2 h horizon, so this never binds
+/// there; it exists so a hypothetical sub-hectometre product can't turn one snapshot sample into
+/// thousands of tile probes.
+pub const CORRIDOR_MAX_HALF_CELLS: u32 = 12;
+
 /// One rain frame's timestamp plus the nearest-cell intensity sampled at the rider's position for
 /// that frame's instant — the *current* position, or the route-projected one when the host passed
 /// a [`RideProjection`] ([`INTENSITY_NODATA`] when the position lies outside the grid or the tile
 /// read failed — missing data stays missing, it never reads as dry). `lat`/`lon` record the µdeg
 /// position the sample was taken at (the alert engine's spatial anchor); for a `None` position
-/// they are `(0, 0)` and the intensity is the no-data sentinel.
+/// they are `(0, 0)` **and** the intensity is the no-data sentinel, so nothing downstream ever
+/// reads that placeholder as a place (no candidate is derived from a no-data frame).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSample {
     pub valid_at: i64,
     pub intensity: u8,
     pub lat: i32,
     pub lon: i32,
+    /// The projection ran off the end of the route for this frame, so the sample is the finish
+    /// point held still. A finished rider keeps riding (onward, home, a second loop), so the
+    /// finish point's weather says nothing about where they will be: such a frame counts as **no
+    /// coverage** for the DRY claim. Warnings may still use it — rain actually parked on the
+    /// destination is worth saying.
+    pub past_route_end: bool,
+    /// The [`PACE_SPREAD_CMS`] corridor around this frame's sample is **not** known dry-and-covered
+    /// (a cell inside it is wet, no-data, unreadable, or outside the grid). Blocks the DRY claim
+    /// only — the warning path never reads it. `false` on any frame that already blocks the claim
+    /// for a cheaper reason (the scan is skipped there) and on every unprojected sample.
+    pub spread_uncertain: bool,
+}
+
+impl FrameSample {
+    /// May this frame stand as one honest, dry link of the two-hour coverage chain? Every reason
+    /// it can't is fail-closed: missing data, a projection past the route end, or a pace-spread
+    /// corridor that isn't wholly dry-and-covered.
+    fn supports_dry_claim(&self) -> bool {
+        self.intensity != INTENSITY_NODATA && !self.past_route_end && !self.spread_uncertain
+    }
 }
 
 /// The compact resident snapshot of the active weather bundle: the 24 hourly records verbatim,
@@ -95,6 +142,14 @@ pub struct WeatherSnapshot {
     /// Some sampled (current or projected) position lies inside the rain grid's bbox. `false`
     /// means the rain product covers no part of the sampled ride — the explicit hourly-only state.
     pub pos_in_grid: bool,
+    /// The rider's **current** position lies inside the rain grid's bbox — deliberately *not* the
+    /// same bit as [`pos_in_grid`](Self::pos_in_grid) since WX12 widened that one to "some
+    /// projected position". A rider outside the product whose ride enters it has
+    /// `pos_in_grid = true` (so rain met along the way is still reported) but
+    /// `current_pos_in_grid = false`, which is what keeps the honest **hourly-only** state
+    /// reachable instead of degrading into WEATHER UPDATE NEEDED: the product simply doesn't
+    /// cover where the rider is.
+    pub current_pos_in_grid: bool,
     /// The frame samples were route-projected (a [`RideProjection`] was supplied) — diagnostics
     /// and tests only; the derivation itself is projection-agnostic.
     pub projected: bool,
@@ -142,13 +197,31 @@ impl WeatherSnapshot {
 
     /// Sample the open bundle for the ride: every kept frame is sampled at the rider's expected
     /// position for that frame's timestamp — the current `pos` without a projection, else the
-    /// route point the [`RideProjection`] advances to — inside a conservative one-cell corridor
-    /// (projected sampling only): the projected position is uncertain by well over a 1 km cell,
-    /// so a wet cell immediately beside the line counts as wet (max intensity), while validity
-    /// is still governed by the centre cell — a corridor can raise a warning, never manufacture
-    /// coverage. Bounded I/O through the WX7 fixed cache: 24 hourly reads, one descriptor sweep,
-    /// and a handful of tile decodes per kept frame — run at refresh/fix cadence by the host,
-    /// never per rendered frame.
+    /// route point the [`RideProjection`] advances to. Projected sampling runs **two** corridors
+    /// around that point, because warning and claiming want opposite conservatism:
+    ///
+    /// - the **warning** corridor is one cell (the four neighbours), *raise-only*: a wet cell
+    ///   immediately beside the line counts as wet, while validity is still governed by the centre
+    ///   cell. It can raise a warning, never manufacture coverage. Unchanged since WX12's first
+    ///   cut, and the whole of the unprojected (WX11 screens) path.
+    /// - the **claim** corridor grows with the horizon ([`PACE_SPREAD_CMS`]), because at +45 min
+    ///   the projection's own positional uncertainty is already 2–4 cells wide: a DRY FOR 2 HOURS
+    ///   is only honest if *every* cell the rider might plausibly be in is dry and covered. Any
+    ///   wet / no-data / out-of-grid cell inside it sets
+    ///   [`spread_uncertain`](FrameSample::spread_uncertain) and the frame stops supporting the
+    ///   dry claim (it produces no warning of its own — warn early, claim dry conservatively).
+    ///
+    /// Bounded I/O through the WX7 fixed cache: 24 hourly reads, one descriptor sweep, and a
+    /// handful of tile decodes per kept frame — plus, **only for frames that are otherwise dry and
+    /// covered** (the claim corridor short-circuits on the first blocker and is skipped entirely
+    /// when the frame already can't claim), `4 · half_width` further cell probes. Worst case on
+    /// the shipped 1 km/15 min radar product (a wholly clean nine-frame sky, the one case that
+    /// pays in full): 45 warning probes + 184 claim probes = 229 `intensity_at` calls per pass
+    /// against a *single-entry* tile cache — of which ~36 are the claim corridor's first step
+    /// repeating the warning neighbours, and most of the rest are same-tile hits, since 16
+    /// consecutive cells along an arm share one tile. Run at refresh/fix cadence by the host,
+    /// never per rendered frame; the SD-read figure behind it is on the WX8 mount-time
+    /// measurement list.
     pub fn sample_along<S: ByteSource + ?Sized>(
         reader: &WeatherReader<'_, S>,
         cache: &mut WeatherCache,
@@ -193,15 +266,18 @@ impl WeatherSnapshot {
             // The position this frame is sampled at: the projected route point for the frame's
             // timestamp when a projection was supplied (an undecodable route falls back to the
             // current position — sampling somewhere real beats sampling nowhere), else `pos`.
-            let sample_pos = match (pos, projection) {
-                (Some(current), Some((route, proj))) => {
-                    Some(projected_position(route, proj, frame.valid_at).unwrap_or(current))
-                }
-                (current, _) => current,
+            // `past_route_end` records that the projection clamped at the finish.
+            let (sample_pos, past_route_end) = match (pos, projection) {
+                (Some(current), Some((route, proj))) => match projected_position(route, proj, frame.valid_at) {
+                    Some((at, clamped)) => (Some(at), clamped),
+                    None => (Some(current), false),
+                },
+                (current, _) => (current, false),
             };
+            let mut spread_uncertain = false;
             let intensity = match sample_pos {
                 Some((lat, lon)) => {
-                    // µdeg-per-cell of *this* frame's grid, for the one-cell corridor offsets.
+                    // µdeg-per-cell of *this* frame's grid, for the corridor offsets.
                     let cell = corridor_cell_udeg(header, frame.width, frame.height);
                     let center = match reader.intensity_at(index, lat, lon, cache) {
                         Ok(Some(value)) => {
@@ -212,9 +288,9 @@ impl WeatherSnapshot {
                         Ok(None) | Err(_) => INTENSITY_NODATA,
                     };
                     if projection.is_some() && center != INTENSITY_NODATA {
-                        // Conservative corridor: the four one-cell neighbours can only *raise*
-                        // the sample. Neighbours outside the grid / unreadable are ignored —
-                        // the corridor widens the warning, never the coverage claim.
+                        // Warning corridor: the four one-cell neighbours can only *raise* the
+                        // sample. Neighbours outside the grid / unreadable are ignored — the
+                        // corridor widens the warning, never the coverage claim.
                         let mut max = center;
                         for (dlat, dlon) in [(cell.0, 0), (-cell.0, 0), (0, cell.1), (0, -cell.1)] {
                             if let Ok(Some(v)) =
@@ -225,6 +301,12 @@ impl WeatherSnapshot {
                                 }
                             }
                         }
+                        // Claim corridor — only worth paying for while a dry claim is still alive.
+                        if max < RAIN_MIN_INTENSITY && !past_route_end {
+                            let lead_s = projection.map_or(0, |(_, p)| frame.valid_at.saturating_sub(p.now));
+                            let half = spread_half_cells(lead_s, frame.cell_size_m);
+                            spread_uncertain = !corridor_is_dry(reader, cache, index, (lat, lon), cell, half);
+                        }
                         max
                     } else {
                         center
@@ -234,7 +316,14 @@ impl WeatherSnapshot {
             };
             let (lat, lon) = sample_pos.unwrap_or((0, 0));
             // Capacity is `kept <= SNAPSHOT_MAX_FRAMES` by construction.
-            let _ = frames.push(FrameSample { valid_at: frame.valid_at, intensity, lat, lon });
+            let _ = frames.push(FrameSample {
+                valid_at: frame.valid_at,
+                intensity,
+                lat,
+                lon,
+                past_route_end,
+                spread_uncertain,
+            });
         }
 
         let rain_grid = (frame_count > 0).then_some(obc_render::RainGrid {
@@ -254,6 +343,16 @@ impl WeatherSnapshot {
             frame_cap_s,
             sampled_at: pos,
             pos_in_grid,
+            // The rider's own position against the bundle's half-open bbox — the exact bounds test
+            // `WeatherReader::cell_index` applies, without spending a tile read on it. A frameless
+            // bundle has no grid at all, so nothing is inside it.
+            current_pos_in_grid: frame_count > 0
+                && pos.is_some_and(|(lat, lon)| {
+                    lat >= header.south_lat_udeg
+                        && lat < header.north_lat_udeg
+                        && lon >= header.west_lon_udeg
+                        && lon < header.east_lon_udeg
+                }),
             projected: pos.is_some() && projection.is_some(),
             frames_truncated: frame_count > SNAPSHOT_MAX_FRAMES,
             rain_grid,
@@ -354,11 +453,16 @@ pub enum RainOutlook {
 /// Derive the dashboard headline from the snapshot at `now`. Pure and total — the honesty laws
 /// live here, in one testable place:
 ///
-/// - no rain frames, or the position outside the grid → [`RainOutlook::HourlyOnly`];
+/// - no rain frames, or no sampled position anywhere in the grid → [`RainOutlook::HourlyOnly`];
 /// - **DRY only with complete coverage**: every 15-minute-grained instant of `[now, now+2h]`
-///   inside a current frame's honest window, with no no-data sample and no truncation;
+///   inside a current frame's honest window, with no no-data sample, no truncation, no frame
+///   projected past the route end, and no frame whose pace-spread corridor is unclaimed
+///   ([`FrameSample::supports_dry_claim`] carries the last three);
 /// - anything wet inside the covered part is reported even when coverage is partial —
 ///   a gap suppresses the dry claim, never a rain warning;
+/// - nothing wet, coverage incomplete, and the rain product doesn't even reach the rider's
+///   *current* position → [`RainOutlook::HourlyOnly`] again: the honest "no rain product here",
+///   not a fetch instruction that would never help;
 /// - otherwise → [`RainOutlook::UpdateNeeded`] (stale is never dry).
 pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
     if snap.frames.is_empty() || !snap.pos_in_grid {
@@ -393,7 +497,7 @@ pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
         Some(start) => {
             let mut index = start;
             loop {
-                if snap.frames[index].intensity == INTENSITY_NODATA {
+                if !snap.frames[index].supports_dry_claim() {
                     fully_covered = false;
                     break;
                 }
@@ -422,6 +526,9 @@ pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
             }
         }
         None if fully_covered => RainOutlook::Dry,
+        // Nothing wet, coverage incomplete — but if the product doesn't cover where the rider
+        // actually *is*, the gap isn't staleness, it's absence: the explicit hourly-only state.
+        None if !snap.current_pos_in_grid => RainOutlook::HourlyOnly,
         None => RainOutlook::UpdateNeeded,
     }
 }
@@ -496,14 +603,54 @@ fn corridor_cell_udeg(header: obc_formats::obcw::Header, width: u16, height: u16
 
 /// The expected rider position `(lat, lon)` µdeg at instant `t` under the projection: progress
 /// advanced by `speed · Δt` (frames at or before the anchor sample at the current progress — we
-/// don't reconstruct the past), clamped to the route end by `position_at` itself (the rider
-/// arriving stays at the destination — the conservative read for a finished ride). `None` when
+/// don't reconstruct the past), clamped to the route end by `position_at` itself. The returned
+/// flag says the clamp fired — the projection ran out of route, so this sample is the finish point
+/// standing still and may not carry a dry claim (see [`FrameSample::past_route_end`]). `None` when
 /// the route geometry doesn't decode (flaky SD); the caller falls back to the current position.
-fn projected_position(route: &RouteReader<'_>, proj: RideProjection, t: i64) -> Option<(i32, i32)> {
+fn projected_position(route: &RouteReader<'_>, proj: RideProjection, t: i64) -> Option<((i32, i32), bool)> {
     let dt_s = t.saturating_sub(proj.now).max(0) as u64;
     let ahead_m = (proj.speed_cms as u64 * dt_s / 100).min(u32::MAX as u64) as u32;
-    let position = route.position_at(proj.progress_m.saturating_add(ahead_m))?;
-    Some((position.lat, position.lon))
+    let target_m = proj.progress_m.saturating_add(ahead_m);
+    let position = route.position_at(target_m)?;
+    Some(((position.lat, position.lon), target_m > route.total_distance_m))
+}
+
+/// Half-width, in cells, of the pace-spread corridor a frame `lead_s` seconds past the projection
+/// anchor needs before it may carry a DRY claim: one cell (the projection's own grid granularity)
+/// plus whole cells of [`PACE_SPREAD_CMS`] accumulated over the lead, capped by
+/// [`CORRIDOR_MAX_HALF_CELLS`]. Frames at or before the anchor carry no pace uncertainty at all
+/// and stay at one cell.
+fn spread_half_cells(lead_s: i64, cell_size_m: u16) -> u32 {
+    let spread_m = (PACE_SPREAD_CMS as i64).saturating_mul(lead_s.max(0)) / 100;
+    let cells = spread_m / cell_size_m.max(1) as i64;
+    (1 + cells).clamp(1, CORRIDOR_MAX_HALF_CELLS as i64) as u32
+}
+
+/// Is every cell within `half` cells of `(lat, lon)` along both axes readable, in-grid and dry?
+/// The DRY claim's gate — fail-closed in every direction (a wet cell, a no-data cell, a cell
+/// outside the product, or a failed read all answer `false`), and short-circuiting on the first
+/// blocker so the cost is only paid by corridors that actually turn out clean.
+fn corridor_is_dry<S: ByteSource + ?Sized>(
+    reader: &WeatherReader<'_, S>,
+    cache: &mut WeatherCache,
+    frame: usize,
+    (lat, lon): (i32, i32),
+    cell: (i32, i32),
+    half: u32,
+) -> bool {
+    for (dlat, dlon) in [(cell.0, 0), (-cell.0, 0), (0, cell.1), (0, -cell.1)] {
+        // Walk each arm outward from the centre: consecutive cells share a tile, so the
+        // single-entry tile cache is hit for all but the few steps that cross a tile edge.
+        for step in 1..=half as i32 {
+            let probe_lat = lat.saturating_add(dlat.saturating_mul(step));
+            let probe_lon = lon.saturating_add(dlon.saturating_mul(step));
+            match reader.intensity_at(frame, probe_lat, probe_lon, cache) {
+                Ok(Some(v)) if v != INTENSITY_NODATA && v < RAIN_MIN_INTENSITY => {}
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 /// Great-circle-free flat bearing from `a` to `b` (`(lat, lon)` µdeg), degrees CW from north in
@@ -684,7 +831,16 @@ mod tests {
         let (lat, lon) = snap.sampled_at.unwrap();
         let mut frames = heapless::Vec::new();
         for (index, &intensity) in intensities.iter().enumerate() {
-            frames.push(FrameSample { valid_at: t0 + index as i64 * 900, intensity, lat, lon }).unwrap();
+            frames
+                .push(FrameSample {
+                    valid_at: t0 + index as i64 * 900,
+                    intensity,
+                    lat,
+                    lon,
+                    past_route_end: false,
+                    spread_uncertain: false,
+                })
+                .unwrap();
         }
         WeatherSnapshot {
             valid_from: t0 - 3_600,
@@ -692,6 +848,7 @@ mod tests {
             frames,
             frame_cap_s: 900,
             pos_in_grid: true,
+            current_pos_in_grid: true,
             frames_truncated: false,
             ..snap
         }
@@ -744,10 +901,85 @@ mod tests {
         gap.frames.truncate(0);
         for (index, at) in [0i64, 900, 1_800, 5_400, 6_300, 7_200].iter().enumerate() {
             let _ = index;
-            gap.frames.push(FrameSample { valid_at: t0 + at, intensity: INTENSITY_DRY, lat, lon }).unwrap();
+            gap.frames
+                .push(FrameSample {
+                    valid_at: t0 + at,
+                    intensity: INTENSITY_DRY,
+                    lat,
+                    lon,
+                    past_route_end: false,
+                    spread_uncertain: false,
+                })
+                .unwrap();
         }
         gap.frame_cap_s = 900;
         assert_eq!(rain_outlook(&gap, t0), RainOutlook::UpdateNeeded, "a bake gap goes dark, not dry");
+    }
+
+    /// The two WX12 dry-claim blockers, at the level the derivation sees them: a frame the
+    /// projection clamped past the route end, and a frame whose pace-spread corridor isn't wholly
+    /// dry-and-covered, each refuse DRY on their own — while neither invents a warning.
+    #[test]
+    fn projection_blockers_refuse_dry_without_inventing_rain() {
+        let t0 = 1_800_000_000;
+        // Baseline: nine dry frames are an honest DRY FOR 2 HOURS.
+        assert_eq!(rain_outlook(&synthetic(&[0; 9], t0), t0), RainOutlook::Dry);
+
+        // The rider reaches the finish inside the window: from there the projection stands still
+        // at the destination, which says nothing about where the rider will actually be.
+        let mut clamped = synthetic(&[0; 9], t0);
+        for frame in clamped.frames.iter_mut().skip(5) {
+            frame.past_route_end = true;
+        }
+        assert_eq!(rain_outlook(&clamped, t0), RainOutlook::UpdateNeeded, "a finished projection can't claim dry");
+        assert_eq!(rain_outlook(&clamped, t0 + 90 * 60), RainOutlook::UpdateNeeded);
+
+        // …but rain parked on the destination is still worth saying.
+        let mut wet_end = clamped.clone();
+        wet_end.frames[6].intensity = 6;
+        assert_eq!(rain_outlook(&wet_end, t0), RainOutlook::RainIn { minutes: 90 }, "warnings still use them");
+
+        // A wet/no-data/out-of-grid cell inside the widened claim corridor: no dry claim, and
+        // (deliberately) no warning either — warn early on the one-cell rule, claim dry widely.
+        let mut spread = synthetic(&[0; 9], t0);
+        spread.frames[4].spread_uncertain = true;
+        assert_eq!(rain_outlook(&spread, t0), RainOutlook::UpdateNeeded, "an unclaimed corridor refuses dry");
+    }
+
+    /// The pace-spread ladder: one cell at the anchor, and the reviewer's measured 2 / 3 / 4 cells
+    /// at +15 / +30 / +45 min on a 1 km grid — while a coarse floor product stays one cell wide
+    /// across the whole horizon, and the I/O cap bounds a pathological fine grid.
+    #[test]
+    fn spread_half_cells_ladder_covers_the_measured_uncertainty() {
+        assert_eq!(spread_half_cells(0, 1_000), 1, "no lead, no pace uncertainty");
+        assert_eq!(spread_half_cells(-900, 1_000), 1, "a past frame samples here, exactly");
+        assert_eq!(spread_half_cells(15 * 60, 1_000), 2, "measured 1.7 cells at +15 min");
+        assert_eq!(spread_half_cells(30 * 60, 1_000), 3, "measured 2.4 cells at +30 min");
+        assert_eq!(spread_half_cells(45 * 60, 1_000), 4, "measured 3.5 cells at +45 min");
+        // A 27 km global-floor cell already swallows two hours of pace spread whole.
+        assert_eq!(spread_half_cells(2 * 3_600, 27_000), 1);
+        // And nothing can run the probe count away.
+        assert_eq!(spread_half_cells(2 * 3_600, 1), CORRIDOR_MAX_HALF_CELLS);
+    }
+
+    /// F6: `pos_in_grid` ("some projected sample is covered") and `current_pos_in_grid` ("the
+    /// rider is covered") are different questions, and the honest **hourly-only** state hangs off
+    /// the second one — a rider outside the product whose ride enters it must not read as a stale
+    /// cache that a refresh would fix.
+    #[test]
+    fn a_ride_entering_the_product_stays_hourly_only_where_the_rider_is() {
+        let t0 = 1_800_000_000;
+        // The ride enters the grid partway: the early frames are no-data, the later ones dry.
+        let mut entering = synthetic(&[INTENSITY_NODATA, INTENSITY_NODATA, 0, 0, 0, 0, 0, 0, 0], t0);
+        entering.current_pos_in_grid = false; // the rider themselves is outside the product
+        assert_eq!(rain_outlook(&entering, t0), RainOutlook::HourlyOnly, "no product here — not 'update needed'");
+        // Rain met along the way is still reported: hourly-only never swallows a warning.
+        entering.frames[4].intensity = 7;
+        assert_eq!(rain_outlook(&entering, t0), RainOutlook::RainIn { minutes: 60 });
+        // The same holes with the rider *inside* the product are the old, correct verdict.
+        let mut inside = synthetic(&[INTENSITY_NODATA, INTENSITY_NODATA, 0, 0, 0, 0, 0, 0, 0], t0);
+        inside.current_pos_in_grid = true;
+        assert_eq!(rain_outlook(&inside, t0), RainOutlook::UpdateNeeded);
     }
 
     /// The strip's covering rule: inside a window the frame's sample answers, past the cap and
@@ -781,6 +1013,9 @@ mod tests {
     #[test]
     fn snapshot_resident_size_is_bounded() {
         assert!(core::mem::size_of::<WeatherSnapshot>() <= 1_024, "snapshot must stay ~sub-KiB resident");
+        // The two dry-claim flags land in the padding `valid_at`'s alignment already forced, so
+        // the frame table (16 × this) costs the host buffer nothing new.
+        assert_eq!(core::mem::size_of::<FrameSample>(), 24);
     }
 
     /// The route-relative classification (WX12's seam): no travel direction is `None` — never a

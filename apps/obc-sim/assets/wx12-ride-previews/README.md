@@ -38,3 +38,10 @@ rm -rf "$R"
 
 The demo bundles anchor the app clock on their first frame when no `--clock` is passed, so every
 derivation — decision card, alert timing, arrow colors — is deterministic.
+
+Re-verified byte-identical after the adversarial review round (the horizon-widened DRY-claim
+corridor, the off-route projection gate and the route-end clamp): none of these five scenes is a
+dry claim under projection — the parked shot has no projection at all, the two riding shots cross
+the ring and answer with a *warning*, and the gust/hourly shots don't read the rain grid — so the
+review's conservatism lands on paths none of them exercise. That gap is itself a note for the
+on-glass round: there is no committed frame of a projected DRY FOR 2 HOURS.

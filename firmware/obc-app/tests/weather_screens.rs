@@ -33,7 +33,14 @@ fn snapshot(intensities: &[u8]) -> WeatherSnapshot {
     let mut frames = heapless::Vec::new();
     for (index, &intensity) in intensities.iter().enumerate() {
         frames
-            .push(obc_app::weather::FrameSample { valid_at: T0 + index as i64 * 900, intensity, lat: 0, lon: 0 })
+            .push(obc_app::weather::FrameSample {
+                valid_at: T0 + index as i64 * 900,
+                intensity,
+                lat: 0,
+                lon: 0,
+                past_route_end: false,
+                spread_uncertain: false,
+            })
             .unwrap();
     }
     WeatherSnapshot {
@@ -45,6 +52,7 @@ fn snapshot(intensities: &[u8]) -> WeatherSnapshot {
         frame_cap_s: 900,
         sampled_at: Some((0, 0)),
         pos_in_grid: true,
+        current_pos_in_grid: true,
         projected: false,
         frames_truncated: false,
         rain_grid: Some(obc_render::RainGrid {

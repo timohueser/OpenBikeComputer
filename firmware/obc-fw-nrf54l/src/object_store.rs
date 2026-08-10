@@ -524,7 +524,7 @@ impl ObjectStore {
         set_upload: None,
     };
 
-    /// Mount-time fill of an [`empty`](Self::empty) store, **in place**: load settings, scan
+    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings, scan
     /// `/routes` into the id table, and sweep aborted commits (files whose held-back magic never
     /// got patched — see `sd.rs`). Runs under a boot-time lock of the shared store (`shared`),
     /// which it borrows for the settings load + scans.

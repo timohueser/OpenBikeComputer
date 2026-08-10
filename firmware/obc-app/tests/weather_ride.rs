@@ -26,6 +26,12 @@ fn grimsel_index() -> RouteIndex {
 /// A generous bbox around the whole route (sampled along its length, padded well past a cell) so
 /// every projected position lies strictly inside the grid.
 fn route_bbox(route: &RouteReader) -> (i32, i32, i32, i32) {
+    padded_route_bbox(route, 20_000)
+}
+
+/// [`route_bbox`] with the padding named — the pace-spread tests need the widened claim corridor
+/// (up to ten cells at the +2 h horizon) to stay comfortably inside the product.
+fn padded_route_bbox(route: &RouteReader, pad_udeg: i32) -> (i32, i32, i32, i32) {
     let (mut south, mut west, mut north, mut east) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
     let mut m = 0;
     while m <= route.total_distance_m {
@@ -36,7 +42,7 @@ fn route_bbox(route: &RouteReader) -> (i32, i32, i32, i32) {
         east = east.max(p.lon);
         m += 100;
     }
-    (south - 20_000, west - 20_000, north + 20_000, east + 20_000)
+    (south - pad_udeg, west - pad_udeg, north + pad_udeg, east + pad_udeg)
 }
 
 /// The frame-grid cell containing `(lat, lon)` — the exact `cell_index` arithmetic of the
@@ -184,6 +190,106 @@ fn projected_decision_sees_the_storm_the_parked_one_misses() {
     let riding =
         WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
     assert_eq!(rain_outlook(&riding, T0), RainOutlook::StormIn { minutes: 45 }, "the ride crosses the storm");
+}
+
+/// Review F1's sibling: once the projection runs out of route it clamps at the finish and stands
+/// there. A finished rider keeps riding, so the finish point's sky says nothing about where they
+/// will be — those frames count as **no coverage** and the two-hour dry claim is refused, while
+/// rain actually sitting on the destination is still reported.
+#[test]
+fn frames_projected_past_the_route_end_carry_no_dry_claim() {
+    let idx = grimsel_index();
+    let src = SliceSource(GRIMSEL);
+    let route = RouteReader::new(&idx, &src);
+    let bbox = padded_route_bbox(&route, 200_000);
+    let start = route.position_at(0).unwrap();
+    let end = route.position_at(route.total_distance_m).unwrap();
+
+    // 5 m/s over the 18.7 km route: the projection reaches the finish inside the second hour.
+    let proj = RideProjection { progress_m: 0, speed_cms: 500, now: T0 };
+    let dry = bundle(bbox, |_| Vec::new());
+    let source = SliceSource(&dry);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+
+    // Parked on the same all-dry sky: an honest DRY FOR 2 HOURS.
+    let parked = WeatherSnapshot::sample(&reader, &mut cache, Some((start.lat, start.lon))).unwrap();
+    assert_eq!(rain_outlook(&parked, T0), RainOutlook::Dry);
+
+    let riding =
+        WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
+    assert!(!riding.frames[3].past_route_end, "18.7 km isn't reached at +45 min");
+    assert!(riding.frames[5].past_route_end, "…but it is by +75 min");
+    assert_eq!(
+        rain_outlook(&riding, T0),
+        RainOutlook::UpdateNeeded,
+        "a projection standing on the finish line can't promise the next two hours"
+    );
+
+    // Rain parked on the destination is still worth saying — warnings may use clamped frames.
+    let end_cell = cell_of(bbox, end.lat, end.lon);
+    let wet = bundle(bbox, move |frame| if frame >= 5 { vec![(end_cell.0, end_cell.1, 6)] } else { Vec::new() });
+    let source = SliceSource(&wet);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+    let riding =
+        WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
+    assert_eq!(rain_outlook(&riding, T0), RainOutlook::RainIn { minutes: 75 }, "the destination's rain still reports");
+}
+
+/// Review F3: the projection's own positional uncertainty at the far horizon is 2–4 cells wide, so
+/// a one-cell corridor is too narrow to *promise* dryness. The claim corridor grows with the
+/// horizon — a cell three steps off the +45 min position (inside that frame's four-cell claim
+/// corridor, outside every frame's one-cell warning corridor) refuses DRY, while the warning path
+/// stays exactly where it was: no RAIN IN is manufactured from it.
+#[test]
+fn the_claim_corridor_widens_with_the_horizon_while_warnings_do_not() {
+    let idx = grimsel_index();
+    let src = SliceSource(GRIMSEL);
+    let route = RouteReader::new(&idx, &src);
+    let bbox = padded_route_bbox(&route, 200_000);
+
+    // 2 m/s: 14.4 km in two hours, so the 18.7 km route never runs out and the route-end clamp
+    // stays out of this test's way.
+    let proj = RideProjection { progress_m: 0, speed_cms: 200, now: T0 };
+    let start = route.position_at(0).unwrap();
+    let at = |k: usize| route.position_at(k as u32 * 1_800).unwrap();
+    let frame_cells: Vec<(usize, usize)> = (0..9).map(|k| cell_of(bbox, at(k).lat, at(k).lon)).collect();
+
+    // Control: nothing wet anywhere is an honest DRY FOR 2 HOURS along the projection — which is
+    // what makes the widened refusal below a real difference and not a blanket "never dry".
+    let dry = bundle(bbox, |_| Vec::new());
+    let source = SliceSource(&dry);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+    let riding =
+        WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
+    assert_eq!(rain_outlook(&riding, T0), RainOutlook::Dry, "the widened corridor still lets a clean sky be dry");
+
+    // A cell on frame 3's axis, 3 steps out: inside its claim corridor (half-width 4 at +45 min on
+    // the declared 1 km grid), and more than one step from *every* frame's projected cell, so no
+    // one-cell warning corridor can see it.
+    let target = frame_cells[3];
+    let far_enough = |c: &(usize, usize)| frame_cells.iter().all(|f| c.0.abs_diff(f.0) + c.1.abs_diff(f.1) >= 2);
+    let candidates =
+        [(target.0 + 3, target.1), (target.0 - 3, target.1), (target.0, target.1 + 3), (target.0, target.1 - 3)];
+    let wet_cell =
+        candidates.into_iter().find(far_enough).expect("fixture: a 3-step cell clear of every warning corridor");
+
+    let wet = bundle(bbox, move |_| vec![(wet_cell.0, wet_cell.1, 8)]);
+    let source = SliceSource(&wet);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+    let riding =
+        WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
+
+    assert_eq!(riding.frames[3].intensity, 0, "the one-cell warning corridor never sees it — no false RAIN IN");
+    assert!(riding.frames[3].spread_uncertain, "…but the pace-spread corridor does");
+    assert_eq!(
+        rain_outlook(&riding, T0),
+        RainOutlook::UpdateNeeded,
+        "one cell would have said DRY; the rider's plausible position spread refuses it"
+    );
 }
 
 /// The corridor is conservative in exactly one direction: a wet cell one step beside the
