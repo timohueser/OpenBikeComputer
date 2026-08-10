@@ -25,15 +25,17 @@ use std::path::PathBuf;
 use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::canonical::{
-    emit_shard, run_canonical_cycle, CycleTimes, Lattice, Mosaic, MosaicLayer, CANONICAL, CELL_UDEG, CYCLE_FRAMES,
-    LATTICE_CELL_SIZE_M,
+    bake_cycle, emit_shard, run_canonical_cycle, source_column, source_reaches, CycleTimes, Lattice, Mosaic,
+    MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
 use obc_wx_bake::grib::{decode_bzip2_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
 use obc_wx_bake::manifest;
 use obc_wx_bake::publish::DirStore;
-use obc_wx_bake::source::{dwd_rv, gfs, icon_eu, Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use obc_wx_bake::source::{
+    dwd_rv, gfs, hrrr, icon_eu, mrms, us, Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct,
+};
 use obc_wx_bake::stereo;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -171,7 +173,19 @@ fn icon_expected_field() -> ExpectedGrib {
 }
 
 /// Nearest-neighbour index into a source window from a lattice cell centre, or `None` outside it.
-fn source_index(window: &GridGeometry, lattice: &Lattice, col: u32, row: u32) -> Option<usize> {
+///
+/// **How independent this oracle actually is**, so a later reader does not over-trust the sample
+/// count. This function is a deliberate re-derivation of the window→index arithmetic that
+/// `Mosaic::fill` also does, so the *selection* half of the oracle is a second opinion rather than
+/// an independent one — it would agree with a shared sign error. What is genuinely independent is
+/// the *value* half: the DWD branch reads the raw ODIM raster out of the tar and re-implements the
+/// gain/offset/quantize chain, and it reaches the raster through `stereo::native_index` from the
+/// source cell's own centre, which pins the DWD window's alignment against the projection rather
+/// than against the mosaic. The ICON branch differences two independently decoded GRIB fields.
+/// The wrap and edge rules that `fill` alone owns are pinned separately, by
+/// `the_floor_covers_every_column_once_the_antimeridian_wraps` and
+/// `a_lattice_centre_on_a_source_outer_edge_is_outside_the_window`.
+fn source_index(window: &GridGeometry, lattice: &Lattice, col: u32, row: u32) -> Option<(usize, u32, u32)> {
     let lat = lattice.centre_lat_udeg(row);
     let lon = lattice.centre_lon_udeg(col);
     let column = (lon - i64::from(window.west_lon_udeg)).div_euclid(i64::from(window.cell_lon_udeg));
@@ -179,7 +193,7 @@ fn source_index(window: &GridGeometry, lattice: &Lattice, col: u32, row: u32) ->
     if !(0..i64::from(window.width)).contains(&column) || !(0..i64::from(window.height)).contains(&source_row) {
         return None;
     }
-    Some(source_row as usize * window.width as usize + column as usize)
+    Some((source_row as usize * window.width as usize + column as usize, column as u32, source_row as u32))
 }
 
 /// **The test the rewrite had to carry across.** Every published cell equals the quantized
@@ -224,12 +238,16 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
             let local_row = (cell as u32) / window.width;
             let col = window.col0 + local_col;
             let row = window.row0 + local_row;
-            let lat = lattice.centre_lat_udeg(row) as f64 / 1e6;
-            let lon = lattice.centre_lon_udeg(col) as f64 / 1e6;
 
-            // The oracle, in priority order: the radar answers unless it has no data there.
-            let radar = source_index(&dwd_window, &lattice, col, row).map(|_| dwd_expected(lat, lon, &raw));
-            let model = source_index(&icon_window, &lattice, col, row).map(|index| {
+            // The oracle, in priority order: the radar answers unless it has no data there. The
+            // DWD window is *not* on the canonical lattice (it is the shipped 9,000 x 14,000 µdeg
+            // one, frozen until the cutover — see `dwd_rv::GEOMETRY`), so the published cell is the
+            // stereographic sample taken at the **source cell's** centre, not at the lattice
+            // cell's. Getting that wrong is exactly the double-hop this test exists to describe.
+            let radar = source_index(&dwd_window, &lattice, col, row).map(|(_, column, source_row)| {
+                dwd_expected(dwd_window.center_lat_deg(source_row), dwd_window.center_lon_deg(column), &raw)
+            });
+            let model = source_index(&icon_window, &lattice, col, row).map(|(index, _, _)| {
                 precip4::quantize_rate_mm_per_hour(f64::from(f008.values[index]) - f64::from(f007.values[index]))
             });
             let (expected, winner) = match (radar, model) {
@@ -264,22 +282,43 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
 // 2. The priority table decides, and nothing else does
 // ---------------------------------------------------------------------------------------------
 
-/// A synthetic source on one window, one frame, filled from `value`.
+/// A synthetic source on one window, one **forecast** frame, filled from `value`.
 fn synthetic(id: &'static str, window: GridGeometry, valid_at: i64, value: impl Fn(u32, u32) -> u8) -> BakedProduct {
+    synthetic_frames(id, window, &[(valid_at, obcg::FLAG_FORECAST)], value)
+}
+
+/// A synthetic source with an explicit frame list: `(valid_at, flags)` each carrying the same
+/// field, which is enough for every frame-selection and provenance question.
+fn synthetic_frames(
+    id: &'static str,
+    window: GridGeometry,
+    frames: &[(i64, u16)],
+    value: impl Fn(u32, u32) -> u8,
+) -> BakedProduct {
     let cells = (0..window.height)
         .flat_map(|row| (0..window.width).map(move |col| (col, row)))
         .map(|(col, row)| value(col, row))
         .collect::<Vec<u8>>();
+    let reference_time = frames.first().map_or(0, |(valid_at, _)| *valid_at);
     BakedProduct {
         id,
         product_code: obcg::PRODUCT_MOSAIC,
         tier: obcg::TIER_RADAR,
         geometry: window,
-        reference_time: valid_at,
-        staleness_deadline: valid_at + 3_600,
+        reference_time,
+        staleness_deadline: reference_time + 3_600,
         attribution: Attribution { text: "synthetic", url: "https://example.invalid" },
         upstream_etag: None,
-        frames: vec![BakedFrame { offset_min: 0, valid_at, flags: obcg::FLAG_OBSERVED, source: None, cells }],
+        frames: frames
+            .iter()
+            .map(|(valid_at, flags)| BakedFrame {
+                offset_min: ((valid_at - reference_time) / 60) as u32,
+                valid_at: *valid_at,
+                flags: *flags,
+                source: None,
+                cells: cells.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -411,6 +450,196 @@ fn a_floor_outage_publishes_code_fifteen_and_never_dry() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The covered domain — what "every cell always carries a best-available value" actually means
+// ---------------------------------------------------------------------------------------------
+
+/// **The claim the whole no-provenance decision rests on, finally checked.** The floor source's
+/// window drops the antimeridian column, so before the wrap there was a permanent no-data stripe
+/// through Fiji in every frame of every cycle. This walks all 36,000 canonical columns.
+#[test]
+fn the_floor_covers_every_column_once_the_antimeridian_wraps() {
+    let floor = gfs::GEOMETRY;
+    let interior_row = CANONICAL.covered_rows().start;
+    let uncovered: Vec<u32> =
+        (0..CANONICAL.width).filter(|&col| !source_reaches(&floor, &CANONICAL, col, interior_row)).collect();
+    assert!(uncovered.is_empty(), "the floor leaves {} columns unpainted: {:?}", uncovered.len(), &uncovered);
+
+    // …and the wrap is nearest-neighbour on the circle, not a modulo that shifts by a cell. The
+    // westmost lattice column (centre 179.995 W) is nearer to the floor's first grid point
+    // (179.75 W) than to its last (179.75 E); the eastmost is the mirror image.
+    assert_eq!(source_column(&floor, CANONICAL.centre_lon_udeg(0)), Some(0));
+    assert_eq!(source_column(&floor, CANONICAL.centre_lon_udeg(CANONICAL.width - 1)), Some(floor.width - 1));
+    // A regional source is not periodic and must not wrap: nothing off its east edge comes back
+    // around onto its west edge.
+    assert_eq!(source_column(&icon_eu::GEOMETRY, CANONICAL.centre_lon_udeg(0)), None);
+}
+
+/// The polar band is a genuine hole and is named as one. No source we ingest reaches beyond
+/// ±89.875°, so those rows publish intensity 15 forever — honest, but not something to discover
+/// from a rendered frame.
+#[test]
+fn the_covered_domain_is_exactly_what_the_floor_reaches() {
+    let rows = CANONICAL.covered_rows();
+    assert_eq!(rows, 12..17_987, "the covered domain moved; the module docs and spec state this range");
+    let sources = [gfs::GEOMETRY, icon_eu::GEOMETRY, dwd_rv::GEOMETRY, mrms::GEOMETRY, hrrr::GEOMETRY];
+    // Inside: the floor reaches every one of them, so no cell is unsourced.
+    for row in [rows.start, rows.start + 1, CANONICAL.height / 2, rows.end - 2, rows.end - 1] {
+        assert!(source_reaches(&gfs::GEOMETRY, &CANONICAL, 18_000, row), "row {row} is inside the covered domain");
+    }
+    // Outside: *nothing* reaches, not just the floor — 25 rows of 18,000, both poles.
+    let outside: Vec<u32> = (0..CANONICAL.height).filter(|row| !rows.contains(row)).collect();
+    assert_eq!(outside.len(), 25);
+    for row in outside {
+        for source in &sources {
+            for col in [0u32, 12_345, CANONICAL.width - 1] {
+                assert!(!source_reaches(source, &CANONICAL, col, row), "row {row} col {col} is claimed by a source");
+            }
+        }
+    }
+}
+
+/// The half-open-window rule, pinned because it is the one place nearest-neighbour quietly drops a
+/// cell and because WXR6's windows have to be checked against it. A lattice centre landing on an
+/// *interior* source boundary takes the eastern/northern cell; one landing on the window's *outer*
+/// edge is outside the window and gets no data, rather than being snapped back inside a source
+/// that does not cover it.
+#[test]
+fn a_lattice_centre_on_a_source_outer_edge_is_outside_the_window() {
+    let lattice = sub_lattice(45_680_000, 1_460_000, 8, 8);
+    // 0.02° cells whose edges land exactly on lattice cell *centres*: west edge at 1.455°, so cell
+    // boundaries are 1.455, 1.475, … and lattice centres are 1.465, 1.475, ….
+    let source = window(45_675_000, 1_455_000, 20_000, 4, 4);
+    let columns: Vec<Option<u32>> = (0..8).map(|col| source_column(&source, lattice.centre_lon_udeg(col))).collect();
+    assert_eq!(
+        columns,
+        vec![Some(0), Some(1), Some(1), Some(2), Some(2), Some(3), Some(3), None],
+        "interior boundaries take the eastern cell; the outer edge is outside"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Frame selection and provenance
+// ---------------------------------------------------------------------------------------------
+
+/// **An observation must not paint a forward frame that a real forecast is offering.** The `us`
+/// layer is exactly this shape — a 1 km MRMS observation at f0, 3 km HRRR forecasts ahead of it —
+/// and a nearest-only tie-break lets the frozen radar field win a forward frame it has nothing to
+/// say about. Re-using an observation as a forecast is a persistence nowcast; that is WXR9 #1251's
+/// job to do deliberately, not the frame picker's to stumble into.
+#[test]
+fn a_forecast_beats_an_equally_close_observation_on_a_forward_frame() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
+    let source = window(45_680_000, 1_460_000, 10_000, 64, 64);
+    // One layer, two frames the same distance from the target: an observation 15 min behind and a
+    // forecast 15 min ahead. The forecast is about the future; the observation is frozen weather.
+    let composed = synthetic_frames(
+        dwd_rv::ID,
+        source,
+        &[(t0 - 900, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)],
+        |_, _| 5,
+    );
+    let mosaic = Mosaic::from_products(vec![composed]).expect("ranked");
+    let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
+    let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+    let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
+    assert_eq!(header.flags, obcg::FLAG_FORECAST, "the forecast frame won, so the object is not Observed");
+
+    // The observation still wins when it is genuinely the nearest — including exactly on target,
+    // where it is the observation *of* that instant.
+    let exact =
+        synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)], |_, _| 5);
+    let mosaic = Mosaic::from_products(vec![exact]).expect("ranked");
+    let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
+    let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
+    assert_eq!(header.flags, obcg::FLAG_OBSERVED, "an observation valid at the target instant is the answer");
+}
+
+/// `FLAG_OBSERVED` is the last provenance channel the device sees, so it is measured rather than
+/// assumed. A shard painted entirely by radar observation says Observed; the same frame's shard
+/// over model fill does not — which is the ~85 % of the planet an unconditional "f0 is Observed"
+/// would have lied about.
+#[test]
+fn the_observed_flag_follows_what_actually_painted_the_shard() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    // Two shards side by side: the radar covers only the western one.
+    let lattice = sub_lattice(45_680_000, 1_460_000, 128, 64);
+    let radar = synthetic_frames(
+        dwd_rv::ID,
+        window(45_680_000, 1_460_000, 10_000, 64, 64),
+        &[(t0, obcg::FLAG_OBSERVED)],
+        |_, _| 6,
+    );
+    let floor = synthetic_frames(
+        gfs::ID,
+        window(45_680_000, 1_460_000, 250_000, 8, 8),
+        &[(t0, obcg::FLAG_FORECAST)],
+        |_, _| INTENSITY_DRY,
+    );
+    let mosaic = Mosaic::from_products(vec![radar, floor]).expect("ranked");
+    let times = CycleTimes { reference_time: t0 };
+    let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+
+    let west = emit_shard(&lattice, &mosaic, times, 0, 0).expect("emits");
+    let east = emit_shard(&lattice, &mosaic, times, 0, 1).expect("emits");
+    assert_eq!(obcg::validate(&west.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_OBSERVED);
+    assert_eq!(obcg::validate(&east.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_FORECAST);
+    assert!(west.fill.all_observed && east.fill.painted && !east.fill.all_observed);
+}
+
+/// **The failure the epic actually forbids**: a source that has fallen out of the timeline must
+/// hand its cells to the next-priority source, not to no-data — and certainly not to dry. The
+/// floor-outage test proves stale → 15 with nothing beneath; this proves stale → the next layer.
+#[test]
+fn a_stale_source_falls_through_to_the_next_priority_layer() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
+    let germany = window(45_680_000, 1_460_000, 10_000, 64, 64);
+    // The radar run is four hours behind the anchor: far outside MAX_FRAME_SKEW_S.
+    let stale_radar = synthetic_frames(dwd_rv::ID, germany, &[(t0 - 4 * 3_600, obcg::FLAG_OBSERVED)], |_, _| 9);
+    let model = synthetic_frames(icon_eu::ID, germany, &[(t0, obcg::FLAG_FORECAST)], |_, _| 3);
+    let floor =
+        synthetic_frames(gfs::ID, window(45_680_000, 1_460_000, 250_000, 8, 8), &[(t0, obcg::FLAG_FORECAST)], |_, _| 1);
+    let mosaic = Mosaic::from_products(vec![stale_radar, model, floor]).expect("all three are ranked");
+    let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
+    for (col, row) in [(0u32, 0u32), (15, 15), (31, 31)] {
+        let value = published_cell(&object.bytes, col, row);
+        assert_ne!(value, 9, "the stale radar must not paint ({col},{row})");
+        assert_ne!(value, INTENSITY_NODATA, "a stale source must not become a hole when a fresh one covers");
+        assert_ne!(value, INTENSITY_DRY, "and it must never become dry");
+        assert_eq!(value, 3, "the model answers Germany");
+    }
+    assert_eq!(mosaic.winner_at(&lattice, t0, 31, 31), Some(icon_eu::ID));
+}
+
+/// A cycle in which no source reached the lattice at all is 216 objects of "we do not know" about
+/// the whole planet. Publishing it would swap in a manifest claiming the service is current, so
+/// the baker fails closed and the previous generation stands.
+#[test]
+fn a_cycle_that_paints_nothing_refuses_to_publish() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 32, 32);
+    // Everything the one layer has is four hours out of skew.
+    let stale = synthetic_frames(
+        gfs::ID,
+        window(45_680_000, 1_460_000, 250_000, 8, 8),
+        &[(t0 - 4 * 3_600, obcg::FLAG_FORECAST)],
+        |_, _| 2,
+    );
+    let mosaic = Mosaic::from_products(vec![stale]).expect("ranked");
+    let times = CycleTimes { reference_time: t0 };
+    let mut painted = 0usize;
+    let mut total = 0usize;
+    bake_cycle(&lattice, &mosaic, times, 2, &mut |object| {
+        total += 1;
+        painted += usize::from(object.fill.painted);
+        Ok(())
+    })
+    .expect("baking itself succeeds; it is publishing that must refuse");
+    assert!(total > 0 && painted == 0, "the premise: every object is entirely no-data");
+}
+
+// ---------------------------------------------------------------------------------------------
 // The published geometry states the lattice, not a source
 // ---------------------------------------------------------------------------------------------
 
@@ -456,7 +685,7 @@ fn a_canonical_cycle_publishes_every_shard_of_every_frame_and_repeats_itself() {
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = DirStore::new(&dir);
         let mut upstream = european_upstream();
-        let report = run_canonical_cycle(&lattice, &adapters, &mut upstream, &mut store, now, false)
+        let report = run_canonical_cycle(&lattice, &adapters, &mut upstream, &mut store, now, BAKE_THREADS, false)
             .expect("the canonical cycle publishes");
         let objects = usize::try_from(lattice.shard_count()).unwrap() * usize::try_from(CYCLE_FRAMES).unwrap();
         assert_eq!(report.published_objects, objects + 1, "every shard of every frame, plus the manifest");
@@ -499,6 +728,144 @@ fn a_canonical_cycle_publishes_every_shard_of_every_frame_and_repeats_itself() {
         trees.push(tree);
     }
     assert_eq!(trees[0], trees[1], "same upstream bytes, byte-identical published tree");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The other half of the production adapter set
+// ---------------------------------------------------------------------------------------------
+
+const HRRR_OBJECTS: [(u32, u64); 3] = [(2, 210_757_046), (3, 214_632_128), (4, 220_555_508)];
+const HRRR_RANGES: [(u32, u32, u64); 9] = [
+    (2, 120, 183_664_477),
+    (3, 135, 25_809_346),
+    (3, 150, 79_031_140),
+    (3, 165, 132_718_351),
+    (3, 180, 186_502_886),
+    (4, 195, 26_244_769),
+    (4, 210, 80_983_359),
+    (4, 225, 136_058_399),
+    (4, 240, 191_463_451),
+];
+const GFS_SPANS: [(u32, u64, u64); 16] = [
+    (1, 537_540_348, 427_603_385),
+    (2, 538_822_727, 428_091_880),
+    (3, 539_798_514, 428_475_805),
+    (4, 540_724_755, 428_752_482),
+    (5, 542_923_155, 430_080_077),
+    (6, 544_451_780, 431_023_684),
+    (7, 542_096_820, 432_070_312),
+    (8, 543_890_390, 433_033_986),
+    (9, 543_734_730, 432_288_308),
+    (10, 544_255_893, 432_328_102),
+    (11, 544_322_108, 431_989_179),
+    (12, 545_133_960, 432_276_114),
+    (13, 541_397_261, 431_060_039),
+    (14, 541_818_663, 430_713_865),
+    (15, 542_144_204, 430_643_461),
+    (16, 546_445_777, 433_214_890),
+];
+
+/// The captured American snapshot, wired exactly as `us_gfs_cycle.rs` wires it.
+fn american_upstream() -> FixtureUpstream {
+    let mut upstream = FixtureUpstream::default();
+    let observation = ts("2026-08-09T16:58:00Z");
+    let hrrr_run = ts("2026-08-09T15:00:00Z");
+    let gfs_run = ts("2026-08-09T12:00:00Z");
+    upstream.insert(mrms::object_url(observation), fixture("mrms-conus-20260809-165800.grib2.gz"), None);
+    for file in hrrr::SUBHOURLY_FILES {
+        upstream.insert(
+            hrrr::index_url(hrrr_run, file),
+            fixture(&format!("hrrr-conus-20260809T15-f{file:02}.idx")),
+            None,
+        );
+    }
+    for (file, object_len) in HRRR_OBJECTS {
+        upstream.declare(hrrr::object_url(hrrr_run, file), object_len);
+    }
+    for (file, lead, start) in HRRR_RANGES {
+        let object_len = HRRR_OBJECTS.iter().find(|(candidate, _)| *candidate == file).expect("declared").1;
+        upstream.insert_range(
+            hrrr::object_url(hrrr_run, file),
+            object_len,
+            start,
+            fixture(&format!("hrrr-conus-20260809T15-prate-t{lead}.grib2")),
+        );
+    }
+    for (lead, object_len, start) in GFS_SPANS {
+        upstream.insert(
+            gfs::index_url(gfs_run, lead),
+            fixture(&format!("gfs-global-20260809T12-f{lead:03}.idx")),
+            None,
+        );
+        upstream.insert_range(
+            gfs::object_url(gfs_run, lead),
+            object_len,
+            start,
+            fixture(&format!("gfs-global-20260809T12-apcp-f{lead:03}.grib2")),
+        );
+    }
+    upstream
+}
+
+/// **The `us` composite in a mosaic, from real fixtures.** It is the one layer whose frames carry
+/// a *different window each* — `mrms::GEOMETRY` at f0, `hrrr::GEOMETRY` ahead of it — which is the
+/// interesting branch of `MosaicLayer::from_product` and was previously unexercised, and it sits
+/// over the real GFS floor so the CONUS radar edge (MRMS `NO_COVERAGE` → 15 → fall through) is a
+/// real fall-through rather than a synthetic one.
+#[test]
+fn the_us_composite_and_the_real_floor_mosaic_over_conus() {
+    let now = ts("2026-08-09T17:00:00Z");
+    let mut upstream = american_upstream();
+    let us_product = bake(&us::UsComposite, &mut upstream, now);
+    let gfs_product = bake(&gfs::GfsFloor, &mut upstream, now);
+    // The composed product really does change window between frames — the premise of this test.
+    let windows: Vec<(u32, u32)> = us_product
+        .frames
+        .iter()
+        .map(|frame| {
+            let window = frame.source.map_or(us_product.geometry, |source| source.geometry);
+            (window.width, window.height)
+        })
+        .collect();
+    assert!(
+        windows.contains(&(mrms::GEOMETRY.width, mrms::GEOMETRY.height))
+            && windows.contains(&(hrrr::GEOMETRY.width, hrrr::GEOMETRY.height)),
+        "the us layer must carry both windows: {windows:?}"
+    );
+
+    let mosaic = Mosaic::from_products(vec![us_product, gfs_product]).expect("both are ranked");
+    let times = CycleTimes::anchored_at(now);
+    // Kansas: deep inside CONUS, and inside the GFS floor too.
+    let lattice = sub_lattice(37_000_000, -100_000_000, 256, 192);
+    let mut radar_or_model = 0usize;
+    let mut floor_cells = 0usize;
+    for shard in 0..lattice.shard_count() {
+        let window = lattice.shard(shard).expect("shard");
+        let object = emit_shard(&lattice, &mosaic, times, 0, shard).expect("emits and self-validates");
+        for cell in (0..window.cells()).step_by(37) {
+            let col = window.col0 + (cell as u32) % window.width;
+            let row = window.row0 + (cell as u32) / window.width;
+            // Nothing is unsourced over Kansas: the floor is beneath everything.
+            let value = published_cell(&object.bytes, col - window.col0, row - window.row0);
+            assert_ne!(value, INTENSITY_NODATA, "({col},{row}) is inside the floor and must not be no-data");
+            match mosaic.winner_at(&lattice, times.valid_at(0), col, row) {
+                Some(id) if id == us::ID => radar_or_model += 1,
+                Some(id) if id == gfs::ID => floor_cells += 1,
+                other => panic!("unexpected winner {other:?} at ({col},{row})"),
+            }
+        }
+    }
+    eprintln!("CONUS mosaic: {radar_or_model} us, {floor_cells} floor");
+    assert!(radar_or_model > 0, "MRMS must answer inside CONUS");
+
+    // The floor really is global: it answers a mid-Pacific cell no other source reaches, including
+    // one in the antimeridian column the source window had to drop.
+    let pacific = sub_lattice(-10_000_000, 179_900_000, 8, 8);
+    let object = emit_shard(&pacific, &mosaic, times, 0, 0).expect("emits");
+    for col in 0..pacific.shard(0).expect("shard").width {
+        assert_eq!(mosaic.winner_at(&pacific, times.valid_at(0), col, 0), Some(gfs::ID), "column {col}");
+        assert_ne!(published_cell(&object.bytes, col, 0), INTENSITY_NODATA, "the antimeridian is painted");
+    }
 }
 
 /// A layer whose source has no row in the priority table cannot be mosaicked — that is a bakery

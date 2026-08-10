@@ -1183,10 +1183,18 @@ Two consequences are worth stating because they look like losses and are not. A 
 radar with 6.5 km model fill has no single true source resolution, so `cell_size_m` stops
 describing a source and states the lattice instead — and rather than transport the missing
 information in a per-cell plane or a per-tile label, we **remove** it. That is honest because the
-mosaic always has a global floor: every cell always carries a best-available value, so "no radar
-coverage" renders as visibly coarse model fill, never as no rain. And intensity code 15 keeps its
-one meaning — *we do not know* — for the case that actually needs it: a source outage, or a shard
-that failed to bake.
+mosaic always has a global floor: every cell carries a best-available value, so "no radar coverage"
+renders as visibly coarse model fill, never as no rain. And intensity code 15 keeps its one
+meaning — *we do not know* — for the case that actually needs it: a source outage, or a shard that
+failed to bake.
+
+"Global floor" is worth one sentence of pedantry, because it is the load-bearing claim and it is
+not free. The floor's grid is periodic in longitude, so the baker closes the antimeridian seam by
+wrapping — without that, the last column of the source window and the first would leave a
+25-column stripe of permanent no-data running through Fiji, forever, in every frame. Latitude does
+not wrap and the floor has no polar points, so the 25 lattice rows beyond ±89.875° genuinely have
+no source: they publish as 15, which is the truth, and the covered domain is named in the code and
+the spec rather than left to be found in a rendered frame.
 
 Beneath the regional tiers a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
