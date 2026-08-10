@@ -357,8 +357,11 @@ where
     let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
     // The rain overlay lease (WX10), taken for this frame: precipitation draws inside the base-map
     // paint order (below the road band), so roads, route, rider and the chrome below all stay
-    // above it. `None` — no store, nothing current, expired — renders the byte-identical
-    // rain-free map.
+    // above it. `None` — no store, nothing current, expired, **or a base screen that did not
+    // declare `Caps::rain_overlay`** (every map screen but the WX11 rain map) — renders the
+    // byte-identical rain-free map. This helper is shared, so it deliberately does not decide
+    // *whether* rain belongs on the frame: `App::render_scene_map_rain_timed` already dropped the
+    // lease for a screen that doesn't want it.
     let rain = rx.rain.take();
     let mut stats = scratch.render_rain_timed(target, scene, vp, bg, cfg, rain, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);

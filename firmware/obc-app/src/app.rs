@@ -1592,8 +1592,9 @@ impl App {
         self.state.rain_steps_ahead = steps_ahead;
         self.state.rain_step = self.state.rain_step.min(steps_ahead);
         self.state.rain_zoom_min = zoom_floor;
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay());
-        if matches!(base.map(|i| &self.ui.stack[i]), Some(Screen::WeatherRainMap(_))) {
+        // Asked as the declared capability, not as a `matches!` on the variant: the screen whose
+        // zoom must stay in the product's regime is exactly the screen that draws the raster.
+        if self.ui.base_wants_rain() {
             let before = self.state.zoom;
             self.state.clamp_rain_zoom();
             if self.state.zoom != before {
@@ -2852,10 +2853,12 @@ impl App {
 
     /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
     /// lease** (WX10): a host that mounted a weather store passes the frame's
-    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) and the
-    /// map-drawing base screen renders precipitation below the road band; `None` is byte-identical
-    /// to the plain call. This is the single production hook — firmware and simulator both land
-    /// here.
+    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) every
+    /// frame and the base screen renders precipitation below the road band **if its
+    /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay) says it wants it** — today only
+    /// the WX11 rain map. On any other screen the lease is dropped here, so a mounted weather store
+    /// never tints the ordinary Map; `None` is byte-identical to the plain call. This is the single
+    /// production hook — firmware and simulator both land here.
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map_rain_timed<D, F, S>(
         &mut self,
@@ -2918,6 +2921,18 @@ impl App {
         // yields a stale readout.
         let now_utc = self.wall_unix_now();
         let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        // The rain overlay is the **base screen's** declared capability
+        // ([`Caps::rain_overlay`](crate::screen::Caps::rain_overlay)), not the host's: a host mounts
+        // a weather store once and then leases a frame unconditionally, so this is the one place
+        // that decides whether the frame's rain may be drawn at all. Dropped here — before any
+        // screen can `take` it — the ordinary Map, the Detour pair, and every map base added later
+        // are rain-free by construction rather than by an exit hook a screen transition could
+        // forget. It also keeps the *per-tile* decodes off every frame no screen would have painted
+        // rain on — which will matter once the board renders rain (today only `obc-sim` leases;
+        // `obc-fw-nrf54l` still renders through `render_map_timed` and builds no adapter). Note it
+        // is only the `tile` reads that are skipped: the adapter's own header/frame reads happen in
+        // `RainOverlayAdapter::at_step`, upstream of this gate.
+        let rain = if self.ui.base_wants_rain() { rain } else { None };
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
