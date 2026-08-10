@@ -70,22 +70,37 @@ pub use obc_map_scene::RAIN_BELOW_Z;
 ///
 /// | slots | `Nearest` | `EdgeSoften` | `Jitter` | `Bilinear` |
 /// | ---: | ---: | ---: | ---: | ---: |
-/// | 12 | 36 | 36 | 37 | 71 |
+/// | 12 | 36 | 37 | 59 | 89 |
 /// | 14 | 36 | 36 | **37** | **47** |
 /// | 15 | 36 | 36 | 36 | 36 |
 /// | 16 | 36 | 36 | 36 | 36 |
 ///
-/// Fifteen is the measured floor and sixteen is what ships: the whole lesson of the phase axis is
-/// that a *measured* minimum is not a *bound*, so the constant does not sit on the cliff edge. A
-/// pinned-camera version of the sweep reported twelve as sufficient for every mode, and a coarser
-/// 8 × 8 phase grid still missed jitter's 37 — both numbers were real and both were wrong.
+/// **This constant is empirical, and no number here is a bound.** Camera phase is a *continuous*
+/// free parameter, so a finite grid can only ever fail to find a worse case; it cannot prove one
+/// does not exist. A closed-form bound would have to come from the regime cap and the kernel's
+/// reach in tiles, and nobody has derived it. The table's own history is the argument: a
+/// pinned-camera sweep reported twelve as sufficient for every mode; an 8 × 8 phase grid still
+/// missed jitter's 37 (its worst phase is `(14, 13)` — the **latitude** axis is the one an 8 × 8
+/// steps over); and the 16 × 16 grid above misses that **fifteen is not the floor either** — at
+/// 15 slots a 64 × 64 grid finds `Bilinear` = 38 at 300 m/px / 225°, phase `(47, 60)`, which is
+/// not a multiple of 4 and so is structurally invisible above. Three sweeps in a row returned a
+/// real number that was not a bound.
+///
+/// Sixteen is therefore margin rather than a measured minimum, and the evidence for it is what
+/// makes it defensible: 32 × 32 phase × 7 zooms × 24 headings × all four modes (~688 k frames)
+/// peaks at 36; 64 × 64 × the four coarse zoom/heading pairs × `Bilinear` + `Jitter` (~786 k
+/// frames) peaks at 36; and the response is not chaotic below that scale — ±1/±7/±8/±16 µdeg
+/// around jitter's worst camera all return an identical count, so the sensitivity lives at about
+/// the 1/64-tile scale and these grids resolve real structure rather than noise.
 ///
 /// The four extra slots over twelve cost 1,048 B of [`RainScratch`], which the arena's render arm
 /// absorbs without moving a resident byte. With `Bilinear` shipped (#1250) they are load-bearing,
 /// not headroom: at fourteen the default re-decodes 11 tiles per frame (+31 % SD reads) on a
 /// heading-up ride at the coarse end of the regime — exactly where WX11's `rain_min_zoom` clamp
 /// parks the rain map. `the_decode_bound_holds_in_every_sampling_mode` is the check, and it covers
-/// all four modes so the number stays honest if the knob is ever flipped back.
+/// all four modes so the number stays honest if the knob is ever flipped back. Note the guard
+/// passes at fifteen: it defends against a two-slot regression, not the one-slot margin, which
+/// only matters to someone deliberately editing this constant — i.e. to you, reading this.
 pub const RAIN_TILE_SLOTS: usize = 16;
 
 /// The overlay's **zoom regime** cap: the rain raster draws only while each **grid axis** advances
@@ -1444,8 +1459,11 @@ mod tests {
     ///
     /// Run it (`cargo test --release -p obc-render -- --ignored`) whenever a sampling mode, the
     /// zoom regime cap or the tile geometry changes, and re-derive the slot count from what it
-    /// reports. A coarser 8 × 8 grid is *not* a substitute: it misses jitter's 37-fetch case
-    /// entirely, whose worst camera lands on an odd sixteenth in both axes.
+    /// reports — and treat what it reports as a measurement, not a bound (see
+    /// [`RAIN_TILE_SLOTS`]). A coarser 8 × 8 grid is *not* a substitute: it misses jitter's
+    /// 37-fetch case entirely, whose worst camera sits at phase `(14, 13)` — an odd sixteenth
+    /// in **latitude**, which is the axis an 8 × 8 grid steps over. This 16 × 16 grid has the
+    /// same weakness one level down: it misses that fifteen slots fail at 64 × 64.
     #[test]
     #[ignore = "exhaustive derivation: ~172k frames, minutes to run"]
     fn the_decode_bound_survives_an_exhaustive_phase_sweep() {
