@@ -14,6 +14,11 @@
 //! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
 //! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
 //! - [`cycle`] — the idempotent orchestrator a systemd timer invokes.
+//!
+//! One thing here is *not* the service: [`pack`] freezes a real past event — raw archive bytes,
+//! the tree the real baker makes of them, and what actually happened next — so the simulator and
+//! the tests can run against real radar. It is driven by the `obc-wx-pack` binary and nothing in
+//! the bakery depends on it.
 
 pub mod cycle;
 pub mod emit;
@@ -23,6 +28,7 @@ pub mod grib;
 pub mod idx;
 pub mod lcc;
 pub mod manifest;
+pub mod pack;
 pub mod publish;
 pub mod source;
 pub mod stereo;
