@@ -17,7 +17,10 @@
 //!   position itself only ever leaves this process in a MET query — the single third party the
 //!   epic allows to see one.
 //! - **Nothing branches on a product id.** Coverage, tier and freshness are manifest data, so a
-//!   new region is a baker deploy and never a client release.
+//!   new region is a baker deploy and never a client release. Under manifest v2 ([`manifest_v2`],
+//!   WXR4 #1243) there is no product to branch on at all: one sharded dataset, and "which objects
+//!   cover me" is arithmetic over the grid the manifest states. WXR5 #1244 moves the fetch path
+//!   onto it and deletes [`select`]'s tier ladder.
 //!
 //! This is a second implementation of the contract the iOS companion implements; the phone stays
 //! the reference. Where the two could drift, this crate's tests pin the shared vectors both read.
@@ -26,6 +29,7 @@ pub mod bundle;
 pub mod corridor;
 pub mod http;
 pub mod manifest;
+pub mod manifest_v2;
 pub mod met;
 pub mod select;
 

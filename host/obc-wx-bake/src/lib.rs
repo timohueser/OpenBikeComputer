@@ -15,6 +15,8 @@
 //!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions.
 //! - [`emit`] — cell grids → OBCG bytes through the `obc-formats` byte authority.
 //! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
+//! - [`manifest_v2`] — `wx/v2/manifest.json`: the canonical dataset's manifest (WXR4 #1243), with
+//!   nothing selectable in it — generation, grid constants, shard presence and deadlines.
 //! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
 //! - [`cycle`] — the idempotent orchestrator a systemd timer invokes.
 //!
@@ -33,6 +35,7 @@ pub mod grib;
 pub mod idx;
 pub mod lcc;
 pub mod manifest;
+pub mod manifest_v2;
 pub mod pack;
 pub mod publish;
 pub mod source;

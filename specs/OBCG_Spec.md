@@ -97,7 +97,7 @@ are invalid.
 | 6 | Header Len | 2 | `uint16` | `128` |
 | 8 | Total Len | 4 | `uint32` | Exact object length |
 | 12 | Product ID | 1 | `uint8` | Nonzero registry code (§3.1) |
-| 13 | Tier | 1 | `uint8` | Nonzero: `1` radar, `2` model, `3` floor |
+| 13 | Tier | 1 | `uint8` | Nonzero registry code (§3.1a) |
 | 14 | Flags | 2 | `uint16` | §3.2; exactly one source-class bit |
 | 16 | Valid At | 8 | `int64` | Real upstream UTC frame validity time; positive |
 | 24 | Reference Time | 8 | `int64` | Upstream run/reference UTC time; positive, `<= valid_at` |
@@ -177,6 +177,28 @@ unknown nonzero code and MUST NOT use it for selection policy.
 | 6 | `mosaic` | Canonical mosaic: every source normalised onto the global lattice, best available per cell, no provenance carried (#1242) |
 | 7...254 | - | Reserved for future registry additions |
 | 255 | - | Experimental / private products |
+
+### 3.1a Tier registry
+
+| Code | Name | Meaning |
+| ---: | --- | --- |
+| 0 | - | Invalid; reject |
+| 1 | `radar` | Radar observation or radar-derived nowcast |
+| 2 | `model` | NWP model output |
+| 3 | `floor` | The global model of last resort |
+| 4 | `mosaic` | **No tier**: the canonical mosaic, whose cells come from several of the above (#1243) |
+| 5...255 | - | Reserved |
+
+Code 4 is not a rank among 1-3, and that is the point. A canonical-dataset object is 1 km radar
+over Germany and 27.75 km model over the Pacific in the same frame, so calling it "radar" would be
+the untruth `cell_size_m` was corrected for in §3's amendment. The header slot is fixed and must be
+nonzero, so the field says *mosaic*, which is a statement about how the object was made and not a
+position in a ladder.
+
+Tier was only ever selection input, and the canonical dataset has no selection: manifest v2 (§10)
+carries no tier at all, and a consumer MUST NOT branch on this byte. It survives in the header
+because the header is fixed-offset; #1246 removes the multi-product path that gave codes 1-3 their
+meaning.
 
 ### 3.2 Flags
 
@@ -451,16 +473,124 @@ only sizes it may act on are the header's, and for a codec-2 tile that is `tile_
 
 ## 10. Service manifest
 
-The manifest is the mutable JSON document `wx/v1/manifest.json` beside the immutable frame
-objects; its JSON Schema is checked in at `host/obc-wx-bake/schema/manifest.schema.json` and
-pinned by tests. It is delivery metadata, not a byte format, but its contract is normative:
+The manifest is the mutable JSON document `wx/v2/manifest.json` beside the immutable frame objects.
+Its JSON Schema is checked in at `host/obc-wx-bake/schema/manifest-v2.schema.json` and pinned by
+tests; a shared parse fixture both client implementations read is `specs/vectors/wx-manifest-v2.json`.
+It is delivery metadata, not a byte format, but its contract is normative.
 
-> **Superseded 2026-08-10 by #1242; replaced by #1243, deleted by #1246.** The product/selection
-> model below — `products[]`, tiers, per-product bboxes and the client-side choice between them —
-> describes the multi-product service. The baker now publishes one dataset on one lattice, so
-> there is nothing to select between. #1243 defines the manifest that replaces this section; until
-> it lands, the canonical dataset publishes a placeholder document beside the `wx/v1` tree that no
-> client reads.
+The service publishes **one dataset**: a global lattice at a fixed cell pitch, cut into a fixed grid
+of shards, at a fixed cadence. There is nothing to select between, so the manifest carries nothing
+selectable — no products, no tiers, no per-product bboxes, no competing staleness. What it carries
+is what a client cannot compute: which generation is current, the constants of the grid, what exists
+per frame, and when this stops being usable.
+
+### 10.1 Object keys are computed, not listed
+
+Frame objects are published under immutable keys
+
+```text
+<key_prefix>/<generation>/f<offset-min>/s<col>-<row>.obcg
+```
+
+where `<generation>` is the cycle's reference time as `YYYYMMDD'T'HHMM'Z'`, `<offset-min>` is
+`(valid_at - reference_time) / 60`, and `<col>`/`<row>` address the shard grid from the lattice's
+**south-west** corner. The manifest states `key_prefix` and `generation`; the client composes the
+rest. This is the one part of the contract a client computes rather than reads, so it is normative
+here: an implementation that derives a different string for the same shard is wrong, even if the
+object happens to exist.
+
+Shards are addressed by `(col, row)` and not by a flat index. A client derives `(col, row)` from its
+bbox by division; a flat index would have it multiply by `shard_cols` to name an object and divide
+back to read the presence bitmap, which is two spellings of one identity.
+
+Objects upload first; the manifest swaps last, atomically. A failed cycle leaves the previous
+manifest and its objects fully consistent. Frame objects carry long immutable `Cache-Control`; the
+manifest's own maximum age is stated in the document (`freshness.manifest_max_age_s`) as well as in
+its header, so the rule survives a proxy that rewrites headers.
+
+### 10.2 The grid, stated
+
+`lattice` carries the lattice origin and cell pitch in microdegrees, its width and height in cells,
+the shard extent and the shard grid dimensions, the tile edge and paging every object uses, the
+`cell_size_m` every object declares, and `covered_rows`.
+
+A client MUST take the grid from this block and MUST NOT hardcode it: re-cutting the dataset is then
+a baker deploy rather than a client release. `shard_cols` MUST equal `ceil(width / shard_width)` and
+`shard_rows` MUST equal `ceil(height / shard_height)`; a client MUST reject a document where they do
+not, because it and the publisher would then disagree about which object holds a cell.
+
+`covered_rows` is the half-open range of lattice rows that at least one source reaches. Rows outside
+it have no source at all and are published as intensity 15 in **every** frame, permanently — a
+property of the dataset, not an outage (§3's covered-domain amendment). Stating it once is what lets
+a consumer tell a permanent hole from a broken cycle without a per-cell channel.
+
+### 10.3 What exists: presence, and why a 404 must not mean dry
+
+Each `frames[]` entry carries `offset_min`, the frame's true upstream `valid_at`, a `present`
+bitmap, and one `shards[]` entry per present shard with its `bytes`, `object_crc32` and `observed`
+flag.
+
+`present` is `ceil(shard_count / 8)` bytes as lowercase hex, first byte first, least-significant bit
+first inside each byte. The bit of shard `(col, row)` is at index `row * shard_cols + col`. Bits past
+`shard_count` MUST be zero. `shards[]` MUST name exactly the shards `present` names, ascending by
+`(row, col)`; a consumer MUST reject a frame where the two disagree rather than reconcile them —
+either reconciliation invents a fact about whether an object exists.
+
+The bitmap makes three states distinguishable that a bare `GET` collapses into two:
+
+| bit | shard on the grid | meaning |
+| --- | --- | --- |
+| set | yes | the object exists. A 404, a short body or a CRC mismatch is an **error** — retry, then surface it. It is never dry. |
+| clear | yes | every cell of that shard is dry. There is no object, no request and no failure. |
+| - | no | out of domain: the bbox reaches off the lattice. |
+
+A shard that is entirely **no-data** MUST be published, as an object full of intensity 15. Only a
+shard whose every cell is dry may be omitted. That is what keeps a clear bit from ever being an
+outage in disguise, and it is the whole of "missing is not dry".
+
+`observed` is per shard, not per frame: a mosaic frame is radar over one country and model over the
+next ocean at the same instant, and it mirrors the object's own `FLAG_OBSERVED` (§3.2), which the
+publisher measures rather than assumes.
+
+### 10.4 Retention: current plus two
+
+`generation` names the current generation and `previous_generations` names the superseded ones whose
+objects are still fetchable, **newest first**, at most two. Together they are the complete set of
+generations that exist: a lifecycle sweep MAY delete any generation prefix under `key_prefix` that
+this document does not name, and MUST NOT delete one it does. Two is what covers a client that
+fetched the manifest just before a swap and is still reading the generation it named.
+
+A client MAY finish a read from a listed previous generation; it MUST NOT start planning from one,
+because only the current generation's presence and integrity data is in the document.
+
+### 10.5 Freshness: deadlines, not client constants
+
+`freshness` carries absolute timestamps, so a client compares times and holds no durations of its
+own:
+
+- `manifest_max_age_s` — how long a fetched copy of this document may be reused.
+- `next_generation_expected_at` — when the next generation is due. Past it, the service is late.
+  This is a monitor's alarm; the data is not yet unusable.
+- `stale_after` — when this generation stops being usable at all: the validity of its **last**
+  frame, past which every frame describes the past. A client past this deadline has *no weather*,
+  which is a different thing from no rain: expiry MUST NOT render as dry.
+
+`cadence` states `frame_step_min`, the number of `frames`, and `max_source_skew_s` — how far from a
+frame's stated validity the source that painted a cell may have been. It is a property of the data,
+stated so a consumer that wants to caveat "radar, up to N minutes old" reads the number instead of
+assuming one.
+
+`attribution` lists every source that may have painted a cell of this generation, in the publisher's
+priority order. There is no per-cell provenance (§3's amendment), so every line must be displayable
+together; a client MUST NOT treat a `source_id` as selectable.
+
+### 10.6 Appendix: manifest v1 (superseded)
+
+> **Superseded 2026-08-10 by #1242 and #1243. Retained only because `wx/v1/manifest.json` is still
+> published to live clients; #1246 deletes the path and this appendix with it.** Nothing in it
+> applies to the canonical dataset above: the product/selection model — `products[]`, tiers,
+> per-product bboxes and the client-side choice between them — describes the multi-product service.
+> Its JSON Schema is `host/obc-wx-bake/schema/manifest.schema.json`.
 
 - Frame objects are published under immutable keys
   `wx/v1/<product>/<generated-utc>/f<offset-min>.obcg`, where `<generated-utc>` is the upstream
@@ -514,6 +644,11 @@ Two positives exist to pin what a decoder must **not** reject: a second legal by
 deflate4 tile, differing only in the padding bits of its final byte, and a `tile_edge = 256` frame
 — the production geometry, the only one where a tile payload can exceed 255 bytes and where the
 pre-inflate ceiling reaches 32,767.
+
+`specs/vectors/wx-manifest-v2.json` is the shared **manifest** fixture: one v2 document (§10) that
+every client implementation parses, so the parsers cannot drift on the one file a rider reads first.
+Both must derive the same shard key set from the same bbox against it — that equivalence is the
+cross-client test, and it is what "selection is arithmetic" means in practice.
 
 Rust builds and validates them through the `obc-formats` authority; Swift independently decodes
 the same positives to the same cells and rejects every negative. Vector provenance is recorded
