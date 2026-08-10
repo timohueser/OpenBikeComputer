@@ -85,6 +85,10 @@ public final class MockControl: @unchecked Sendable {
     /// How many `forgetBond` commands (#756) the transport sent — the forget
     /// tests assert a connected forget reaches the device before clearing.
     private var _forgetBondCount = 0
+    /// The standing weather watch's armed state as the app last set it (WX13). The mock has no
+    /// radio to scan with, so the recorded flag *is* the observable effect — it is what pins that
+    /// the Background weather switch reaches the transport rather than only the preference store.
+    private var _weatherWatchArmed = false
     /// Test-only evidence that a catalog read was abandoned by its caller. A
     /// store-change burst must coalesce behind a live read instead of cancelling
     /// it halfway through the real transport's CoC exchange.
@@ -510,6 +514,16 @@ public final class MockControl: @unchecked Sendable {
     /// the connected forget reached the device before clearing the local record.
     public var forgetBondCount: Int {
         lock.withLocked { _forgetBondCount }
+    }
+
+    /// Record the standing weather watch's armed state (WX13).
+    func recordWeatherWatch(_ armed: Bool) {
+        lock.withLocked { _weatherWatchArmed = armed }
+    }
+
+    /// Whether the app currently wants the standing weather watch armed (test hook).
+    public var weatherWatchArmed: Bool {
+        lock.withLocked { _weatherWatchArmed }
     }
 
     public var cancelledRouteListReadCount: Int {

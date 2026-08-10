@@ -110,4 +110,46 @@ struct FileWeatherJobHistoryStoreTests {
         #expect(reloaded.map(\.requestID) == [7])
         #expect(reloaded.first?.outcome == .committed)
     }
+
+    /// A ring written by a previous build must cost the rows *that build* wrote differently — not
+    /// the whole ring. `noRainMapReason` was a `String` in the WX9-era ring and is a
+    /// ``NoRainMapReason`` now; decoding the array as a unit meant one such row silently wiped a
+    /// rider's entire sync history the first time they opened the updated app (#1198 review).
+    @Test func oneUnreadableLegacyRowDoesNotWipeTheRing() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("history.json")
+
+        // A ring as the previous build left it: two rows this build reads fine, and between them
+        // one carrying the old string-shaped reason.
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        func object(_ row: WeatherJobHistoryEntry) throws -> [String: Any] {
+            let data = try encoder.encode(row)
+            return try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        }
+        var legacy = try object(entry(8))
+        legacy["noRainMapReason"] =
+            "allCoveringProductsExpired(latestDeadline: 2026-08-10 12:00:00 +0000)"
+        let onDisk: [Any] = [try object(entry(7)), legacy, try object(entry(9))]
+        try JSONSerialization.data(withJSONObject: onDisk).write(to: fileURL)
+
+        let store = FileWeatherJobHistoryStore(fileURL: fileURL)
+        #expect(store.entries().map(\.requestID) == [7, 9], "only the unreadable row is dropped")
+
+        // …and the ring stays usable: the next append lands beside the survivors rather than on a
+        // file the store has given up on.
+        store.append(entry(10))
+        #expect(store.entries().map(\.requestID) == [7, 9, 10])
+    }
+
+    /// The salvage path is a fallback, not a licence to invent rows: a file that is not an array
+    /// at all is not a ring, and reads as empty rather than as something half-understood.
+    @Test func aFileThatIsNotARingReadsAsEmpty() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("history.json")
+        try Data("not json at all".utf8).write(to: fileURL)
+        #expect(FileWeatherJobHistoryStore(fileURL: fileURL).entries().isEmpty)
+    }
 }

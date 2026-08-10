@@ -193,7 +193,11 @@ public struct PrecipitationSelection: Equatable, Sendable {
 /// Why a corridor has no rain map. Every case is a *state the rider is told about* (WX11 renders
 /// the explicit no-rain-map screen, WX13 the diagnostics) — never a silent empty map, and never a
 /// dry claim.
-public enum NoRainMapReason: Equatable, Sendable {
+///
+/// `Codable` because the WX13 history ring persists it: the alternative — flattening it to
+/// `String(describing:)` on the way in — printed Swift's debug spelling on glass and destroyed the
+/// one associated value a reader wants as a time (#1198 review).
+public enum NoRainMapReason: Codable, Equatable, Sendable {
     /// The manifest lists no product whose bbox covers this corridor.
     case corridorNotCovered
     /// Products cover the corridor, but every one of them is past its staleness deadline.

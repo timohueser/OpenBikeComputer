@@ -15,6 +15,14 @@ public struct WeatherJobHistoryEntry: Codable, Equatable, Sendable {
         case failed
         /// A newer device request replaced this job before it finished.
         case superseded
+        /// Time ended it, and nothing else did: a checkpoint past the engine's `jobLifetime`, or a
+        /// built bundle the app slept past `bundleMaxAge`.
+        ///
+        /// Its own outcome rather than ``failed`` because it is not a failure the rider can act
+        /// on — in the bundle case the *same* request is still being answered under the same job
+        /// id, usually delivered moments later, and painting that row in failure ink would make a
+        /// working sync look broken. Calm ink, honest reason (#1198 review).
+        case agedOut
     }
 
     public var startedAt: Date
@@ -32,14 +40,18 @@ public struct WeatherJobHistoryEntry: Codable, Equatable, Sendable {
     public var uploadConnectedMilliseconds: Int?
     /// The manifest product that answered the corridor, when one did — a product id, never a place.
     public var precipitationProductID: String?
-    public var noRainMapReason: String?
+    /// Why the bundle carried no rain map, kept as the *reason* rather than a rendered string.
+    /// `String(describing:)` here used to hand the diagnostics screen Swift's own debug spelling —
+    /// `allCoveringProductsExpired(latestDeadline: 2026-08-10 12:00:00 +0000)` on glass — and threw
+    /// away the deadline's type on the way (#1198 review). The screen formats it now.
+    public var noRainMapReason: NoRainMapReason?
 
     public init(
         startedAt: Date, finishedAt: Date, requestID: UInt32, outcome: Outcome,
         failureReason: WeatherJobFailure? = nil, phaseReached: WeatherJobPhase, attempts: Int,
         bundleByteCount: Int? = nil, readConnectedMilliseconds: Int? = nil,
         uploadConnectedMilliseconds: Int? = nil, precipitationProductID: String? = nil,
-        noRainMapReason: String? = nil
+        noRainMapReason: NoRainMapReason? = nil
     ) {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
@@ -97,9 +109,31 @@ public final class FileWeatherJobHistoryStore: WeatherJobHistoryStore, @unchecke
         queue.sync { read() }
     }
 
+    /// Read the ring, salvaging **row by row** when the whole array will not decode.
+    ///
+    /// Decoding the array as a unit makes every row hostage to the worst one: a single entry this
+    /// build cannot read takes the other nineteen with it, and a rider who updates the app silently
+    /// loses their entire sync history. That trade is wrong for a diagnostics ring — the rows are
+    /// independent by construction, and their whole purpose is to still be there when something
+    /// needs explaining. So a failed bulk decode falls back to decoding each element on its own and
+    /// dropping only the ones that are genuinely unreadable.
+    ///
+    /// Concretely today: `noRainMapReason` was a `String` in the WX9-era ring and is a
+    /// ``NoRainMapReason`` now (#1198 review). A row written by the previous build costs that row,
+    /// not the ring.
     private func read() -> [WeatherJobHistoryEntry] {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        return (try? decoder().decode([WeatherJobHistoryEntry].self, from: data)) ?? []
+        let decoder = decoder()
+        if let all = try? decoder.decode([WeatherJobHistoryEntry].self, from: data) { return all }
+        // The outer shape still has to be an array — a file that is not one is not a ring, and
+        // there is nothing to salvage row-wise.
+        guard let elements = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else {
+            return []
+        }
+        return elements.compactMap { element in
+            guard let row = try? JSONSerialization.data(withJSONObject: element) else { return nil }
+            return try? decoder.decode(WeatherJobHistoryEntry.self, from: row)
+        }
     }
 
     private func encoder() -> JSONEncoder {
