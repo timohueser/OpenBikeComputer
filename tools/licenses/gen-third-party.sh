@@ -75,13 +75,18 @@ trap 'rm -f "$tmp"' EXIT
     echo "survive at all — and that service's whitespace is not stable between machines. Words,"
     echo "copyright holders and terms are untouched; only the spacing between them is."
     echo
-    echo "Two obligations live outside this file, because their artifacts are built elsewhere:"
+    echo "Three obligations live outside this file, because their artifacts are built elsewhere:"
     echo
     echo "- **The map builder's web bundle** emits \`third-party-licenses.txt\` beside itself at"
     echo "  build time, generated from the modules the bundler actually included."
     echo "- **Map data** is © OpenStreetMap contributors, under the"
     echo "  [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both"
     echo "  credits ship on the device (Settings ▸ System ▸ About) and in every published catalog."
+    echo "- **Weather sources** are credited in the companion app, on its Weather screen, and the"
+    echo "  credit text comes from the weather service's own manifest rather than from a list kept"
+    echo "  here: a source a baker deploy adds has to appear on a phone that shipped before it"
+    echo "  existed, so a baked-in list could only ever be out of date. MET Norway's line is the"
+    echo "  one constant, declared by the provider adapter that calls it."
     echo
     echo "GEOS deserves a line, because deny.toml's note about it predates the current tree:"
     echo "\`geos-src\` declares MIT for the *wrapper* while the C++ sources it carries are"
