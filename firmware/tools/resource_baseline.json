@@ -44,6 +44,7 @@
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
       "poll_frame_limit": 12288,
+      "_arena_render_note_1185_smoothing": "**#1185 smoothing round (DRAFT) — the rain overlay's decoded-tile cache grows from 12 slots to 14 and gains a one-entry slot memo: `arena_render` 120,544 → 121,068 B (+524 B = 2 tile slots × 256 B + their keys/flags + the memo's key/slot; `size_of::<RainScratch>()` 3,136 → 3,660, pinned by `rain::tests::rain_scratch_size_is_pinned`, and the 32 B delta to `MCU_SCRATCH_BYTES` is the same struct padding it always carried).** Why: a *smoothing* sampler reaches further than nearest neighbour — half a cell for the jitter modes, a whole cell for bilinear's 2 × 2 stencil — which widens the worst-case scanline tile staircase. Measured over the full reachable zoom × heading sweep, per-frame decodes for a 36-tile product: at 12 slots `Nearest` 36, `EdgeSoften` 36, `Jitter` 37, `Bilinear` **71** (≈ 2× the SD reads); at 14 slots all four sit at 36. Still not resident RAM: the arena is max(arms), the USB arm (131,072 B) is still the maximum (`ARENA_BYTES == USB_ARM_BYTES` is compile-asserted in arena.rs), so `arena_total`, `measured_resident`, `uninit_max` and `resident_ram_max` are unchanged — **+0 B on glass**. Render-arm headroom under the max-of-arms cliff is now 131,072 − 121,068 = 10,004 B. `RAIN_SAMPLING` still ships `Nearest`; if the round settles on `Nearest` or `EdgeSoften` the slot count goes back to 12 and this entry reverts to 120,544.",
       "_arena_render_note_1213": "**#1213 (WX10) — the rain overlay's per-frame decoded-tile cache joins `RenderScratch`: `arena_render` 117,408 → 120,544 B (+3,136 B = 12 tile slots × 256 B decoded cells + keys/ok flags/cursor + padding; `MCU_SCRATCH_BYTES` moves 117,376 → 120,512 and the 32 B delta is the same struct padding it always carried).** This is the arena-arm *composition* figure moving, not resident RAM: the arena is max(arms) and the USB arm (131,072 B) is still the maximum — `ARENA_BYTES == USB_ARM_BYTES` is compile-asserted in arena.rs — so `arena_total`, `measured_resident`, `uninit_max` and `resident_ram_max` are all unchanged, +0 B on glass. Render-arm headroom under the max-of-arms cliff is now 131,072 − 120,544 = 10,528 B; growth past that becomes 1:1 resident and moves the cliff (re-read arena.rs's growth-asymmetry notes before spending it). The slot count is 12 because the rain zoom regime's 45°-worst-case scanline crosses ~10 tiles (`RAIN_MAX_CELL_STEP` in obc-render/src/rain.rs); 8 slots measurably re-fetched at the regime edge. Identical in both profiles — the render path is the same image either way.",
       "compile_time_allocations": {
         "framebuffer": 76800,
@@ -58,7 +59,7 @@
         "route_index": 12396,
         "weather_reader_cache": 472,
         "arena_total": 131072,
-        "arena_render": 120544,
+        "arena_render": 121068,
         "arena_nav": 80832,
         "arena_usb": 131072,
         "terrain": 2152,
@@ -146,6 +147,7 @@
         "flash": 1166584,
         "poll_frame": 9728
       },
+      "_arena_render_note_1185_smoothing": "**#1185 smoothing round (DRAFT) — the rain overlay's decoded-tile cache grows from 12 slots to 14 and gains a one-entry slot memo: `arena_render` 120,544 → 121,068 B (+524 B = 2 tile slots × 256 B + their keys/flags + the memo's key/slot; `size_of::<RainScratch>()` 3,136 → 3,660, pinned by `rain::tests::rain_scratch_size_is_pinned`, and the 32 B delta to `MCU_SCRATCH_BYTES` is the same struct padding it always carried).** Why: a *smoothing* sampler reaches further than nearest neighbour — half a cell for the jitter modes, a whole cell for bilinear's 2 × 2 stencil — which widens the worst-case scanline tile staircase. Measured over the full reachable zoom × heading sweep, per-frame decodes for a 36-tile product: at 12 slots `Nearest` 36, `EdgeSoften` 36, `Jitter` 37, `Bilinear` **71** (≈ 2× the SD reads); at 14 slots all four sit at 36. Still not resident RAM: the arena is max(arms), the USB arm (131,072 B) is still the maximum (`ARENA_BYTES == USB_ARM_BYTES` is compile-asserted in arena.rs), so `arena_total`, `measured_resident`, `uninit_max` and `resident_ram_max` are unchanged — **+0 B on glass**. Render-arm headroom under the max-of-arms cliff is now 131,072 − 121,068 = 10,004 B. `RAIN_SAMPLING` still ships `Nearest`; if the round settles on `Nearest` or `EdgeSoften` the slot count goes back to 12 and this entry reverts to 120,544.",
       "_arena_render_note_1213": "**#1213 (WX10) — the rain overlay's per-frame decoded-tile cache joins `RenderScratch`: `arena_render` 117,408 → 120,544 B (+3,136 B = 12 tile slots × 256 B decoded cells + keys/ok flags/cursor + padding; `MCU_SCRATCH_BYTES` moves 117,376 → 120,512 and the 32 B delta is the same struct padding it always carried).** This is the arena-arm *composition* figure moving, not resident RAM: the arena is max(arms) and the USB arm (131,072 B) is still the maximum — `ARENA_BYTES == USB_ARM_BYTES` is compile-asserted in arena.rs — so `arena_total`, `measured_resident`, `uninit_max` and `resident_ram_max` are all unchanged, +0 B on glass. Render-arm headroom under the max-of-arms cliff is now 131,072 − 120,544 = 10,528 B; growth past that becomes 1:1 resident and moves the cliff (re-read arena.rs's growth-asymmetry notes before spending it). The slot count is 12 because the rain zoom regime's 45°-worst-case scanline crosses ~10 tiles (`RAIN_MAX_CELL_STEP` in obc-render/src/rain.rs); 8 slots measurably re-fetched at the regime edge. Identical in both profiles — the render path is the same image either way.",
       "compile_time_allocations": {
         "framebuffer": 76800,
@@ -160,7 +162,7 @@
         "route_index": 12396,
         "weather_reader_cache": 472,
         "arena_total": 131072,
-        "arena_render": 120544,
+        "arena_render": 121068,
         "arena_nav": 80832,
         "arena_usb": 131072,
         "terrain": 2152,

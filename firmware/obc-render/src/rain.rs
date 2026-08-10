@@ -1,5 +1,5 @@
-//! The precipitation raster overlay (WX10, epic #1185): nearest-neighbour provider cells,
-//! RGB222-targeted colors, ordered-Bayer *transparency* dithering.
+//! The precipitation raster overlay (WX10, epic #1185): provider cells sampled with fixed-point
+//! per-pixel increments, RGB222-targeted colors, ordered-Bayer *transparency* dithering.
 //!
 //! Drawn inside the base-map paint order — after the low-z ground fills (land / water / landuse /
 //! buildings / terrain) and **before the road band**, so roads, route, rider and compass always
@@ -8,15 +8,20 @@
 //! cells in 16 × 16 tiles, exactly the shape `obc-weather` serves off SD.
 //!
 //! **Semantics are locked (epic #1185, "Locked UX"):**
-//! - Sampling is direct nearest-neighbour on provider cells, mapped with per-pixel fixed-point
-//!   increments. No bilinear, no supersampling, no contouring — no fabricated precision.
 //! - The Bayer matrix is applied **only as transparency**: a selected pixel shows the rain color,
-//!   every other pixel keeps the already-rendered basemap. It never mixes or smooths values.
+//!   every other pixel keeps the already-rendered basemap. It never mixes or averages colors.
 //! - The intensity → color/coverage table is **firmware-owned** ([`rain_style`]): semantic
 //!   intensity, not cartography. It lives here, next to the code that draws it, and a map skin
 //!   change can never alter it.
 //! - `dry`, the reserved codes and `no-data` all draw **nothing**. Whether missing data may be
 //!   *claimed* dry is decision logic and lives with the weather screens, never here.
+//! - **No-data never participates in sampling, in either direction** ([`paintable`]): a coverage
+//!   edge is pixel-identical whatever the sampling mode, so "no rain" can never blur into "no
+//!   radar" or the reverse.
+//!
+//! *Spatial* sampling — how a screen pixel picks its provider cell — is the one thing reopened:
+//! [`RAIN_SAMPLING`] selects it and is the entire knob. See [`RainSampling`] for the options, what
+//! each costs, and (for [`Bilinear`](RainSampling::Bilinear) alone) which locked rule it breaks.
 
 use embedded_graphics::prelude::*;
 
@@ -40,13 +45,22 @@ pub use obc_map_scene::RAIN_BELOW_Z;
 /// Decoded-tile slots the per-frame [`RainScratch`] cache holds. Within the overlay's zoom regime
 /// ([`RAIN_MAX_CELL_STEP`], grid-axis row norms ≤ 1/3 cell/px) a scanline's combined step is at
 /// most `√2/3` cells per pixel, so a 240-px row crosses at most `240·√2/(3·16) + 2 ≈ 10` tiles;
-/// twelve slots hold that worst-case staircase **plus** the neighbouring rows' overlap, so a
+/// the cache must hold that worst-case staircase **plus** the neighbouring rows' overlap, so a
 /// tile's whole contiguous span of use stays resident and every visible tile decodes exactly once
 /// per frame at any heading anywhere in the regime (pinned across the full reachable m/px range —
 /// including the 45°-worst-case boundary zooms — by `decode_bound_across_the_reachable_zoom_range`;
 /// eight slots measurably re-fetched near the regime edge). The bound that keeps rotation from
 /// causing per-pixel SD reads.
-pub const RAIN_TILE_SLOTS: usize = 12;
+///
+/// **Fourteen, not twelve, because a smoothing kernel reaches further than nearest neighbour**
+/// ([`RainSampling`]) — half a cell for the jitter modes, a whole one for bilinear's 2 × 2
+/// stencil — which widens that staircase by a tile at each end. Measured over the same sweep,
+/// worst case per frame for a 36-tile product at twelve slots:
+/// `Nearest` 36, `EdgeSoften` 36, `Jitter` 37, `Bilinear` **71**; at fourteen, all four sit at 36.
+/// The two extra slots cost 524 B of [`RainScratch`], which the arena's render arm absorbs
+/// without moving a resident byte. If the #1185 round settles on `Nearest` or `EdgeSoften` this
+/// goes back to twelve — `the_decode_bound_holds_in_every_sampling_mode` is the check.
+pub const RAIN_TILE_SLOTS: usize = 14;
 
 /// The overlay's **zoom regime** cap: the rain raster draws only while each **grid axis** advances
 /// at or below this many cells per screen pixel — the Euclidean row norms of the screen→grid
@@ -166,12 +180,108 @@ pub const fn rain_style(intensity: u8) -> (u16, u8) {
 /// [`draw_rain`]) is a legal tuning-round edit as long as it stays a permutation.
 const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
+/// How a screen pixel picks its provider cell — **the smoothing knob**, and the whole of it.
+///
+/// Timo's on-glass verdict on real 1 km MRMS was that the nearest-neighbour squares "look very
+/// blocky"; these are the candidates for the comparison round. Flipping [`RAIN_SAMPLING`] is the
+/// only edit any of them needs — no plumbing, no app, sim or skin participates.
+///
+/// Every mode is bound by the same two rules, which is what keeps smoothing from *lying*:
+///
+/// 1. **No band is ever synthesised.** A painted pixel always shows [`RAIN_STYLE`] for a code some
+///    real cell within half a cell of it reports. Smoothing shifts *which* cell a pixel reads, it
+///    never averages two codes into a third (there is no third — the palette is 13 discrete bands
+///    and the dither is transparency, not blending).
+/// 2. **No-data never participates**, in either direction ([`paintable`]): if the smoothed sample
+///    or the pixel's own cell is no-data, reserved, or off-grid, the pixel falls back to plain
+///    nearest-neighbour. So a coverage edge — the "no rain vs no radar" boundary the weather
+///    screens are built on — is **pixel-identical to [`Nearest`](RainSampling::Nearest) in every
+///    mode**, and can never soften into something that reads as light rain.
+///
+/// Costs below are steady-state per pixel on top of the shared two adds + shift + compare;
+/// `probe` is a [`RainScratch`] slot lookup, near-always the memoised-tile fast path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RainSampling {
+    /// **A — nearest neighbour.** The shipped behaviour: floor the sample point, take that cell.
+    /// Hard 1 km squares. Cost: 0 extra. The honest floor every other mode is measured against.
+    Nearest,
+    /// **B — bilinear on the band field.** Interpolate the 4-bit code bilinearly between the four
+    /// surrounding cell *centres* in Q16, then ordered-dither the fractional part back onto the
+    /// two adjacent bands ([`DITHER_B`]) — the palette has no intermediate colors to land on, so
+    /// the fraction is spent as a spatial mix of the two real bands rather than a fabricated one.
+    /// Cost: ~4 probes + 3 muls per stencil change (≤ every 3rd pixel in regime), 1 add + 1
+    /// compare per pixel. Reaches one cell further than nearest, so it needs the wider
+    /// [`RAIN_TILE_SLOTS`].
+    Bilinear,
+    /// **C — ordered sub-cell jitter.** Offset the sample point by a stratified ±½-cell dither
+    /// ([`JITTER`]) before flooring — nearest-neighbour of a jittered point. Over each 4 × 4 pixel
+    /// block the 16 offsets are the midpoints of a 4 × 4 stratification of the unit cell, so the
+    /// *expected* field is exactly the bilinear one of B — this is B, evaluated stochastically
+    /// with a fixed low-discrepancy pattern instead of arithmetically. Cost: 2 adds + 1 probe per
+    /// pixel, **no interpolation and no stencil**, and it cannot synthesise a band by construction
+    /// (it only ever reads one real cell).
+    Jitter,
+    /// **C-narrow — edge-only softening.** [`Jitter`](RainSampling::Jitter) at half amplitude
+    /// (±¼ cell): a cell's interior stays pure nearest-neighbour and only the ~1 px either side of
+    /// a cell boundary mixes. Breaks the straight edges without dissolving the block. Same cost
+    /// as C.
+    EdgeSoften,
+}
+
+/// **The smoothing switch.** One line, one file: everything the comparison round turns.
+pub const RAIN_SAMPLING: RainSampling = RainSampling::Nearest;
+
+/// Stratum indices `(x_stratum, y_stratum)` in `0..4` for [`RainSampling::Jitter`], indexed
+/// `[y & 3][x & 3]` in **panel** coordinates like [`BAYER`], and screen-anchored for the same
+/// reason: the pattern must not swim under pan/zoom/rotation.
+///
+/// Built as `(x + 2y, 2x + y) mod 4` — a bijection of the 4 × 4 block onto all sixteen
+/// `(x_stratum, y_stratum)` pairs (the matrix's determinant is a unit mod 4), so each block is a
+/// complete 4 × 4 stratification of the cell and the *mean* offset is exactly zero: the smoothing
+/// is unbiased, it cannot systematically grow or shrink a storm. Neighbouring pixels differ in
+/// both strata, and it is deliberately **not** [`BAYER`] — sharing a matrix with the transparency
+/// dither would lock the two patterns together into visible cross-hatching.
+const JITTER: [[(u8, u8); 4]; 4] = {
+    let mut m = [[(0u8, 0u8); 4]; 4];
+    let mut y = 0;
+    while y < 4 {
+        let mut x = 0;
+        while x < 4 {
+            m[y][x] = (((x + 2 * y) % 4) as u8, ((2 * x + y) % 4) as u8);
+            x += 1;
+        }
+        y += 1;
+    }
+    m
+};
+
+/// A second 4 × 4 ordered matrix, used **only** by [`RainSampling::Bilinear`] to dither the
+/// fractional band. Decorrelated from [`BAYER`] by `v ↦ 7v mod 16` (7 is a unit mod 16, so a
+/// permutation survives): sharing the transparency matrix would make the band mix and the coverage
+/// pattern fire on the same pixels and clump.
+const DITHER_B: [[u8; 4]; 4] = {
+    let mut m = [[0u8; 4]; 4];
+    let mut y = 0;
+    while y < 4 {
+        let mut x = 0;
+        while x < 4 {
+            m[y][x] = (BAYER[y][x] * 7) % 16;
+            x += 1;
+        }
+        y += 1;
+    }
+    m
+};
+
 // ------------------------------- end of the rain tuning surface -------------------------------
 
 /// Fixed-point format of the per-pixel grid walk: Q31.32 in an `i64`. A 240-px row accumulates at
 /// most `240 × 2⁻³²` cells of increment rounding — far below any cell boundary's width.
 const FP_SHIFT: u32 = 32;
 const FP_ONE: f64 = 4_294_967_296.0; // 2^32
+/// One whole cell in the Q31.32 walk — the jitter amplitudes and bilinear's half-cell centre
+/// offset are fractions of this.
+const FP_ONE_FP: i64 = 1 << FP_SHIFT;
 
 /// The per-frame decoded-tile cache — pure scratch (written before read every frame, reset at
 /// overlay start), living inside [`RenderScratch`](crate::RenderScratch) so the device pays for it
@@ -186,6 +296,12 @@ pub(crate) struct RainScratch {
     ok: [bool; RAIN_TILE_SLOTS],
     /// Round-robin replacement cursor.
     next: u8,
+    /// One-entry memo of the last resolved key (`0` = none, so all-zero is still the empty cache)
+    /// and its slot. The smoothing modes ([`RainSampling`]) probe the cache more than once per
+    /// pixel and consecutive probes almost always name the same tile; without this the linear key
+    /// scan would be the overlay's hot loop instead of the pixel walk.
+    memo_key: u32,
+    memo_slot: u8,
     tiles: [[u8; RAIN_TILE_CELLS]; RAIN_TILE_SLOTS],
 }
 
@@ -195,6 +311,8 @@ impl Default for RainScratch {
             keys: [0; RAIN_TILE_SLOTS],
             ok: [false; RAIN_TILE_SLOTS],
             next: 0,
+            memo_key: 0,
+            memo_slot: 0,
             tiles: [[0; RAIN_TILE_CELLS]; RAIN_TILE_SLOTS],
         }
     }
@@ -207,6 +325,8 @@ impl RainScratch {
         self.keys = [0; RAIN_TILE_SLOTS];
         self.ok = [false; RAIN_TILE_SLOTS];
         self.next = 0;
+        self.memo_key = 0;
+        self.memo_slot = 0;
     }
 
     /// The intensity of `cell` inside `tile_index`, fetching the tile through the cache. `None`
@@ -219,13 +339,19 @@ impl RainScratch {
         stats: &mut RenderStats,
     ) -> Option<u8> {
         let key = tile_index.wrapping_add(1);
+        if key == self.memo_key {
+            let slot = self.memo_slot as usize;
+            return self.ok[slot].then(|| self.tiles[slot][cell]);
+        }
         if let Some(slot) = self.keys.iter().position(|&k| k == key) {
+            (self.memo_key, self.memo_slot) = (key, slot as u8);
             return self.ok[slot].then(|| self.tiles[slot][cell]);
         }
         let slot = self.next as usize % RAIN_TILE_SLOTS;
         self.next = (self.next + 1) % RAIN_TILE_SLOTS as u8;
         self.keys[slot] = key;
         self.ok[slot] = source.tile(tile_index, &mut self.tiles[slot]);
+        (self.memo_key, self.memo_slot) = (key, slot as u8);
         stats.rain_tiles = stats.rain_tiles.saturating_add(1);
         self.ok[slot].then(|| self.tiles[slot][cell])
     }
@@ -344,16 +470,61 @@ fn regime_steps_ok(dcol_dx: f64, dcol_dy: f64, drow_dx: f64, drow_dy: f64) -> bo
     col_norm <= RAIN_MAX_CELL_STEP && row_norm <= RAIN_MAX_CELL_STEP
 }
 
-/// Draw the rain overlay over the already-painted low-z map band.
+/// Whether an intensity code is real, sampleable precipitation — the 13 defined bands, `0` (dry)
+/// through [`INTENSITY_MAX`](obc_formats::precip4::INTENSITY_MAX) (12).
+///
+/// The gate on rule 2 of [`RainSampling`]: the reserved codes and `no-data` are **not** values on
+/// the intensity scale, they are the absence of one, so no smoothing mode may read one *as* a
+/// value or replace one *with* a value. Both directions matter — softening rain into a no-data
+/// gap would draw a fade that reads as light rain, and softening a no-data gap into rain would
+/// paint weather nobody observed.
+#[inline]
+const fn paintable(code: u8) -> bool {
+    code <= INTENSITY_MAX
+}
+
+/// Highest defined precipitation band, mirroring `obc_formats::precip4::INTENSITY_MAX`. Restated
+/// rather than imported: the whole point of the [`RainOverlaySource`] seam is that `obc-render`
+/// never links the OBCW format crate. [`RAIN_STYLE`]'s shape is the local pin — codes above this
+/// are the reserved pair and no-data, and the table's transparency test asserts they stay so.
+const INTENSITY_MAX: u8 = 12;
+
+/// One provider cell by grid coordinate, through the per-frame tile cache. `None` both for an
+/// off-grid coordinate (which costs no fetch, so a viewport hanging off the frame still touches
+/// nothing) and for a tile the source could not serve — the two are indistinguishable to the
+/// caller because both paint nothing.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn cell_at(
+    scratch: &mut RainScratch,
+    source: &mut dyn RainOverlaySource,
+    stats: &mut RenderStats,
+    width: i64,
+    height: i64,
+    tile_cols: u32,
+    cf: i64,
+    rf: i64,
+) -> Option<u8> {
+    if cf < 0 || rf < 0 || cf >= width || rf >= height {
+        return None;
+    }
+    let tile_index = (rf as u32 / RAIN_TILE_EDGE as u32) * tile_cols + cf as u32 / RAIN_TILE_EDGE as u32;
+    let cell = (rf as usize % RAIN_TILE_EDGE) * RAIN_TILE_EDGE + cf as usize % RAIN_TILE_EDGE;
+    scratch.cell(source, tile_index, cell, stats)
+}
+
+/// Draw the rain overlay over the already-painted low-z map band, sampling per [`RAIN_SAMPLING`].
 ///
 /// One pass over the panel in scan order. The screen→grid transform is affine (the viewport's
 /// rotate/scale/translate composed with the grid's linear lat/lon → cell map), so cell coordinates
 /// are walked with per-pixel Q31.32 **fixed-point increments** — floor of the accumulator is the
-/// nearest-neighbour provider cell, bit-exactly reproducible. Per pixel the steady-state work is
-/// two adds and a cell-change compare; inside the zoom regime ([`RAIN_MAX_CELL_STEP`]) tiles are
-/// decoded through the per-frame [`RainScratch`] cache at most once per tile per frame (failures
-/// included), and outside it the overlay draws nothing and sets
+/// nearest-neighbour provider cell, bit-exactly reproducible. Inside the zoom regime
+/// ([`RAIN_MAX_CELL_STEP`]) tiles are decoded through the per-frame [`RainScratch`] cache at most
+/// once per tile per frame (failures included), and outside it the overlay draws nothing and sets
 /// [`RenderStats::rain_out_of_regime`].
+/// `mode` comes from [`RenderConfig::rain_sampling`](crate::RenderConfig), whose default *is*
+/// [`RAIN_SAMPLING`] — so the const remains the one switch every shipped path obeys, and a host
+/// comparison tool can still sweep all four modes in one binary and one frame loop.
 pub(crate) fn draw_rain<D, F>(
     target: &mut D,
     vp: &Viewport,
@@ -361,6 +532,7 @@ pub(crate) fn draw_rain<D, F>(
     source: &mut dyn RainOverlaySource,
     color_fn: &F,
     stats: &mut RenderStats,
+    mode: RainSampling,
 ) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
@@ -411,6 +583,24 @@ pub(crate) fn draw_rain<D, F>(
     });
     let tile_cols = (grid.width_cells as u32).div_ceil(RAIN_TILE_EDGE as u32);
 
+    // The mode's sub-cell offsets in Q31.32 cells: [`JITTER`]'s strata scaled to its amplitude.
+    // `Nearest` and `Bilinear` walk unjittered, and the all-zero table is exactly what switches
+    // off the jitter arm below — `Nearest` *is* the zero-amplitude jitter, same instructions.
+    let amp: i64 = match mode {
+        RainSampling::Nearest | RainSampling::Bilinear => 0,
+        RainSampling::Jitter => FP_ONE_FP,
+        RainSampling::EdgeSoften => FP_ONE_FP / 2,
+    };
+    // Stratum `k` of 4 sits at `(2k + 1 - 4)/8` of a cell — the midpoint of its quarter, so the
+    // four offsets are ±1/8 and ±3/8 of `amp` and their mean is zero.
+    let jitter: [[(i64, i64); 4]; 4] = core::array::from_fn(|y| {
+        core::array::from_fn(|x| {
+            let (sx, sy) = JITTER[y][x];
+            (amp * (2 * sx as i64 - 3) / 8, amp * (2 * sy as i64 - 3) / 8)
+        })
+    });
+    let bilinear = matches!(mode, RainSampling::Bilinear);
+
     let (w_px, h_px) = (vp.w as i32, vp.h as i32);
     for y in 0..h_px {
         // Row starts are exact multiples of the row increments, so a row's cells are independent
@@ -418,27 +608,82 @@ pub(crate) fn draw_rain<D, F>(
         let mut col = col00 + y as i64 * dcol_dy;
         let mut row = row00 + y as i64 * drow_dy;
         let bayer_row = &BAYER[(y & 3) as usize];
-        // Nearest-neighbour cell state, reused while consecutive pixels stay inside one cell —
-        // the steady-state fast path (a provider cell spans many pixels at riding zooms).
-        let mut last_cell: Option<(i64, i64)> = None;
-        let mut last_style: (D::Color, u8) = lut[0];
+        let jitter_row = &jitter[(y & 3) as usize];
+        let dither_row = &DITHER_B[(y & 3) as usize];
+        // The pixel's **own** cell, reused while consecutive pixels stay inside it — the
+        // steady-state fast path (a provider cell spans ≥ 3 px in regime, many more at riding
+        // zooms). Every mode needs it: it is what `Nearest` paints, and what all the others fall
+        // back to whenever smoothing would have to read across a no-data or off-grid cell.
+        let mut base_cell: Option<(i64, i64)> = None;
+        let mut base_code: Option<u8> = None;
+        // `Bilinear`'s 2 × 2 stencil, memoised on its own anchor (which moves at most every third
+        // pixel in regime). `None` marks a stencil that touched a non-paintable cell — that pixel
+        // falls back to plain nearest, which is rule 2 and the reason a coverage edge renders
+        // pixel-identically in every mode.
+        let mut stencil_at: Option<(i64, i64)> = None;
+        let mut stencil: Option<[i32; 4]> = None;
         let pixels = (0..w_px).filter_map(|x| {
             let (c_fp, r_fp) = (col, row);
             col += dcol_dx;
             row += drow_dx;
             let (cf, rf) = (c_fp >> FP_SHIFT, r_fp >> FP_SHIFT);
-            if cf < 0 || rf < 0 || cf >= width || rf >= height {
-                last_cell = None;
-                return None;
+            if base_cell != Some((cf, rf)) {
+                base_code = cell_at(scratch, source, stats, width, height, tile_cols, cf, rf);
+                base_cell = Some((cf, rf));
             }
-            if last_cell != Some((cf, rf)) {
-                let tile_index = (rf as u32 / RAIN_TILE_EDGE as u32) * tile_cols + cf as u32 / RAIN_TILE_EDGE as u32;
-                let cell = (rf as usize % RAIN_TILE_EDGE) * RAIN_TILE_EDGE + cf as usize % RAIN_TILE_EDGE;
-                let intensity = scratch.cell(source, tile_index, cell, stats);
-                last_style = intensity.map_or(lut[15], |i| lut[(i & 0x0F) as usize]);
-                last_cell = Some((cf, rf));
-            }
-            let (color, coverage) = last_style;
+            let base = base_code;
+
+            let code = if amp != 0 {
+                // C / C-narrow: nearest neighbour of a jittered point. The sample is still ONE
+                // real cell — nothing is averaged, so no band can be synthesised.
+                let (jx, jy) = jitter_row[(x & 3) as usize];
+                let (jc, jr) = ((c_fp + jx) >> FP_SHIFT, (r_fp + jy) >> FP_SHIFT);
+                if (jc, jr) == (cf, rf) {
+                    base // the common case well inside a cell: no second lookup at all
+                } else {
+                    match (base, cell_at(scratch, source, stats, width, height, tile_cols, jc, jr)) {
+                        (Some(b), Some(j)) if paintable(b) && paintable(j) => Some(j),
+                        _ => base,
+                    }
+                }
+            } else if bilinear {
+                // B: bilinear between the four surrounding cell **centres**, which sit at `k + ½`,
+                // so the stencil's anchor is `floor(c − ½)`. Codes are carried in Q8 so the whole
+                // interpolation stays in 32-bit arithmetic on the MCU.
+                let (cc, rr) = (c_fp - (FP_ONE_FP / 2), r_fp - (FP_ONE_FP / 2));
+                let (c0, r0) = (cc >> FP_SHIFT, rr >> FP_SHIFT);
+                if stencil_at != Some((c0, r0)) {
+                    stencil_at = Some((c0, r0));
+                    let mut v = [0i32; 4];
+                    let mut all_real = true;
+                    for (i, (dc, dr)) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+                        match cell_at(scratch, source, stats, width, height, tile_cols, c0 + dc, r0 + dr) {
+                            Some(code) if paintable(code) => v[i] = (code as i32) << 8,
+                            _ => all_real = false,
+                        }
+                    }
+                    stencil = all_real.then_some(v);
+                }
+                match stencil {
+                    Some(v) => {
+                        let fx = ((cc >> (FP_SHIFT - 8)) & 0xFF) as i32;
+                        let fy = ((rr >> (FP_SHIFT - 8)) & 0xFF) as i32;
+                        let lerp = |a: i32, b: i32, f: i32| a + (((b - a) * f) >> 8);
+                        let mid = lerp(lerp(v[0], v[1], fx), lerp(v[2], v[3], fx), fy);
+                        // Spend the fractional band as an ordered-dithered mix of the two REAL
+                        // bands it lies between — adding the matrix threshold before flooring is
+                        // exactly that. The palette has no colour in between to land on, and
+                        // inventing one would be the fabricated precision the format forbids.
+                        let dithered = (mid + ((dither_row[(x & 3) as usize] as i32) << 4)) >> 8;
+                        Some((dithered as u8).min(INTENSITY_MAX))
+                    }
+                    None => base,
+                }
+            } else {
+                base // A: nearest neighbour, the shipped behaviour
+            };
+
+            let (color, coverage) = code.map_or(lut[15], |i| lut[(i & 0x0F) as usize]);
             if bayer_row[(x & 3) as usize] < coverage {
                 stats.rain_px = stats.rain_px.saturating_add(1);
                 Some(Pixel(Point::new(x, y), color))
@@ -536,6 +781,20 @@ mod tests {
     }
 
     fn draw(vp: &Viewport, source: &mut dyn RainOverlaySource, w: i32, h: i32) -> (Frame, RenderStats) {
+        draw_mode(vp, source, w, h, RainSampling::Nearest)
+    }
+
+    /// Every sampling mode, for the comparison round's honesty and cost pins.
+    const MODES: [RainSampling; 4] =
+        [RainSampling::Nearest, RainSampling::Bilinear, RainSampling::Jitter, RainSampling::EdgeSoften];
+
+    fn draw_mode(
+        vp: &Viewport,
+        source: &mut dyn RainOverlaySource,
+        w: i32,
+        h: i32,
+        mode: RainSampling,
+    ) -> (Frame, RenderStats) {
         let mut frame = Frame::new(w, h);
         let mut scratch = RainScratch::default();
         let mut stats = RenderStats::default();
@@ -549,6 +808,7 @@ mod tests {
                 Rgb565::from(RawU16::new(c))
             },
             &mut stats,
+            mode,
         );
         (frame, stats)
     }
@@ -834,6 +1094,7 @@ mod tests {
                 Rgb565::from(RawU16::new(c))
             },
             &mut stats,
+            RainSampling::Nearest,
         );
         assert!(frame.px.iter().all(|&p| p == 0xFFFF - 1), "failures never fabricate rain");
         assert!(source.fetches <= 36, "failures are cached per tile, got {}", source.fetches);
@@ -862,6 +1123,241 @@ mod tests {
             }
             previous = Some((color, coverage));
         }
+    }
+
+    // --------------------------------------------------------------------------------------
+    // The #1185 smoothing round: what each `RainSampling` mode may and may not do.
+    // --------------------------------------------------------------------------------------
+
+    /// **The load-bearing one.** A coverage edge — real cells on one side, `no-data` on the other,
+    /// which is the "no rain vs no radar" boundary the weather screens are built on — must render
+    /// **pixel-identically in every mode**. No mode may fade rain into a radar gap (that reads as
+    /// drizzle tapering off) or paint rain into one.
+    #[test]
+    fn a_nodata_edge_is_pixel_identical_in_every_mode() {
+        let grid = dwd_grid();
+        // A ragged coverage boundary, not a straight one: radar umbrellas end in arcs, and a
+        // straight edge would hide a mode that softens only along one axis.
+        let pattern = |r: u32, c: u32| if c + (r % 5) < 40 { 8 } else { 15 };
+        for course_deg in [0.0_f32, 37.0, 218.5] {
+            let vp = Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, 0.026, course_deg.to_radians());
+            let mut base = TestSource { grid, pattern, fetches: 0 };
+            let (reference, _) = draw_mode(&vp, &mut base, 240, 320, RainSampling::Nearest);
+            for mode in MODES {
+                let mut source = TestSource { grid, pattern, fetches: 0 };
+                let (frame, _) = draw_mode(&vp, &mut source, 240, 320, mode);
+                assert_eq!(frame.px, reference.px, "{mode:?} moved a no-data edge at course {course_deg}");
+            }
+        }
+    }
+
+    /// The same, for the grid's own outer boundary: off-grid is no-data by another name, so the
+    /// frame edge must not soften either.
+    #[test]
+    fn the_grid_edge_is_pixel_identical_in_every_mode() {
+        let grid = dwd_grid();
+        let vp = Viewport::new_rotated(240.0, 320.0, 7_000_000, 47_000_000, 0.026, 0.4);
+        let mut base = TestSource { grid, pattern: |_, _| 9, fetches: 0 };
+        let (reference, _) = draw_mode(&vp, &mut base, 240, 320, RainSampling::Nearest);
+        for mode in MODES {
+            let mut source = TestSource { grid, pattern: |_, _| 9, fetches: 0 };
+            let (frame, _) = draw_mode(&vp, &mut source, 240, 320, mode);
+            assert_eq!(frame.px, reference.px, "{mode:?} softened the grid edge");
+        }
+    }
+
+    /// **The finding that decides the round.** Over a field holding only `dry` and band 12, the
+    /// jitter modes can only ever paint band 12's colour — they resample *position*, so every
+    /// pixel still shows one real cell. `Bilinear` interpolates the band *index*, so between a dry
+    /// cell and a 50 mm/h cell it paints the whole drizzle → heavy ladder that no radar cell
+    /// reported: fabricated intensity, which is what OBCW §7 and OBCG forbid.
+    ///
+    /// This test does not judge — it pins the difference, so a later reader knows which modes
+    /// resample and which one invents.
+    #[test]
+    fn only_bilinear_paints_bands_no_cell_reports() {
+        let grid = dwd_grid();
+        // Big blocks of dry and torrential, so there is plenty of boundary to interpolate across.
+        let pattern = |r: u32, c: u32| if (r / 9 + c / 9).is_multiple_of(2) { 0 } else { 12 };
+        let vp = Viewport::new(240.0, 320.0, 7_600_000, 47_400_000, 0.026);
+        let torrential = rain_style(12).0;
+        for mode in MODES {
+            let mut source = TestSource { grid, pattern, fetches: 0 };
+            let (frame, _) = draw_mode(&vp, &mut source, 240, 320, mode);
+            let foreign = frame.px.iter().filter(|&&p| p != 0xFFFF - 1 && p != torrential).count();
+            match mode {
+                RainSampling::Bilinear => {
+                    assert!(foreign > 0, "bilinear must be shown fabricating, or this test is moot")
+                }
+                _ => assert_eq!(foreign, 0, "{mode:?} painted a band no cell reports"),
+            }
+        }
+    }
+
+    /// The jitter offsets are a complete, zero-mean 4 x 4 stratification of the cell: over one
+    /// 4 x 4 pixel block every `(x, y)` stratum pair occurs exactly once, and the offsets sum to
+    /// zero on both axes. That is what makes the smoothing *unbiased* — it cannot systematically
+    /// grow or shrink a storm, only soften where its edge falls.
+    #[test]
+    fn jitter_is_a_complete_zero_mean_stratification() {
+        let mut seen = [[false; 4]; 4];
+        let (mut sum_x, mut sum_y) = (0i32, 0i32);
+        for row in &JITTER {
+            for &(sx, sy) in row {
+                assert!(!seen[sy as usize][sx as usize], "stratum ({sx},{sy}) repeats inside one block");
+                seen[sy as usize][sx as usize] = true;
+                sum_x += 2 * sx as i32 - 3;
+                sum_y += 2 * sy as i32 - 3;
+            }
+        }
+        assert!(seen.iter().flatten().all(|&s| s), "the 16 offsets do not cover the cell");
+        assert_eq!((sum_x, sum_y), (0, 0), "the offsets are biased");
+        // Neighbouring pixels must land in different strata on both axes, or the jitter degenerates
+        // into stripes at the cell scale.
+        for y in 0..4usize {
+            for x in 0..4usize {
+                let (a, b) = (JITTER[y][x], JITTER[y][(x + 1) % 4]);
+                assert_ne!(a.0, b.0, "horizontally adjacent pixels share an x stratum at ({x},{y})");
+                let c = JITTER[(y + 1) % 4][x];
+                assert_ne!(a.1, c.1, "vertically adjacent pixels share a y stratum at ({x},{y})");
+            }
+        }
+        // ...and it must not be keyed off the transparency matrix, or the two patterns lock
+        // together into visible cross-hatching.
+        let bayer_low: [[u8; 4]; 4] = core::array::from_fn(|y| core::array::from_fn(|x| BAYER[y][x] & 3));
+        let jitter_x: [[u8; 4]; 4] = core::array::from_fn(|y| core::array::from_fn(|x| JITTER[y][x].0));
+        assert_ne!(bayer_low, jitter_x, "the jitter must not be keyed off the coverage dither");
+    }
+
+    /// `DITHER_B` stays a permutation of `0..16` — the property that makes bilinear's fractional
+    /// band spread evenly instead of clumping — and is not `BAYER` itself.
+    #[test]
+    fn bilinears_band_dither_is_a_distinct_permutation() {
+        let mut seen = [false; 16];
+        for row in &DITHER_B {
+            for &v in row {
+                assert!(!seen[v as usize], "DITHER_B repeats {v}");
+                seen[v as usize] = true;
+            }
+        }
+        assert!(seen.iter().all(|&s| s));
+        assert_ne!(DITHER_B, BAYER, "bilinear must not share the transparency matrix");
+    }
+
+    /// The rotation/SD-thrash bound survives smoothing: reaching half a cell (jitter) or a whole
+    /// one (bilinear's stencil) further than nearest may add tiles to a scanline's staircase, and
+    /// the [`RAIN_TILE_SLOTS`] cache must still absorb it — one decode per visible tile per frame,
+    /// at every heading, in **every** mode. This is the test that sizes the cache.
+    #[test]
+    fn the_decode_bound_holds_in_every_sampling_mode() {
+        let grid = dwd_grid();
+        for mode in MODES {
+            for mpp in [1.0_f32, 10.0, 50.0, 100.0, 208.0, 300.0, 330.0] {
+                let zoom = crate::viewport::zoom_for_mpp(mpp);
+                for course_deg in (0..360).step_by(15) {
+                    let vp = Viewport::new_rotated(
+                        240.0,
+                        320.0,
+                        7_600_000,
+                        47_400_000,
+                        zoom,
+                        (course_deg as f32).to_radians(),
+                    );
+                    let mut source = TestSource { grid, pattern: |r, c| ((r / 3 + c / 2) % 13) as u8, fetches: 0 };
+                    let (_, stats) = draw_mode(&vp, &mut source, 240, 320, mode);
+                    if stats.rain_out_of_regime {
+                        assert_eq!(source.fetches, 0, "{mode:?} decoded out of regime");
+                        continue;
+                    }
+                    assert!(
+                        source.fetches <= 36,
+                        "{mode:?} at {mpp} m/px, {course_deg}deg: {} fetches for a 36-tile product \
+                         — the smoothing kernel outgrew RAIN_TILE_SLOTS",
+                        source.fetches
+                    );
+                }
+            }
+        }
+    }
+
+    /// Smoothing must not change *whether* the overlay draws: the regime verdict is a property of
+    /// the camera and the grid, not of the sampler.
+    #[test]
+    fn the_regime_verdict_is_independent_of_the_sampling_mode() {
+        let grid = dwd_grid();
+        for mpp in [10.0_f32, 208.0, 330.0, 340.0, 1_000.0] {
+            let zoom = crate::viewport::zoom_for_mpp(mpp);
+            let vp = Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, zoom, 0.7);
+            for mode in MODES {
+                let mut source = TestSource { grid, pattern: |_, _| 12, fetches: 0 };
+                let (_, stats) = draw_mode(&vp, &mut source, 240, 320, mode);
+                assert_eq!(rain_in_regime(&vp, &grid), !stats.rain_out_of_regime, "{mode:?} at {mpp} m/px");
+            }
+        }
+    }
+
+    /// Every mode is deterministic and screen-anchored: same viewport, same source, byte-identical
+    /// output twice over. (The jitter is an ordered pattern, not a random one — nothing here may
+    /// shimmer between frames.)
+    #[test]
+    fn every_mode_is_deterministic() {
+        let grid = dwd_grid();
+        let vp = Viewport::new_rotated(240.0, 320.0, 7_600_000, 47_400_000, 0.026, 1.1);
+        for mode in MODES {
+            let mut a_src = TestSource { grid, pattern: |r, c| ((r / 7 + c / 5) % 13) as u8, fetches: 0 };
+            let mut b_src = TestSource { grid, pattern: |r, c| ((r / 7 + c / 5) % 13) as u8, fetches: 0 };
+            let (a, _) = draw_mode(&vp, &mut a_src, 240, 320, mode);
+            let (b, _) = draw_mode(&vp, &mut b_src, 240, 320, mode);
+            assert_eq!(a.px, b.px, "{mode:?} is not deterministic");
+        }
+    }
+
+    /// Dry, reserved and no-data still paint nothing in every mode — smoothing may never
+    /// manufacture a wet look out of a uniformly unpaintable field.
+    #[test]
+    fn unpaintable_fields_stay_blank_in_every_sampling_mode() {
+        let grid = dwd_grid();
+        let vp = Viewport::new(240.0, 320.0, 7_600_000, 47_400_000, 0.026);
+        for mode in MODES {
+            for code in [0u8, 13, 14, 15] {
+                let mut source = TestSource { grid, pattern: move |_, _| code, fetches: 0 };
+                let (frame, stats) = draw_mode(&vp, &mut source, 240, 320, mode);
+                assert!(frame.px.iter().all(|&p| p == 0xFFFF - 1), "{mode:?} painted code {code}");
+                assert_eq!(stats.rain_px, 0);
+            }
+        }
+    }
+
+    /// The one-entry slot memo the smoothing modes lean on must never go stale: after a
+    /// round-robin eviction the memoised key has to name the slot's *new* tenant, or a pixel reads
+    /// another tile's cells.
+    #[test]
+    fn the_slot_memo_survives_eviction() {
+        let grid = dwd_grid();
+        let pattern = |r: u32, c: u32| ((r * 7 + c * 3) % 13) as u8;
+        let mut scratch = RainScratch::default();
+        let mut stats = RenderStats::default();
+        let mut source = TestSource { grid, pattern, fetches: 0 };
+        let tile_cols = 6u32; // 96 cells / 16
+                              // Fill every slot and keep going, so the round-robin evicts; then re-read from the start.
+        for pass in 0..2 {
+            for tile in 0..RAIN_TILE_SLOTS as u32 + 3 {
+                let got = scratch.cell(&mut source, tile, 0, &mut stats);
+                let (tr, tc) = (tile / tile_cols, tile % tile_cols);
+                assert_eq!(got, Some(pattern(tr * 16, tc * 16)), "pass {pass}, tile {tile} read the wrong slot");
+            }
+        }
+    }
+
+    /// `RainScratch`'s size lands in `arena_render`
+    /// (`firmware/tools/resource_baseline.json`) one byte for one byte. Pin it here so the
+    /// arithmetic in that file has a source in the code, and a stray field in the tile cache fails
+    /// in `cargo test` rather than in the board build.
+    #[test]
+    fn rain_scratch_size_is_pinned() {
+        // 12 slots x 256 cells + 12 keys x 4 B + 12 flags + the round-robin cursor + the
+        // one-entry slot memo (key + slot), rounded to the struct's 4-byte alignment.
+        assert_eq!(core::mem::size_of::<RainScratch>(), 3_660);
     }
 
     /// The Bayer matrix is the canonical index-4 ordered matrix: a permutation of 0..16 in which
