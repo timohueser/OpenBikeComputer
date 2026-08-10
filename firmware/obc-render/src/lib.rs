@@ -38,8 +38,8 @@ mod viewport;
 pub use canvas::{rect, Canvas};
 pub use overlay::{OverlayChunk, RouteOverlaySource};
 pub use rain::{
-    rain_in_regime, rain_min_zoom, rain_style, RainGrid, RainOverlaySource, RAIN_BELOW_Z, RAIN_MAX_CELL_STEP,
-    RAIN_STYLE, RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
+    rain_in_regime, rain_min_zoom, rain_style, RainGrid, RainOverlaySource, RainSampling, RAIN_BELOW_Z,
+    RAIN_MAX_CELL_STEP, RAIN_SAMPLING, RAIN_STYLE, RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
 };
 pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
@@ -146,10 +146,11 @@ pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_SCREEN_POINTS * 8
     + MAX_CROSSINGS * 4
-    // WX10: the rain overlay's per-frame decoded-tile cache (12 slots, ~3.1 KB). On the board this
-    // grows the arena's render arm, which still sits ~10.5 KB below the USB arm's max — so it
-    // costs the device zero resident bytes until the render arm ever overtakes USB (the arena
-    // assert names that cliff).
+    // WX10: the rain overlay's per-frame decoded-tile cache (14 slots, ~3.6 KB; the two slots over
+    // the original twelve are what keeps a smoothing kernel's wider reach inside one decode per
+    // visible tile — see `RAIN_TILE_SLOTS`). On the board this grows the arena's render arm, which
+    // still sits ~10 KB below the USB arm's max — so it costs the device zero resident bytes until
+    // the render arm ever overtakes USB (the arena assert names that cliff).
     + core::mem::size_of::<rain::RainScratch>();
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
@@ -493,6 +494,34 @@ impl RenderScratch {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
+        self.render_rain_sampled_timed(target, scene, vp, bg, cfg, rain, RAIN_SAMPLING, color_fn, clock)
+    }
+
+    /// [`render_rain_timed`](RenderScratch::render_rain_timed) with the overlay's spatial sampling
+    /// mode passed in rather than taken from [`RAIN_SAMPLING`].
+    ///
+    /// **Provisional (#1185 smoothing round).** Every shipped caller goes through
+    /// `render_rain_timed`, so the const stays the one switch that decides what a rider sees; this
+    /// exists only so one host binary can render the *same* frame in all four modes for the
+    /// side-by-side comparison. When a mode is picked it goes, along with the enum's losing arms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_rain_sampled_timed<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        vp: &Viewport,
+        bg: D::Color,
+        cfg: RenderConfig,
+        rain: Option<&mut dyn RainOverlaySource>,
+        rain_sampling: RainSampling,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
         let t0 = clock.now_us();
         let _ = target.clear(bg);
         let t_cleared = clock.now_us();
@@ -528,7 +557,7 @@ impl RenderScratch {
         self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
         let t_sorted = clock.now_us();
 
-        self.draw_map(target, scene, is_finest, vp, &color_fn, rain, clock, &mut stats);
+        self.draw_map(target, scene, is_finest, vp, &color_fn, rain, rain_sampling, clock, &mut stats);
         let t_drawn = clock.now_us();
 
         // The clear is a framebuffer write, so it counts toward `draw` even though it ran first.
@@ -575,6 +604,7 @@ impl RenderScratch {
         vp: &Viewport,
         color_fn: &F,
         rain: Option<&mut dyn RainOverlaySource>,
+        rain_sampling: RainSampling,
         clock: &dyn Clock,
         stats: &mut RenderStats,
     ) where
@@ -642,7 +672,7 @@ impl RenderScratch {
                 &spans[..rain_at],
             );
             let t_rain = clock.now_us();
-            rain::draw_rain(target, vp, rain_scratch, source, color_fn, stats);
+            rain::draw_rain(target, vp, rain_scratch, source, color_fn, stats, rain_sampling);
             stats.rain_us = clock.now_us().saturating_sub(t_rain) as u32;
         }
         let spans = &spans[rain_at..];
