@@ -586,6 +586,14 @@ means depends on the direction:
   rename the device and writes the 3-byte-plus-name blob; a device that took that as
   a choice would reset a rider who deliberately picked `Off`.
 
+**This app never sets the refresh byte** (WX13 / #1198). The interval is a *device*
+setting and the OBC's own Weather screen is its editor; the companion reports it and
+offers no control at all, so the one place a `Config` write happens — the H3 rename —
+is a round-trip that carries `weatherRefreshRaw` back untouched, and the rule above is
+what makes that safe. §7.3 keeps the byte writable and the codec keeps both directions
+(`weatherRefreshToApply()` is the *device's* side of the contract, and stays tested);
+the app simply declines to use the write direction.
+
 **An unknown refresh byte is direction-dependent too (spec §11.8), and decoding is
 direction-blind — it never rejects.** A *read* tolerates it: `knownWeatherRefresh`
 reports `nil`, exactly as an unrecognised `reason` bit is reported. Only a *write*

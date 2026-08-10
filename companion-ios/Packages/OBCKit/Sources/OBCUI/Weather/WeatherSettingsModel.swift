@@ -10,11 +10,13 @@ import OBCWeather
 ///
 /// Three rules shape everything here.
 ///
-/// **The device is the source of truth for refresh.** The interval lives in the Config blob and the
-/// device schedules from it; this screen reads it back and writes changes through the same
-/// read-modify-write the rename uses. It keeps no phone-side mirror to fall back on, because a
-/// mirror would confidently show a value the device never stored. Not connected means the control
-/// is honest about not knowing rather than guessing.
+/// **Device settings live on the device.** The refresh interval is the OBC's own setting: it lives
+/// in the Config blob, the device schedules from it, and the OBC's Weather screen is its editor.
+/// This app *reports* it and offers no way to change it — a second editor for one value is two
+/// places to look when they disagree, and the phone is the one that would be wrong. So there is no
+/// write path here at all, and no phone-side mirror either: not connected, the row does not claim a
+/// value rather than showing a remembered one. (§7.3 still makes the byte writable over BLE; the
+/// contract is frozen and stays as it is. Nothing in this app uses that direction, by choice.)
 ///
 /// **Provenance comes from the manifest.** Not one provider name is written down in the app. The
 /// credit lines, tiers, source-run times and staleness deadlines are read from
@@ -33,17 +35,14 @@ public final class WeatherSettingsModel {
     public private(set) var deviceSupportsWeather: Bool?
     /// The device's stored interval as this build can read it; `nil` when the device named one this
     /// app version does not know (§11.8's tolerant read direction) or nothing has been read yet.
+    ///
+    /// **Read-only.** The interval is a *device* setting and the OBC's own Weather screen is its
+    /// editor; the app reports it and nothing more. There is no phone-side write path to get wrong.
     public private(set) var refresh: WeatherRefresh?
     /// True when the device stored a refresh byte this build cannot name — a newer firmware, not a
     /// broken one. The row says so instead of showing a made-up interval.
     public private(set) var refreshIsUnknownToThisBuild = false
-    /// The write went out but the confirming read never came back, so the value on this row is the
-    /// rider's choice and *not* device truth. Said out loud rather than left to look identical to a
-    /// confirmed value; settled by a re-read on the next visit.
-    public private(set) var refreshIsUnconfirmed = false
     public private(set) var hasReadConfig = false
-    /// The last interval write failed; the view surfaces it once and clears it.
-    public var refreshWriteFailed = false
     /// The rider's standing-watch preference (phone-side).
     public private(set) var watchEnabled: Bool
     public private(set) var history: [WeatherJobHistoryEntry] = []
@@ -70,18 +69,6 @@ public final class WeatherSettingsModel {
     private let now: @Sendable () -> Date
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
-    /// The interval write currently in flight, if any — the tail of a single serial chain. See
-    /// ``setRefresh(_:)``.
-    @ObservationIgnored private var refreshWriteTask: Task<Void, Never>?
-    /// Bumped by every selection; a write task acts only while it still matches.
-    @ObservationIgnored private var refreshWriteGeneration = 0
-    /// Selections written but not yet settled. While this is non-zero the refresh field belongs to
-    /// the write chain, and a routine device re-read may not touch it.
-    @ObservationIgnored private var refreshWritesInFlight = 0
-    /// The last interval the *device* stated, and whether it was one this build cannot name — the
-    /// only thing a failed write may revert to.
-    @ObservationIgnored private var confirmedRefresh: WeatherRefresh?
-    @ObservationIgnored private var confirmedRefreshIsUnknown = false
 
     public init(
         transport: any DeviceTransport,
@@ -102,7 +89,6 @@ public final class WeatherSettingsModel {
 
     deinit {
         streamTasks.forEach { $0.cancel() }
-        refreshWriteTask?.cancel()
     }
 
     /// Subscribe the link state and load everything the screen shows (call once, from `.task`).
@@ -124,16 +110,16 @@ public final class WeatherSettingsModel {
         Task { [weak self] in await self?.loadServiceStatus() }
     }
 
-    /// The view's `.task` hook. First appearance starts the streams; a later one settles anything
-    /// the screen knows it is unsure about — today that is exactly one thing: an interval whose
-    /// confirming read never came back (F7). Re-reading everything on every appearance would be a
-    /// device round trip for a screen the rider is only glancing at.
+    /// The view's `.task` hook. The first appearance starts the streams; a later one re-reads,
+    /// because everything this screen shows is now somebody else's to change — the interval on the
+    /// device, the ring in the background job, the manifest on the server — and a rider coming back
+    /// from the OBC's own Weather screen expects the interval they just set to be here.
     public func appeared() async {
         guard started else {
             start()
             return
         }
-        if refreshIsUnconfirmed { await refreshAll() }
+        await refreshAll()
     }
 
     /// Re-read everything that can change behind the screen's back (the pull-to-refresh / reappear
@@ -151,83 +137,22 @@ public final class WeatherSettingsModel {
             deviceSupportsWeather = info.supportsWeather
         }
         guard let config = try? await transport.readConfig() else { return }
-        // The other unordered read-back, arriving by the other door. This screen re-reads the
-        // device on launch *and* when the link comes up, and either of those can still be in the
-        // air when the rider picks a new interval — landing afterwards it would snap the row back
-        // to the value the device held a moment ago, which reads exactly like a rejected write.
-        // A write in flight owns the refresh field until it settles (#1198 review).
-        guard refreshWritesInFlight == 0 else { return }
         applyReadConfig(config)
     }
 
-    /// The **only** writer of confirmed device truth. Everything else that moves `refresh` moves an
-    /// optimistic guess, and says so.
     private func applyReadConfig(_ config: DeviceConfig) {
         hasReadConfig = true
         // `effectiveWeatherRefresh` is the one correct reader: an absent field is the device's
         // documented default (30 min), and only an interval this build cannot name reads as `nil`.
         refresh = config.effectiveWeatherRefresh
         refreshIsUnknownToThisBuild = config.effectiveWeatherRefresh == nil
-        refreshIsUnconfirmed = false
-        confirmedRefresh = refresh
-        confirmedRefreshIsUnknown = refreshIsUnknownToThisBuild
     }
 
-    /// Whether the refresh control may be operated: a connected device that announced the weather
-    /// contract. Everything else dims it (the S4 rule — actions that need the link dim).
-    public var canEditRefresh: Bool {
-        connection == .connected && deviceSupportsWeather != false
-    }
-
-    /// Write a new interval to the device (read-modify-write, so the name and units survive).
-    /// Optimistic: the row moves at once and reverts if the device never took it.
-    ///
-    /// **Serial, and last-writer-wins.** A rider scrubbing the picker fires several of these within
-    /// a second, and unsupervised they are three concurrent read-modify-writes plus three
-    /// confirming reads landing in whatever order the link feels like. Two things fix that: each
-    /// write awaits its predecessor, so the device sees them in tap order and no read-modify-write
-    /// straddles another; and every task carries the generation it was born with, so a superseded
-    /// one neither writes a value the rider has already changed their mind about nor applies a
-    /// read-back that would snap the row to a value the device no longer holds (#1198 review).
-    public func setRefresh(_ new: WeatherRefresh) {
-        guard canEditRefresh, new != refresh || refreshIsUnknownToThisBuild else { return }
-        refresh = new
-        refreshIsUnknownToThisBuild = false
-        refreshIsUnconfirmed = false
-        refreshWriteGeneration &+= 1
-        let generation = refreshWriteGeneration
-        let predecessor = refreshWriteTask
-        refreshWritesInFlight += 1
-        refreshWriteTask = Task { [weak self, transport] in
-            await predecessor?.value
-            guard let self else { return }
-            defer { refreshWritesInFlight -= 1 }
-            guard generation == refreshWriteGeneration else { return }
-            do {
-                var config = try await transport.readConfig()
-                config.weatherRefreshRaw = new.rawValue
-                try await transport.writeConfig(config)
-                guard generation == refreshWriteGeneration else { return }
-                // Read back rather than trust the write: the device applies §11.8's strict half and
-                // is the only authority on what it stored. A read that never answers leaves the row
-                // *unconfirmed* rather than silently promoting this phone's optimism to device
-                // truth — the write may well have landed, but "may well have" is not a value.
-                let stored = try? await transport.readConfig()
-                guard generation == refreshWriteGeneration else { return }
-                if let stored {
-                    applyReadConfig(stored)
-                } else {
-                    refreshIsUnconfirmed = true
-                }
-            } catch {
-                guard generation == refreshWriteGeneration else { return }
-                // Back to the last value the *device* stated, never to an earlier optimistic guess.
-                refresh = confirmedRefresh
-                refreshIsUnknownToThisBuild = confirmedRefreshIsUnknown
-                refreshIsUnconfirmed = false
-                refreshWriteFailed = true
-            }
-        }
+    /// Whether the interval is worth stating at all: a device that is there and has weather. Not
+    /// connected, the row simply does not claim a value — the interval lives on the OBC, and a
+    /// remembered one would be this screen guessing at a setting it does not own.
+    public var canStateRefresh: Bool {
+        connection == .connected && deviceSupportsWeather != false && hasReadConfig
     }
 
     // MARK: The standing watch (phone-side)
@@ -309,6 +234,22 @@ public final class WeatherSettingsModel {
         return "No weather sent yet"
     }
 
+    /// Whether the schedule row belongs on the screen at all. A firmware without weather has no
+    /// schedule to report — its Config may well still carry a refresh byte, but reporting one for a
+    /// device that schedules nothing is the same theatre as offering to set it. The banner and the
+    /// status footer already say what is going on.
+    public var showsRefreshRow: Bool { deviceSupportsWeather != false }
+
+    /// The value column of the read-only "Asks for weather" row — the device's own schedule,
+    /// reported. Reads with its label as one sentence: *Asks for weather · Every 30 min.*
+    public var refreshValue: String {
+        WeatherCopy.refreshValue(
+            refresh,
+            unknownToThisBuild: refreshIsUnknownToThisBuild,
+            connected: connection == .connected,
+            hasRead: hasReadConfig)
+    }
+
     /// The value column of the "Last delivered" row.
     public var lastDeliveryValue: String {
         guard let delivered = lastDelivery else { return "Never" }
@@ -329,7 +270,8 @@ public final class WeatherSettingsModel {
     /// The status row's label: what is happening now, or what happened last.
     public var statusRowLabel: String { pending != nil ? "Now" : "Last try" }
 
-    /// The plain sentence under the status group: what is owed and who owes it.
+    /// The plain sentence under the status group: what is owed, who owes it, and — since the
+    /// interval row above is read-only — where the one setting on it is actually changed.
     public var statusFooter: String {
         if deviceSupportsWeather == false {
             return "This OBC's firmware doesn't include weather, so it never asks for any."
@@ -338,8 +280,8 @@ public final class WeatherSettingsModel {
             return "Your OBC asked for weather. The app fetches it and sends it back over "
                 + "Bluetooth — it doesn't need to stay connected in between."
         }
-        return "Your OBC asks for weather on its own schedule; the app answers. Nothing to do here "
-            + "unless a request is waiting."
+        return "Your OBC asks for weather on its own schedule; the app answers. Change how often "
+            + "on the OBC itself, under Weather."
     }
 
     /// The service group's value line: how old the published state of the world is.
