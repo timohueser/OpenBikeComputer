@@ -1,0 +1,201 @@
+{
+  "version": 1,
+  "generated_at": "2020-08-10T18:52:00Z",
+  "products": [
+    {
+      "id": "us",
+      "tier": 1,
+      "bbox_udeg": {
+        "south_udeg": 40480000,
+        "west_udeg": -96720000,
+        "north_udeg": 43564000,
+        "east_udeg": -89680000
+      },
+      "cell": {
+        "lat_udeg": 10000,
+        "lon_udeg": 10000,
+        "nominal_m": 1000
+      },
+      "reference_time": "2020-08-10T18:52:00Z",
+      "generated_at": "2020-08-10T18:52:00Z",
+      "staleness_deadline": "2020-08-10T19:22:00Z",
+      "attribution": {
+        "text": "Source: NOAA/NCEP MRMS PrecipRate (observation) and HRRR (forecast); modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+        "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+      },
+      "frames": [
+        {
+          "offset_min": 0,
+          "valid_at": "2020-08-10T18:52:00Z",
+          "source_class": "observation",
+          "key": "wx/v1/us/20200810T1852Z/f0.obcg",
+          "bytes": 35405,
+          "object_crc32": "0xFBC57613",
+          "geometry": {
+            "south_udeg": 40480000,
+            "west_udeg": -96720000,
+            "cell_lat_udeg": 10000,
+            "cell_lon_udeg": 10000,
+            "width": 704,
+            "height": 320,
+            "cell_size_m": 1000,
+            "tile_edge": 64,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 8,
+          "valid_at": "2020-08-10T19:00:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f8.obcg",
+          "bytes": 9249,
+          "object_crc32": "0x27A55AB8",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 23,
+          "valid_at": "2020-08-10T19:15:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f23.obcg",
+          "bytes": 9163,
+          "object_crc32": "0xF6209A8B",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 38,
+          "valid_at": "2020-08-10T19:30:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f38.obcg",
+          "bytes": 8992,
+          "object_crc32": "0x372714D2",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 53,
+          "valid_at": "2020-08-10T19:45:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f53.obcg",
+          "bytes": 9049,
+          "object_crc32": "0xF834E51E",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 68,
+          "valid_at": "2020-08-10T20:00:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f68.obcg",
+          "bytes": 8996,
+          "object_crc32": "0x6A86D368",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 83,
+          "valid_at": "2020-08-10T20:15:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f83.obcg",
+          "bytes": 8892,
+          "object_crc32": "0xF10ADC2E",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 98,
+          "valid_at": "2020-08-10T20:30:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f98.obcg",
+          "bytes": 8919,
+          "object_crc32": "0x3CA4F387",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        },
+        {
+          "offset_min": 113,
+          "valid_at": "2020-08-10T20:45:00Z",
+          "source_class": "forecast",
+          "key": "wx/v1/us/20200810T1852Z/f113.obcg",
+          "bytes": 8889,
+          "object_crc32": "0xDBD46490",
+          "geometry": {
+            "south_udeg": 40108000,
+            "west_udeg": -97108000,
+            "cell_lat_udeg": 27000,
+            "cell_lon_udeg": 34000,
+            "width": 224,
+            "height": 128,
+            "cell_size_m": 3000,
+            "tile_edge": 32,
+            "entries_per_page": 512
+          }
+        }
+      ]
+    }
+  ]
+}
