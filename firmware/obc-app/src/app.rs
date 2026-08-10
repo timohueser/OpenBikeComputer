@@ -2927,8 +2927,11 @@ impl App {
         // that decides whether the frame's rain may be drawn at all. Dropped here — before any
         // screen can `take` it — the ordinary Map, the Detour pair, and every map base added later
         // are rain-free by construction rather than by an exit hook a screen transition could
-        // forget. It also keeps the adapter's tile decodes (SD reads on the board) off every frame
-        // no screen would have painted rain on.
+        // forget. It also keeps the *per-tile* decodes off every frame no screen would have painted
+        // rain on — which will matter once the board renders rain (today only `obc-sim` leases;
+        // `obc-fw-nrf54l` still renders through `render_map_timed` and builds no adapter). Note it
+        // is only the `tile` reads that are skipped: the adapter's own header/frame reads happen in
+        // `RainOverlayAdapter::at_step`, upstream of this gate.
         let rain = if self.ui.base_wants_rain() { rain } else { None };
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.

@@ -379,8 +379,9 @@ impl UiRuntime {
     /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay), true only for the WX11 rain map.
     /// The frame's rain lease is dropped when this is false, so the precipitation raster is a
     /// property of the screen the rider is on rather than of the host's weather mount: leaving the
-    /// rain map leaves the Map clean with nothing to reset, and no rain tile is decoded (no SD
-    /// read) on a frame no screen would draw it on.
+    /// rain map leaves the Map clean with nothing to reset, and no rain *tile* is decoded on a
+    /// frame no screen would draw it on (a property that starts paying storage reads once the board
+    /// renders rain — today `obc-sim` is the only host that leases one).
     pub(crate) fn base_wants_rain(&self) -> bool {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         self.stack.get(base).is_some_and(|s| s.caps().rain_overlay)

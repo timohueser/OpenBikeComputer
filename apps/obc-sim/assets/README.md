@@ -63,16 +63,22 @@ mounted — is the rain-*free* baseline and the state-leak regression surface:
 cargo build --release -p obc-sim
 S=target/release/obc-sim; M=apps/obc-sim/assets/grimsel.obcm; O=apps/obc-sim/assets/wx10-rain-previews
 R="p d d d d w p d p"   # Home -> Menu -> Weather -> RAIN MAP
-$S $M --boot --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-scattered.png
-$S $M --boot --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-frontal-heading.png
-$S $M --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-storm.png
-$S $M --boot --weather demo:drizzle --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-drizzle.png
-$S $M --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "p d d d w p" --png $O/map-rain-free.png
+E="--expect-screen WeatherRainMap"   # the walk states where it lands, so a new menu row fails loudly
+$S $M --boot --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" $E --png $O/map-rain-frontal-heading.png
+$S $M --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" $E --png $O/map-rain-storm.png
+$S $M --boot --weather demo:drizzle --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" $E --png $O/map-rain-drizzle.png
+$S $M --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "p d d d w p" --expect-screen Map --png $O/map-rain-free.png
 ```
 
-Re-render after any edit to the rain tuning surface (`firmware/obc-render/src/rain.rs` -- the one
-file a look round touches) and commit the refreshed frames with it; delete the directory whenever
-the review era ends.
+The scattered-shower scene is deliberately absent: it is the same screen and scenario as
+`../wx11-weather-previews/rainmap-now.png`, and one copy of a frame is enough.
+
+Re-render — and commit the refreshed frames with the change — after anything that can move these
+bytes: the rain tuning surface (`firmware/obc-render/src/rain.rs`), the rain-map screen
+(`firmware/obc-app/src/screen/weather_map.rs`), the shared map scene it draws through
+(`screen/map.rs`), the demo bundles (`apps/obc-sim/src/weather_store.rs`), or the navigation the
+recipes walk (a new main-menu station changes what `$R` reaches — `--expect-screen` turns that into
+a failure rather than a wrong PNG). Delete the directory whenever the review era ends.
 
 ## The bbox-ratchet trap (read before re-packing)
 

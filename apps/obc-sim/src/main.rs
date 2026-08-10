@@ -77,6 +77,13 @@ struct Args {
     /// the once-per-load state builds), `I` = elapse 5 min with no input so the idle-return
     /// timeout fires.
     script: Option<String>,
+    /// `--expect-screen NAME`: headless `--png` only — refuse to render unless the script landed
+    /// on that screen ([`Screen::name`](obc_app::Screen::name), the `screens!` table's own
+    /// variant string). A recipe that walks a menu is a hostage to that menu's station order:
+    /// insert one row and `p d d d d w p d p` silently snapshots a different screen under the old
+    /// filename. Stating the destination turns that into a failed sweep instead of a quietly
+    /// wrong PNG.
+    expect_screen: Option<String>,
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
     boot: bool,
@@ -278,6 +285,7 @@ impl Default for Args {
             center: None,
             zoom_mul: 1.0,
             script: None,
+            expect_screen: None,
             boot: false,
             routes_dir: None,
             tracks_dir: None,
@@ -489,6 +497,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
+            "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
             "--tracks-dir" => a.tracks_dir = Some(it.next().ok_or("--tracks-dir needs a path")?),
@@ -970,7 +979,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|stormahead|rainahead|gusty|hourly]|live] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]|gust[:MIN]] [--weather-decide] [--weather-service URL] [--weather-radius-km KM] [--weather-offline] [--weather-latency MS] [--weather-fail-from N:CODE] [--weather-corrupt-request N] [--weather-truncate-request N] [--no-card]\n\n  --weather-decide run the production ride-decision path for the rendered frame: sample the\n                   bundle route-projected (App::ride_projection -> sample_along) and run the\n                   real alert engine (thresholds, dedup, cooldown), as the GUI does every\n                   frame. Source-agnostic: it decides over whichever bundle is loaded, demo\n                   or live. Opt-in, so every existing fixture render stays byte-identical.\n\n  --weather live   fetch the real OpenBikeComputer weather service for the rider's position:\n                   the manifest, OBCG corridor Range reads and MET hourly — the same bytes the\n                   phone consumes — assembled into an OBCW bundle and fed through the production\n                   reader/renderer/screens. The only network path in the simulator; fixtures and\n                   CI never reach it. The service receives no coordinate (every request is a\n                   Range read of a static object); MET is the one third party that does, rounded\n                   to four decimals. The failure controls above inject latency, HTTP status,\n                   truncation, corruption and offline against that same path. The corridor is\n                   projected from the fix the way the phone projects it (bearing + speed, the\n                   two-hour reach clamped to 10..120 km); --weather-radius-km forces a fixed\n                   undirected disc instead.\n\n  --no-card        the device has no storage to write a bundle to: per §11.7 the scheduler then\n                   raises no weather request at all, urgent included, so the simulator issues no\n                   HTTP request either. (--boot-fault nocard only draws a screen.)\n\n  clock rules      --clock always wins. Without it, a DIR/demo store anchors the app clock on\n                   its own first frame, so fixture renders are deterministic; --weather live\n                   anchors on the real wall clock instead, because anchoring on the newest frame\n                   would hide a stalled service behind a fresh-looking nowcast. --weather-now\n                   overrides the freshness instant in every mode — the stale-scenario tool.\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--expect-screen NAME] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|stormahead|rainahead|gusty|hourly]|live] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]|gust[:MIN]] [--weather-decide] [--weather-service URL] [--weather-radius-km KM] [--weather-offline] [--weather-latency MS] [--weather-fail-from N:CODE] [--weather-corrupt-request N] [--weather-truncate-request N] [--no-card]\n\n  --weather-decide run the production ride-decision path for the rendered frame: sample the\n                   bundle route-projected (App::ride_projection -> sample_along) and run the\n                   real alert engine (thresholds, dedup, cooldown), as the GUI does every\n                   frame. Source-agnostic: it decides over whichever bundle is loaded, demo\n                   or live. Opt-in, so every existing fixture render stays byte-identical.\n\n  --weather live   fetch the real OpenBikeComputer weather service for the rider's position:\n                   the manifest, OBCG corridor Range reads and MET hourly — the same bytes the\n                   phone consumes — assembled into an OBCW bundle and fed through the production\n                   reader/renderer/screens. The only network path in the simulator; fixtures and\n                   CI never reach it. The service receives no coordinate (every request is a\n                   Range read of a static object); MET is the one third party that does, rounded\n                   to four decimals. The failure controls above inject latency, HTTP status,\n                   truncation, corruption and offline against that same path. The corridor is\n                   projected from the fix the way the phone projects it (bearing + speed, the\n                   two-hour reach clamped to 10..120 km); --weather-radius-km forces a fixed\n                   undirected disc instead.\n\n  --no-card        the device has no storage to write a bundle to: per §11.7 the scheduler then\n                   raises no weather request at all, urgent included, so the simulator issues no\n                   HTTP request either. (--boot-fault nocard only draws a screen.)\n\n  clock rules      --clock always wins. Without it, a DIR/demo store anchors the app clock on\n                   its own first frame, so fixture renders are deterministic; --weather live\n                   anchors on the real wall clock instead, because anchoring on the newest frame\n                   would hide a stalled service behind a fresh-looking nowcast. --weather-now\n                   overrides the freshness instant in every mode — the stale-scenario tool.\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1589,6 +1598,18 @@ fn main() {
         // decision engine will drive on the device.
         if let Some((kind, minutes)) = args.weather_alert {
             app.show_weather_alert(kind, minutes);
+        }
+
+        // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
+        // sim checks it against the `screens!` table's own name before a single pixel is written.
+        // Checked here — after the injections, at the frame that is actually about to be drawn —
+        // so what is verified is what gets saved.
+        if let Some(expected) = &args.expect_screen {
+            let landed = app.top_screen().name();
+            if landed != expected {
+                eprintln!("error: --expect-screen {expected}, but the script landed on {landed}");
+                std::process::exit(1);
+            }
         }
 
         let mut fb = Framebuffer::new(args.width, args.height);
