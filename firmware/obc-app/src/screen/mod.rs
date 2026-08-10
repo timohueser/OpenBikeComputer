@@ -258,11 +258,15 @@ pub struct Render<'a> {
     pub scratch: Option<&'a mut RenderScratch>,
     /// The frame's **rain overlay lease** (WX10) — the host-constructed adapter over the active
     /// weather bundle's *current* frame, or `None` when nothing may render (no store, no current
-    /// frame, expired bundle). Like the scratch it is per-frame: the map-drawing base screen
+    /// frame, expired bundle) **or when the base screen did not declare
+    /// [`Caps::rain_overlay`]**. Like the scratch it is per-frame: the map-drawing base screen
     /// `take`s it and threads it into [`RenderScratch::render_rain_timed`], where the
     /// precipitation raster draws below the road band; `None` renders a byte-identical rain-free
     /// map. The freshness decision lives with the adapter (`obc-weather`'s `current_frame`), never
-    /// in a screen.
+    /// in a screen; *which screen may see rain at all* is the declared capability, resolved once in
+    /// [`App::render_scene_map_rain_timed`](crate::App::render_scene_map_rain_timed) — so a map
+    /// base that never asked for rain (the Map, the Detour pair) is handed `None` and cannot leak
+    /// the rain map's raster onto its own frame.
     pub rain: Option<&'a mut dyn obc_render::RainOverlaySource>,
     pub state: &'a AppState,
     pub activity: &'a Activity,
@@ -610,6 +614,14 @@ pub struct Caps {
     /// Declares the screen can draw a live **hold fill** for a guarded selection — it has a
     /// [`wants_hold_fill`](Screen::wants_hold_fill) arm.
     pub hold_fill: bool,
+    /// Declares the screen **wants the rain overlay** (WX10/WX11): the frame's rain lease is
+    /// handed to it and the precipitation raster draws inside its map scene. Off for every other
+    /// screen — including the ordinary Map and the Detour pair, which draw the same scene through
+    /// the same helper — so the overlay is a property of the screen the rider is on, not of the
+    /// frame the host happened to lease weather for. That makes leaving the rain map clean by
+    /// construction: there is no exit hook to forget, and a future map screen is rain-free until
+    /// its row says otherwise.
+    pub rain_overlay: bool,
     /// Which catalog the screen's held indices remap against after a rescan (#450).
     pub remap: RemapKind,
 }
@@ -627,6 +639,7 @@ impl Caps {
             reader: ReaderNeed::Never,
             timed: false,
             hold_fill: false,
+            rain_overlay: false,
             remap: RemapKind::None,
         }
     }
@@ -684,6 +697,13 @@ impl Caps {
     /// Declare the screen can draw a hold fill (a [`wants_hold_fill`](Screen::wants_hold_fill) arm).
     pub const fn hold_fill(mut self) -> Self {
         self.hold_fill = true;
+        self
+    }
+
+    /// Declare the screen wants the frame's **rain overlay** lease (see
+    /// [`rain_overlay`](Caps::rain_overlay)) — the rain map's row, and nothing else's.
+    pub const fn rain_overlay(mut self) -> Self {
+        self.rain_overlay = true;
         self
     }
 
@@ -866,8 +886,10 @@ screens! {
     /// temperature, precipitation, wind.
     WeatherHourly(WeatherHourlyScreen) => Caps::nav(),
     /// The rain map (WX11): the normal map scene with the WX10 precipitation raster below the
-    /// road band, 15-minute time-step navigation, and the honest out-of-regime/stale banners.
-    WeatherRainMap(WeatherRainMapScreen) => Caps::map().timed(),
+    /// road band, 15-minute time-step navigation, and the honest out-of-regime/stale banners. The
+    /// **one** screen that declares [`rain_overlay`](Caps::rain_overlay) — the raster is its
+    /// content, so it cannot survive the screen.
+    WeatherRainMap(WeatherRainMapScreen) => Caps::map().timed().rain_overlay(),
     /// The weather alert card (WX11): RAIN AHEAD / STORM AHEAD with VIEW RAIN MAP + DISMISS.
     /// **Host-pushed** by [`App::show_weather_alert`]; alert *generation* is WX12's.
     WeatherAlert(WeatherAlertScreen) => Caps::modal(),
@@ -2035,6 +2057,11 @@ mod tests {
                 assert!(c.ride_view, "{name}: a live-data base must be a ride view");
                 assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
+            // A rain-overlay screen must be a map base: the raster draws inside the map scene's
+            // paint order, so there is nowhere for it to go on a chrome or live-riding screen.
+            if c.rain_overlay {
+                assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base can carry the rain overlay");
+            }
             // A browse-exempt "deliberate view when not tracking" must be map-based.
             if c.browse_exempt {
                 assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base is browse-exempt");
@@ -2082,6 +2109,12 @@ mod tests {
         assert_eq!(named("Detour").remap, RemapKind::Route);
         assert_eq!(named("DetourPreview").remap, RemapKind::Route);
         assert_eq!(named("Rides").remap, RemapKind::Ride);
+        // The rain overlay belongs to the rain map and to nothing else — the Map and the Detour
+        // pair draw the very same scene through `draw_map_scene`, so a stray `.rain_overlay()` on
+        // one of them is exactly how the raster would start outliving its screen again.
+        assert!(named("WeatherRainMap").rain_overlay, "the rain map is the screen rain belongs to");
+        assert!(!named("Map").rain_overlay, "the ordinary Map never draws rain");
+        assert_eq!(caps.iter().filter(|c| c.rain_overlay).count(), 1, "exactly one screen wants rain");
         // Each capability value is used by at least one screen (nothing dead-declared).
         assert!(caps.iter().any(|c| c.reader == ReaderNeed::Always));
         assert!(caps.iter().any(|c| c.reader == ReaderNeed::PoiSnapshot));

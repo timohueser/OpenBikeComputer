@@ -52,19 +52,22 @@ byte changes the next time their pinned snapshots are deliberately refreshed.
 Rendered 240 x 320 review frames of the WX10 rain overlay (epic #1185), embedded in PR bodies so
 look-tuning rounds have a stable surface to point at. **Not fixtures** -- nothing reads them; they
 are regenerated (release sim, deterministic output) by exactly the `map-rain-*` commands in
-`firmware/ui-snapshots.sh` plus the `demo:drizzle` variant and the rain-free baseline (the explicit `--weather-now
+`firmware/ui-snapshots.sh` plus the `demo:drizzle` variant (the explicit `--weather-now
 1800000000` anchor pins the first demo frame now that the sim's rain lease follows the live wall
 clock — WX11 review F5; with `--clock` pinning the clock elsewhere the anchor keeps these frames
-byte-identical):
+byte-identical). Every rain frame is the **rain map** screen: the overlay is that screen's declared
+content (`Caps::rain_overlay`), so the last command — the ordinary Map with the heaviest bundle
+mounted — is the rain-*free* baseline and the state-leak regression surface:
 
 ```sh
 cargo build --release -p obc-sim
 S=target/release/obc-sim; M=apps/obc-sim/assets/grimsel.obcm; O=apps/obc-sim/assets/wx10-rain-previews
-$S $M --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-scattered.png
-$S $M --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-frontal-heading.png
-$S $M --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-storm.png
-$S $M --weather demo:drizzle --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-drizzle.png
-$S $M --clock "2025-06-29T14:40" --png $O/map-rain-none.png
+R="p d d d d w p d p"   # Home -> Menu -> Weather -> RAIN MAP
+$S $M --boot --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-scattered.png
+$S $M --boot --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-frontal-heading.png
+$S $M --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-storm.png
+$S $M --boot --weather demo:drizzle --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$R" --png $O/map-rain-drizzle.png
+$S $M --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "p d d d w p" --png $O/map-rain-free.png
 ```
 
 Re-render after any edit to the rain tuning surface (`firmware/obc-render/src/rain.rs` -- the one
