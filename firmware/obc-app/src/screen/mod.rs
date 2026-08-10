@@ -2058,9 +2058,17 @@ mod tests {
                 assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
             // A rain-overlay screen must be a map base: the raster draws inside the map scene's
-            // paint order, so there is nowhere for it to go on a chrome or live-riding screen.
+            // paint order, so there is nowhere for it to go on a chrome or live-riding screen. And
+            // it must not be an *overlay* kind: the lease is resolved against the base (lowest
+            // non-overlay) screen, so a rain screen declared `Overlay` would carry a capability
+            // that never fires — a silently dead declaration, exactly the drift this table exists
+            // to catch.
             if c.rain_overlay {
                 assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base can carry the rain overlay");
+                assert!(
+                    !c.kind.is_overlay(),
+                    "{name}: an overlay-kind screen is never the base the lease resolves against"
+                );
             }
             // A browse-exempt "deliberate view when not tracking" must be map-based.
             if c.browse_exempt {
