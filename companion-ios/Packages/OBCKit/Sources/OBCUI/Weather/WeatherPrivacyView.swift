@@ -112,7 +112,7 @@ public struct WeatherPrivacyView: View {
 
     private func stepRow(_ step: WeatherPrivacyCopy.Step, isLast: Bool) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text("\(step.id)")
+            Text(verbatim: "\(step.id)")
                 .font(.obcMono(size: 13, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 28, height: 28)
