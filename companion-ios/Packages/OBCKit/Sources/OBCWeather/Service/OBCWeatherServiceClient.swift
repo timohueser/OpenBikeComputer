@@ -13,7 +13,7 @@ import OBCWeatherWire
 /// Everything that can go wrong here degrades to a state instead of an error: an unreachable or
 /// malformed manifest is a service outage, a corridor no product covers is the explicit
 /// no-rain-map state, and either way the hourly forecast is untouched.
-public actor OBCWeatherServiceClient: PrecipitationGridProvider {
+public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceStatusProviding {
     /// The manifest key from OBCG §10.
     public static let manifestKey = "wx/v1/manifest.json"
     /// The manifest caches for at most 60 s (OBCG §10), so that is how long this client reuses one
@@ -91,6 +91,21 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider {
                 referenceTime: product.referenceTime, generatedAt: product.generatedAt,
                 stalenessDeadline: product.stalenessDeadline, crops: crops),
             diagnostics)
+    }
+
+    // MARK: - WeatherServiceStatusProviding
+
+    /// The manifest as health + credits (WX13). Rides the same 60 s manifest cache the corridor
+    /// path uses, so opening the weather screen right after a job costs nothing, and carries no
+    /// corridor or coordinate of its own.
+    public func serviceStatus(now: Date) async throws -> WeatherServiceStatus {
+        var diagnostics = WeatherDiagnostics()
+        let manifest = try await self.manifest(now: now, diagnostics: &diagnostics)
+        return WeatherServiceStatus(
+            generatedAt: manifest.generatedAt,
+            observedAt: manifestCache?.fetchedAt ?? now,
+            products: manifest.products.map(WeatherServiceProductStatus.init(product:)),
+            skippedProducts: manifestCache?.skippedProducts ?? 0)
     }
 
     // MARK: - Manifest

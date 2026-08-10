@@ -224,12 +224,17 @@ extension FixtureSet {
     /// one rather than serving the pre-E1 short read by default.
     public static let defaultObcmVersion: UInt8 = 13
 
+    /// The optional contracts a mock device announces unless a fixture overrides them (WX3 §11):
+    /// current firmware implements weather, so the mock does too — otherwise every mock run would
+    /// show the weather screen's "this OBC has no weather support" state and nothing else.
+    public static let defaultFeatureBits: UInt32 = OBCProtocol.featureWeather
+
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
     public static let builtIn = FixtureSet(
         deviceInfo: DeviceInfo(
             name: "OBC (mock)", firmwareVersion: "0.0.0-mock",
             serial: "OBC-MOCK-000000", storeEpoch: defaultStoreEpoch,
-            obcmVersion: defaultObcmVersion),
+            obcmVersion: defaultObcmVersion, featureBits: defaultFeatureBits),
         config: DeviceConfig(name: "OBC (mock)"),
         battery: 72, routes: [], rides: [],
         diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
@@ -374,13 +379,18 @@ private struct DeviceInfoDTO: Decodable {
     /// Optional in the JSON; defaults to `FixtureSet.defaultObcmVersion` so a
     /// mock device states the map format it reads, the way a real one does.
     let obcmVersion: UInt8?
+    /// Optional in the JSON; defaults to `FixtureSet.defaultFeatureBits` — a mock device is a
+    /// *current* device, so it announces the optional contracts current firmware implements
+    /// (weather, WX3). `-OBCWeatherDemo unsupported` is how a run models an older one.
+    let featureBits: UInt32?
 
     var domain: DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion,
                    hardwareVersion: hardwareVersion ?? "", serial: serial ?? "",
                    protocolVersion: protocolVersion ?? OBCProtocol.version,
                    storeEpoch: storeEpoch ?? FixtureSet.defaultStoreEpoch,
-                   obcmVersion: obcmVersion ?? FixtureSet.defaultObcmVersion)
+                   obcmVersion: obcmVersion ?? FixtureSet.defaultObcmVersion,
+                   featureBits: featureBits ?? FixtureSet.defaultFeatureBits)
     }
 }
 

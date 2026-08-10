@@ -77,6 +77,13 @@ public actor WeatherJobEngine {
         /// App launch / foreground: finish whatever the checkpoint says is owed, honouring
         /// cooldowns. Nothing persisted means nothing to do.
         case resume
+        /// The rider tapped *Retry now* on the WX13 screen. Like `.resume` it finishes only what
+        /// the checkpoint already owes — the phone cannot invent a request the device did not
+        /// raise, and a manufactured read leg would spend a 60 s scan hunting an advertisement
+        /// nobody is broadcasting. Unlike `.resume` it ignores the local cooldown: an explicit tap
+        /// outranks a timer the rider cannot see. It never overrides the device's own ladder,
+        /// because there is nothing here to override — the device is not being asked anything new.
+        case userRetry
     }
 
     private let link: any WeatherDeviceLink
@@ -139,12 +146,19 @@ public actor WeatherJobEngine {
     private func merged(_ queued: Trigger?, with incoming: Trigger) -> Trigger {
         switch (queued, incoming) {
         case (nil, _): return incoming
-        case (.contextRead(let snapshot, let ms), .resume), (.contextRead(let snapshot, let ms), .deviceRaisedRequest):
+        case (.contextRead(let snapshot, let ms), .resume),
+             (.contextRead(let snapshot, let ms), .userRetry),
+             (.contextRead(let snapshot, let ms), .deviceRaisedRequest):
             return .contextRead(snapshot, readConnectedMilliseconds: ms)
-        case (.deviceRaisedRequest, .resume): return .deviceRaisedRequest
+        case (.deviceRaisedRequest, .resume), (.deviceRaisedRequest, .userRetry):
+            return .deviceRaisedRequest
         default: return incoming
         }
     }
+
+    /// The persisted job, for ``WeatherJobControlling/pendingJob()``'s coordinate-free projection.
+    /// Kept `internal` so the record — which holds the rider's position — cannot leave the module.
+    func pendingRecord() -> WeatherJobRecord? { store.load() }
 
     // MARK: - The run
 
@@ -153,9 +167,10 @@ public actor WeatherJobEngine {
         var job = store.load() ?? WeatherJobRecord(startedAt: now, updatedAt: now)
 
         // A checkpoint from hours ago is not worth finishing — the weather it was fetching has
-        // moved on, and the device's ladder has long since re-raised or the ride ended.
+        // moved on, and the device's ladder has long since re-raised or the ride ended. It aged
+        // out; it did not run out of attempts (it may have spent none) and nothing superseded it.
         if now.timeIntervalSince(job.startedAt) > configuration.jobLifetime, store.load() != nil {
-            finish(job: &job, outcome: .failed, failure: .attemptsExhausted, at: now)
+            finish(job: &job, outcome: .failed, failure: .agedOut, at: now)
             job = WeatherJobRecord(startedAt: now, updatedAt: now)
         }
 
@@ -166,6 +181,12 @@ public actor WeatherJobEngine {
             // issue forbids.
             guard store.load() != nil else { return }
             if let notBefore = job.notBefore, now < notBefore { return }
+        case .userRetry:
+            // The rider asked. Same "only finish what is owed" rule as `.resume` — the phone never
+            // manufactures a request — but the cooldown is waived, because a tap is a person
+            // waiting rather than a timer ticking.
+            guard store.load() != nil else { return }
+            job.notBefore = nil
         case .deviceRaisedRequest:
             // The device is advertising *now*: any cooldown is overridden (its ladder outranks
             // ours) and a job without a snapshot starts at the read leg.
@@ -220,8 +241,15 @@ public actor WeatherJobEngine {
                 return
             }
             // The old bundle is history — record why, then rebuild against the fresh snapshot.
+            // *Why* is the point: a bundle the app slept past aged out, and calling that
+            // "superseded" invents a newer request that never existed (#1227 follow-up). Only a
+            // genuinely different request id, a rider who left the window, or a device that has
+            // since taken an equal-or-newer generation is something superseding this work.
+            let failure: WeatherJobFailure =
+                (existing.requestID == snapshot.requestID && !freshEnough) ? .agedOut : .superseded
             history.append(historyEntry(
-                for: job, outcome: .superseded, failure: .superseded, at: now))
+                for: job, outcome: failure == .agedOut ? .failed : .superseded,
+                failure: failure, at: now))
         } else if sameRequest == false {
             // A *new* request id landing on a job that had not built anything yet still abandons
             // that job — the fetch it was paying for answers a question nobody is asking any more.
@@ -355,6 +383,15 @@ public actor WeatherJobEngine {
                     // a good bundle and paid for a whole corridor re-fetch, six times over.
                     job.phase = .bundleReady
                     deferRetry(&job, .deviceUnavailable)
+                    return
+                } catch WeatherDeviceLinkError.transferCorrupted {
+                    // The wire mangled correct bytes (§11.5 `crcMismatch`). Handled exactly like a
+                    // drop — keep the bundle, re-send it — but recorded as itself: folding it into
+                    // `uploadFailed` cost the ring the one distinction that separates "this link
+                    // keeps dropping" from "this link corrupts what it carries" (#1227 follow-up).
+                    job.phase = .bundleReady
+                    recordFailure(
+                        &job, .transferCorrupted, error: WeatherDeviceLinkError.transferCorrupted)
                     return
                 } catch {
                     // Link-class failure: the persisted bytes stay valid, and a duplicate answers

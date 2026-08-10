@@ -31,8 +31,18 @@ public enum WeatherJobFailure: String, Codable, Equatable, Sendable {
     case fetchFailed
     /// The context read leg failed (scan/connect/read/decode).
     case contextReadFailed
-    /// The upload leg failed on the link (drop, timeout, radio off).
+    /// The upload leg failed on the link: a drop, a timeout, the radio going away. The bytes are
+    /// untouched and the retry re-sends them.
     case uploadFailed
+    /// The bytes arrived corrupted (§11.5 `crcMismatch`): the wire damaged a *correct* bundle, so
+    /// the retry re-sends the same bytes.
+    ///
+    /// Deliberately **not** folded into ``uploadFailed``. The engine treats the two alike — both
+    /// keep the bundle, both re-upload — but they are different field stories, and the ring is
+    /// where that difference has to survive: a run of `uploadFailed` says "this link keeps
+    /// dropping", a run of `transferCorrupted` says "this link stays up and mangles bytes", which
+    /// is a radio/PHY problem the drop label would hide (#1227 follow-up).
+    case transferCorrupted
     /// The device refused the bytes as not-a-bundle (§11.5 `error`) — a producer bug to surface.
     case bundleRejected
     /// The device could not take the bundle *right now* — it answered `busy` / `storageFull` /
@@ -44,8 +54,17 @@ public enum WeatherJobFailure: String, Codable, Equatable, Sendable {
     case buildFailed
     /// The job exceeded its attempt budget and was abandoned to the device's ladder.
     case attemptsExhausted
-    /// A newer device request superseded this job before it could finish.
+    /// A newer device request superseded this job before it could finish — or the device had
+    /// already taken a bundle at or past this one's generation, so these bytes answered a question
+    /// somebody else had answered.
     case superseded
+    /// Time, not another request, ended it: a checkpoint that outlived ``WeatherJobEngine``'s
+    /// `jobLifetime`, or a built bundle that sat past `bundleMaxAge` while the app slept.
+    ///
+    /// Split out of ``superseded`` and ``attemptsExhausted`` (#1227 follow-up), which both used to
+    /// absorb it and both told the rider something false: nothing superseded a job the app simply
+    /// slept through, and a job that aged out on its first attempt exhausted nothing.
+    case agedOut
 }
 
 /// The persisted job — everything a relaunched process needs to finish the exchange.

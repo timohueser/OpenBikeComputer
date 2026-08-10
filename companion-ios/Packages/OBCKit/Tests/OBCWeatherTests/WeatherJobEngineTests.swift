@@ -453,6 +453,113 @@ struct WeatherJobEngineTests {
         #expect(rig.store.load() == nil)
         #expect(rig.assembler.calls.count == 1, "the dead job did not fetch again")
         #expect(rig.history.entries().last?.outcome == .failed)
+        // …and it says *why*: time ran out. It used to read `attemptsExhausted`, which was false
+        // twice over — one attempt was spent, and nothing was exhausted (#1227 follow-up).
+        #expect(rig.history.entries().last?.failureReason == .agedOut)
+        #expect(rig.history.entries().last?.attempts == 1)
+    }
+
+    /// The crc-vs-drop split (#1227 follow-up). Both keep the bundle and re-upload it, so the
+    /// engine's *behaviour* is identical — which is exactly why the ring is the only place the
+    /// difference can survive, and why folding them lost it.
+    @Test func aCorruptedTransferIsRecordedApartFromADroppedOne() async {
+        let rig = Rig(configuration: .init(maxAttempts: 1))
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([5])))]
+        rig.link.uploadResults = [.failure(.transferCorrupted)]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.history.entries().last?.failureReason == .transferCorrupted)
+
+        let dropped = Rig(configuration: .init(maxAttempts: 1))
+        dropped.link.readResults = [.success(readReceipt(snapshot(readAt: dropped.clock.now)))]
+        dropped.assembler.results = [
+            .success(builtBundle(generation: 1, at: dropped.clock.now, bytes: Data([5]))),
+        ]
+        dropped.link.uploadResults = [.failure(.connectionDropped)]
+        await dropped.engine().kick(.deviceRaisedRequest)
+        #expect(dropped.history.entries().last?.failureReason == .uploadFailed)
+    }
+
+    /// A corrupted transfer re-sends the *same* bytes: they were correct when they left.
+    @Test func aCorruptedTransferResendsTheSameBytes() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([5])))]
+        rig.link.uploadResults = [.failure(.transferCorrupted), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        rig.clock.advance(rig.configuration.retryCooldown + 1)
+        await rig.engine().kick(.resume)
+        #expect(rig.assembler.calls.count == 1, "corruption on the wire is not a producer bug")
+        #expect(rig.link.uploadedPayloads == [Data([5]), Data([5])])
+    }
+
+    /// A ladder re-read landing on a bundle the app slept past records *aged out*, not
+    /// *superseded*: nothing superseded it — the same request is still being answered.
+    @Test func aBundleTheAppSleptPastIsRecordedAsAgedOutNotSuperseded() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 7, readAt: rig.clock.now)))]
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([1]))),
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([2]))),
+        ]
+        rig.link.uploadResults = [.failure(.connectionDropped), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.phase == .bundleReady)
+
+        // An hour asleep (past bundleMaxAge, inside jobLifetime), then the device's ladder step —
+        // the *same* request id, re-read by the transport's standing watch.
+        rig.clock.advance(3_600)
+        await rig.engine().kick(
+            .contextRead(snapshot(requestID: 7, readAt: rig.clock.now),
+                         readConnectedMilliseconds: 1_400))
+        let rows = rig.history.entries()
+        #expect(rows.first?.failureReason == .agedOut)
+        #expect(rows.first?.outcome == .failed)
+        #expect(rows.last?.outcome == .committed)
+        #expect(rig.link.uploadedPayloads.last == Data([2]), "the rebuilt bundle, not the old one")
+    }
+
+    /// *Retry now* waives the cooldown a `.resume` honours — and still refuses to invent work.
+    @Test func aRiderRetryWaivesTheCooldownButNeverManufacturesARequest() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [
+            .success(builtBundle(generation: 1, at: rig.clock.now, bytes: Data([3]))),
+        ]
+        rig.link.uploadResults = [.failure(.connectionDropped), .success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.store.load()?.notBefore != nil)
+
+        // No clock advance at all: the cooldown is still in force, and `.resume` would sit it out.
+        await rig.engine().kick(.userRetry)
+        #expect(rig.history.entries().last?.outcome == .committed)
+        #expect(rig.store.load() == nil)
+
+        // Nothing owed now — a tap must not start a read leg the device never asked for.
+        await rig.engine().kick(.userRetry)
+        #expect(rig.link.readCalls == 1)
+    }
+
+    /// The screen's view of the checkpoint carries no position, by construction.
+    @Test func thePendingProjectionIsCoordinateFree() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(requestID: 11, readAt: rig.clock.now)))]
+        rig.assembler.results = [.failure(WeatherProviderError.unavailable)]
+        let engine = rig.engine()
+        await engine.kick(.deviceRaisedRequest)
+
+        #expect(rig.store.load()?.snapshot?.latitudeMicrodegrees != nil, "the checkpoint holds it")
+        let pending = await engine.pendingJob()
+        #expect(pending?.requestID == 11)
+        #expect(pending?.phase == .fetching)
+        #expect(pending?.attempts == 1)
+        #expect(pending?.retryNotBefore != nil)
+        // The projection is a fixed set of scalars, and this pins the set: adding a field to the
+        // checkpoint must not quietly widen what a screen can hold.
+        #expect(Mirror(reflecting: pending!).children.compactMap(\.label).sorted() == [
+            "attempts", "bundleByteCount", "deferrals", "phase", "requestID", "retryNotBefore",
+            "startedAt", "updatedAt",
+        ])
     }
 
     /// A brand-new request id arriving mid-*fetch* abandons that fetch just as surely as one
