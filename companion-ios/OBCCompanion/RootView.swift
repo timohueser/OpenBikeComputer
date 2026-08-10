@@ -3,6 +3,7 @@ import OBCDomain
 import OBCTransport
 import OBCFormats
 import OBCUI
+import OBCWeather
 
 /// The app's root: the B2 launch gate (bond check → quiet reconnect, or the
 /// D1–D5 pairing flow) in front of the main screen (B3), which pushes the B4
@@ -57,6 +58,10 @@ struct RootView: View {
     /// pushes the S7 screen straight to its staged state (the Files picker can't
     /// be driven from automation), optionally auto-sending. `nil` in normal runs.
     private let firmwareDemoAtLaunch: (data: Data, autoSend: Bool)?
+    /// The WX13 Weather screens' seams (#1198): the job history ring, the engine (as the retry
+    /// control), the service-status provider and the standing-watch preference. Chosen by the
+    /// composition root exactly like the transport is.
+    private let weather: WeatherScreenSeams
 
     init(
         transport: any DeviceTransport,
@@ -72,7 +77,8 @@ struct RootView: View {
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture (`-OBCHoldSyncConfirmation`, #1212).
         // Untouched in every ordinary run.
-        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
+        weather: WeatherScreenSeams = WeatherScreenSeams()
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -80,6 +86,7 @@ struct RootView: View {
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
+        self.weather = weather
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
         self.importer = importer
         let transferActivity = TransferActivity()
@@ -493,8 +500,22 @@ struct RootView: View {
                 // the host owns a stable model — an in-flight transfer survives
                 // Settings body passes).
                 onOpenFirmwareUpdate: { path.append(.firmwareUpdate) },
+                // WX13: the Weather screen is its own destination for the same reason — the model
+                // reads the device, the ring and the service, and must survive Settings body passes.
+                onOpenWeather: { path.append(.weather) },
                 onOpenDevPanel: devPanelOpener
             )
+        case .weather:
+            WeatherSettingsScreen(
+                transport: transport,
+                seams: weather,
+                onOpenDiagnostics: { path.append(.weatherDiagnostics) },
+                onOpenPrivacy: { path.append(.weatherPrivacy) }
+            )
+        case .weatherDiagnostics:
+            WeatherDiagnosticsScreen(history: weather.history)
+        case .weatherPrivacy:
+            WeatherPrivacyView()
         case .firmwareUpdate:
             FirmwareUpdateScreen(
                 transport: transport,
@@ -527,6 +548,9 @@ enum MainDestination: Hashable {
     case ride(id: RideID)
     case trash
     case settings
+    case weather
+    case weatherDiagnostics
+    case weatherPrivacy
     case firmwareUpdate
 }
 

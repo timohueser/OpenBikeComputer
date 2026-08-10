@@ -235,6 +235,12 @@ public struct MockTransport: DeviceTransport {
         control.recordForgetBond()
     }
 
+    /// The standing weather watch (WX13). No radio here, so the mock records the intent — which is
+    /// the whole of the observable effect for a transport that never scans.
+    public func setWeatherWatch(_ enabled: Bool) {
+        control.recordWeatherWatch(enabled)
+    }
+
     // MARK: Shared op prelude
 
     /// Every control-plane / list op: apply latency, require a reachable link, then

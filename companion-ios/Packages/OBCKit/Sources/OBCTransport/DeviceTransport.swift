@@ -186,6 +186,19 @@ public protocol DeviceTransport: Sendable {
     /// bond until the rider forgets the phone on it).
     func forgetBond() async throws
 
+    // MARK: Weather (spec §11 — the standing watch)
+
+    /// Arm or disarm the **standing weather watch** (WX9): a UUID-filtered scan for the bonded
+    /// device's Weather Request advertisement whenever nothing else needs the radio, so a device
+    /// raising a request wakes the app — foregrounded, backgrounded, or after the process was
+    /// killed (CoreBluetooth state restoration). The flag persists across relaunches.
+    ///
+    /// On the protocol rather than only on `BLETransport` because the rider owns it now: WX13's
+    /// *Background weather* switch is the first caller that ever passes `false`, and a view model
+    /// may not reach past `DeviceTransport` to find one (the golden rule). Stand-ins that model no
+    /// radio ignore it, which is the truthful stand-in behaviour — there is no scan to arm.
+    func setWeatherWatch(_ enabled: Bool)
+
     // MARK: Firmware update (S7 — DFU delivery)
 
     /// Upload a firmware update (app → device, S7). The payload is the whole OBCU
@@ -261,6 +274,12 @@ extension DeviceTransport {
     /// tolerates. `BLETransport` sends the real command; `MockTransport` records
     /// the request.
     public func forgetBond() async throws {}
+
+    /// Default: no radio, so no watch to arm — for preview/test stand-ins. Safe as a no-op in a
+    /// way the other defaults are not merely conveniently: the watch *is* a scan, and a transport
+    /// that does not scan has nothing to turn off. The rider's preference is stored by
+    /// ``WeatherPreferencesStore`` either way, so the setting survives a stand-in run.
+    public func setWeatherWatch(_ enabled: Bool) {}
 
     // MARK: Trips (TR8) — defaults for stand-ins that don't model trips
     //
