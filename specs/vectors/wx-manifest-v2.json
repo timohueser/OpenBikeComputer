@@ -1,0 +1,1617 @@
+{
+  "version": 2,
+  "generation": "20260810T1430Z",
+  "generated_at": "2026-08-10T14:31:07Z",
+  "reference_time": "2026-08-10T14:30:00Z",
+  "key_prefix": "wx/v2",
+  "previous_generations": [
+    "20260810T1415Z",
+    "20260810T1400Z"
+  ],
+  "lattice": {
+    "south_lat_udeg": -90000000,
+    "west_lon_udeg": -180000000,
+    "cell_udeg": 10000,
+    "width": 36000,
+    "height": 18000,
+    "shard_width": 6144,
+    "shard_height": 4608,
+    "shard_cols": 6,
+    "shard_rows": 4,
+    "tile_edge": 256,
+    "entries_per_page": 128,
+    "cell_size_m": 1113,
+    "covered_rows": {
+      "first": 12,
+      "end": 17987
+    }
+  },
+  "cadence": {
+    "frame_step_min": 15,
+    "frames": 9,
+    "max_source_skew_s": 1800
+  },
+  "freshness": {
+    "manifest_max_age_s": 60,
+    "next_generation_expected_at": "2026-08-10T14:45:00Z",
+    "stale_after": "2026-08-10T16:30:00Z"
+  },
+  "attribution": [
+    {
+      "source_id": "dwd-rv",
+      "text": "Source: Deutscher Wetterdienst (DWD), radar composite RV; modified/quantized by OpenBikeComputer",
+      "url": "https://www.dwd.de/EN/service/copyright/copyright_artikel.html"
+    },
+    {
+      "source_id": "us",
+      "text": "Source: NOAA/NCEP MRMS PrecipRate (observation) and HRRR (forecast); modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "source_id": "icon-eu",
+      "text": "Source: Deutscher Wetterdienst (DWD), ICON-EU; modified/quantized by OpenBikeComputer",
+      "url": "https://www.dwd.de/EN/service/copyright/copyright_artikel.html"
+    },
+    {
+      "source_id": "gfs",
+      "text": "Source: NOAA/NCEP GFS; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    }
+  ],
+  "frames": [
+    {
+      "offset_min": 0,
+      "valid_at": "2026-08-10T14:30:00Z",
+      "present": "f3ffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120000,
+          "object_crc32": "0x51A00000",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123000,
+          "object_crc32": "0x51A70707",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132000,
+          "object_crc32": "0x51BC1C1C",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135000,
+          "object_crc32": "0x51C32323",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 120700,
+          "object_crc32": "0x51AD0D0D",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 123700,
+          "object_crc32": "0x51B41414",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 126700,
+          "object_crc32": "0x51BB1B1B",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 129700,
+          "object_crc32": "0x51C22222",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 132700,
+          "object_crc32": "0x51C92929",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 135700,
+          "object_crc32": "0x51D03030",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 121400,
+          "object_crc32": "0x51BA1A1A",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 124400,
+          "object_crc32": "0x51C12121",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 127400,
+          "object_crc32": "0x51C82828",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 130400,
+          "object_crc32": "0x51CF2F2F",
+          "observed": true
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 133400,
+          "object_crc32": "0x51D63636",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 136400,
+          "object_crc32": "0x51DD3D3D",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 122100,
+          "object_crc32": "0x51C72727",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 125100,
+          "object_crc32": "0x51CE2E2E",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 128100,
+          "object_crc32": "0x51D53535",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 131100,
+          "object_crc32": "0x51DC3C3C",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 134100,
+          "object_crc32": "0x51E34343",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 137100,
+          "object_crc32": "0x51EA4A4A",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 15,
+      "valid_at": "2026-08-10T14:45:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120165,
+          "object_crc32": "0x51AF0F0F",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123165,
+          "object_crc32": "0x51B61616",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 126165,
+          "object_crc32": "0x51BD1D1D",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 129165,
+          "object_crc32": "0x51C42424",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132165,
+          "object_crc32": "0x51CB2B2B",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135165,
+          "object_crc32": "0x51D23232",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 120865,
+          "object_crc32": "0x51BC1C1C",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 123865,
+          "object_crc32": "0x51C32323",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 126865,
+          "object_crc32": "0x51CA2A2A",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 129865,
+          "object_crc32": "0x51D13131",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 132865,
+          "object_crc32": "0x51D83838",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 135865,
+          "object_crc32": "0x51DF3F3F",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 121565,
+          "object_crc32": "0x51C92929",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 124565,
+          "object_crc32": "0x51D03030",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 127565,
+          "object_crc32": "0x51D73737",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 130565,
+          "object_crc32": "0x51DE3E3E",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 133565,
+          "object_crc32": "0x51E54545",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 136565,
+          "object_crc32": "0x51EC4C4C",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 122265,
+          "object_crc32": "0x51D63636",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 125265,
+          "object_crc32": "0x51DD3D3D",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 128265,
+          "object_crc32": "0x51E44444",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 131265,
+          "object_crc32": "0x51EB4B4B",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 134265,
+          "object_crc32": "0x51F25252",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 137265,
+          "object_crc32": "0x51F95959",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 30,
+      "valid_at": "2026-08-10T15:00:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120330,
+          "object_crc32": "0x51BE1E1E",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123330,
+          "object_crc32": "0x51C52525",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 126330,
+          "object_crc32": "0x51CC2C2C",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 129330,
+          "object_crc32": "0x51D33333",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132330,
+          "object_crc32": "0x51DA3A3A",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135330,
+          "object_crc32": "0x51E14141",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 121030,
+          "object_crc32": "0x51CB2B2B",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 124030,
+          "object_crc32": "0x51D23232",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 127030,
+          "object_crc32": "0x51D93939",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 130030,
+          "object_crc32": "0x51E04040",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 133030,
+          "object_crc32": "0x51E74747",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 136030,
+          "object_crc32": "0x51EE4E4E",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 121730,
+          "object_crc32": "0x51D83838",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 124730,
+          "object_crc32": "0x51DF3F3F",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 127730,
+          "object_crc32": "0x51E64646",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 130730,
+          "object_crc32": "0x51ED4D4D",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 133730,
+          "object_crc32": "0x51F45454",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 136730,
+          "object_crc32": "0x51FB5B5B",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 122430,
+          "object_crc32": "0x51E54545",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 125430,
+          "object_crc32": "0x51EC4C4C",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 128430,
+          "object_crc32": "0x51F35353",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 131430,
+          "object_crc32": "0x51FA5A5A",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 134430,
+          "object_crc32": "0x52016161",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 137430,
+          "object_crc32": "0x52086868",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 45,
+      "valid_at": "2026-08-10T15:15:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120495,
+          "object_crc32": "0x51CD2D2D",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123495,
+          "object_crc32": "0x51D43434",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 126495,
+          "object_crc32": "0x51DB3B3B",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 129495,
+          "object_crc32": "0x51E24242",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132495,
+          "object_crc32": "0x51E94949",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135495,
+          "object_crc32": "0x51F05050",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 121195,
+          "object_crc32": "0x51DA3A3A",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 124195,
+          "object_crc32": "0x51E14141",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 127195,
+          "object_crc32": "0x51E84848",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 130195,
+          "object_crc32": "0x51EF4F4F",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 133195,
+          "object_crc32": "0x51F65656",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 136195,
+          "object_crc32": "0x51FD5D5D",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 121895,
+          "object_crc32": "0x51E74747",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 124895,
+          "object_crc32": "0x51EE4E4E",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 127895,
+          "object_crc32": "0x51F55555",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 130895,
+          "object_crc32": "0x51FC5C5C",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 133895,
+          "object_crc32": "0x52036363",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 136895,
+          "object_crc32": "0x520A6A6A",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 122595,
+          "object_crc32": "0x51F45454",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 125595,
+          "object_crc32": "0x51FB5B5B",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 128595,
+          "object_crc32": "0x52026262",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 131595,
+          "object_crc32": "0x52096969",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 134595,
+          "object_crc32": "0x52107070",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 137595,
+          "object_crc32": "0x52177777",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 60,
+      "valid_at": "2026-08-10T15:30:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120660,
+          "object_crc32": "0x51DC3C3C",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123660,
+          "object_crc32": "0x51E34343",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 126660,
+          "object_crc32": "0x51EA4A4A",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 129660,
+          "object_crc32": "0x51F15151",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132660,
+          "object_crc32": "0x51F85858",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135660,
+          "object_crc32": "0x51FF5F5F",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 121360,
+          "object_crc32": "0x51E94949",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 124360,
+          "object_crc32": "0x51F05050",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 127360,
+          "object_crc32": "0x51F75757",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 130360,
+          "object_crc32": "0x51FE5E5E",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 133360,
+          "object_crc32": "0x52056565",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 136360,
+          "object_crc32": "0x520C6C6C",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 122060,
+          "object_crc32": "0x51F65656",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 125060,
+          "object_crc32": "0x51FD5D5D",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 128060,
+          "object_crc32": "0x52046464",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 131060,
+          "object_crc32": "0x520B6B6B",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 134060,
+          "object_crc32": "0x52127272",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 137060,
+          "object_crc32": "0x52197979",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 122760,
+          "object_crc32": "0x52036363",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 125760,
+          "object_crc32": "0x520A6A6A",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 128760,
+          "object_crc32": "0x52117171",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 131760,
+          "object_crc32": "0x52187878",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 134760,
+          "object_crc32": "0x521F7F7F",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 137760,
+          "object_crc32": "0x52268686",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 75,
+      "valid_at": "2026-08-10T15:45:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120825,
+          "object_crc32": "0x51EB4B4B",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123825,
+          "object_crc32": "0x51F25252",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 126825,
+          "object_crc32": "0x51F95959",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 129825,
+          "object_crc32": "0x52006060",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132825,
+          "object_crc32": "0x52076767",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135825,
+          "object_crc32": "0x520E6E6E",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 121525,
+          "object_crc32": "0x51F85858",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 124525,
+          "object_crc32": "0x51FF5F5F",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 127525,
+          "object_crc32": "0x52066666",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 130525,
+          "object_crc32": "0x520D6D6D",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 133525,
+          "object_crc32": "0x52147474",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 136525,
+          "object_crc32": "0x521B7B7B",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 122225,
+          "object_crc32": "0x52056565",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 125225,
+          "object_crc32": "0x520C6C6C",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 128225,
+          "object_crc32": "0x52137373",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 131225,
+          "object_crc32": "0x521A7A7A",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 134225,
+          "object_crc32": "0x52218181",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 137225,
+          "object_crc32": "0x52288888",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 122925,
+          "object_crc32": "0x52127272",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 125925,
+          "object_crc32": "0x52197979",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 128925,
+          "object_crc32": "0x52208080",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 131925,
+          "object_crc32": "0x52278787",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 134925,
+          "object_crc32": "0x522E8E8E",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 137925,
+          "object_crc32": "0x52359595",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 90,
+      "valid_at": "2026-08-10T16:00:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 120990,
+          "object_crc32": "0x51FA5A5A",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 123990,
+          "object_crc32": "0x52016161",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 126990,
+          "object_crc32": "0x52086868",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 129990,
+          "object_crc32": "0x520F6F6F",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 132990,
+          "object_crc32": "0x52167676",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 135990,
+          "object_crc32": "0x521D7D7D",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 121690,
+          "object_crc32": "0x52076767",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 124690,
+          "object_crc32": "0x520E6E6E",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 127690,
+          "object_crc32": "0x52157575",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 130690,
+          "object_crc32": "0x521C7C7C",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 133690,
+          "object_crc32": "0x52238383",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 136690,
+          "object_crc32": "0x522A8A8A",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 122390,
+          "object_crc32": "0x52147474",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 125390,
+          "object_crc32": "0x521B7B7B",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 128390,
+          "object_crc32": "0x52228282",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 131390,
+          "object_crc32": "0x52298989",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 134390,
+          "object_crc32": "0x52309090",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 137390,
+          "object_crc32": "0x52379797",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 123090,
+          "object_crc32": "0x52218181",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 126090,
+          "object_crc32": "0x52288888",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 129090,
+          "object_crc32": "0x522F8F8F",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 132090,
+          "object_crc32": "0x52369696",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 135090,
+          "object_crc32": "0x523D9D9D",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 138090,
+          "object_crc32": "0x5244A4A4",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 105,
+      "valid_at": "2026-08-10T16:15:00Z",
+      "present": "ffffff",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 121155,
+          "object_crc32": "0x52096969",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 124155,
+          "object_crc32": "0x52107070",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 127155,
+          "object_crc32": "0x52177777",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 130155,
+          "object_crc32": "0x521E7E7E",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 133155,
+          "object_crc32": "0x52258585",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 136155,
+          "object_crc32": "0x522C8C8C",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 121855,
+          "object_crc32": "0x52167676",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 124855,
+          "object_crc32": "0x521D7D7D",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 127855,
+          "object_crc32": "0x52248484",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 130855,
+          "object_crc32": "0x522B8B8B",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 133855,
+          "object_crc32": "0x52329292",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 136855,
+          "object_crc32": "0x52399999",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 122555,
+          "object_crc32": "0x52238383",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 125555,
+          "object_crc32": "0x522A8A8A",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 128555,
+          "object_crc32": "0x52319191",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 131555,
+          "object_crc32": "0x52389898",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 134555,
+          "object_crc32": "0x523F9F9F",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 137555,
+          "object_crc32": "0x5246A6A6",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 123255,
+          "object_crc32": "0x52309090",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 126255,
+          "object_crc32": "0x52379797",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 129255,
+          "object_crc32": "0x523E9E9E",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 132255,
+          "object_crc32": "0x5245A5A5",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 135255,
+          "object_crc32": "0x524CACAC",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 3,
+          "bytes": 138255,
+          "object_crc32": "0x5253B3B3",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 120,
+      "valid_at": "2026-08-10T16:30:00Z",
+      "present": "ffff7f",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 121320,
+          "object_crc32": "0x52187878",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 0,
+          "bytes": 124320,
+          "object_crc32": "0x521F7F7F",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 0,
+          "bytes": 127320,
+          "object_crc32": "0x52268686",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 0,
+          "bytes": 130320,
+          "object_crc32": "0x522D8D8D",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 0,
+          "bytes": 133320,
+          "object_crc32": "0x52349494",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 0,
+          "bytes": 136320,
+          "object_crc32": "0x523B9B9B",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 1,
+          "bytes": 122020,
+          "object_crc32": "0x52258585",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 1,
+          "bytes": 125020,
+          "object_crc32": "0x522C8C8C",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 1,
+          "bytes": 128020,
+          "object_crc32": "0x52339393",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 1,
+          "bytes": 131020,
+          "object_crc32": "0x523A9A9A",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 1,
+          "bytes": 134020,
+          "object_crc32": "0x5241A1A1",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 1,
+          "bytes": 137020,
+          "object_crc32": "0x5248A8A8",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 2,
+          "bytes": 122720,
+          "object_crc32": "0x52329292",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 2,
+          "bytes": 125720,
+          "object_crc32": "0x52399999",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 2,
+          "bytes": 128720,
+          "object_crc32": "0x5240A0A0",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 2,
+          "bytes": 131720,
+          "object_crc32": "0x5247A7A7",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 2,
+          "bytes": 134720,
+          "object_crc32": "0x524EAEAE",
+          "observed": false
+        },
+        {
+          "col": 5,
+          "row": 2,
+          "bytes": 137720,
+          "object_crc32": "0x5255B5B5",
+          "observed": false
+        },
+        {
+          "col": 0,
+          "row": 3,
+          "bytes": 123420,
+          "object_crc32": "0x523F9F9F",
+          "observed": false
+        },
+        {
+          "col": 1,
+          "row": 3,
+          "bytes": 126420,
+          "object_crc32": "0x5246A6A6",
+          "observed": false
+        },
+        {
+          "col": 2,
+          "row": 3,
+          "bytes": 129420,
+          "object_crc32": "0x524DADAD",
+          "observed": false
+        },
+        {
+          "col": 3,
+          "row": 3,
+          "bytes": 132420,
+          "object_crc32": "0x5254B4B4",
+          "observed": false
+        },
+        {
+          "col": 4,
+          "row": 3,
+          "bytes": 135420,
+          "object_crc32": "0x525BBBBB",
+          "observed": false
+        }
+      ]
+    }
+  ]
+}

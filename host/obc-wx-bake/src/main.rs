@@ -8,16 +8,16 @@
 //! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
 //! obc-wx-bake us      [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   CONUS MRMS+HRRR, tier 1
 //! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
-//! obc-wx-bake schema                                                       print the manifest JSON Schema
+//! obc-wx-bake schema [--v2]                                                print a manifest JSON Schema
 //! obc-wx-bake spike   [--threads 4] [...]                                  WXR1 #1240 measurement harness
 //! ```
 //!
 //! `canonical` is the WXR3 (#1242) path and the one the service is moving to: it bakes **every**
 //! adapter, mosaics them onto the canonical global 0.01 degree lattice by the ordered
 //! `source::MOSAIC_PRIORITY` table, and publishes one provider-agnostic dataset of 24 shards x 9
-//! frames under `wx/v2/` — beside the live `wx/v1` tree, never over it. Its manifest is a
-//! deliberate placeholder until WXR4 #1243 designs the real one. Everything else below is the
-//! multi-product path WXR7 #1246 deletes.
+//! frames under `wx/v2/` — beside the live `wx/v1` tree, never over it, indexed by the v2 manifest
+//! (WXR4 #1243: one generation, one grid, a shard presence bitmap, nothing selectable). Everything
+//! else below is the multi-product path WXR7 #1246 deletes.
 //!
 //! One product's failure never blocks another's: run the per-product subcommands from separate
 //! timers when that isolation matters more than a single-manifest cycle.
@@ -36,6 +36,7 @@ use obc_wx_bake::canonical::{run_canonical_cycle, BAKE_THREADS, CANONICAL};
 use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
+use obc_wx_bake::manifest_v2;
 use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
 use obc_wx_bake::source::{dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, us::UsComposite, Adapter};
 
@@ -53,7 +54,8 @@ fn main() {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
-        print!("{}", manifest::schema_json());
+        let v2 = args[1..].iter().any(|arg| arg == "--v2");
+        print!("{}", if v2 { manifest_v2::schema_json() } else { manifest::schema_json() });
         return Ok(());
     }
     // The WXR1 (#1240) measurement spike: fixtures in, numbers out, nothing published.
@@ -117,6 +119,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema"
+    "usage: obc-wx-bake <canonical|cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       canonical also takes [--threads <n>] (default 4, the production VPS core count)\n       obc-wx-bake schema [--v2]   (v1 by default; --v2 is the canonical dataset's manifest)"
         .to_string()
 }
