@@ -428,7 +428,7 @@
           ],
           "format": "double",
           "default": 0.0,
-          "description": "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.",
+          "description": "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a coverage_simplify tier it is an *elimination* threshold instead: a face this small is absorbed into the neighbour it shares the longest boundary with, so the ground stays covered.",
           "minimum": 0.0
         },
         "coverage_simplify": {
@@ -437,7 +437,7 @@
             "null"
           ],
           "default": false,
-          "description": "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open into backdrop slivers. Costs bake time; false (the default) packs byte-identically to before."
+          "description": "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically to before."
         }
       }
     },

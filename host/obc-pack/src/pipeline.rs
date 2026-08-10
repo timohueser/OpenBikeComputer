@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::coverage::{coverage_simplify_fills_with, CoverageStats};
+use crate::coverage::{coverage_simplify_fills_with, CoverageStats, Eliminate};
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
@@ -64,6 +64,15 @@ pub struct PackSummary {
     /// map content is missing.
     pub dropped: usize,
 }
+
+/// How much bigger than the tier's `min_area_px` a **hole** must be to survive on a
+/// [`crate::coverage`] tier. Outlines carry a far-zoom frame; the specks inside them do not, and a
+/// hole costs a whole ring plus its vertices in the render scratch. The threshold is deliberately
+/// looser than the one that keeps a face: a face this small has already been absorbed into its
+/// neighbour, and what is left as a hole is another class's island that the outline reads better
+/// without. Filling it is not a lie about the ground — the class around it simply extends over it,
+/// which is what the paint order does anyway when the island is a pixel wide.
+pub(crate) const COVERAGE_HOLE_FACTOR: f64 = 4.0;
 
 /// Pack `pbfs` into `output` using `config`.
 ///
@@ -226,25 +235,34 @@ fn run(
             // `simplify` is `false` for a feature the coverage pass already cut to this tier's
             // tolerance (below): simplifying it a second time would move exactly the shared
             // boundaries that pass exists to keep glued.
-            let simplify_cull = |style_id: u8, geom: &Geom, simplify: bool| -> Option<(u8, Geom)> {
-                if progress.is_cancelled() {
-                    return None;
-                }
-                let mut g = if simplify && tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
-                if let Some(mpp) = cull_mpp {
-                    if footprint_below(&g, mpp, min_area_px) {
-                        culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            //
+            // `from_coverage` marks the output of [`crate::coverage`]: that pass already applied
+            // this tier's `min_area_px`, as *elimination* rather than a drop, so culling it a
+            // second time would punch back the holes it exists to avoid. Its holes are trimmed
+            // harder instead — a hole is another class's face, and at a far-zoom tier an outline
+            // is worth more than the specks inside it.
+            let simplify_cull =
+                |style_id: u8, geom: &Geom, simplify: bool, from_coverage: bool| -> Option<(u8, Geom)> {
+                    if progress.is_cancelled() {
                         return None;
                     }
-                    // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in the
-                    // render scratch, on the same tier gate + threshold as the footprint cull).
-                    let n = strip_small_holes(&mut g, mpp, min_area_px);
-                    if n > 0 {
-                        holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                    let mut g =
+                        if simplify && tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                    if let Some(mpp) = cull_mpp {
+                        if !from_coverage && footprint_below(&g, mpp, min_area_px) {
+                            culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return None;
+                        }
+                        // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in the
+                        // render scratch, on the same tier gate + threshold as the footprint cull).
+                        let hole_floor = if from_coverage { min_area_px * COVERAGE_HOLE_FACTOR } else { min_area_px };
+                        let n = strip_small_holes(&mut g, mpp, hole_floor);
+                        if n > 0 {
+                            holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
-                }
-                Some((style_id, g))
-            };
+                    Some((style_id, g))
+                };
             // Optionally dissolve pixel-identical fill polygons and/or stitch
             // same-styled line fragments BEFORE simplify (see `crate::merge`):
             // merging first deletes shared parcel boundaries / duplicated way
@@ -267,9 +285,15 @@ fn run(
                     report_merge(progress, m, "line fragment", "into");
                     feats = merged;
                 }
-                let (feats, c) = coverage_simplify_fills_with(feats, &fill_classes, tol, progress);
+                let (feats, c) = coverage_simplify_fills_with(
+                    feats,
+                    &fill_classes,
+                    tol,
+                    Eliminate::new(cull_mpp, min_area_px),
+                    progress,
+                );
                 report_coverage(progress, c);
-                feats.par_iter().filter_map(|(sid, g, done)| simplify_cull(*sid, g, !*done)).collect()
+                feats.par_iter().filter_map(|(sid, g, done)| simplify_cull(*sid, g, !*done, *done)).collect()
             } else if config.merge_fills || config.merge_lines {
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
@@ -283,13 +307,13 @@ fn run(
                     report_merge(progress, m, "line fragment", "into");
                     feats = merged;
                 }
-                feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g, true)).collect()
+                feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g, true, false)).collect()
             } else {
                 ingested
                     .features
                     .par_iter()
                     .filter(|f| f.min_lod <= i)
-                    .filter_map(|f| simplify_cull(f.style_id, &f.geom, true))
+                    .filter_map(|f| simplify_cull(f.style_id, &f.geom, true, false))
                     .collect()
             };
             let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
@@ -384,11 +408,17 @@ pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
         return;
     }
     let mut line = format!(
-        "  coverage-simplified {} fill polygon(s) into {} across {} component(s)",
-        c.inputs, c.outputs, c.components
+        "  coverage-simplified {} fill polygon(s) into {} across {} component(s), {} face(s)",
+        c.inputs, c.outputs, c.components, c.faces
     );
+    if c.eliminated > 0 {
+        line.push_str(&format!(" ({} small face(s) absorbed into a neighbour)", c.eliminated));
+    }
     if c.dropped_faces > 0 {
         line.push_str(&format!(" ({} uncovered face(s) dropped)", c.dropped_faces));
+    }
+    if c.dissolve_failures > 0 {
+        line.push_str(&format!(" ({} class(es) would not dissolve)", c.dissolve_failures));
     }
     if c.fallbacks > 0 {
         line.push_str(&format!(" ({} component(s) fell back to per-feature simplify)", c.fallbacks));

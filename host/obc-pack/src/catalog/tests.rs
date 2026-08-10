@@ -1721,11 +1721,11 @@ const SHIPPED_SKIN: &str = "../../builder/presets/skins/default.json";
 /// The night restyle (epic #1016 P5) — the first skin that legitimately differs.
 const SHIPPED_DUSK_SKIN: &str = "../../builder/presets/skins/dusk.json";
 /// `OBCA_Spec.md` §1.5's recommended band table, against the shipped bikepacking ladder: LOD
-/// 0–2 coarse, 3–4 mid, 5–6 fine, nav + POI in `network`.
+/// 0–4 coarse, 5–6 mid, 7–8 fine, nav + POI in `network`.
 const RECOMMENDED_BAND_TABLE: &str = r#"[
-    { "id": "coarse", "cell_log2": 20, "lods": [0, 1, 2], "role": "coarse" },
-    { "id": "mid", "cell_log2": 19, "lods": [3, 4], "role": "geometry" },
-    { "id": "fine", "cell_log2": 18, "lods": [5, 6], "role": "geometry" },
+    { "id": "coarse", "cell_log2": 20, "lods": [0, 1, 2, 3, 4], "role": "coarse" },
+    { "id": "mid", "cell_log2": 19, "lods": [5, 6], "role": "geometry" },
+    { "id": "fine", "cell_log2": 18, "lods": [7, 8], "role": "geometry" },
     { "id": "network", "cell_log2": 18, "sections": ["nav", "poi"], "role": "core" }
 ]"#;
 
@@ -1758,10 +1758,10 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
 
     let g = generate(t.path(), &opts()).expect("the shipped documents generate a catalog");
     assert_eq!(g.root.schema.id, "bikepacking", "the shipped schema names itself");
-    assert_eq!(g.root.schema.lods.len(), 7, "the shipped ladder is 7 rungs");
+    assert_eq!(g.root.schema.lods.len(), 9, "the shipped ladder is 9 rungs");
     assert_eq!(
         g.root.schema.lods.iter().map(|l| l.band.as_str()).collect::<Vec<_>>(),
-        ["coarse", "coarse", "coarse", "mid", "mid", "fine", "fine"],
+        ["coarse", "coarse", "coarse", "coarse", "coarse", "mid", "mid", "fine", "fine"],
         "OBCA_Spec.md §1.5's band table partitions the shipped ladder"
     );
     let skin = &g.root.skins[0];

@@ -593,7 +593,9 @@ pub struct Lod {
     /// [`crate::geom::footprint_below`].
     pub min_area_px: f64,
     /// Simplify this tier's **plain fills** as one polygonal coverage instead of feature by
-    /// feature ([`crate::coverage`]): every boundary two fills share is cut **once**, so
+    /// feature ([`crate::coverage`]), which also turns [`Lod::min_area_px`] from a drop into an
+    /// **elimination** (a face under it joins its longest neighbour rather than leaving a hole
+    /// in the tiling): every boundary two fills share is cut **once**, so
     /// neighbouring classes stay glued at any `simplify_m` instead of drifting apart into
     /// backdrop slivers. Only polygons whose style carries no `color2` take part; lines,
     /// outlined polygons and every downstream stage are untouched. Default `false` ⇒ the tier
@@ -969,13 +971,18 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
         Value::String("Topology-preserving simplify tolerance in meters; 0 means no simplification.".into());
     lod_props["simplify"]["minimum"] = Value::from(0.0);
     lod_props["min_area_px"]["description"] = Value::String(
-        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.".into(),
+        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a \
+         coverage_simplify tier it is an *elimination* threshold instead: a face this small is absorbed into the \
+         neighbour it shares the longest boundary with, so the ground stays covered."
+            .into(),
     );
     lod_props["min_area_px"]["minimum"] = Value::from(0.0);
     lod_props["coverage_simplify"]["description"] = Value::String(
         "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by \
          feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open \
-         into backdrop slivers. Costs bake time; false (the default) packs byte-identically to before."
+         into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its \
+         largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically \
+         to before."
             .into(),
     );
 
@@ -1245,17 +1252,26 @@ mod tests {
     #[test]
     fn lods_marker_chunk_parsed() {
         let cfg = corpus_config();
-        // The default preset's 7-tier pyramid (coarsest first, max_mpp
-        // 30/16/10/5/3/1.2): the coarse tiers carry a footprint cull
+        // The default preset's 9-tier pyramid (coarsest first, max_mpp
+        // 400/120/30/16/10/5/3/1.2): the coarse tiers carry a footprint cull
         // (min_area_px) and the finest tier a small sub-pixel simplify (0.5 m)
         // that trims road vertices with no visible change.
-        assert_eq!(cfg.lods.len(), 7);
-        assert_eq!(cfg.lods[0].max_mpp, None);
-        assert_eq!(cfg.lods[0].simplify_m, 200.0);
-        assert_eq!(cfg.lods[0].min_area_px, 50.0);
-        assert_eq!(cfg.lods[1].max_mpp, Some(30.0));
-        assert_eq!(cfg.lods[6].simplify_m, 0.5);
-        assert_eq!(cfg.lods[6].min_area_px, 0.0);
+        assert_eq!(cfg.lods.len(), 9);
+        assert_eq!(
+            cfg.lods.iter().map(|l| l.max_mpp).collect::<Vec<_>>(),
+            [None, Some(400.0), Some(120.0), Some(30.0), Some(16.0), Some(10.0), Some(5.0), Some(3.0), Some(1.2)],
+            "strictly decreasing, coarsest first"
+        );
+        // The two far-zoom tiers: the only ones that run the coverage pass, where `min_area_px`
+        // is an elimination threshold rather than a drop (`crate::coverage`).
+        assert!(cfg.lods[0].coverage_simplify && cfg.lods[1].coverage_simplify);
+        assert!(cfg.lods[2..].iter().all(|l| !l.coverage_simplify), "and the tiers that predate them are untouched");
+        assert_eq!((cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (2200.0, 250.0));
+        assert_eq!((cfg.lods[1].simplify_m, cfg.lods[1].min_area_px), (700.0, 700.0));
+        // Tier 2 is the ladder's former coarsest rung, verbatim but for its new ceiling.
+        assert_eq!((cfg.lods[2].simplify_m, cfg.lods[2].min_area_px), (200.0, 50.0));
+        assert_eq!(cfg.lods[8].simplify_m, 0.5);
+        assert_eq!(cfg.lods[8].min_area_px, 0.0);
         // `"marker": {"color": "0xF800"}`
         assert_eq!(cfg.marker_color, 0xF800);
         // No chunk_size key ⇒ default.
@@ -1599,11 +1615,13 @@ mod tests {
     /// tagged terrain, and the block itself **on**. Every one of those was argued from a rendered
     /// frame, so each is pinned rather than left to a re-read of the JSON.
     ///
-    /// Both classes reach **LOD 2** (#1104), one tier above the planning tier (LOD 3) where #1095
-    /// first put them; LODs 0–1 stay contour-free. The reach is the same number for both on purpose:
-    /// index-only at LOD 2 was tried and rejected — solid grey lines with no dashes around them read
-    /// as paths, because emphasis-by-continuity only means anything while the dashes are present
-    /// (Timo's on-glass pick, 2026-08-03).
+    /// Both classes reach **LOD 4** (#1104), one tier above the planning tier (LOD 5) where #1095
+    /// first put them; LODs 0–3 stay contour-free. (The reach was authored as LOD 2 and moved with
+    /// the ladder when two far-zoom tiers were prepended in front of it — the *tier* is the same
+    /// one, renumbered.) The reach is the same number for both on purpose: index-only there was
+    /// tried and rejected — solid grey lines with no dashes around them read as paths, because
+    /// emphasis-by-continuity only means anything while the dashes are present (Timo's on-glass
+    /// pick, 2026-08-03).
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
@@ -1614,8 +1632,8 @@ mod tests {
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
             assert_eq!(
-                style.min_lod, 2,
-                "#1104: {class:?} reaches LOD 2 — index-only at LOD 2 read as paths, so both classes \
+                style.min_lod, 4,
+                "#1104: {class:?} reaches LOD 4 — index-only there read as paths, so both classes \
                  travel together (Timo's on-glass pick 2026-08-03)"
             );
         }

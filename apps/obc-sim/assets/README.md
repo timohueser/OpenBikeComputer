@@ -33,7 +33,10 @@ All three maps are packed with `builder/presets/schema.json` via
 passes `--terrain grimsel.obcd` (the committed sidecar beside it), so its nav
 graph carries real integrated ascent and its ladder carries the traced contours
 the preset asks for — since #1104 that reaches the `coarse` band too, whose
-LOD 2 carries the full contour set; `grimsel-demo.obcm` and `monaco.obcm` are packed
+coarsest contour tier carries the full set (LOD 2 in the committed files, which were
+packed at the 7-tier ladder; the same tier is LOD 4 since the ladder gained its two
+far-zoom rungs, and these fixtures have not been repacked for it);
+`grimsel-demo.obcm` and `monaco.obcm` are packed
 without terrain (the demo stays small for the wasm payload, and Monaco has no
 sidecar), so the packer's "contours enabled but no terrain" warning is expected
 for them. `grimsel-demo.obcm` shares the Switzerland snapshot with

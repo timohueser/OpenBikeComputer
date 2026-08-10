@@ -1,5 +1,11 @@
 <script lang="ts">
-    import { addLodTier, autoSimplify, editLodTier, removeLodTier } from "../../lib/config/edit";
+    import {
+        addLodTier,
+        autoSimplify,
+        editLodTier,
+        removeLodTier,
+        setLodCoverageSimplify,
+    } from "../../lib/config/edit";
     import { working } from "../../lib/config/storage.svelte";
 
     const env = $derived(working.envelope!);
@@ -30,6 +36,13 @@
         declutter that keeps sub-pixel slivers out of the point budget. Lines (roads, paths) are
         never culled. 0 is off; the finest tier has no coarser fallback, so it is never culled.
     </p>
+    <p class="muted small intro">
+        <em>glue fills</em> simplifies a tier's plain area fills as one shared coverage instead of
+        one feature at a time, so a boundary two of them share is cut once and neighbours stay
+        glued rather than drifting apart into backdrop slivers. It only matters where the tolerance
+        is metres wide, and it costs real bake time — the shipped preset turns it on for its two
+        coarsest tiers only.
+    </p>
 
     <div class="tiers">
         <div class="hrow small faint">
@@ -37,6 +50,7 @@
             <span>max m/px</span>
             <span>simplify (m)</span>
             <span>min area (px²)</span>
+            <span>glue fills</span>
         </div>
         {#each lods as lod, i (i)}
             <div class="tier">
@@ -95,6 +109,18 @@
                         />
                     {/if}
                 </span>
+                <span class="cell">
+                    <input
+                        type="checkbox"
+                        class="glue"
+                        aria-label="glue fills for LOD {i}"
+                        checked={lod.coverage_simplify === true}
+                        onchange={(e) => {
+                            setLodCoverageSimplify(env.config, i, e.currentTarget.checked);
+                            working.markModified();
+                        }}
+                    />
+                </span>
                 {#if lods.length > 1}
                     <button
                         type="button"
@@ -142,7 +168,7 @@
     .hrow,
     .tier {
         display: grid;
-        grid-template-columns: 110px 120px 200px 130px 1fr;
+        grid-template-columns: 110px 120px 200px 130px 90px 1fr;
         gap: 16px;
         align-items: center;
     }
@@ -177,6 +203,10 @@
         width: 82px;
         padding: 4px 7px;
         font-size: 13px;
+    }
+
+    input.glue {
+        width: auto;
     }
 
     .inf {
