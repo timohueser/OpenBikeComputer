@@ -500,10 +500,12 @@ impl RenderScratch {
     /// [`render_rain_timed`](RenderScratch::render_rain_timed) with the overlay's spatial sampling
     /// mode passed in rather than taken from [`RAIN_SAMPLING`].
     ///
-    /// **Provisional (#1185 smoothing round).** Every shipped caller goes through
-    /// `render_rain_timed`, so the const stays the one switch that decides what a rider sees; this
-    /// exists only so one host binary can render the *same* frame in all four modes for the
-    /// side-by-side comparison. When a mode is picked it goes, along with the enum's losing arms.
+    /// Every shipped caller goes through `render_rain_timed`, so [`RAIN_SAMPLING`] stays the one
+    /// switch that decides what a rider sees. This exists for the two callers that must span the
+    /// modes rather than obey the const: the host binary that renders one frame in all four for a
+    /// side-by-side look round, and `obc-app`'s
+    /// `the_decision_path_is_identical_in_every_sampling_mode`, which proves no display mode can
+    /// move a claim (OBCW §5, OBCG §6).
     #[allow(clippy::too_many_arguments)]
     pub fn render_rain_sampled_timed<D, F, S>(
         &mut self,
