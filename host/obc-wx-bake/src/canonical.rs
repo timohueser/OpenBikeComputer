@@ -792,6 +792,11 @@ pub struct CycleReport {
     /// clear. Reported because a sudden jump in it is the shape a broken source has.
     pub dry_shards: usize,
     pub published_bytes: u64,
+    /// What the retention sweep retired after the manifest swap (WXR8 #1247). Empty for the first
+    /// three cycles of a fresh bucket and for any re-bake; one generation per cycle in steady
+    /// state. `accounted_bytes` is real against a directory store and `0` against R2, which cannot
+    /// report a deleted object's length without a second round-trip — see [`crate::sweep`].
+    pub swept: crate::sweep::SweepReport,
     pub elapsed_ms: u128,
     pub warnings: Vec<String>,
 }
@@ -806,6 +811,18 @@ impl CycleReport {
             "fetched {} upstream bytes; published {} objects / {} bytes ({} dry shards omitted); {} ms",
             self.fetched_bytes, self.published_objects, self.published_bytes, self.dry_shards, self.elapsed_ms
         ));
+        if !self.swept.generations.is_empty() {
+            let bytes = if self.swept.accounted_bytes > 0 {
+                format!(" / {} bytes", self.swept.accounted_bytes)
+            } else {
+                String::new()
+            };
+            lines.push(format!(
+                "retired {} ({} objects{bytes})",
+                self.swept.generations.join(", "),
+                self.swept.deleted_objects
+            ));
+        }
         for warning in &self.warnings {
             lines.push(format!("warning: {warning}"));
         }
@@ -813,7 +830,15 @@ impl CycleReport {
     }
 }
 
-/// **The cycle**: bake every adapter, mosaic them, publish the shard set, manifest last.
+/// **The cycle**: bake every adapter, mosaic them, publish the shard set, manifest last — then
+/// retire the generation the new manifest no longer names.
+///
+/// The sweep is the last step for the reason `crate::sweep` exists to state: it is the only
+/// destructive operation in this crate, its licence is a chain carried out of a predecessor
+/// manifest this cycle read successfully, and it runs strictly after the swap so that nothing it
+/// deletes was ever referenced by a document a client could still be holding. Its failures are
+/// warnings — the objects are already unreferenced — and the bucket's 1-day lifecycle rule is the
+/// backstop for whatever it leaks.
 ///
 /// It never short-circuits on an unchanged upstream — the mosaic needs every source's *cells*, not
 /// the knowledge that its objects are already published, so every source is re-fetched and
@@ -858,10 +883,11 @@ pub fn run_cycle(
     // there but unreadable fails the cycle rather than publishing an empty chain — see
     // `manifest_v2::carried_generations`, where the reasoning lives.
     let carried = manifest_v2::carried_generations(store.get(manifest_v2::MANIFEST_KEY)?.as_deref(), &mut warnings)?;
-    let mut document = manifest_v2::Builder::new(lattice, times, now, attribution, carried);
+    let mut document = manifest_v2::Builder::new(lattice, times, now, attribution, carried.chain());
 
     let mut published_objects = 0usize;
     let mut published_bytes = 0u64;
+    let mut swept = crate::sweep::SweepReport::default();
     let mut fetchable: Vec<(String, u64)> = Vec::new();
     let mut painted_objects = 0usize;
     let mut dry_shards = 0usize;
@@ -928,15 +954,25 @@ pub fn run_cycle(
                 None => return Err(format!("{key}: not fetchable — refusing to swap the manifest in")),
             }
         }
+        let manifest = document.finish();
         let planned = PlannedObject {
             key: manifest_v2::MANIFEST_KEY.to_string(),
-            bytes: manifest_v2::to_json(&document.finish()).into_bytes(),
+            bytes: manifest_v2::to_json(&manifest).into_bytes(),
             cache_control: publish::MANIFEST_CACHE_CONTROL,
             content_type: "application/json",
         };
         published_bytes += planned.bytes.len() as u64;
         published_objects += 1;
         store.put(&planned).map_err(|error| format!("{}: {error}", planned.key))?;
+
+        // **After the swap, and only after it** (WXR8 #1247). The manifest above is durably in
+        // place, so the generations it no longer names are unreferenced and may go. `carried` is
+        // the §10.4 licence — a chain read out of a predecessor this cycle successfully parsed —
+        // and it is the only thing `sweep` will act on: a torn read never gets here, because it
+        // failed the cycle before a single object was published. Sweep failures are warnings; the
+        // cycle succeeded the moment the manifest landed.
+        swept = crate::sweep::sweep(store, lattice, times, &carried, &manifest);
+        warnings.append(&mut swept.warnings);
     }
 
     Ok(CycleReport {
@@ -946,6 +982,7 @@ pub fn run_cycle(
         published_objects,
         dry_shards,
         published_bytes,
+        swept,
         elapsed_ms: started.elapsed().as_millis(),
         warnings,
     })
