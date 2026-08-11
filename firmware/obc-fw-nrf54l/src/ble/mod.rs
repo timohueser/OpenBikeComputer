@@ -57,9 +57,9 @@ pub use state::wait_status_change;
 pub use state::{request_forget_bond, set_radio_enabled};
 
 // The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
-// each pass; the Weather screen (WX11) raises the urgent request; the store's commit/config paths
-// poke the two crate-internal edges.
-#[allow(unused_imports)] // WX11's Weather screen is the caller; the seam ships with the scheduler.
+// each pass and raises the urgent request when WX11's dashboard opens; the store's commit/config
+// paths poke the two crate-internal edges.
+pub use weather::refresh_in_flight as weather_refresh_in_flight;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
 pub(crate) use weather::{note_commit as weather_committed, note_settings_changed as weather_settings_changed};
@@ -605,7 +605,8 @@ pub async fn run(
                     // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
                     // are answered) and owns the exit — it returns the disconnect reason. The background set
                     // (parameter negotiation, the CoC accept-and-drain, the BAS battery notify, and the
-                    // #455 link control — radio-off / Forget both end in a local disconnect) runs
+                    // link control — radio-off / Forget / a Weather Request raised on a Control
+                    // link all end in a local disconnect) runs
                     // concurrently and never returns before the teardown, so `select` tears it all down the
                     // moment the link drops (any disconnect drops straight back to the loop top).
                     let reason = match select(
@@ -614,7 +615,7 @@ pub async fn run(
                             negotiate_link(stack, &conn),
                             serve_coc(stack, server, &conn, store, shared),
                             battery_task(stack, server, &conn),
-                            link_control(stack, &conn, store, shared),
+                            link_control(stack, &conn, store, shared, advertising_intent),
                         ),
                     )
                     .await
@@ -707,28 +708,58 @@ async fn forget_bond(
 }
 
 /// The per-connection control watcher (#455): rides the background `join4` beside the serve loop
-/// and waits for either the radio switch flipping **off** or a **Forget phone** request. Both end
-/// in a local disconnect; the `Disconnected` event then unwinds `serve_connection` and the outer
-/// loop lands back at its top (parked Off, or re-advertising with pairing open). Returns after the
-/// disconnect request — the enclosing `join4` keeps waiting on its never-returning siblings, so the
-/// teardown still comes from the one `select` exit path.
+/// and waits for the radio switch flipping **off**, a **Forget phone** request, or a newly raised
+/// **Weather Request**. All three end in a local disconnect; the `Disconnected` event then unwinds
+/// `serve_connection` and the outer loop lands back at its top.
+///
+/// The weather arm is load-bearing: the request is announced by swapping the legacy advertising
+/// UUID, which cannot happen while OBC Control is already connected. Without ending that idle
+/// control session, opening Weather while the companion is in the foreground leaves the request
+/// invisible until the phone happens to disconnect — often longer than the request's 60 s budget.
+/// The reconnect is the protocol's normal two-connection path: Weather Request read first, OBC
+/// Control upload second. Returns after the disconnect request — the enclosing `join4` keeps
+/// waiting on its never-returning siblings, so teardown still comes from the one `select` exit.
 async fn link_control(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     store: &core::cell::RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
+    advertised_as: AdvertisingIntent,
 ) {
-    match select(state::radio_disabled(), FORGET_BOND.wait()).await {
-        Either::First(()) => info!("ble: radio switched off — dropping the live connection"),
-        Either::Second(()) => {
+    match select3(state::radio_disabled(), FORGET_BOND.wait(), weather_request_raised(advertised_as)).await {
+        Either3::First(()) => info!("ble: radio switched off — dropping the live connection"),
+        Either3::Second(()) => {
             // Forget with a live link: clear the bond first, then drop the connection (locked
             // decision). The single-peer model means the peer is the bonded phone in every real
             // flow; an unbonded peer that happens to hold the link just reconnects.
             forget_bond(stack, store, shared).await;
             info!("ble: forget phone — dropping the live connection");
         }
+        Either3::Third(()) => {
+            info!("ble: Weather Request raised on Control link — reconnecting through weather advertisement");
+        }
     }
     conn.raw().disconnect();
+}
+
+/// Wait for the *raised* level. A link accepted from a Weather Request advertisement already owns
+/// the current request and must be allowed to read it; first wait for that level to clear. A link
+/// accepted from OBC Control must drop immediately even if the raise raced the connect boundary.
+/// `WEATHER_REQUEST_EDGE` signals both directions, so the level is always the authority.
+async fn weather_request_raised(advertised_as: AdvertisingIntent) {
+    if advertised_as == AdvertisingIntent::WeatherRequest {
+        while state::weather_request_pending() {
+            state::weather_request_changed().await;
+        }
+    } else if state::weather_request_pending() {
+        return;
+    }
+    loop {
+        state::weather_request_changed().await;
+        if state::weather_request_pending() {
+            return;
+        }
+    }
 }
 
 /// The host's transport pump — must run forever alongside the advertise loop. Runs **with the

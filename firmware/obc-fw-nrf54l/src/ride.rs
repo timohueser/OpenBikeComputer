@@ -111,6 +111,16 @@ async fn wait_ble_edge() {
     core::future::pending::<()>().await
 }
 
+#[cfg(feature = "ble")]
+fn weather_refresh_in_flight() -> bool {
+    crate::ble::weather_refresh_in_flight()
+}
+
+#[cfg(not(feature = "ble"))]
+const fn weather_refresh_in_flight() -> bool {
+    false
+}
+
 /// The loop's third select arm: a sensor/host datapoint, **or** (`ble` builds) a store movement —
 /// a BLE route commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
 /// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
@@ -691,6 +701,17 @@ pub(crate) async fn run_app(
     // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in. Polled in `Sensors`
     // like any other sensor.
     let mut fuel = StubFuelGauge::new(75);
+    // WX7's fixed one-tile cache is the board's resident half of weather streaming. The snapshot
+    // is host-owned by design (~0.8 KiB) and refreshed only when the selected bundle or sample
+    // position changes; neither object is rebuilt per rendered frame.
+    let mut weather_cache = obc_weather::WeatherCache::new();
+    let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
+    let mut weather_sample_key: Option<(
+        obc_weather::Candidate,
+        Option<(i32, i32)>,
+        Option<(Option<usize>, u32, u32)>,
+        i64,
+    )> = None;
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
@@ -886,7 +907,22 @@ pub(crate) async fn run_app(
             } else {
                 defmt::info!("input: {=str} on {=str}", gesture_name(g), app.top_screen().name());
             }
+            // Weather's manual refresh is an **entry edge**, not a periodic poll and not a draw
+            // side effect.  WX8 already owns the request scheduler/radio plumbing; what was
+            // missing was the one board seam that tells it the rider actually opened the WX11
+            // dashboard.  Remember whether this gesture started on a weather surface so Back
+            // from Hourly/Rain map does not manufacture another urgent request.
+            #[cfg(feature = "ble")]
+            let was_on_weather = matches!(
+                app.top_screen(),
+                obc_app::Screen::Weather(_) | obc_app::Screen::WeatherHourly(_) | obc_app::Screen::WeatherRainMap(_)
+            );
             app.apply_gesture(g);
+            #[cfg(feature = "ble")]
+            if !was_on_weather && matches!(app.top_screen(), obc_app::Screen::Weather(_)) {
+                crate::ble::request_weather_now();
+                defmt::info!("weather: dashboard opened — urgent phone fetch requested");
+            }
             holds_cancelled |= app.take_hold_cancel();
         }
         if holds_cancelled {
@@ -1875,6 +1911,48 @@ pub(crate) async fn run_app(
                 }
             }
 
+            // Stream the selected OBCW into the host-owned resident snapshot. Keying on the fully
+            // validated slot identity plus the live fix keeps this off ordinary redraws while still
+            // resampling at movement cadence; a commit changes the candidate even when A/B happens
+            // to keep the same filename. With no fix the hourly half remains useful and every rain
+            // sample is honestly no-data (the companion likewise refuses to build a *new* local
+            // bundle without a device position).
+            let weather_pos = app.has_live_fix(now).then(|| app.state.user_fix.map(|fix| (fix.lat, fix.lon))).flatten();
+            let weather_projection = app.ride_projection();
+            let weather_projection_key = weather_projection
+                .map(|projection| (app.active_route_index(), projection.progress_m, projection.speed_cms));
+            // Projection position/freshness moves with time even while the GPS coordinate is
+            // unchanged. Minute buckets match the dashboard's own timer resolution and avoid an
+            // otherwise pointless snapshot rebuild on every event-loop pass.
+            let weather_minute = app.wall_unix_now() as i64 / 60;
+            let weather_candidate = storage.as_ref().and_then(sd::Storage::weather_active);
+            let next_weather_key =
+                weather_candidate.map(|candidate| (candidate, weather_pos, weather_projection_key, weather_minute));
+            if next_weather_key != weather_sample_key {
+                let next_snapshot = storage.as_ref().and_then(|storage| {
+                    let source = storage.weather_source()?;
+                    let reader = storage.weather_mount()?.reader(&source).ok()?;
+                    let projection = route.as_ref().zip(weather_projection);
+                    obc_app::WeatherSnapshot::sample_along(&reader, &mut weather_cache, weather_pos, projection).ok()
+                });
+                // A transient SD read must retry on the next pass, not pin a failed sample until
+                // the next minute bucket. No active candidate is a settled `None` and may key.
+                weather_sample_key =
+                    if next_weather_key.is_none() || next_snapshot.is_some() { next_weather_key } else { None };
+                if next_snapshot != weather_snapshot {
+                    weather_snapshot = next_snapshot;
+                    if let Some(snapshot) = weather_snapshot.as_ref() {
+                        let wall_now = app.wall_unix_now() as i64;
+                        let floor = snapshot.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                        app.set_rain_view(snapshot.steps_ahead(wall_now), floor);
+                        app.weather_alert_tick(Some(snapshot));
+                    } else {
+                        app.set_rain_view(0, 0.0);
+                    }
+                    app.weather_feed_changed();
+                }
+            }
+
             // Feed the high-priority plane's Select hold-progress to the map render so the in-screen
             // confirm fills (the factory-Reset bar) track the hold — `App`'s own input plane isn't
             // driven here, so the render would otherwise read 0 and the bar would never fill.
@@ -2053,41 +2131,85 @@ pub(crate) async fn run_app(
                         // the row-diffed push scales down with it.
                         let clip = if needs_map { None } else { dirty.region };
                         app.set_render_clip(clip);
-                        #[cfg(feature = "sd-bench")]
-                        let read_before = sd::read_perf_snapshot();
-                        let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
-                            let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
-                            if let Some(r) = clip {
-                                fbdev.set_clip(r);
-                            }
-                            match mounted_set.as_ref() {
-                                Some(set) => app.render_scene_map_timed(
-                                    render_guard.as_deref_mut(),
-                                    &mut fbdev,
-                                    needs_map.then_some(set),
-                                    reader.as_ref(),
-                                    route.as_ref(),
-                                    FRAME_W as f32,
-                                    FRAME_H as f32,
-                                    color_fn,
-                                    &InstantClock,
-                                ),
-                                None => app.render_map_timed(
-                                    render_guard.as_deref_mut(),
-                                    &mut fbdev,
-                                    reader.as_ref(),
-                                    route.as_ref(),
-                                    FRAME_W as f32,
-                                    FRAME_H as f32,
-                                    color_fn,
-                                    &InstantClock,
-                                ),
-                            }
-                        });
-                        #[cfg(feature = "sd-bench")]
-                        if needs_map {
-                            let reads = sd::read_perf_snapshot().since(read_before);
-                            defmt::info!(
+                        // Construct the rain lease only for the WX11 rain-map base. The dashboard
+                        // and hourly screens still receive the resident snapshot, but pay zero SD
+                        // header/frame/tile reads during draw; the ordinary Map never receives a
+                        // lease and therefore cannot be tinted by weather accidentally.
+                        let weather_source = app
+                            .base_wants_rain()
+                            .then(|| storage.as_ref().and_then(sd::Storage::weather_source))
+                            .flatten();
+                        let weather_reader = weather_source
+                            .as_ref()
+                            .and_then(|source| storage.as_ref()?.weather_mount()?.reader(source).ok());
+                        let weather_bind_failed = app.base_wants_rain()
+                            && storage.as_ref().and_then(sd::Storage::weather_active).is_some()
+                            && weather_reader.is_none();
+                        if weather_bind_failed {
+                            // A transient header read is not evidence of a dry map. Keep the last
+                            // complete glass and retry rather than flashing a misleading rain-free
+                            // frame. A valid reader with no current frame remains a truthful None.
+                            pending_map_redraw = true;
+                            drop(render_guard);
+                            defmt::warn!("weather: active bundle bind failed — kept frame, retrying redraw next frame");
+                            None
+                        } else {
+                            let wall_now = app.wall_unix_now() as i64;
+                            let rain_step = app.state.rain_step;
+                            let mut rain_adapter = weather_reader.as_ref().and_then(|reader| {
+                                obc_app::RainOverlayAdapter::at_step(reader, &mut weather_cache, wall_now, rain_step)
+                            });
+                            let weather_snapshot_ref = weather_snapshot.as_ref();
+                            let weather_refreshing = weather_refresh_in_flight();
+                            #[cfg(feature = "sd-bench")]
+                            let read_before = sd::read_perf_snapshot();
+                            let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
+                                let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                                if let Some(r) = clip {
+                                    fbdev.set_clip(r);
+                                }
+                                match mounted_set.as_ref() {
+                                    Some(set) => app.render_scene_map_rain_timed(
+                                        render_guard.as_deref_mut(),
+                                        &mut fbdev,
+                                        needs_map.then_some(set),
+                                        reader.as_ref(),
+                                        route.as_ref(),
+                                        rain_adapter
+                                            .as_mut()
+                                            .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
+                                        obc_app::WeatherFeed {
+                                            snapshot: weather_snapshot_ref,
+                                            refreshing: weather_refreshing,
+                                        },
+                                        FRAME_W as f32,
+                                        FRAME_H as f32,
+                                        color_fn,
+                                        &InstantClock,
+                                    ),
+                                    None => app.render_map_rain_timed(
+                                        render_guard.as_deref_mut(),
+                                        &mut fbdev,
+                                        reader.as_ref(),
+                                        route.as_ref(),
+                                        rain_adapter
+                                            .as_mut()
+                                            .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
+                                        obc_app::WeatherFeed {
+                                            snapshot: weather_snapshot_ref,
+                                            refreshing: weather_refreshing,
+                                        },
+                                        FRAME_W as f32,
+                                        FRAME_H as f32,
+                                        color_fn,
+                                        &InstantClock,
+                                    ),
+                                }
+                            });
+                            #[cfg(feature = "sd-bench")]
+                            if needs_map {
+                                let reads = sd::read_perf_snapshot().since(read_before);
+                                defmt::info!(
                                 "map SD bench: {=u32} us | logical {=u32} read(s) / {=u32} B | physical {=u32} command(s) / {=u32} block(s) ({=u32} single + {=u32} multi)",
                                 reads.us,
                                 stats.map_sd_reads,
@@ -2096,12 +2218,13 @@ pub(crate) async fn run_app(
                                 reads.blocks,
                                 reads.single_commands,
                                 reads.multi_commands
-                            );
+                                );
+                            }
+                            // The guard (when a map base took one) dies here, at the end of the render
+                            // span — before the present's await, never across it (#677).
+                            drop(render_guard);
+                            Some(RenderedFrame { needs_map, stats, render_us })
                         }
-                        // The guard (when a map base took one) dies here, at the end of the render
-                        // span — before the present's await, never across it (#677).
-                        drop(render_guard);
-                        Some(RenderedFrame { needs_map, stats, render_us })
                     }
                 }
             } else {

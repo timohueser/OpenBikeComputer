@@ -172,6 +172,9 @@ impl DemoScenario {
 /// generation + bundle CRC and therefore survives across frames and reloads safely.
 pub struct SimWeather {
     bytes: Vec<u8>,
+    /// Full-validation proof for `bytes`: sampling and rain leases fast-reopen from this rather
+    /// than CRC-walking/decoding every tile on each GUI frame.
+    mount: obc_weather::ValidatedBundle,
     cache: obc_weather::WeatherCache,
     /// `--weather-now` override; `None` treats the bundle's own first frame as current — the
     /// deterministic-fixture default that makes `--weather <dir> --png` render rain out of the box.
@@ -241,7 +244,7 @@ impl SimWeather {
             return Some(now);
         }
         let source = obc_formats::io::SliceSource(&self.bytes);
-        let reader = obc_weather::WeatherReader::open(&source).ok()?;
+        let reader = self.mount.reader(&source).ok()?;
         Some(reader.frame(0).map(|f| f.valid_at).unwrap_or(reader.header().valid_from))
     }
 
@@ -255,7 +258,7 @@ impl SimWeather {
         projection: Option<(&obc_route::RouteReader<'_>, obc_app::RideProjection)>,
     ) -> Option<obc_app::WeatherSnapshot> {
         let source = obc_formats::io::SliceSource(&self.bytes);
-        let reader = obc_weather::WeatherReader::open(&source).ok()?;
+        let reader = self.mount.reader(&source).ok()?;
         obc_app::WeatherSnapshot::sample_along(&reader, &mut self.cache, pos, projection).ok()
     }
 
@@ -263,6 +266,13 @@ impl SimWeather {
     /// context and the A/B comparison.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Header identity from the store's one full-validation pass. Companion polling uses this
+    /// instead of reopening and CRC-walking the whole resident bundle every GUI frame.
+    pub fn validated_identity(&self) -> (u32, i64, u32) {
+        let header = self.mount.header();
+        (header.generation, header.generated_at, header.crc32)
     }
 
     /// Adopt an in-memory bundle (the `--weather live` path, and the companion's commit): the
@@ -274,8 +284,8 @@ impl SimWeather {
     /// baker into a permanently fresh-looking nowcast, which is the exact lie the epic forbids.
     pub fn from_bytes(bytes: Vec<u8>, now_override: Option<i64>) -> Option<Self> {
         let source = obc_formats::io::SliceSource(&bytes);
-        obc_weather::WeatherReader::open(&source).ok()?;
-        Some(Self { bytes, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
+        let mount = obc_weather::WeatherReader::open(&source).ok()?.validated();
+        Some(Self { bytes, mount, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
     }
 
     /// Load the newest valid generation from a WEATHER.A/WEATHER.B root, exactly as boot selection
@@ -284,7 +294,9 @@ impl SimWeather {
         let selection = inspect_root(root);
         let (candidate, _) = open_active(root, selection).ok().flatten()?;
         let bytes = std::fs::read(root.join(candidate.slot.root_file_name())).ok()?;
-        Some(Self { bytes, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
+        let source = obc_formats::io::SliceSource(&bytes);
+        let mount = obc_weather::WeatherReader::open(&source).ok()?.validated();
+        Some(Self { bytes, mount, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
     }
 
     /// A deterministic in-memory demo bundle over `(west, south, east, north)` microdegrees: a
@@ -296,8 +308,12 @@ impl SimWeather {
     /// material for the WX10/WX11 review rounds.
     pub fn demo(scenario: Option<DemoScenario>, bbox: (i32, i32, i32, i32), now_override: Option<i64>) -> Self {
         let bytes = Self::demo_bundle(scenario, bbox, DEMO_GENERATED_AT);
+        let mount = obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&bytes))
+            .expect("generated demo weather is valid")
+            .validated();
         Self {
             bytes,
+            mount,
             cache: obc_weather::WeatherCache::new(),
             now_override,
             demo_recipe: Some((scenario, bbox)),
@@ -410,6 +426,9 @@ impl SimWeather {
             return;
         }
         self.bytes = Self::demo_bundle(scenario, bbox, now);
+        self.mount = obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&self.bytes))
+            .expect("re-anchored bundle valid")
+            .validated();
         self.anchor = now;
         // The tile cache keys on generation + bundle CRC, so the re-anchored bytes miss cleanly.
     }
@@ -433,7 +452,7 @@ impl SimWeather {
     ) -> R {
         // No self-sync: the caller synced this frame and knows whether its clock is live.
         let source = obc_formats::io::SliceSource(&self.bytes);
-        let Ok(reader) = obc_weather::WeatherReader::open(&source) else {
+        let Ok(reader) = self.mount.reader(&source) else {
             return frame(None);
         };
         let now = self.now_override.unwrap_or(now);
