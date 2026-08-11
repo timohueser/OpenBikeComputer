@@ -244,9 +244,11 @@ pub struct Shard {
     /// The OBCG whole-object CRC-32 (`0x` + 8 uppercase hex digits).
     #[schemars(pattern(CRC32_PATTERN))]
     pub object_crc32: String,
-    /// Was **every** cell of this shard painted by an observation? Per shard rather than per
-    /// frame, because a mosaic frame is radar over Germany and model over the Atlantic at the same
-    /// instant — this mirrors the object's own `FLAG_OBSERVED`, which the baker measures.
+    /// Is this shard an observation of `valid_at`? True only when every cell came from an
+    /// observation **and** the frame is the anchor — see [`crate::canonical::shard_is_observed`],
+    /// which is the one place that decides it. Per shard rather than per frame, because a mosaic
+    /// frame is radar over Germany and model over the Atlantic at the same instant. This mirrors
+    /// the object's own `FLAG_OBSERVED` exactly; the two are written from the same value.
     pub observed: bool,
 }
 

@@ -434,12 +434,12 @@
     {
       "key": "wx/v2/20200810T1845Z/f15/s0-0.obcg",
       "bytes": 35904,
-      "sha256": "9f8ecd6c2e5fa3fc2a794fea16792992c6f2166675279f9a59d4c01e06c54ee2"
+      "sha256": "f28c2d66e53c5db259fb74be35f33b607e7b6d21bbd998a4afabacea8528c1e7"
     },
     {
       "key": "wx/v2/20200810T1845Z/f30/s0-0.obcg",
       "bytes": 35904,
-      "sha256": "5662480a85009e38c30842ee968f7df4c553adce71235f4d685b72e073d21f61"
+      "sha256": "781f4a745b783364e814a5db374b8f065cdf0a51f74931e9a257ac3b7b1de3c8"
     },
     {
       "key": "wx/v2/20200810T1845Z/f45/s0-0.obcg",
@@ -463,8 +463,8 @@
     },
     {
       "key": "wx/v2/manifest.json",
-      "bytes": 3885,
-      "sha256": "4bb445f854da9780b209be83ceb197f41da4019257c4d073dbab19481b0ebc25"
+      "bytes": 3887,
+      "sha256": "e0a2483c842297b54cfca298ad86a416bd5704828949f601fe36858799b50014"
     }
   ],
   "truth_frames": [
@@ -474,7 +474,7 @@
       "valid_at": "2020-08-10T19:02:00Z",
       "path": "truth/f14.obcg",
       "bytes": 38369,
-      "sha256": "01b698ab7d18cb6474e473fe04e7ee6a72b25a062a84c44cf3abf2c524587343"
+      "sha256": "7f5e80b75f489c84b8f59602678bdd333b1b9e9441ac9411509661f5d08e17bb"
     },
     {
       "requested_offset_min": 30,
@@ -482,7 +482,7 @@
       "valid_at": "2020-08-10T19:18:00Z",
       "path": "truth/f30.obcg",
       "bytes": 40113,
-      "sha256": "6483deccfad3788185b0b6fbc995563fd5a6faef11344cf422107e8dc5dd3b94"
+      "sha256": "ac2befb77e20c4ec81cd9dadbdaacf767f910d5ec693c6453073e3ef72b82765"
     },
     {
       "requested_offset_min": 45,
@@ -490,7 +490,7 @@
       "valid_at": "2020-08-10T19:32:00Z",
       "path": "truth/f44.obcg",
       "bytes": 41215,
-      "sha256": "9805b341856a511684cc120225f7f2b6f7246ed090ed460f9895f9781d3c45e5"
+      "sha256": "6a20a3663481d7a77a12c4f9214867d9e94201e7074d7ee34279069e790c9872"
     },
     {
       "requested_offset_min": 60,
@@ -498,7 +498,7 @@
       "valid_at": "2020-08-10T19:48:00Z",
       "path": "truth/f60.obcg",
       "bytes": 42291,
-      "sha256": "34e56e4ba9281144bbc56825d448db403251299c82f7f3f55fce7e9a0b1d6d6c"
+      "sha256": "907f3c4463eb4e294c954620cbf6e1240142064305cbe143aa018bfd4fb8d374"
     },
     {
       "requested_offset_min": 75,
@@ -506,7 +506,7 @@
       "valid_at": "2020-08-10T20:02:00Z",
       "path": "truth/f74.obcg",
       "bytes": 42052,
-      "sha256": "5dbaca1098191856a9088f3f46dd57a372a0437d9c594d5efe532b11bf5a2134"
+      "sha256": "6e8f63d64a847f9c74eda38fa85bf44c5cb31739718ac1d1f8755274a98e8c13"
     },
     {
       "requested_offset_min": 90,
@@ -514,7 +514,7 @@
       "valid_at": "2020-08-10T20:18:00Z",
       "path": "truth/f90.obcg",
       "bytes": 43451,
-      "sha256": "170ef6c7ebf307991ee7124272eaf49163fe186372fcc19adb7b45b67974ec19"
+      "sha256": "259a66ad3424b6be8e81f07f59ce4ba3f941abd4fe89b5bc28b5ed617e9f59b6"
     },
     {
       "requested_offset_min": 105,
@@ -522,7 +522,7 @@
       "valid_at": "2020-08-10T20:32:00Z",
       "path": "truth/f104.obcg",
       "bytes": 43499,
-      "sha256": "0e137761fd04061dc56dadb1daf97dddda49fccea62c7bd2557524a2f05cd679"
+      "sha256": "75f6c3169fa927d212b99bf8dabd666e956a34940b0a5209dfe55a09f663764d"
     },
     {
       "requested_offset_min": 120,
@@ -530,7 +530,7 @@
       "valid_at": "2020-08-10T20:48:00Z",
       "path": "truth/f120.obcg",
       "bytes": 43067,
-      "sha256": "632e2f9a43d93abdbe5b5b257eb20b3920479e11d14787705d62d5946e748c43"
+      "sha256": "bfaf811574a014a7831c1f1cfd879b9e648e212d9e05a41c0830cb62892f8323"
     }
   ]
 }

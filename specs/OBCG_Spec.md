@@ -156,13 +156,36 @@ for something else is a format version bump.
 
 | Bit | Name | Meaning |
 | ---: | --- | --- |
-| 0 | Observed | The frame is primarily an observation valid at `valid_at` |
-| 1 | Forecast | The frame is primarily a model/nowcast forecast valid at `valid_at` |
+| 0 | Observed | Every cell of this object came from an observation, and `valid_at` is the anchor |
+| 1 | Forecast | Anything else: model output, a nowcast, or an observation frozen forward |
 | 2...15 | Reserved | Must be zero in v1 |
 
-Exactly one of Observed and Forecast MUST be set. `valid_at` is always the genuine upstream
-timestamp — a latent observation keeps its old timestamp, and a forecast lead is
-`valid_at - reference_time`. Re-stamping fetch or bake time here is forbidden.
+Exactly one of Observed and Forecast MUST be set.
+
+**`valid_at` is the frame's place on the cadence, and the flag is what says how the content got
+there.** A generation publishes frames at fixed offsets from its reference time (§10.5's `cadence`),
+so `valid_at = reference_time + offset_min x 60` and the timestamp is not negotiable: it states
+*which instant this frame is about*, not when the data under it was measured. How far the sources
+that painted a cell were from that instant is stated once, for the whole generation, as
+`freshness`/`cadence.max_source_skew_s` — a consumer that wants to caveat "radar, up to N minutes
+old" reads that number instead of assuming one. Re-stamping fetch or bake time as `reference_time`
+is forbidden; so is publishing a frame at an offset the cadence does not define.
+
+The flag then carries the honesty. A publisher MUST set **Observed** only when both hold:
+
+- every cell of the object came from a source frame that was an observation upstream; **and**
+- `offset_min` is `0`.
+
+The second condition is the one that is easy to get wrong, and it is normative. A frame ahead of the
+anchor is about an instant no observation of exists at bake time, so what fills it is either a
+genuine forecast or an observation carried forward inside the skew window — and an observation
+carried forward is a **persistence nowcast**, which is a forecast. A single-frame radar source
+therefore paints the first frames after the anchor with real measured cells and those frames MUST
+still say Forecast. Setting Observed there would tell a consumer it is looking at measured weather
+at a future instant, which is the one thing a source class exists to prevent.
+
+A consumer MUST NOT infer anything further from the flag than those two facts, and in particular
+MUST NOT read Forecast as "unmeasured" or Observed as "exact at `valid_at`".
 
 ## 4. Paged tile directory
 

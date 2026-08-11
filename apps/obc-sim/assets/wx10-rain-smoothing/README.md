@@ -4,7 +4,7 @@ Timo, on glass, on real 1 km radar: *"1 km square blobs are bigger than I though
 look very blocky — maybe we should do some interpolation/smoothing after all."* This directory is
 the answer to that, as **options to pick from**, not a decision already taken.
 
-Six scenes. Each sheet holds the **same frame** — same product, same camera, same zoom, same
+Six scenes. Each sheet holds the **same frame** — same source data, same camera, same zoom, same
 heading — rendered four times, once per `obc_render::RainSampling` mode:
 
 | | mode | what it does |
@@ -19,41 +19,54 @@ heading — rendered four times, once per `obc_render::RainSampling` mode:
 | `1-us-storm-60mpp` | NOAA **MRMS** 1 km, inside a real storm over Wisconsin/Lake Michigan, 60 m/px. The pure "1 km blobs" case. |
 | `2-us-storm-15mpp` | the same storm zoomed right in — the blockiest frame a rider can reach. |
 | `3-grimsel-riding-20mpp` | DWD **RV** composite 1 km over the packed Grimsel map, typical riding zoom. |
-| `4-grimsel-wide-200mpp` | the same ground near the locked 50 km view; the regime cap for a 1 km product is ~333 m/px. |
+| `4-grimsel-wide-200mpp` | the same ground near the locked 50 km view; the regime cap on a 1 km lattice is ~333 m/px. |
 | `5-coverage-edge-60mpp` | the radar umbrella's own **coverage edge** — where smoothing would lie if it were going to. |
 | `6-heading-up-40mpp` | heading-up at 37°, so the rotated fixed-point walk is in the picture too. |
 
 Only the six sheets are committed. The 24 single 240 × 320 panels are written next to them by the
 same command and are deliberately not checked in.
 
-## The data is real, and offline
+## The data is real
 
-The rain is decoded straight out of a baked **OBCG** product object — `obc-wx-bake`'s real output
-from the checked-in, unmodified upstream fixtures (see `host/obc-wx-bake/tests/fixtures/README.md`
-for their provenance and hashes). Nothing here touches the network, and nothing is synthetic: a
-demo pattern cannot answer a complaint about how real radar looks.
+The rain is decoded straight out of a baked **OBCG** object — `obc-wx-bake`'s real output from real
+upstream bytes. Nothing is synthetic: a demo pattern cannot answer a complaint about how real radar
+looks.
+
+> **The repro below was re-derived on 2026-08-11 for #1246**, which deleted the per-product tree
+> these sheets were originally baked from (`wx/v1/us/...` and `wx/v1/dwd-rv/...`) along with the two
+> test binaries that left it in `$TMPDIR`. The sheets themselves are unchanged and still show what
+> they showed: the same cells, from the same upstream bytes, through the same renderer. What moved
+> is where a baked object comes from — one dataset at `wx/v2/<generation>/f<offset>/s<col>-<row>.obcg`
+> — and the US half of the repro is now **more** reproducible than it was, because the event pack
+> carries its own upstream bytes.
 
 Reading OBCG rather than assembling an OBCW bundle is deliberate. Both containers carry the *same*
 4-bit cells (`obc_formats::precip4` is shared), so this puts the actual upstream radar in front of
 the actual renderer with nothing in between — and it does not need `api.met.no`, which an OBCW
 assembly does.
 
-**The two products' ground does not overlap the repo's packed maps.** MRMS is CONUS-only and every
+**The two sources' ground does not overlap the repo's packed maps.** MRMS is CONUS-only and every
 committed `.obcm` is Alpine/Rhine, so scenes 1 and 2 render over an empty basemap — the raster is
-judged on its own there, which is the honest way to describe them. Scenes 3–6 use DWD RV, which
-does cover Grimsel, and have real streets, contours and water underneath.
+judged on its own there, which is the honest way to describe them. Scenes 3–6 are painted by DWD RV,
+which does cover Grimsel, and have real streets, contours and water underneath.
 
 ## Exact repro
 
 ```sh
-# 1. Bake the fixture trees. Both are ordinary test runs; each leaves its published tree behind
-#    in $TMPDIR (the tests do not clean up after themselves).
-cargo test --release -p obc-wx-bake --test us_gfs_cycle    # -> .../obc-wx-bake-wx6-<pid>-cycle-a
-cargo test --release -p obc-wx-bake --test cycle           # -> .../obc-wx-bake-test-<pid>-cycle-a
+# 1a. The US frame, fully offline: re-bake the checked-in event pack, which carries its own raw
+#     MRMS and HRRR bytes. f0 is the observation frame — the 1 km radar these sheets are about.
+PACK=host/obc-wx-bake/tests/events/us-derecho-2020-08-10
+cargo run --release -p obc-wx-bake --bin obc-wx-pack -- rebake $PACK --out /tmp/wx10-us
+MRMS=/tmp/wx10-us/wx/v2/20200810T1845Z/f0/s0-0.obcg
 
-# Key shapes as of #1246: one dataset, `wx/v2/<generation>/f<offset>/s<col>-<row>.obcg`.
-MRMS=$(ls -dt ${TMPDIR:-/tmp}/obc-wx-canonical-*-0 | head -1)/wx/v2/20260809T1645Z/f0/s0-0.obcg
-DWD=$(ls -dt ${TMPDIR:-/tmp}/obc-wx-canonical-*-0 | head -1)/wx/v2/20260809T1430Z/f0/s0-0.obcg
+# 1b. The German frame needs a live bake: nothing checked in covers Grimsel, and the baker's only
+#     entry point is a whole cycle. This fetches every source and publishes one generation.
+cargo run --release -p obc-wx-bake --bin obc-wx-bake -- cycle --store /tmp/wx10-dach
+GEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' \
+        /tmp/wx10-dach/wx/v2/manifest.json)
+# The Alps are shard (3,2) of the 6 x 4 grid - 4.32..65.76 E, 2.16..48.24 N; `manifest.json`'s
+# frames[0].shards lists exactly which shards exist.
+DWD=/tmp/wx10-dach/wx/v2/$GEN/f0/s3-2.obcg
 
 # 2. Build the comparison renderer.
 cargo build --release -p obc-sim --bin rain_sampling_sheet
@@ -77,7 +90,7 @@ $BIN --obcg $MRMS --survey                              # geometry + exhaustive 
 $BIN --obcg $DWD  --center 8300000,46600000 --probe     # the raw cell field as ASCII, one char per 1 km cell
 ```
 
-`--probe` is the one to look at before arguing about any of this: it prints the provider cells
+`--probe` is the one to look at before arguing about any of this: it prints the lattice cells
 themselves. The blockiness in sheet A is not a rendering artefact — it is that field, drawn
 faithfully.
 
@@ -90,6 +103,6 @@ compiled and covered by the same tests, so the round can be re-run on glass by e
 line; these sheets are the record of how the call was made, and the binary still renders all four.
 
 Two consequences worth knowing before re-deciding it, both in `RAIN_TILE_SLOTS`' own docs:
-bilinear is the only mode that can paint an intensity band no provider cell reported (permitted for
+bilinear is the only mode that can paint an intensity band no lattice cell reported (permitted for
 display, forbidden for data queries — OBCW §5, OBCG §6), and it is the mode that sizes the tile
 cache. `Nearest` or `EdgeSoften` alone would need 12 slots where the shipped configuration needs 16.

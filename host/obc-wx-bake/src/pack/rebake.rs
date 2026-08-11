@@ -77,7 +77,13 @@ pub struct RebakeReport {
 }
 
 pub fn bake_into(root: &Path, event: &Event, destination: &Path) -> Result<RebakeReport, String> {
-    if event.bake.sources != archive::SUPPORTED_SOURCES {
+    // A **set** comparison: `["hrrr","mrms"]` describes the same pack as `["mrms","hrrr"]`, and the
+    // mosaic's own precedence comes from `source::MOSAIC_PRIORITY`, never from this list's order.
+    let mut recorded: Vec<&str> = event.bake.sources.iter().map(String::as_str).collect();
+    recorded.sort_unstable();
+    let mut supported: Vec<&str> = archive::SUPPORTED_SOURCES.to_vec();
+    supported.sort_unstable();
+    if recorded != supported {
         return Err(format!(
             "pack sources {:?} cannot be replayed yet (supported: {})",
             event.bake.sources,
@@ -182,11 +188,12 @@ pub fn verify_truth_rebake(root: &Path, event: &Event) -> Result<usize, String> 
     for frame in &event.truth_frames {
         let valid_at = timefmt::parse_rfc3339(&frame.valid_at)
             .ok_or_else(|| format!("{}: valid_at {:?} is not RFC 3339", frame.path, frame.valid_at))?;
+        // The rung lives in `event.json`, not in the object's header, so this is where it is
+        // checked — the frame itself is anchored on its own instant (see `bake_truth_frame`).
         if valid_at - anchor != i64::from(frame.offset_min) * 60 {
             return Err(format!("{}: offset_min disagrees with valid_at - window_start", frame.path));
         }
-        let baked =
-            crate::pack::capture::bake_truth_frame(&mut upstream, &lattice, anchor, frame.offset_min, valid_at)?;
+        let baked = crate::pack::capture::bake_truth_frame(&mut upstream, &lattice, valid_at)?;
         let stored = std::fs::read(crate::pack::resolve(root, &frame.path)?)
             .map_err(|error| format!("{}: {error}", frame.path))?;
         if baked != stored {
@@ -232,14 +239,11 @@ pub fn regenerate(root: &Path, event: &mut Event) -> Result<(), String> {
         })
         .collect();
 
-    let anchor = timefmt::parse_rfc3339(&event.window_start)
-        .ok_or_else(|| format!("event.json: window_start {:?} is not RFC 3339", event.window_start))?;
     let mut upstream = truth_upstream(root, event)?;
     for frame in &mut event.truth_frames {
         let valid_at = timefmt::parse_rfc3339(&frame.valid_at)
             .ok_or_else(|| format!("{}: valid_at {:?} is not RFC 3339", frame.path, frame.valid_at))?;
-        let bytes =
-            crate::pack::capture::bake_truth_frame(&mut upstream, &lattice, anchor, frame.offset_min, valid_at)?;
+        let bytes = crate::pack::capture::bake_truth_frame(&mut upstream, &lattice, valid_at)?;
         crate::pack::write_file(&crate::pack::resolve(root, &frame.path)?, &bytes)?;
         frame.bytes = bytes.len() as u64;
         frame.sha256 = crate::pack::sha256(&bytes);

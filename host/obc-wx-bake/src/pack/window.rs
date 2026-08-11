@@ -138,9 +138,17 @@ pub fn sub_lattice(bbox: &BboxUdeg) -> Result<Lattice, String> {
         height: CANONICAL.height,
     });
     let cut = window(&full, bbox)?;
+    // Widen before multiplying, like `axis()` above and for the same reason: `overflow-checks` is
+    // off in this workspace, so a `u32` product that wrapped would come back as a confident wrong
+    // origin rather than a panic. Today's bounds cannot reach it; the standard should not differ
+    // by twenty lines within one file.
+    let shift = |index: u32, origin: i32| -> Result<i32, String> {
+        i32::try_from(i64::from(origin) + i64::from(index) * i64::from(CANONICAL.cell_udeg))
+            .map_err(|_| "the pack lattice origin overflows microdegrees".to_string())
+    };
     let lattice = Lattice {
-        south_lat_udeg: CANONICAL.south_lat_udeg + (cut.row0 * CANONICAL.cell_udeg) as i32,
-        west_lon_udeg: CANONICAL.west_lon_udeg + (cut.col0 * CANONICAL.cell_udeg) as i32,
+        south_lat_udeg: shift(cut.row0, CANONICAL.south_lat_udeg)?,
+        west_lon_udeg: shift(cut.col0, CANONICAL.west_lon_udeg)?,
         width: cut.width(),
         height: cut.height(),
         shard_width: cut.width(),

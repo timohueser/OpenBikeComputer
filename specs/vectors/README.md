@@ -116,9 +116,9 @@ distance reaches before the start of the tile's image, and a valid stream that f
 canonical raw4/RLE4 length), an encoded all-dry full tile (the sentinel is mandatory there), a dry
 sentinel at a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry
 sentinel, reserved byte, nonzero bytes 12–13 (the deleted provenance pair, which is a malformed
-object rather than a code a reader must tolerate), and a double source-class flag. Except for truncation and the deliberate
-stale-CRC files, every CRC covering a corrupted byte is recomputed so structural validation cannot
-hide behind an integrity check.
+object rather than a code a reader must tolerate), and a double source-class flag. Except for
+truncation and the deliberate stale-CRC files, every CRC covering a corrupted byte is recomputed so
+structural validation cannot hide behind an integrity check.
 
 ### The shared weather manifest (`wx-manifest-v2.json`)
 

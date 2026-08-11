@@ -47,12 +47,18 @@ pub struct MosaicSource {
 /// MRMS and HRRR are two rows and not one. They were the single composed `us` product until #1246
 /// — the last place in the bakery where two upstreams shared one published timeline — and under
 /// the mosaic a source is a source, placed by the rule above with no exception attached: 1 km
-/// CONUS radar among the radars, 3 km CONUS model above the pan-European one. The visible
-/// consequence is that the MRMS observation now paints the forward frames it is within
-/// [`crate::canonical::MAX_FRAME_SKEW_S`] of, rather than losing them to an equally close HRRR
-/// forecast the composed product could see and a priority table cannot. That is exactly the
-/// frozen-observation behaviour every other single-frame radar source in this table already has
-/// (both OPERA rows, #1245); doing it deliberately and well is WXR9 #1251's job.
+/// CONUS radar among the radars, 3 km CONUS model above the pan-European one.
+///
+/// The visible consequence, stated with its arithmetic: MRMS contributes **one** frame, so
+/// [`crate::canonical::MosaicLayer::nearest`] hands that one field to every canonical frame within
+/// [`crate::canonical::MAX_FRAME_SKEW_S`] (1,800 s) of it. At a 15-minute cadence that is the
+/// anchor **and the next two frames** — f+0, f+15 and f+30 — and HRRR's real forecast takes over
+/// from f+45, where the observation is 2,520 s out and refused. So two of nine frames over CONUS
+/// change hands. Meteorologically that is arguably an improvement (radar persistence beats a 3 km
+/// model at +15 and +30); what it must not do is *claim* to be measured weather at those instants,
+/// which is why [`crate::canonical::shard_is_observed`] flags them Forecast. Doing persistence
+/// deliberately and well is WXR9 #1251's job. Every other single-frame radar source in this table
+/// (both OPERA rows, #1245) has always behaved the same way.
 ///
 /// Adding a source is one row. Its position in this list *is* its priority; there is no separate
 /// number to keep in sync, and [`mosaic_rank`] is the only reader.

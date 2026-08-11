@@ -289,7 +289,7 @@ pub fn capture(root: &Path, request: &CaptureRequest, network: &mut dyn Upstream
     recorder.set_role(Role::Truth);
     let mut truth_frames = Vec::with_capacity(ladder.len());
     for rung in &ladder {
-        let bytes = bake_truth_frame(&mut recorder, &lattice, anchor, rung.offset_min, rung.valid_at)?;
+        let bytes = bake_truth_frame(&mut recorder, &lattice, rung.valid_at)?;
         let path = format!("{TRUTH_DIR}/f{}.obcg", rung.offset_min);
         write_file(&root.join(TRUTH_DIR).join(format!("f{}.obcg", rung.offset_min)), &bytes)?;
         truth_frames.push(TruthFrame {
@@ -405,30 +405,31 @@ pub fn pack_coverage(lattice: &Lattice) -> BboxUdeg {
 /// One observed frame, baked through the same MRMS path and the same emitter the service tree's
 /// own frames go through — a one-source mosaic on the pack's lattice.
 ///
+/// **A truth frame is anchored on itself**: `reference_time == valid_at`, offset 0. It is a real
+/// observation of a real instant, so that is the only stamping that satisfies `OBCG_Spec.md` §3.2,
+/// which reserves `FLAG_OBSERVED` for offset 0 precisely because a frame ahead of its anchor is
+/// about an instant nothing observed. Stamping the ladder's own offset into the header instead —
+/// which is what this did until the flag rule landed — produced an object whose bytes said
+/// "forecast valid at 19:02" over a genuine 19:02 radar field.
+///
+/// The ladder is not lost by that: `event.json`'s `truth_frames[]` carries `requested_offset_min`,
+/// the snapped `offset_min` and `valid_at` for every rung, which is where a scorer reads it. The
+/// rung is pack metadata about *when to compare*, not a claim the OBCG object makes about itself.
+///
 /// Public because [`crate::pack::rebake`] re-derives the truth ladder from the pack's own stored
 /// bytes and byte-compares — the same promise `service/` carries, which only became keepable once
 /// the truth ladder's raw observations were checked in.
-pub fn bake_truth_frame(
-    upstream: &mut dyn Upstream,
-    lattice: &Lattice,
-    anchor: i64,
-    offset_min: u32,
-    valid_at: i64,
-) -> Result<Vec<u8>, String> {
-    let mut frame = mrms::bake_observation(upstream, valid_at)?;
-    // `bake_observation` anchors its frame at its own instant; here the anchor is the cycle's, so
-    // the truth frame's offset is its real distance ahead of the forecast it will be scored
-    // against. The cells and their source window are untouched.
-    frame.offset_min = offset_min;
+pub fn bake_truth_frame(upstream: &mut dyn Upstream, lattice: &Lattice, valid_at: i64) -> Result<Vec<u8>, String> {
+    let frame = mrms::bake_observation(upstream, valid_at)?;
     let source = BakedSource {
         id: mrms::ID,
         geometry: mrms::GEOMETRY,
-        reference_time: anchor,
+        reference_time: valid_at,
         attribution: mrms::ATTRIBUTION,
         frames: vec![frame],
     };
     let mosaic = Mosaic::from_sources(vec![source])?;
-    let object = emit_shard(lattice, &mosaic, CycleTimes { reference_time: anchor }, offset_min, 0)?;
+    let object = emit_shard(lattice, &mosaic, CycleTimes { reference_time: valid_at }, 0, 0)?;
     Ok(object.bytes)
 }
 
