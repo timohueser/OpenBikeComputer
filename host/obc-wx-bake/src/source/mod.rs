@@ -62,12 +62,14 @@ pub struct MosaicSource {
 /// the next two — and HRRR only took over at f+45. Those frames were labelled Forecast, honestly,
 /// but a repeated "now" image is not a prediction of +15 whatever it is labelled. Doing radar
 /// persistence deliberately, as an extrapolated forecast source with real forward frames, is WXR9
-/// #1251's job; it will join this table as a source and be eligible for forward frames on the same
-/// terms as any other forecast. Both OPERA rows (#1245) are single-frame observations too and the
-/// rule reads them identically: f0 over Europe outside Germany is OPERA, f+15 onward is ICON-EU.
-/// DWD RV is the exception that proves it is a rule about *data* and not about radar — RV is a
-/// nowcast composite whose +5…+120 members are forecasts and are stamped as such, so Germany's
-/// forward frames stay RV.
+/// #1251's job — **and it has now landed**: `mrms-nowcast` and `opera-cirrus-nowcast` are rows in
+/// this table, ranked under every observation and over every model, and they are eligible for
+/// forward frames on exactly the same terms as any other forecast. Both OPERA rows (#1245) are
+/// single-frame observations too and the rule reads them identically: f0 over Europe outside Germany
+/// is OPERA, and f+15 onward is `opera-cirrus-nowcast` where CIRRUS had a motion baseline, ICON-EU
+/// otherwise. DWD RV is the exception that proves it is a rule about *data* and not about radar — RV
+/// is a nowcast composite whose +5…+120 members are forecasts and are stamped as such, so Germany's
+/// forward frames stay RV and WXR9 derives nothing from it.
 ///
 /// ## What the forward frames now fall through to
 ///
@@ -102,6 +104,13 @@ pub struct MosaicSource {
 /// instant is not. Narrowing the strips means a source whose forecasts cover them, which is a
 /// [`MOSAIC_PRIORITY`] row, not an exception to the rule.
 ///
+/// **WXR9 narrows two of the four, on exactly those terms.** `mrms-nowcast` and
+/// `opera-cirrus-nowcast` are radar-derived *forecast* sources, so they are eligible where their
+/// parents are not, and they cover their parents' whole footprint — including the strips past the
+/// regional model's domain — out to `derive::NOWCAST_MAX_LEAD_MIN`. Finnmark's f+15 and f+30 are
+/// advected OPERA rather than the 27.75 km floor; past the horizon the fall-through above is
+/// unchanged, and the two OPERA-NIMBUS-only strips were never covered by CIRRUS to begin with.
+///
 /// Adding a source is one row. Its position in this list *is* its priority; there is no separate
 /// number to keep in sync, and [`mosaic_rank`] is the only reader.
 pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
@@ -115,6 +124,20 @@ pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
         id: opera_nimbus::ID,
         why: "pan-European 2 km radar rain rate — coarser and later than CIRRUS, but native mm/h and near-surface, and it covers cells CIRRUS does not",
     },
+    // WXR9 #1251's derived rows: the radar image, moved. Below every radar **observation** — an
+    // extrapolation of a measurement never outranks the measurement, and the two never contend
+    // anyway, because a nowcast has no frame at f0 and an observation has none ahead of it — and
+    // above every model, which is the whole claim the skill harness has to earn. They are produced
+    // by `crate::derive`, not by an adapter, so they are the two rows in this table with no
+    // `Adapter` behind them; `DERIVED_NOWCASTS` is where that correspondence lives.
+    MosaicSource {
+        id: mrms::NOWCAST.id,
+        why: "1 km CONUS radar advected forward — beats the 3 km model inside derive::NOWCAST_MAX_LEAD_MIN",
+    },
+    MosaicSource {
+        id: opera_cirrus::NOWCAST.id,
+        why: "1 km pan-European radar advected forward — the same trade, over the ground ICON-EU would otherwise own",
+    },
     MosaicSource {
         id: hrrr::ID,
         why: "national 3 km model (CONUS) — fill ahead of the radar observation and where it does not reach",
@@ -127,6 +150,42 @@ pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
 /// a bakery configuration bug, not a runtime condition, and the mosaic refuses to build.
 pub fn mosaic_rank(id: &str) -> Option<usize> {
     MOSAIC_PRIORITY.iter().position(|source| source.id == id)
+}
+
+/// **A source the bakery derives rather than fetches** (WXR9 #1251).
+///
+/// One row per radar source whose observations are advected into forward frames by
+/// [`crate::derive::radar_nowcast`]. It is a table rather than a flag on the adapter because the
+/// derived source is a *separate* [`MOSAIC_PRIORITY`] row with its own rank and its own licence
+/// line, and because the thing that decides whether a source can be nowcast is not the adapter but
+/// whether it supplies a [`BakedSource::motion_history`] — which the adapter may fail to do on any
+/// given cycle without that being an error.
+#[derive(Debug, Clone, Copy)]
+pub struct DerivedNowcast {
+    /// The observation source this is extrapolated from.
+    pub parent: &'static str,
+    /// The derived source's own id, and its [`MOSAIC_PRIORITY`] row.
+    pub id: &'static str,
+    /// Its licence line. It restates the parent's — the pixels are the parent's measurement — and
+    /// adds what was done to them, because "advected by OpenBikeComputer" is a modification the
+    /// upstream terms require to be declared and a rider deserves to be able to read.
+    pub attribution: Attribution,
+}
+
+/// Every derived nowcast the bakery can produce. Two today: the 1 km radars either side of the
+/// Atlantic. DWD RV is deliberately absent — it is itself a nowcast, publishing real +5 … +120
+/// members from the DWD's own advection scheme, and extrapolating an extrapolation would replace a
+/// better product with a worse one.
+pub const DERIVED_NOWCASTS: &[DerivedNowcast] = &[mrms::NOWCAST, opera_cirrus::NOWCAST];
+
+/// The nowcast derived from `parent`, if there is one.
+pub fn nowcast_of(parent: &str) -> Option<&'static DerivedNowcast> {
+    DERIVED_NOWCASTS.iter().find(|derived| derived.parent == parent)
+}
+
+/// Is `id` a source the bakery derives rather than fetches?
+pub fn is_derived(id: &str) -> bool {
+    DERIVED_NOWCASTS.iter().any(|derived| derived.id == id)
 }
 
 /// NOAA Open Data Dissemination terms, the attribution URL of every NOAA-sourced product
@@ -203,6 +262,19 @@ pub struct BakedSource {
     pub reference_time: i64,
     pub attribution: Attribution,
     pub frames: Vec<BakedFrame>,
+    /// **Earlier observations of the same field, kept only to estimate motion** (WXR9 #1251).
+    ///
+    /// These never reach the mosaic. They are measurements of instants the cycle does not publish,
+    /// and putting them in `frames` would be actively wrong rather than merely redundant: a cycle
+    /// anchored at 18:45 whose radar observation lands at 18:52 would find a 18:42 history frame
+    /// *nearer* the anchor instant, and [`crate::canonical::MosaicLayer::nearest`] would faithfully
+    /// paint f0 with the ten-minutes-older image. So the two sets are separate, and this one has
+    /// exactly one consumer: [`crate::derive::radar_nowcast`].
+    ///
+    /// Empty for every source that has no nowcast row, and legitimately empty for one that does —
+    /// an adapter that could not find its earlier observation reports a warning and the mosaic goes
+    /// on without a nowcast layer.
+    pub motion_history: Vec<BakedFrame>,
 }
 
 pub trait Adapter {
@@ -223,8 +295,13 @@ mod priority_tests {
     use super::*;
 
     /// Every adapter the bakery ships must have exactly one row, and every row must name a real
-    /// adapter. A source with no row cannot be mosaicked at all, and a duplicate row would make
-    /// "its position is its priority" ambiguous.
+    /// adapter **or a derived source**. A source with no row cannot be mosaicked at all, and a
+    /// duplicate row would make "its position is its priority" ambiguous.
+    ///
+    /// Since WXR9 #1251 there are two kinds of source, and the table is the union: seven adapters
+    /// fetch, and [`DERIVED_NOWCASTS`] are computed from two of them by `crate::derive`. Both are
+    /// checked here rather than only the fetched ones, because a derived row with nothing producing
+    /// it is a permanently absent layer that nothing else would notice.
     #[test]
     fn every_adapter_has_exactly_one_row_and_every_row_an_adapter() {
         let adapters: [&dyn Adapter; 7] = [
@@ -240,14 +317,58 @@ mod priority_tests {
             let rows = MOSAIC_PRIORITY.iter().filter(|source| source.id == adapter.id()).count();
             assert_eq!(rows, 1, "{} has {rows} rows in MOSAIC_PRIORITY", adapter.id());
         }
+        for derived in DERIVED_NOWCASTS {
+            let rows = MOSAIC_PRIORITY.iter().filter(|source| source.id == derived.id).count();
+            assert_eq!(rows, 1, "{} has {rows} rows in MOSAIC_PRIORITY", derived.id);
+            assert!(
+                adapters.iter().any(|adapter| adapter.id() == derived.parent),
+                "{} is derived from {}, which no adapter produces",
+                derived.id,
+                derived.parent
+            );
+            assert!(nowcast_of(derived.parent).is_some() && is_derived(derived.id));
+            // A derived source is never itself derivable — nothing nowcasts a nowcast.
+            assert!(nowcast_of(derived.id).is_none(), "{} must not have a nowcast of its own", derived.id);
+        }
         for source in MOSAIC_PRIORITY {
             assert!(
-                adapters.iter().any(|adapter| adapter.id() == source.id),
-                "MOSAIC_PRIORITY names {} but no adapter answers to it",
+                adapters.iter().any(|adapter| adapter.id() == source.id) || is_derived(source.id),
+                "MOSAIC_PRIORITY names {} but neither an adapter nor a derivation produces it",
                 source.id
             );
         }
-        assert_eq!(MOSAIC_PRIORITY.len(), adapters.len());
+        assert_eq!(MOSAIC_PRIORITY.len(), adapters.len() + DERIVED_NOWCASTS.len());
+    }
+
+    /// The derived rows sit exactly where the ordering rule puts them: **under every radar
+    /// observation and over every model.**
+    ///
+    /// That is the whole claim WXR9 makes and the whole thing its skill harness has to earn. Being
+    /// under the observations costs nothing — a nowcast has no frame at f0 and an observation is
+    /// ineligible ahead of it (#1248), so the two never contend — but stating it is what stops a
+    /// later reordering from letting an extrapolation outrank the measurement it came from.
+    #[test]
+    fn a_derived_nowcast_sits_under_every_radar_and_over_every_model() {
+        let rank = |id| mosaic_rank(id).unwrap_or_else(|| panic!("{id} has no row"));
+        for derived in DERIVED_NOWCASTS {
+            assert!(
+                rank(derived.parent) < rank(derived.id),
+                "{} must not outrank the radar it is derived from",
+                derived.id
+            );
+            for radar in [dwd_rv::ID, mrms::ID, opera_cirrus::ID, opera_nimbus::ID] {
+                assert!(rank(radar) < rank(derived.id), "{radar} is an observation and must beat {}", derived.id);
+            }
+            for model in [hrrr::ID, icon_eu::ID, gfs::ID] {
+                assert!(rank(derived.id) < rank(model), "{} must beat {model}", derived.id);
+            }
+            // The licence line travels with the derivation and says what was done to the pixels.
+            assert!(
+                derived.attribution.text.contains("advection"),
+                "{}: a derived licence line must declare the modification",
+                derived.id
+            );
+        }
     }
 
     /// The locked ordering rule, spelled out so a reordering has to argue with a test: radar

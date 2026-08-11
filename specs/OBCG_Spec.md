@@ -182,11 +182,70 @@ The rule turns on **what the source data is**, not on how near it lands. Being a
 guarantee; being a forecast of *exactly* this instant is not, and no consumer may read it as one.
 `valid_at` states the frame's position on the cadence, while the forecast step underneath it may sit
 up to `cadence.max_source_skew_s` away. At a 30-minute window and a 15-minute cadence the quantity
-is concrete and worth stating: **one hourly model step paints four consecutive frames.** A step
-valid at 11:00 answers 10:30, 10:45, 11:00 and 11:15, because a frame instant at :30 is 1,800 s from
-both flanking steps and an implementation that samples the nearest step MUST break that tie toward
-the later one — the field valid after the target is about weather that has not happened yet, the one
-before it is already past.
+is concrete and worth stating: **one hourly model step may paint four consecutive frames.** A step
+valid at 11:00 can answer 10:30, 10:45, 11:00 and 11:15, because a frame instant at :30 is 1,800 s
+from both flanking steps and an implementation that samples the nearest step MUST break that tie
+toward the later one — the field valid after the target is about weather that has not happened yet,
+the one before it is already past.
+
+#### Derived frames
+
+A publisher MAY compute a frame rather than sample one, and the result is a **derived frame**. It is
+an ordinary Forecast frame — there is no flag for it, no field distinguishes it, and a consumer
+neither can nor needs to tell. What this section requires of one is that it be a genuine estimate
+**for its own `valid_at`**, produced from source data by a documented method, and never a copy of a
+neighbouring instant relabelled.
+
+Two derivations are in use and both are motion-based:
+
+- **extrapolation** — an observed field carried forward along a motion field estimated from
+  consecutive observations, to produce forward frames where only an observation existed;
+- **temporal interpolation** — the two source steps bracketing a cadence instant carried to that
+  instant along the motion between them, to produce a frame where a source's own steps are coarser
+  than the cadence.
+
+Both MUST obey the same three limits, which are what stop a derived frame from being a fabrication:
+
+- **No spatial precision is created.** Advection moves whole cells by nearest-neighbour sampling
+  (§6); a derived frame's effective resolution is its source's, and the lattice pitch says nothing
+  about it — exactly as for an upsampled coarse source.
+- **Missing stays missing.** Where a trajectory originates outside the source's domain there is no
+  data behind the field that moved, and the cell MUST be intensity 15, never dry. A publisher that
+  fills such a cell with dry is asserting an absence of rain that nothing observed or predicted.
+  This holds for **temporal interpolation too, and without exception**: a derived cell whose
+  contributing trajectory has no data MUST be 15, even where a *different* source field would have
+  covered it. Filling one derivation's blind spot from another field is how a frame comes to have no
+  blind spot at all, and the mosaic (§3) is the layer that decides what covers an uncovered cell.
+- **No intensity is created either.** Every cell of a derived frame MUST carry an intensity that one
+  of its contributing source cells holds — the cells are *moved*, not combined. A weighted mean of
+  two quantized codes is inside its inputs' range and is still a value neither of them stated; over a
+  measured 30-minute interpolation it left 22.6 % of wet cells carrying such a value, grew the wet
+  area past both parents' and damped the mean intensity by about one band. An implementation that
+  needs a value between two steps MUST take the nearer step's, not a blend of both.
+
+A derived frame MUST NOT set **Observed**, whatever its inputs were: it is an estimate for an instant
+nothing measured. The preceding paragraphs' rules apply to it unchanged — it is Forecast, it is
+eligible only where a forecast is eligible, and `valid_at` is its cadence instant.
+
+#### `valid_at` is a label, not a measurement time — and deriving motion from it is wrong
+
+Stated separately because it has already cost one implementation a silent, uniform error. §3.2's
+opening rule says `valid_at = reference_time + offset_min x 60`; it is the frame's **place on the
+cadence** and it is what makes an object's key computable by arithmetic. The data underneath an
+Observed f0 is up to `cadence.max_source_skew_s` *older* than that — an 18:48 radar scan is published
+as the 18:45 frame — and no field of the object states when the measurement was actually taken. That
+is the deliberate consequence of §3's no-provenance decision, not an omission.
+
+A consumer that derives motion by differencing two frames MUST therefore NOT take the interval
+between their `valid_at` values as the interval between the measurements. Doing so stretches the
+baseline by the observations' ages and divides the displacement by too large a number: measured on a
+real event, an 840-second baseline read as 1,020 seconds advected the field **18 % too slowly** at
+every lead, with no cell out of range and nothing visibly wrong in any frame. An implementation that
+needs the measurement instant must obtain it where it is stated — the producer's own frame records,
+or an event pack's `window_start` — or it must not estimate motion from published frames at all.
+
+`cadence.max_source_skew_s` bounds the error and does not remove it: it is the *worst* case for the
+generation, not this frame's own age.
 
 What distinguishes this from the frozen-observation case is not the distance: a model step valid at
 17:00 is a prediction, and the nearest prediction is a defensible answer for 17:15, whereas a radar
