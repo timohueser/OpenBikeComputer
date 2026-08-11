@@ -111,13 +111,15 @@ fn source(
 fn production_sources(now: i64) -> Vec<BakedSource> {
     let run = now - 3_600;
     vec![
-        // DWD RV: 15-minute members from a run five minutes off the quarter hour, which is why
-        // `derive::uniform_frames` has work to do here even though the cadence already matches.
+        // DWD RV: a run five minutes off the quarter hour, which is where RV's runs really are, and
+        // members **selected onto the canonical instants** exactly as `dwd_rv::selected_leads` does
+        // since #1278's M4. So there is nothing here for `derive::uniform_frames` to morph — which
+        // is the point, and the harness would report it if the selection regressed.
         source(
             dwd_rv::ID,
             dwd_rv::GEOMETRY,
             now - 300,
-            frames(&dwd_rv::GEOMETRY, 9, 900, now - 300, SourceClass::Forecast, 1),
+            frames(&dwd_rv::GEOMETRY, 9, 900, now, SourceClass::Forecast, 1),
             Vec::new(),
         ),
         // MRMS: one observation, plus the motion-history frame WXR9 fetches.
@@ -190,8 +192,16 @@ fn rss_mb() -> String {
 #[test]
 #[ignore = "materialises every source at production size and bakes the global lattice; run deliberately"]
 fn a_full_cycle_at_production_scale() {
-    let now = 1_760_000_000i64;
+    // **On a quarter hour** (#1278 r1, n9). `CycleTimes::anchored_at` floors to the cadence, so an
+    // arbitrary `now` puts the synthetic HRRR steps a few hundred seconds off every canonical
+    // instant and the harness charges job B nine interpolations HRRR would never need: in
+    // production its run is on the hour and its 15-minute leads land exactly on the quarter hours.
+    // That inflated the very measurement the horizon argument rests on, in the safe direction but
+    // confusingly. DWD RV is deliberately *not* aligned — its run really is on a five-minute
+    // boundary, and since #1278's M4 the adapter selects its members by canonical instant anyway.
+    let now = 1_760_000_000i64 / 900 * 900;
     let times = CycleTimes::anchored_at(now);
+    assert_eq!(times.reference_time, now, "the harness must not be measuring an off-cadence anchor");
 
     let built = Instant::now();
     let sources = production_sources(now);

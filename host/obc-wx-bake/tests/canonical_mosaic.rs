@@ -28,8 +28,8 @@ use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::canonical::{
     bake_cycle, emit_shard, frame_is_eligible, run_cycle, source_column, source_reaches, source_row, CycleTimes,
-    FrameSlot, Lattice, Mosaic, MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, FRAME_STEP_MIN,
-    LATTICE_CELL_SIZE_M, MAX_FRAME_SKEW_S,
+    FrameSlot, Lattice, Mosaic, MosaicLayer, ANCHOR_OBSERVATION_PREFERENCE_S, BAKE_THREADS, CANONICAL, CELL_UDEG,
+    CYCLE_FRAMES, FRAME_STEP_MIN, LATTICE_CELL_SIZE_M, MAX_FRAME_SKEW_S,
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
@@ -353,6 +353,137 @@ fn the_dwd_window_is_a_window_of_the_canonical_lattice() {
             (lat_udeg as f64 / 1e6, lon_udeg as f64 / 1e6),
             "the source cell selected for canonical cell ({col},{row}) has a different centre"
         );
+    }
+}
+
+/// **Germany's radar is DWD's data, unmodified** (WXR9 #1251, review round 1 M4).
+///
+/// The RV tar carries 25 validated members at five-minute leads, and a cycle anchors on a quarter
+/// hour, so *every* canonical instant inside the run's reach is a member DWD published for exactly
+/// that instant. Until #1251 the adapter selected a fixed ladder off the **run** — which is on the
+/// five-minute boundary, not the quarter hour — so those members were decoded, validated and thrown
+/// away, and `derive::uniform_frames` then reconstructed the very same instants by optical flow.
+///
+/// This drives the real fixture tar through the real adapter at every anchor phase the cadence
+/// admits, and asserts three things **separately** — round 2 caught the first version conflating
+/// them, asserting `exact >= 5` while its own prose claimed "every instant, exactly", which would
+/// have sailed straight through a three-slot regression:
+///
+/// 1. **all nine** canonical instants resolve to a native DWD member at every run phase, no further
+///    than one member step away. Nothing falls through to a stale frame, and nothing is left for
+///    optical flow;
+/// 2. every instant that *can* have an exact member has one — `exact == reachable`, zero skew, not
+///    "within tolerance". The at most one that cannot is at an end of the tar's reach: an instant
+///    before the run, or one past `run + 120 min`, which no member is valid at;
+/// 3. `derive::uniform_frames` adds **nothing**. Not "little" — nothing.
+#[test]
+fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
+    let run = ts(DWD_RUN);
+    let step_s = i64::from(dwd_rv::MEMBER_STEP_MIN) * 60;
+    // Every anchor phase a quarter-hour cadence admits relative to RV's own five-minute run, plus a
+    // wall clock a few minutes into each, which is how a timer actually fires.
+    for phase_min in [0i64, 5, 10, 15, 20, 25] {
+        let now = run + phase_min * 60 + 137;
+        let times = CycleTimes::anchored_at(now);
+        let mut upstream = european_upstream();
+        let mut source = bake(&dwd_rv::DwdRv, &mut upstream, now);
+        assert_eq!(source.reference_time, run);
+
+        let (mut exact, mut reachable, mut native) = (0usize, 0usize, 0usize);
+        for offset_min in times.offsets_min() {
+            let target = times.valid_at(offset_min);
+            let ahead = target - run;
+            let can_be_exact = (0..=i64::from(dwd_rv::MAX_LEAD_MIN) * 60).contains(&ahead) && ahead % step_s == 0;
+            reachable += usize::from(can_be_exact);
+
+            // 1. Some native member answers this instant, and **it is the nearest member the tar
+            //    contains** — checked against the whole 25-member ladder rather than against the
+            //    selection, so "the tar carries a nearer one" is a claim the test can actually make.
+            //    That is the regression round 2 found: f+120 used to fall to the lead-110 member
+            //    900 s stale while lead 120 sat decoded 300 s away.
+            let nearest = source
+                .frames
+                .iter()
+                .min_by_key(|frame| (frame.valid_at - target).abs())
+                .unwrap_or_else(|| panic!("phase {phase_min}: f+{offset_min} has no DWD frame at all"));
+            let skew = (nearest.valid_at - target).abs();
+            let best_possible = (0..dwd_rv::MEMBER_COUNT)
+                .map(|member| (run + member as i64 * step_s - target).abs())
+                .min()
+                .expect("the tar has members");
+            assert_eq!(
+                skew, best_possible,
+                "phase {phase_min}: f+{offset_min} is answered by a member {skew} s away and the tar carries one \
+                 {best_possible} s away"
+            );
+            // …and it is inside the mosaic's own sampling window, so the frame is really published.
+            assert!(skew <= MAX_FRAME_SKEW_S, "phase {phase_min}: f+{offset_min} is outside the skew window");
+            native += 1;
+
+            // 2. …and where an exact member can exist, it is the one that was selected.
+            if can_be_exact {
+                assert_eq!(skew, 0, "phase {phase_min}: f+{offset_min} has an exact member and did not get it");
+                let lead = (ahead / 60) as u32;
+                assert_eq!(nearest.offset_min, lead, "phase {phase_min}: f+{offset_min} is not the member it claims");
+                assert!(matches!(nearest.class, SourceClass::Forecast) || lead == 0);
+                exact += 1;
+            }
+        }
+        assert_eq!(native, CYCLE_FRAMES as usize, "phase {phase_min}: every one of the nine frames must be native");
+        assert_eq!(exact, reachable, "phase {phase_min}: {exact} exact of the {reachable} instants that could be");
+
+        // …and f0 is the **observation**, at every run phase (#1278 r2, R2-2). Round 2 caught the
+        // anchor going to an exact-instant lead-5 forecast when the run sat 300 s after it, which
+        // put Germany's `FLAG_OBSERVED` on RV's publication schedule. Measured through the real
+        // mosaic and emitter here, not inferred from the frame list.
+        // Well inside the radar footprint (50.0 N, 10.0 E — Thuringia), so `all_observed` is about
+        // which frame won and not about whether the composite reaches the window's corner.
+        let lattice = sub_lattice(50_000_000, 10_000_000, 64, 64);
+        let cells_before: Vec<usize> = source.frames.iter().map(|frame| frame.cells.len()).collect();
+        let anchor_flags = {
+            let mosaic =
+                Mosaic::from_sources(vec![bake(&dwd_rv::DwdRv, &mut european_upstream(), now)]).expect("ranked");
+            let object = emit_shard(&lattice, &mosaic, times, 0, 0).expect("emits");
+            let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+            obcg::validate(&object.bytes, &mut scratch).expect("valid").flags
+        };
+        // The rule exactly: the observation owns f0 while it is inside the preference, and the
+        // preference is one cadence step — which covers every phase a healthy RV feed can produce,
+        // because the run is at most a few minutes old. Past it (phase 25 here: a *stale* feed, the
+        // newest run 25 minutes back) the forecast valid at the instant is genuinely the better
+        // answer and wins, which is the bound doing its job rather than the rule failing.
+        let expected = if times.reference_time - run <= ANCHOR_OBSERVATION_PREFERENCE_S {
+            obcg::FLAG_OBSERVED
+        } else {
+            obcg::FLAG_FORECAST
+        };
+        assert_eq!(
+            anchor_flags,
+            expected,
+            "phase {phase_min}: anchor is {} s after the run; Germany's f0 is the wrong kind of frame",
+            times.reference_time - run
+        );
+
+        // 3. Nothing left for the derivation stage to do over Germany.
+        let added = obc_wx_bake::derive::uniform_frames(&mut source, times);
+        assert_eq!(added, 0, "phase {phase_min}: DWD RV must never be morphed — it published the frame already");
+        assert_eq!(source.frames.iter().map(|frame| frame.cells.len()).collect::<Vec<_>>(), cells_before);
+    }
+}
+
+/// The selection is a pure function of the run and the wall clock, so it is worth stating on its own
+/// terms too: lead 0 always survives (it is the tar's only observation and what f0's
+/// `FLAG_OBSERVED` rests on), and nothing past the tar's reach is ever asked for.
+#[test]
+fn the_dwd_selection_always_keeps_the_observation_and_never_overruns_the_tar() {
+    let run = ts(DWD_RUN);
+    for phase_s in [0i64, 137, 300, 899, 900, 3_600, 7_200] {
+        let leads = dwd_rv::selected_leads(run, run + phase_s);
+        assert_eq!(leads.first(), Some(&0), "the lead-0 observation is not optional");
+        assert!(leads.iter().all(|lead| *lead <= dwd_rv::MAX_LEAD_MIN));
+        assert!(leads.iter().all(|lead| lead.is_multiple_of(dwd_rv::MEMBER_STEP_MIN)));
+        assert!(leads.windows(2).all(|pair| pair[0] < pair[1]), "sorted and unique");
+        assert!(leads.len() <= dwd_rv::MEMBER_COUNT);
     }
 }
 
@@ -753,38 +884,75 @@ fn one_hourly_forecast_step_paints_exactly_four_consecutive_frames() {
     assert_eq!(runs[0].1 as i64, candidates - 1, "one of the two boundary ties goes to the later step");
 }
 
-/// The anchor's own tie-break, which the eligibility rule leaves standing and is the only slot it
-/// can now fire on: at equal distance a forecast beats an observation that is *not* valid at the
-/// target instant — a field about the future beats a field about the past when neither is about
-/// now — while an observation exactly on target still wins, because it is the observation *of* that
-/// instant, which is the whole of what f0's `FLAG_OBSERVED` claims.
+/// **The anchor belongs to a recent observation** (#1278 r2, R2-2), and this is the whole of the
+/// rule, at both of its edges.
+///
+/// Round 2 caught the old ordering handing f0 to an exact-instant *forecast* over an observation
+/// 300 s away — which over Germany meant `FLAG_OBSERVED` flapping with RV's five-minute publication
+/// phase, because an RV lead-5 member is DWD's own extrapolation **of the very scan it was beating**.
+/// f0 asks "is it raining on me now", and a five-minute-old composite answers that better than a
+/// zero-minute-old advection of it. So at f0 an observation inside
+/// `ANCHOR_OBSERVATION_PREFERENCE_S` wins outright.
+///
+/// It is bounded, and the bound is the other half of the test: a genuinely stale scan does *not*
+/// displace a model step that is actually about the instant, and no forward frame is affected at
+/// all, because eligibility has already left only forecasts there.
 #[test]
-fn on_the_anchor_a_forecast_beats_an_equally_close_but_older_observation() {
+fn the_anchor_prefers_a_recent_observation_over_an_exact_forecast() {
     let t0 = ts("2026-08-09T14:00:00Z");
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
     let source = window(45_680_000, 1_460_000, 10_000, 64, 64);
+    let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+    let mut flags_at_anchor = |frames: &[(i64, SourceClass)]| {
+        let composed = synthetic_frames(dwd_rv::ID, source, frames, |_, _| 5);
+        let mosaic = Mosaic::from_sources(vec![composed]).expect("ranked");
+        let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
+        obcg::validate(&object.bytes, &mut scratch).expect("valid").flags
+    };
+
+    // The case round 2 found, verbatim: a forecast valid at exactly the anchor instant against an
+    // observation five minutes old. The observation wins now.
+    assert_eq!(
+        flags_at_anchor(&[(t0 - 300, SourceClass::Observation), (t0, SourceClass::Forecast)]),
+        obcg::FLAG_OBSERVED,
+        "a five-minute-old scan answers 'is it raining now' better than an extrapolation of that scan"
+    );
+    // …and it holds right out to the edge of the preference, which is one cadence step — the widest
+    // an anchor and a discovered observation can ever be apart.
+    assert_eq!(
+        flags_at_anchor(&[
+            (t0 - ANCHOR_OBSERVATION_PREFERENCE_S, SourceClass::Observation),
+            (t0, SourceClass::Forecast),
+        ]),
+        obcg::FLAG_OBSERVED
+    );
+    // One second past it the preference is gone and plain nearest-validity decides, so the forecast
+    // that is actually about this instant wins. A stale scan does not own f0 forever.
+    assert_eq!(
+        flags_at_anchor(&[
+            (t0 - ANCHOR_OBSERVATION_PREFERENCE_S - 1, SourceClass::Observation),
+            (t0, SourceClass::Forecast),
+        ]),
+        obcg::FLAG_FORECAST,
+        "past the preference the observation competes on distance like anything else"
+    );
+    // An observation exactly on the instant is unchanged and always was the answer.
+    assert_eq!(
+        flags_at_anchor(&[(t0, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)]),
+        obcg::FLAG_OBSERVED
+    );
+
+    // The forward frames are untouched: eligibility left only forecasts there, so the preference
+    // cannot fire and an observation can never paint one however recent it is.
     let composed = synthetic_frames(
         dwd_rv::ID,
         source,
-        &[(t0 - 900, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)],
+        &[(t0 - 300, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)],
         |_, _| 5,
     );
     let mosaic = Mosaic::from_sources(vec![composed]).expect("ranked");
-    let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
-    let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
-    let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
-    assert_eq!(header.flags, obcg::FLAG_FORECAST, "the forecast frame won, so the object is not Observed");
-
-    let exact = synthetic_frames(
-        dwd_rv::ID,
-        source,
-        &[(t0, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)],
-        |_, _| 5,
-    );
-    let mosaic = Mosaic::from_sources(vec![exact]).expect("ranked");
-    let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
-    let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
-    assert_eq!(header.flags, obcg::FLAG_OBSERVED, "an observation valid at the target instant is the answer");
+    let forward = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 15, 0).expect("emits");
+    assert_eq!(obcg::validate(&forward.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_FORECAST);
 }
 
 /// `FLAG_OBSERVED` is the last provenance channel the device sees, so it is measured rather than
