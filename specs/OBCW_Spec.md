@@ -229,6 +229,17 @@ the frame at offset 0 whose validity is within the dataset's stated source skew 
 sets **Observed**; every forward frame sets **Forecast**. Dryness is not part of it in either
 direction — an all-dry radar scan is an observation, and an all-dry forecast frame is not one.
 
+**Cross-reference: this is deliberately looser than `OBCG_Spec.md` §3.2's rule, and the divergence
+is safe in one direction.** That spec's publisher may set Observed only when `offset_min` is 0 *and*
+every cell of the object came from an observation upstream — a checkable property, because an OBCG
+object is one shard. The rule here is positional only, because the unit is an assembled frame that
+cannot be uniform: content that is true of the shard over the rider is false of the shard across the
+seam. Both specs keep the offset-0 condition, which is the one that prevents the actual failure —
+an observation re-stamped at a future validity. What differs is that an OBCW frame may say Observed
+over cells whose OBCG shard said Forecast, never the reverse, and that is bounded by §5's standing
+rule above: no claim, alert, alert-clear or dry decision may derive from it. Neither spec should be
+edited to match the other.
+
 Partial coverage is likewise decided over the **assembled** frame: a cell no source object and no
 measured-dry region reached. A producer composing one frame from several objects must not raise it
 merely because one of those objects stopped at its own edge, where a neighbouring object supplies

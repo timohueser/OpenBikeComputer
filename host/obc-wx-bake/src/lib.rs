@@ -18,6 +18,8 @@
 //!   selectable in it — generation, grid constants, shard presence and deadlines.
 //! - [`timefmt`] — the one UTC formatting convention every timestamp and key segment uses.
 //! - [`publish`] — objects-first, manifest-last object stores (directory and R2).
+//! - [`sweep`] — retention (WXR8 #1247): the one destructive path, deleting the generations the
+//!   manifest just published no longer names, and only after it is durably in place.
 //!
 //! One thing here is *not* the service: [`pack`] freezes a real past event — raw archive bytes,
 //! the tree the real baker makes of them, and what actually happened next — so the simulator and
@@ -36,5 +38,6 @@ pub mod pack;
 pub mod publish;
 pub mod source;
 pub mod stereo;
+pub mod sweep;
 pub mod tiff;
 pub mod timefmt;
