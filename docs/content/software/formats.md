@@ -1258,6 +1258,15 @@ a client to hold durations, and lists every source that may have painted a cell,
 per-cell provenance every attribution line has to be displayable together. Which objects a rider
 needs is then arithmetic: divide the corridor's bounding box by the shard size, and compose the key.
 
+That generation list is also the only thing licensed to delete. Object storage cannot express a
+45-minute retention window — lifecycle rules are day-granular and lazily applied — so the publisher
+retires generations itself, and it derives what to retire by subtracting the generations its new
+manifest names from the ones its previous manifest named. Never a timestamp, never a prefix listing;
+the delete set is a difference between two documents it wrote. What that buys is an ordering rule
+with teeth: a publisher that cannot *read* its own previous manifest must fail the cycle rather than
+publish an empty chain, because an empty chain is a positive claim that nothing older exists, and a
+torn read must never become a deletion set.
+
 The one thing the document must still *say* is what exists. Each frame carries a presence bitmap,
 one bit per shard, and that bit is the difference between two things a bare 404 cannot tell apart:
 a shard the bitmap names must exist, so a missing object is an error to retry, while a shard it does
