@@ -241,6 +241,33 @@ Radar persistence done deliberately — extrapolated, verified, with real forwar
 frames — is a separate source and a separate decision (#1251). It will be
 eligible for forward frames as a forecast source, on the same terms as HRRR.
 
+### What the forward frames fall through to
+
+Forward frames skip the radar rows entirely, so the fall-through is one step
+longer than it was. Where a regional model is absent — outside its domain, or a
+failed lead — the radar used to mask it and the global floor was never reached;
+now an HRRR or ICON-EU outage costs f+15 and f+30 their resolution, visibly.
+
+Permanently, that is four strips where a radar footprint reaches past its
+regional model's domain. At f+15 and f+30 these drop to the 27.75 km floor; f0
+and f+45 onward are unchanged.
+
+| strip | radar | regional model |
+| --- | --- | --- |
+| CONUS 52.66–55.00 N | MRMS to 55.00 N | HRRR stops at 52.66 N |
+| CONUS 60.87–60.00 W | MRMS to 60.00 W | HRRR stops at 60.87 W |
+| Europe 70.53–73.00 N | OPERA to 73.00 N | ICON-EU stops at 70.53 N |
+| Europe 28.00–23.53 W | OPERA to 28.00 W | ICON-EU stops at 23.53 W |
+
+Finnmark (70.9 N, 29 E) is the one of the four with riders in it. This is
+accepted rather than worked around: 27.75 km model fill that is a forecast of
+the frame's instant is truthful, and a 1 km radar image of half an hour ago
+published under that instant is not. Narrowing a strip means acquiring a source
+whose *forecasts* cover it — a new priority row, not an exception to the rule.
+The bakery says so at run time as well: a cycle that publishes intensity 15 into
+a forward frame for want of an eligible forecast source warns, because the floor
+being degraded has no other symptom.
+
 ## DWD ICON-EU: European forecast
 
 Use DWD's regular-lat-lon single-level `TOT_PREC` files:
