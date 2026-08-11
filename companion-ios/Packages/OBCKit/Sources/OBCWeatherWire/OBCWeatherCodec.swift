@@ -139,7 +139,16 @@ public struct OBCWeatherBundle: Equatable, Sendable {
 
 /// Independent Swift implementation of `specs/OBCW_Spec.md`.
 public enum OBCWeatherCodec {
-    public static let producerPolicyMaximumLength = 65_536
+    /// `OBCW_Spec.md` §2's **phone producer policy**, separate from the format: a conforming reader
+    /// must not treat it as a limit, and `encodeFormat` deliberately does not.
+    ///
+    /// 256 KiB, raised from 64 KiB in #1244 and sized from the re-derived worst case. Under one
+    /// uniform 1 km lattice every frame is the radar-resolution frame, so a 90 km disc is 162 x 162
+    /// cells at every latitude and nine raw4 frames come to ~153.6 kB — 41 % headroom. The device
+    /// does not move for this: its bundle slots carry a `u32` length and its reader is a windowed
+    /// stream with a compile-time-pinned resident budget, so the only cost is open-validation time
+    /// and ≈10–13 s on the BLE CoC against §11.3's 60 s advertising window.
+    public static let producerPolicyMaximumLength = 262_144
 
     private static let magic = Data("OBCW".utf8)
     private static let version: UInt16 = 1
@@ -161,7 +170,7 @@ public enum OBCWeatherCodec {
         var tileLengths: [Int]
     }
 
-    /// Phone producer entry point. The 64 KiB cap is policy, not a decode/format limit.
+    /// Phone producer entry point. The cap is policy, not a decode/format limit.
     public static func encode(_ bundle: OBCWeatherBundle) throws -> Data {
         let data = try encodeFormat(bundle)
         guard data.count <= producerPolicyMaximumLength else {

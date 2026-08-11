@@ -154,21 +154,14 @@ impl SimCompanion {
             // stand-in is the camera, which is what the rider is looking at.
             fallback_position
         };
-        // The corridor is projected from what the device actually vouched for — a cleared validity
-        // bit is an absent input, never a zero. The route ahead stays empty on purpose: §11.4
-        // carries a route *id*, not geometry, so a phone widens the corridor along a route only
-        // when it holds that route itself, and the simulator holds none.
-        let fix = obc_wx_client::select::Fix {
-            lat_udeg: position.0,
-            lon_udeg: position.1,
-            bearing_deg: context.has(VALID_BEARING).then(|| f64::from(context.bearing_deg)),
-            speed_ms: context.has(VALID_SPEED).then(|| f64::from(context.speed_deci_ms) / 10.0),
-            route_ahead: Vec::new(),
-        };
+        // The corridor is a 90 km disc around wherever the device says the rider is. The bearing
+        // and speed §11.4 carries are still read into the context — the device vouches for them and
+        // the panel shows them — but nothing downstream projects a corridor from them any more:
+        // under one uniform dataset a heading changes no answer, only the shape of the question.
 
         // 3. BLE is off while HTTP runs. Nothing here touches a radio, which is exactly the
         //    property the budget depends on.
-        let bytes = live.fetch(&fix, now, context.request_id)?;
+        let bytes = live.fetch(position, now, context.request_id)?;
 
         // 4. Reconnect and upload. The disposition is the *firmware's* verdict, not ours.
         let incoming = held_from_bytes(&bytes)?;
@@ -320,24 +313,25 @@ mod tests {
         assert_eq!(context.bundle_generation, 7);
     }
 
-    /// The corridor is projected from what the device vouched for. A snapshot with a bearing and a
-    /// speed must produce a *directed* corridor, and one without must not.
+    /// The corridor is the same 90 km disc whatever the device vouched for. A bearing and a speed
+    /// used to stretch it into a cone, because containment made the shape decide which product
+    /// answered; with one dataset there is nothing for a heading to change, and a rider who turns
+    /// around must not get a different map.
     #[test]
-    fn the_corridor_is_projected_from_the_context_not_from_a_fixed_disc() {
+    fn the_corridor_is_the_same_disc_whatever_the_context_vouches_for() {
         let mut moving = riding();
         moving.bearing_deg = Some(90);
         moving.speed_deci_ms = Some(80); // 8 m/s ≈ 29 km/h
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
         companion.run(&moving, 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
-        let directed = live.report.corridor_km.expect("a corridor was projected");
-        assert!(directed.2, "a vouched-for bearing and speed project a directed corridor");
+        let directed = live.report.corridor_km.expect("a corridor was asked about");
 
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
         companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
-        let disc = live.report.corridor_km.expect("a corridor was projected");
-        assert!(!disc.2, "no bearing, no speed ⇒ the undirected disc");
-        assert!(directed.0 > disc.0, "the directed corridor reaches further east than the 10 km disc");
+        let still = live.report.corridor_km.expect("a corridor was asked about");
+        assert_eq!(directed, still, "a heading must not change the window");
+        assert!((still.1 - 180.0).abs() < 1.0, "2 x 90 km north-south: {}", still.1);
     }
 }

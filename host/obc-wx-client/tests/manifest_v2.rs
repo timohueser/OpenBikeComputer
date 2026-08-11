@@ -433,3 +433,81 @@ fn shard_ids_sort_by_row_then_col_not_col_then_row() {
     sorted.sort();
     assert_eq!(walked, sorted, "the bit index walk row-major and the sort order are the same order");
 }
+
+// ── the shared rejection corpus ────────────────────────────────────────────────────────────
+
+/// Apply one `rejection_equivalence` patch op to a parsed document. RFC 6901 pointers, two ops.
+///
+/// Deliberately tiny and deliberately duplicated in Swift rather than pulled from a JSON-Patch
+/// crate: the whole value of the corpus is that two independent implementations answer the same
+/// way, and a shared library on one side against a hand-rolled walker on the other is exactly the
+/// asymmetry that makes a "cross-language" fixture test one language.
+fn apply_patch(document: &mut serde_json::Value, op: &serde_json::Value) {
+    let path: Vec<&str> = op["path"].as_str().expect("path").trim_start_matches('/').split('/').collect();
+    let (last, parents) = path.split_last().expect("a non-empty pointer");
+    let mut cursor = document;
+    for step in parents {
+        cursor = match cursor {
+            serde_json::Value::Array(items) => &mut items[step.parse::<usize>().expect("index")],
+            other => &mut other[*step],
+        };
+    }
+    match (op["op"].as_str().expect("op"), cursor) {
+        ("set", serde_json::Value::Object(map)) => {
+            map.insert((*last).to_string(), op["value"].clone());
+        }
+        ("remove", serde_json::Value::Object(map)) => {
+            map.remove(*last);
+        }
+        ("remove", serde_json::Value::Array(items)) => {
+            items.remove(last.parse::<usize>().expect("index"));
+        }
+        (op, _) => panic!("unsupported patch op {op}"),
+    }
+}
+
+/// **The other half of the cross-client contract.** `bbox_equivalence` pins what the two clients
+/// compute; this pins what they *refuse* — and the review that asked for it found five documents
+/// the two answered differently and three that crashed one of them outright.
+///
+/// A manifest is the first thing a rider's phone fetches from a network nobody controls, so "does
+/// not crash" is the floor and "answers identically" is the contract. Every case is a mutation of
+/// the shared fixture, and the verdicts live in the fixture directory rather than here, so the
+/// Swift twin cannot quietly diverge by testing a different list.
+#[test]
+fn the_shared_rejection_corpus_is_answered_identically() {
+    let directory: serde_json::Value =
+        serde_json::from_slice(&repo_file("specs/vectors/manifest.json")).expect("vector directory");
+    let cases = directory["wx_manifest_v2"]["rejection_equivalence"]["cases"].as_array().expect("cases");
+    assert!(cases.len() >= 20, "the corpus must not shrink; it is the only pin on rejection parity");
+    let base: serde_json::Value = serde_json::from_slice(&shared_fixture()).expect("fixture");
+
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let mut document = base.clone();
+        for op in case["patch"].as_array().expect("patch") {
+            apply_patch(&mut document, op);
+        }
+        // A walker that silently did nothing would pass every `accepted` row. Swift has the same
+        // guard; without it on this side, only the `rejected` and `skipped_frames > 0` rows would
+        // notice a mis-walked pointer, and the plain-accepted rows would be decoration.
+        assert_ne!(document, base, "{name}: the patch changed nothing — check the pointer");
+        let bytes = serde_json::to_vec(&document).expect("serialise");
+        let parsed = manifest_v2::parse(&bytes);
+        match case["verdict"].as_str().expect("verdict") {
+            "rejected" => assert!(parsed.is_err(), "{name}: must be refused, parsed instead"),
+            "accepted" => {
+                let manifest = parsed.unwrap_or_else(|error| panic!("{name}: must parse, got {error}"));
+                let expected = case["skipped_frames"].as_u64().unwrap_or(0) as usize;
+                assert_eq!(manifest.skipped_frames, expected, "{name}: skipped frames");
+            }
+            other => panic!("{name}: unknown verdict {other}"),
+        }
+    }
+}
+
+/// The base document must still be the happy path, or every "accepted" row above is vacuous.
+#[test]
+fn the_rejection_corpus_starts_from_a_document_that_parses_cleanly() {
+    assert_eq!(parsed().skipped_frames, 0);
+}

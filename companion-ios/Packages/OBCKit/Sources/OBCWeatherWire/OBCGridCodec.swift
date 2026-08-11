@@ -5,8 +5,8 @@ import Foundation
 ///
 /// Every derived count below is checked arithmetic over these fields, so a corridor consumer
 /// computes directory-page and tile byte ranges from the 128 header bytes alone. Product id and
-/// tier are provenance only: selection, staleness and attribution are manifest data, and an
-/// unknown nonzero product id is never a rejection reason.
+/// tier are provenance only — nothing branches on either, staleness and attribution are manifest
+/// data, and an unknown nonzero value in either is never a rejection reason.
 public struct OBCGridHeader: Equatable, Sendable {
     public var totalLength: UInt32
     public var productID: UInt8
@@ -254,9 +254,11 @@ public enum OBCGridCodec {
     public static let flagObserved: UInt16 = 1 << 0
     public static let flagForecast: UInt16 = 1 << 1
 
-    public static let tierRadar: UInt8 = 1
-    public static let tierModel: UInt8 = 2
-    public static let tierFloor: UInt8 = 3
+    /// The one tier code the bakery writes (OBCG §3's registry). The radar/model/floor **ladder** is
+    /// gone with product selection (#1244): there is one mosaic dataset, so there is nothing to rank
+    /// and no code here may be branched on. The header field itself stays until OBCG §3/§3.1 drop it
+    /// in WXR7, and a nonzero value this build has never seen is still not a rejection reason.
+    public static let tierMosaic: UInt8 = 4
 
     /// Tile codec ids (OBCG_Spec.md §4.1/§5). 0 and 1 are the shared raw4/RLE4 pair; 2 is raw
     /// DEFLATE (RFC 1951) over the tile's raw4 nibble image and exists only in OBCG.

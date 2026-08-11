@@ -52,6 +52,12 @@ pub const MANIFEST_VERSION: u32 = 2;
 /// OBCG 10.4's retention cap, mirrored here because the reader enforces it.
 pub const RETAINED_PREVIOUS_GENERATIONS: usize = 2;
 
+/// The most shards a document may claim. The production layout is 24 (a 6 x 4 grid); this is three
+/// orders of magnitude above it and bounds both the presence bitmap (8 KiB of hex) and every `u32`
+/// the shard arithmetic multiplies. It exists because `width` and `shard_width` arrive from the
+/// network and their quotient is otherwise unbounded — see [`validate_grid`].
+pub const MAX_SHARDS: u32 = 65_536;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     Malformed(String),
@@ -142,6 +148,28 @@ impl Grid {
         format!("{}/{}/f{offset_min}/s{}-{}.obcg", self.key_prefix, self.generation, shard.col, shard.row)
     }
 
+    /// The geometry of one shard's OBCG object. `None` for a shard off the grid.
+    ///
+    /// Interior shards are exactly `shard_width x shard_height`; the last column and row are
+    /// **short**, because the lattice is not required to be a whole number of shards. Rounding that
+    /// up instead would make the client expect an object bigger than the one the baker published,
+    /// and the header check would then refuse every edge shard on the planet.
+    pub fn shard_geometry(&self, shard: ShardId) -> Option<ShardGeometry> {
+        self.bit_of(shard)?;
+        let first_col = shard.col * self.shard_width;
+        let first_row = shard.row * self.shard_height;
+        Some(ShardGeometry {
+            south_udeg: self.south_lat_udeg + (i64::from(first_row) * i64::from(self.cell_udeg)) as i32,
+            west_udeg: self.west_lon_udeg + (i64::from(first_col) * i64::from(self.cell_udeg)) as i32,
+            cell_udeg: self.cell_udeg,
+            width: self.shard_width.min(self.width - first_col),
+            height: self.shard_height.min(self.height - first_row),
+            cell_size_m: self.cell_size_m,
+            tile_edge: self.tile_edge,
+            entries_per_page: self.entries_per_page,
+        })
+    }
+
     /// Do any of the lattice rows this bbox touches have a **source** behind them?
     ///
     /// `covered_rows` is not decoration: rows outside it are published as intensity 15 in every
@@ -218,6 +246,49 @@ impl Grid {
             shards.extend(cols.iter().map(|&col| ShardId { col, row }));
         }
         Ok(shards)
+    }
+}
+
+/// One shard's OBCG geometry, **derived** from the stated lattice rather than carried per object.
+///
+/// This is what replaces v1's per-frame `geometry` block: 216 objects a cycle cannot each restate a
+/// grid that is a division away, so the manifest states the lattice once and the client computes.
+/// The check it feeds is unchanged — the fetched header must agree with this before a cell is
+/// trusted (see [`ShardGeometry::agrees_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardGeometry {
+    pub south_udeg: i32,
+    pub west_udeg: i32,
+    pub cell_udeg: u32,
+    pub width: u32,
+    pub height: u32,
+    pub cell_size_m: u16,
+    pub tile_edge: u16,
+    pub entries_per_page: u16,
+}
+
+impl ShardGeometry {
+    pub fn bounds(&self) -> Bbox {
+        Bbox {
+            south_udeg: i64::from(self.south_udeg),
+            west_udeg: i64::from(self.west_udeg),
+            north_udeg: i64::from(self.south_udeg) + i64::from(self.height) * i64::from(self.cell_udeg),
+            east_udeg: i64::from(self.west_udeg) + i64::from(self.width) * i64::from(self.cell_udeg),
+        }
+    }
+
+    /// Does the fetched OBCG header say what the lattice promised? A manifest that mis-states the
+    /// grid, or an object published against a different one, is caught here rather than decoded.
+    pub fn agrees_with(&self, header: &obc_formats::obcg::Header) -> bool {
+        self.south_udeg == header.south_lat_udeg
+            && self.west_udeg == header.west_lon_udeg
+            && self.cell_udeg == header.cell_lat_udeg
+            && self.cell_udeg == header.cell_lon_udeg
+            && self.width == header.width
+            && self.height == header.height
+            && self.cell_size_m == header.cell_size_m
+            && self.tile_edge == header.tile_edge
+            && self.entries_per_page == header.entries_per_page
     }
 }
 
@@ -558,7 +629,16 @@ struct WireShard {
     observed: bool,
 }
 
+/// RFC 3339 seconds, **with the date-time separator required to be `T`**.
+///
+/// RFC 3339 §5.6 lets an application accept a space there, and chrono does. Swift's ISO-8601 parser
+/// does not, so accepting it would be a rejection divergence between the two clients over the one
+/// document every rider fetches first — the exact class of drift `rejection_equivalence` exists to
+/// catch. The stricter reading is also the one the baker writes, so nothing legitimate is refused.
 pub fn parse_rfc3339(text: &str) -> Option<i64> {
+    if !text.as_bytes().get(10).is_some_and(|byte| *byte == b'T' || *byte == b't') {
+        return None;
+    }
     chrono::DateTime::parse_from_rfc3339(text).ok().map(|time| time.timestamp())
 }
 
@@ -648,6 +728,23 @@ fn validate_grid(wire: WireLattice, key_prefix: String, generation: String) -> R
     if wire.cell_udeg == 0 || wire.width == 0 || wire.height == 0 || wire.shard_width == 0 || wire.shard_height == 0 {
         return Err(bad("degenerate"));
     }
+    // **Bound the lattice, not just the shard.** Every arithmetic below — `shard_cols * shard_rows`,
+    // the bitmap's `div_ceil(8)`, the bit index `row * shard_cols + col` — is `u32`, and a document
+    // is free to say `width: 4294967295`. Without this the shard grid overflows: a debug panic here,
+    // and in release a wrapped count that quietly disagrees with the bitmap about how many shards
+    // exist. Two bounds, both geometric rather than arbitrary:
+    //
+    // - an axis cannot hold more cells than 360 (or 180) degrees do at the lattice's own pitch, so
+    //   anything past that is not a description of this planet;
+    // - a shard grid is capped at [`MAX_SHARDS`], which is three orders of magnitude above the
+    //   production layout and still keeps the presence bitmap a few kilobytes.
+    let axis_limit = |degrees: u32| degrees * 1_000_000 / wire.cell_udeg + 1;
+    if wire.width > axis_limit(360) || wire.height > axis_limit(180) {
+        return Err(bad("the lattice is larger than the planet at its own cell pitch"));
+    }
+    if wire.shard_cols.checked_mul(wire.shard_rows).is_none_or(|count| count > MAX_SHARDS) {
+        return Err(bad("more shards than a dataset can have"));
+    }
     // The shard grid must be exactly the one that tiles the lattice, or the client's arithmetic and
     // the baker's disagree about which object holds a cell.
     if wire.shard_cols != wire.width.div_ceil(wire.shard_width)
@@ -714,7 +811,7 @@ fn validate_frame(wire: WireFrame, grid: &Grid) -> Option<Frame> {
         if present[(bit / 8) as usize] & (1 << (bit % 8)) == 0 {
             return None;
         }
-        let object_crc32 = u32::from_str_radix(shard.object_crc32.strip_prefix("0x")?, 16).ok()?;
+        let object_crc32 = parse_crc32(&shard.object_crc32)?;
         if shard.bytes == 0 || shard.bytes > i32::MAX as u64 {
             return None;
         }
@@ -743,9 +840,36 @@ fn is_safe_prefix(text: &str) -> bool {
         && text.split('/').all(is_safe_segment)
 }
 
+/// Lowercase-or-uppercase hex, **parsed over bytes**.
+///
+/// The obvious `&text[i * 2..i * 2 + 2]` slices a `&str` by byte index, which panics the moment a
+/// hostile `present` string carries a multi-byte character: `"aäb"` is four bytes, so the second
+/// pair cuts `ä` in half and Rust refuses mid-character. The bytes are the right unit anyway — this
+/// field is hex or it is nothing — and every non-hex byte answers `None`, which is a skipped frame
+/// rather than a dead process. Swift's twin walks characters and already answered `nil`.
 fn unhex(text: &str) -> Option<Vec<u8>> {
-    if text.is_empty() || !text.len().is_multiple_of(2) {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
         return None;
     }
-    (0..text.len() / 2).map(|index| u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()).collect()
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    bytes.chunks_exact(2).map(|pair| Some(nibble(pair[0])? << 4 | nibble(pair[1])?)).collect()
+}
+
+/// A `0x`-prefixed 32-bit hex integer, and nothing else.
+///
+/// `u32::from_str_radix` accepts a leading `+`, so `"0x+1234"` used to parse in both clients — the
+/// review found them agreeing on an answer neither had decided. A CRC is eight hex digits; a sign is
+/// not one of them.
+fn parse_crc32(text: &str) -> Option<u32> {
+    let digits = text.strip_prefix("0x")?;
+    if digits.is_empty() || digits.len() > 8 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
 }

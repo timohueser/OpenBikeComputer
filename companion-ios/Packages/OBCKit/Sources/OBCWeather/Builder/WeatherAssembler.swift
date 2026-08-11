@@ -28,7 +28,7 @@ public struct WeatherAssembler: Sendable {
     public func assemble(
         request: WeatherRequest, generation: UInt32, now: Date
     ) async throws -> BuiltWeatherBundle {
-        guard let corridor = WeatherCorridor.projected(for: request) else {
+        guard let corridor = WeatherCorridor.around(request) else {
             throw WeatherProviderError.noPosition
         }
         async let hourlyTask = hourlyProvider.hourlyForecast(for: request, now: now)

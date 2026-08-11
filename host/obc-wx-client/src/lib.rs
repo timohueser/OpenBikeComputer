@@ -1,13 +1,13 @@
 //! The host weather client: what the phone does, in Rust, for the simulator.
 //!
 //! ```text
-//!   manifest.json  ──►  select a product      (containment + freshness + frames; never an id)
-//!        │                    │
-//!        │                    ▼
-//!        │            OBCG corridor reads     (header + covering pages + needed tiles, Range)
-//!        │                    │
-//!        ▼                    ▼
-//!   MET hourly  ────────►  OBCW bundle         (shared obc-formats encoder; device-readable)
+//!   wx/v2/manifest.json ──►  plan            (expiry + bbox ÷ shard grid; no product, no tier)
+//!        │                     │
+//!        │                     ▼
+//!        │             OBCG corridor reads   (header + covering pages + needed tiles, Range)
+//!        │                     │
+//!        ▼                     ▼
+//!   MET hourly  ────────►  OBCW bundle       (shared obc-formats encoder; device-readable)
 //! ```
 //!
 //! Two boundaries are load-bearing and are enforced here, not by convention:
@@ -16,30 +16,69 @@
 //!   Range read of a static object. The corridor *derives* from the rider's position, but the
 //!   position itself only ever leaves this process in a MET query — the single third party the
 //!   epic allows to see one.
-//! - **Nothing branches on a product id.** Coverage, tier and freshness are manifest data, so a
-//!   new region is a baker deploy and never a client release. Under manifest v2 ([`manifest_v2`],
-//!   WXR4 #1243) there is no product to branch on at all: one sharded dataset, and "which objects
-//!   cover me" is arithmetic over the grid the manifest states. WXR5 #1244 moves the fetch path
-//!   onto it and deletes [`select`]'s tier ladder.
+//! - **Nothing chooses.** There is one dataset on one lattice at one cadence, so "which objects
+//!   cover me" is four divisions ([`manifest_v2::Grid::shards_for`]) and not a policy. WXR5 #1244
+//!   deleted the tier ladder, bbox containment, expired-product shadowing and the lattice-nesting
+//!   refusal that existed only because a client used to compose heterogeneous products.
 //!
 //! This is a second implementation of the contract the iOS companion implements; the phone stays
-//! the reference. Where the two could drift, this crate's tests pin the shared vectors both read.
+//! the reference. Where the two could drift, this crate's tests pin the shared vectors both read —
+//! including `specs/vectors/wx-manifest-v2.json`, the manifest both parsers must answer identically.
 
 pub mod bundle;
 pub mod corridor;
 pub mod http;
-pub mod manifest;
 pub mod manifest_v2;
 pub mod met;
-pub mod select;
 
-use corridor::Crop;
+use std::collections::BTreeMap;
+
+use bundle::{FrameInput, Lattice, Scene};
+use corridor::{Corridor, ShardRead, CLOCK_SKEW_TOLERANCE_S, HORIZON_S, MAX_OBSERVATION_AGE_S};
 use http::{Http, Request, MANIFEST_CAP};
-use manifest::Manifest;
-use select::{Corridor, NoRainMap};
+use manifest_v2::{Manifest, PlanOutcome};
 
 /// The production service origin.
 pub const DEFAULT_SERVICE_URL: &str = "https://wx.openbikecomputer.com";
+
+/// Why there is no rain map. Every variant is a *stated* reason: the UI never has to guess, and
+/// **none of them may be rendered as "dry"** — an absent map is not an absence of rain. The
+/// difference is the whole reason [`manifest_v2::PlanOutcome`] is four-valued rather than an empty
+/// list of objects to fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoRainMap {
+    /// The corridor is off the lattice, or is not a window this client will interpret.
+    OutOfDomain,
+    /// On the lattice, but no source reaches it in any frame — the polar band. The objects exist
+    /// and are entirely intensity 15, so there is nothing there to fetch and nothing to show.
+    Uncovered,
+    /// The published generation is past its own `stale_after` and nothing fresher replaced it.
+    /// **No weather**, which is not no rain.
+    Expired,
+    /// The manifest itself could not be had.
+    ServiceUnavailable,
+    /// Every frame this generation publishes is outside the window the rain map answers — too old
+    /// to be a current observation, or further ahead than two hours. Nothing failed; the data on
+    /// offer is about a different time. Distinct from [`NoRainMap::FramesUnavailable`] because
+    /// wearing that label would have said "failed" about a service that answered perfectly.
+    OutsideWindow,
+    /// Every shard of every frame failed to fetch or verify. A present object that 404s, comes back
+    /// short or fails its CRC is an **error**, never an absence of rain.
+    FramesUnavailable,
+}
+
+impl std::fmt::Display for NoRainMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoRainMap::OutOfDomain => write!(f, "this position is off the weather lattice"),
+            NoRainMap::Uncovered => write!(f, "no source covers this position"),
+            NoRainMap::Expired => write!(f, "the published weather expired and nothing replaced it"),
+            NoRainMap::ServiceUnavailable => write!(f, "the weather service is unreachable"),
+            NoRainMap::OutsideWindow => write!(f, "every published frame is outside the two-hour window"),
+            NoRainMap::FramesUnavailable => write!(f, "every frame failed to fetch or verify"),
+        }
+    }
+}
 
 /// Evidence about one fetch. Counters only — never control flow, and never rendered as weather.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,21 +92,26 @@ pub struct Diagnostics {
     /// What MET cost, this fetch — the one request that carries the rider's coordinate.
     pub met_requests: u32,
     pub met_bytes: u64,
-    /// Frames answered from the in-process crop cache, costing no request at all.
+    /// Shard crops answered from the in-process cache, costing no request at all.
     pub cached_frames: u32,
-    pub skipped_manifest_products: usize,
-    /// Covering products that were past their staleness deadline when we looked.
-    pub expired_products: Vec<String>,
+    /// Frames the manifest parser refused. One bad entry costs its own frame, never the document.
+    pub skipped_manifest_frames: usize,
     pub clock_skew_suspected: bool,
-    /// Frames that failed to fetch or verify. A frame is dropped, never faked.
+    /// Shards that failed to fetch or verify. One is a hole in one frame, never a failed job.
     pub failed_frames: u32,
-    pub dropped_incompatible_frames: u32,
+    /// Shards the manifest measured as dry, so no request was made. Evidence that "no rain" was
+    /// *measured*, which is the difference between a dry map and a missing one.
+    pub dry_shards: u32,
+    /// Shards whose manifest entry says a radar painted them, rather than model fill. Per shard
+    /// because that is where the fact is true — and it stays a counter: OBCW carries one quality
+    /// flag per *frame*, so no per-shard bit may set it (see `read_plan`).
+    pub observed_shards: u32,
     pub dropped_oversize_frames: u32,
-    /// The chosen product's manifest id and tier, for the dev panel. Not on the device.
-    pub product: Option<(String, u8)>,
+    /// The generation this bundle was built from, for the dev panel. Not on the device.
+    pub generation: Option<String>,
     pub attribution: Vec<String>,
     /// Why there is no rain map, when there isn't one.
-    pub no_rain_map: Option<String>,
+    pub no_rain_map: Option<NoRainMap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,13 +138,14 @@ pub struct Bundle {
     pub diagnostics: Diagnostics,
 }
 
-/// The stateful client: it holds the manifest cache (60 s per OBCG §10, ETag-revalidated) and the
-/// MET cache (whose `Expires` is absolute), because the throttle rules *are* those caches.
+/// The stateful client: it holds the manifest cache (whose window the manifest itself states, per
+/// OBCG §10) and the MET cache (whose `Expires` is absolute), because the throttle rules *are*
+/// those caches.
 pub struct WeatherClient {
     origin: String,
     met: met::MetClient,
     manifest_cache: Option<CachedManifest>,
-    /// Cropped frames, keyed on `(object key, window)`. Frame objects are immutable by the
+    /// Cropped shards, keyed on `(object key, window)`. Frame objects are immutable by the
     /// publishing contract, so a hit is served without a request of any kind.
     frames: corridor::FrameCache,
     generation: u32,
@@ -134,17 +179,19 @@ impl WeatherClient {
         &self.origin
     }
 
-    /// The manifest, honoring the 60 s window and revalidating with the stored ETag past it. An
-    /// unreachable service with a cached manifest is not an outage; a cold cache is.
-    pub fn manifest<H: Http>(&mut self, http: &mut H, now: i64) -> Result<Manifest, manifest::ManifestError> {
+    /// The manifest, honoring the window **the document states** (`freshness.manifest_max_age_s`)
+    /// and revalidating with the stored ETag past it. The client holds no duration of its own: a
+    /// cadence change is a baker deploy. An unreachable service with a cached manifest is not an
+    /// outage; a cold cache is.
+    pub fn manifest<H: Http>(&mut self, http: &mut H, now: i64) -> Result<Manifest, manifest_v2::ManifestError> {
         // The backwards-clock guard matters: without it a clock that jumped back would pin a
         // stale manifest forever instead of refetching.
         if let Some(cached) = &self.manifest_cache {
-            if now >= cached.fetched_at && now - cached.fetched_at < manifest::FRESHNESS_WINDOW_S {
+            if now >= cached.fetched_at && !cached.manifest.freshness.manifest_is_stale(cached.fetched_at, now) {
                 return Ok(cached.manifest.clone());
             }
         }
-        let url = corridor::join(&self.origin, manifest::MANIFEST_KEY);
+        let url = corridor::join(&self.origin, manifest_v2::MANIFEST_KEY);
         let request = Request {
             url,
             range: None,
@@ -156,7 +203,7 @@ impl WeatherClient {
             Err(error) => {
                 return match &self.manifest_cache {
                     Some(cached) => Ok(cached.manifest.clone()),
-                    None => Err(manifest::ManifestError::Malformed(error.to_string())),
+                    None => Err(manifest_v2::ManifestError::Malformed(error.to_string())),
                 }
             }
         };
@@ -169,18 +216,18 @@ impl WeatherClient {
         if !response.is_success() {
             return match &self.manifest_cache {
                 Some(cached) => Ok(cached.manifest.clone()),
-                None => Err(manifest::ManifestError::Malformed(format!("status {}", response.status))),
+                None => Err(manifest_v2::ManifestError::Malformed(format!("status {}", response.status))),
             };
         }
-        let parsed = manifest::parse(&response.body)?;
+        let parsed = manifest_v2::parse(&response.body)?;
         self.manifest_cache = Some(CachedManifest { manifest: parsed.clone(), etag: response.etag, fetched_at: now });
         Ok(parsed)
     }
 
-    /// The whole job: manifest → selection → corridor reads → MET → OBCW.
+    /// The whole job: manifest → plan → corridor reads → MET → OBCW.
     ///
-    /// The rain half degrades on its own. A service outage, an expired product or an uncovered
-    /// corridor all produce a truthful *hourly-only* bundle with the reason recorded — never a
+    /// The rain half degrades on its own. A service outage, an expired generation and a corridor off
+    /// the lattice all produce a truthful *hourly-only* bundle with the reason recorded — never a
     /// fabricated map and never a dry claim.
     pub fn fetch<H: Http>(
         &mut self,
@@ -193,27 +240,45 @@ impl WeatherClient {
         let (before_requests, before_bytes) = (http.requests(), http.bytes());
         let cache_hits_before = self.frames.hits;
 
-        let crops = match self.manifest(http, now) {
+        let scene = match self.manifest(http, now) {
             Ok(manifest) => {
-                diagnostics.skipped_manifest_products = manifest.skipped_products;
-                let (chosen, report) = select::select(&manifest, corridor, now);
-                diagnostics.expired_products = report.expired;
-                diagnostics.clock_skew_suspected = report.clock_skew_suspected;
-                match chosen {
-                    Ok(product) => {
-                        diagnostics.product = Some((product.id.clone(), product.tier));
-                        diagnostics.attribution.push(product.attribution.text.clone());
-                        self.read_corridor(http, product, corridor, now, &mut diagnostics)
+                diagnostics.skipped_manifest_frames = manifest.skipped_frames;
+                diagnostics.clock_skew_suspected = manifest.generated_at - now > CLOCK_SKEW_TOLERANCE_S;
+                diagnostics.generation = Some(manifest.generation.clone());
+                diagnostics.attribution.extend(manifest.attribution.iter().map(|attribution| attribution.text.clone()));
+                let plan = manifest.plan(&corridor.bounds, now);
+                match plan.outcome {
+                    // Read the outcome first and the vectors second: outside `Covered` both are
+                    // empty and *mean nothing*, and rendering that as a dry map is the failure the
+                    // whole epic exists to make impossible.
+                    PlanOutcome::Covered => {
+                        let (frames, outside_window) =
+                            self.read_plan(http, &manifest, &plan, corridor, now, &mut diagnostics);
+                        // Nothing failed and nothing is left: every frame this generation publishes
+                        // is outside the window the rain map answers. That is a different sentence
+                        // from "the objects would not come", so it gets a different reason.
+                        if frames.is_empty() && diagnostics.failed_frames == 0 && outside_window > 0 {
+                            diagnostics.no_rain_map = Some(NoRainMap::OutsideWindow);
+                        }
+                        (!frames.is_empty()).then(|| (Lattice::from(&manifest.grid), frames))
                     }
-                    Err(reason) => {
-                        diagnostics.no_rain_map = Some(reason.to_string());
-                        Vec::new()
+                    PlanOutcome::OutOfDomain => {
+                        diagnostics.no_rain_map = Some(NoRainMap::OutOfDomain);
+                        None
+                    }
+                    PlanOutcome::Uncovered => {
+                        diagnostics.no_rain_map = Some(NoRainMap::Uncovered);
+                        None
+                    }
+                    PlanOutcome::Expired => {
+                        diagnostics.no_rain_map = Some(NoRainMap::Expired);
+                        None
                     }
                 }
             }
-            Err(error) => {
-                diagnostics.no_rain_map = Some(format!("{}: {error}", NoRainMap::ServiceUnavailable));
-                Vec::new()
+            Err(_) => {
+                diagnostics.no_rain_map = Some(NoRainMap::ServiceUnavailable);
+                None
             }
         };
 
@@ -239,39 +304,104 @@ impl WeatherClient {
             now,
             (corridor.lat_udeg, corridor.lon_udeg),
             &corridor.bounds,
-            &crops,
+            scene.as_ref().map(|(lattice, frames)| Scene { lattice: *lattice, frames }),
             &hourly,
         )
         .map_err(FetchError::Build)?;
-        diagnostics.dropped_incompatible_frames = report.dropped_incompatible;
         diagnostics.dropped_oversize_frames = report.dropped_oversize;
         if report.frames == 0 && diagnostics.no_rain_map.is_none() {
-            diagnostics.no_rain_map = Some(NoRainMap::FramesUnavailable.to_string());
+            diagnostics.no_rain_map = Some(NoRainMap::FramesUnavailable);
         }
         Ok(Bundle { bytes, diagnostics })
     }
 
-    fn read_corridor<H: Http>(
+    /// Turn a plan into frames: fetch what exists, paint what is dry, count what failed.
+    ///
+    /// A frame is kept as long as *something* is known about it — a dry shard is knowledge, and a
+    /// failed shard is a **hole in its frame**, not the loss of the frame. Dropping the frame would
+    /// throw away the eight shards that did arrive to punish the one that did not; the hole is
+    /// no-data, which is distinguishable from dry at every layer below, so keeping it cannot make
+    /// an outage look rain-free. Only a frame where every present shard failed and nothing was dry
+    /// disappears, and losing every frame that way is [`NoRainMap::FramesUnavailable`].
+    fn read_plan<H: Http>(
         &mut self,
         http: &mut H,
-        product: &manifest::Product,
+        manifest: &Manifest,
+        plan: &manifest_v2::Plan,
         corridor: &Corridor,
         now: i64,
         diagnostics: &mut Diagnostics,
-    ) -> Vec<Crop> {
-        let mut crops = Vec::new();
+    ) -> (Vec<FrameInput>, u32) {
         let origin = self.origin.clone();
-        for frame in select::usable_frames(product, now) {
-            match corridor::crop_frame_cached(http, &origin, frame, &corridor.bounds, &mut self.frames) {
-                Ok(crop) => crops.push(crop),
-                // One bad frame is one missing timestamp, not a failed job. Only losing every
-                // frame becomes "frames unavailable".
+        let mut frames: BTreeMap<u32, FrameInput> = BTreeMap::new();
+        let mut outside_window = 0u32;
+        // Frames outside the usable window are not fetched: two hours ahead is the question the
+        // rain map answers, and an observation older than six hours would be a lie told with a
+        // true timestamp. Both are properties of the timeline, not of any product.
+        let usable = |offset_min: u32, outside: &mut u32| -> Option<i64> {
+            let frame = manifest.frame(offset_min)?;
+            let inside = frame.valid_at <= now + HORIZON_S && frame.valid_at >= now - MAX_OBSERVATION_AGE_S;
+            if !inside {
+                *outside += 1;
+            }
+            inside.then_some(frame.valid_at)
+        };
+        // The quality flag follows the frame's **temporal nature**, not its content and not the
+        // per-shard `observed` bits. An OBCW frame carries one flag for a mosaic that is radar over
+        // the rider and model fill across the seam, so no content rule can be true of all of it —
+        // and a content rule made an all-dry frame's flag depend on whether the baker happened to
+        // publish an object, which is how the two clients came to disagree about the commonest scene
+        // there is. So: the frame at offset 0 whose validity is within the dataset's own
+        // `max_source_skew_s` of now is the **analysis** and says observed; every forward frame is a
+        // forecast and says so. An all-dry radar scan is still an observation; an all-dry forecast
+        // frame is still a forecast. The per-shard bits stay in the diagnostics, where they are true.
+        let skew = manifest.cadence.max_source_skew_s.max(0);
+        let observed_frame = |offset_min: u32, valid_at: i64| offset_min == 0 && (now - valid_at).abs() <= skew;
+
+        for read in &plan.fetch {
+            let Some(valid_at) = usable(read.offset_min, &mut outside_window) else { continue };
+            let Some(geometry) = manifest.grid.shard_geometry(read.shard) else { continue };
+            if read.observed {
+                diagnostics.observed_shards += 1;
+            }
+            let shard = ShardRead {
+                key: read.key.clone(),
+                geometry,
+                bytes: read.bytes,
+                object_crc32: read.object_crc32,
+                valid_at,
+                observed: read.observed,
+            };
+            let entry = frames.entry(read.offset_min).or_insert(FrameInput {
+                valid_at,
+                observed: observed_frame(read.offset_min, valid_at),
+                ..FrameInput::default()
+            });
+            match corridor::crop_frame_cached(http, &origin, &shard, &corridor.bounds, &mut self.frames) {
+                Ok(crop) => entry.crops.push(crop),
+                // One bad shard is one hole in one frame, not a failed job.
                 Err(_) => diagnostics.failed_frames += 1,
             }
         }
-        if crops.is_empty() {
-            diagnostics.no_rain_map = Some(NoRainMap::FramesUnavailable.to_string());
+        for (offset_min, shard) in &plan.dry {
+            let Some(valid_at) = usable(*offset_min, &mut outside_window) else { continue };
+            let Some(bounds) = manifest.grid.shard_geometry(*shard).map(|geometry| geometry.bounds()) else {
+                continue;
+            };
+            diagnostics.dry_shards += 1;
+            frames
+                .entry(*offset_min)
+                .or_insert(FrameInput {
+                    valid_at,
+                    observed: observed_frame(*offset_min, valid_at),
+                    ..FrameInput::default()
+                })
+                .dry
+                .push(bounds);
         }
-        crops
+        // A frame every one of whose shards failed is not a frame: it would be an all-no-data image
+        // claiming a timestamp. It goes, and its absence is counted by `failed_frames` above.
+        frames.retain(|_, frame| !frame.crops.is_empty() || !frame.dry.is_empty());
+        (frames.into_values().collect(), outside_window)
     }
 }
