@@ -116,7 +116,16 @@ impl Adapter for DwdRv {
             FetchOutcome::Body(fetched) => fetched,
         };
         let (run, frames) = bake_tar(&fetched.bytes)?;
-        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
+        // DWD RV is itself a nowcast: its +5 … +120 members are the DWD's own advection scheme,
+        // so WXR9 adds nothing here and asks for no motion history.
+        Ok(BakedSource {
+            id: ID,
+            geometry: GEOMETRY,
+            reference_time: run,
+            attribution: ATTRIBUTION,
+            frames,
+            motion_history: Vec::new(),
+        })
     }
 }
 

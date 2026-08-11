@@ -392,6 +392,7 @@ fn synthetic_frames(
                 cells: cells.clone(),
             })
             .collect(),
+        motion_history: Vec::new(),
     }
 }
 
@@ -711,6 +712,7 @@ fn one_hourly_forecast_step_paints_exactly_four_consecutive_frames() {
                 cells: vec![step as u8 + 1; source.cells()],
             })
             .collect(),
+        motion_history: Vec::new(),
     };
     let mosaic = Mosaic::from_sources(vec![hourly]).expect("gfs is ranked");
     // Anchor at 10:30 — the phase that puts a frame instant exactly on the tie in both directions.
