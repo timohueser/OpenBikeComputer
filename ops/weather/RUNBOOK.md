@@ -601,8 +601,8 @@ inside the free tier. The measured inputs are WXR1's (#1254), taken on the publi
 | Published per **wet global** cycle | **14.69 MB** | #1254 (43.60 MB at tile edge 64 — the reason the edge is 256) |
 | Objects per cycle | ≤ 216 | 24 shards × 9 frames, minus every all-dry shard |
 | Largest single object | 1.92 MB | #1254, wet, tile 256 |
-| Cycle wall time | 12.4 s (+1.0 s LZ) on 8 cores | #1254; the 4-vCPU box is slower, the budget is 300 s |
-| Peak RSS | ≈ 398 MB | #1254 at `BAKE_THREADS = 4` |
+| Cycle wall time | 10.8 s on 4 threads | #1278 at the shipped +90 nowcast horizon (#1254 measured 12.4 s before WXR9); the budget is 300 s |
+| Peak RSS | ≈ **755 MB** | #1278 at `BAKE_THREADS = 4`, `MemoryMax = 3G` (#1254 measured 398 MB before WXR9's derived layers) |
 
 14.69 MB is the **worst case, not the average** — a real cycle omits every shard whose cells are all
 dry. Everything below is stated against it anyway.
@@ -766,7 +766,7 @@ risk. Wait for the next tick before intervening.
 | The probe says `CADENCE` | the timer fires faster than the dataset's cadence — **or somebody just ran a bake by hand**, which stamps whatever phase of the step they ran it at | if you (or a step in this table) started a bake in the last 15 minutes, that is this, and it clears on the next scheduled tick. Otherwise `systemctl list-timers 'obc-wx-bake@*'` against `adapters.conf`: this is the one mistake that reaches a bill (§6) |
 | `refusing to publish a manifest that goes backwards` | this cycle is anchored earlier than the generation already published — a clock that stepped back, or a bake started outside the unit's `flock` while another was running | nothing was published and nothing was deleted; the live manifest still stands. `timedatectl` first, then check nobody is running `obc-wx-bake cycle --r2` by hand (§7). It clears itself on the next tick once the clock is right |
 | `published but does not parse back` / `read back … not the … just written` | the manifest was written and the read-back did not match — a torn body on the way out | **the sweep did not run**, deliberately: nothing was deleted. The next tick republishes and re-verifies. If it repeats, the bucket or the endpoint is the problem, not the baker |
-| Cycle killed, `MemoryMax` in the journal | the bake exceeded its cap; the budget is ≈ 398 MB at `BAKE_THREADS = 4` | that is a bug, not a tuning problem — file it; raise the cap in the unit template only with a measurement |
+| Cycle killed, `MemoryMax` in the journal | the bake exceeded its cap; the budget is ≈ 755 MB at `BAKE_THREADS = 4` against a 3G ceiling | that is a bug, not a tuning problem — file it; raise the cap in the unit template only with a measurement (`cargo test -p obc-wx-bake --release --test nowcast_cost -- --ignored`) |
 | Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop obc-wx-bake@cycle.service`, check `ps`, then `systemctl start obc-wx-bake@cycle.service` — through the unit, so the replacement takes the same lock |
 | `wx/v2/manifest.json exists but did not parse … refusing to publish` | a torn or truncated read of the manifest the baker itself wrote | **do nothing.** This is the §10.4 rule working: publishing an empty retention chain from a torn read would delete the generations in-flight clients are reading. The next tick retries. **If it repeats on every single tick against a prefix that is genuinely empty** — a fresh `wx/v2`, or one just reset below — it is not a torn read at all but the baker failing to tell "absent" from "empty": that is the pre-#1279 bug, and the fix is to deploy a binary that reads absence off a `404` (§3) |
 | Timer "active" but nothing publishes | clock skew, or a paused system | `timedatectl` (NTP on?), then `systemctl start obc-wx-bake@cycle.service`. A clock that stepped *backwards* shows up as `refusing to publish a manifest that goes backwards` rather than as silence |

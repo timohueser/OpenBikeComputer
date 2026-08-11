@@ -108,7 +108,21 @@ fn the_pack_rebakes_byte_identically() {
     let event = event();
     let report = rebake::verify_rebake(&pack_root(), &event, &scratch("rebake")).expect("the pack re-bakes");
     eprintln!("{EVENT_ID} re-bake:\n{}", report.cycle.summary());
-    assert!(report.cycle.warnings.is_empty(), "{:?}", report.cycle.warnings);
+    // **Exactly one warning, and it is WXR9's honest fallback in action.** The MRMS adapter probes
+    // once for the observation ten minutes before its anchor, to estimate motion from; this pack
+    // does not carry one, because Iowa State's MTArchive mirror — the `archive_url` behind every
+    // MRMS member here — no longer serves any PrecipRate key of 2020-08-10, so the probe was
+    // recorded as the 404 it actually returned. That makes the re-bake a regression test for the
+    // path that matters most: no motion baseline means no nowcast layer, and the published tree is
+    // byte-for-byte what it was before the nowcast existed. A pack captured against a live upstream
+    // will carry the frame and produce the layer.
+    assert_eq!(report.cycle.warnings.len(), 1, "{:?}", report.cycle.warnings);
+    assert!(report.cycle.warnings[0].contains("no motion baseline"), "{}", report.cycle.warnings[0]);
+    assert!(report.cycle.derived.nowcasts.is_empty(), "there is nothing to nowcast from in this pack");
+    assert_eq!(report.cycle.derived.skipped.len(), 1, "and the report says so as well as the warning");
+    // HRRR's leads are already 15-minute, so nothing is interpolated either — which is why the tree
+    // below is unchanged.
+    assert!(report.cycle.derived.interpolated.is_empty(), "{:?}", report.cycle.derived.interpolated);
     assert_eq!(report.cycle.published_objects, event.service.len(), "every published object is in the pack");
 
     // Hermeticity, asserted rather than asserted about. `verify_rebake` already refuses a request

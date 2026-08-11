@@ -1218,6 +1218,50 @@ renders as visibly coarse model fill, never as no rain. And intensity code 15 ke
 meaning — *we do not know* — for the case that actually needs it: a source outage, or a shard that
 failed to bake.
 
+**Uniform in space was the easy half.** Nine frames fifteen minutes apart is a promise about the
+timeline, and for most of the planet it was only a promise about the *labels*: the global floor
+publishes hourly steps, so one model field answered four consecutive frames and the picture changed
+once an hour and stood still in between. Each of those four frames was honestly flagged a forecast,
+and the one in the middle was still a prediction of a neighbouring instant wearing this one's
+timestamp.
+
+So the baker fills the gaps rather than repeating the step — but only where nobody published one
+already. Germany's radar is the case worth stating: the DWD's RV composite arrives as 25 members
+five minutes apart, and a cycle sits on the quarter hour, so *every* frame the dataset wants is a
+member the DWD published for exactly that instant. The baker selects by instant rather than by a
+fixed ladder off the run, and Germany's rain map is therefore DWD's own data, unmodified, at all nine
+frames. Deriving a frame the source already published would have been a strictly worse copy of it.
+
+Where nobody published one — the hourly model steps, most of the planet — the baker estimates the
+**motion field** carrying the rain between the two steps that bracket the instant: pyramidal
+Lucas–Kanade, on a grid of nodes about 16 km apart, because a motion field is smooth at the scale of
+the systems it describes. It then carries the nearer of the two steps along that field to the target
+instant. Not a blend of both: two steps hold the same storm in two different places, and averaging
+them produces two ghosts of it, one fading in and one fading out. Carrying one of them there instead
+produces one storm, in the right place, made of values that source actually measured.
+
+The same machinery, pointed forward instead of between, is what makes the forward half of the
+timeline worth having where radar exists. Two consecutive radar composites give the motion; the
+observed field carried along it gives +15 through +90 minutes of **advected radar** in place of a
+3 km or 27.75 km model — which is a different quality of answer to "should I shelter", and measurably
+so. Scored against what actually happened on the 2020 Midwest derecho, at 30 minutes ahead the
+advected radar hits a CSI of 0.72 where the model manages 0.31 and simply freezing the last image
+manages 0.54; at an hour ahead it is 0.60 against 0.26 and 0.34, and at ninety minutes 0.51 against
+0.22 and 0.21. Where it *stops* is set by that kind of measurement rather than by taste, and by a
+test that fails two ways: if the published horizon promises skill the scoring does not show, and if
+the horizon runs past the last lead the scoring can verify at all.
+
+Three limits keep a computed frame from being a fabrication, and they are in the spec rather than in
+the implementation's conscience. Advection **moves whole cells** — nearest-neighbour, the same rule
+the rest of the pipeline follows — so no sub-cell detail is invented and a derived frame's real
+resolution is its source's. Every published intensity is one its source actually measured for some
+cell, because the frames are moved rather than combined. And where a trajectory comes from outside
+the source's own domain there is nothing behind the field that moved, so the cell is *unknown*, never
+dry: the ground a storm vacates at the upwind edge of a radar footprint falls through to the model
+beneath it instead of being published as clear sky. Downstream nothing is told which frames were
+computed, because nothing downstream could act on it — a derived frame is a forecast, like every
+other frame ahead of now.
+
 "Global floor" is worth one sentence of pedantry, because it is the load-bearing claim and it is
 not free. The floor's grid is periodic in longitude, so the baker closes the antimeridian seam by
 wrapping — without that, the last column of the source window and the first would leave a

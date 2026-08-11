@@ -46,7 +46,7 @@
       "kind": "probe",
       "object_length": null,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -56,7 +56,7 @@
       "kind": "probe",
       "object_length": null,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -66,7 +66,7 @@
       "kind": "probe",
       "object_length": 448150,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -76,7 +76,7 @@
       "kind": "probe",
       "object_length": null,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -86,7 +86,7 @@
       "kind": "probe",
       "object_length": 10220,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -96,7 +96,7 @@
       "kind": "probe",
       "object_length": 10215,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -106,7 +106,7 @@
       "kind": "probe",
       "object_length": 10114,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -116,7 +116,7 @@
       "kind": "probe",
       "object_length": 10013,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -128,7 +128,17 @@
       "length": 448150,
       "sha256": "fb78ef1e5bafaf3db57b8ce5046a60853b8471860cbe98bb2e3e352200abf1bf",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-183800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-183800.grib2.gz",
+      "kind": "probe",
+      "object_length": null,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -138,7 +148,7 @@
       "kind": "probe",
       "object_length": 186909295,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -150,7 +160,7 @@
       "length": 10114,
       "sha256": "0979d3ed4e38d039b121c6eb8e3b8511810288cb6558dd1e07e8788523c571ef",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -165,7 +175,7 @@
       "length": 45444,
       "sha256": "1bb44439b117483526650283ce0691acc4d76f51c2069f18c804ce9dfcad2758",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -175,7 +185,7 @@
       "kind": "probe",
       "object_length": 192621021,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -187,7 +197,7 @@
       "length": 10215,
       "sha256": "25f149159caf4371d2b7be4eb5a7cad860c282831f5c3b94c130a183865d7bdc",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -202,7 +212,7 @@
       "length": 47373,
       "sha256": "c5fc04d101d17b39797036224ab965863462d0a7cf256b7190e17c1ca6799767",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -217,7 +227,7 @@
       "length": 46970,
       "sha256": "26cf10c3077b1852a2e11d640a92bbd19ded59b188d31d8d80322f77465e1ad5",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -232,7 +242,7 @@
       "length": 49120,
       "sha256": "ec2b98695745b98d9953f62a2e16cf9feed95df8c5eedaf843c281d2ec74f362",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -247,7 +257,7 @@
       "length": 49911,
       "sha256": "73b991423335303b6238fdc7cca2ba591b855f00d72cd576b5d481aaed7c38e1",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -257,7 +267,7 @@
       "kind": "probe",
       "object_length": 197621511,
       "stored": false,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -269,7 +279,7 @@
       "length": 10220,
       "sha256": "5f79515f89ea260104cc1f2bd7ee000c67d687889a78e4bb92c199edfd19e648",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -284,7 +294,7 @@
       "length": 49490,
       "sha256": "6ad4baa933a5323f383dabadf3651c9a4249b05980067a04fe8912814dd8a0f4",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -299,7 +309,7 @@
       "length": 49217,
       "sha256": "04780e873c64735246ee35300b5aa73c7a108ea0f26828eedcf349dee1cc1b91",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -314,7 +324,7 @@
       "length": 49637,
       "sha256": "e1e886abdd8b138ca181add700ae3d84a35c2a11c1f687abf89259fb593a47c1",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -326,7 +336,7 @@
       "length": 464823,
       "sha256": "ee4b731ebf07710c743b4595c2da04cb63a096efb63fddc67c3717991bd0881b",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -338,7 +348,7 @@
       "length": 488065,
       "sha256": "261611724e3a0e5415df7123334007b0aee125ae498c33940bd837c33d1bb058",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -350,7 +360,7 @@
       "length": 512256,
       "sha256": "10807fdabbee6f57818872a24c2a16cbda3a932be80c0d1f40a780b04d933239",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -362,7 +372,7 @@
       "length": 539054,
       "sha256": "c9858662a92e8e7cf8fac44c1f4b62b6753077d301d8619a50ab7ae826729d16",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -374,7 +384,7 @@
       "length": 547051,
       "sha256": "9ffc0e6fb95f586f1806899c430fa346ad9115ea7903f839ed917ba249c4b1f9",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -386,7 +396,7 @@
       "length": 559673,
       "sha256": "1c23b7c6c5f79f9f122b0565544332bde170388a724655757cf29dbc4be87000",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -398,7 +408,7 @@
       "length": 570840,
       "sha256": "934f8d888bd775d06ff9c64225950486799555abcdd85604390bdf400f1a8489",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     },
     {
@@ -410,7 +420,7 @@
       "length": 578683,
       "sha256": "cfc66e870a027d964c0f7f808d95113e8f800fc59f7cd623c15049256bccbe6d",
       "stored": true,
-      "licence": "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied",
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     }
   ],
