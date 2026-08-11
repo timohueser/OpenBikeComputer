@@ -4,7 +4,8 @@
 //! five-minute steps). Every member is validated against the WX1-pinned contract before the
 //! nine published leads (+0, +15, ..., +120) are selected; the discarded intermediate frames are
 //! never interpolated. Reprojection is nearest-neighbour from the pinned polar-stereographic
-//! raster onto a fixed regular lat/lon window at native ~1 km cell size — no smoothing.
+//! raster straight onto a fixed window of the canonical 0.01 degree lattice — no smoothing, and
+//! since [`GEOMETRY`] moved onto that lattice, no second rounding downstream either.
 
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File as Hdf5File};
@@ -22,8 +23,8 @@ use crate::stereo;
 pub const ID: &str = "dwd-rv";
 pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
 
-/// The **source window**: a regular lat/lon cover of the composite's trapezoid, and — since #1246
-/// deleted the live per-product tree that used to publish on it — **a window of the canonical
+/// The **source window**: a regular lat/lon rectangle over the composite's trapezoid, and — since
+/// #1246 deleted the live per-product tree that used to publish on it — **a window of the canonical
 /// lattice**. The pitch is [`crate::canonical::CELL_UDEG`] in both axes and the origin is a whole
 /// number of canonical cells from [`crate::canonical::CANONICAL`]'s -90/-180 origin, so every cell
 /// here *is* a canonical cell: the mosaic copies from this window rather than resampling it,
@@ -39,10 +40,19 @@ pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv
 /// On the lattice there is one rounding and only one: [`source_index_map`] projects the lattice
 /// cell's own centre through [`stereo::native_index`], and nothing downstream rounds again.
 ///
-/// It still covers the trapezoid, because the old extent was rounded **outwards** onto the lattice
-/// and never inwards: north 55.868 -> 55.87 N, east 18.736 -> 18.74 E, with the south-west corner
-/// already on it. `cell_size_m` stays the source's nominal native resolution — 1 km, the figure
-/// MRMS states on the identical pitch — and is descriptive here; a published frame states
+/// The extent covers everything the old window did and a shade more, because it is the old extent
+/// rounded **outwards** onto the lattice and never inwards: north 55.868 -> 55.87 N, east
+/// 18.736 -> 18.74 E, with the south-west corner already on it.
+///
+/// What this rectangle does **not** take in — unchanged by the alignment and pre-dating it — is the
+/// raster's north bulge. A polar-stereographic north edge curves poleward away from its corners, so
+/// the frame reaches 56.219 N at 10 E against the 55.862 N its UL corner reports, and the top
+/// ~0.35 degrees of it — Denmark and the western Baltic, no German ground — falls outside and is
+/// answered by the next-priority source. Widening to take it in is a coverage decision rather than
+/// an alignment one, so it is not made here.
+///
+/// `cell_size_m` stays the source's nominal native resolution — 1 km, the figure MRMS states on the
+/// identical pitch — and is descriptive here; a published frame states
 /// [`crate::canonical::LATTICE_CELL_SIZE_M`] instead.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 45_680_000,
