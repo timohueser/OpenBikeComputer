@@ -891,11 +891,15 @@ mod coverage_api {
             }
         }
         let mut raw = holes.release();
+        // An empty `Vec`'s `as_mut_ptr` is a dangling (aligned, non-null) pointer, and handing one
+        // to a C function is a promise we cannot keep even where it is only read `0` times. A
+        // hole-less polygon passes a real null instead.
+        let holes_ptr = if raw.is_empty() { ptr::null_mut() } else { raw.as_mut_ptr() };
         // SAFETY: `shell` and every hole are live rings owned here; `GEOSGeom_createPolygon_r`
         // takes ownership of all of them (the `raw` *array* stays ours) and returns null on
         // failure — the documented C-API leak on that path is accepted rather than risking a
         // double free.
-        unsafe { GEOSGeom_createPolygon_r(ctx.raw(), shell, raw.as_mut_ptr(), raw.len() as u32) }
+        unsafe { GEOSGeom_createPolygon_r(ctx.raw(), shell, holes_ptr, raw.len() as u32) }
     }
 
     /// The polygons as one GEOS `GeometryCollection` — the shape both coverage entry points
@@ -906,12 +910,14 @@ mod coverage_api {
             nursery.push(build_polygon(ctx, g))?;
         }
         let mut raw = nursery.release();
+        // Same dangling-pointer rule as `build_polygon`: an empty collection passes null, not the
+        // aligned nothing an empty `Vec` hands out.
+        let members = if raw.is_empty() { ptr::null_mut() } else { raw.as_mut_ptr() };
         // SAFETY: every element is a live polygon owned here; `GEOSGeom_createCollection_r`
         // takes ownership of them (the array stays ours). Same accepted-leak note as above on
         // the null path.
-        let ptr = unsafe {
-            GEOSGeom_createCollection_r(ctx.raw(), TYPE_COLLECTION as c_int, raw.as_mut_ptr(), raw.len() as u32)
-        };
+        let ptr =
+            unsafe { GEOSGeom_createCollection_r(ctx.raw(), TYPE_COLLECTION as c_int, members, raw.len() as u32) };
         Owned::new(ctx, ptr)
     }
 
@@ -948,9 +954,14 @@ mod coverage_api {
     /// pointers *borrowed* from `g`, which stays alive for the whole walk, and are never
     /// destroyed here.
     unsafe fn read_geom(ctx: &Context, g: *const GEOSGeometry) -> Option<Geom> {
-        if GEOSisEmpty_r(ctx.raw(), g) != 0 {
-            // 1 = empty, 2 = exception; neither carries geometry.
-            return Some(Geom::Empty);
+        // 1 = empty, 2 = exception. They must not be conflated: an exception means GEOS could not
+        // answer, and reading that as "empty" would silently delete this element's content while
+        // the call as a whole still reported success. `None` instead, which fails the whole call
+        // and takes the caller's never-drop fallback.
+        match GEOSisEmpty_r(ctx.raw(), g) {
+            0 => {}
+            1 => return Some(Geom::Empty),
+            _ => return None,
         }
         let type_id = GEOSGeomTypeId_r(ctx.raw(), g);
         if type_id < 0 {

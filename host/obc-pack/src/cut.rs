@@ -319,10 +319,22 @@ pub fn cut_ingested(
         // Per-band preparation, done once and read by every cell of the band.
         // One memo per band: a band's coverage tiers dissolve the same classes over the same fills
         // (see `crate::coverage::PredissolveCache`), and it dies with the band rather than sitting on
-        // memory through the cells.
+        // memory through the cells. It is also cleared at the **first** tier of the band that does
+        // not want the pass — the coarse band runs LODs 0-4 and only its first two are coverage
+        // tiers, so holding a couple of hundred megabytes of dissolved geometry through the rest of
+        // the band is exactly the peak this pass is budgeted against (`pipeline::run` clears it on
+        // the same rule).
         let predissolved = PredissolveCache::new();
-        let lod_sets: Vec<LodSet<'_>> =
-            band.lods.iter().map(|&l| prepare_lod(ing, config, l, band.cell_log2, &predissolved, progress)).collect();
+        let lod_sets: Vec<LodSet<'_>> = band
+            .lods
+            .iter()
+            .map(|&l| {
+                if !config.lods[l].coverage_simplify {
+                    predissolved.clear();
+                }
+                prepare_lod(ing, config, l, band.cell_log2, &predissolved, progress)
+            })
+            .collect();
         drop(predissolved);
         let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
@@ -552,7 +564,7 @@ impl LodSet<'_> {
             };
             // A coverage-produced feature carries this tier's `min_area_px` already, as elimination
             // rather than a drop; culling the clipped result again would re-open the gaps the pass
-            // closed. Its holes are trimmed harder instead (`COVERAGE_HOLE_FACTOR`).
+            // closed. The hole trim still runs, at the same threshold as everywhere else.
             let from_coverage = self.presimplified[k as usize];
             flatten_culled(*style_id, clipped, self.cull_mpp, self.min_area_px, from_coverage, &mut out);
         }
@@ -562,6 +574,14 @@ impl LodSet<'_> {
 
 /// Append `geom`'s simple parts to `out`, dropping the ones the sub-pixel footprint cull rejects and
 /// trimming sub-pixel holes from the survivors — the pipeline's cull, applied to clipped geometry.
+///
+/// `from_coverage` skips the footprint cull entirely, and that is deliberate down to the worst
+/// case: a coverage polygon clipped by a cell edge can come out as a hairline strip along the seam,
+/// far under `min_area_px`, and dropping it would open exactly the kind of backdrop sliver the pass
+/// exists to close — visible as a hole *at the cell boundary*, where a neighbouring cell still
+/// paints its half. The pass has already applied this tier's threshold globally (as elimination
+/// rather than a drop, including culling the faces it could not eliminate), so nothing sub-threshold
+/// reaches here except these clip artefacts.
 fn flatten_culled(
     style_id: u8,
     geom: Geom,
@@ -582,9 +602,7 @@ fn flatten_culled(
                 if !from_coverage && footprint_below(&simple, mpp, min_area_px) {
                     return;
                 }
-                let hole_floor =
-                    if from_coverage { min_area_px * crate::pipeline::COVERAGE_HOLE_FACTOR } else { min_area_px };
-                strip_small_holes(&mut simple, mpp, hole_floor);
+                strip_small_holes(&mut simple, mpp, min_area_px);
             }
             out.push((style_id, simple));
         }

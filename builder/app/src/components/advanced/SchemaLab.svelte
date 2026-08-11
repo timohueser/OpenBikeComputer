@@ -1,9 +1,9 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { buildConfigForSubmit, type SchemaEnvelope } from "../../lib/config/model";
+    import { buildConfigForSubmit, type LodTier, type SchemaEnvelope } from "../../lib/config/model";
     import type { WorkingEnvelope } from "../../lib/config/storage.svelte";
     import type { SchemaPreviewMap, SchemaPreviewService, SchemaPreviewStatus } from "../../lib/platform/types";
-    import { representativeMpp } from "../../lib/schema/lods";
+    import { previewLadder, representativeMpp } from "../../lib/schema/lods";
     import {
         openSchemaRenderer,
         type SchemaRenderer,
@@ -25,6 +25,11 @@
     let metersPerPixel = $state(5);
     let canvas = $state<HTMLCanvasElement>();
     let installGeneration = 0;
+    // The ladder the *displayed* map was packed with. The editable one has already moved on by
+    // the time a pack lands, and a chip has to name a tier the loaded map actually carries.
+    let packedLods = $state<LodTier[] | null>(null);
+    let pendingLods: LodTier[] | null = null;
+    const lodChips = $derived(previewLadder(packedLods, env.config.lods, stats?.lodCount));
 
     const controller = new PreviewController(
         (config: Record<string, unknown>, signal) => {
@@ -47,6 +52,8 @@
             const previous = renderer;
             renderer = opened;
             previous?.free();
+            // The chips now describe this map, not the config someone may have edited since.
+            packedLods = pendingLods;
             packDurationMs = result.packDurationMs;
             diagnostics = result.diagnostics;
             opened.setMetersPerPixel(metersPerPixel);
@@ -110,6 +117,7 @@
         // the same submit normalization an exported config uses.
         const submitted = buildConfigForSubmit(env.config, env.disabled, schema).config;
         const snapshot = JSON.parse(JSON.stringify(submitted)) as Record<string, unknown>;
+        pendingLods = snapshot.lods as LodTier[];
         controller.schedule(snapshot);
     });
 </script>
@@ -162,8 +170,8 @@
                     <span>m/px</span>
                 </label>
                 <div class="lods" aria-label="Preview each authored LOD">
-                    {#each env.config.lods as _lod, index}
-                        {@const value = representativeMpp(env.config.lods, index)}
+                    {#each lodChips as _lod, index}
+                        {@const value = representativeMpp(lodChips, index)}
                         <button
                             type="button"
                             class:active={stats?.lodIndex === index}

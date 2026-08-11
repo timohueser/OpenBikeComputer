@@ -65,15 +65,6 @@ pub struct PackSummary {
     pub dropped: usize,
 }
 
-/// How much bigger than the tier's `min_area_px` a **hole** must be to survive on a
-/// [`crate::coverage`] tier. Outlines carry a far-zoom frame; the specks inside them do not, and a
-/// hole costs a whole ring plus its vertices in the render scratch. The threshold is deliberately
-/// looser than the one that keeps a face: a face this small has already been absorbed into its
-/// neighbour, and what is left as a hole is another class's island that the outline reads better
-/// without. Filling it is not a lie about the ground — the class around it simply extends over it,
-/// which is what the paint order does anyway when the island is a pixel wide.
-pub(crate) const COVERAGE_HOLE_FACTOR: f64 = 4.0;
-
 /// Pack `pbfs` into `output` using `config`.
 ///
 /// The one code path both hosts run. Cancellation is decided by the token inside
@@ -246,9 +237,13 @@ fn run(
             //
             // `from_coverage` marks the output of [`crate::coverage`]: that pass already applied
             // this tier's `min_area_px`, as *elimination* rather than a drop, so culling it a
-            // second time would punch back the holes it exists to avoid. Its holes are trimmed
-            // harder instead — a hole is another class's face, and at a far-zoom tier an outline
-            // is worth more than the specks inside it.
+            // second time would punch back the holes it exists to avoid. The **hole** trim runs
+            // on it unchanged, at exactly the same threshold: a hole in a coverage polygon is
+            // another class's kept face, so filling one above the elimination threshold would
+            // paint a face the pass deliberately kept out of existence while it still costs a
+            // span, a ring and its points. Below the threshold no such face can exist — it was
+            // absorbed into its neighbour, which leaves no hole — so the ordinary trim is exactly
+            // the safe bound.
             let simplify_cull =
                 |style_id: u8, geom: &Geom, simplify: bool, from_coverage: bool| -> Option<(u8, Geom)> {
                     if progress.is_cancelled() {
@@ -263,8 +258,7 @@ fn run(
                         }
                         // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in the
                         // render scratch, on the same tier gate + threshold as the footprint cull).
-                        let hole_floor = if from_coverage { min_area_px * COVERAGE_HOLE_FACTOR } else { min_area_px };
-                        let n = strip_small_holes(&mut g, mpp, hole_floor);
+                        let n = strip_small_holes(&mut g, mpp, min_area_px);
                         if n > 0 {
                             holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -428,6 +422,9 @@ pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
     }
     if c.eliminated > 0 {
         line.push_str(&format!(" ({} small face(s) absorbed into a neighbour)", c.eliminated));
+    }
+    if c.uneliminable_culled > 0 {
+        line.push_str(&format!(" ({} small face(s) culled for want of a neighbour)", c.uneliminable_culled));
     }
     if c.healed > 0 {
         line.push_str(&format!(" ({} micro-gap(s) healed)", c.healed));

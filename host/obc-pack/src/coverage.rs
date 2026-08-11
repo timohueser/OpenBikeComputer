@@ -120,6 +120,13 @@
 //! [`coverage_simplify_fills_with`]'s return contract) — it has already been applied, in the one
 //! form a coverage can survive.
 //!
+//! **The tier is assumed to have a full-coverage base fill** (the preset's `natural.land`), so a
+//! sub-threshold face normally has a covered neighbour to be absorbed into. Where it does not —
+//! a bake with `--no-land`, or a schema with no base class — elimination has no target, and such a
+//! face is *culled* exactly as the caller's [`crate::geom::footprint_below`] would have culled it
+//! (see [`eliminate_small_faces`]); dropping an island opens no hole in a tiling it was never part
+//! of. Without that rule an isolated speck escaped both operators and survived at any size.
+//!
 //! # Never drop map content
 //!
 //! Any GEOS failure — a boundary that will not node, a polygonize that returns nothing, a
@@ -166,6 +173,10 @@ pub struct CoverageStats {
     pub dropped_faces: usize,
     /// Faces below the tier's threshold that were absorbed into a neighbour (see the module docs).
     pub eliminated: usize,
+    /// Covered faces below the tier's threshold that had **no** covered neighbour to be absorbed
+    /// into, so the ordinary footprint cull was applied to them instead — see
+    /// [`eliminate_small_faces`]. Non-zero on a tier with no full-coverage base fill.
+    pub uneliminable_culled: usize,
     /// Uncovered faces below the tier's threshold that a covered neighbour absorbed — the
     /// micro-gaps decimation opens, plus the ones the source data already had.
     pub healed: usize,
@@ -347,7 +358,20 @@ impl FillSetId {
         let mut composition = Vec::with_capacity(fills.len());
         for f in fills {
             composition.push((f.seq as u32, f.style_id));
-            let Geom::Polygon { exterior, interiors } = &f.geom else { continue };
+            // A kind discriminant goes into the hash *before* the coordinates, so a non-polygon —
+            // which `split_geom` guarantees cannot happen, hence the assert — cannot silently
+            // contribute nothing and let two different fill sets share a cache key.
+            let kind: u8 = match &f.geom {
+                Geom::Polygon { .. } => 1,
+                Geom::Line(_) => 2,
+                Geom::Multi(_) => 3,
+                Geom::Empty => 4,
+            };
+            kind.hash(&mut h);
+            let Geom::Polygon { exterior, interiors } = &f.geom else {
+                debug_assert!(false, "a Fill is always a single polygon: split_geom flattens everything else");
+                continue;
+            };
             for ring in std::iter::once(exterior).chain(interiors.iter()) {
                 ring.len().hash(&mut h);
                 for &(x, y) in ring {
@@ -393,18 +417,28 @@ impl PredissolveCache {
     /// The dissolve of `fills` — from the memo if it was computed from exactly this set, otherwise
     /// computed now and memoised. A poisoned lock falls through to computing it, since the cache is
     /// an optimisation and never the source of truth.
-    fn dissolve(&self, fills: Vec<Fill>) -> std::sync::Arc<Vec<Fill>> {
+    ///
+    /// The lock is taken three times and **never held across the dissolve**, which is a minutes-long
+    /// parallel GEOS union: lock to look up, unlock, compute, lock to store. Holding it would put a
+    /// mutex around a rayon fan-out — the classic way to deadlock a work-stealing pool, since a
+    /// blocked worker inside the critical section cannot be stolen from. The cost of not holding it
+    /// is that two concurrent misses for the same set would both compute; that is duplicated work and
+    /// never a wrong answer, and callers are sequential today (one tier at a time, per band).
+    fn dissolve(&self, fills: Vec<Fill>, progress: &Progress) -> std::sync::Arc<Vec<Fill>> {
         let id = FillSetId::of(&fills);
-        let Ok(mut slot) = self.entry.lock() else { return std::sync::Arc::new(predissolve(fills)) };
-        if let Some((cached, dissolved)) = slot.as_ref() {
-            if *cached == id {
-                return std::sync::Arc::clone(dissolved);
+        if let Ok(slot) = self.entry.lock() {
+            if let Some((cached, dissolved)) = slot.as_ref() {
+                if *cached == id {
+                    return std::sync::Arc::clone(dissolved);
+                }
             }
         }
         // Drop whatever else was held *before* building the replacement, so the two never coexist.
-        *slot = None;
-        let dissolved = std::sync::Arc::new(predissolve(fills));
-        *slot = Some((id, std::sync::Arc::clone(&dissolved)));
+        self.clear();
+        let dissolved = std::sync::Arc::new(predissolve(fills, progress));
+        if let Ok(mut slot) = self.entry.lock() {
+            *slot = Some((id, std::sync::Arc::clone(&dissolved)));
+        }
         dissolved
     }
 }
@@ -432,7 +466,12 @@ impl PredissolveCache {
 /// this pass a class is one block of records, and the device paints the block at that position, so
 /// a per-parcel `seq` would be answering a question the output no longer asks. It changes nothing
 /// unless two *different* classes share a `z_index`, which is the only case `seq` ever decided.
-fn predissolve(fills: Vec<Fill>) -> Vec<Fill> {
+///
+/// Cancellation is checked per class, for the same reason [`crate::merge::merge_fills_with`] checks
+/// per group: one class's union runs for seconds inside GEOS and cannot be interrupted from outside.
+/// A cancelled class keeps its fills exactly as they arrived — the same well-formed degradation a
+/// GEOS refusal takes, since the work is discarded anyway.
+fn predissolve(fills: Vec<Fill>, progress: &Progress) -> Vec<Fill> {
     // Classes in canonical-id order; members in input order within each.
     let mut groups: BTreeMap<u8, Vec<Fill>> = BTreeMap::new();
     for f in fills {
@@ -440,7 +479,7 @@ fn predissolve(fills: Vec<Fill>) -> Vec<Fill> {
     }
     let mut out: Vec<Fill> = Vec::new();
     for (canonical, members) in groups {
-        if members.len() < 2 {
+        if members.len() < 2 || progress.is_cancelled() {
             out.extend(members);
             continue;
         }
@@ -477,10 +516,17 @@ fn predissolve(fills: Vec<Fill>) -> Vec<Fill> {
 /// arrangement out (unchanged, as before this pass existed), and a decimation that errors or comes
 /// back invalid or empty leaves the fill at full detail. The arrangement is therefore fed exactly
 /// the same *set* of fills as it was before, only lighter.
-fn prepare_fills(fills: &[Fill], dec_tol: f64) -> Vec<Prep> {
+///
+/// Cancellation is checked per fill (the tasks are short, but there are hundreds of thousands of
+/// them): a cancelled fill answers [`Prep::AsIs`], which is what a decimation failure answers, so a
+/// cancelled run stops doing GEOS work without inventing a state nothing tests.
+fn prepare_fills(fills: &[Fill], dec_tol: f64, progress: &Progress) -> Vec<Prep> {
     fills
         .par_iter()
         .map(|f| {
+            if progress.is_cancelled() {
+                return Prep::AsIs;
+            }
             let Some(g) = try_polygon_to_geos(&f.geom) else { return Prep::SitOut };
             if !g.is_valid().unwrap_or(false) {
                 return Prep::SitOut;
@@ -601,13 +647,13 @@ pub fn coverage_simplify_fills_with(
     // what closes the micro-gaps decimating independently opens: without it the pre-pass would
     // trade the tear this whole module exists to remove for a cheaper arrangement, which is no
     // trade at all. The two levers are one lever. ---
-    let fills = cache.dissolve(fills);
+    let fills = cache.dissolve(fills, progress);
     stats.dissolved = fills.len();
     let dec_tol = if eliminate.is_some() { decimation_tol(tol) } else { 0.0 };
     // The sliver bound healing measures uncovered faces against, in metres. It is derived from the
     // decimation tolerance, so a tier that does not decimate opens no gaps and heals none.
     let heal_half_width_m = HEAL_WIDTH_TOLERANCES * dec_tol * M_PER_DEG;
-    let preps = prepare_fills(&fills, dec_tol);
+    let preps = prepare_fills(&fills, dec_tol, progress);
     stats.vertices_arranged = fills
         .iter()
         .zip(&preps)
@@ -642,6 +688,7 @@ pub fn coverage_simplify_fills_with(
                 stats.faces += out.faces;
                 stats.dropped_faces += out.dropped_faces;
                 stats.eliminated += out.eliminated;
+                stats.uneliminable_culled += out.uneliminable_culled;
                 stats.healed += out.healed;
                 stats.dissolve_failures += out.dissolve_failures;
                 stats.outputs += out.polys.len();
@@ -701,6 +748,7 @@ struct ComponentOut {
     faces: usize,
     dropped_faces: usize,
     eliminated: usize,
+    uneliminable_culled: usize,
     healed: usize,
     dissolve_failures: usize,
 }
@@ -845,13 +893,15 @@ fn coverage_component(
     // boundary with, so the dissolve below absorbs it instead of the cull deleting it. An
     // *uncovered* face under the threshold joins a covered neighbour the same way, which is what
     // closes the micro-gaps decimation opens (see the module docs). ---
-    let (eliminated, healed) = match eliminate {
+    let (eliminated, uneliminable_culled, healed) = match eliminate {
         Some(e) => eliminate_small_faces(&faces, &mut winners, e, heal_half_width_m),
-        None => (0, 0),
+        None => (0, 0, 0),
     };
     // After elimination, because healing is exactly the operation that turns an uncovered face
-    // into a covered one: what is still uncovered here is what stays backdrop.
-    let dropped = winners.iter().filter(|w| w.is_none()).count();
+    // into a covered one: what is still uncovered here is what stays backdrop. The faces the cull
+    // took are uncovered now too, but they are a cull rather than a gap, so they are reported as
+    // one and not the other.
+    let dropped = winners.iter().filter(|w| w.is_none()).count() - uneliminable_culled;
 
     // --- Per-class dissolve, classes in key order so emission is deterministic. ---
     let mut by_class: BTreeMap<ClassKey, (u8, Vec<Geom>)> = BTreeMap::new();
@@ -887,6 +937,7 @@ fn coverage_component(
             faces: n_faces,
             dropped_faces: dropped,
             eliminated,
+            uneliminable_culled,
             healed,
             dissolve_failures,
         });
@@ -920,7 +971,15 @@ fn coverage_component(
         }
     }
     polys.extend(sat_out);
-    Some(ComponentOut { polys, faces: n_faces, dropped_faces: dropped, eliminated, healed, dissolve_failures })
+    Some(ComponentOut {
+        polys,
+        faces: n_faces,
+        dropped_faces: dropped,
+        eliminated,
+        uneliminable_culled,
+        healed,
+        dissolve_failures,
+    })
 }
 
 /// Node every member's boundary into one planar arrangement and polygonize it into faces.
@@ -1019,8 +1078,9 @@ fn assign_faces(
 }
 
 /// Absorb faces under the tier's threshold into their neighbours until nothing under it is left,
-/// returning `(covered faces that changed class, uncovered faces a neighbour healed)` — see the
-/// module docs for why this replaces the cull.
+/// returning `(covered faces that changed class, covered faces nothing could absorb and the cull
+/// therefore took, uncovered faces a neighbour healed)` — see the module docs for why this replaces
+/// the cull.
 ///
 /// This is the cartographic **eliminate** operator, run to a fixed point rather than in one sweep.
 /// Faces are grouped into clusters (each face starts as its own); the smallest cluster still under
@@ -1049,12 +1109,23 @@ fn assign_faces(
 /// lose its fill. An uncovered cluster therefore never grows, and a gap that is compact rather than
 /// thin, or at or above the threshold, or with no covered neighbour at all, is left exactly as it
 /// is. `heal_half_width_m <= 0.0` turns healing off entirely.
+///
+/// **A covered face nothing can absorb is culled, not kept.** The fixed point can leave a covered
+/// cluster under the threshold in exactly one way: it was popped and found no *covered* neighbour to
+/// join. That face is an island — everything touching it is backdrop already — so it is not part of
+/// any tiling and dropping it opens no hole; keeping it would let a sub-threshold speck outlive the
+/// operator on both sides, because the caller skips its own footprint cull for everything this pass
+/// produced. So the cull is applied here instead, at the tier's own `(mpp, min_area_px)` — the same
+/// verdict [`crate::geom::footprint_below`] would give — and counted separately. It is decided after
+/// the loop rather than inside it, so it cannot depend on the order faces were popped in (a face
+/// whose only neighbour is an uncovered sliver acquires a covered neighbour the moment that sliver
+/// is healed).
 fn eliminate_small_faces(
     faces: &[Geom],
     winners: &mut [Option<usize>],
     e: Eliminate,
     heal_half_width_m: f64,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let n = faces.len();
     // --- adjacency: undirected segment -> the face(s) carrying it ---
     //
@@ -1171,7 +1242,10 @@ fn eliminate_small_faces(
             }
         }
         let Some((into, _)) = best else {
-            continue; // an island with nothing covered beside it: it stays as it is
+            // An island with nothing covered beside it. It cannot be absorbed, and the sweep after
+            // the loop is what decides its fate: covered ⇒ the cull takes it, uncovered ⇒ it was
+            // never fill to begin with and stays backdrop.
+            continue;
         };
         // `small` joins `into` and takes its class; the survivor keeps its own id so the heap's
         // other entries for it stay meaningful.
@@ -1196,10 +1270,28 @@ fn eliminate_small_faces(
     // --- every face takes its cluster's owner ---
     //
     // A cluster's owner is its root's, and a root is always covered by the time anything joins it
-    // (the target rule above), so a face can only gain fill here, never lose it.
-    let (mut moved, mut healed) = (0, 0);
+    // (the target rule above), so a face can only gain fill here, never lose it — except through the
+    // cull below, which takes a whole cluster the fixed point could not lift over the threshold.
+    //
+    // Which clusters the cull takes is decided **before** anything is written back: the test reads
+    // the root's own `winners` entry, and the loop below is about to clear it.
+    let mut cull_cluster: Vec<bool> = vec![false; n];
+    for r in 0..n {
+        if find(&mut parent, r) == r {
+            cull_cluster[r] = winners[r].is_some() && area[r] < e.min_area_px;
+        }
+    }
+    let (mut moved, mut culled, mut healed) = (0, 0, 0);
     for fi in 0..n {
         let root = find(&mut parent, fi);
+        // The uneliminable case: a covered cluster still under the threshold after the fixed point.
+        if cull_cluster[root] {
+            if winners[fi].is_some() {
+                winners[fi] = None;
+                culled += 1;
+            }
+            continue;
+        }
         if root == fi {
             continue;
         }
@@ -1216,7 +1308,7 @@ fn eliminate_small_faces(
             Some(_) => {}
         }
     }
-    (moved, healed)
+    (moved, culled, healed)
 }
 
 /// A total order over the `f64` areas the heap sorts by. Every value here is a finite,
@@ -1620,27 +1712,59 @@ mod tests {
         );
     }
 
-    /// Healing never runs the other way: a **covered** face under the threshold whose only
-    /// neighbour is a gap keeps its fill rather than being swallowed by it. With healing switched
-    /// on and the gap far too fat to qualify, this is the rule that makes the pass safe to point at
-    /// a real coastline.
+    /// Healing never runs the other way: a **covered** face whose only neighbour is a gap is never
+    /// swallowed by it. With healing switched on and the gap far too fat to qualify, this is the
+    /// rule that makes the pass safe to point at a real coastline.
+    ///
+    /// The island is *over* the tier's threshold here, which is the case where it survives whole.
+    /// The sub-threshold case is the other rule
+    /// ([`eliminate_small_faces`]'s uneliminable cull, pinned by the test below): still not
+    /// absorbed — culled, exactly as the caller's footprint cull would have culled it.
     #[test]
     fn a_gap_never_absorbs_a_covered_face() {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
-        // A host with a 6x6 hole, and a 1x1 speck of another class sitting inside that hole so its
+        // A host with a 6x6 hole, and a 2x2 island of another class sitting inside that hole so its
         // only neighbour is the uncovered rest of the hole.
         let host = Geom::Polygon {
             exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
             interiors: vec![vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)]],
         };
+        let island = rect(4.0, 4.0, 6.0, 6.0); // 4 deg², wholly inside the hole
+                                               // 2 deg²: under the island, the 32 deg² hole and the 64 deg² ring around it.
+        let e = Some(threshold_for(2.0, 100.0));
+        let (out, stats) = coverage_simplify_fills(vec![(1, host), (2, island)], &classes, HEAL_TOL, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.healed, 0, "the hole is nowhere near thin: {stats:?}");
+        assert_eq!(stats.uneliminable_culled, 0, "the island is over the threshold: {stats:?}");
+        let by = |sid: u8| area(&out.iter().filter(|(s, _, _)| *s == sid).cloned().collect::<Vec<_>>());
+        assert!(by(2) > 3.5, "the island kept its fill instead of being eaten by the gap: {out:?}");
+        assert!((by(1) - 64.0).abs() < 1e-9, "and the host did not grow into the hole either: {out:?}");
+    }
+
+    /// **The uneliminable cull.** A covered face under the tier's threshold with no *covered*
+    /// neighbour satisfies neither operator on its own: elimination has nothing to absorb it into,
+    /// and the caller skips its footprint cull for everything this pass produced. So the pass
+    /// applies that cull itself — the same `(mpp, min_area_px)` verdict, on a face that is an
+    /// island and therefore part of no tiling, so dropping it opens no hole.
+    ///
+    /// Without the rule a `--no-land` bake (no full-coverage base fill) kept every sub-threshold
+    /// parcel at the coarsest tier.
+    #[test]
+    fn a_covered_speck_with_no_covered_neighbour_is_culled() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let host = Geom::Polygon {
+            exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+            interiors: vec![vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)]],
+        };
         let speck = rect(4.0, 4.0, 5.0, 5.0); // 1 deg², wholly inside the hole
-                                              // 2 deg²: over the speck, under the 35 deg² hole and the 64 deg² ring around it.
         let e = Some(threshold_for(2.0, 100.0));
         let (out, stats) = coverage_simplify_fills(vec![(1, host), (2, speck)], &classes, HEAL_TOL, e);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
-        assert_eq!(stats.healed, 0, "the hole is nowhere near thin: {stats:?}");
+        assert_eq!(stats.eliminated, 0, "there was nothing to absorb it into: {stats:?}");
+        assert_eq!(stats.uneliminable_culled, 1, "so the cull took it: {stats:?}");
         let by = |sid: u8| area(&out.iter().filter(|(s, _, _)| *s == sid).cloned().collect::<Vec<_>>());
-        assert!(by(2) > 0.5, "the speck kept its fill instead of being eaten by the gap: {out:?}");
+        assert_eq!(by(2), 0.0, "the speck is gone: {out:?}");
+        assert!((by(1) - 64.0).abs() < 1e-9, "and its ground went to the backdrop, not to the host: {out:?}");
     }
 
     // --- pre-dissolve --------------------------------------------------------------------------
@@ -1833,8 +1957,8 @@ mod tests {
 
     /// **The fixed point.** A long chain of equal specks, each other's nearest neighbour, has no
     /// face big enough to be a root anywhere in it — a single absorption sweep would pair them off
-    /// and stop, leaving the threshold binding nothing. Run to a fixed point they coalesce all the
-    /// way into one class instead.
+    /// and stop at 2 deg² each, leaving the threshold binding nothing. Run to a fixed point they
+    /// coalesce all the way into one class instead, and only the complete row clears the threshold.
     #[test]
     fn a_chain_of_equal_specks_coalesces_completely() {
         let styles: Vec<Style> = (1..=8).map(|i| fill_style(i, i as i8, 0x0001 + i as u16)).collect();
@@ -1842,14 +1966,32 @@ mod tests {
         // Eight 1x1 tiles in a row, each its own class, each far below the threshold.
         let feats: Vec<(u8, Geom)> = (0..8).map(|i| (i as u8 + 1, rect(i as f64, 0.0, i as f64 + 1.0, 1.0))).collect();
         let mpp = 100.0;
-        // Threshold above the whole row, so nothing can ever satisfy it.
-        let e = Some(threshold_for(100.0, mpp));
+        // Just under the whole 8 deg² row and far over any partial coalescence of it, so nothing
+        // short of the complete chain satisfies the threshold.
+        let e = Some(threshold_for(7.5, mpp));
         let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, e);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.uneliminable_culled, 0, "the coalesced row cleared the threshold: {stats:?}");
         assert!((area(&out) - 8.0).abs() < 1e-9, "all eight tiles of ground survive: {out:?}");
         let live: std::collections::BTreeSet<u8> = out.iter().map(|(sid, _, _)| *sid).collect();
         assert_eq!(live.len(), 1, "the row coalesced into a single class, not four pairs: {live:?}");
         assert_eq!(out.len(), 1, "and into a single polygon: {out:?}");
+    }
+
+    /// The same chain against a threshold **nothing** can satisfy: coalescing runs to the end, the
+    /// one surviving cluster is still under the threshold, and the cull that would have taken each
+    /// tile on an ordinary tier takes the row. A coverage tier sheds detail; it does not keep
+    /// sub-threshold content alive just because it was handed to this pass.
+    #[test]
+    fn a_chain_that_cannot_reach_the_threshold_is_culled_whole() {
+        let styles: Vec<Style> = (1..=8).map(|i| fill_style(i, i as i8, 0x0001 + i as u16)).collect();
+        let classes = merge_classes(&styles);
+        let feats: Vec<(u8, Geom)> = (0..8).map(|i| (i as u8 + 1, rect(i as f64, 0.0, i as f64 + 1.0, 1.0))).collect();
+        let e = Some(threshold_for(100.0, 100.0));
+        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.uneliminable_culled, 8, "every face of the one dead-end cluster: {stats:?}");
+        assert_eq!(area(&out), 0.0, "nothing is emitted: {out:?}");
     }
 
     /// Determinism with elimination on: the absorption order (ascending area, then face index) and
