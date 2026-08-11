@@ -21,12 +21,16 @@
 //! advects out of a radar footprint therefore leaves no-data behind it and the mosaic falls
 //! through to the model, which is the honest answer and happens for free.
 //!
-//! The one place a value is combined rather than moved is [`morph`], which is *temporal*
-//! interpolation between two known fields: at a target instant three quarters of the way from one
-//! model step to the next, the two advected fields are combined 1:3. That is a genuine estimate for
-//! that instant and it is what makes the 15-minute grid uniform; it is documented here rather than
-//! hidden because it is the only arithmetic in this module that produces an intensity code neither
-//! input held.
+//! **Nothing here combines two values into a third**, and that is a change from how this module
+//! first shipped. [`morph`] — the temporal half, which carries two known fields to an instant
+//! between them — used to blend the two advected results by time weight. Round 1 of #1278's review
+//! measured what that cost on a real 30-minute morph: **22.6 % of wet cells carried an intensity
+//! code neither parent held**, the wet area grew past the truth's, and the mean wet code fell about
+//! one band. Every value was inside its two parents' range, so it was not fabrication in the strict
+//! sense; it was still an intensity no source stated for that cell, and it published a bigger,
+//! fainter storm than anything it was made from. So `morph` now **selects**: the cell comes from
+//! whichever parent is nearer the target instant, whole. Advection may move cells; it may not invent
+//! values.
 //!
 //! ## Why the flow grid is coarser than the intensity grid
 //!
@@ -107,8 +111,47 @@ pub const MAX_SPEED_M_S: f64 = 60.0;
 /// aperture problem — and the node is left for the fill pass.
 const MIN_EIGENVALUE: f32 = 0.02;
 
-/// A pair of frames with fewer wet cells than this between them is not a motion signal.
+/// A pair of frames with less wet area than this is not a motion signal.
+///
+/// **Relative, with an absolute floor** (#1278 r1, m8). A bare 64-cell gate is 0.0003 % of MRMS's
+/// 24.5 M-cell window: a handful of echoes anywhere on the continent passed it, and if only one node
+/// was then trackable, [`fill_invalid`] grew that node's vector across the whole 438 x 219 grid and
+/// the entire field advected by it at every lead. The damage was bounded by the wet area, but it was
+/// the one place where "no motion vector is ever fabricated" was a stronger claim than the code
+/// made. One part in ten thousand of the window is 2,450 cells for MRMS and 103 for GFS's floor, and
+/// the absolute floor keeps small test rasters and small regional windows workable.
+const MIN_WET_FRACTION: f64 = 1.0 / 10_000.0;
 const MIN_WET_CELLS: usize = 64;
+
+/// How far, in nodes, a solved vector may be grown into unsolved ground before the field is simply
+/// left still.
+///
+/// The other half of m8. Growing outward from the trackable nodes is right where the unsolved region
+/// is the *inside* of a uniform rain shield or its immediate surroundings — that ground is carried by
+/// the flow its edges were solved from. It is not right at continental range: a single trackable
+/// node over Kansas says nothing about Maine, and a field that advects everything by it is asserting
+/// a motion nobody measured. Beyond this many nodes the flow stays zero, which advects dry ground to
+/// dry ground and leaves distant rain where it is — visibly persistence, which is what "we could not
+/// tell" should look like.
+///
+/// **Nine nodes, derived from the horizon rather than picked** (raised from six while landing
+/// #1283's timestamp fix). A back-trace integrates the flow *along* the trajectory, so the field has
+/// to be defined everywhere the frame will be carried or the trajectory stalls part-way and the
+/// storm arrives short — measurably so: an isolated cell in an otherwise dry domain under-shot by
+/// 12 % at a 57-minute lead with the bound at six. The distance a frame can travel is what sets it:
+/// a 25 m/s system (90 km/h, above ordinary storm motion and far below the [`MAX_SPEED_M_S`] clamp)
+/// covers 135 km over [`crate::derive::NOWCAST_MAX_LEAD_MIN`], which is 8.4 nodes at the 16 km
+/// spacing. Nine covers it with a node in hand, and it is still a bound — a lone trackable node
+/// reaches ~144 km, not a continent, and only where there is rain within that distance to begin
+/// with.
+///
+/// **To within one smoothing pass** (#1278 r2, n18). [`fill_invalid`] finishes with an unconditional
+/// 3x3 box pass over the whole node grid, so the ring of nodes immediately past the cap picks up a
+/// fraction — at most a ninth per neighbour — of its grown neighbours' vectors. That is the seam
+/// treatment doing its job rather than the cap leaking: the alternative is a hard edge in the
+/// trajectories at exactly the distance where confidence runs out. The bound is therefore on where
+/// the *grown* field stops, not on where the last non-zero float is.
+const MAX_FILL_NODES: u32 = 9;
 
 /// A dense motion field on a coarse node grid.
 ///
@@ -364,7 +407,8 @@ pub fn estimate_motion(
     if !dt_seconds.is_finite() || dt_seconds <= 0.0 {
         return None;
     }
-    if wet_cells(earlier) < MIN_WET_CELLS || wet_cells(later) < MIN_WET_CELLS {
+    let wet_floor = MIN_WET_CELLS.max((cells as f64 * MIN_WET_FRACTION) as usize);
+    if wet_cells(earlier) < wet_floor || wet_cells(later) < wet_floor {
         return None;
     }
 
@@ -572,7 +616,10 @@ fn median_filter(plane: &mut [f32], valid: &[bool], cols: u32, rows: u32) {
 fn fill_invalid(u: &mut [f32], v: &mut [f32], valid: &[bool], cols: u32, rows: u32) {
     let mut filled = valid.to_vec();
     let total = cols as usize * rows as usize;
-    while filled.iter().any(|ok| !ok) {
+    for _ in 0..MAX_FILL_NODES {
+        if filled.iter().all(|ok| *ok) {
+            break;
+        }
         let previous = filled.clone();
         let mut progressed = false;
         for row in 0..rows as i32 {
@@ -609,6 +656,10 @@ fn fill_invalid(u: &mut [f32], v: &mut [f32], valid: &[bool], cols: u32, rows: u
             break;
         }
     }
+    // Whatever the growth did not reach stays at zero — the honest answer at that distance, and the
+    // reason the loop is bounded (see `MAX_FILL_NODES`). Nodes are initialised to zero and the
+    // solver only writes the ones it solved, so this is already true; it is asserted rather than
+    // assumed, because "unreached means still" is the whole claim.
     debug_assert!(total == u.len());
     // One box pass, so the seam between solved and grown nodes is not a discontinuity in the
     // trajectories.
@@ -646,7 +697,12 @@ fn fill_invalid(u: &mut [f32], v: &mut [f32], valid: &[bool], cols: u32, rows: u
 const MAX_SUBSTEP_CELLS: f32 = 4.0;
 /// Cap on substeps, so a pathological flow field cannot turn one frame into an unbounded amount of
 /// work.
-const MAX_SUBSTEPS: u32 = 48;
+///
+/// Sized so the target above is actually met at the longest lead this bakery publishes rather than
+/// being quietly abandoned there (#1278 r1, n11): the clamp at [`MAX_SPEED_M_S`] over a 90-minute
+/// lead on the 1,113 m lattice is 291 cells, which needs 73 substeps to stay inside four cells each.
+/// A hundred keeps the margin at the horizon and still bounds the work.
+const MAX_SUBSTEPS: u32 = 100;
 
 /// Semi-Lagrangian advection: where did the cell that is *here* now come from?
 ///
@@ -664,7 +720,29 @@ const MAX_SUBSTEPS: u32 = 48;
 /// upwind edge of a radar footprint has no observation behind it, so it must not be published as
 /// dry. The mosaic then falls through to whatever is beneath the nowcast, which is a model forecast
 /// of that instant.
-pub fn advect(cells: &[u8], width: u32, height: u32, flow: &MotionField, dt_seconds: f64) -> Vec<u8> {
+///
+/// `wrap_x` says the raster **closes the circle in longitude**, which is true of exactly one source:
+/// the GFS floor, whose grid is periodic (the mosaic already samples it through
+/// [`crate::canonical::source_column`]'s wrap). It matters because the floor is the last row of the
+/// priority table — nothing falls through *beneath* it — so an unwrapped advection would leave one
+/// or two columns of permanent intensity 15 at the antimeridian, the exact 25-column stripe through
+/// Fiji that `source_column`'s wrap exists to prevent, reintroduced by the derivation stage. The
+/// wrap is over the *window*, which for GFS is one column short of the full turn, so a trajectory
+/// crossing the seam samples a cell 0.25 degrees off. That offset is one cell in **magnitude**, but
+/// it applies to every output column whose back-trace crosses the seam — a band as wide as the
+/// displacement, up to about a dozen GFS columns over a 90-minute lead (#1278 r2, n15). Against a
+/// permanent 25-column stripe of no-data through Fiji it is still the right trade, and it is the
+/// whole of what the trade costs.
+///
+/// **The wrap is on the final lookup only, not on the trajectory integration** (n16):
+/// [`MotionField::sample`] clamps at the node grid's edge rather than wrapping, so a trajectory that
+/// crosses the antimeridian picks up the edge node's velocity for the rest of its walk. Harmless
+/// while the flow is smooth across the seam, which on a global grid it is — the field there is one
+/// continuous synoptic pattern, not a boundary — but it is stated rather than left as the half a
+/// reader would assume.
+///
+/// Latitude never wraps: a pole is not a neighbour of anything.
+pub fn advect(cells: &[u8], width: u32, height: u32, flow: &MotionField, dt_seconds: f64, wrap_x: bool) -> Vec<u8> {
     let count = width as usize * height as usize;
     assert_eq!(cells.len(), count, "advect: the field does not match its dimensions");
     if count == 0 {
@@ -684,8 +762,11 @@ pub fn advect(cells: &[u8], width: u32, height: u32, flow: &MotionField, dt_seco
                 x -= u * step;
                 y -= v * step;
             }
-            let source_col = x.floor();
+            let mut source_col = x.floor();
             let source_row = y.floor();
+            if wrap_x && source_col.is_finite() {
+                source_col = source_col.rem_euclid(width as f32);
+            }
             *cell = if source_col >= 0.0 && source_row >= 0.0 && source_col < width as f32 && source_row < height as f32
             {
                 cells[source_row as usize * width as usize + source_col as usize]
@@ -699,55 +780,92 @@ pub fn advect(cells: &[u8], width: u32, height: u32, flow: &MotionField, dt_seco
 
 /// **Temporal interpolation between two known fields** — job B's whole mechanism.
 ///
-/// `earlier` and `later` are `dt_seconds` apart and `flow` is the motion between them; the result
-/// is the field at `offset_seconds` after `earlier`. Both inputs are carried to that instant along
-/// the same trajectories — the earlier one forwards, the later one backwards — and then combined by
-/// how close the target is to each.
+/// `earlier` and `later` are `dt_seconds` apart and `flow` is the motion between them; the result is
+/// the field at `offset_seconds` after `earlier`. **One of the two is carried to that instant along
+/// the flow — whichever is nearer it — and that carried field *is* the result.** The other is not
+/// advected, not sampled and not consulted.
 ///
-/// Advect-both-and-blend rather than blend-then-advect, and rather than blending the two *static*
-/// fields, because the two static fields have the same storm in two different places: averaging
-/// them produces two ghosts of it, one fading and one appearing, which is exactly the artefact this
-/// method exists to avoid. Once both are carried to the target instant the storm is in the same
-/// place in both and the combination is a genuine estimate of its intensity there.
+/// It used to advect both and blend them by time weight, and round 1 of #1278's review measured what
+/// that cost: over a real 30-minute morph, **22.6 % of wet cells carried an intensity code neither
+/// parent held**, the wet area grew to 0.186 against a truth of 0.166, and the mean wet code fell to
+/// 5.53 against 6.26 — a bigger, fainter storm than anything it was made from, about one intensity
+/// band low. Every value was bounded by its two parents, so it was not fabrication in the strict
+/// sense; it was still a published intensity that no source stated for that cell. The rule this
+/// engine holds to is that **advection may move cells and must never invent values**, and a weighted
+/// mean of two quantized codes invents one. Blending the two *static* fields would have been worse
+/// again — same storm, two places, two ghosts — but that was never the choice on the table.
 ///
-/// The combination is a weighted mean **of the intensity codes**, which are a log-rate ladder, so it
-/// is a geometric mean of rates. That is the conventional choice for precipitation and it is the
-/// conservative one: arithmetic averaging of rates would let one heavy cell dominate its
-/// neighbourhood and brighten the interpolated frame relative to both of its parents. Where one
-/// side is no-data the other is taken whole rather than being averaged toward nothing; where both
-/// are, the result is no-data.
-pub fn morph(
-    earlier: &[u8],
-    later: &[u8],
-    width: u32,
-    height: u32,
-    flow: &MotionField,
-    dt_seconds: f64,
-    offset_seconds: f64,
-) -> Vec<u8> {
+/// **Missing propagates.** If the nearer parent's advected cell is no-data, so is the output —
+/// `OBCG_Spec.md` §3.2 requires it of every derivation without exception, and the alternative
+/// (taking the other parent whole) published 43,130 dry cells over ground the nearer field had no
+/// data for on that same morph. The cost is real and is the honest one: a morphed frame inherits the
+/// blind spot of whichever parent answers it, so the mosaic falls through to the next source there
+/// instead of asserting clear sky.
+pub fn morph(earlier: &[u8], later: &[u8], width: u32, height: u32, flow: &MotionField, span: Span) -> Vec<u8> {
     let count = width as usize * height as usize;
     assert_eq!(earlier.len(), count, "morph: the earlier field does not match its dimensions");
     assert_eq!(later.len(), count, "morph: the later field does not match its dimensions");
-    let weight = if dt_seconds > 0.0 { (offset_seconds / dt_seconds).clamp(0.0, 1.0) } else { 0.0 } as f32;
-    let forward = advect(earlier, width, height, flow, offset_seconds);
-    let backward = advect(later, width, height, flow, offset_seconds - dt_seconds);
-    forward
-        .into_iter()
-        .zip(backward)
-        .map(|(from_earlier, from_later)| combine(from_earlier, from_later, weight))
-        .collect()
+    // Only the parent that wins is advected. Since `nearer_is_later` picks one field for the whole
+    // frame rather than per cell, advecting the other would be work whose every output cell is
+    // discarded — which is also the honest way to read what this function does: it is *the nearer
+    // measurement, carried to the target instant*, not an average of two.
+    if nearer_is_later(span.weight()) {
+        advect(later, width, height, flow, span.offset_seconds - span.dt_seconds, span.wrap_x)
+    } else {
+        advect(earlier, width, height, flow, span.offset_seconds, span.wrap_x)
+    }
 }
 
-fn combine(from_earlier: u8, from_later: u8, weight: f32) -> u8 {
-    match (from_earlier == precip4::INTENSITY_NODATA, from_later == precip4::INTENSITY_NODATA) {
-        (true, true) => precip4::INTENSITY_NODATA,
-        (true, false) => from_later,
-        (false, true) => from_earlier,
-        (false, false) => {
-            let blended = f32::from(from_earlier) * (1.0 - weight) + f32::from(from_later) * weight;
-            (blended.round() as u8).min(precip4::INTENSITY_MAX)
+/// The gap a [`morph`] interpolates across, and where in it the target instant sits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    /// Seconds from the earlier parent to the later one.
+    pub dt_seconds: f64,
+    /// Seconds from the earlier parent to the target instant.
+    pub offset_seconds: f64,
+    /// Does the source raster close the circle in longitude? See [`advect`].
+    pub wrap_x: bool,
+}
+
+impl Span {
+    /// How far the target sits from the earlier parent toward the later one, in `0.0 ..= 1.0`.
+    pub fn weight(&self) -> f32 {
+        if self.dt_seconds > 0.0 {
+            (self.offset_seconds / self.dt_seconds).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
         }
     }
+}
+
+/// Which parent a morph takes its cells from.
+///
+/// `weight` is how far the target sits from the earlier parent toward the later one, so `< 0.5`
+/// takes the earlier and the rest takes the later — the same "nearest validity, ties to the later
+/// frame" rule [`crate::canonical::MosaicLayer::nearest`] uses one level up, for the same reason:
+/// the field valid after the target is about weather that has not happened yet, the one before it is
+/// already past.
+///
+/// **There is a visible discontinuity where the parent changes, and it is measured rather than
+/// waved away** (#1278 r2, R2-4). An earlier draft of this comment claimed there was none, on the
+/// argument that both parents are carried to the same instant and hold the same storm in the same
+/// place. The argument is half right — they do — but two radar composites an hour apart are not two
+/// views of one unchanged storm, and the residual shows up as a step in the published timeline
+/// exactly at the middle of every bracket. On a real hourly bracket over the derecho, wet/dry
+/// disagreement between consecutive frames is **0.0774 across the parent switch against 0.0577
+/// within one parent**, a 34 % excess (`tests/nowcast_skill.rs` measures and prints both). Before
+/// WXR9 the same two instants took the same nearest step and the figure was 0.0000 by construction,
+/// so the step is new.
+///
+/// It is accepted rather than removed, and the trade is stated plainly: a timeline that *moves* is
+/// the whole point of job B, and the alternative is the frozen four-frame staircase this replaced.
+/// The measurement above is on radar, which changes shape far faster than the hourly model fields
+/// this actually runs on, so it is an upper bound on what a rider sees over a GFS-only region.
+/// Removing it entirely means a scheme that never switches source — which is either blending (it
+/// invents values, `OBCG_Spec.md` §3.2 forbids it) or one parent for the whole bracket (which puts a
+/// bigger step at the bracket boundary instead of a smaller one in the middle).
+pub fn nearer_is_later(weight: f32) -> bool {
+    weight >= 0.5
 }
 
 #[cfg(test)]
@@ -809,7 +927,7 @@ mod tests {
         assert!((u * 600.0 - 24.0).abs() < 4.0, "eastward: {} cells / 600 s", u * 600.0);
         assert!((v * 600.0 - 12.0).abs() < 4.0, "northward: {} cells / 600 s", v * 600.0);
 
-        let forecast = advect(&later, width, height, &flow, 600.0);
+        let forecast = advect(&later, width, height, &flow, 600.0, false);
         let (cx, cy) = centroid(&forecast, width);
         let (tx, ty) = centroid(&blob(width, height, 108, 84, 18, 10), width);
         assert!((cx - tx).abs() < 3.0 && (cy - ty).abs() < 3.0, "advected to ({cx}, {cy}), expected ({tx}, {ty})");
@@ -874,7 +992,7 @@ mod tests {
             .expect("an unchanged field is a legitimate zero-motion answer");
         assert!(flow.max_speed_cells_s() * 600.0 < 2.0, "an unchanged field must not move");
         // Advecting by a zero field is the identity.
-        assert_eq!(advect(&still, width, height, &flow, 900.0), still);
+        assert_eq!(advect(&still, width, height, &flow, 900.0, false), still);
     }
 
     /// Advection never fabricates dry ground behind a departing field: what leaves the raster
@@ -889,7 +1007,7 @@ mod tests {
         for u in flow.u.iter_mut() {
             *u = 10.0 / 600.0;
         }
-        let out = advect(&cells, width, height, &flow, 600.0);
+        let out = advect(&cells, width, height, &flow, 600.0, false);
         // The western ten columns were traced back off the raster.
         for row in 0..height as usize {
             for col in 0..10usize {
@@ -910,18 +1028,39 @@ mod tests {
             .expect("a moving blob has motion");
         // A quarter, a half and three quarters of the way across the gap.
         for (offset, expected_x) in [(150.0, 66.0), (300.0, 72.0), (450.0, 78.0)] {
-            let between = morph(&earlier, &later, width, height, &flow, 600.0, offset);
+            let between = morph(
+                &earlier,
+                &later,
+                width,
+                height,
+                &flow,
+                Span { dt_seconds: 600.0, offset_seconds: offset, wrap_x: false },
+            );
             let (cx, _) = centroid(&between, width);
             assert!((cx - expected_x).abs() < 3.0, "at +{offset}s the blob is at {cx}, expected ~{expected_x}");
             // …and it is one blob, not two ghosts: nothing wet may remain at either parent's
-            // position, which is the artefact advect-both-then-blend exists to avoid.
+            // position, which is the artefact any scheme that blends two static fields produces.
             let (px, _) = centroid(&earlier, width);
             assert!((cx - px).abs() > 2.0 || offset < 200.0);
         }
         // The endpoints are the parents themselves, to within the nearest-neighbour resample.
-        let at_start = morph(&earlier, &later, width, height, &flow, 600.0, 0.0);
+        let at_start = morph(
+            &earlier,
+            &later,
+            width,
+            height,
+            &flow,
+            Span { dt_seconds: 600.0, offset_seconds: 0.0, wrap_x: false },
+        );
         assert!((centroid(&at_start, width).0 - centroid(&earlier, width).0).abs() < 2.0);
-        let at_end = morph(&earlier, &later, width, height, &flow, 600.0, 600.0);
+        let at_end = morph(
+            &earlier,
+            &later,
+            width,
+            height,
+            &flow,
+            Span { dt_seconds: 600.0, offset_seconds: 600.0, wrap_x: false },
+        );
         assert!((centroid(&at_end, width).0 - centroid(&later, width).0).abs() < 2.0);
     }
 
@@ -974,13 +1113,34 @@ mod tests {
     /// intensity ladder.
     #[test]
     fn the_temporal_combination_respects_no_data_and_the_ladder() {
-        assert_eq!(combine(precip4::INTENSITY_NODATA, precip4::INTENSITY_NODATA, 0.5), precip4::INTENSITY_NODATA);
-        assert_eq!(combine(precip4::INTENSITY_NODATA, 7, 0.5), 7);
-        assert_eq!(combine(7, precip4::INTENSITY_NODATA, 0.5), 7);
-        assert_eq!(combine(4, 8, 0.0), 4);
-        assert_eq!(combine(4, 8, 1.0), 8);
-        assert_eq!(combine(4, 8, 0.5), 6);
-        assert_eq!(combine(0, 10, 0.25), 3, "a weighted mean of codes is a geometric mean of rates");
-        assert!(combine(precip4::INTENSITY_MAX, precip4::INTENSITY_MAX, 0.5) <= precip4::INTENSITY_MAX);
+        // Selection, not blending: the nearer parent in time, with the tie to the later one.
+        assert!(!nearer_is_later(0.0) && !nearer_is_later(0.49));
+        assert!(nearer_is_later(0.5) && nearer_is_later(1.0));
+
+        // …and on real fields, every output cell is a value one parent actually held at that cell,
+        // including no-data. That is the whole property: no third value is ever created, and a
+        // parent's blind spot is inherited rather than papered over with the other parent's dry.
+        let (width, height) = (128u32, 96u32);
+        let earlier = blob(width, height, 40, 48, 16, 10);
+        let later = blob(width, height, 64, 48, 16, 10);
+        let flow = estimate_motion(&earlier, &later, width, height, 600.0, FlowParams::for_cells(1_000.0))
+            .expect("a moving blob has motion");
+        for offset in [60.0f64, 200.0, 300.0, 400.0, 540.0] {
+            let between = morph(
+                &earlier,
+                &later,
+                width,
+                height,
+                &flow,
+                Span { dt_seconds: 600.0, offset_seconds: offset, wrap_x: false },
+            );
+            let source = if nearer_is_later((offset / 600.0) as f32) { later.as_slice() } else { earlier.as_slice() };
+            for code in &between {
+                assert!(
+                    *code == precip4::INTENSITY_NODATA || source.contains(code),
+                    "+{offset}s published intensity {code}, which its parent never held anywhere"
+                );
+            }
+        }
     }
 }
