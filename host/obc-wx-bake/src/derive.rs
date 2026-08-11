@@ -93,11 +93,15 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// that **grows** through the ladder because the cells develop in place rather than arriving — and
 /// scored both packs at every lead and three thresholds, 45 comparisons:
 ///
-/// (An earlier version of this paragraph said "mean flow 10.4 m/s against the derecho's 29.5". Both
-/// figures were an artifact of sampling the motion field at node indices instead of cell positions;
-/// measured over the nodes that have rain under them it is 20.4 against 25.8, and the hard case is
-/// **not** the slow one. What makes it hard is that its field is continuously rebuilt rather than
-/// translated, which is what the rows above measure.)
+/// (This paragraph used to quote a mean flow speed, and that number was wrong **twice** — first
+/// "10.4 against 29.5", from sampling the motion field at node indices rather than cell positions,
+/// then "20.4 against 25.8", from converting a cells-per-second field to m/s with
+/// `header.cell_size_m`, which is the lattice's *label* — the metres 0.01 degrees of **latitude**
+/// spans — while a cell at 42 N is ~829 m east-west and both storms move nearly due east. It is
+/// 16.1 against 19.8, the hard case is **not** the slow one, and the speed is not what makes it
+/// hard: its field is continuously rebuilt rather than translated, which is what the rows above
+/// measure. The figure is not quoted here any more for the same reason it took three attempts to
+/// get right — nothing in this argument needs it.)
 ///
 /// * **exactly one crossover exists**, and it is the one that matters: on the hard case at
 ///   `>= 6 mm/h`, advected radar falls behind the model somewhere past +90 and is behind at +120;
