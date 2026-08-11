@@ -1096,7 +1096,7 @@
       }
     ],
     "rejection_equivalence": {
-      "why": "bbox_equivalence pins the happy path; this pins the other half, which is where two JSON stacks actually rot apart. Round 1 of #1271's review ran 28 hostile documents through both readers: they disagreed on five and hard-crashed on three. Every case below is a mutation of wx-manifest-v2.json that BOTH clients must answer identically, and none of them may crash, trap or panic \u2014 a manifest is the one document every rider fetches first, from a network.",
+      "why": "bbox_equivalence pins the happy path; this pins the other half, which is where two JSON stacks actually rot apart. Round 1 of #1271's review ran 28 hostile documents through both readers: they disagreed on five and hard-crashed on three. Every case below is a mutation of wx-manifest-v2.json that BOTH clients must answer identically, and none of them may crash, trap or panic \u2014 a manifest is the one document every rider fetches first, from a network. Round 2 added the integral-float family: the corpus pinned the NON-integral spelling of every number and the integral one at /version alone, so integral floats in every other field were the untested middle, and six of them diverged.",
       "apply": "Each case patches a fresh copy of wx-manifest-v2.json. A patch is an ordered list of {op, path, value}: op 'set' assigns value at the JSON Pointer path (creating a top-level key if absent), op 'remove' deletes the member or array element. Paths are RFC 6901 with no escapes needed.",
       "verdicts": "'rejected' = the parser refuses the whole document (which error it names is each language's business). 'accepted' = the document parses; 'skipped_frames' is how many frame entries the lenient half then refused, and defaults to 0. The document/entry strictness split is stated in both module docs; these cases pin the type coercions underneath it, which is what the docs could not say.",
       "cases": [
@@ -1472,6 +1472,117 @@
           ],
           "verdict": "accepted",
           "skipped_frames": 1
+        },
+        {
+          "name": "presence-hex-carries-a-sign",
+          "why": "FD1. `UInt8(_:radix:)` and `from_str_radix` both accept a leading '+', so '+0+0+0' parsed as a valid all-zero bitmap on one side and was refused on the other. Hex digits are hex digits; the shard list is emptied so the frame is otherwise well formed and only the sign decides",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/present",
+              "value": "+0+0+0"
+            },
+            {
+              "op": "set",
+              "path": "/frames/0/shards",
+              "value": []
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "presence-hex-without-a-sign-is-the-control",
+          "why": "the same document with plain zeros: accepted by both, so the case above is about the sign and not about the empty shard list",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/present",
+              "value": "000000"
+            },
+            {
+              "op": "set",
+              "path": "/frames/0/shards",
+              "value": []
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 0
+        },
+        {
+          "name": "cadence-frames-is-an-integral-float",
+          "why": "FD2, document level. 9.0 is not 9, and the count of frames is not a measurement",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/cadence/frames",
+              "value": 9.0
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "lattice-width-is-an-integral-float",
+          "why": "FD2, document level. A cell count is an integer; a lattice cannot be 36000.0 cells wide",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/lattice/width",
+              "value": 36000.0
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "manifest-max-age-is-an-integral-float",
+          "why": "FD2, document level. Seconds are whole here \u2014 the non-integral spelling was already pinned, and the integral one was the untested middle",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/freshness/manifest_max_age_s",
+              "value": 60.0
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "shard-bytes-is-an-integral-float",
+          "why": "FD2, entry level. An object length is a count of bytes, so the entry is refused and the frame with it \u2014 lenient, not fatal",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/shards/0/bytes",
+              "value": 120000.0
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "frame-offset-is-an-integral-float",
+          "why": "FD2, entry level, on the field that names the object. Same answer for the exponent spelling, which is why the rule is about the number's type and not about how it was written",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/offset_min",
+              "value": 0.0
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "an-unknown-field-may-be-a-float",
+          "why": "the counterweight to FD2, and the reason the rule is not 'no float anywhere in the document': a reader ignores fields it does not know, so a float in one must not fail the parse. A blanket refusal would be a fresh divergence in the opposite direction",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/lattice/future_measurement",
+              "value": 1.5
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 0
         }
       ]
     },
