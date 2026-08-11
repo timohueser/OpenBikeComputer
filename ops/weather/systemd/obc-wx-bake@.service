@@ -75,10 +75,23 @@ SyslogIdentifier=obc-wx-bake
 # TimeoutStartSec kill. That trades a soft, invisible condition for a hard one, in the direction
 # nobody wants.
 #
-# MemoryMax stays as the one number: a hard, fail-closed ceiling at the epic's stated budget and
-# 2.5x the measurement. An OOM-killed bake publishes nothing, exactly like any other failure, and
-# the previous generation stands. Raise it here (and only here), and only with a measurement.
-MemoryMax=1G
+# MemoryMax stays as the one number: a hard, fail-closed ceiling. An OOM-killed bake publishes
+# nothing, exactly like any other failure, and the previous generation stands. Raise it here (and
+# only here), and only with a measurement.
+#
+# **Raised 1G -> 3G on 2026-08-11, with the measurement** (#1251/#1278). The 1G was our own number
+# from #1274, set at 2.5x a 398 MB cycle, and it was never a property of the machine: this box has
+# 7.8 GB and 4 cores. WXR9's derivation stage roughly doubles the resident cell budget — a nowcast
+# frame is a full copy of its parent's window, 24.5 MB for MRMS and 25 MB for OPERA CIRRUS, held for
+# the whole cycle. `tests/nowcast_cost.rs` measures a full wet global cycle at **690-740 MB** at the
+# shipped +90 horizon (the spread is run-to-run allocator noise, not load), against 905 MB measured
+# at +120. Keeping 1G would have let a self-imposed ceiling, rather than evidence, decide how far
+# ahead riders can see.
+#
+# 3G is ~4x the measured cycle and leaves the service under 40 % of the box with the old v1 baker
+# still alongside. It is still a fail-closed ceiling and still the only one: nothing about the
+# reasoning above changes, only the number it is anchored to.
+MemoryMax=3G
 TasksMax=64
 # Bakes are background work on a box that must stay responsive to ssh.
 Nice=5

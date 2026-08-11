@@ -317,6 +317,51 @@ fn the_quality_flag_follows_the_frames_place_in_the_timeline_not_its_content() {
     assert_eq!(bundle.diagnostics.observed_shards, 1, "the per-shard bits stay a counter");
 }
 
+/// **…and the manifest's bits hold a veto over it, since WXR9** (#1251/#1278 m6).
+///
+/// The positional rule above was sufficient while an f0 could only be an observation or a real model
+/// step. It is not any more: the baker can now *derive* f0 by interpolating between two hourly model
+/// steps, which happens in every region with only the global floor whenever the cycle anchors off the
+/// hour — three quarters of them. Such a frame is published `FLAG_FORECAST` with every shard's
+/// manifest `observed` bit clear, and the temporal rule alone showed it to the rider as observed.
+///
+/// So: a frame may say observed only if at least one of its **published** shards says so. Not all of
+/// them — the mixed radar-and-model corridor is exactly what the rule above exists to keep calling
+/// observed — and a frame with no published shards at all keeps the temporal answer, which the test
+/// above pins for the all-dry case. The veto can only clear the flag, never set one.
+#[test]
+fn a_derived_f0_is_not_shown_as_an_observation() {
+    let now = 1_800_000_000;
+    let grid = test_grid();
+    // The corridor straddles all four shards of this grid; two of them is enough to make the point.
+    let (left, right) = (ShardId { col: 0, row: 1 }, ShardId { col: 1, row: 1 });
+
+    // 1. f0 painted only by model fill — a derived or interpolated frame, published as a forecast.
+    let modelled = shard_object(&grid, left, now, false, |_, _| 4);
+    let frames = vec![FrameSpec { offset_min: 0, valid_at: now, objects: vec![(left, modelled, false)] }];
+    let (mut http, mut client, corridor) = wired(&grid, &frames, now, now + 3_600);
+    let bundle = client.fetch(&mut http, &corridor, now, 1).expect("fetch");
+    assert_eq!(
+        frame_quality(&bundle.bytes, 0),
+        obc_formats::obcw::QUALITY_FORECAST,
+        "an f0 no shard of which was observed must not be shown as an observation"
+    );
+
+    // 2. The mixed corridor the positional rule exists for: radar over the rider, model across the
+    //    seam. One observed shard is enough, and the frame keeps saying observed.
+    let radar = shard_object(&grid, left, now, true, |_, _| 6);
+    let fill = shard_object(&grid, right, now, false, |_, _| 3);
+    let frames =
+        vec![FrameSpec { offset_min: 0, valid_at: now, objects: vec![(left, radar, true), (right, fill, false)] }];
+    let (mut http, mut client, corridor) = wired(&grid, &frames, now, now + 3_600);
+    let bundle = client.fetch(&mut http, &corridor, now, 1).expect("fetch");
+    assert_eq!(
+        frame_quality(&bundle.bytes, 0),
+        obc_formats::obcw::QUALITY_OBSERVED,
+        "one observed shard in the corridor keeps the frame an observation — the veto is not an AND"
+    );
+}
+
 /// **A failed shard is a hole in its frame, not the loss of the frame.** Dropping the frame would
 /// throw away the shards that did arrive to punish the one that did not — and the hole cannot make
 /// an outage look rain-free, because no-data is a different code from dry all the way down.
