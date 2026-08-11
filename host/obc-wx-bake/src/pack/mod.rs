@@ -10,11 +10,15 @@
 //! ```
 //!
 //! The pack's central promise is **re-bakeability**, and it covers both halves: `service/` is what
-//! [`crate::cycle::run_cycle`] emits when its `Upstream` is [`crate::fetch::FixtureUpstream`]
+//! [`crate::canonical::run_cycle`] emits when its `Upstream` is [`crate::fetch::FixtureUpstream`]
 //! loaded from `upstream/` — the very seam the checked-in fixture cycles already use — and
 //! `truth/` is the same deal through [`crate::source::mrms::bake_observation`]. Neither is a
 //! hand-assembled artifact. A re-bake that differs by one byte is a bug in the baker, and
 //! [`crate::pack::rebake`] is what CI runs to say so.
+//!
+//! A pack bakes the real cycle over a **smaller lattice** ([`crate::pack::window::sub_lattice`]),
+//! not a crop of production objects: since #1246 the bakery publishes one global lattice in 24
+//! shards of 6,144 x 4,608 cells, and a shard is not a thing a repository can hold.
 //!
 //! Two facts about historical archives shape the format:
 //!
@@ -36,8 +40,8 @@
 
 pub mod archive;
 pub mod capture;
-pub mod crop;
 pub mod rebake;
+pub mod window;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -169,7 +173,7 @@ impl BboxUdeg {
 
 /// What a member is to the pack. Service members are the baker's own ingress and are always
 /// checked in; truth members feed the observed ladder and are recorded but usually not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Service,
@@ -253,13 +257,16 @@ pub struct TruthFrame {
 /// The bake parameters a re-bake must reproduce exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BakeParams {
-    /// The adapter the pack captures (`us` today — see `archive::supported_adapters`).
-    pub adapter: String,
-    /// The wall clock injected into the cycle. Discovery, run selection and staleness all read it.
+    /// The sources the pack bakes, in [`crate::source::MOSAIC_PRIORITY`] order (`mrms`, `hrrr`
+    /// today — see [`archive::SUPPORTED_SOURCES`]). A pack is a **subset** mosaic: it names the
+    /// sources whose upstream bytes it carries, and a replay builds the mosaic from exactly those.
+    pub sources: Vec<String>,
+    /// The wall clock injected into the cycle. Discovery and run selection both read it.
     pub now: String,
-    /// The crop applied to the **baked** output. `null` is a full-domain pack (hundreds of MB).
-    /// The raw `upstream/` bytes are never cropped — they must stay byte-identical to the archive.
-    pub bbox_udeg: Option<BboxUdeg>,
+    /// The ground the pack's own lattice covers. Required: a global cycle is not a thing a
+    /// repository can hold. The raw `upstream/` bytes are never cropped — they must stay
+    /// byte-identical to the archive.
+    pub bbox_udeg: BboxUdeg,
 }
 
 /// The observed ladder's shape.
@@ -282,9 +289,9 @@ pub struct Event {
     pub window_start: String,
     pub window_end: String,
     pub bake: BakeParams,
-    /// The ground the pack's baked frames actually answer for — the published product's bbox,
-    /// which is the intersection of its frames' windows after the crop. Stated rather than
-    /// inferred so a later pack drifting off the basemap is visible in the document.
+    /// The ground the pack's baked frames actually answer for — its lattice's own extent, which
+    /// is `bake.bbox_udeg` aligned outward to whole tiles. Stated rather than inferred so a later
+    /// pack drifting off the basemap is visible in the document.
     pub coverage_udeg: BboxUdeg,
     /// The `regions.toml` id of the map a simulator needs under this pack. See
     /// [`US_BASEMAP_REGION`].
@@ -310,10 +317,9 @@ impl Event {
             return Err(format!("event.json declares format {:?}, expected {FORMAT}", event.format));
         }
         // A pack document is untrusted input like any other: the bbox it carries goes straight
-        // into the crop's integer arithmetic, so it is checked here rather than where it lands.
-        if let Some(bbox) = event.bake.bbox_udeg {
-            bbox.validate().map_err(|error| format!("event.json: bake.bbox_udeg: {error}"))?;
-        }
+        // into the lattice window's integer arithmetic, so it is checked here rather than where it
+        // lands.
+        event.bake.bbox_udeg.validate().map_err(|error| format!("event.json: bake.bbox_udeg: {error}"))?;
         event.coverage_udeg.validate().map_err(|error| format!("event.json: coverage_udeg: {error}"))?;
         Ok(event)
     }
@@ -481,8 +487,7 @@ mod tests {
     #[test]
     fn an_event_document_carrying_an_impossible_bbox_is_refused() {
         let mut event = sample_event();
-        event.bake.bbox_udeg =
-            Some(BboxUdeg { south_udeg: 0, west_udeg: 0, north_udeg: i64::MAX, east_udeg: 1_000_000 });
+        event.bake.bbox_udeg = BboxUdeg { south_udeg: 0, west_udeg: 0, north_udeg: i64::MAX, east_udeg: 1_000_000 };
         let error = Event::from_json(event.to_json().as_bytes()).unwrap_err();
         assert!(error.contains("bake.bbox_udeg") && error.contains("off the planet"), "{error}");
 
@@ -511,14 +516,14 @@ mod tests {
             window_start: "2020-08-10T18:52:00Z".into(),
             window_end: "2020-08-10T20:52:00Z".into(),
             bake: BakeParams {
-                adapter: "us".into(),
+                sources: vec!["mrms".into(), "hrrr".into()],
                 now: "2020-08-10T18:52:00Z".into(),
-                bbox_udeg: Some(BboxUdeg {
+                bbox_udeg: BboxUdeg {
                     south_udeg: 40_500_000,
                     west_udeg: -96_500_000,
                     north_udeg: 43_500_000,
                     east_udeg: -90_000_000,
-                }),
+                },
             },
             coverage_udeg: US_BASEMAP_BBOX,
             basemap_region: US_BASEMAP_REGION.into(),

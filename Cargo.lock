@@ -3076,7 +3076,6 @@ dependencies = [
  "flate2",
  "grib",
  "hdf5-pure",
- "libc",
  "obc-crc",
  "obc-formats",
  "rayon",

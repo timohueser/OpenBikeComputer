@@ -17,16 +17,16 @@ struct OBCGridCodecTests {
 
     /// `specs/vectors/manifest.json`'s `grid.positives` block: name, byte length, object CRC-32.
     private static let positives: [(name: String, byteLength: Int, objectCRC: UInt32)] = [
-        ("grid-minimal-dry.obcg", 228, 0x2E08_A044),
-        ("grid-raw-tile.obcg", 308, 0xA1E6_1BAF),
-        ("grid-rle-tile.obcg", 196, 0x4879_AADD),
-        ("grid-rle-wins.obcg", 212, 0x8CDE_9C28),
-        ("grid-deflate-tile.obcg", 1_745, 0x5389_CB3F),
-        ("grid-deflate-padding-bits.obcg", 1_745, 0xBE31_481F),
-        ("grid-deflate-edge256.obcg", 2_178, 0x60CC_3040),
-        ("grid-nodata-tile.obcg", 195, 0x47F5_3E9A),
-        ("grid-multipage.obcg", 375, 0x446D_C053),
-        ("grid-edge-padding.obcg", 316, 0x0C5E_6E35),
+        ("grid-minimal-dry.obcg", 228, 0x5442_F251),
+        ("grid-raw-tile.obcg", 308, 0x5E5B_5311),
+        ("grid-rle-tile.obcg", 196, 0x3551_A5A4),
+        ("grid-rle-wins.obcg", 212, 0xD9AE_9866),
+        ("grid-deflate-tile.obcg", 1_745, 0xA222_3CC2),
+        ("grid-deflate-padding-bits.obcg", 1_745, 0x4F9A_BFE2),
+        ("grid-deflate-edge256.obcg", 2_178, 0x751F_EF24),
+        ("grid-nodata-tile.obcg", 195, 0x6864_F615),
+        ("grid-multipage.obcg", 375, 0xB8FB_4EB7),
+        ("grid-edge-padding.obcg", 316, 0x7603_7888),
     ]
 
     /// `manifest.json`'s `grid.positives` codec column: §5's choice rule, pinned per vector.
@@ -53,7 +53,9 @@ struct OBCGridCodecTests {
         "grid-invalid-deflate-noncanonical.obcg",
         "grid-invalid-dry-encoded.obcg", "grid-invalid-dry-sentinel-nonzero.obcg",
             "grid-invalid-dry-sentinel-edge-tile.obcg",
-        "grid-invalid-tile-crc.obcg", "grid-invalid-reserved.obcg", "grid-invalid-flags.obcg",
+        "grid-invalid-tile-crc.obcg", "grid-invalid-reserved.obcg",
+            "grid-invalid-reserved-provenance.obcg",
+        "grid-invalid-flags.obcg",
     ]
 
     private func fixture(_ name: String) throws -> Data {
@@ -84,8 +86,6 @@ struct OBCGridCodecTests {
             let header = try OBCGridCodec.validate(bytes)
             #expect(Int(header.totalLength) == bytes.count)
             #expect(header.objectCRC32 == positive.objectCRC, "object CRC drift for \(positive.name)")
-            #expect(header.productID != 0)
-            #expect(header.tier != 0)
             #expect(header.validAtUnixSeconds >= header.referenceTimeUnixSeconds)
         }
     }

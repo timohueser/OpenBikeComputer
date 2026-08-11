@@ -1,8 +1,13 @@
 //! OBCG v1 published precipitation grid object: byte authority for `specs/OBCG_Spec.md`.
 //!
-//! One OBCG object is exactly one grid frame — one product, one real UTC valid time, one regular
-//! latitude/longitude window. The multi-frame table lives in the service manifest, never inside
-//! an object, so heterogeneous per-frame geometry composes with no resampling by construction.
+//! One OBCG object is exactly one grid frame — one real UTC valid time, one regular
+//! latitude/longitude window of the one published lattice. The frame set, its keys and its
+//! integrity data live in the service manifest, never inside an object.
+//!
+//! An object carries **no provenance**: no product id, no tier, no source label. The baker
+//! normalises every source onto one lattice and the dataset is what it publishes, so there is
+//! nothing to name and nothing to select between (#1246). Bytes 12-13 of the header are reserved
+//! and MUST be zero.
 //!
 //! The layout is built for HTTP Range consumers: a fixed self-CRC'd header, then a paged tile
 //! directory whose pages verify independently, then tightly packed tile payloads. Corridor
@@ -41,8 +46,10 @@ pub const HDR_MAGIC: usize = 0;
 pub const HDR_VERSION: usize = 4;
 pub const HDR_HEADER_LEN: usize = 6;
 pub const HDR_TOTAL_LEN: usize = 8;
-pub const HDR_PRODUCT_ID: usize = 12;
-pub const HDR_TIER: usize = 13;
+/// Bytes 12-13: the old Product ID / Tier pair. Reserved and zero since #1246 deleted the
+/// multi-product path — the concept is gone, and the two bytes stay reserved rather than being
+/// reassigned, because the header is fixed-offset and nothing is short of room.
+pub const HDR_RESERVED_PROVENANCE: usize = 12;
 pub const HDR_FLAGS: usize = 14;
 pub const HDR_VALID_AT: usize = 16;
 pub const HDR_REFERENCE_TIME: usize = 24;
@@ -74,35 +81,6 @@ pub const FLAG_OBSERVED: u16 = 1 << 0;
 pub const FLAG_FORECAST: u16 = 1 << 1;
 pub const FLAG_KNOWN_MASK: u16 = FLAG_OBSERVED | FLAG_FORECAST;
 
-/// Product registry. Appending an id is a spec-table addition, not a version bump; a consumer
-/// MUST NOT reject an unknown nonzero id — selection policy is manifest data, and this field is
-/// provenance.
-pub const PRODUCT_DWD_RV: u8 = 1;
-pub const PRODUCT_ICON_EU: u8 = 2;
-pub const PRODUCT_MRMS: u8 = 3;
-pub const PRODUCT_HRRR: u8 = 4;
-pub const PRODUCT_GFS: u8 = 5;
-/// The one canonical mosaic dataset: every source normalised onto the global 0.01 degree lattice
-/// by the baker, best available in every cell, no provenance carried (#1242). The five codes
-/// above and the two below are the per-source products it replaces.
-pub const PRODUCT_MOSAIC: u8 = 6;
-/// EUMETNET OPERA, the European radar pair (#1245). Source provenance only: these never reach a
-/// published object once the mosaic is the dataset, and WXR7 #1246 deletes the whole registry.
-pub const PRODUCT_OPERA_CIRRUS: u8 = 7;
-pub const PRODUCT_OPERA_NIMBUS: u8 = 8;
-pub const PRODUCT_EXPERIMENTAL: u8 = 255;
-
-pub const TIER_RADAR: u8 = 1;
-pub const TIER_MODEL: u8 = 2;
-pub const TIER_FLOOR: u8 = 3;
-/// The canonical mosaic's tier, and the honest answer to "which tier is a global mosaic?" —
-/// **none of them** (#1243). A mosaic frame is 1 km radar over Germany and 27.75 km model over the
-/// Pacific in the same object, so `TIER_RADAR` would be the same category of untruth `cell_size_m`
-/// was retired for in #1242. The header slot is fixed and must be nonzero, so the field gets a code
-/// that means "this object is not a member of any tier"; nothing may branch on it, and manifest v2
-/// carries no tier at all.
-pub const TIER_MOSAIC: u8 = 4;
-
 /// Tile codec ids (spec §4.1/§5). `0` and `1` are [`crate::precip4`]'s shared raw4/RLE4 pair —
 /// the identical two bytes OBCW uses. `2` is OBCG-only: raw DEFLATE (RFC 1951, no wrapper) over
 /// the tile's raw4 nibble image, decoded by this module and by nothing on the device.
@@ -123,7 +101,6 @@ pub enum DecodeError {
     TileCrc,
     Reserved,
     Flags,
-    Product,
     Timestamp,
     Geography,
     Paging,
@@ -146,8 +123,6 @@ pub enum EncodeError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     pub total_len: u32,
-    pub product_id: u8,
-    pub tier: u8,
     pub flags: u16,
     /// Real upstream UTC frame validity timestamp; never an ordinal or a re-stamped fetch time.
     pub valid_at: i64,
@@ -281,8 +256,6 @@ impl TileEntry {
 /// tiles; handing it raw cells keeps every canonicality decision inside the byte authority.
 #[derive(Debug)]
 pub struct FrameInput<'a> {
-    pub product_id: u8,
-    pub tier: u8,
     pub flags: u16,
     pub valid_at: i64,
     pub reference_time: i64,
@@ -369,13 +342,14 @@ pub fn decode_header(bytes: &[u8; HEADER_LEN]) -> Result<Header, DecodeError> {
     if rd_u32(bytes, HDR_HEADER_CRC32)? != header_crc(bytes) {
         return Err(DecodeError::HeaderCrc);
     }
-    if rd_u16(bytes, HDR_RESERVED0)? != 0 || bytes[HDR_RESERVED..].iter().any(|&byte| byte != 0) {
+    if rd_u16(bytes, HDR_RESERVED_PROVENANCE)? != 0
+        || rd_u16(bytes, HDR_RESERVED0)? != 0
+        || bytes[HDR_RESERVED..].iter().any(|&byte| byte != 0)
+    {
         return Err(DecodeError::Reserved);
     }
     let header = Header {
         total_len: rd_u32(bytes, HDR_TOTAL_LEN)?,
-        product_id: bytes[HDR_PRODUCT_ID],
-        tier: bytes[HDR_TIER],
         flags: rd_u16(bytes, HDR_FLAGS)?,
         valid_at: rd_i64(bytes, HDR_VALID_AT)?,
         reference_time: rd_i64(bytes, HDR_REFERENCE_TIME)?,
@@ -401,9 +375,6 @@ pub fn decode_header(bytes: &[u8; HEADER_LEN]) -> Result<Header, DecodeError> {
 }
 
 fn validate_header_semantics(header: &Header) -> Result<(), DecodeError> {
-    if header.product_id == 0 || header.tier == 0 {
-        return Err(DecodeError::Product);
-    }
     if header.flags & !FLAG_KNOWN_MASK != 0
         || (header.flags & FLAG_OBSERVED != 0) == (header.flags & FLAG_FORECAST != 0)
     {
@@ -625,8 +596,6 @@ pub fn decode_tile_cells(
 fn frame_header(input: &FrameInput<'_>) -> Result<Header, EncodeError> {
     let header = Header {
         total_len: 0,
-        product_id: input.product_id,
-        tier: input.tier,
         flags: input.flags,
         valid_at: input.valid_at,
         reference_time: input.reference_time,
@@ -645,9 +614,7 @@ fn frame_header(input: &FrameInput<'_>) -> Result<Header, EncodeError> {
         header_crc32: 0,
     };
     // Semantic validation minus the layout/total fields this function has not derived yet.
-    if header.product_id == 0
-        || header.tier == 0
-        || header.flags & !FLAG_KNOWN_MASK != 0
+    if header.flags & !FLAG_KNOWN_MASK != 0
         || (header.flags & FLAG_OBSERVED != 0) == (header.flags & FLAG_FORECAST != 0)
         || header.reference_time <= 0
         || header.valid_at < header.reference_time
@@ -842,8 +809,6 @@ pub fn encode_format(input: &FrameInput<'_>, scratch: &mut [u8], out: &mut [u8])
     put_u16(bytes, HDR_VERSION, VERSION);
     put_u16(bytes, HDR_HEADER_LEN, HEADER_LEN as u16);
     put_u32(bytes, HDR_TOTAL_LEN, total as u32);
-    bytes[HDR_PRODUCT_ID] = input.product_id;
-    bytes[HDR_TIER] = input.tier;
     put_u16(bytes, HDR_FLAGS, input.flags);
     put_i64(bytes, HDR_VALID_AT, input.valid_at);
     put_i64(bytes, HDR_REFERENCE_TIME, input.reference_time);
@@ -985,8 +950,6 @@ mod tests {
 
     fn frame(width: u32, height: u32, tile_edge: u16, entries_per_page: u16, cells: &[u8]) -> Vec<u8> {
         let input = FrameInput {
-            product_id: PRODUCT_DWD_RV,
-            tier: TIER_RADAR,
             flags: FLAG_OBSERVED,
             valid_at: 1_800_000_000,
             reference_time: 1_800_000_000,
@@ -1061,9 +1024,9 @@ mod tests {
         let mut corrupt = good.clone();
         *corrupt.last_mut().unwrap() ^= 1;
         assert_eq!(validated(&corrupt), Err(DecodeError::ObjectCrc));
-        // Header CRC.
+        // Header CRC: a header field changed with the CRC left stale.
         let mut corrupt = good.clone();
-        corrupt[HDR_TIER] = TIER_MODEL;
+        put_u16(&mut corrupt, HDR_CELL_SIZE_M, 2_226);
         assert_eq!(validated(&corrupt), Err(DecodeError::HeaderCrc));
         // Page CRC.
         let mut corrupt = good.clone();
@@ -1074,6 +1037,32 @@ mod tests {
         let hcrc = header_crc(header_bytes);
         put_u32(&mut corrupt, HDR_HEADER_CRC32, hcrc);
         assert_eq!(validated(&corrupt), Err(DecodeError::PageCrc));
+    }
+
+    /// Bytes 12-13 held the Product ID and Tier until #1246 deleted the multi-product path. They
+    /// are reserved now, and the encoder writes zero — so an object claiming provenance in them is
+    /// refused as a reserved-byte violation rather than being silently tolerated as "an unknown
+    /// product id a consumer must not reject". That distinction is the deletion: the field does not
+    /// mean anything any more, so a value there is a malformed object.
+    #[test]
+    fn the_old_provenance_bytes_are_reserved_and_must_be_zero() {
+        let mut cells = vec![0u8; 40 * 40];
+        cells[0] = 6;
+        let good = frame(40, 40, 16, 2, &cells);
+        assert_eq!(&good[HDR_RESERVED_PROVENANCE..HDR_RESERVED_PROVENANCE + 2], &[0, 0]);
+        for byte in 0..2 {
+            let mut corrupt = good.clone();
+            corrupt[HDR_RESERVED_PROVENANCE + byte] = 1;
+            // Honest CRCs, so only the reserved rule can be doing the rejecting.
+            put_u32(&mut corrupt, HDR_OBJECT_CRC32, 0);
+            put_u32(&mut corrupt, HDR_HEADER_CRC32, 0);
+            let object = object_crc(&corrupt);
+            put_u32(&mut corrupt, HDR_OBJECT_CRC32, object);
+            let header_bytes: &[u8; HEADER_LEN] = corrupt[..HEADER_LEN].try_into().unwrap();
+            let crc = header_crc(header_bytes);
+            put_u32(&mut corrupt, HDR_HEADER_CRC32, crc);
+            assert_eq!(validated(&corrupt), Err(DecodeError::Reserved), "byte {}", HDR_RESERVED_PROVENANCE + byte);
+        }
     }
 
     #[test]
@@ -1297,8 +1286,6 @@ mod tests {
 
         // The cheap producer-side bound is a real bound, and slack enough to hold the object.
         let input = FrameInput {
-            product_id: PRODUCT_DWD_RV,
-            tier: TIER_RADAR,
             flags: FLAG_OBSERVED,
             valid_at: 1_800_000_000,
             reference_time: 1_800_000_000,

@@ -7,14 +7,13 @@
 //! decreases). The native grid is already regular lat/lon, so "reprojection" is the identity;
 //! no smoothing, no resampling.
 
-use obc_formats::obcg::{FLAG_FORECAST, PRODUCT_ICON_EU, TIER_MODEL};
+use obc_formats::obcg::FLAG_FORECAST;
 use obc_formats::precip4;
 
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_bzip2_field, DecodedField, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX, MAX_COMPRESSED_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource};
 
 pub const ID: &str = "icon-eu";
 
@@ -99,13 +98,7 @@ impl Adapter for IconEu {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
         GEOMETRY.validate()?;
         // Newest complete run: every retained lead (plus the f000 baseline) must exist before a
         // run is selectable (WX1). Candidates are probed newest-first.
@@ -120,20 +113,6 @@ impl Adapter for IconEu {
             break;
         }
         let run = selected.ok_or("no complete ICON-EU run among the recent cycles")?;
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        // Upstream regression: the newest complete run is older than the one already published
-        // (files withdrawn upstream). Never re-bake backwards — reference_time and the staleness
-        // deadline must not move into the past while published frames stand.
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "icon-eu: newest complete run {run} is older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
 
         // Fetch and decode the cumulative fields, then de-accumulate consecutive pairs.
         let mut previous_field: Option<(u32, DecodedField)> = None;
@@ -161,17 +140,7 @@ impl Adapter for IconEu {
             }
             previous_field = Some((lead, field));
         }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
-            id: ID,
-            product_code: PRODUCT_ICON_EU,
-            tier: TIER_MODEL,
-            geometry: GEOMETRY,
-            reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
-            attribution: ATTRIBUTION,
-            upstream_etag: None,
-            frames,
-        })))
+        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
     }
 }
 
@@ -195,11 +164,5 @@ pub fn deaccumulate(earlier: &DecodedField, later: &DecodedField, run: i64, lead
         // One hour between interval ends, so the mm delta is numerically an mm/h rate.
         cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
     }
-    Ok(BakedFrame {
-        offset_min: lead * 60,
-        valid_at: run + i64::from(lead) * 3_600,
-        flags: FLAG_FORECAST,
-        source: None,
-        cells,
-    })
+    Ok(BakedFrame { offset_min: lead * 60, valid_at: run + i64::from(lead) * 3_600, flags: FLAG_FORECAST, cells })
 }

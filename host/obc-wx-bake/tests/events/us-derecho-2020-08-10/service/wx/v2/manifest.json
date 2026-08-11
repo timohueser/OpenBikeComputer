@@ -1,0 +1,176 @@
+{
+  "version": 2,
+  "generation": "20200810T1845Z",
+  "generated_at": "2020-08-10T18:52:00Z",
+  "reference_time": "2020-08-10T18:45:00Z",
+  "key_prefix": "wx/v2",
+  "previous_generations": [],
+  "lattice": {
+    "south_lat_udeg": 38000000,
+    "west_lon_udeg": -98080000,
+    "cell_udeg": 10000,
+    "width": 1024,
+    "height": 768,
+    "shard_width": 1024,
+    "shard_height": 768,
+    "shard_cols": 1,
+    "shard_rows": 1,
+    "tile_edge": 256,
+    "entries_per_page": 128,
+    "cell_size_m": 1113,
+    "covered_rows": {
+      "start": 0,
+      "end": 768
+    }
+  },
+  "cadence": {
+    "frame_step_min": 15,
+    "frames": 9,
+    "max_source_skew_s": 1800
+  },
+  "freshness": {
+    "manifest_max_age_s": 60,
+    "next_generation_expected_at": "2020-08-10T19:00:00Z",
+    "stale_after": "2020-08-10T20:45:00Z"
+  },
+  "attribution": [
+    {
+      "source_id": "mrms",
+      "text": "Source: NOAA/NCEP MRMS PrecipRate; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "source_id": "hrrr",
+      "text": "Source: NOAA/NCEP HRRR subhourly PRATE; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    }
+  ],
+  "frames": [
+    {
+      "offset_min": 0,
+      "valid_at": "2020-08-10T18:45:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 35904,
+          "object_crc32": "0x5A3FFFD7",
+          "observed": true
+        }
+      ]
+    },
+    {
+      "offset_min": 15,
+      "valid_at": "2020-08-10T19:00:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 35904,
+          "object_crc32": "0x8289BAEC",
+          "observed": true
+        }
+      ]
+    },
+    {
+      "offset_min": 30,
+      "valid_at": "2020-08-10T19:15:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 35904,
+          "object_crc32": "0x398B2655",
+          "observed": true
+        }
+      ]
+    },
+    {
+      "offset_min": 45,
+      "valid_at": "2020-08-10T19:30:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 6279,
+          "object_crc32": "0x5D137587",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 60,
+      "valid_at": "2020-08-10T19:45:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 6381,
+          "object_crc32": "0xC4D5582F",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 75,
+      "valid_at": "2020-08-10T20:00:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 6811,
+          "object_crc32": "0xAC3F7F3F",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 90,
+      "valid_at": "2020-08-10T20:15:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 6858,
+          "object_crc32": "0xD79BD8F3",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 105,
+      "valid_at": "2020-08-10T20:30:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 6961,
+          "object_crc32": "0x0412D84D",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 120,
+      "valid_at": "2020-08-10T20:45:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 6824,
+          "object_crc32": "0xE6665750",
+          "observed": false
+        }
+      ]
+    }
+  ]
+}
