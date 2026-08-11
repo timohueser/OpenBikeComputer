@@ -112,11 +112,14 @@ fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
 /// projected area (exterior minus holes) is below `min_area_px` square pixels at
 /// `mpp` meters-per-pixel, so it should be dropped from this tier.
 ///
-/// **Lines are never culled.** OSM ways are fragmented — one road is stored as
-/// many short segments — so an extent test on each segment drops a road's
-/// shortest links and leaves it patched with holes. There's no per-segment size
-/// that means anything without stitching the ways back together, so zoomed-out
-/// line density is left to `min_lod` (only major classes reach the coarse tiers).
+/// **Lines are never culled here.** OSM ways are fragmented — one road is stored
+/// as many short segments — so an extent test on each segment drops a road's
+/// shortest links and leaves it patched with holes. There is no per-segment size
+/// that means anything *before* the ways are stitched back together. Once
+/// [`crate::merge::merge_lines_with`] has stitched a class into connected
+/// polylines a record's length does mean something, and a tier may then drop the
+/// short leftovers by their own measure — see [`line_below`], which is the only
+/// place a line is ever culled.
 /// A `Multi` culls only if *every* non-empty part is a cullable polygon.
 ///
 /// Degrees convert to meters with [`M_PER_DEG`] and the `cos(lat)` longitude
@@ -173,6 +176,57 @@ pub fn footprint_below(g: &Geom, mpp: f64, min_area_px: f64) -> bool {
             area.max(0.0) * lon_ppd * lat_ppd < min_area_px
         }
     }
+}
+
+/// A line geometry's length in **kilometres**. Polygons and empties have no length (`0.0`); a
+/// `Multi` sums its parts, so one feature's several strands measure as the one road they are.
+///
+/// Degrees convert with [`M_PER_DEG`] and the `cos(lat)` longitude foreshortening at each
+/// *segment's* mid-latitude — the same basis as [`footprint_area_px`], taken per segment rather
+/// than per feature because a line may run far enough north-south for one factor to be wrong.
+pub fn line_length_km(g: &Geom) -> f64 {
+    match g {
+        Geom::Empty | Geom::Polygon { .. } => 0.0,
+        Geom::Multi(parts) => parts.iter().map(line_length_km).sum(),
+        Geom::Line(c) => {
+            let deg: f64 = c
+                .windows(2)
+                .map(|w| {
+                    let ((x1, y1), (x2, y2)) = (w[0], w[1]);
+                    let cos_lat = (0.5 * (y1 + y2)).to_radians().cos().abs().max(0.01);
+                    ((x2 - x1) * cos_lat).hypot(y2 - y1)
+                })
+                .sum();
+            deg * M_PER_DEG / 1000.0
+        }
+    }
+}
+
+/// Post-stitch length cull for a coarse LOD: `true` when a **line** feature is shorter than
+/// `min_km`, so this tier should drop it.
+///
+/// The counterpart to [`footprint_below`], and subject to the same caveat from the other side:
+/// this is only meaningful **after** [`crate::merge::merge_lines_with`] has stitched a class's
+/// fragments into connected polylines. Run on raw OSM ways it would do exactly the damage that
+/// function's docs warn about. Run on stitched records it drops the short *leftovers* — the
+/// junction stubs and roundabout arms that no through-line could absorb — and keeps the
+/// long-distance skeleton, which is the whole reason a road class is on a far-zoom tier.
+///
+/// Never culls a polygon, so a `Multi` carrying any polygon part is safe by construction:
+/// `min_km <= 0` (the default ⇒ off), empties and anything with a polygon in it all return
+/// `false`.
+pub fn line_below(g: &Geom, min_km: f64) -> bool {
+    if min_km <= 0.0 || g.is_empty() {
+        return false;
+    }
+    fn line_only(g: &Geom) -> bool {
+        match g {
+            Geom::Line(_) => true,
+            Geom::Multi(parts) => parts.iter().all(|p| p.is_empty() || line_only(p)),
+            Geom::Empty | Geom::Polygon { .. } => false,
+        }
+    }
+    line_only(g) && line_length_km(g) < min_km
 }
 
 /// Drop interior rings (holes) whose projected area is below `min_area_px` square pixels at `mpp`,
@@ -1554,5 +1608,55 @@ mod tests {
         assert_eq!(strip_small_holes(&mut square(0.001), 18.0, 4.0), 0, "a solid polygon has no holes to trim");
         let mut multi = Geom::Multi(vec![holed(vec![tiny_hole()]), Geom::Line(ring(&[(0.0, 0.0), (0.01, 0.0)]))]);
         assert_eq!(strip_small_holes(&mut multi, 18.0, 4.0), 1, "Multi recurses: the polygon part's tiny hole goes");
+    }
+
+    /// A degree of latitude is [`M_PER_DEG`]; a degree of longitude is that times `cos(lat)`. At
+    /// 48° N the two axes must therefore measure differently for the same degree span, which is
+    /// the whole reason the length is not a plain euclidean distance in degrees.
+    #[test]
+    fn line_length_km_uses_latitude_foreshortening() {
+        let north = Geom::Line(vec![(7.8, 47.99), (7.8, 48.00)]);
+        assert!((line_length_km(&north) - 1.1132).abs() < 1e-3, "0.01° of latitude is 1.1132 km");
+        let east = Geom::Line(vec![(7.8, 48.0), (7.81, 48.0)]);
+        let expect = 1.1132 * 48.0_f64.to_radians().cos();
+        assert!((line_length_km(&east) - expect).abs() < 1e-3, "0.01° of longitude is that shrunk by cos(48°)");
+        // Segments accumulate, and a Multi is one road measured across its strands.
+        let bent = Geom::Line(vec![(7.8, 47.99), (7.8, 48.00), (7.8, 48.01)]);
+        assert!((line_length_km(&bent) - 2.0 * 1.1132).abs() < 1e-3);
+        let multi = Geom::Multi(vec![north.clone(), north.clone()]);
+        assert!((line_length_km(&multi) - 2.0 * 1.1132).abs() < 1e-3);
+    }
+
+    /// Areas are not lengths: a polygon has no length, so the cull can never reach one.
+    #[test]
+    fn line_length_km_ignores_polygons_and_empties() {
+        assert_eq!(line_length_km(&square(0.01)), 0.0);
+        assert_eq!(line_length_km(&Geom::Empty), 0.0);
+        assert_eq!(line_length_km(&Geom::Line(vec![])), 0.0, "a degenerate line has no segments");
+    }
+
+    /// The threshold is a strict `<`, and `0.0` is off — the default, and what makes a tier
+    /// without the knob pack exactly as it did before.
+    #[test]
+    fn line_below_thresholds_and_disabled() {
+        let km = |n: f64| Geom::Line(vec![(7.8, 48.0), (7.8, 48.0 + n / 111.32)]);
+        assert!(line_below(&km(0.4), 0.5), "shorter than the threshold culls");
+        assert!(!line_below(&km(0.6), 0.5), "longer does not");
+        assert!(!line_below(&km(0.4), 0.0), "0 km is off");
+        assert!(!line_below(&km(0.4), -1.0), "so is a negative");
+        assert!(!line_below(&Geom::Empty, 0.5), "an empty is not a short line");
+    }
+
+    /// The safety property the pipeline leans on: a polygon is never culled by length, and a
+    /// `Multi` carrying one is safe by the same token however short its line parts are.
+    #[test]
+    fn line_below_never_culls_a_polygon() {
+        let tiny = square(0.0001);
+        assert!(!line_below(&tiny, 1000.0), "a polygon has no length but is never 'short'");
+        let stub = Geom::Line(vec![(7.8, 48.0), (7.8001, 48.0)]);
+        assert!(line_below(&stub, 0.5), "the bare stub culls");
+        assert!(!line_below(&Geom::Multi(vec![stub.clone(), tiny]), 0.5), "but not once a polygon rides along");
+        assert!(line_below(&Geom::Multi(vec![stub.clone(), Geom::Empty]), 0.5), "empties do not protect it");
+        assert!(line_below(&Geom::Multi(vec![stub.clone(), stub]), 0.5), "two stubs still measure under 0.5 km");
     }
 }

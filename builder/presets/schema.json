@@ -15,8 +15,8 @@
         "palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the web builder picker and the device agree. OSM/Komoot conventions on a cream 'paper' base (the only near-white tint the gamut offers): warm = through-roads, white with a grey casing = local streets, brown = trails, indigo = cycleways (a cycling computer's key feature, lifted out of the brown trail group), green = vegetation, azure = water, light grey = built-up landuse fill (residential / commercial / industrial / retail — towns read as a quiet grey wash), with darker grey buildings on top at the closest zoom only. Verify the gamut with `obc-sim --palette`."
     },
     "lods": [
-        {"max_mpp": null, "simplify": 2200, "min_area_px": 250, "coverage_simplify": true},
-        {"max_mpp": 400, "simplify": 700, "min_area_px": 700, "coverage_simplify": true},
+        {"max_mpp": null, "simplify": 3000, "min_area_px": 350, "coverage_simplify": true, "min_line_km": 1.0},
+        {"max_mpp": 400, "simplify": 1500, "min_area_px": 1000, "coverage_simplify": true, "min_line_km": 0.5},
         {"max_mpp": 120, "simplify": 200, "min_area_px": 50},
         {"max_mpp": 30, "simplify": 100, "min_area_px": 50},
         {"max_mpp": 16, "simplify": 40, "min_area_px": 30},
@@ -31,7 +31,7 @@
             "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 2, "priority": 2},
             "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2},
             "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 2, "priority": 2},
-            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 2, "priority": 2},
+            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2},
             "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 2, "priority": 2},
             "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 4, "priority": 2},
             "secondary_link": {"z_index": 43, "color": "0xFD40", "weight": 1, "min_lod": 4, "priority": 2},

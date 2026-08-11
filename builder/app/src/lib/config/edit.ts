@@ -17,7 +17,7 @@ export function autoSimplify(config: PackConfig, i: number): number {
 export function editLodTier(
     config: PackConfig,
     i: number,
-    field: "max_mpp" | "simplify" | "min_area_px",
+    field: "max_mpp" | "simplify" | "min_area_px" | "min_line_km",
     value: number,
 ) {
     if (field === "max_mpp" && i > 0 && config.lods[i - 1].simplify === config.lods[i].max_mpp) {
