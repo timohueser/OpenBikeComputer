@@ -305,7 +305,7 @@ mod tests {
         assert_eq!((rect.rows, rect.cols), (2, 2));
     }
 
-    /// The Grimsel bbox `repack.sh` pins, at the v1 pairing — the shape the sidecar assets were
+    /// The Grimsel bbox `build-map-package.sh` pins, at the v1 pairing — the shape the sidecar assets were
     /// sized around, and the reason they are baked at a smaller cell.
     #[test]
     fn the_grimsel_box_straddles_four_v1_cells() {

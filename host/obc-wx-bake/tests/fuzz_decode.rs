@@ -6,7 +6,7 @@
 //!   byte-range GRIB2 complex-packing paths of HRRR and GFS, and the tiled-deflate GeoTIFF path
 //!   of the two OPERA composites.
 
-use std::path::PathBuf;
+#![cfg(feature = "external-fixtures")]
 
 use obc_wx_bake::grib::{decode_bzip2_field, decode_field, decode_gzip_field};
 use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms};
@@ -18,7 +18,16 @@ const RV_NOW: i64 = 1_775_745_600;
 use obc_wx_bake::{idx, tiff};
 
 fn fixture(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    if name.starts_with("opera-") {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+        return std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+    let package = if name.starts_with("composite_rv_") || name.starts_with("icon-eu-") {
+        "weather-dwd-icon"
+    } else {
+        "weather-noaa"
+    };
+    let path = obc_fixtures::root().join(package).join(name);
     std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 

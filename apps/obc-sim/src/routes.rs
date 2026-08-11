@@ -288,9 +288,9 @@ mod tests {
     use super::*;
 
     /// The committed sample OBCR the folder store seeds from (twice, for a ≥2-route catalog).
-    const ROUTE: &[u8] = include_bytes!("../assets/grimsel-climb.obcr");
+    const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
     /// …and the GPX it is the conversion of. The pair is the asset's provenance (see below).
-    const ROUTE_GPX: &[u8] = include_bytes!("../assets/grimsel-climb.gpx");
+    const ROUTE_GPX: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx");
     /// The route name `import_gpx` derives from the GPX's file stem.
     const ROUTE_NAME: &str = "grimsel-climb";
 
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     #[ignore]
     fn regenerate_committed_route_asset() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.obcr");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
         std::fs::write(path, convert_the_committed_gpx()).unwrap();
     }
 

@@ -10,6 +10,7 @@ description = "OBCR route format reader + GPX converter (no_std) — shared by t
 # simulator — enables this to build a zeroed `NavScratch` straight on the heap; the device never
 # does (its scratch is a `.bss` static), so `alloc` stays off by default.
 alloc = []
+external-fixtures = []
 
 [dependencies]
 heapless = "0.8"
@@ -27,3 +28,4 @@ obc-reader = { path = "../obc-reader" }
 obc-pack = { path = "../../host/obc-pack" }
 # Shared OBCM byte builder — the corridor tests need a real packed POI quadtree to query.
 obcm-testkit = { path = "../../host/obcm-testkit" }
+obc-fixtures = { path = "../../host/obc-fixtures" }
