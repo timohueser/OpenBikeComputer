@@ -2,7 +2,8 @@
 //!
 //! The newest run whose whole retained lead set exists is selected — never wall-clock
 //! arithmetic alone. Cumulative `TOT_PREC` is de-accumulated to hourly rates between
-//! consecutive leads of the same run; a negative difference within the packing-roundoff bound
+//! consecutive leads of the same run; each resulting hourly mean is valid at the interval
+//! midpoint, not at its end. A negative difference within the packing-roundoff bound
 //! is dry, anything larger fails the cycle (WX1's tightly bounded rule — no clamping of real
 //! decreases). The native grid is already regular lat/lon, so "reprojection" is the identity;
 //! no smoothing, no resampling.
@@ -37,11 +38,12 @@ pub const GEOMETRY: GridGeometry = GridGeometry {
     entries_per_page: 512,
 };
 
-/// Retained forward leads in hours. Twelve hourly frames cover +2 h of forward frames at any
-/// wall-clock moment before the staleness deadline: runs land at most ~4 h after their
-/// reference, the next run at latest ~10 h after, and `10 h + 2 h = 12 h`.
+/// Retained forward leads in hours. Because each hourly mean is valid at its midpoint, f012 is
+/// valid at +11.5 h. The staleness deadline below is therefore +9.5 h: up to that instant these
+/// frames cover the complete two-hour client window; after it ICON-EU falls through to GFS rather
+/// than claiming a half-hour of regional-model coverage it does not have.
 pub const LEADS_H: [u32; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-pub const STALENESS_SECONDS: i64 = 10 * 3_600;
+pub const STALENESS_SECONDS: i64 = 9 * 3_600 + 30 * 60;
 
 pub const ATTRIBUTION: Attribution = Attribution {
     text: "Source: Deutscher Wetterdienst (DWD), ICON-EU; modified/quantized by OpenBikeComputer",
@@ -139,7 +141,8 @@ impl Adapter for IconEu {
             }
             previous_field = Some((lead, field));
         }
-        // Hourly steps, like the floor: `derive::uniform_frames` fills the quarter hours between them.
+        // Hourly mean steps centred on their accumulation intervals; `derive::uniform_frames`
+        // fills the quarter hours between them.
         Ok(BakedSource {
             id: ID,
             geometry: GEOMETRY,
@@ -171,10 +174,26 @@ pub fn deaccumulate(earlier: &DecodedField, later: &DecodedField, run: i64, lead
         // One hour between interval ends, so the mm delta is numerically an mm/h rate.
         cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
     }
+    // This is the mean rate over `(lead - 1, lead]`, so its representative instant is the
+    // interval midpoint. Stamping it at the interval end shifts every feature 30 minutes late
+    // before the uniform-frame morph even starts.
     Ok(BakedFrame {
-        offset_min: lead * 60,
-        valid_at: run + i64::from(lead) * 3_600,
+        offset_min: lead * 60 - 30,
+        valid_at: run + i64::from(lead) * 3_600 - 1_800,
         class: SourceClass::Forecast,
         cells,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midpoint_steps_cover_two_hours_until_staleness() {
+        let last = i64::from(*LEADS_H.last().expect("retained leads")) * 3_600 - 1_800;
+        assert!(last >= STALENESS_SECONDS + 2 * 3_600);
+        assert_eq!(LEADS_H[0], 1);
+        assert!(LEADS_H.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    }
 }

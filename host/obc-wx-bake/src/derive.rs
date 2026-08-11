@@ -98,7 +98,7 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// then "20.4 against 25.8", from converting a cells-per-second field to m/s with
 /// `header.cell_size_m`, which is the lattice's *label* — the metres 0.01 degrees of **latitude**
 /// spans — while a cell at 42 N is ~829 m east-west and both storms move nearly due east. It is
-/// 16.1 against 19.8, the hard case is **not** the slow one, and the speed is not what makes it
+/// 15.6 against 19.4, the hard case is **not** the slow one, and the speed is not what makes it
 /// hard: its field is continuously rebuilt rather than translated, which is what the rows above
 /// measure. The figure is not quoted here any more for the same reason it took three attempts to
 /// get right — nothing in this argument needs it.)
@@ -111,13 +111,15 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// **The crossover is an interval, not a lead.** A point estimate off one realisation of one storm
 /// is worth less than it looks, so `tests/nowcast_skill_events.rs` block-bootstraps the gap (2,000
 /// draws over 192 blocks of 64 x 64 cells, which keeps rain's spatial correlation inside a block).
+/// This is uncertainty **within these two events**, not a claim of climatological significance:
+/// more independent holdout storms, especially European ones, are still required.
 /// On the hard case at `>= 6 mm/h`, as `model - nowcast`:
 ///
 /// | lead | gap | 95 % interval | verdict |
 /// |---|---|---|---|
-/// | +90 | -0.027 | [-0.050, -0.004] | nowcast ahead, **significant** |
-/// | +104 | +0.013 | [-0.024, +0.050] | **not significant** — the point estimate alone would say "crossed" |
-/// | +120 | +0.041 | [+0.008, +0.079] | model ahead, **significant** |
+/// | +90 | -0.026 | [-0.047, -0.001] | nowcast ahead, **significant** |
+/// | +104 | +0.010 | [-0.023, +0.047] | **not significant** — the point estimate alone would say "crossed" |
+/// | +120 | +0.037 | [+0.005, +0.075] | model ahead, **significant** |
 ///
 /// So the honest statement is that **the crossover lies between +90 and +120, and +90 is the last
 /// lead at which the nowcast is significantly ahead.** That is a stronger argument for this
@@ -295,7 +297,7 @@ pub fn uniform_frames(source: &mut BakedSource, times: CycleTimes) -> usize {
     }
     let width = source.geometry.width;
     let height = source.geometry.height;
-    let params = FlowParams::for_cells(f64::from(source.geometry.cell_size_m));
+    let params = FlowParams::for_geometry(&source.geometry);
     // The floor source's grid closes the circle, and it is the one row of the priority table with
     // nothing beneath it — see `flow::advect`'s `wrap_x` for why an unwrapped advection there would
     // reintroduce a permanent no-data stripe at the antimeridian.
@@ -465,19 +467,19 @@ pub fn radar_nowcast(source: &BakedSource, times: CycleTimes) -> Result<Option<B
         dt >= MIN_MOTION_DT_S as f64 && dt <= MAX_MOTION_DT_S as f64,
         "the motion baseline must be the observations' own interval"
     );
-    let params = FlowParams::for_cells(f64::from(source.geometry.cell_size_m));
+    let params = FlowParams::for_geometry(&source.geometry);
     let Some(motion) = flow::estimate_motion(&history.cells, &anchor.cells, width, height, dt, params) else {
         return Err("the observation pair carries no motion signal (a dry or unscanned field)".to_string());
     };
 
     let mut frames = Vec::new();
     for offset_min in times.offsets_min() {
-        if offset_min == 0 || offset_min > NOWCAST_MAX_LEAD_MIN {
+        if offset_min == 0 {
             continue;
         }
         let slot = times.slot(offset_min);
         let lead = slot.valid_at() - anchor.valid_at;
-        if lead <= 0 {
+        if lead <= 0 || lead > i64::from(NOWCAST_MAX_LEAD_MIN) * 60 {
             // The observation is *after* this frame's instant, which the anchoring rule allows for
             // the first slot or two. Advecting backwards would be a hindcast of an instant the
             // anchor frame already answers better than anything derived from it.
@@ -714,6 +716,37 @@ mod tests {
         // a nowcast from.
         assert!(nowcast.motion_history.is_empty());
         assert!(radar_nowcast(&nowcast, times).expect("no row").is_none());
+    }
+
+    /// The evidence-backed horizon is a maximum age of the observation, not a maximum cadence
+    /// label. An observation just before the cycle anchor makes the nominal +90 slot older than
+    /// 90 minutes and it must therefore fall through to the model.
+    #[test]
+    fn the_nowcast_cap_applies_to_actual_observation_age() {
+        let times = CycleTimes::anchored_at(0);
+        let observed_at = -180i64;
+        let mut radar = source(
+            crate::source::mrms::ID,
+            observed_at,
+            vec![BakedFrame {
+                offset_min: 0,
+                valid_at: observed_at,
+                class: SourceClass::Observation,
+                cells: blob(60, 96),
+            }],
+        );
+        radar.motion_history.push(BakedFrame {
+            offset_min: 0,
+            valid_at: observed_at - 600,
+            class: SourceClass::Observation,
+            cells: blob(36, 96),
+        });
+
+        let nowcast = radar_nowcast(&radar, times).expect("a moving field").expect("mrms has a nowcast row");
+        let last = nowcast.frames.last().expect("a last nowcast frame");
+        assert_eq!(last.valid_at, times.valid_at(NOWCAST_MAX_LEAD_MIN - FRAME_STEP_MIN));
+        assert!(last.valid_at - observed_at <= i64::from(NOWCAST_MAX_LEAD_MIN) * 60);
+        assert!(nowcast.frames.iter().all(|frame| frame.valid_at != times.valid_at(NOWCAST_MAX_LEAD_MIN)));
     }
 
     /// **The speed is the observed displacement over the observed interval, and nothing else.**

@@ -16,11 +16,10 @@
 //!
 //! So this adapter applies Marshall-Palmer and then divides by that measured ratio
 //! ([`super::opera::MAX_TO_SURFACE_RATIO`], equivalently `a_eff = 706.2` or -5.48 dBZ), leaving
-//! OPERA's declared 200/1.6 as the NIMBUS contract check. **That correction is an empirical
-//! anchor on one frame pair, not physics**, and `MAX_TO_SURFACE_RATIO`'s own doc records what
-//! would settle it properly: split the ratio by regime at 30 dBZ over a full day, and score both
-//! OPERA products against gauge-adjusted `dwd-rv` — which also answers whether CIRRUS belongs
-//! above or below `dwd-rv` in the mosaic.
+//! OPERA's declared 200/1.6 as the NIMBUS contract check. **That correction is empirical, not
+//! physics.** The follow-up 24-frame CIRRUS/NIMBUS/DWD pass is recorded in
+//! `docs/decisions/WX-opera-evidence-20260810.md`; it confirms that a roughly twofold correction
+//! is warranted and does not support replacing 2.2 or the source order yet.
 //!
 //! **Frames are flagged observed, and that is a "primarily" claim.** The composite's own metadata
 //! says some volume data is filled by Meteo France with a Lucas-Kanade advection

@@ -2,7 +2,7 @@
 //! GRIB objects.
 //!
 //! A NOAA HRRR subhourly object is ~200 MB and a GFS 0.25-degree object ~500 MB, of which the
-//! baker needs one 30-600 KB message. Every object is published beside a text index of
+//! baker needs one 30-700 KB message. Every object is published beside a text index of
 //! `record:offset:date:parameter:level:interval:` lines, so the exact message range is
 //! computable without downloading anything but the index. This is the mechanism WX1 pinned
 //! (AWS NODD only; NOMADS is deliberately never contacted).
@@ -36,9 +36,9 @@ pub const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 /// Resolve `needle` to the byte range spanning its matching records.
 ///
 /// `accepted_matches` lists the record counts the source contract allows — `&[1]` for a unique
-/// record, `&[1, 2]` for GFS's deliberately duplicated `APCP` entries (fetched as one span and
-/// proven identical after decode). `object_len` bounds the final record, which has no successor
-/// offset to end it.
+/// record, or a larger exact count for a deliberately duplicated upstream field fetched as one
+/// span and proven identical after decode. `object_len` bounds the final record, which has no
+/// successor offset to end it.
 pub fn resolve(
     index: &str,
     needle: &str,
