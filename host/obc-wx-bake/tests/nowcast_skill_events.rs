@@ -58,6 +58,24 @@
 //! with **only** the HRRR adapter, onto the pack's own lattice. That is the same bytes, the same
 //! projection and the same quantization the published model frames get, minus the radar that would
 //! otherwise outrank it. It answers at every lead, which is what a crossover measurement needs.
+//!
+//! ## Which numbers these are
+//!
+//! **Every figure quoted in this file, in `tests/events/README.md` and in
+//! `derive::NOWCAST_MAX_LEAD_MIN` was measured against the engine as merged**, i.e. after both of
+//! the corrections that landed while this measurement was being taken:
+//!
+//! * motion estimated from **measurement instants**, never from a published frame's cadence stamp.
+//!   Deriving `dt` from two OBCG headers stretched the derecho's true 840 s baseline to 1,020 s and
+//!   advected it 18 % too slowly. This harness reads `event.window_start`; `OBCG_Spec.md` §3.2 and
+//!   `radar_nowcast`'s own comment now say why a header cannot be used for it.
+//! * `flow::MAX_FILL_NODES` raised from 6 to 9. Re-scoring across it moved **both events by
+//!   `<= 0.001` at every lead and threshold**, and moved no crossover: the bound governs
+//!   extrapolation into nodes with no trackable echo nearby, and a window holding 235 separate
+//!   components almost never has one. "Many small components" is not "isolated echo".
+//!
+//! The numbers are therefore current, and they are not a coincidence of either fix. Re-run them with
+//! `cargo test --release -p obc-wx-bake --test nowcast_skill_events -- --nocapture`.
 
 use std::path::{Path, PathBuf};
 

@@ -88,9 +88,16 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// **What stops it at +90 is a measured crossover, not a missing measurement.** This used to say
 /// "+105 and +120 are unmeasured, so extend the pack". They have since been measured. PR #1283
 /// captured the opposite kind of storm on purpose — `us-airmass-2023-06-24`, scattered afternoon
-/// convection over Iowa, mean flow 10.4 m/s against the derecho's 29.5, 235 wet components against
-/// 62, and a wet fraction that **grows** through the ladder because the cells develop in place
-/// rather than arriving — and scored both packs at every lead and three thresholds, 45 comparisons:
+/// convection over Iowa: 235 wet components against 62, a mean component area of 79 cells against
+/// 1331, persistence decaying twice as fast (CSI 0.192 against 0.343 at +60), and a wet fraction
+/// that **grows** through the ladder because the cells develop in place rather than arriving — and
+/// scored both packs at every lead and three thresholds, 45 comparisons:
+///
+/// (An earlier version of this paragraph said "mean flow 10.4 m/s against the derecho's 29.5". Both
+/// figures were an artifact of sampling the motion field at node indices instead of cell positions;
+/// measured over the nodes that have rain under them it is 20.4 against 25.8, and the hard case is
+/// **not** the slow one. What makes it hard is that its field is continuously rebuilt rather than
+/// translated, which is what the rows above measure.)
 ///
 /// * **exactly one crossover exists**, and it is the one that matters: on the hard case at
 ///   `>= 6 mm/h`, advected radar falls behind the model at **+104** (0.054 against 0.066) and stays
