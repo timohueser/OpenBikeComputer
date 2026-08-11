@@ -153,7 +153,7 @@ const FULL_CIRCLE_UDEG: i64 = 360_000_000;
 /// window cannot cross ±180° — but its *grid* does: the column east of the last one is the first
 /// one again. Under the per-product path that distinction was invisible. Under one global lattice
 /// it is a 25-column stripe of permanent no-data through Fiji, so the mosaic has to know.
-fn is_globally_periodic(source: &GridGeometry) -> bool {
+pub fn is_globally_periodic(source: &GridGeometry) -> bool {
     let span = i64::from(source.width) * i64::from(source.cell_lon_udeg);
     span + i64::from(source.cell_lon_udeg) >= FULL_CIRCLE_UDEG
 }

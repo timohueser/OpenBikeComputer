@@ -44,11 +44,14 @@
 //! next pack — but they do pin the two claims that decide whether WXR9 ships at all: the nowcast
 //! beats persistence, and it beats the model out to `derive::NOWCAST_MAX_LEAD_MIN`.
 
-use obc_formats::obcg;
-use obc_wx_bake::derive::NOWCAST_MAX_LEAD_MIN;
+use obc_formats::{obcg, precip4};
+use obc_wx_bake::canonical::{CycleTimes, FRAME_STEP_MIN};
+use obc_wx_bake::derive::{self, NOWCAST_MAX_LEAD_MIN};
 use obc_wx_bake::flow::{self, FlowParams};
+use obc_wx_bake::geometry::GridGeometry;
 use obc_wx_bake::pack::{self, Event};
-use obc_wx_bake::skill::Scores;
+use obc_wx_bake::skill::{Scores, LIGHT_RAIN};
+use obc_wx_bake::source::{mrms, BakedFrame, BakedSource, SourceClass};
 use obc_wx_bake::timefmt;
 
 const EVENT_ID: &str = "us-derecho-2020-08-10";
@@ -173,10 +176,13 @@ fn the_nowcast_beats_persistence_and_the_model_over_the_derecho() {
     let mut wins_over_persistence = 0usize;
     let mut wins_over_model_inside_cap = 0usize;
     let mut leads_inside_cap = 0usize;
+    let mut verifiable_lead_min = 0i64;
+    // For the seam below: the advected frame at each lead, kept.
+    let mut nowcast_frames: Vec<(i64, Vec<u8>)> = Vec::new();
     for target in &ladder[2..] {
         let lead_s = target.valid_at - anchor.valid_at;
         let lead_min = lead_s / 60;
-        let nowcast = flow::advect(&anchor.cells, width, height, &motion, lead_s as f64);
+        let nowcast = flow::advect(&anchor.cells, width, height, &motion, lead_s as f64, false);
         let (model_skew, model) = model_frame(&event, target.valid_at);
 
         let scored = Scores::of(&nowcast, &target.cells, width, height);
@@ -192,10 +198,12 @@ fn the_nowcast_beats_persistence_and_the_model_over_the_derecho() {
         }
         if lead_min <= i64::from(NOWCAST_MAX_LEAD_MIN) {
             leads_inside_cap += 1;
+            verifiable_lead_min = verifiable_lead_min.max(lead_min);
             if csi(&scored) > csi(&modelled) {
                 wins_over_model_inside_cap += 1;
             }
         }
+        nowcast_frames.push((target.valid_at, nowcast));
     }
     eprintln!();
 
@@ -212,5 +220,256 @@ fn the_nowcast_beats_persistence_and_the_model_over_the_derecho() {
         leads_inside_cap > 0 && wins_over_model_inside_cap == leads_inside_cap,
         "the nowcast beat the model at {wins_over_model_inside_cap} of the {leads_inside_cap} lead times inside \
          NOWCAST_MAX_LEAD_MIN = {NOWCAST_MAX_LEAD_MIN}; the cap must not promise skill the measurement does not show"
+    );
+    // **And the ladder must actually reach the cap** (#1278 r1, M3). Without this the assertion above
+    // is vacuous for every lead past the last truth frame: the reviewer set the constant to 120 and
+    // the test passed unchanged, which is precisely the property the comment at the constant claims
+    // it does not have. The largest lead this pack can verify is +90; a horizon past it would be a
+    // trend extrapolation wearing a measurement's clothes, and unlocking one means a **second event
+    // pack** whose ladder goes further, not a bigger number here.
+    assert!(
+        verifiable_lead_min >= i64::from(NOWCAST_MAX_LEAD_MIN),
+        "NOWCAST_MAX_LEAD_MIN is {NOWCAST_MAX_LEAD_MIN} min but this pack's truth ladder only verifies +{verifiable_lead_min}; \
+         the horizon must never promise skill beyond the leads that were measured — extend the pack, not the constant"
+    );
+
+    // ── The seam (#1278 r1, m7) ──────────────────────────────────────────────────────────────────
+    //
+    // At the horizon the published timeline stops being advected radar and becomes the model, in one
+    // 15-minute step. The reviewer measured that discontinuity at a +60 cap as **0.146** wet/dry
+    // disagreement, against 0.063 between two consecutive nowcast frames and 0.046 between two
+    // consecutive model frames — a rider scrubbing the timeline sees the storm lose most of its area
+    // and come back a different shape. Raising the cap moves the seam to a weaker nowcast, so it
+    // should shrink; this measures whether it did.
+    eprintln!("seam (wet/dry disagreement at >= 0.25 mm/h between consecutive published frames):");
+    let disagreement = |left: &[u8], right: &[u8]| -> f64 {
+        let (mut differ, mut counted) = (0u64, 0u64);
+        for (a, b) in left.iter().zip(right) {
+            let wet = |code: &u8| *code != precip4::INTENSITY_NODATA && *code >= LIGHT_RAIN;
+            counted += 1;
+            differ += u64::from(wet(a) != wet(b));
+        }
+        differ as f64 / counted.max(1) as f64
+    };
+    for pair in nowcast_frames.windows(2) {
+        eprintln!(
+            "  nowcast {} -> nowcast {}: {:.3}",
+            timefmt::rfc3339(pair[0].0),
+            timefmt::rfc3339(pair[1].0),
+            disagreement(&pair[0].1, &pair[1].1)
+        );
+    }
+    // The seam itself, at whatever the cap is: the last nowcast frame against the model frame the
+    // mosaic publishes one cadence step later.
+    let step = i64::from(FRAME_STEP_MIN) * 60;
+    for (valid_at, cells) in &nowcast_frames {
+        let lead_min = (*valid_at - anchor.valid_at) / 60;
+        let (skew, model) = model_frame(&event, valid_at + step);
+        let marker = if lead_min == i64::from(NOWCAST_MAX_LEAD_MIN) { "  <- the shipped seam" } else { "" };
+        eprintln!(
+            "  nowcast +{lead_min}m -> model +{}m: {:.3}   (model frame {skew} s from the target instant){marker}",
+            lead_min + i64::from(FRAME_STEP_MIN),
+            disagreement(cells, &model)
+        );
+    }
+    eprintln!();
+}
+
+/// **What the morph publishes, on real bytes** (#1278 r1, M1 + M5).
+///
+/// Job B's interpolation is the half of WXR9 with no truth ladder of its own — no pack carries GFS
+/// or ICON-EU — so it is measured here on the radar frames instead, which is a *harder* test than
+/// the hourly model steps it actually runs on: consecutive radar composites change shape far faster
+/// than consecutive model fields. The bracket is 19:02 -> 19:32 and the target is 19:18, an instant
+/// the pack has a real observation for.
+///
+/// Round 1 of #1278's review measured the blend this replaces, over exactly this bracket: 22.6 % of
+/// wet cells carried an intensity code neither parent held, the wet fraction was 0.186 against a
+/// truth of 0.166, the mean wet code was 5.53 against 6.26 — a bigger, fainter storm than either
+/// parent — and **43,130 cells published dry where one advected parent had no data at all**, which
+/// `OBCG_Spec.md` §3.2 forbids without exception.
+///
+/// The three assertions here are those three findings turned into properties. They are exact rather
+/// than tolerances, because none of them is a matter of degree.
+#[test]
+fn a_morphed_frame_publishes_only_values_its_parent_actually_held() {
+    let event = Event::read(&pack_root()).expect("the derecho pack");
+    let (header, ladder) = truth_ladder(&event);
+    let (width, height) = (header.width, header.height);
+    assert!(ladder.len() >= 3);
+    let (earlier, target, later) = (&ladder[0], &ladder[1], &ladder[2]);
+    let dt = (later.valid_at - earlier.valid_at) as f64;
+    let offset = (target.valid_at - earlier.valid_at) as f64;
+    let params = FlowParams::for_cells(f64::from(header.cell_size_m));
+    let motion = flow::estimate_motion(&earlier.cells, &later.cells, width, height, dt, params)
+        .expect("a derecho is not a dry field");
+    let span = flow::Span { dt_seconds: dt, offset_seconds: offset, wrap_x: false };
+    let morphed = flow::morph(&earlier.cells, &later.cells, width, height, &motion, span);
+    // Which parent the selection took, and how far it was carried — re-derived here rather than
+    // read off the implementation.
+    let weight = span.weight();
+    let takes_later = flow::nearer_is_later(weight);
+    let parent = if takes_later { &later.cells } else { &earlier.cells };
+    let carried = if takes_later { offset - dt } else { offset };
+    let advected_parent = flow::advect(parent, width, height, &motion, carried, false);
+
+    eprintln!(
+        "\n{EVENT_ID} morph: bracket {} -> {}, target {} (weight {weight:.2}, taking the {} parent)",
+        timefmt::rfc3339(earlier.valid_at),
+        timefmt::rfc3339(later.valid_at),
+        timefmt::rfc3339(target.valid_at),
+        if takes_later { "later" } else { "earlier" },
+    );
+    for (name, cells) in [
+        ("truth            ", target.cells.as_slice()),
+        ("morphed          ", morphed.as_slice()),
+        ("parent, raw      ", parent.as_slice()),
+        ("parent, advected ", advected_parent.as_slice()),
+    ] {
+        let (wet, missing, mean) = field_stats(cells);
+        eprintln!("  {name}: wet {wet:.4}  no-data {missing:.4}  mean wet code {mean:.2}");
+    }
+    eprintln!(
+        "  morph vs the real observation at that instant: {}",
+        Scores::of(&morphed, &target.cells, width, height).row()
+    );
+    eprintln!(
+        "  the nearest native frame instead:              {}\n",
+        Scores::of(parent, &target.cells, width, height).row()
+    );
+
+    // 1. **No invented values.** Every published code is one the chosen parent holds somewhere, or
+    //    no-data. This is "advection may move cells and must never invent values" as a property
+    //    rather than a slogan.
+    let held: std::collections::BTreeSet<u8> = parent.iter().copied().collect();
+    let invented = morphed.iter().filter(|code| **code != precip4::INTENSITY_NODATA && !held.contains(code)).count();
+    assert_eq!(invented, 0, "{invented} morphed cells carry an intensity the parent never held");
+
+    // 2. **Missing stays missing.** A morphed cell is no-data exactly where its advected parent is,
+    //    so a trajectory that left the domain publishes 15 and the mosaic falls through — never dry.
+    let (_, morph_missing, morph_mean) = field_stats(&morphed);
+    let (_, advected_missing, _) = field_stats(&advected_parent);
+    assert!(morph_missing > 0.0, "a real morph must inherit the upwind blind spot, not paper over it");
+    assert!(
+        (morph_missing - advected_missing).abs() < 1e-9,
+        "morph no-data {morph_missing} must equal its advected parent's {advected_missing}"
+    );
+    let dry_over_missing = morphed
+        .iter()
+        .zip(&advected_parent)
+        .filter(|(out, source)| **source == precip4::INTENSITY_NODATA && **out == precip4::INTENSITY_DRY)
+        .count();
+    assert_eq!(dry_over_missing, 0, "{dry_over_missing} cells published dry where the parent had no data (§3.2)");
+
+    // 3. **No area or intensity drift.** The blend grew the wet area and damped the mean code by
+    //    about a band; a selection cannot, because what it publishes *is* a parent, moved.
+    let (morph_wet, _, _) = field_stats(&morphed);
+    let (parent_wet, _, parent_mean) = field_stats(parent);
+    assert!(
+        (morph_mean - parent_mean).abs() < 0.5,
+        "mean wet code drifted from {parent_mean} to {morph_mean} — a selection must not damp intensity"
+    );
+    assert!(morph_wet <= parent_wet * 1.05, "the wet area grew from {parent_wet} to {morph_wet}");
+}
+
+/// `(wet fraction, no-data fraction, mean wet code)` — the three numbers the review's M5 turns on.
+fn field_stats(cells: &[u8]) -> (f64, f64, f64) {
+    let (mut wet, mut missing, mut sum) = (0u64, 0u64, 0u64);
+    for code in cells {
+        match *code {
+            precip4::INTENSITY_NODATA => missing += 1,
+            code if code >= LIGHT_RAIN => {
+                wet += 1;
+                sum += u64::from(code);
+            }
+            _ => {}
+        }
+    }
+    let total = cells.len() as f64;
+    (wet as f64 / total, missing as f64 / total, if wet > 0 { sum as f64 / wet as f64 } else { 0.0 })
+}
+
+/// **`derive::radar_nowcast` on real bytes** (#1278 r1, n13).
+///
+/// The skill harness calls `flow::advect` directly, and the derecho pack's motion-history key
+/// records a 404, so until now the derivation's own arithmetic — which observation becomes the
+/// anchor, that leads run from the *observation's* instant rather than from the cycle anchor, and
+/// where the horizon clips — was proved on synthetic blobs only. This drives it through real MRMS
+/// composites, by handing it the pack's own truth frames as the observation pair it would otherwise
+/// have fetched.
+#[test]
+fn the_derived_nowcast_leads_from_the_observation_on_real_composites() {
+    let event = Event::read(&pack_root()).expect("the derecho pack");
+    let (header, ladder) = truth_ladder(&event);
+    let observed_at = ladder[1].valid_at;
+    // A cycle anchored a few minutes before the observation — the ordinary case, and the one where
+    // leading from the anchor instead of from the observation is wrong by most of a frame step.
+    let times = CycleTimes::anchored_at(observed_at - 200);
+    let as_observation = |source: &Frame| BakedFrame {
+        offset_min: 0,
+        valid_at: source.valid_at,
+        class: SourceClass::Observation,
+        cells: source.cells.clone(),
+    };
+    let source = BakedSource {
+        id: mrms::ID,
+        geometry: GridGeometry {
+            south_lat_udeg: header.south_lat_udeg,
+            west_lon_udeg: header.west_lon_udeg,
+            cell_lat_udeg: header.cell_lat_udeg,
+            cell_lon_udeg: header.cell_lon_udeg,
+            width: header.width,
+            height: header.height,
+            cell_size_m: header.cell_size_m,
+            tile_edge: header.tile_edge,
+            entries_per_page: header.entries_per_page,
+        },
+        reference_time: observed_at,
+        attribution: mrms::ATTRIBUTION,
+        frames: vec![as_observation(&ladder[1])],
+        motion_history: vec![as_observation(&ladder[0])],
+    };
+    let nowcast =
+        derive::radar_nowcast(&source, times).expect("real radar has motion").expect("mrms has a nowcast row");
+
+    assert_eq!(nowcast.id, mrms::NOWCAST.id);
+    assert!(nowcast.motion_history.is_empty(), "nothing nowcasts a nowcast");
+    assert_eq!(nowcast.reference_time, observed_at, "the derived source is anchored on the observation");
+    let instants: Vec<i64> = nowcast.frames.iter().map(|frame| frame.valid_at).collect();
+    let expected: Vec<i64> = times
+        .offsets_min()
+        .filter(|offset| *offset > 0 && *offset <= NOWCAST_MAX_LEAD_MIN)
+        .map(|offset| times.valid_at(offset))
+        .filter(|instant| *instant > observed_at)
+        .collect();
+    assert_eq!(instants, expected, "the nowcast must fill exactly the canonical slots inside the horizon");
+
+    let east_of_mass = |cells: &[u8]| -> f64 {
+        let (mut sum, mut mass) = (0.0f64, 0.0f64);
+        for (index, code) in cells.iter().enumerate() {
+            if *code == precip4::INTENSITY_NODATA || *code < LIGHT_RAIN {
+                continue;
+            }
+            sum += f64::from(*code) * (index as u32 % header.width) as f64;
+            mass += f64::from(*code);
+        }
+        sum / mass
+    };
+    for derived in &nowcast.frames {
+        assert!(matches!(derived.class, SourceClass::Forecast), "a derived frame is never an observation");
+        // The lead is measured from the observation, not from the cycle anchor: the two differ by
+        // the observation's age, which is up to most of a frame step.
+        assert_eq!(i64::from(derived.offset_min), (derived.valid_at - observed_at) / 60);
+        assert_ne!(derived.cells, source.frames[0].cells, "an advected frame is not the frozen anchor");
+        // …and the field really moved rather than being re-labelled: the derecho went east.
+        assert!(
+            east_of_mass(&derived.cells) > east_of_mass(&source.frames[0].cells),
+            "the derecho moved east; f+{} did not",
+            derived.offset_min
+        );
+    }
+    assert!(
+        nowcast.frames.last().expect("frames").valid_at - observed_at <= i64::from(NOWCAST_MAX_LEAD_MIN) * 60,
+        "the nowcast published a frame past its horizon"
     );
 }

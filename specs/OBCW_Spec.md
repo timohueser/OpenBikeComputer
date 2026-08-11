@@ -229,6 +229,18 @@ the frame at offset 0 whose validity is within the dataset's stated source skew 
 sets **Observed**; every forward frame sets **Forecast**. Dryness is not part of it in either
 direction — an all-dry radar scan is an observation, and an all-dry forecast frame is not one.
 
+**The manifest's per-shard bits then hold a veto, added 2026-08-11 (#1251).** The positional rule
+above was sufficient while a frame at offset 0 could only be an observation or a real model step. It
+is not any more: an upstream publisher may **derive** a frame at that offset (`OBCG_Spec.md` §3.2 —
+temporal interpolation, where the source's own steps are coarser than the cadence), which is neither.
+So a producer MUST NOT set Observed unless, in addition to the positional test, **at least one of the
+published objects it assembled the frame from is itself flagged Observed**. Deliberately "at least
+one" and not "all": the mixed radar-and-model corridor above is exactly the case the positional rule
+exists to keep calling Observed, and requiring all of them would invert it. A frame assembled from no
+published objects at all — the all-dry scene, whose objects are omitted rather than flagged — keeps
+the positional answer, which is the whole reason there is no content rule here. The veto can only
+clear the flag, never set one.
+
 **Cross-reference: this is deliberately looser than `OBCG_Spec.md` §3.2's rule, and the divergence
 is safe in one direction.** That spec's publisher may set Observed only when `offset_min` is 0 *and*
 every cell of the object came from an observation upstream — a checkable property, because an OBCG

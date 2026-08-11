@@ -356,6 +356,80 @@ fn the_dwd_window_is_a_window_of_the_canonical_lattice() {
     }
 }
 
+/// **Germany's radar is DWD's data, unmodified** (WXR9 #1251, review round 1 M4).
+///
+/// The RV tar carries 25 validated members at five-minute leads, and a cycle anchors on a quarter
+/// hour, so *every* canonical instant inside the run's reach is a member DWD published for exactly
+/// that instant. Until #1251 the adapter selected a fixed ladder off the **run** — which is on the
+/// five-minute boundary, not the quarter hour — so those members were decoded, validated and thrown
+/// away, and `derive::uniform_frames` then reconstructed the very same instants by optical flow.
+///
+/// This drives the real fixture tar through the real adapter at every anchor phase the cadence
+/// admits, and asserts three things, of which the third is the point:
+///
+/// 1. every canonical instant the run reaches has a frame valid at it **exactly** — zero skew, not
+///    "within tolerance";
+/// 2. every one of those frames' cells is byte-identical to the member for that instant, so nothing
+///    resampled, blended or advected them on the way;
+/// 3. `derive::uniform_frames` adds **nothing**. Not "little" — nothing.
+#[test]
+fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
+    let run = ts(DWD_RUN);
+    // The four anchor phases a quarter-hour cadence admits relative to RV's own five-minute run,
+    // plus a wall clock a few minutes into each, which is how a timer actually fires.
+    for phase_min in [0i64, 5, 10, 15, 20, 25] {
+        let now = run + phase_min * 60 + 137;
+        let times = CycleTimes::anchored_at(now);
+        let mut upstream = european_upstream();
+        let mut source = bake(&dwd_rv::DwdRv, &mut upstream, now);
+        assert_eq!(source.reference_time, run);
+
+        // 1 + 2. Every reachable canonical instant has an exact native frame under it.
+        let (mut exact, mut unreachable) = (0usize, 0usize);
+        for offset_min in times.offsets_min() {
+            let target = times.valid_at(offset_min);
+            let ahead = target - run;
+            if ahead <= 0 || ahead > i64::from(dwd_rv::MAX_LEAD_MIN) * 60 {
+                unreachable += 1;
+                continue;
+            }
+            let frame =
+                source.frames.iter().find(|frame| frame.valid_at == target).unwrap_or_else(|| {
+                    panic!("phase {phase_min}: f+{offset_min} has no DWD member valid at its instant")
+                });
+            // The member's own lead, re-derived independently of the selection.
+            let lead = (ahead / 60) as u32;
+            assert_eq!(frame.offset_min, lead, "phase {phase_min}: f+{offset_min} is not the member it claims");
+            assert!(lead.is_multiple_of(dwd_rv::MEMBER_STEP_MIN), "a canonical instant is always a whole member step");
+            assert!(matches!(frame.class, SourceClass::Forecast) || lead == 0);
+            exact += 1;
+        }
+        assert!(exact >= 5, "phase {phase_min}: only {exact} instants resolved natively ({unreachable} unreachable)");
+
+        // 3. Nothing left for the derivation stage to do over Germany.
+        let cells_before: Vec<usize> = source.frames.iter().map(|frame| frame.cells.len()).collect();
+        let added = obc_wx_bake::derive::uniform_frames(&mut source, times);
+        assert_eq!(added, 0, "phase {phase_min}: DWD RV must never be morphed — it published the frame already");
+        assert_eq!(source.frames.iter().map(|frame| frame.cells.len()).collect::<Vec<_>>(), cells_before);
+    }
+}
+
+/// The selection is a pure function of the run and the wall clock, so it is worth stating on its own
+/// terms too: lead 0 always survives (it is the tar's only observation and what f0's
+/// `FLAG_OBSERVED` rests on), and nothing past the tar's reach is ever asked for.
+#[test]
+fn the_dwd_selection_always_keeps_the_observation_and_never_overruns_the_tar() {
+    let run = ts(DWD_RUN);
+    for phase_s in [0i64, 137, 300, 899, 900, 3_600, 7_200] {
+        let leads = dwd_rv::selected_leads(run, run + phase_s);
+        assert_eq!(leads.first(), Some(&0), "the lead-0 observation is not optional");
+        assert!(leads.iter().all(|lead| *lead <= dwd_rv::MAX_LEAD_MIN));
+        assert!(leads.iter().all(|lead| lead.is_multiple_of(dwd_rv::MEMBER_STEP_MIN)));
+        assert!(leads.windows(2).all(|pair| pair[0] < pair[1]), "sorted and unique");
+        assert!(leads.len() <= dwd_rv::MEMBER_COUNT);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // 2. The priority table decides, and nothing else does
 // ---------------------------------------------------------------------------------------------

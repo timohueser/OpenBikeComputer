@@ -15,11 +15,18 @@
 //! — the timeline changes once an hour and stands still in between. Four frames, one statement.
 //!
 //! So the gap gets filled properly: estimate the motion between the two bracketing steps and
-//! [`morph`](crate::flow::morph) both of them to the instant in the middle. The result is a
+//! [`morph`](crate::flow::morph) the nearer of them to the instant in the middle. The result is a
 //! forecast for *that* instant rather than a neighbouring one, which is the same standard the
 //! forward-frames rule (#1248) holds observations to, finally applied to the model steps as well.
 //! It closes the honesty gap that rule left open: `valid_at` is the cadence instant, and now the
 //! data genuinely is an estimate for it.
+//!
+//! **It only runs where nobody published a frame for that instant already** — condition 1 below —
+//! and that is not a formality. DWD RV publishes 25 members five minutes apart, so every canonical
+//! instant is a member the DWD produced for exactly that instant; until #1278's review caught it,
+//! sixteen of them were decoded, validated and discarded, and this function then reconstructed those
+//! very instants by optical flow. `dwd_rv::selected_leads` fixed that at the source. Germany's radar
+//! is DWD's data, unmodified, and job B finds nothing to do there.
 //!
 //! ## Job A: the radar nowcast ([`radar_nowcast`])
 //!
@@ -49,42 +56,49 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// Advection skill decays and model skill does not, so there is a lead time past which the model is
 /// the better answer and the nowcast must stop being published — "nowcast where we have radar" is
 /// not automatically right at +120. Three shapes were available (a fixed cap, a lead-weighted
-/// blend, or a per-cycle skill-driven switch) and this is a **fixed cap**, for reasons that are
-/// about verifiability rather than elegance:
+/// blend of the two, or a per-cycle skill-driven switch) and this is a **fixed cap**, for reasons
+/// that are about verifiability rather than elegance:
 ///
-/// * a **blend** of two intensity-quantized fields produces codes neither source stated, over ground
-///   with no provenance channel to explain them (#1242), and it makes the published frame a
-///   function of a weight nobody downstream can see;
+/// * a **blend** of a nowcast and a model field publishes intensity codes neither source stated,
+///   over ground with no provenance channel to explain them (#1242) — the same objection that took
+///   the blend out of [`crate::flow::morph`], and `OBCG_Spec.md` §3.2 now forbids it outright;
 /// * a **skill-driven** switch needs verification data for the cycle being baked, and the truth for
 ///   the next two hours is, definitionally, in the future. It could only ever switch on *last*
 ///   cycle's skill, which is a different question asked about a different storm;
 /// * a **fixed cap** is a number that can be measured once, argued about, and re-measured when a
-///   pack disagrees with it. `tests/nowcast_skill.rs` is that measurement and it fails if this
-///   constant promises skill the derecho pack does not show.
+///   pack disagrees with it. `tests/nowcast_skill.rs` is that measurement, and it fails two ways:
+///   if this constant promises skill the derecho pack does not show, **and** if it runs past the
+///   largest lead that pack can verify at all.
 ///
-/// **Sixty minutes, and it is bound by memory rather than by skill — which is worth saying out
-/// loud, because the two would give different answers.**
+/// **Ninety minutes: the largest lead the evidence actually reaches, and not one step further.**
 ///
 /// On the 2020-08-10 derecho pack the advected radar beats the 3 km model at every lead the truth
-/// ladder reaches, by a margin that is not close (CSI at `>= 0.25 mm/h`: 0.60 against 0.26 at +60,
-/// 0.52 against 0.22 at +90), and it beats frozen persistence everywhere too. The evidence supports
-/// at least +90 and shows no crossover inside two hours.
+/// ladder verifies, by a margin that is not close and is not a drizzle-scale artefact — CSI at
+/// `>= 0.25 mm/h` is 0.60 against 0.26 at +60 and 0.52 against 0.22 at +90, and at `>= 6 mm/h` the
+/// ratio is wider still. It beats frozen persistence everywhere too. The decay is smooth and shows
+/// no sign of converging on the model inside the ladder.
 ///
-/// What stops it there is `MemoryMax=1G`. A nowcast frame is a full copy of its parent's window —
-/// 24.5 MB for MRMS, 25 MB for OPERA CIRRUS — so each extra 15 minutes of horizon is ~50 MB
-/// resident for the whole cycle. Measured (`tests/nowcast_cost.rs`): 694 MB peak at this horizon,
-/// ~793 MB at +90, ~892 MB at +120, against WXR1's 398 MB baseline. Two thirds of the ceiling with
-/// a third in hand is a service; nine tenths of it is a cycle that OOMs on the first frame that
-/// compresses badly.
+/// **Memory used to be what stopped it and no longer is.** Round 1 of #1278's review measured +120
+/// at 905 MB against `MemoryMax=1G` — so the cap was set at +60 to keep headroom. The ceiling was
+/// our own number from #1274, chosen when a cycle measured 398 MB, on a box with 7.8 GB and 4 cores;
+/// it is now 3 G (`ops/weather/systemd/obc-wx-bake@.service`), which leaves the service under 40 %
+/// of the box. The second hour of horizon costs +0.1 s wall and +2 CPU-s. Cost is not the argument
+/// any more.
 ///
-/// So the number to move is not this one. **The follow-up that unlocks +120 is a lazy nowcast
-/// layer** — a `SourceFrame` that holds the anchor plus the motion field and advects per shard
-/// inside `Mosaic::fill`, at which point the horizon costs no resident memory at all and this
-/// constant goes back to being purely a skill question. Until then, raising it means re-running
-/// `tests/nowcast_skill.rs` on a *second* event (the derecho is the most advection-friendly case in
-/// the catalogue and one favourable event is not a horizon) **and** re-running
-/// `tests/nowcast_cost.rs`. It is not a taste parameter.
-pub const NOWCAST_MAX_LEAD_MIN: u32 = 60;
+/// **What stops it at +90 is that +105 and +120 are unmeasured.** The pack's clean anchor tops out
+/// there — the observation pair is 19:02/19:18 and the last truth frame is 20:48 — so a cap past it
+/// would be a trend extrapolation wearing a measurement's clothes, and the leads it would be
+/// extrapolating over are exactly where the missing decay model bites hardest: this engine holds
+/// intensity that a real, scattered, decaying convective field loses, and a derecho is the
+/// friendliest case in the catalogue. `tests/nowcast_skill.rs` enforces the rule rather than trusting
+/// this comment: it **fails** if this constant exceeds the largest lead its ladder can verify, so the
+/// horizon cannot outrun the evidence even by accident.
+///
+/// **What unlocks +120 is therefore a second event pack** over a disorganised convective case, with
+/// a truth ladder reaching +120 — not an optimisation. (The lazy per-shard nowcast layer, advecting
+/// inside `Mosaic::fill`, is still the right long-term design and makes the horizon free; it is now
+/// a scaling question for a third radar rather than a prerequisite for anything.)
+pub const NOWCAST_MAX_LEAD_MIN: u32 = 90;
 
 /// The observation pair's separation must sit in this range for the motion to be trustworthy.
 ///
@@ -242,6 +256,10 @@ pub fn uniform_frames(source: &mut BakedSource, times: CycleTimes) -> usize {
     let width = source.geometry.width;
     let height = source.geometry.height;
     let params = FlowParams::for_cells(f64::from(source.geometry.cell_size_m));
+    // The floor source's grid closes the circle, and it is the one row of the priority table with
+    // nothing beneath it — see `flow::advect`'s `wrap_x` for why an unwrapped advection there would
+    // reintroduce a permanent no-data stripe at the antimeridian.
+    let wrap_x = crate::canonical::is_globally_periodic(&source.geometry);
 
     let mut added: Vec<BakedFrame> = Vec::new();
     // One motion field per bracketing **pair**, not per slot. An hourly source has three or four
@@ -287,10 +305,22 @@ pub fn uniform_frames(source: &mut BakedSource, times: CycleTimes) -> usize {
             // reach for the nearest step inside the skew window.
             continue;
         };
-        let cells =
-            flow::morph(&source.frames[before].cells, &source.frames[after].cells, width, height, motion, dt, offset);
+        let cells = flow::morph(
+            &source.frames[before].cells,
+            &source.frames[after].cells,
+            width,
+            height,
+            motion,
+            flow::Span { dt_seconds: dt, offset_seconds: offset, wrap_x },
+        );
         added.push(BakedFrame {
-            offset_min: ((target - source.reference_time).max(0) / 60) as u32,
+            // A forecast valid before its own run does not exist, and `bracket` cannot produce one:
+            // both parents are this source's own frames. So the subtraction is non-negative and is
+            // stated rather than flattened by a `.max(0)` that would silently collapse a would-be
+            // negative offset onto f0's value — cosmetic today, and exactly the field a later reader
+            // would key on (#1278 r1, n12).
+            offset_min: u32::try_from((target - source.reference_time) / 60)
+                .expect("a derived frame is never valid before its source's reference time"),
             valid_at: target,
             class: SourceClass::Forecast,
             cells,
@@ -385,7 +415,9 @@ pub fn radar_nowcast(source: &BakedSource, times: CycleTimes) -> Result<Option<B
             offset_min: (lead / 60) as u32,
             valid_at: slot.valid_at(),
             class: SourceClass::Forecast,
-            cells: flow::advect(&anchor.cells, width, height, &motion, lead as f64),
+            // No wrap: every radar window is regional, and a composite's east edge is a coverage
+            // boundary rather than a seam in a periodic grid.
+            cells: flow::advect(&anchor.cells, width, height, &motion, lead as f64, false),
         });
     }
     if frames.is_empty() {

@@ -73,8 +73,55 @@ pub const GEOMETRY: GridGeometry = GridGeometry {
     entries_per_page: 512,
 };
 
-/// Published leads in minutes: the epic's nine 15-minute frames through +2 h.
-pub const LEADS_MIN: [u32; 9] = [0, 15, 30, 45, 60, 75, 90, 105, 120];
+/// The tar's own member cadence and reach: 25 members, `+0` to `+120` minutes every five minutes.
+///
+/// **Every canonical instant is one of them.** A cycle anchors on a quarter hour and RV runs on a
+/// five-minute boundary, so `canonical instant - run` is always a whole number of five-minute steps
+/// — DWD publishes a member valid at *exactly* the instant the dataset wants, for every frame of
+/// the cycle its reach covers. [`selected_leads`] is what turns that from a fact into the frames.
+pub const MEMBER_STEP_MIN: u32 = 5;
+pub const MAX_LEAD_MIN: u32 = 120;
+pub const MEMBER_COUNT: usize = (MAX_LEAD_MIN / MEMBER_STEP_MIN) as usize + 1;
+
+/// **The members this cycle bakes: DWD's own frames, at the dataset's own instants** (WXR9 #1251).
+///
+/// Until #1251 this was a fixed ladder — `[0, 15, 30, … 120]` minutes from the *run* — and it was
+/// wrong in a way that only became visible once the baker could interpolate. RV's run is not on the
+/// quarter hour (it is on the five-minute boundary before it), so a fixed ladder off the run lands
+/// its frames five or ten minutes away from every canonical instant. Sixteen validated members were
+/// decoded and thrown away, and then `derive::uniform_frames` reconstructed those very instants by
+/// morphing across a 900 s bracket — reconstructing, by optical flow, frames that were sitting
+/// decoded in the same tar.
+///
+/// Selecting by *instant* instead fixes both halves at once: **Germany's radar is DWD's data,
+/// unmodified**, and `uniform_frames` finds every slot already answered and does nothing here.
+/// Which also disposes of the double-processing question — RV is itself a nowcast, and advecting
+/// the DWD's own advection scheme was never a good idea.
+///
+/// Lead 0 is always included whatever the cycle asks for: it is the tar's only **observation**, it
+/// is what f0's `FLAG_OBSERVED` rests on, and it costs one member.
+///
+/// A canonical instant that is not a whole number of member steps from the run gets nothing here
+/// and falls to `uniform_frames`, which is the honest order: use the measurement where one exists,
+/// derive only where none does. On the shipped cadence that branch is unreachable, and
+/// `every_canonical_instant_of_a_cycle_is_a_native_member` pins it.
+pub fn selected_leads(run: i64, now: i64) -> Vec<u32> {
+    let step = i64::from(MEMBER_STEP_MIN) * 60;
+    let mut leads = vec![0u32];
+    let times = crate::canonical::CycleTimes::anchored_at(now);
+    for offset_min in times.offsets_min() {
+        let ahead = times.valid_at(offset_min) - run;
+        if ahead <= 0 || ahead > i64::from(MAX_LEAD_MIN) * 60 || ahead % step != 0 {
+            continue;
+        }
+        let lead = (ahead / 60) as u32;
+        if !leads.contains(&lead) {
+            leads.push(lead);
+        }
+    }
+    leads.sort_unstable();
+    leads
+}
 /// A radar run refreshes every five minutes; half an hour without a fresh one is the epic's
 /// stuck-baker detection horizon, so the product must not outlive it.
 pub const STALENESS_SECONDS: i64 = 30 * 60;
@@ -108,16 +155,17 @@ impl Adapter for DwdRv {
         ID
     }
 
-    fn bake(&self, upstream: &mut dyn Upstream, _now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
         // No conditional request and no ETag short-circuit: the mosaic needs this source's cells
         // every cycle, so "unchanged" would only save a download it has to do anyway (#1246).
         let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, None)? {
             FetchOutcome::Unchanged => return Err("DWD RV LATEST returned 304 without a validator".into()),
             FetchOutcome::Body(fetched) => fetched,
         };
-        let (run, frames) = bake_tar(&fetched.bytes)?;
-        // DWD RV is itself a nowcast: its +5 … +120 members are the DWD's own advection scheme,
-        // so WXR9 adds nothing here and asks for no motion history.
+        let (run, frames) = bake_tar(&fetched.bytes, now)?;
+        // DWD RV is itself a nowcast: its +5 … +120 members are the DWD's own advection scheme, so
+        // WXR9 adds nothing here — no motion history, and since #1251 selects members *by canonical
+        // instant* (see `selected_leads`), nothing for `derive::uniform_frames` to morph either.
         Ok(BakedSource {
             id: ID,
             geometry: GEOMETRY,
@@ -129,8 +177,13 @@ impl Adapter for DwdRv {
     }
 }
 
-/// Validate a complete RV tar and bake the nine published leads. Public for the fixture tests.
-pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
+/// Validate a complete RV tar and bake the members [`selected_leads`] names for a cycle at `now`.
+/// Public for the fixture tests.
+///
+/// Every one of the 25 members is still decoded and validated — the contract check is over the
+/// whole tar, not over the subset that gets published — and the selection decides only which of
+/// them become frames.
+pub fn bake_tar(tar_bytes: &[u8], now: i64) -> Result<(i64, Vec<BakedFrame>), String> {
     GEOMETRY.validate()?;
     if tar_bytes.is_empty() || tar_bytes.len() as u64 > MAX_COMPRESSED_BYTES {
         return Err("DWD RV tar size is outside the WX1 limits".into());
@@ -140,6 +193,7 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
     let mut run_time: Option<i64> = None;
     let mut member_count = 0usize;
     let mut frames: Vec<BakedFrame> = Vec::new();
+    let mut wanted: Vec<u32> = Vec::new();
     for entry in archive.entries().map_err(|error| format!("DWD RV tar: {error}"))? {
         let entry = entry.map_err(|error| format!("DWD RV tar: {error}"))?;
         if entry.size() > MAX_DECOMPRESSED_BYTES {
@@ -168,8 +222,13 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
             return Err("DWD RV HDF5 member exceeds the WX1 limit".into());
         }
         let member = validate_member(bytes, member_run, lead_minutes)?;
-        // Every member is validated; only the nine published leads are baked.
-        if LEADS_MIN.contains(&lead_minutes) {
+        // The selection needs the run, which the first member establishes; every member after it is
+        // checked against the same run above, so this is stable for the whole walk.
+        if wanted.is_empty() {
+            wanted = selected_leads(member_run, now);
+        }
+        // Every member is validated; only the ones valid at a canonical instant are baked.
+        if wanted.contains(&lead_minutes) {
             frames.push(BakedFrame {
                 offset_min: lead_minutes,
                 valid_at: member_run + i64::from(lead_minutes) * 60,
@@ -179,13 +238,15 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
         }
         member_count += 1;
     }
-    if member_count != 25 {
-        return Err(format!("DWD RV tar contains {member_count} members; expected leads 000..120 every 5 minutes"));
+    if member_count != MEMBER_COUNT {
+        return Err(format!(
+            "DWD RV tar contains {member_count} members; expected leads 000..{MAX_LEAD_MIN} every {MEMBER_STEP_MIN} minutes"
+        ));
     }
-    if frames.len() != LEADS_MIN.len() {
-        return Err("DWD RV tar is missing a published lead".into());
+    if frames.len() != wanted.len() {
+        return Err("DWD RV tar is missing a member the cycle selected".into());
     }
-    Ok((run_time.expect("25 members imply a run"), frames))
+    Ok((run_time.expect("a full tar implies a run"), frames))
 }
 
 /// The per-cycle nearest-neighbour map: for every cell of the window, the native raster index (or
