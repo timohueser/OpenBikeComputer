@@ -15,11 +15,14 @@
 //! canonical lattice", is this one shared nearest-neighbour implementation, and it runs **lazily,
 //! per shard**:
 //!
-//! - a source already at the lattice pitch and lattice-aligned (MRMS is) is copied cell for cell;
-//! - anything else — a coarser model, or a finer/offset window like DWD RV's 9,000 x 14,000 µdeg
-//!   trapezoid — is resampled nearest-neighbour at fill time, which for a coarse source means
-//!   **cell replication**: one 6.5 km ICON cell paints a block of identical 1 km cells. That is
-//!   the rule `OBCG_Spec.md` §6 already mandates.
+//! - a source already at the lattice pitch and lattice-aligned is copied cell for cell. MRMS is,
+//!   and DWD RV is too since #1246 freed its window to move — an adapter whose window can be put
+//!   on the lattice should be, because the alternative is a second rounding of an already-rounded
+//!   reprojection (see `dwd_rv::GEOMETRY`);
+//! - anything else — a coarser model like ICON-EU or the GFS floor, or a window whose origin the
+//!   upstream grid fixes off the lattice — is resampled nearest-neighbour at fill time, which for a
+//!   coarse source means **cell replication**: one 6.5 km ICON cell paints a block of identical
+//!   1 km cells. That is the rule `OBCG_Spec.md` §6 already mandates.
 //!
 //! Doing it lazily is a hard requirement, not a preference. WXR1 (#1254) measured the GO on the
 //! condition that the baker materialises **one shard per thread** (255 MB steady state); a global
