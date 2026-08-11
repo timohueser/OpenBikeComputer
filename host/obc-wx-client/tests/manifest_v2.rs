@@ -488,6 +488,10 @@ fn the_shared_rejection_corpus_is_answered_identically() {
         for op in case["patch"].as_array().expect("patch") {
             apply_patch(&mut document, op);
         }
+        // A walker that silently did nothing would pass every `accepted` row. Swift has the same
+        // guard; without it on this side, only the `rejected` and `skipped_frames > 0` rows would
+        // notice a mis-walked pointer, and the plain-accepted rows would be decoration.
+        assert_ne!(document, base, "{name}: the patch changed nothing — check the pointer");
         let bytes = serde_json::to_vec(&document).expect("serialise");
         let parsed = manifest_v2::parse(&bytes);
         match case["verdict"].as_str().expect("verdict") {

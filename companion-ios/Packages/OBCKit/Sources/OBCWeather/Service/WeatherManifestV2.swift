@@ -709,17 +709,22 @@ public extension WeatherManifestV2 {
     /// - a **frame** is lenient — a frame this build cannot make sense of is skipped and counted,
     ///   never fatal. One malformed frame must not cost a rider the whole timeline.
     static func parse(_ data: Data) throws -> WeatherManifestV2 {
-        // **`2.0` is not `2`.** `JSONDecoder` folds an integral `Double` into `Int`, so a document
-        // saying `"version": 2.0` would decode as version 2 and be answered as a format it is not
-        // written to; serde refuses it outright. The distinction survives nowhere in the decoded
-        // model — only in the raw JSON number — so it is read there, and `CFNumberIsFloatType` is
-        // the only way to ask `JSONSerialization` what the wire actually spelled.
+        // **`9.0` is not `9`, anywhere.** `JSONDecoder` folds an integral `Double` into `Int`, so a
+        // document saying `"frames": 9.0` decodes as 9 here while serde refuses it outright. The
+        // distinction survives nowhere in the decoded model — only in the raw JSON number — so the
+        // raw tree is read first and `CFNumberIsFloatType` asks what the wire actually spelled.
+        //
+        // Every number this document carries is a count, a microdegree or a whole second, so the
+        // rule is "these fields are integers" rather than a guard on the one field that got caught
+        // first. It is deliberately **not** a blanket refusal of every float in the tree: a reader
+        // ignores fields it does not know, so a float in one of those must not fail the parse, and
+        // refusing it would be a fresh divergence in the opposite direction. Both directions are
+        // pinned by `rejection_equivalence`.
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw WeatherManifestError.malformed
         }
-        if let version = root["version"] as? NSNumber, CFNumberIsFloatType(version) {
-            throw WeatherManifestError.malformed
-        }
+        guard documentIntegersAreWhole(root) else { throw WeatherManifestError.malformed }
+        let rawFrames = root["frames"] as? [Any] ?? []
         let document: Document
         do {
             document = try JSONDecoder().decode(Document.self, from: data)
@@ -750,8 +755,11 @@ public extension WeatherManifestV2 {
 
         var frames: [WeatherManifestFrame] = []
         var skipped = 0
-        for entry in document.frames {
-            if let frame = entry.frame?.validated(lattice: lattice) {
+        for (index, entry) in document.frames.enumerated() {
+            // The raw element is consulted alongside the decoded one for the single thing the
+            // decoded one cannot say: whether a number arrived as `0.0` rather than `0`.
+            let spelledWhole = index < rawFrames.count ? frameIntegersAreWhole(rawFrames[index]) : true
+            if spelledWhole, let frame = entry.frame?.validated(lattice: lattice) {
                 frames.append(frame)
             } else {
                 skipped += 1
@@ -1043,14 +1051,80 @@ private func parseCRC32(_ text: String) -> UInt32? {
     return UInt32(digits, radix: 16)
 }
 
+private func numbersAreWhole(_ container: [String: Any], _ keys: [String]) -> Bool {
+    for key in keys {
+        if let number = container[key] as? NSNumber, CFNumberIsFloatType(number) { return false }
+    }
+    return true
+}
+
+/// Are the **document-level** numbers spelled as integers? A float in one is fatal.
+///
+/// The field lists are written out rather than derived, because what is being checked is exactly
+/// what the decoder consumes: a field absent from these lists is a field this build ignores, and a
+/// float in one of those is not this reader's business — serde skips unknown fields too, so
+/// refusing it would break parity in the other direction. A field added to the model without being
+/// added here silently decodes leniently again, which is why the corpus pins a case per field class.
+private func documentIntegersAreWhole(_ root: [String: Any]) -> Bool {
+    guard numbersAreWhole(root, ["version"]) else { return false }
+    if let lattice = root["lattice"] as? [String: Any] {
+        guard numbersAreWhole(lattice, [
+            "south_lat_udeg", "west_lon_udeg", "cell_udeg", "width", "height",
+            "shard_width", "shard_height", "shard_cols", "shard_rows",
+            "tile_edge", "entries_per_page", "cell_size_m",
+        ]) else { return false }
+        if let rows = lattice["covered_rows"] as? [String: Any] {
+            guard numbersAreWhole(rows, ["start", "end"]) else { return false }
+        }
+    }
+    if let cadence = root["cadence"] as? [String: Any] {
+        guard numbersAreWhole(cadence, ["frame_step_min", "frames", "max_source_skew_s"]) else { return false }
+    }
+    if let freshness = root["freshness"] as? [String: Any] {
+        guard numbersAreWhole(freshness, ["manifest_max_age_s"]) else { return false }
+    }
+    return true
+}
+
+/// Are one **frame's** numbers spelled as integers? A float in one skips that frame and nothing else.
+///
+/// The strict/lenient split is the same one the rest of the module draws, and it has to be drawn
+/// here too: Rust decodes each frame out of a `serde_json::Value` with `.ok()`, so a float in
+/// `offset_min` or in a shard's `bytes` costs that frame alone. Folding these into the document
+/// check would refuse a whole timeline for one bad entry — the failure mode `LenientFrameEntry`
+/// exists to prevent.
+private func frameIntegersAreWhole(_ raw: Any) -> Bool {
+    guard let frame = raw as? [String: Any] else { return true }
+    guard numbersAreWhole(frame, ["offset_min"]) else { return false }
+    for shard in (frame["shards"] as? [Any] ?? []) {
+        guard let shard = shard as? [String: Any] else { continue }
+        guard numbersAreWhole(shard, ["col", "row", "bytes"]) else { return false }
+    }
+    return true
+}
+
+/// Lowercase-or-uppercase hex, parsed **a nibble at a time**.
+///
+/// Not `UInt8(_:radix:)`: that initialiser accepts a leading `+`, so `"+0+0+0"` parsed as a
+/// perfectly good all-zero presence bitmap here while Rust's nibble table refused it — a frame
+/// accepted on the phone and skipped in the simulator, over a character that is not a hex digit.
+/// `parseCRC32` lost the same defect one round earlier; this is the other half of it.
 private func unhex(_ text: String) -> [UInt8]? {
-    let characters = Array(text)
+    let characters = Array(text.utf8)
     guard !characters.isEmpty, characters.count % 2 == 0 else { return nil }
+    func nibble(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): return byte - UInt8(ascii: "0")
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): return byte - UInt8(ascii: "a") + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "F"): return byte - UInt8(ascii: "A") + 10
+        default: return nil
+        }
+    }
     var bytes: [UInt8] = []
     bytes.reserveCapacity(characters.count / 2)
     for index in stride(from: 0, to: characters.count, by: 2) {
-        guard let byte = UInt8(String(characters[index...index + 1]), radix: 16) else { return nil }
-        bytes.append(byte)
+        guard let high = nibble(characters[index]), let low = nibble(characters[index + 1]) else { return nil }
+        bytes.append(high << 4 | low)
     }
     return bytes
 }
