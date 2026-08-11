@@ -28,8 +28,8 @@ use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::canonical::{
     bake_cycle, emit_shard, frame_is_eligible, run_cycle, source_column, source_reaches, CycleTimes, FrameSlot,
-    Lattice, Mosaic, MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
-    MAX_FRAME_SKEW_S,
+    Lattice, Mosaic, MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, FRAME_STEP_MIN,
+    LATTICE_CELL_SIZE_M, MAX_FRAME_SKEW_S,
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
@@ -602,6 +602,76 @@ fn an_observation_never_paints_a_forward_frame_however_near_it_sits() {
         .filter(|offset| i64::from(*offset) * 60 <= MAX_FRAME_SKEW_S)
         .collect();
     assert_eq!(inside_skew, vec![15, 30], "f+15 and f+30 are refused by the rule, not by the distance bound");
+}
+
+/// **How far a forecast's latitude actually goes: four frames per hourly step, not two or three.**
+///
+/// The rule refuses a frozen observation but still lets one forecast step paint several frames, and
+/// `OBCG_Spec.md` §3.2 is now explicit about the quantity — so the quantity is pinned rather than
+/// described. Four is the answer because both ends are inclusive: a frame instant at :30 is 1,800 s
+/// from *both* flanking steps, `MAX_FRAME_SKEW_S` admits it, and the tie breaks toward the later
+/// step, so the 11:00 step takes 10:30 (won on the tie), 10:45, 11:00 and 11:15, and hands 11:30
+/// on to 12:00.
+///
+/// Each hourly frame carries a distinct cell value, so the published byte says which step painted
+/// it — no inference from timestamps.
+#[test]
+fn one_hourly_forecast_step_paints_exactly_four_consecutive_frames() {
+    let ten = ts("2026-08-09T10:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 32, 32);
+    let source = window(45_680_000, 1_460_000, CELL_UDEG, 32, 32);
+    // Four hourly steps, valued 1..4, so a published cell names the step that won it.
+    let hourly = BakedSource {
+        id: gfs::ID,
+        geometry: source,
+        reference_time: ten,
+        attribution: Attribution { text: "synthetic", url: "https://example.invalid" },
+        frames: (0..4)
+            .map(|step| BakedFrame {
+                offset_min: step * 60,
+                valid_at: ten + i64::from(step) * 3_600,
+                class: SourceClass::Forecast,
+                cells: vec![step as u8 + 1; source.cells()],
+            })
+            .collect(),
+    };
+    let mosaic = Mosaic::from_sources(vec![hourly]).expect("gfs is ranked");
+    // Anchor at 10:30 — the phase that puts a frame instant exactly on the tie in both directions.
+    let times = CycleTimes::anchored_at(ten + 1_800);
+    assert_eq!(times.reference_time, ten + 1_800, "the anchor is already on a quarter hour");
+
+    let painted: Vec<u8> = times
+        .offsets_min()
+        .map(|offset_min| {
+            let object = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+            published_cell(&object.bytes, 4, 4)
+        })
+        .collect();
+    // 10:30 10:45 11:00 11:15 | 11:30 11:45 12:00 12:15 | 12:30
+    assert_eq!(painted, vec![2, 2, 2, 2, 3, 3, 3, 3, 4], "each hourly step owns exactly four consecutive frames");
+
+    // Said as the number the spec and the module docs state, so a change to either constant has to
+    // come back through here.
+    let mut runs: Vec<(u8, usize)> = Vec::new();
+    for value in &painted {
+        match runs.last_mut() {
+            Some((seen, count)) if seen == value => *count += 1,
+            _ => runs.push((*value, 1)),
+        }
+    }
+    assert_eq!(runs[0].1, 4, "the first whole run is four frames — not two, not three");
+    assert_eq!(runs[1].1, 4);
+
+    // Four is arithmetic, not a measured coincidence, and this is the derivation: the window admits
+    // `MAX_FRAME_SKEW_S / step` frame instants either side of a step plus the one on it, which is
+    // five candidates — and the two at exactly the window boundary are ties, each handed to the
+    // *later* of the two steps, so a step gives one away at its early edge and keeps one at its
+    // late edge. Five candidates, one handed on, four kept.
+    let step_s = i64::from(FRAME_STEP_MIN) * 60;
+    assert_eq!(MAX_FRAME_SKEW_S % step_s, 0, "the boundary ties only exist when the window is a whole number of steps");
+    let candidates = 2 * (MAX_FRAME_SKEW_S / step_s) + 1;
+    assert_eq!(candidates, 5, "five frame instants are inside the window of one hourly step");
+    assert_eq!(runs[0].1 as i64, candidates - 1, "one of the two boundary ties goes to the later step");
 }
 
 /// The anchor's own tie-break, which the eligibility rule leaves standing and is the only slot it

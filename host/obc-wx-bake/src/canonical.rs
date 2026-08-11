@@ -59,11 +59,13 @@
 //! never be a repeated "now" image wearing a future `valid_at`.
 //!
 //! It turns on the source data's **class**, not on its distance, and the two must not be run
-//! together. The skew window still applies on top, so an hourly model step legitimately paints two
-//! or three consecutive frames — the guarantee is "a prediction", not "a prediction of exactly this
-//! instant", and `OBCG_Spec.md` §3.2 states it in those terms. What makes that different from the
-//! frozen observation is what the data is *about*: the nearest model step is a defensible answer
-//! for 17:15, and a radar scan of 16:58 is not an answer for 17:15 at all.
+//! together. The skew window still applies on top, so one hourly model step legitimately paints
+//! **four** consecutive 15-minute frames: the 11:00 step wins 10:30, 10:45, 11:00 and 11:15,
+//! because the :30 instants are 1,800 s from *both* flanking steps and the tie breaks toward the
+//! later one ([`MosaicLayer::nearest`]). The guarantee is "a prediction", not "a prediction of
+//! exactly this instant", and `OBCG_Spec.md` §3.2 states it in those terms. What makes that
+//! different from the frozen observation is what the data is *about*: the nearest model step is a
+//! defensible answer for 17:15, and a radar scan of 16:58 is not an answer for 17:15 at all.
 
 use std::time::Instant;
 
@@ -415,11 +417,15 @@ impl FrameSlot {
 /// DWD RV's own nowcast members, which the adapter already classes `Forecast` for every lead but 0.
 ///
 /// It is a test on the class and not on the distance, and the skew window still runs on top of it,
-/// so a forecast may paint a frame it is not exactly valid at — an hourly step covers two or three
-/// consecutive 15-minute frames, which is ordinary rather than degraded. That is not the same
-/// latitude the frozen observation was taking: the nearest prediction is a defensible answer for
-/// 17:15, and a measurement of 16:58 is not an answer for 17:15 in any sense. `OBCG_Spec.md` §3.2
-/// is normative and says exactly this.
+/// so a forecast may paint a frame it is not exactly valid at. **The quantity is four consecutive
+/// 15-minute frames per hourly step** — the 11:00 step wins 10:30, 10:45, 11:00 and 11:15, since a
+/// :30 instant sits 1,800 s from both flanking steps and [`MosaicLayer::nearest`] breaks that tie
+/// toward the later one. Ordinary rather than degraded, and worth stating as a number: it is the
+/// thing a reader would otherwise assume away.
+///
+/// That is not the same latitude the frozen observation was taking: the nearest prediction is a
+/// defensible answer for 17:15, and a measurement of 16:58 is not an answer for 17:15 in any sense.
+/// `OBCG_Spec.md` §3.2 is normative and says exactly this.
 ///
 /// This replaces the rule WXR7 shipped, which let any observation inside [`MAX_FRAME_SKEW_S`]
 /// paint f+15 and f+30 as long as the object said Forecast. Labelling it honestly was not enough:
@@ -433,7 +439,18 @@ impl FrameSlot {
 /// frozen — is WXR9 #1251's job. It joins the mosaic as a source whose forward frames are
 /// forecasts, and this rule admits it on exactly those terms.
 pub fn frame_is_eligible(class: SourceClass, offset_min: u32) -> bool {
-    offset_min == 0 || !class.is_observation()
+    if offset_min == 0 {
+        // The anchor takes anything: an observation of that instant, or a forecast for it.
+        return true;
+    }
+    // Exhaustive on purpose, and `#[non_exhaustive]`-free on purpose, so adding a variant to
+    // `SourceClass` fails to compile here rather than defaulting into forward eligibility. A
+    // `!is_observation()` would have admitted a future `Analysis` or `Nowcast` variant silently —
+    // the same shape as the `flags & FLAG_OBSERVED != 0` this rule just replaced one level down.
+    match class {
+        SourceClass::Observation => false,
+        SourceClass::Forecast => true,
+    }
 }
 
 /// Every frame one source contributes to the mosaic, at its priority rank.
@@ -793,13 +810,16 @@ pub fn emit_shard(
     let mut cells = vec![0u8; window.cells()];
     let fill = mosaic.fill(lattice, slot, window, &mut cells);
     let observed = shard_is_observed(offset_min, &fill);
+    // Measured, not assumed. See `shard_is_observed`: an f0 shard over open ocean is GFS model fill
+    // and is a Forecast; one inside a radar footprint is an Observation; and every frame ahead of f0
+    // is a Forecast, because nothing but a forecast is allowed to paint one. An all-no-data shard
+    // says Forecast, which is what the format's "exactly one source-class bit" leaves.
+    let class = if observed { SourceClass::Observation } else { SourceClass::Forecast };
 
     let input = FrameInput {
-        // Measured, not assumed. See `shard_is_observed`: an f0 shard over open ocean is GFS model
-        // fill and says Forecast; one inside a radar footprint says Observed; and every frame ahead
-        // of f0 says Forecast, because nothing but a forecast is allowed to paint one. The header
-        // requires exactly one of the two, so an all-no-data shard says Forecast.
-        flags: if observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
+        // The one place the published bit is written, and it goes through `SourceClass::obcg_flag`
+        // so the emitter and the adapters cannot drift into two different mappings.
+        flags: class.obcg_flag(),
         valid_at: slot.valid_at,
         reference_time: times.reference_time,
         south_lat_udeg: geometry.south_lat_udeg,
@@ -978,11 +998,22 @@ pub fn run_cycle(
     let mut published_bytes = 0u64;
     let mut fetchable: Vec<(String, u64)> = Vec::new();
     let mut painted_objects = 0usize;
+    let mut blank_forward_objects = 0usize;
     let mut dry_shards = 0usize;
     let mut total_objects = 0usize;
     bake_cycle(lattice, &mosaic, times, threads, &mut |object| {
         total_objects += 1;
         painted_objects += usize::from(object.fill.painted);
+        // A forward frame with no eligible forecast source anywhere in its window. Since #1248 this
+        // is a state the dataset can actually reach — the radar that used to mask an absent model
+        // is no longer eligible here — and it publishes a shard of intensity 15 rather than a
+        // frozen field, which is the honest answer but not a quiet one. It should be impossible
+        // while the hourly GFS floor is healthy (`the_hourly_floor_reaches_every_offset_with_
+        // exactly_zero_margin`), so seeing it means the floor is degraded, and a run of cycles
+        // reporting it is what a freshness probe should be escalating on.
+        if object.offset_min > 0 && !object.fill.painted {
+            blank_forward_objects += 1;
+        }
         // A shard whose every cell is dry is not published, and the manifest's presence bitmap says
         // so — the bit stays clear and the client reads "dry here", never a 404 it has to interpret.
         // A shard with so much as one no-data cell *is* published, so absence can never be an
@@ -1025,6 +1056,16 @@ pub fn run_cycle(
         return Err(format!(
             "every one of the {total_objects} baked objects is entirely no-data — no source reached the lattice; \
              refusing to publish a blank cycle"
+        ));
+    }
+
+    // Not fatal — a partial dataset is still worth publishing, and intensity 15 is a truthful thing
+    // to publish — but it is the one degradation #1248 introduced that has no other symptom, so it
+    // is said out loud rather than left to be inferred from a rendered frame.
+    if blank_forward_objects > 0 {
+        warnings.push(format!(
+            "{blank_forward_objects} forward-frame shards had no eligible forecast source and published intensity 15; \
+             an observation cannot stand in for one, so this is the global floor degraded"
         ));
     }
 
@@ -1181,10 +1222,21 @@ mod tests {
     ///    out of two frames in four.
     #[test]
     fn the_hourly_floor_reaches_every_offset_with_exactly_zero_margin() {
-        const HOUR: i64 = 3_600;
-        // A cycle anchors on a quarter hour, so the anchor's phase within the hour is one of four.
+        // "Hourly" is read off the floor adapter's own retained lead set rather than restated as a
+        // local constant, so a GFS re-tune to three-hourly leads fails here instead of quietly
+        // invalidating the arithmetic below.
+        let leads = crate::source::gfs::LEADS_H;
+        let step_h = leads[1] - leads[0];
+        assert!(
+            leads.windows(2).all(|pair| pair[1] - pair[0] == step_h),
+            "the floor's leads are not evenly spaced; the nearest-step arithmetic below assumes they are"
+        );
+        assert_eq!(step_h, 1, "the floor is hourly — a coarser one cannot cover a 15-minute cadence at this window");
+        let hour = i64::from(step_h) * 3_600;
+
+        // A cycle anchors on a quarter hour, so its phase within one floor step is one of four.
         let phases: Vec<i64> =
-            (0..HOUR / (i64::from(FRAME_STEP_MIN) * 60)).map(|step| step * i64::from(FRAME_STEP_MIN) * 60).collect();
+            (0..hour / (i64::from(FRAME_STEP_MIN) * 60)).map(|step| step * i64::from(FRAME_STEP_MIN) * 60).collect();
         assert_eq!(phases, vec![0, 900, 1_800, 2_700], "the anchoring rule admits exactly these four phases");
 
         let mut worst = 0i64;
@@ -1194,8 +1246,8 @@ mod tests {
             for offset_min in times.offsets_min() {
                 // Distance from this frame's instant to the nearer of the two hourly steps
                 // bracketing it. An hourly source publishes on the hour, whatever its run.
-                let into_hour = times.valid_at(offset_min).rem_euclid(HOUR);
-                let distance = into_hour.min(HOUR - into_hour);
+                let into_hour = times.valid_at(offset_min).rem_euclid(hour);
+                let distance = into_hour.min(hour - into_hour);
                 assert!(
                     distance <= MAX_FRAME_SKEW_S,
                     "anchor phase {phase}s, f+{offset_min}: an hourly step is {distance}s away, outside the window \
