@@ -63,13 +63,27 @@
 //! never be a repeated "now" image wearing a future `valid_at`.
 //!
 //! It turns on the source data's **class**, not on its distance, and the two must not be run
-//! together. The skew window still applies on top, so one hourly model step legitimately paints
-//! **four** consecutive 15-minute frames: the 11:00 step wins 10:30, 10:45, 11:00 and 11:15,
-//! because the :30 instants are 1,800 s from *both* flanking steps and the tie breaks toward the
-//! later one ([`MosaicLayer::nearest`]). The guarantee is "a prediction", not "a prediction of
-//! exactly this instant", and `OBCG_Spec.md` §3.2 states it in those terms. What makes that
-//! different from the frozen observation is what the data is *about*: the nearest model step is a
-//! defensible answer for 17:15, and a radar scan of 16:58 is not an answer for 17:15 at all.
+//! together. The skew window still applies on top, so one hourly model step is *permitted* to paint
+//! four consecutive 15-minute frames — the 11:00 step reaches 10:30, 10:45, 11:00 and 11:15,
+//! because the :30 instants are 1,800 s from both flanking steps and the tie breaks toward the later
+//! one ([`MosaicLayer::nearest`]). The guarantee that rule alone gives is "a prediction", not "a
+//! prediction of exactly this instant". What makes it different from the frozen observation is what
+//! the data is *about*: the nearest model step is a defensible answer for 17:15, and a radar scan of
+//! 16:58 is not an answer for 17:15 at all.
+//!
+//! ## …and since WXR9, they are predictions of their own instant
+//!
+//! Locked 2026-08-11 (#1251). The paragraph above describes what the *rule* allows, and until WXR9
+//! it also described what the dataset did: in a GFS-only region — most of the planet — one hourly
+//! step really did paint four frames, so the timeline changed once an hour and stood still in
+//! between. [`crate::derive`] closes that. Between the adapters and the mosaic, every canonical
+//! instant an hourly source skips is filled by morphing its two bracketing steps to that instant
+//! along the estimated motion field, and every radar source with a motion baseline gains advected
+//! forward frames of its own. The skew window is still the fall-back and still admits four frames
+//! per step; it is simply not what happens any more when the source has enough to interpolate from.
+//!
+//! `OBCG_Spec.md` §3.2 states both halves: `valid_at` is the frame's cadence instant, and the frame
+//! is an estimate **for** it.
 
 use std::time::Instant;
 
@@ -923,6 +937,10 @@ pub fn bake_cycle(
 pub struct CycleReport {
     /// `(source id, priority rank, frames contributed)`, best rank first.
     pub layers: Vec<(String, usize, usize)>,
+    /// What WXR9's derivation stage did this cycle: the nowcast layers it built, the frames it
+    /// interpolated onto the cadence, and the nowcasts it could not build. Reported rather than
+    /// warned — see [`crate::derive::DeriveReport`] for why the two channels are separate.
+    pub derived: crate::derive::DeriveReport,
     pub reference_time: i64,
     pub fetched_bytes: u64,
     pub published_objects: usize,
@@ -945,6 +963,7 @@ impl CycleReport {
         for (id, rank, frames) in &self.layers {
             lines.push(format!("  #{rank} {id}: {frames} source frames"));
         }
+        lines.extend(self.derived.lines());
         lines.push(format!(
             "fetched {} upstream bytes; published {} objects / {} bytes ({} dry shards omitted); {} ms",
             self.fetched_bytes, self.published_objects, self.published_bytes, self.dry_shards, self.elapsed_ms
@@ -1080,6 +1099,19 @@ pub fn run_cycle(
     for adapter in adapters {
         sources.push(adapter.bake(upstream, now, &mut warnings)?);
     }
+    // WXR9 #1251, between the adapters and the mosaic and nowhere else: the radar sources gain an
+    // advected forward layer, and the hourly model sources gain a frame at every canonical instant
+    // their own steps skip. Both produce ordinary `BakedSource`s on their parent's window, so
+    // everything below this line is unchanged — which is the test of whether WXR3's mosaic was
+    // built widely enough. Every failure inside is a warning and leaves the mosaic as it was.
+    // On the same `threads` the bake is measured at, and for the same reason: the derivation's own
+    // parallelism is inside `flow`, so on a 16-core builder it would report a wall time the 4-vCPU
+    // production box will never see. A published budget must not be a property of the machine.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads.max(1))
+        .build()
+        .map_err(|error| format!("derive pool: {error}"))?;
+    let (sources, derived) = pool.install(|| crate::derive::derive_sources(sources, times));
     let mosaic = Mosaic::from_sources(sources)?;
     let mut layers: Vec<(String, usize, usize)> =
         mosaic.layers().iter().map(|layer| (layer.id.to_string(), layer.rank, layer.frames.len())).collect();
@@ -1227,6 +1259,7 @@ pub fn run_cycle(
 
     Ok(CycleReport {
         layers,
+        derived,
         reference_time: times.reference_time,
         fetched_bytes: upstream.fetched_bytes(),
         published_objects,
@@ -1306,6 +1339,11 @@ mod tests {
             (mrms::ID, mrms::ATTRIBUTION),
             (opera_cirrus::ID, opera_cirrus::ATTRIBUTION),
             (opera_nimbus::ID, opera_nimbus::ATTRIBUTION),
+            // WXR9 #1251's derived layers carry their parent's licence plus the modification they
+            // made to it. They are sources in this list on exactly the same terms as the fetched
+            // ones, because a rider cannot tell which of them painted a cell.
+            (mrms::NOWCAST.id, mrms::NOWCAST.attribution),
+            (opera_cirrus::NOWCAST.id, opera_cirrus::NOWCAST.attribution),
             (hrrr::ID, hrrr::ATTRIBUTION),
             (icon_eu::ID, icon_eu::ATTRIBUTION),
             (gfs::ID, gfs::ATTRIBUTION),
@@ -1334,7 +1372,11 @@ mod tests {
             .filter(|entry| entry.source_id.starts_with("opera-"))
             .map(|entry| entry.text.as_str())
             .collect();
-        assert_eq!(opera.len(), 2);
+        // Three OPERA rows since WXR9: the two fetched composites and the nowcast derived from
+        // CIRRUS. All three carry CC BY 4.0, which is the point — a derived layer inherits the
+        // obligation it was derived under, and forgetting that on one of them would put an
+        // unattributed EUMETNET pixel on the wire.
+        assert_eq!(opera.len(), 3);
         assert!(opera.iter().all(|text| text.contains("CC BY 4.0")), "OPERA's licence must survive to the manifest");
     }
 
