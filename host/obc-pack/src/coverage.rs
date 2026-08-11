@@ -33,6 +33,33 @@
 //! unchanged on the result, and the OBCM bytes are the same shape as ever: this is a bake-time
 //! geometry transform, not a format change.
 //!
+//! # The decimation pre-pass
+//!
+//! Steps 2–3 above are a planar overlay, and an overlay's cost is driven by the number of
+//! *vertices* it has to node, not the number of polygons. Full-detail OSM landcover carries a
+//! vertex every few metres — detail a tier whose tolerance is hundreds of metres is about to throw
+//! away anyway, but which the arrangement pays for in full first. On the Freiburg extract that was
+//! the difference between a pack that fits the host memory law and one that does not.
+//!
+//! So before anything is noded, each participating fill is pre-simplified **on its own** with the
+//! ordinary [`crate::geom::topology_preserve_simplify`] at
+//! `tier tolerance / `[`DECIMATE_DIVISOR`], floored at [`DECIMATE_FLOOR_M`] metres and never
+//! coarser than the tier's own tolerance. At the coarse tiers this pass runs on that is deeply
+//! sub-pixel — the 2200 m tier decimates at 275 m, two thirds of a pixel at the 400 m/px it is
+//! first shown at — so it cannot change the picture, while cutting the vertices entering the
+//! overlay by about an order of magnitude.
+//!
+//! It is not a free lunch, and the cost is paid by the elimination step below: because each fill is
+//! decimated independently, two neighbours' copies of a shared boundary walk apart by up to the
+//! decimation tolerance. Where they overlap, face assignment already resolves it (the visible class
+//! wins). Where they part, a **micro-gap** appears — a face nothing covers, sub-pixel wide, which
+//! step 3 would drop as backdrop. Healing those is what makes decimation safe, and it is the same
+//! operator that already eliminates small *covered* faces.
+//!
+//! The two are therefore one lever, and the code says so: the pre-pass runs **only** on a tier that
+//! has an elimination threshold to heal with. A tier without one gets the full-detail arrangement
+//! it has always got, slowly and glued.
+//!
 //! # Components
 //!
 //! The arrangement is not built over a whole country at once. Fills are first split into
@@ -66,6 +93,23 @@
 //! step and the pass ends with nothing under the threshold left — where one sweep would leave every
 //! speck settled on the speck next door and the threshold binding nothing at all.
 //!
+//! An **uncovered** face under the same threshold is absorbed too — into a *covered* neighbour,
+//! never the other way round. That is what closes the micro-gaps the decimation pre-pass opens,
+//! and it closes the ones OSM ships with as well: two landcover polygons digitised a few metres
+//! apart leave a crack that is nothing but backdrop at any zoom. At a tier this coarse a complete
+//! rendering of crude shapes beats a faithful one full of slivers. The direction of the rule is
+//! what keeps it honest: absorbing *into* a gap would delete map content, and a gap at or above
+//! the threshold — a real unmapped basin, the sea beyond a coastline — is left exactly as it is.
+//!
+//! **What the threshold measures is decided by the pre-dissolve** ([`predissolve`]), and that is
+//! the one place these cost levers change the picture rather than just the bill. Without it a class
+//! arrives as its individual parcels, so a plain of fragmented farmland is a plain of faces that are
+//! each under the threshold, and the fixed point walks them one by one into whatever is around them
+//! — on the Rhine valley, into the `natural.land` base underneath, until the far-zoom tier shows
+//! bare ground where every finer tier shows farmland. With it, contiguous farmland is one face of
+//! its true size and it survives. Elimination is supposed to drop what is too small **to see**, and
+//! only a dissolved class states that size honestly.
+//!
 //! The caller's cull is then skipped for everything this pass produced (see
 //! [`coverage_simplify_fills_with`]'s return contract) — it has already been applied, in the one
 //! form a coverage can survive.
@@ -89,7 +133,7 @@ use obc_map_scene::M_PER_DEG;
 
 use crate::geom::{
     box_polygon, collect_polygons, coverage_is_valid, coverage_simplify_vw, footprint_area_px, from_geos,
-    try_polygon_to_geos, Bounds, Geom,
+    try_polygon_to_geos, union_polygons, Bounds, Geom,
 };
 use crate::merge::ClassKey;
 use crate::progress::Progress;
@@ -99,20 +143,66 @@ use crate::progress::Progress;
 pub struct CoverageStats {
     /// Participating fill polygons consumed.
     pub inputs: usize,
+    /// What the per-class pre-dissolve left of them — the polygons the arrangement is built over.
+    pub dissolved: usize,
     /// Polygons emitted in their place.
     pub outputs: usize,
+    /// Ring positions those fills arrived with.
+    pub vertices_in: usize,
+    /// Ring positions that actually entered the arrangement, after the decimation pre-pass.
+    pub vertices_arranged: usize,
     /// Bbox-connected components the arrangement was built over.
     pub components: usize,
     /// Faces the arrangements produced.
     pub faces: usize,
-    /// Faces no fill covered — genuine gaps, dropped rather than invented.
+    /// Faces no fill covered and no covered neighbour absorbed — genuine gaps, left as backdrop
+    /// rather than invented into fill.
     pub dropped_faces: usize,
     /// Faces below the tier's threshold that were absorbed into a neighbour (see the module docs).
     pub eliminated: usize,
+    /// Uncovered faces below the tier's threshold that a covered neighbour absorbed — the
+    /// micro-gaps decimation opens, plus the ones the source data already had.
+    pub healed: usize,
     /// Class groups whose `GEOSCoverageUnion` refused, leaving that class's faces undissolved.
     pub dissolve_failures: usize,
     /// Components that hit a GEOS failure and fell back to the per-feature path.
     pub fallbacks: usize,
+}
+
+/// GEOS `STRtree` **node capacity**: the number of children a tree node may hold, and *not* a
+/// count of items to reserve room for.
+///
+/// [`geos::STRtree::with_capacity`] passes this value straight to `GEOSSTRtree_create`, so the
+/// natural reading of the name — "how many things am I about to insert" — builds a tree of a single
+/// flat node, and every query then scans every envelope in it. That is not a slow index, it is no
+/// index: on this pass' quarter-million fills against half a million faces it was **minutes** of
+/// linear search per tier, and it was the whole of the pass' cost. 10 is GEOS' own documented
+/// default.
+const STRTREE_NODE_CAPACITY: usize = 10;
+
+/// A member with more coordinates than this gets a `PreparedGeometry` for the face assignment;
+/// smaller ones are point-tested directly. See [`assign_faces`].
+const PREPARE_ABOVE_COORDS: usize = 64;
+
+/// The decimation pre-pass runs at the tier's tolerance divided by this — small enough to be
+/// deeply sub-pixel at the scale the tier is drawn at, large enough to take an order of magnitude
+/// of vertices out of the arrangement. See the module docs.
+const DECIMATE_DIVISOR: f64 = 8.0;
+
+/// Floor on the decimation tolerance, metres: below this the vertices removed stop paying for the
+/// simplify that removes them. A tier whose own tolerance is finer than this decimates at its own
+/// tolerance instead — the pre-pass is never allowed to be coarser than the pass it feeds.
+const DECIMATE_FLOOR_M: f64 = 10.0;
+
+/// The decimation tolerance for a tier simplifying at `tol` degrees, `0.0` for "do not decimate".
+///
+/// A tier that asked for no simplify at all (`tol == 0.0`, dissolve and re-cut only) gets no
+/// decimation either: it asked for its geometry back unmoved, and the pre-pass would move it.
+fn decimation_tol(tol: f64) -> f64 {
+    if tol <= 0.0 {
+        return 0.0;
+    }
+    (tol / DECIMATE_DIVISOR).max(DECIMATE_FLOOR_M / M_PER_DEG).min(tol)
 }
 
 /// The tier's small-face elimination threshold: `min_area_px` square pixels at `mpp`
@@ -146,6 +236,122 @@ struct Fill {
     key: ClassKey,
     geom: Geom,
     bounds: Bounds,
+}
+
+/// What the decimation pre-pass decided about one fill, and the geometry the arrangement should
+/// build from.
+enum Prep {
+    /// GEOS will not touch it (unconvertible, or invalid): it sits the arrangement out and passes
+    /// through untouched — see [`coverage_component`].
+    SitOut,
+    /// Usable exactly as it arrived: the tier asked for no simplify, or the decimation did not
+    /// produce something usable and the original is the honest input.
+    AsIs,
+    /// Usable, decimated to [`decimation_tol`].
+    Decimated(Geom),
+}
+
+/// Ring positions in a polygon — the unit the overlay's cost is measured in.
+fn vertex_count(g: &Geom) -> usize {
+    match g {
+        Geom::Polygon { exterior, interiors } => exterior.len() + interiors.iter().map(Vec::len).sum::<usize>(),
+        Geom::Line(c) => c.len(),
+        Geom::Multi(parts) => parts.iter().map(vertex_count).sum(),
+        Geom::Empty => 0,
+    }
+}
+
+/// Dissolve each class's fills into their union **before** the arrangement is built.
+///
+/// This is [`crate::merge::merge_fills`]' operator, run here for a different reason. There it saves
+/// spans on the device; here it deletes work: a shared boundary between two *same-class* parcels is
+/// invisible in the output either way, but the arrangement still has to node it, polygonize a face
+/// on each side of it, index both, assign both and dissolve them back together at the end. Rural
+/// OSM is wall-to-wall parcels of a handful of classes, so most boundaries in the extract are of
+/// exactly that kind — on Freiburg it is 237 000 fills down to 90 000. Deleting them early is
+/// strictly less to node, fewer faces to hold, fewer prepared geometries to index, and it comes
+/// before the decimation, so the boundaries that *do* survive are decimated once between two
+/// classes rather than once per parcel.
+///
+/// The union is [`crate::geom::union_polygons`], which clusters by shared vertices and unions each
+/// cluster on one thread; a cluster GEOS refuses passes its own polygons through unmerged, so
+/// nothing is dropped and an invalid parcel still reaches [`prepare_fills`] to sit the arrangement
+/// out. Order is deterministic (classes in canonical-id order, parts as `union_polygons` emits
+/// them).
+///
+/// **Paint order becomes per class.** A dissolved polygon carries the whole class's *first* `seq`,
+/// because that is where [`coverage_simplify_fills_with`]'s `Slot::Group` emits the class — after
+/// this pass a class is one block of records, and the device paints the block at that position, so
+/// a per-parcel `seq` would be answering a question the output no longer asks. It changes nothing
+/// unless two *different* classes share a `z_index`, which is the only case `seq` ever decided.
+fn predissolve(fills: Vec<Fill>) -> Vec<Fill> {
+    // Classes in canonical-id order; members in input order within each.
+    let mut groups: BTreeMap<u8, Vec<Fill>> = BTreeMap::new();
+    for f in fills {
+        groups.entry(f.canonical).or_default().push(f);
+    }
+    let mut out: Vec<Fill> = Vec::new();
+    for (canonical, members) in groups {
+        if members.len() < 2 {
+            out.extend(members);
+            continue;
+        }
+        let (key, seq) = (members[0].key, members.iter().map(|f| f.seq).min().expect("non-empty"));
+        let refs: Vec<&Geom> = members.iter().map(|f| &f.geom).collect();
+        match union_polygons(&refs) {
+            Some(parts) => {
+                drop(refs);
+                for geom in parts {
+                    if geom.is_empty() {
+                        continue;
+                    }
+                    let bounds = geom.bounds();
+                    out.push(Fill { seq, style_id: canonical, canonical, key, geom, bounds });
+                }
+            }
+            // The whole class refused: keep it exactly as it arrived (this is a cost optimisation,
+            // never a correctness step).
+            None => {
+                drop(refs);
+                out.extend(members);
+            }
+        }
+    }
+    out
+}
+
+/// The decimation pre-pass: validate every fill and pre-simplify it at `dec_tol` (see the module
+/// docs). Runs in parallel over the fills — each task builds, simplifies and reads back its GEOS
+/// geometry on its own thread, so nothing `!Send` crosses a boundary — which also moves the
+/// per-fill validity check off the single rayon task that owns the one big component.
+///
+/// Anything GEOS refuses, at either step, degrades rather than fails: an invalid input sits the
+/// arrangement out (unchanged, as before this pass existed), and a decimation that errors or comes
+/// back invalid or empty leaves the fill at full detail. The arrangement is therefore fed exactly
+/// the same *set* of fills as it was before, only lighter.
+fn prepare_fills(fills: &[Fill], dec_tol: f64) -> Vec<Prep> {
+    fills
+        .par_iter()
+        .map(|f| {
+            let Some(g) = try_polygon_to_geos(&f.geom) else { return Prep::SitOut };
+            if !g.is_valid().unwrap_or(false) {
+                return Prep::SitOut;
+            }
+            if dec_tol <= 0.0 {
+                return Prep::AsIs;
+            }
+            let Ok(s) = g.topology_preserve_simplify(dec_tol) else { return Prep::AsIs };
+            // A simplify that broke validity is not an input this pass may node: the arrangement
+            // assumes valid members (see `coverage_component`), so the full-detail original stands.
+            if !s.is_valid().unwrap_or(false) {
+                return Prep::AsIs;
+            }
+            match from_geos(&s) {
+                g @ Geom::Polygon { .. } if !g.is_empty() => Prep::Decimated(g),
+                _ => Prep::AsIs,
+            }
+        })
+        .collect()
 }
 
 /// One emission slot in input order (the same device [`crate::merge`] uses): a passthrough
@@ -230,13 +436,35 @@ pub fn coverage_simplify_fills_with(
     }
 
     let mut stats = CoverageStats { inputs: fills.len(), ..Default::default() };
+    stats.vertices_in = fills.iter().map(|f| vertex_count(&f.geom)).sum();
     if fills.is_empty() {
         // Nothing participated (a lines-only tier, or one whose polygons are all outlined): the
         // input echoes back untouched, and there are no `Group` slots to fill.
         return (slots.into_iter().map(|s| s.into_pass()).collect(), stats);
     }
 
-    // --- Phase 2: bbox-connected components (see the module docs). ---
+    // --- Phase 2: dissolve each class, decimate what is left, then take bbox-connected components
+    // (see the module docs). Decimation only shrinks a polygon's bounds (it keeps a subset of its
+    // vertices), so the components computed from the post-dissolve bounds stay the conservative
+    // superset they have to be.
+    //
+    // Decimation is gated on the tier having an elimination threshold, because that threshold is
+    // what closes the micro-gaps decimating independently opens: without it the pre-pass would
+    // trade the tear this whole module exists to remove for a cheaper arrangement, which is no
+    // trade at all. The two levers are one lever. ---
+    let fills = predissolve(fills);
+    stats.dissolved = fills.len();
+    let dec_tol = if eliminate.is_some() { decimation_tol(tol) } else { 0.0 };
+    let preps = prepare_fills(&fills, dec_tol);
+    stats.vertices_arranged = fills
+        .iter()
+        .zip(&preps)
+        .map(|(f, p)| match p {
+            Prep::SitOut => 0,
+            Prep::AsIs => vertex_count(&f.geom),
+            Prep::Decimated(g) => vertex_count(g),
+        })
+        .sum();
     let components = bbox_components(&fills);
     stats.components = components.len();
 
@@ -245,7 +473,15 @@ pub fn coverage_simplify_fills_with(
     // `!Send`); only plain `Geom` crosses a thread boundary. ---
     let results: Vec<Option<ComponentOut>> = components
         .par_iter()
-        .map(|comp| if progress.is_cancelled() { None } else { coverage_component(&fills, comp, tol, eliminate) })
+        .map(
+            |comp| {
+                if progress.is_cancelled() {
+                    None
+                } else {
+                    coverage_component(&fills, &preps, comp, tol, eliminate)
+                }
+            },
+        )
         .collect();
 
     // --- Phase 4: emit in slot order, each class's polygons at its first member's position. ---
@@ -256,6 +492,7 @@ pub fn coverage_simplify_fills_with(
                 stats.faces += out.faces;
                 stats.dropped_faces += out.dropped_faces;
                 stats.eliminated += out.eliminated;
+                stats.healed += out.healed;
                 stats.dissolve_failures += out.dissolve_failures;
                 stats.outputs += out.polys.len();
                 for (style_id, g, simplified) in out.polys {
@@ -314,6 +551,7 @@ struct ComponentOut {
     faces: usize,
     dropped_faces: usize,
     eliminated: usize,
+    healed: usize,
     dissolve_failures: usize,
 }
 
@@ -348,7 +586,7 @@ fn bbox_components(fills: &[Fill]) -> Vec<Vec<usize>> {
     // Envelopes as GEOS boxes. A box that will not build (a degenerate bound) links to nothing
     // by itself, so the polygon simply forms its own component and is coverage-simplified alone.
     let boxes: Vec<Option<Geometry>> = fills.iter().map(|f| box_polygon(f.bounds).ok()).collect();
-    if let Ok(mut tree) = STRtree::<usize>::with_capacity(n.max(1)) {
+    if let Ok(mut tree) = STRtree::<usize>::with_capacity(STRTREE_NODE_CAPACITY) {
         for (i, b) in boxes.iter().enumerate() {
             if let Some(b) = b {
                 tree.insert(b, i);
@@ -393,18 +631,40 @@ fn bbox_components(fills: &[Fill]) -> Vec<Vec<usize>> {
 /// out of the arrangement and passed through to the ordinary per-feature path. Its valid
 /// neighbours still get glued to each other; the worst case is that the broken shape overlaps a
 /// face it used to own, which is exactly what the packer stores today.
-fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64, eliminate: Option<Eliminate>) -> Option<ComponentOut> {
+///
+/// `preps` is the decimation pre-pass' verdict per fill, indexed like `fills`; it is what decides
+/// which members sit out, and supplies the (lighter) geometry the arrangement is built from.
+fn coverage_component(
+    fills: &[Fill],
+    preps: &[Prep],
+    comp: &[usize],
+    tol: f64,
+    eliminate: Option<Eliminate>,
+) -> Option<ComponentOut> {
     // The members as GEOS polygons — also the inputs of the point-in-polygon assignment.
     let mut members: Vec<Geometry> = Vec::with_capacity(comp.len());
     let mut member_of: Vec<usize> = Vec::with_capacity(comp.len());
+    // The `Geom` each member was built from, for the single-member shortcut below.
+    let mut prepared: Vec<&Geom> = Vec::with_capacity(comp.len());
     let mut sat_out: Vec<(u8, Geom, bool)> = Vec::new();
     for (k, &i) in comp.iter().enumerate() {
-        match try_polygon_to_geos(&fills[i].geom) {
-            Some(g) if g.is_valid().unwrap_or(false) => {
+        // The pre-pass already validated (and possibly decimated) this fill; `SitOut` is its way
+        // of saying GEOS would not have it, which is the case the arrangement must not see.
+        let geom: &Geom = match &preps[i] {
+            Prep::SitOut => {
+                sat_out.push((fills[i].style_id, fills[i].geom.clone(), false));
+                continue;
+            }
+            Prep::AsIs => &fills[i].geom,
+            Prep::Decimated(g) => g,
+        };
+        match try_polygon_to_geos(geom) {
+            Some(g) => {
                 members.push(g);
                 member_of.push(k);
+                prepared.push(geom);
             }
-            _ => sat_out.push((fills[i].style_id, fills[i].geom.clone(), false)),
+            None => sat_out.push((fills[i].style_id, fills[i].geom.clone(), false)),
         }
     }
     if members.is_empty() {
@@ -421,7 +681,7 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64, eliminate: Optio
     let (faces, mut winners) = {
         let members = members; // moved in, so the block's end frees them
         if members.len() == 1 {
-            (vec![fills[comp[member_of[0]]].geom.clone()], vec![Some(0usize)])
+            (vec![prepared[0].clone()], vec![Some(0usize)])
         } else {
             let faces = arrangement_faces(&members)?;
             let winners = assign_faces(&faces, &members, fills, comp, &member_of)?;
@@ -429,14 +689,18 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64, eliminate: Optio
         }
     };
     let n_faces = faces.len();
-    let dropped = winners.iter().filter(|w| w.is_none()).count();
 
     // --- Elimination: a face under the tier's threshold joins the neighbour it shares the most
-    // boundary with, so the dissolve below absorbs it instead of the cull deleting it. ---
-    let eliminated = match eliminate {
+    // boundary with, so the dissolve below absorbs it instead of the cull deleting it. An
+    // *uncovered* face under the threshold joins a covered neighbour the same way, which is what
+    // closes the micro-gaps decimation opens (see the module docs). ---
+    let (eliminated, healed) = match eliminate {
         Some(e) => eliminate_small_faces(&faces, &mut winners, e),
-        None => 0,
+        None => (0, 0),
     };
+    // After elimination, because healing is exactly the operation that turns an uncovered face
+    // into a covered one: what is still uncovered here is what stays backdrop.
+    let dropped = winners.iter().filter(|w| w.is_none()).count();
 
     // --- Per-class dissolve, classes in key order so emission is deterministic. ---
     let mut by_class: BTreeMap<ClassKey, (u8, Vec<Geom>)> = BTreeMap::new();
@@ -472,6 +736,7 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64, eliminate: Optio
             faces: n_faces,
             dropped_faces: dropped,
             eliminated,
+            healed,
             dissolve_failures,
         });
     }
@@ -504,7 +769,7 @@ fn coverage_component(fills: &[Fill], comp: &[usize], tol: f64, eliminate: Optio
         }
     }
     polys.extend(sat_out);
-    Some(ComponentOut { polys, faces: n_faces, dropped_faces: dropped, eliminated, dissolve_failures })
+    Some(ComponentOut { polys, faces: n_faces, dropped_faces: dropped, eliminated, healed, dissolve_failures })
 }
 
 /// Node every member's boundary into one planar arrangement and polygonize it into faces.
@@ -517,8 +782,15 @@ fn arrangement_faces(members: &[Geometry]) -> Option<Vec<Geom>> {
     for m in members {
         lines.push(m.boundary().ok()?);
     }
-    let collection = Geometry::create_geometry_collection(lines).ok()?;
-    let noded = collection.node().ok()?;
+    // Each of these steps copies every coordinate again, so each input is freed the moment its
+    // successor exists rather than at the end of the function: on a country-scale arrangement a
+    // spare copy of every boundary is hundreds of megabytes, and the whole point of this pass'
+    // recent shape is that it fits the host memory law. (`noded` needs no `drop`: it is moved into
+    // the temporary array `polygonize` borrows, which dies with the statement.)
+    let noded = {
+        let collection = Geometry::create_geometry_collection(lines).ok()?;
+        collection.node().ok()?
+    };
     let polygonized = Geometry::polygonize(&[noded]).ok()?;
     let mut faces = Vec::new();
     collect_polygons(from_geos(&polygonized), &mut faces);
@@ -530,10 +802,18 @@ fn arrangement_faces(members: &[Geometry]) -> Option<Vec<Geom>> {
 /// *valid* fills only.
 ///
 /// The representative point is a `GEOSPointOnSurface`, which is guaranteed to lie in the face's
-/// interior, so "which fills cover this face" is decided by a single point test against
-/// prepared geometries — with an `STRtree` to keep the candidate set to the polygons whose box
+/// interior, so "which fills cover this face" is decided by a single point test against each
+/// candidate member — with an `STRtree` to keep the candidate set to the polygons whose box
 /// contains the point. Ties do not exist: the winner is the maximum by `(z_index, seq)`, the
 /// device's paint order, and a later span paints over an earlier one.
+///
+/// **Only the big members are prepared.** A `PreparedGeometry` earns its index when the same shape
+/// is queried many times; after the pre-dissolve and the decimation the typical member is a handful
+/// of vertices tested two or three times, and building an indexed point locator for each of ninety
+/// thousand of those costs far more — in the arena churn this pass is memory-budgeted on, most of
+/// all — than the ray casts it saves. The few genuinely large members (the land polygon under
+/// everything, a big forest) are the opposite case, and every face's point falls inside their
+/// envelope, so they are prepared and the rest are tested directly. Same predicate either way.
 ///
 /// `None` for a face nothing covers.
 fn assign_faces(
@@ -543,9 +823,15 @@ fn assign_faces(
     comp: &[usize],
     member_of: &[usize],
 ) -> Option<Vec<Option<usize>>> {
-    let prepared: Vec<PreparedGeometry<'_>> =
-        members.iter().map(|m| m.to_prepared_geom()).collect::<Result<_, _>>().ok()?;
-    let mut tree = STRtree::<usize>::with_capacity(members.len().max(1)).ok()?;
+    let prepared: Vec<Option<PreparedGeometry<'_>>> = members
+        .iter()
+        .map(|m| {
+            let big = m.get_num_coordinates().unwrap_or(0) > PREPARE_ABOVE_COORDS;
+            big.then(|| m.to_prepared_geom()).transpose()
+        })
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let mut tree = STRtree::<usize>::with_capacity(STRTREE_NODE_CAPACITY).ok()?;
     for (i, m) in members.iter().enumerate() {
         tree.insert(m, i);
     }
@@ -561,7 +847,11 @@ fn assign_faces(
         for i in hits {
             // A point test GEOS could not answer is a failure, not a "no": treating it as a miss
             // would drop the face and with it a piece of the map.
-            if !prepared[i].contains_xy(x, y).ok()? {
+            let inside = match &prepared[i] {
+                Some(p) => p.contains_xy(x, y).ok()?,
+                None => members[i].contains(&point).ok()?,
+            };
+            if !inside {
                 continue;
             }
             let rank = |k: usize| {
@@ -578,7 +868,8 @@ fn assign_faces(
 }
 
 /// Absorb faces under the tier's threshold into their neighbours until nothing under it is left,
-/// returning how many faces changed hands (see the module docs for why this replaces the cull).
+/// returning `(covered faces that changed class, uncovered faces a neighbour healed)` — see the
+/// module docs for why this replaces the cull.
 ///
 /// This is the cartographic **eliminate** operator, run to a fixed point rather than in one sweep.
 /// Faces are grouped into clusters (each face starts as its own); the smallest cluster still under
@@ -599,10 +890,13 @@ fn assign_faces(
 /// Deterministic throughout: the merge order is (area, cluster id) and the target is (shared
 /// length, cluster id), both total orders, so the pass cannot depend on hash or thread order.
 ///
-/// Only covered faces take part in either role: a face nobody covers is a genuine gap
-/// ([`assign_faces`]), and absorbing one — or into one — would invent fill or destroy it. A cluster
-/// with no covered neighbour left simply stays under the threshold.
-fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Eliminate) -> usize {
+/// **The direction of the rule is what keeps it honest.** An uncovered face ([`assign_faces`] found
+/// nothing covering it) may be absorbed *into* a covered neighbour — that is the healing the module
+/// docs describe, and it is how the micro-gaps decimation opens are closed — but never the reverse:
+/// the target of every absorption is a covered cluster, so a covered face can never be swallowed by
+/// a gap and lose its fill. An uncovered cluster therefore never grows, and a gap at or above the
+/// threshold, or one with no covered neighbour at all, is left exactly as it is.
+fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Eliminate) -> (usize, usize) {
     let n = faces.len();
     // --- adjacency: undirected segment -> the face(s) carrying it ---
     //
@@ -636,8 +930,9 @@ fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Elimi
         edges.sort_unstable();
     }
 
-    // Shared ground length per unordered face pair — both sides covered, or it is not a merge
-    // candidate. A run of one is an outer edge; a run of more than two is non-manifold and the
+    // Shared ground length per unordered face pair — at least one side covered, or there is no
+    // absorption either way (a gap cannot be a target, and gap-into-gap would only move a gap
+    // around). A run of one is an outer edge; a run of more than two is non-manifold and the
     // arrangement should not produce it, so both are skipped rather than guessed at.
     let mut adj: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n];
     let mut k = 0;
@@ -659,7 +954,7 @@ fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Elimi
             continue;
         }
         let (i, j) = (owners[0], owners[1]);
-        if winners[i].is_none() || winners[j].is_none() {
+        if winners[i].is_none() && winners[j].is_none() {
             continue;
         }
         let (ax, ay, bx, by) = (f64::from_bits(x0), f64::from_bits(y0), f64::from_bits(x1), f64::from_bits(y1));
@@ -683,10 +978,12 @@ fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Elimi
     let mut area: Vec<f64> = faces.iter().map(|f| footprint_area_px(f, e.mpp)).collect();
     // A min-heap over (area, id) with lazy invalidation: a cluster is re-pushed whenever it grows,
     // and a pop whose area no longer matches the live one is a stale entry and is discarded.
+    // Uncovered faces are seeded too: a micro-gap is exactly a face under the threshold that
+    // nobody covers, and healing it is the same absorption with the same tie-breaks.
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(OrdF64, usize)>> = faces
         .iter()
         .enumerate()
-        .filter(|(i, _)| winners[*i].is_some() && area[*i] < e.min_area_px)
+        .filter(|(i, _)| area[*i] < e.min_area_px)
         .map(|(i, _)| std::cmp::Reverse((OrdF64(area[i]), i)))
         .collect();
 
@@ -698,11 +995,12 @@ fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Elimi
             continue; // grew past the threshold while it waited
         }
         // The neighbour cluster sharing the most boundary; ties by lowest id so the choice is
-        // stable however the map iterated.
+        // stable however the map iterated. Only a **covered** cluster may be the target: absorbing
+        // into a gap would delete fill rather than tidy it away.
         let mut best: Option<(usize, f64)> = None;
         for (&other, &len) in &adj[small] {
             let root = find(&mut parent, other);
-            if root == small {
+            if root == small || winners[root].is_none() {
                 continue;
             }
             if best.is_none_or(|(bi, bl)| len > bl || (len == bl && root < bi)) {
@@ -733,18 +1031,29 @@ fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Elimi
     }
 
     // --- every face takes its cluster's owner ---
-    let mut moved = 0;
+    //
+    // A cluster's owner is its root's, and a root is always covered by the time anything joins it
+    // (the target rule above), so a face can only gain fill here, never lose it.
+    let (mut moved, mut healed) = (0, 0);
     for fi in 0..n {
-        if winners[fi].is_none() {
+        let root = find(&mut parent, fi);
+        if root == fi {
             continue;
         }
-        let root = find(&mut parent, fi);
-        if root != fi && winners[root] != winners[fi] {
-            winners[fi] = winners[root];
-            moved += 1;
+        let Some(owner) = winners[root] else { continue };
+        match winners[fi] {
+            None => {
+                winners[fi] = Some(owner);
+                healed += 1;
+            }
+            Some(w) if w != owner => {
+                winners[fi] = Some(owner);
+                moved += 1;
+            }
+            Some(_) => {}
         }
     }
-    moved
+    (moved, healed)
 }
 
 /// A total order over the `f64` areas the heap sorts by. Every value here is a finite,
@@ -942,11 +1251,11 @@ mod tests {
         assert!((by_style(1) - 2.0).abs() < 1e-9, "the covered half of the bottom class is gone");
     }
 
-    /// A face no fill covers is a genuine gap and stays one: the pass never invents fill.
-    #[test]
-    fn an_uncovered_face_is_not_invented() {
-        let classes = merge_classes(&[fill_style(1, 0, 0x0001)]);
-        // Eight unit squares around an unmapped centre cell.
+    /// Eight unit squares of one class around an unmapped centre cell, plus a neighbour of a second
+    /// class abutting the block's right edge. The ring dissolves into one polygon whose hole is the
+    /// unmapped cell; the neighbour is what makes the component a real arrangement rather than the
+    /// single-member shortcut, so the hole reaches [`assign_faces`] as a face nothing covers.
+    fn ring_around_a_hole() -> Vec<(u8, Geom)> {
         let mut feats = Vec::new();
         for gx in 0..3 {
             for gy in 0..3 {
@@ -956,18 +1265,29 @@ mod tests {
                 feats.push((1u8, rect(gx as f64, gy as f64, gx as f64 + 1.0, gy as f64 + 1.0)));
             }
         }
-        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, None);
-        assert_eq!(stats.fallbacks, 0, "{stats:?}");
-        assert!(stats.dropped_faces >= 1, "the centre face belongs to nobody: {stats:?}");
-        assert!((area(&out) - 8.0).abs() < 1e-9, "eight squares in, eight squares of area out");
-        let holes: usize = out
-            .iter()
+        feats.push((2u8, rect(3.0, 0.0, 4.0, 1.0)));
+        feats
+    }
+
+    /// Every ring of a feature set, counted — the unmapped centre must survive as one of them.
+    fn hole_count(out: &[(u8, Geom, bool)]) -> usize {
+        out.iter()
             .map(|(_, g, _)| match g {
                 Geom::Polygon { interiors, .. } => interiors.len(),
                 _ => 0,
             })
-            .sum();
-        assert_eq!(holes, 1, "the unmapped centre survives as a hole, not as fill");
+            .sum()
+    }
+
+    /// A face no fill covers is a genuine gap and stays one: the pass never invents fill.
+    #[test]
+    fn an_uncovered_face_is_not_invented() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let (out, stats) = coverage_simplify_fills(ring_around_a_hole(), &classes, 0.0, None);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert!(stats.dropped_faces >= 1, "the centre face belongs to nobody: {stats:?}");
+        assert!((area(&out) - 9.0).abs() < 1e-9, "nine squares in, nine squares of area out");
+        assert_eq!(hole_count(&out), 1, "the unmapped centre survives as a hole, not as fill");
     }
 
     // --- elimination ---------------------------------------------------------------------------
@@ -1035,25 +1355,48 @@ mod tests {
         assert!(by(3) < 1e-12, "and the sliver's class is gone from the tier: {out:?}");
     }
 
-    /// A face nobody covers is still a gap after elimination: it is neither absorbed (that would
-    /// invent fill) nor absorbed *into* (that would destroy the gap).
+    /// A face nobody covers and that is **too big to be a micro-gap** stays a gap through
+    /// elimination: it is neither absorbed *into* (that would destroy the gap) nor healed. The
+    /// unit square in the middle here is twice the threshold.
     #[test]
-    fn elimination_never_fills_an_uncovered_face() {
-        let classes = merge_classes(&[fill_style(1, 0, 0x0001)]);
-        let mut feats = Vec::new();
-        for gx in 0..3 {
-            for gy in 0..3 {
-                if gx == 1 && gy == 1 {
-                    continue;
-                }
-                feats.push((1u8, rect(gx as f64, gy as f64, gx as f64 + 1.0, gy as f64 + 1.0)));
-            }
-        }
+    fn elimination_never_fills_a_large_uncovered_face() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
         let mpp = 100.0;
-        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, Some(threshold_for(4.0, mpp)));
+        let (out, stats) = coverage_simplify_fills(ring_around_a_hole(), &classes, 0.0, Some(threshold_for(0.5, mpp)));
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.healed, 0, "a 1 deg² gap under a 0.5 deg² threshold is not a micro-gap: {stats:?}");
         assert!(stats.dropped_faces >= 1, "the centre still belongs to nobody: {stats:?}");
-        assert!((area(&out) - 8.0).abs() < 1e-9, "eight squares in, eight squares of ground out");
+        assert!((area(&out) - 9.0).abs() < 1e-9, "nine squares in, nine squares of ground out");
+        assert_eq!(hole_count(&out), 1, "the unmapped centre survives as a hole rather than being invented into fill");
+    }
+
+    // --- healing -------------------------------------------------------------------------------
+
+    /// A big fill with a small unmapped hole in it, plus a neighbour so the component is a real
+    /// arrangement rather than the single-member shortcut. Polygonize turns the hole into its own
+    /// face, which nothing covers — the shape of every micro-gap decimation can open.
+    fn gap_fixture() -> Vec<(u8, Geom)> {
+        let host = Geom::Polygon {
+            exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+            interiors: vec![vec![(4.9, 4.9), (5.1, 4.9), (5.1, 5.1), (4.9, 5.1), (4.9, 4.9)]],
+        };
+        vec![(1u8, host), (2u8, rect(10.0, 0.0, 11.0, 1.0))]
+    }
+
+    /// **The healing test.** A gap under the threshold is absorbed by the covered face around it,
+    /// so the tier renders complete ground instead of a speck of backdrop. The hole's 0.04 deg² is
+    /// *added* to the map — the one place this pass invents fill, and only below the size at which
+    /// the same threshold is already deleting whole classes.
+    #[test]
+    fn a_micro_gap_is_healed_into_its_neighbour() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let mpp = 100.0;
+        // 0.5 deg²: above the 0.04 deg² hole, below the 1 deg² neighbour and the ~100 deg² host.
+        let (out, stats) = coverage_simplify_fills(gap_fixture(), &classes, 0.0, Some(threshold_for(0.5, mpp)));
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.healed, 1, "exactly the hole was healed: {stats:?}");
+        assert_eq!(stats.dropped_faces, 0, "and nothing is left uncovered: {stats:?}");
+        assert!((area(&out) - 101.0).abs() < 1e-9, "the 0.04 deg² hole is now ground: {}", area(&out));
         let holes: usize = out
             .iter()
             .map(|(_, g, _)| match g {
@@ -1061,7 +1404,151 @@ mod tests {
                 _ => 0,
             })
             .sum();
-        assert_eq!(holes, 1, "the unmapped centre survives as a hole rather than being invented into fill");
+        assert_eq!(holes, 0, "the hole is gone, not merely relabelled: {out:?}");
+    }
+
+    /// **The threshold boundary.** The same gap, with the threshold moved below it, is left alone:
+    /// what decides is the tier's own elimination size, not the fact of being a hole.
+    #[test]
+    fn a_gap_above_the_threshold_is_left_alone() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let mpp = 100.0;
+        // 0.01 deg²: below the 0.04 deg² hole.
+        let (out, stats) = coverage_simplify_fills(gap_fixture(), &classes, 0.0, Some(threshold_for(0.01, mpp)));
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.healed, 0, "the gap is over the threshold: {stats:?}");
+        assert_eq!(stats.dropped_faces, 1, "and stays a gap: {stats:?}");
+        assert!((area(&out) - 100.96).abs() < 1e-9, "the hole is still missing from the ground: {}", area(&out));
+    }
+
+    /// Healing never runs the other way: a **covered** face under the threshold whose only
+    /// neighbour is a gap keeps its fill rather than being swallowed by it. The rule that makes the
+    /// pass safe to point at real coastlines.
+    #[test]
+    fn a_gap_never_absorbs_a_covered_face() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        // A ring-shaped host with a hole, and a speck of another class sitting inside that hole so
+        // its only neighbour is the uncovered rest of the hole.
+        let host = Geom::Polygon {
+            exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+            interiors: vec![vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)]],
+        };
+        let speck = rect(4.0, 4.0, 4.2, 4.2); // 0.04 deg², wholly inside the hole
+        let mpp = 100.0;
+        // Above the speck, below the 36 deg² hole around it.
+        let (out, stats) =
+            coverage_simplify_fills(vec![(1, host), (2, speck)], &classes, 0.0, Some(threshold_for(0.5, mpp)));
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.healed, 0, "the hole is far over the threshold: {stats:?}");
+        let by = |sid: u8| area(&out.iter().filter(|(s, _, _)| *s == sid).cloned().collect::<Vec<_>>());
+        assert!((by(2) - 0.04).abs() < 1e-9, "the speck kept its fill instead of being eaten by the gap: {out:?}");
+    }
+
+    // --- pre-dissolve --------------------------------------------------------------------------
+
+    /// **The pre-dissolve.** A row of same-class parcels reaches the arrangement as one polygon, so
+    /// the boundaries between them are never noded, never become two faces, and never have to be
+    /// dissolved back together — and the ground is untouched, because a class's union is what the
+    /// pass emits for it anyway.
+    #[test]
+    fn same_class_parcels_are_dissolved_before_the_arrangement() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let mut feats: Vec<(u8, Geom)> = (0..10).map(|i| (1u8, rect(i as f64, 0.0, i as f64 + 1.0, 1.0))).collect();
+        feats.push((2, rect(0.0, 1.0, 10.0, 2.0))); // a second class above, so an arrangement is built
+        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, None);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.inputs, 11, "eleven fills arrived: {stats:?}");
+        assert_eq!(stats.dissolved, 2, "and two polygons reached the arrangement: {stats:?}");
+        assert_eq!(stats.faces, 2, "one face per class, not one per parcel: {stats:?}");
+        assert!((area(&out) - 20.0).abs() < 1e-9, "the ground is untouched: {}", area(&out));
+    }
+
+    /// A class of one is not run through GEOS at all, and neither is a tier whose fills are all in
+    /// different classes — the pre-dissolve is a cost optimisation and must cost nothing when there
+    /// is nothing to dissolve.
+    #[test]
+    fn the_pre_dissolve_leaves_single_member_classes_alone() {
+        let styles: Vec<Style> = (1..=3).map(|i| fill_style(i, i as i8, 0x0001 + i as u16)).collect();
+        let classes = merge_classes(&styles);
+        let feats: Vec<(u8, Geom)> = (0..3).map(|i| (i as u8 + 1, rect(i as f64, 0.0, i as f64 + 1.0, 1.0))).collect();
+        let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, None);
+        assert_eq!((stats.inputs, stats.dissolved), (3, 3), "nothing to dissolve: {stats:?}");
+        assert!((area(&out) - 3.0).abs() < 1e-9);
+    }
+
+    // --- decimation ----------------------------------------------------------------------------
+
+    /// The decimation tolerance: the tier's own over [`DECIMATE_DIVISOR`], floored at
+    /// [`DECIMATE_FLOOR_M`] metres, never coarser than the tier itself, and off entirely for a tier
+    /// that asked for no simplify.
+    #[test]
+    fn the_decimation_tolerance_is_a_small_fraction_of_the_tier() {
+        assert_eq!(decimation_tol(0.0), 0.0, "no simplify ⇒ no decimation");
+        let coarse = 2200.0 / M_PER_DEG; // the shipping ladder's LOD 0
+        assert!((decimation_tol(coarse) - coarse / 8.0).abs() < 1e-15, "an eighth of the tier");
+        let floor = DECIMATE_FLOOR_M / M_PER_DEG;
+        let just_over = floor * 4.0; // /8 would be under the floor
+        assert!((decimation_tol(just_over) - floor).abs() < 1e-15, "the floor binds");
+        let fine = floor / 2.0;
+        assert!((decimation_tol(fine) - fine).abs() < 1e-15, "and never coarser than the tier's own tolerance");
+    }
+
+    /// **The decimation pre-pass.** A fill whose boundary carries far more detail than the tier can
+    /// show enters the arrangement with an order of magnitude fewer vertices — which is the whole
+    /// memory and time lever — while the ground it covers is unchanged to well within the tier's
+    /// own tolerance.
+    #[test]
+    fn decimation_thins_the_arrangement_input() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 3, 0x0002)]);
+        // Two abutting slabs whose shared edge is a dense sawtooth: 400 teeth of 0.0005 deg, far
+        // under the 0.01 deg tier tolerance below.
+        let teeth = 400;
+        let seam: Vec<(f64, f64)> = (0..=teeth)
+            .map(|i| {
+                let t = i as f64 / teeth as f64;
+                (1.0 + if i % 2 == 0 { 0.0 } else { 0.0005 }, t)
+            })
+            .collect();
+        let mut west = vec![(0.0, 0.0), (1.0, 0.0)];
+        west.extend(seam.iter().copied());
+        west.extend([(0.0, 1.0)]);
+        let mut east = vec![(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)];
+        east.extend(seam.iter().rev().skip(1).copied());
+        // A threshold well under either slab, so nothing real is eliminated — it is here because it
+        // is what unlocks the pre-pass (and heals anything the sawtooth's two copies leave behind).
+        let e = Some(threshold_for(0.1, 100.0));
+        let (out, stats) = coverage_simplify_fills(vec![(1, poly(&west)), (2, poly(&east))], &classes, 0.01, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert!(stats.vertices_in > 800, "the fixture really is detailed: {stats:?}");
+        assert!(
+            stats.vertices_arranged * 8 < stats.vertices_in,
+            "the arrangement saw an order of magnitude fewer vertices: {stats:?}"
+        );
+        // The sawtooth is 0.0005 deg deep on a 2 deg² pair: the ground it moves is noise.
+        assert!((area(&out) - 2.0).abs() < 0.01, "and the ground is the same to within the tolerance: {}", area(&out));
+        assert_eq!(stats.dropped_faces, 0, "and the two slabs are still glued, not torn: {stats:?}");
+        let seam_of = |sid: u8| {
+            let (_, g, _) = out.iter().find(|(s, _, _)| *s == sid).expect("both classes survive");
+            seam_verts(g)
+        };
+        assert_eq!(seam_of(1), seam_of(2), "the shared boundary is the SAME vertices on both sides");
+    }
+
+    /// Decimation cannot un-glue what the pass exists to glue: it runs *before* the arrangement, so
+    /// the shared boundary is still noded once and both sides still come back identical.
+    #[test]
+    fn decimation_keeps_the_shared_boundary_shared() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 0, 0x0002)]);
+        let e = Some(threshold_for(0.5, 100.0)); // under both fills; only there to unlock the pre-pass
+        let (out, stats) = coverage_simplify_fills(vec![(1, seam_west()), (2, seam_east())], &classes, 0.02, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        let seam_of = |sid: u8| {
+            let (_, g, _) = out.iter().find(|(s, _, _)| *s == sid).expect("both classes survive");
+            seam_verts(g)
+        };
+        let (a, b) = (seam_of(1), seam_of(2));
+        assert!(!a.is_empty(), "the seam did not vanish");
+        assert_eq!(a, b, "the shared boundary must still be the SAME vertices on both sides");
     }
 
     /// **The fixed point.** A long chain of equal specks, each other's nearest neighbour, has no
