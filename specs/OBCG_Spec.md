@@ -173,21 +173,26 @@ is forbidden; so is publishing a frame at an offset the cadence does not define.
 
 **A frame ahead of the anchor MUST be painted by forecast source data, and MUST NOT be painted by an
 observation carried forward.** A frame at `offset_min > 0` is about an instant no observation of
-exists at bake time. What may fill it is a model lead, a model step, or a nowcast member — data
-whose own validity lies ahead of the run that produced it. A single-frame observation, however
-recent and however far inside the skew window it sits, is data about one past instant and is
-eligible for the anchor alone.
+exists at bake time. What may fill it is anything the publisher classes **Forecast** for its own
+source-class bit — model output or a nowcast, which is the same partition the table above draws, no
+narrower. A single-frame observation, however recent and however far inside the skew window it sits,
+is data about one past instant and is eligible for the anchor alone.
 
 The rule turns on **what the source data is**, not on how near it lands. Being a forecast is the
 guarantee; being a forecast of *exactly* this instant is not, and no consumer may read it as one.
 `valid_at` states the frame's position on the cadence, while the forecast step underneath it may sit
-up to `cadence.max_source_skew_s` away — an hourly model step legitimately paints two or three
-consecutive 15-minute frames, and at a 30-minute window and a 15-minute cadence that is the ordinary
-case rather than a degraded one. What distinguishes it from the frozen-observation case is not the
-distance: a model step valid at 17:00 is a prediction, and the nearest prediction is a defensible
-answer for 17:15, whereas a radar scan of 16:58 is a measurement of 16:58 and is not an answer for
-17:15 in any sense. A consumer that needs the underlying distance reads `max_source_skew_s`; there
-is no per-frame field for it and none is coming.
+up to `cadence.max_source_skew_s` away. At a 30-minute window and a 15-minute cadence the quantity
+is concrete and worth stating: **one hourly model step paints four consecutive frames.** A step
+valid at 11:00 answers 10:30, 10:45, 11:00 and 11:15, because a frame instant at :30 is 1,800 s from
+both flanking steps and an implementation that samples the nearest step MUST break that tie toward
+the later one — the field valid after the target is about weather that has not happened yet, the one
+before it is already past.
+
+What distinguishes this from the frozen-observation case is not the distance: a model step valid at
+17:00 is a prediction, and the nearest prediction is a defensible answer for 17:15, whereas a radar
+scan of 16:58 is a measurement of 16:58 and is not an answer for 17:15 in any sense. A consumer that
+needs the underlying distance reads `max_source_skew_s`; there is no per-frame field for it and none
+is coming.
 
 Where no forecast source reaches a forward frame, the honest answer is intensity 15 (§6) — never a
 frozen field.
