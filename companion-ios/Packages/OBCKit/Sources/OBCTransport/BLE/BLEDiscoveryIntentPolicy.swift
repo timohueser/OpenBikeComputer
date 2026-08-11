@@ -150,24 +150,23 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
 
     mutating func discovered(
         peripheralID: UUID,
-        knownPeripheralID: UUID?,
-        advertisedAsWeatherRequest: Bool = false
+        knownPeripheralID: UUID?
     ) -> DiscoveryAction {
         guard phase == .scanning else { return .ignore }
-        // A live foreground session scans for both UUIDs. When the device deliberately drops
-        // Control and comes back advertising Weather Request, reconnecting it as an ordinary
-        // foreground discovery would never arm the autonomous context read: the device would sit
-        // pending until its 60 s budget expired. Recognise the advertised UUID before the general
-        // foreground branch, but keep foreground ownership so the weather job cannot tear down a
-        // connection the rider owns.
-        if advertisedAsWeatherRequest, (weatherWatchArmed || foregroundRequested), knownPeripheralID == peripheralID,
-           !weatherRequestPending {
-            weatherRequestPending = true
-            let owner: Ownership = foregroundRequested ? .foreground : .weatherRequest
-            phase = .connecting(peripheralID: peripheralID, owner: owner)
-            return .connectForWeatherRead(owner: owner)
-        }
         if foregroundRequested {
+            // Once paired, reconnect only the authenticated peripheral and opportunistically probe
+            // its request context. This makes recovery independent of CoreBluetooth preserving a
+            // particular advertised UUID in the discovery dictionary; the resting context is
+            // explicitly harmless and the job bridge filters it. First-time discovery (no known
+            // ID) retains the service-filtered connect-any-OBC flow.
+            if let knownPeripheralID {
+                guard knownPeripheralID == peripheralID else { return .ignore }
+                if !weatherRequestPending {
+                    weatherRequestPending = true
+                    phase = .connecting(peripheralID: peripheralID, owner: .foreground)
+                    return .connectForWeatherRead(owner: .foreground)
+                }
+            }
             phase = .connecting(peripheralID: peripheralID, owner: .foreground)
             return .connect(owner: .foreground)
         }

@@ -425,6 +425,10 @@ pub const fn authenticated_context_was_served(link_secured: bool, reply_sent: bo
 /// beacon, and reopening Weather raises a fresh request. A scheduled request under `Off` lapses
 /// the same way (nothing configures a cadence to fall back to).
 pub const RETRY_LADDER_S: [u64; 3] = [5 * 60, 10 * 60, 20 * 60];
+/// How long the final urgent raise remains consumable before the request lapses. Kept equal to the
+/// board advertising budget: a raise returned by `poll` must remain pending for the interval in
+/// which the companion can actually discover and read it.
+pub const WEATHER_REQUEST_WINDOW_S: u64 = 60;
 
 /// When a held bundle stops counting as one for the `reason` word: OBCW v1 carries 24 hourly
 /// records, so a bundle a day old has nothing left to say and the request advertises
@@ -474,12 +478,13 @@ struct Pending {
     request_id: u32,
     reason: u16,
     /// When the next ladder re-raise fires (absolute, caller seconds). Always meaningful while the
-    /// pending is stored: a raise with no next wait (an urgent past the ladder, or `Off` past it)
-    /// clears the whole `Pending` in the **same** poll that returns the final raise, so a lapsed
-    /// request never lingers as state.
+    /// pending is stored. For the final urgent raise it is the lapse deadline, leaving that raise
+    /// consumable for [`WEATHER_REQUEST_WINDOW_S`] instead of invalidating it in the same poll.
     next_raise_s: u64,
     /// Raises performed so far (1 = the initial raise).
     raises: u8,
+    /// The ladder is exhausted; `next_raise_s` is now the lapse instant, not another raise.
+    final_raise: bool,
 }
 
 /// The **due scheduler** (WX8, #1193): decides *when* a weather request is raised, entirely as a
@@ -620,7 +625,13 @@ impl DueScheduler {
                 None => (self.mint_id(), 0),
             };
             let reason = prior_reason | REASON_URGENT | no_bundle_bit;
-            self.pending = Some(Pending { request_id, reason, next_raise_s: now_s + RETRY_LADDER_S[0], raises: 1 });
+            self.pending = Some(Pending {
+                request_id,
+                reason,
+                next_raise_s: now_s + RETRY_LADDER_S[0],
+                raises: 1,
+                final_raise: false,
+            });
             return Some(Raise { request_id, reason });
         }
 
@@ -629,6 +640,10 @@ impl DueScheduler {
         // cadence, while an urgent one has no fallback at all (#1221 F4).
         if let Some(p) = &mut self.pending {
             if now_s < p.next_raise_s {
+                return None;
+            }
+            if p.final_raise {
+                self.pending = None;
                 return None;
             }
             p.raises = p.raises.saturating_add(1);
@@ -644,8 +659,11 @@ impl DueScheduler {
             match next_wait {
                 Some(wait) => p.next_raise_s = now_s + wait,
                 // This raise is the request's last (urgent past the ladder, or `Off` with no
-                // cadence): it lapses in this same poll rather than beaconing forever.
-                None => self.pending = None,
+                // cadence): leave one discoverable/readable window, then lapse without beaconing.
+                None => {
+                    p.final_raise = true;
+                    p.next_raise_s = now_s + WEATHER_REQUEST_WINDOW_S;
+                }
             }
             return Some(raise);
         }
@@ -665,8 +683,13 @@ impl DueScheduler {
                 if due {
                     let request_id = self.mint_id();
                     let reason = REASON_SCHEDULED | no_bundle_bit;
-                    self.pending =
-                        Some(Pending { request_id, reason, next_raise_s: now_s + RETRY_LADDER_S[0], raises: 1 });
+                    self.pending = Some(Pending {
+                        request_id,
+                        reason,
+                        next_raise_s: now_s + RETRY_LADDER_S[0],
+                        raises: 1,
+                        final_raise: false,
+                    });
                     return Some(Raise { request_id, reason });
                 }
             }

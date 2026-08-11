@@ -149,7 +149,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
             served_refresh = Some(refresh_raw);
-            state::arm_weather_request(Duration::from_secs(super::WEATHER_REQUEST_ADV_BUDGET_SECS));
+            state::arm_weather_request(Duration::from_secs(obc_ble::WEATHER_REQUEST_WINDOW_S));
             info!(
                 "ble: [weather] request {=u32} raised (reason {=u16:#06x}, validity {=u16:#06x})",
                 raise.request_id, raise.reason, ctx.validity
@@ -167,6 +167,13 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         // an older one would misreport it — `note_settings_changed`'s wake lands here.
         if sched.pending_request_id().is_none() {
             IN_FLIGHT.store(false, Ordering::Relaxed);
+            // A request can lapse because its retry ladder ended or because its prerequisites
+            // disappeared (ride stopped, refresh Off, card removed). The scheduler owns that
+            // decision; mirror it to the radio immediately so a stale Weather Request UUID cannot
+            // keep advertising a context that has already become resting.
+            if context_live {
+                state::clear_weather_request();
+            }
             if context_live || served_refresh != Some(refresh_raw) {
                 let _ =
                     server.set(&server.weather_request.context, &WeatherRequestContext::resting(refresh_raw).encode());
@@ -189,8 +196,9 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
 
 /// Fill the §11.4 context from the raise + the current app/bundle facts. Optional groups follow
 /// the flags-not-sentinels rule: absent inputs leave their fields zero **and** their validity bit
-/// clear — a device with no fix still raises a well-formed request (the phone fetches by its own
-/// location).
+/// clear — a device with no fix still raises a well-formed request for diagnostics/retry, but the
+/// companion cannot fetch until the device supplies a position (there is intentionally no phone-
+/// location fallback today).
 fn build_context(
     s: &WeatherSnapshot,
     refresh_raw: u8,

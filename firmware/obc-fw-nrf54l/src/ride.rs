@@ -75,6 +75,11 @@ const INPUT_HB_STALE_MS: u32 = 65_000;
 /// the retry/cache rule below readable and avoids hiding its four independent invalidation axes
 /// inside a nested tuple type at the use site.
 type WeatherSampleKey = (obc_weather::Candidate, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
+/// Fixed-position weather has no clock input. This impossible minute bucket keeps the compact
+/// `i64` cache-key field (an `Option<i64>` costs another eight resident bytes on Thumb). It cannot
+/// collide with the projected key: dividing any cast `i64` wall time by 60 is strictly greater
+/// than `i64::MIN`.
+const WEATHER_TIME_INDEPENDENT: i64 = i64::MIN;
 
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
 /// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
@@ -1921,13 +1926,16 @@ pub(crate) async fn run_app(
             let weather_projection = app.ride_projection();
             let weather_projection_key = weather_projection
                 .map(|projection| (app.active_route_index(), projection.progress_m, projection.speed_cms));
-            // Projection position/freshness moves with time even while the GPS coordinate is
-            // unchanged. Minute buckets match the dashboard's own timer resolution and avoid an
-            // otherwise pointless snapshot rebuild on every event-loop pass.
-            let weather_minute = app.wall_unix_now() as i64 / 60;
+            // A route projection moves with time even while the GPS coordinate/progress is
+            // unchanged, so it gets a minute bucket matching the dashboard's timer resolution.
+            // Fixed-position sampling has no time input at all: giving it a minute key would
+            // reread the same hourly block and rain cells forever while the device is parked (and
+            // before the first fix), with byte-identical output.
+            let weather_projection_minute =
+                weather_projection.map_or(WEATHER_TIME_INDEPENDENT, |_| app.wall_unix_now() as i64 / 60);
             let weather_candidate = storage.as_ref().and_then(sd::Storage::weather_active);
-            let next_weather_key =
-                weather_candidate.map(|candidate| (candidate, weather_pos, weather_projection_key, weather_minute));
+            let next_weather_key = weather_candidate
+                .map(|candidate| (candidate, weather_pos, weather_projection_key, weather_projection_minute));
             if next_weather_key != weather_sample_key {
                 let next_snapshot = storage.as_ref().and_then(|storage| {
                     let source = storage.weather_source()?;
