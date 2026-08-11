@@ -27,7 +27,28 @@ pub struct PlannedObject {
     pub content_type: &'static str,
 }
 
-/// Somewhere weather objects can be put, re-checked and read back.
+/// What one [`ObjectStore::delete`] did.
+///
+/// Deleting is the one store operation whose *failure to find anything* is a success, so the
+/// outcome is a value rather than a `()`: the sweep ([`crate::sweep`]) walks every key a retired
+/// generation could hold and most cycles find every one of them, but a generation that was baked
+/// before a shard grid changed, or one whose cycle died mid-publish, is genuinely short a few.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Deleted {
+    /// Was there an object at that key? `false` is **not** an error: the operation's contract is
+    /// that the key does not exist afterwards, and a key that already did not is that.
+    pub existed: bool,
+    /// Its length, when the backend knew it *without paying for a second round-trip*.
+    ///
+    /// [`DirStore`] does — one `metadata` call on a local file, which is what makes the
+    /// bake-to-a-directory rehearsal in `ops/weather/RUNBOOK.md` report a real number. The rclone
+    /// backend does not: S3 `DeleteObject` answers with no length, and a `head` per key would
+    /// double a 216-key sweep's process spawns to learn a figure nothing acts on. So this is
+    /// `None` against R2 by design, and the object *count* is the number that matters there.
+    pub bytes: Option<u64>,
+}
+
+/// Somewhere weather objects can be put, re-checked, read back and retired.
 pub trait ObjectStore {
     /// Human-readable destination with any credential redacted.
     fn describe(&self) -> String;
@@ -37,6 +58,12 @@ pub trait ObjectStore {
     fn head(&mut self, key: &str) -> Result<Option<u64>, String>;
     /// Read an object back (the previous manifest at cycle start). `None` if absent.
     fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String>;
+    /// Remove one object. **The only destructive operation in this crate** (WXR8 #1247), and the
+    /// reason it is a single named key and not a prefix: the caller derives every key it passes
+    /// from generations a manifest named, so the worst a bug here can reach is one object of one
+    /// generation, never a subtree. `crate::sweep` is the only caller, and it runs only after a
+    /// new manifest is durably in place.
+    fn delete(&mut self, key: &str) -> Result<Deleted, String>;
 }
 
 /// Publish into a local directory: the dry-run target, the test target, and a real one for any
@@ -52,6 +79,24 @@ impl DirStore {
 
     fn dest(&self, key: &str) -> PathBuf {
         key.split('/').fold(self.root.clone(), |path, segment| path.join(segment))
+    }
+
+    /// A key store has no directories; a filesystem does. After removing the last object under
+    /// `wx/v2/<generation>/f45/`, leave no `f45/` behind, or a swept generation goes on looking
+    /// present to anyone who lists this tree — including the runbook's own rehearsal step, which
+    /// is a directory listing and nothing else.
+    ///
+    /// It walks **up from the deleted file** and stops at the first non-empty directory or at the
+    /// store root, so it can only ever remove directories the store itself created and only while
+    /// they hold nothing at all.
+    fn prune_empty_parents(&self, from: &std::path::Path) {
+        let mut parent = from.parent();
+        while let Some(path) = parent {
+            if path == self.root || !path.starts_with(&self.root) || std::fs::remove_dir(path).is_err() {
+                return;
+            }
+            parent = path.parent();
+        }
     }
 }
 
@@ -86,6 +131,19 @@ impl ObjectStore for DirStore {
         match std::fs::read(self.dest(key)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("{key}: {error}")),
+        }
+    }
+
+    fn delete(&mut self, key: &str) -> Result<Deleted, String> {
+        let dest = self.dest(key);
+        let bytes = std::fs::metadata(&dest).ok().map(|metadata| metadata.len());
+        match std::fs::remove_file(&dest) {
+            Ok(()) => {
+                self.prune_empty_parents(&dest);
+                Ok(Deleted { existed: true, bytes })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Deleted::default()),
             Err(error) => Err(format!("{key}: {error}")),
         }
     }
@@ -211,6 +269,31 @@ impl ObjectStore for RcloneStore {
         }
         Ok(Some(out.stdout))
     }
+
+    /// `rclone deletefile` — exactly one object, never a prefix. Same env-only credentials and the
+    /// same `redact()` path as every other call here.
+    ///
+    /// `DeleteObject` is a **free** operation on R2 (Cloudflare lists it beside `DeleteBucket` and
+    /// `AbortMultipartUpload`, in neither Class A nor Class B), so a sweep may issue as many as
+    /// correctness wants. What it does cost is a process spawn per key; see `crate::sweep` for the
+    /// wall-clock that buys, and why it is paid after the manifest swap where nothing waits on it.
+    fn delete(&mut self, key: &str) -> Result<Deleted, String> {
+        let args = vec!["deletefile".to_string(), self.target(key)];
+        let out = self.run(&args)?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // The same two strings `head` and `get` treat as absence, for the same reason: rclone
+            // spells "no such object" this way and there is no exit code that separates it from a
+            // real failure. Absent is the outcome this call was asking for anyway.
+            if stderr.contains("not found") || stderr.contains("directory not found") {
+                return Ok(Deleted::default());
+            }
+            return Err(self.redact(&stderr));
+        }
+        // S3 answers a delete with no length, and paying a `head` per key to learn one would double
+        // the sweep's round-trips for a number nothing acts on.
+        Ok(Deleted { existed: true, bytes: None })
+    }
 }
 
 #[cfg(test)]
@@ -232,5 +315,30 @@ mod tests {
         assert_eq!(store.target("wx/v2/manifest.json"), "obcwx:obc-wx/wx/v2/manifest.json");
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
         assert_eq!(store.redact("secret_access_key=hunter2: 403"), "secret_access_key=***: 403");
+    }
+
+    /// Deleting is idempotent, it reports the bytes it reclaimed, and it leaves no empty
+    /// generation directory standing behind the objects it removed.
+    #[test]
+    fn a_directory_delete_is_idempotent_and_leaves_no_husk() {
+        let root = std::env::temp_dir().join(format!("obc-wx-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = DirStore::new(&root);
+        let key = "wx/v2/20260810T1430Z/f45/s3-2.obcg";
+        store
+            .put(&PlannedObject {
+                key: key.to_string(),
+                bytes: vec![7u8; 11],
+                cache_control: FRAME_CACHE_CONTROL,
+                content_type: "application/octet-stream",
+            })
+            .expect("put");
+
+        assert_eq!(store.delete(key).expect("delete"), Deleted { existed: true, bytes: Some(11) });
+        // Idempotent: the second call is the same request and it succeeds having found nothing.
+        assert_eq!(store.delete(key).expect("delete again"), Deleted { existed: false, bytes: None });
+        assert!(!root.join("wx/v2/20260810T1430Z").exists(), "the swept generation left a husk of empty directories");
+        assert!(root.exists(), "pruning stops at the store root");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

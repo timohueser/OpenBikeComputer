@@ -20,7 +20,7 @@
 //! end to end by the WXR1 spike (#1240, whose numbers are recorded in #1254 and whose harness
 //! #1246 deleted).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -963,6 +963,124 @@ fn each_generation_names_the_two_before_it() {
         ],
         "current plus exactly two, newest first"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **Publish, then sweep, then check what is left** (WXR8 #1247) — the end-to-end half of the
+/// retention story, over the real `run_cycle` and a real store rather than a recording double.
+///
+/// The property is one sentence: *after any cycle, the generations that exist in the tree are
+/// exactly the generations the published manifest names.* That is stronger than "the sweep deleted
+/// N-3", because it also fails if the sweep ever deleted something still on the chain — the
+/// failure mode this feature introduced and the reason it is gated this way rather than by counting
+/// deletions.
+#[test]
+fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
+    let dwd = dwd_rv::DwdRv;
+    let icon = icon_eu::IconEu;
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = std::env::temp_dir().join(format!("obc-wx-sweep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store = DirStore::new(&dir);
+
+    // The generations present in the tree, read from the object keys themselves.
+    let generations_on_disk = |dir: &std::path::Path| -> BTreeSet<String> {
+        published_tree(dir)
+            .keys()
+            .filter(|key| key.ends_with(".obcg"))
+            .filter_map(|key| key.split('/').nth(2).map(str::to_string))
+            .collect()
+    };
+
+    let mut swept = Vec::new();
+    for step in 0..5 {
+        let now = ts("2026-08-09T14:30:00Z") + step * 900;
+        let mut upstream = european_upstream();
+        let report = run_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 2, false).expect("publishes");
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+        let raw = std::fs::read(dir.join(manifest_v2::MANIFEST_KEY)).expect("the manifest");
+        let document = manifest_v2::from_json(&raw).expect("v2");
+        let named: BTreeSet<String> =
+            std::iter::once(document.generation.clone()).chain(document.previous_generations.iter().cloned()).collect();
+        assert_eq!(
+            generations_on_disk(&dir),
+            named,
+            "step {step}: the tree and the manifest disagree about which generations exist"
+        );
+        swept.push((report.swept.generations.clone(), report.swept.deleted_objects > 0));
+    }
+
+    // Nothing to retire until a fourth generation exists; from then on, exactly one per cycle, and
+    // it is the one that just fell off the chain.
+    assert_eq!(
+        swept,
+        vec![
+            (vec![], false),
+            (vec![], false),
+            (vec![], false),
+            (vec!["20260809T1430Z".to_string()], true),
+            (vec!["20260809T1445Z".to_string()], true),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sweep that cannot delete must not turn a good publish into a failed cycle: the manifest is
+/// already in place, the objects it no longer names are unreferenced, and the bucket's 1-day
+/// lifecycle rule is what collects the leak. The cycle reports a warning and succeeds.
+#[test]
+fn a_store_that_refuses_to_delete_still_publishes_a_good_cycle() {
+    use obc_wx_bake::publish::{Deleted, ObjectStore, PlannedObject};
+
+    /// A directory store with its delete wired to fail — everything else is the real one.
+    struct NoDelete(DirStore);
+    impl ObjectStore for NoDelete {
+        fn describe(&self) -> String {
+            self.0.describe()
+        }
+        fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
+            self.0.put(object)
+        }
+        fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
+            self.0.head(key)
+        }
+        fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            self.0.get(key)
+        }
+        fn delete(&mut self, _key: &str) -> Result<Deleted, String> {
+            Err("503 SlowDown".to_string())
+        }
+    }
+
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
+    let dwd = dwd_rv::DwdRv;
+    let icon = icon_eu::IconEu;
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = std::env::temp_dir().join(format!("obc-wx-sweep-fails-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store = NoDelete(DirStore::new(&dir));
+
+    let mut last = None;
+    for step in 0..4 {
+        let now = ts("2026-08-09T14:30:00Z") + step * 900;
+        let mut upstream = european_upstream();
+        last = Some(
+            run_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 2, false)
+                .expect("a sweep failure is not a cycle failure"),
+        );
+    }
+    let report = last.expect("four cycles");
+    assert_eq!(report.swept.generations, vec!["20260809T1430Z"], "it still reports what it tried to retire");
+    assert_eq!(report.swept.deleted_objects, 0);
+    assert_eq!(report.warnings.len(), 1, "one warning for the generation, not one per key");
+    assert!(report.warnings[0].contains("retention sweep"), "{}", report.warnings[0]);
+    // …and the manifest is the one this cycle published, byte for byte the good outcome.
+    let raw = std::fs::read(dir.join(manifest_v2::MANIFEST_KEY)).expect("the manifest");
+    assert_eq!(manifest_v2::from_json(&raw).expect("v2").generation, "20260809T1515Z");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
