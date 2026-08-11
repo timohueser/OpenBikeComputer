@@ -40,11 +40,19 @@
 //! ## What it costs
 //!
 //! `DeleteObject` is **free** on R2 — neither Class A nor Class B — so the number of objects a
-//! sweep deletes is not a budget question at all. What it does cost is one `rclone` process spawn
-//! per key: a full generation is `shard_count x frames` = 216 keys, ~0.2 s each, so ~45 s of
-//! wall-clock. That is paid after the manifest is already in place, with nothing waiting on it, on
-//! a 15-minute cadence. It is not worth a `list` (which would need a new store capability) or a
-//! `head` per key (which would double it) to shave.
+//! sweep deletes is not a budget question at all. What it costs is one request per key: a full
+//! generation is `shard_count x frames` = 216 keys. Until #1279 each of those was an `rclone`
+//! process spawn at ~0.2 s, so ~45 s of wall-clock; they are now requests on the connection pool
+//! the publish phase already warmed, which is round-trip time and little else. Either way it is
+//! paid after the manifest is in place, with nothing waiting on it, on a 15-minute cadence, and it
+//! is still not worth a `list` (which would need a new store capability) or a `head` per key
+//! (which would double it) to shave further.
+//!
+//! It does pay for **one** extra read per retired generation: [`canary`], a bounded sample taken
+//! *before* the deletes. That is not a census and is not on the way to becoming one — it exists
+//! because S3's idempotent delete cannot say whether a key was there, so "this generation was
+//! already empty", the signal that something else is sweeping this prefix, has to be asked for
+//! while asking still means something.
 //!
 //! ## What it deliberately does not collect
 //!
@@ -80,9 +88,14 @@ pub struct SweepReport {
     /// keep-set stays whole. Getting that order wrong makes a re-bake sweep a generation early;
     /// see [`Carried::named`](crate::manifest_v2::Carried::named).
     pub generations: Vec<String>,
-    /// Objects that were there and are gone. A full generation is `shard_count x frames` minus its
-    /// dry shards, so a number well under that is normal and a *zero* against a named generation is
-    /// the interesting one — it means the generation was already collected, or never existed.
+    /// Objects retired. A full generation is `shard_count x frames` minus its dry shards.
+    ///
+    /// What this counts depends on what the store can see, and it says so rather than pretending:
+    /// against [`DirStore`](crate::publish::DirStore) it is objects that were *there* and are gone;
+    /// against R2 it is keys the endpoint accepted a delete for, because `DeleteObject` is
+    /// idempotent and cannot report the difference. **Do not read emptiness off this number** — a
+    /// zero here is meaningful only for a store that can tell. The signal that a generation was
+    /// already empty is [`canary`]'s, and it arrives as a warning.
     pub deleted_objects: usize,
     /// Bytes the store could account for without a second round-trip: real against a directory
     /// store, `0` against R2 (see [`crate::publish::Deleted::bytes`]).
@@ -144,6 +157,92 @@ fn generation_keys(lattice: &Lattice, times: CycleTimes, generation: &str) -> Ve
     keys
 }
 
+/// How many keys the canary samples before concluding a generation was already empty.
+///
+/// It is a *sample*, not a census — a census is a `head` per key, which doubles the sweep's
+/// round-trips for a number only a report line reads, and the module has refused that from the
+/// start. 24 covers the canonical 6x4 shard grid exactly once.
+const CANARY_PROBES: usize = 24;
+
+/// Does this generation still hold anything? Asked **before** any delete, because afterwards the
+/// question is unanswerable.
+///
+/// `Some(true)` — a probe found an object, so the generation was there and the sweep is doing real
+/// work. `Some(false)` — every probe came back absent. `None` — the store could not answer, which
+/// is not evidence of anything and must not be reported as if it were.
+///
+/// It stops at the first hit, so the steady-state cost is **one request per retired generation**.
+/// Only a generation that really is gone pays all [`CANARY_PROBES`], once, and that is the case
+/// worth paying for.
+/// The keys the canary probes: **every shard the budget can reach, enumerated**, each at a
+/// different frame in rotation.
+///
+/// Round 2 of #1282's review caught the previous version, and the bug is worth stating because it
+/// is the kind that hides in an innocuous-looking `step_by`. That version strided the flat key list
+/// by `keys.len() / CANARY_PROBES` — 216 / 24 = **9** — and the list is offset-major, so the shard
+/// a probe landed on was `index % 24`. `gcd(9, 24) = 3`, so the probes only ever touched shards
+/// `{0, 3, 6, ... 21}`: eight of twenty-four, and since `col = shard % 6`, only **columns 0 and 3
+/// of six**. A generation whose objects all sat in the other four columns read as empty, which
+/// raises a "something else is sweeping this prefix" alarm about a generation that is simply there.
+///
+/// The fix deliberately is not "pick a stride coprime with the shard count". That works, but it
+/// stays correct only while someone re-checks the arithmetic every time the shard grid changes, and
+/// the grid is `lattice` configuration precisely so it *can* change. Enumerating shards has no
+/// arithmetic to get wrong: probe `n` asks about shard `n`. The one invariant left is that the
+/// budget must cover at least a full row, so every column is represented — asserted below and
+/// pinned by `the_canary_samples_every_shard_column`.
+fn canary_keys(lattice: &Lattice, times: CycleTimes, generation: &str) -> Vec<String> {
+    let offsets: Vec<u32> = times.offsets_min().collect();
+    let shards = lattice.shard_count();
+    if shards == 0 || offsets.is_empty() {
+        return Vec::new();
+    }
+    debug_assert!(
+        CANARY_PROBES >= lattice.shard_cols() as usize,
+        "the probe budget must cover a whole shard row, or some column is never asked about"
+    );
+    let mut keys = Vec::with_capacity(CANARY_PROBES.min(shards as usize));
+    for probe in 0..CANARY_PROBES.min(shards as usize) {
+        let (col, row) = lattice.shard_col_row(probe as u32);
+        // Rotate the frame as well: asking every shard about `f0` would miss a generation whose
+        // early frames happen to be dry, and the frames cost nothing extra to spread across.
+        let offset = offsets[probe % offsets.len()];
+        keys.push(manifest_v2::shard_key(manifest_v2::KEY_PREFIX, generation, offset, col, row));
+    }
+    keys
+}
+
+fn canary(
+    store: &mut dyn ObjectStore,
+    lattice: &Lattice,
+    times: CycleTimes,
+    warnings: &mut Vec<String>,
+    generation: &str,
+) -> Option<bool> {
+    let keys = canary_keys(lattice, times, generation);
+    if keys.is_empty() {
+        return None;
+    }
+    for key in &keys {
+        match store.head(key) {
+            Ok(Some(_)) => return Some(true),
+            Ok(None) => {}
+            Err(error) => {
+                // A store that cannot answer has told us nothing about the generation, and guessing
+                // "empty" here would turn a transient error into a false alarm about a second
+                // sweeper. Say what happened and decline to conclude.
+                warnings.push(format!(
+                    "retention sweep: could not check whether generation {generation} still held objects \
+                     ({key}: {error}) — deleting it anyway, which is safe and idempotent, but this cycle \
+                     cannot say whether it was already empty"
+                ));
+                return None;
+            }
+        }
+    }
+    Some(false)
+}
+
 /// Retire every generation [`delete_set`] names. **Call this only after the new manifest is
 /// durably in place.**
 ///
@@ -179,6 +278,11 @@ pub fn sweep(
         let mut first_error: Option<String> = None;
         let mut deleted_here = 0usize;
         let prefix = format!("{}/{generation}/", manifest_v2::KEY_PREFIX);
+        // **The canary, before a single delete** (#1282 review M4). Everything below this loses the
+        // ability to tell an already-empty generation from a full one the moment the store is R2,
+        // because `DeleteObject` answers the same either way — so ask *first*, while asking still
+        // means something.
+        let found_something = canary(store, lattice, times, &mut report.warnings, &generation);
         for key in generation_keys(lattice, times, &generation) {
             // The last guard, and it is a **runtime** one: a key this sweep deletes must be inside
             // the generation it is collecting, which is a generation the published manifest does
@@ -193,12 +297,20 @@ pub fn sweep(
                 continue;
             }
             match store.delete(&key) {
-                Ok(deleted) => {
-                    if deleted.existed {
+                Ok(deleted) => match deleted.existed {
+                    // The store knows there was an object and it is gone.
+                    Some(true) => {
                         deleted_here += 1;
                         report.accounted_bytes += deleted.bytes.unwrap_or(0);
                     }
-                }
+                    // The store knows there was nothing. Not an error — see `Deleted::existed`.
+                    Some(false) => {}
+                    // The store cannot tell, because `DeleteObject` is idempotent and answers the
+                    // same either way. Count the key as retired: it is, and the alternative is a
+                    // report that says every R2 sweep deleted nothing. Whether the generation held
+                    // anything at all is the canary's question, asked above.
+                    None => deleted_here += 1,
+                },
                 Err(error) => {
                     failures += 1;
                     first_error.get_or_insert(format!("{key}: {error}"));
@@ -213,16 +325,18 @@ pub fn sweep(
                  lifecycle rule collects the leak. Next cycle will not retry them — this generation is \
                  already off the manifest chain"
             ));
-        } else if deleted_here == 0 {
-            // A generation the chain named should have had objects. Zero means it was already
-            // collected — or, less comfortably, that the store answered "not found" for a reason
-            // that is not absence: `RcloneStore` infers absence from a substring of stderr, and an
-            // endpoint replying "bucket not found" would read as a clean sweep of nothing. Saying
-            // so costs one line and is the difference between a silent no-op and a question.
+        } else if found_something == Some(false) {
+            // A generation the chain named should have had objects, so finding none is the
+            // interesting answer — and since #1282's review it is the *canary's* answer rather than
+            // a delete count, which on R2 can no longer say anything (`Deleted::existed` is `None`
+            // there, so `deleted_here` is the key count every time and this line could never fire).
+            //
+            // What it means: the generation was already collected, which in steady state means a
+            // second sweeper is running — the anomaly this warning exists to surface.
             report.warnings.push(format!(
-                "retention sweep: generation {generation} had nothing to delete. Either it was already \
-                 collected, or every delete was answered with something this store reads as absence — \
-                 check the bucket and prefix in the destination line above"
+                "retention sweep: generation {generation} was already empty before this sweep touched it \
+                 ({CANARY_PROBES} keys sampled across its frames, none present). It was collected by \
+                 something else — check nothing is running a second baker against this prefix"
             ));
         }
         report.generations.push(generation);
@@ -292,7 +406,12 @@ mod tests {
     struct RecordingStore {
         present: BTreeSet<String>,
         deleted: Vec<String>,
+        /// Every key the canary probed, in order — the measure of a sample that became a census.
+        headed: Vec<String>,
         fail_on: Option<&'static str>,
+        /// Answer every delete `existed: None`, the way S3 `DeleteObject` does.
+        cannot_tell: bool,
+        fail_head: bool,
     }
 
     impl ObjectStore for RecordingStore {
@@ -304,6 +423,10 @@ mod tests {
             Ok(())
         }
         fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
+            self.headed.push(key.to_string());
+            if self.fail_head {
+                return Err("503 slow down".into());
+            }
             Ok(self.present.contains(key).then_some(1))
         }
         fn get(&mut self, _key: &str) -> Result<Option<Vec<u8>>, String> {
@@ -314,7 +437,11 @@ mod tests {
                 return Err("503 slow down".into());
             }
             self.deleted.push(key.to_string());
-            Ok(Deleted { existed: self.present.remove(key), bytes: Some(9) })
+            let existed = self.present.remove(key);
+            if self.cannot_tell {
+                return Ok(Deleted { existed: None, bytes: None });
+            }
+            Ok(Deleted { existed: Some(existed), bytes: Some(9) })
         }
     }
 
@@ -466,12 +593,13 @@ mod tests {
         assert_eq!(store.deleted.len(), CANONICAL.shard_count() as usize * 8);
     }
 
-    /// A named generation that yields nothing is reported rather than passed over. `RcloneStore`
-    /// infers absence from a substring of stderr, so an endpoint answering "bucket not found" for
-    /// every key would otherwise read as a clean sweep of zero objects — a silent no-op where a
-    /// question belongs.
+    /// A named generation that was **already empty** is reported rather than passed over: in steady
+    /// state it means something else collected it, which is a second sweeper against this prefix.
+    ///
+    /// The signal is the canary's, taken before any delete. It has to be, because on R2
+    /// `Deleted::existed` is `None` and a delete count can no longer distinguish anything.
     #[test]
-    fn a_generation_that_deleted_nothing_says_so() {
+    fn a_generation_that_was_already_empty_says_so() {
         let mut store = RecordingStore::default();
         let predecessor = manifest("20260810T1445Z", &["20260810T1430Z", "20260810T1415Z"]);
         let published = manifest("20260810T1500Z", &["20260810T1445Z", "20260810T1430Z"]);
@@ -480,7 +608,112 @@ mod tests {
         assert_eq!(report.deleted_objects, 0);
         assert_eq!(report.generations, vec!["20260810T1415Z"]);
         assert_eq!(report.warnings.len(), 1);
-        assert!(report.warnings[0].contains("had nothing to delete"), "{}", report.warnings[0]);
+        assert!(report.warnings[0].contains("was already empty"), "{}", report.warnings[0]);
+        // The canary is a sample and it stops at the first hit, so an empty generation costs
+        // exactly its probe budget — never a `head` per key.
+        assert_eq!(store.headed.len(), CANARY_PROBES);
+    }
+
+    /// **The blind spot, pinned** (#1282 review round 2, F1).
+    ///
+    /// The canary's probe set must reach every shard column. The version this replaces strided the
+    /// flat key list by 9 over a 24-shard grid — `gcd(9, 24) = 3` — and so only ever asked about
+    /// columns 0 and 3 of six, calling a generation whose objects lived in the other four "already
+    /// empty" and raising a second-sweeper alarm about a healthy one.
+    ///
+    /// The assertions are on *coverage*, not on the mechanism, so a future change to how the probe
+    /// set is built has to keep the property rather than the implementation.
+    #[test]
+    fn the_canary_samples_every_shard_column() {
+        let keys = canary_keys(&CANONICAL, CycleTimes { reference_time: 0 }, "20260810T1415Z");
+        assert_eq!(keys.len(), CANARY_PROBES.min(CANONICAL.shard_count() as usize));
+
+        let mut columns = BTreeSet::new();
+        let mut shards = BTreeSet::new();
+        for key in &keys {
+            let name = key.rsplit('/').next().expect("a key ends in the object name");
+            let coords = name.trim_start_matches('s').trim_end_matches(".obcg");
+            let (col, row) = coords.split_once('-').expect("s<col>-<row>.obcg");
+            columns.insert(col.parse::<u32>().expect("a column"));
+            shards.insert((col.parse::<u32>().expect("col"), row.parse::<u32>().expect("row")));
+        }
+        assert_eq!(
+            columns.len() as u32,
+            CANONICAL.shard_cols(),
+            "the canary never asks about columns {:?} — a generation living there reads as empty",
+            (0..CANONICAL.shard_cols()).filter(|col| !columns.contains(col)).collect::<Vec<_>>()
+        );
+        assert_eq!(shards.len(), keys.len(), "a probe was spent asking about a shard already covered");
+
+        // Frames are rotated rather than every probe landing on f0, so a generation whose earliest
+        // frames are dry is still found.
+        let frames: BTreeSet<&str> = keys.iter().filter_map(|key| key.split('/').nth(3)).collect();
+        assert!(frames.len() > 1, "every probe asked about the same frame: {frames:?}");
+
+        // And every probe is a key this sweep would have deleted — the canary must never invent a
+        // key shape of its own.
+        let all: BTreeSet<String> =
+            generation_keys(&CANONICAL, CycleTimes { reference_time: 0 }, "20260810T1415Z").into_iter().collect();
+        for key in &keys {
+            assert!(all.contains(key), "{key} is not a key of this generation");
+        }
+    }
+
+    /// **The R2 shape** (#1282 review M4/M5): a store that cannot tell whether a key existed.
+    ///
+    /// Every delete answers `existed: None`, exactly as `DeleteObject` does. The sweep must still
+    /// report the objects as retired — the alternative is a report claiming every R2 sweep deleted
+    /// nothing — and must **not** raise the already-empty warning, because the canary found the
+    /// generation present.
+    #[test]
+    fn a_store_that_cannot_tell_still_reports_what_it_retired() {
+        let mut store = RecordingStore { cannot_tell: true, ..RecordingStore::default() };
+        let predecessor = manifest("20260810T1445Z", &["20260810T1430Z", "20260810T1415Z"]);
+        let published = manifest("20260810T1500Z", &["20260810T1445Z", "20260810T1430Z"]);
+        let doomed = "20260810T1415Z";
+        let times = CycleTimes { reference_time: 0 };
+        let keys = generation_keys(&CANONICAL, times, doomed);
+        store.present = keys.iter().cloned().collect();
+
+        let report = sweep(&mut store, &CANONICAL, times, &carried(&predecessor), &published);
+        assert_eq!(report.generations, vec![doomed]);
+        assert_eq!(report.deleted_objects, keys.len(), "a store that cannot tell must not report zero");
+        assert_eq!(report.accounted_bytes, 0, "and it cannot account bytes it was never told");
+        assert!(report.warnings.is_empty(), "the canary found it present: {:?}", report.warnings);
+        // One probe: the canary stops at the first hit, so a present generation costs one request.
+        assert_eq!(store.headed.len(), 1);
+        assert_eq!(store.deleted.len(), keys.len());
+    }
+
+    /// The same store, against a generation that is genuinely gone: `existed: None` everywhere, so
+    /// only the canary can raise the alarm — and it does.
+    #[test]
+    fn a_store_that_cannot_tell_still_detects_an_already_empty_generation() {
+        let mut store = RecordingStore { cannot_tell: true, ..RecordingStore::default() };
+        let predecessor = manifest("20260810T1445Z", &["20260810T1430Z", "20260810T1415Z"]);
+        let published = manifest("20260810T1500Z", &["20260810T1445Z", "20260810T1430Z"]);
+        let report =
+            sweep(&mut store, &CANONICAL, CycleTimes { reference_time: 0 }, &carried(&predecessor), &published);
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(report.warnings[0].contains("was already empty"), "{}", report.warnings[0]);
+        assert!(report.warnings[0].contains("second baker"), "{}", report.warnings[0]);
+    }
+
+    /// A canary that cannot get an answer must not invent one. A `head` error is reported and the
+    /// sweep proceeds — deleting is idempotent and safe — but no already-empty alarm is raised off
+    /// a store that never said anything.
+    #[test]
+    fn a_canary_that_errors_declines_to_conclude() {
+        let mut store = RecordingStore { fail_head: true, ..RecordingStore::default() };
+        let predecessor = manifest("20260810T1445Z", &["20260810T1430Z", "20260810T1415Z"]);
+        let published = manifest("20260810T1500Z", &["20260810T1445Z", "20260810T1430Z"]);
+        let report =
+            sweep(&mut store, &CANONICAL, CycleTimes { reference_time: 0 }, &carried(&predecessor), &published);
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(report.warnings[0].contains("cannot say whether it was already empty"), "{}", report.warnings[0]);
+        assert!(!report.warnings[0].contains("second baker"), "an error is not evidence of a second sweeper");
+        // It still swept: the deletes are idempotent and the generation is off the chain either way.
+        assert_eq!(store.deleted.len(), generation_keys(&CANONICAL, CycleTimes { reference_time: 0 }, "x").len());
     }
 
     /// The work bound. `carried_generations` already refuses a chain this long, so the constant is

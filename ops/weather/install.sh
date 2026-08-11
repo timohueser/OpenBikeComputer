@@ -137,6 +137,8 @@ command -v systemctl >/dev/null || die "no systemctl — this installer targets 
 # ── Packages ─────────────────────────────────────────────────────────────────────────────────
 step "Packages"
 need_pkgs=()
+# Not for the baker — it has signed its own S3 requests in-process since #1279. This is for the
+# RUNBOOK's by-hand recipes (the lifecycle probe, the token-scope check, the manifest reset).
 command -v rclone >/dev/null || need_pkgs+=(rclone)
 command -v flock  >/dev/null || need_pkgs+=(util-linux)
 command -v curl   >/dev/null || need_pkgs+=(curl)
