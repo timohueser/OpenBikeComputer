@@ -115,8 +115,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 14615,
-          "object_crc32": "0x0281C560",
+          "bytes": 14613,
+          "object_crc32": "0xAF71EB66",
           "observed": false
         }
       ]
@@ -129,8 +129,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 14615,
-          "object_crc32": "0xE5D99E0A",
+          "bytes": 15108,
+          "object_crc32": "0x88DE02A9",
           "observed": false
         }
       ]
@@ -143,8 +143,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 14615,
-          "object_crc32": "0xEA73D093",
+          "bytes": 15264,
+          "object_crc32": "0x3FD61689",
           "observed": false
         }
       ]
@@ -157,8 +157,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 5592,
-          "object_crc32": "0x0A8D84AC",
+          "bytes": 15264,
+          "object_crc32": "0x14452326",
           "observed": false
         }
       ]
@@ -171,8 +171,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 5732,
-          "object_crc32": "0xB9A8EAF4",
+          "bytes": 15264,
+          "object_crc32": "0x0BFE3C40",
           "observed": false
         }
       ]
