@@ -35,8 +35,9 @@ use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
 use obc_wx_bake::grib::{decode_bzip2_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
 use obc_wx_bake::publish::DirStore;
+use obc_wx_bake::source::opera;
 use obc_wx_bake::source::{
-    dwd_rv, gfs, hrrr, icon_eu, mrms, opera_cirrus, Adapter, Attribution, BakedFrame, BakedSource,
+    dwd_rv, gfs, hrrr, icon_eu, mrms, opera_cirrus, Adapter, Attribution, BakedFrame, BakedSource, SourceClass,
 };
 use obc_wx_bake::stereo;
 use obc_wx_bake::{manifest_v2, timefmt};
@@ -284,7 +285,7 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
 
 /// A synthetic source on one window, one **forecast** frame, filled from `value`.
 fn synthetic(id: &'static str, window: GridGeometry, valid_at: i64, value: impl Fn(u32, u32) -> u8) -> BakedSource {
-    synthetic_frames(id, window, &[(valid_at, obcg::FLAG_FORECAST)], value)
+    synthetic_frames(id, window, &[(valid_at, SourceClass::Forecast)], value)
 }
 
 /// A synthetic source with an explicit frame list: `(valid_at, flags)` each carrying the same
@@ -292,7 +293,7 @@ fn synthetic(id: &'static str, window: GridGeometry, valid_at: i64, value: impl 
 fn synthetic_frames(
     id: &'static str,
     window: GridGeometry,
-    frames: &[(i64, u16)],
+    frames: &[(i64, SourceClass)],
     value: impl Fn(u32, u32) -> u8,
 ) -> BakedSource {
     let cells = (0..window.height)
@@ -307,10 +308,10 @@ fn synthetic_frames(
         attribution: Attribution { text: "synthetic", url: "https://example.invalid" },
         frames: frames
             .iter()
-            .map(|(valid_at, flags)| BakedFrame {
+            .map(|(valid_at, class)| BakedFrame {
                 offset_min: ((valid_at - reference_time) / 60) as u32,
                 valid_at: *valid_at,
-                flags: *flags,
+                class: *class,
                 cells: cells.clone(),
             })
             .collect(),
@@ -516,20 +517,39 @@ fn a_lattice_centre_on_a_source_outer_edge_is_outside_the_window() {
 // Frame selection and provenance
 // ---------------------------------------------------------------------------------------------
 
-/// **The rule itself** (#1248): eligibility is decided per source frame, from two facts — was it an
-/// observation upstream, and which canonical slot is being painted. An observation answers for the
-/// anchor and for nothing else; everything else answers everywhere. Nothing about distance,
-/// priority or which layer it came from enters into it, which is exactly why the rule cannot be
-/// argued around by a source that happens to be fresh or highly ranked.
+/// **The rule itself** (#1248): eligibility is decided per source frame, from two facts — the
+/// frame's [`SourceClass`] and which canonical slot is being painted. An observation answers for
+/// the anchor and for nothing else; a forecast answers everywhere. Nothing about distance, priority
+/// or which layer it came from enters into it, which is exactly why the rule cannot be argued
+/// around by a source that happens to be fresh or highly ranked.
+///
+/// The classification is an enum with two variants and no default, so this is the whole input
+/// space rather than a sample of it — the `u16` it replaced had 65,536 values, 65,534 of which
+/// decoded to "forecast" and would have been eligible for every frame here.
 #[test]
 fn an_observation_is_eligible_for_the_anchor_and_no_other_frame() {
     for offset_min in (0..CYCLE_FRAMES).map(|frame| frame * 15) {
         assert_eq!(
-            frame_is_eligible(true, offset_min),
+            frame_is_eligible(SourceClass::Observation, offset_min),
             offset_min == 0,
             "an observation at f+{offset_min}: only the anchor is about an instant one exists for"
         );
-        assert!(frame_is_eligible(false, offset_min), "a forecast is eligible for f+{offset_min}");
+        assert!(frame_is_eligible(SourceClass::Forecast, offset_min), "a forecast is eligible for f+{offset_min}");
+    }
+}
+
+/// The classification survives the adapter → mosaic hop verbatim, and it is what the emitter's
+/// OBCG source-class bit is written from. Both halves matter: a mapping that dropped the
+/// distinction would make every frame eligible everywhere, and one that inverted it would flag
+/// model fill as measured weather.
+#[test]
+fn the_source_class_maps_to_exactly_one_obcg_bit() {
+    assert_eq!(SourceClass::Observation.obcg_flag(), obcg::FLAG_OBSERVED);
+    assert_eq!(SourceClass::Forecast.obcg_flag(), obcg::FLAG_FORECAST);
+    assert!(SourceClass::Observation.is_observation());
+    assert!(!SourceClass::Forecast.is_observation());
+    for class in [SourceClass::Observation, SourceClass::Forecast] {
+        assert_eq!(class.obcg_flag().count_ones(), 1, "{class:?}: the format requires exactly one source-class bit");
     }
 }
 
@@ -547,8 +567,12 @@ fn an_observation_never_paints_a_forward_frame_however_near_it_sits() {
 
     // A nowcast layer shaped like DWD RV: an observation at the anchor, its own forecast members
     // ahead of it. f0 is the observation; f+15 is the member valid at f+15, never the frozen f0.
-    let nowcast =
-        synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)], |_, _| 5);
+    let nowcast = synthetic_frames(
+        dwd_rv::ID,
+        source,
+        &[(t0, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)],
+        |_, _| 5,
+    );
     let mosaic = Mosaic::from_sources(vec![nowcast]).expect("ranked");
     let anchor = emit_shard(&lattice, &mosaic, times, 0, 0).expect("emits");
     assert_eq!(obcg::validate(&anchor.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_OBSERVED);
@@ -560,7 +584,7 @@ fn an_observation_never_paints_a_forward_frame_however_near_it_sits() {
     // Take the forecast member away and the observation must not step into the gap. It is 900 s
     // from f+15 — half the skew window — and it is still refused, because the honest answer to
     // "what will the sky be doing at 14:15" is 15 and not a picture of 14:00.
-    let only_observed = synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED)], |_, _| 5);
+    let only_observed = synthetic_frames(dwd_rv::ID, source, &[(t0, SourceClass::Observation)], |_, _| 5);
     let mosaic = Mosaic::from_sources(vec![only_observed]).expect("ranked");
     assert_eq!(mosaic.winner_at(&lattice, times.slot(0), 4, 4), Some(dwd_rv::ID));
     for offset_min in (1..CYCLE_FRAMES).map(|frame| frame * 15) {
@@ -593,7 +617,7 @@ fn on_the_anchor_a_forecast_beats_an_equally_close_but_older_observation() {
     let composed = synthetic_frames(
         dwd_rv::ID,
         source,
-        &[(t0 - 900, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)],
+        &[(t0 - 900, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)],
         |_, _| 5,
     );
     let mosaic = Mosaic::from_sources(vec![composed]).expect("ranked");
@@ -602,8 +626,12 @@ fn on_the_anchor_a_forecast_beats_an_equally_close_but_older_observation() {
     let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
     assert_eq!(header.flags, obcg::FLAG_FORECAST, "the forecast frame won, so the object is not Observed");
 
-    let exact =
-        synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)], |_, _| 5);
+    let exact = synthetic_frames(
+        dwd_rv::ID,
+        source,
+        &[(t0, SourceClass::Observation), (t0 + 900, SourceClass::Forecast)],
+        |_, _| 5,
+    );
     let mosaic = Mosaic::from_sources(vec![exact]).expect("ranked");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
     let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
@@ -622,13 +650,13 @@ fn the_observed_flag_follows_what_actually_painted_the_shard() {
     let radar = synthetic_frames(
         dwd_rv::ID,
         window(45_680_000, 1_460_000, 10_000, 64, 64),
-        &[(t0, obcg::FLAG_OBSERVED)],
+        &[(t0, SourceClass::Observation)],
         |_, _| 6,
     );
     let floor = synthetic_frames(
         gfs::ID,
         window(45_680_000, 1_460_000, 250_000, 8, 8),
-        &[(t0, obcg::FLAG_FORECAST)],
+        &[(t0, SourceClass::Forecast)],
         |_, _| INTENSITY_DRY,
     );
     let mosaic = Mosaic::from_sources(vec![radar, floor]).expect("ranked");
@@ -682,8 +710,8 @@ fn an_observation_can_only_ever_paint_the_anchor() {
     let source = window(45_680_000, 1_460_000, 10_000, 32, 32);
     // An observation at every frame instant of the cycle — the most generous possible input, and
     // every one of them is refused everywhere but f0.
-    let frames: Vec<(i64, u16)> =
-        (0..CYCLE_FRAMES).map(|frame| (t0 + i64::from(frame) * 900, obcg::FLAG_OBSERVED)).collect();
+    let frames: Vec<(i64, SourceClass)> =
+        (0..CYCLE_FRAMES).map(|frame| (t0 + i64::from(frame) * 900, SourceClass::Observation)).collect();
     let radar = synthetic_frames(dwd_rv::ID, source, &frames, |_, _| 6);
     let mosaic = Mosaic::from_sources(vec![radar]).expect("ranked");
     let times = CycleTimes { reference_time: t0 };
@@ -725,7 +753,7 @@ fn over_opera_europe_outside_germany_the_anchor_is_radar_and_the_forward_frames_
         window(46_000_000, 1_000_000, CELL_UDEG, 200, 200),
         // OPERA publishes every five minutes, so the newest scan lands three minutes before the
         // quarter-hour anchor rather than on it — the ordinary case, not a contrived one.
-        &[(times.valid_at(0) - 180, obcg::FLAG_OBSERVED)],
+        &[(times.valid_at(0) - 180, SourceClass::Observation)],
         |_, _| 6,
     );
     let mosaic = Mosaic::from_sources(vec![cirrus, icon]).expect("both are ranked");
@@ -752,12 +780,8 @@ fn the_german_forward_frames_stay_on_the_dwd_nowcast() {
     let mut upstream = european_upstream();
     let dwd = bake(&dwd_rv::DwdRv, &mut upstream, now);
     // The premise, read off the adapter: one observation, eight forecasts, on a 15-minute ladder.
-    let observed_leads: Vec<u32> = dwd
-        .frames
-        .iter()
-        .filter(|frame| frame.flags & obcg::FLAG_OBSERVED != 0)
-        .map(|frame| frame.offset_min)
-        .collect();
+    let observed_leads: Vec<u32> =
+        dwd.frames.iter().filter(|frame| frame.class.is_observation()).map(|frame| frame.offset_min).collect();
     assert_eq!(observed_leads, vec![0], "only RV's lead 0 is an observation; the rest are its nowcast");
     let icon = bake(&icon_eu::IconEu, &mut upstream, now);
     let mosaic = Mosaic::from_sources(vec![dwd, icon]).expect("both are ranked");
@@ -784,10 +808,14 @@ fn a_stale_source_falls_through_to_the_next_priority_layer() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
     let germany = window(45_680_000, 1_460_000, 10_000, 64, 64);
     // The radar run is four hours behind the anchor: far outside MAX_FRAME_SKEW_S.
-    let stale_radar = synthetic_frames(dwd_rv::ID, germany, &[(t0 - 4 * 3_600, obcg::FLAG_OBSERVED)], |_, _| 9);
-    let model = synthetic_frames(icon_eu::ID, germany, &[(t0, obcg::FLAG_FORECAST)], |_, _| 3);
-    let floor =
-        synthetic_frames(gfs::ID, window(45_680_000, 1_460_000, 250_000, 8, 8), &[(t0, obcg::FLAG_FORECAST)], |_, _| 1);
+    let stale_radar = synthetic_frames(dwd_rv::ID, germany, &[(t0 - 4 * 3_600, SourceClass::Observation)], |_, _| 9);
+    let model = synthetic_frames(icon_eu::ID, germany, &[(t0, SourceClass::Forecast)], |_, _| 3);
+    let floor = synthetic_frames(
+        gfs::ID,
+        window(45_680_000, 1_460_000, 250_000, 8, 8),
+        &[(t0, SourceClass::Forecast)],
+        |_, _| 1,
+    );
     let mosaic = Mosaic::from_sources(vec![stale_radar, model, floor]).expect("all three are ranked");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
     for (col, row) in [(0u32, 0u32), (15, 15), (31, 31)] {
@@ -811,7 +839,7 @@ fn a_cycle_that_paints_nothing_refuses_to_publish() {
     let stale = synthetic_frames(
         gfs::ID,
         window(45_680_000, 1_460_000, 250_000, 8, 8),
-        &[(t0 - 4 * 3_600, obcg::FLAG_FORECAST)],
+        &[(t0 - 4 * 3_600, SourceClass::Forecast)],
         |_, _| 2,
     );
     let mosaic = Mosaic::from_sources(vec![stale]).expect("ranked");
@@ -970,8 +998,8 @@ fn a_canonical_cycle_publishes_exactly_what_its_manifest_says_and_repeats_itself
 fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
     let t0 = ts("2026-08-09T14:00:00Z");
     let lattice = sub_lattice(45_680_000, 1_460_000, 32, 32);
-    let frames: Vec<(i64, u16)> =
-        (0..CYCLE_FRAMES).map(|frame| (t0 + i64::from(frame) * 900, obcg::FLAG_FORECAST)).collect();
+    let frames: Vec<(i64, SourceClass)> =
+        (0..CYCLE_FRAMES).map(|frame| (t0 + i64::from(frame) * 900, SourceClass::Forecast)).collect();
     // The western 16 columns, entirely dry. The eastern 16 have no source at all.
     let west =
         synthetic_frames(gfs::ID, window(45_680_000, 1_460_000, CELL_UDEG, 16, 32), &frames, |_, _| INTENSITY_DRY);
@@ -1339,6 +1367,59 @@ fn the_floor_offers_an_eligible_forecast_at_every_one_of_the_nine_offsets() {
         let object = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
         assert!(object.fill.painted, "f+{offset_min}");
         assert!(!object.observed, "f+{offset_min}: the floor is a model, so nothing here is ever Observed");
+    }
+}
+
+/// **Where the longer fall-through actually costs resolution** (#1248 review, M5).
+///
+/// A forward frame skips the radar rows, so it falls to the regional model, and where the regional
+/// model's domain does not reach as far as the radar's, it falls all the way to the 27.75 km floor.
+/// Under the old rule the radar observation masked that at f+15 and f+30. Four strips are affected
+/// permanently, and this derives them from the adapters' own window constants rather than from the
+/// review comment that found them — so a domain change moves the documented strips or fails here.
+#[test]
+fn the_forward_frame_fall_through_strips_are_where_radar_outruns_its_model() {
+    let edges = |geometry: &GridGeometry| {
+        (
+            f64::from(geometry.south_lat_udeg) / 1e6,
+            geometry.north_lat_udeg() as f64 / 1e6,
+            f64::from(geometry.west_lon_udeg) / 1e6,
+            geometry.east_lon_udeg() as f64 / 1e6,
+        )
+    };
+    let (_, mrms_north, _, mrms_east) = edges(&mrms::GEOMETRY);
+    let (_, hrrr_north, _, hrrr_east) = edges(&hrrr::GEOMETRY);
+    let (_, opera_north, opera_west, _) = edges(&opera::WINDOW);
+    let (_, icon_north, icon_west, _) = edges(&icon_eu::GEOMETRY);
+
+    assert_eq!((hrrr_north, mrms_north), (52.66, 55.0), "CONUS: the northern strip MOSAIC_PRIORITY documents");
+    assert_eq!((hrrr_east, mrms_east), (-60.87, -60.0), "CONUS: the eastern sliver");
+    assert_eq!((icon_north, opera_north), (70.53125, 73.0), "Europe: the Arctic strip, Finnmark inside it");
+    assert_eq!((opera_west, icon_west), (-28.0, -23.53125), "Europe: the Atlantic strip");
+
+    // And the consequence, driven through the mosaic at Finnmark — the strip with riders in it.
+    // 70.9 N, 29 E: inside OPERA, outside ICON-EU, so at f+15 only the floor is left.
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(70_900_000, 29_000_000, 32, 32);
+    let source = window(70_500_000, 28_000_000, CELL_UDEG, 200, 200);
+    assert!(source_reaches(&opera::WINDOW, &lattice, 8, 8), "the premise: OPERA reaches Finnmark");
+    assert!(!source_reaches(&icon_eu::GEOMETRY, &lattice, 8, 8), "the premise: ICON-EU does not");
+    let cirrus = synthetic_frames(opera_cirrus::ID, source, &[(t0, SourceClass::Observation)], |_, _| 6);
+    let floor = synthetic_frames(
+        gfs::ID,
+        window(70_000_000, 28_000_000, 250_000, 8, 8),
+        &[(t0, SourceClass::Forecast), (t0 + 3_600, SourceClass::Forecast)],
+        |_, _| 2,
+    );
+    let mosaic = Mosaic::from_sources(vec![cirrus, floor]).expect("both are ranked");
+    let times = CycleTimes { reference_time: t0 };
+    assert_eq!(mosaic.winner_at(&lattice, times.slot(0), 8, 8), Some(opera_cirrus::ID), "f0 is still 1 km radar");
+    for offset_min in [15, 30] {
+        assert_eq!(
+            mosaic.winner_at(&lattice, times.slot(offset_min), 8, 8),
+            Some(gfs::ID),
+            "f+{offset_min}: no regional model here, so the fall is all the way to the 27.75 km floor"
+        );
     }
 }
 

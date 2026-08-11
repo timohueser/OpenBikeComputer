@@ -15,14 +15,13 @@
 //! cells) — the deliberate sizing WX1's 161 MB spike measurement called for, and the reason the
 //! baker never runs two MRMS decodes concurrently.
 
-use obc_formats::obcg::FLAG_OBSERVED;
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_gzip_field, ExpectedGrib, MAX_COMPRESSED_BYTES, MRMS_CONUS_GRID_DEFINITION_HEX};
-use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, NOAA_TERMS_URL};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass, NOAA_TERMS_URL};
 
 pub const ID: &str = "mrms";
 
@@ -130,7 +129,7 @@ pub fn bake_observation(upstream: &mut dyn Upstream, valid_at: i64) -> Result<Ba
     if field.values.len() != GEOMETRY.cells() {
         return Err("MRMS field does not have the contracted cell count".into());
     }
-    Ok(BakedFrame { offset_min: 0, valid_at, flags: FLAG_OBSERVED, cells: quantize(&field.values) })
+    Ok(BakedFrame { offset_min: 0, valid_at, class: SourceClass::Observation, cells: quantize(&field.values) })
 }
 
 pub struct Mrms;
