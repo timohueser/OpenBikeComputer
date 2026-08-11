@@ -421,6 +421,20 @@ or the binary. It:
 * finishes with a dry-run bake (fetch + decode, publishes nothing) so a broken upstream or a wrong
   architecture is visible immediately.
 
+**Whatever rclone the distribution packages is fine — there is no version floor — and the reason
+that is true is worth one line.** Debian 13 ships **rclone v1.60.1**, and that version answers both
+`rclone cat` and `rclone size --json` for a key that *does not exist* with an empty body and exit 0,
+writing nothing to stderr. Absence cannot be read off an error message there, so the baker reads the
+`count` field of `rclone size --json` instead: `0` is no object, `1` is an object — including a real
+zero-byte one, which prints the same `"bytes":0`. Every rclone that has `--json` prints `count`,
+which is why this works everywhere rather than pinning a version.
+
+That is also a rule for anyone editing `publish.rs`: **absence is decided by `count`, never by a
+message.** A baker that gets it wrong cannot bootstrap a fresh `wx/v2` prefix at all — it reads the
+empty body back as a present-but-unparseable manifest, refuses to publish over it (correctly, per
+§10.4), and does that on every tick forever. Observed live on 2026-08-11; the regression test is
+`publish::tests::a_missing_object_reads_as_absent_not_as_an_empty_body`.
+
 Then fill in the credentials from **T5** and take the first real publish by hand:
 
 ```sh
@@ -740,7 +754,7 @@ risk. Wait for the next tick before intervening.
 | `published but does not parse back` / `read back … not the … just written` | the manifest was written and the read-back did not match — a torn body on the way out | **the sweep did not run**, deliberately: nothing was deleted. The next tick republishes and re-verifies. If it repeats, the bucket or the endpoint is the problem, not the baker |
 | Cycle killed, `MemoryMax` in the journal | the bake exceeded its cap; the budget is ≈ 398 MB at `BAKE_THREADS = 4` | that is a bug, not a tuning problem — file it; raise the cap in the unit template only with a measurement |
 | Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop obc-wx-bake@cycle.service`, check `ps`, then `systemctl start obc-wx-bake@cycle.service` — through the unit, so the replacement takes the same lock |
-| `wx/v2/manifest.json exists but did not parse … refusing to publish` | a torn or truncated read of the manifest the baker itself wrote | **do nothing.** This is the §10.4 rule working: publishing an empty retention chain from a torn read would delete the generations in-flight clients are reading. The next tick retries |
+| `wx/v2/manifest.json exists but did not parse … refusing to publish` | a torn or truncated read of the manifest the baker itself wrote | **do nothing.** This is the §10.4 rule working: publishing an empty retention chain from a torn read would delete the generations in-flight clients are reading. The next tick retries. **Unless it repeats on every single tick against a prefix that is genuinely empty** — a fresh `wx/v2`, or one just reset below — in which case it is not a torn read but the baker failing to tell "absent" from "empty", and §3's note on `rclone size --json count` is the fix |
 | Timer "active" but nothing publishes | clock skew, or a paused system | `timedatectl` (NTP on?), then `systemctl start obc-wx-bake@cycle.service`. A clock that stepped *backwards* shows up as `refusing to publish a manifest that goes backwards` rather than as silence |
 | Everything green on the box, probe says stale | delivery, not baking: public access, custom domain, DNS or a cached 404 | re-do §4 steps 1–3 |
 
@@ -748,7 +762,9 @@ risk. Wait for the next tick before intervening.
 is a full reset — with one consequence that did not exist before the sweep. Load the environment as
 in §4 step 5, then `rclone deletefile obcwx:obc-wx/wx/v2/manifest.json` and
 `systemctl start obc-wx-bake@cycle.service`.
-The next cycle sees no predecessor, treats itself as a bootstrap, and publishes a complete
+This is the one operation that depends on the baker reading a *deleted* key as absent rather than as
+empty (§3), so do it with a binary that postdates that fix or you have replaced a wedge with a worse
+one. The next cycle sees no predecessor, treats itself as a bootstrap, and publishes a complete
 generation with an empty `previous_generations` — which means **it will not sweep for three
 cycles**, and the generations that were current when you deleted the manifest are now orphaned. They
 are unreferenced, nothing serves them, and T4's lifecycle rule collects them within a day. That is
