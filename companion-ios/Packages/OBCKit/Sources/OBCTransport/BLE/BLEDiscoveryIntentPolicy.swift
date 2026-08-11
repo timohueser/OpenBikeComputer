@@ -44,7 +44,7 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
         /// The standing watch matched the known peripheral with no read waiter in flight: the
         /// transport arms an autonomous one-shot read (result published on the events stream)
         /// and connects. The policy has already raised `weatherRequestPending` for it.
-        case connectForWeatherRead
+        case connectForWeatherRead(owner: Ownership)
     }
 
     private(set) var foregroundRequested = false
@@ -148,8 +148,25 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
         }
     }
 
-    mutating func discovered(peripheralID: UUID, knownPeripheralID: UUID?) -> DiscoveryAction {
+    mutating func discovered(
+        peripheralID: UUID,
+        knownPeripheralID: UUID?,
+        advertisedAsWeatherRequest: Bool = false
+    ) -> DiscoveryAction {
         guard phase == .scanning else { return .ignore }
+        // A live foreground session scans for both UUIDs. When the device deliberately drops
+        // Control and comes back advertising Weather Request, reconnecting it as an ordinary
+        // foreground discovery would never arm the autonomous context read: the device would sit
+        // pending until its 60 s budget expired. Recognise the advertised UUID before the general
+        // foreground branch, but keep foreground ownership so the weather job cannot tear down a
+        // connection the rider owns.
+        if advertisedAsWeatherRequest, (weatherWatchArmed || foregroundRequested), knownPeripheralID == peripheralID,
+           !weatherRequestPending {
+            weatherRequestPending = true
+            let owner: Ownership = foregroundRequested ? .foreground : .weatherRequest
+            phase = .connecting(peripheralID: peripheralID, owner: owner)
+            return .connectForWeatherRead(owner: owner)
+        }
         if foregroundRequested {
             phase = .connecting(peripheralID: peripheralID, owner: .foreground)
             return .connect(owner: .foreground)
@@ -165,7 +182,7 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
             // transport to arm its autonomous read bookkeeping.
             weatherRequestPending = true
             phase = .connecting(peripheralID: peripheralID, owner: .weatherRequest)
-            return .connectForWeatherRead
+            return .connectForWeatherRead(owner: .weatherRequest)
         }
         return .ignore
     }

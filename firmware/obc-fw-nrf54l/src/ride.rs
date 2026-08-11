@@ -71,6 +71,11 @@ const WDT_FEED_CAP_MS: u32 = 12_000;
 /// fresh, not as a wrapped ~u32::MAX staleness.
 const INPUT_HB_STALE_MS: u32 = 65_000;
 
+/// Inputs that make the resident weather snapshot materially different. Keeping this named makes
+/// the retry/cache rule below readable and avoids hiding its four independent invalidation axes
+/// inside a nested tuple type at the use site.
+type WeatherSampleKey = (obc_weather::Candidate, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
+
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
 /// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
 /// square-loop walk. The walk position is time-based, so a slower tick just lowers the demo frame rate.
@@ -706,12 +711,7 @@ pub(crate) async fn run_app(
     // position changes; neither object is rebuilt per rendered frame.
     let mut weather_cache = obc_weather::WeatherCache::new();
     let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
-    let mut weather_sample_key: Option<(
-        obc_weather::Candidate,
-        Option<(i32, i32)>,
-        Option<(Option<usize>, u32, u32)>,
-        i64,
-    )> = None;
+    let mut weather_sample_key: Option<WeatherSampleKey> = None;
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
