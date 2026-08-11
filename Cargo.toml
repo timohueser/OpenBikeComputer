@@ -23,6 +23,7 @@ members = [
     "firmware/obc-crc",
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
     "host/obc-host-core",
+    "host/obc-fixtures",
     "host/obc-pack",
     "host/obc-bake",
     "host/obc-dem",

@@ -20,7 +20,7 @@
 //!
 //! # the four options, one frame, one directory
 //! cargo run --release -p obc-sim --bin rain_sampling_sheet -- \
-//!     --obcg <f0.obcg> --map apps/obc-sim/assets/grimsel.obcm \
+//!     --obcg <f0.obcg> --map <fixture-root>/sim-grimsel/grimsel.obcm \
 //!     --center 7900000,48100000 --mpp 40 --label riding --out-dir /tmp/sheet
 //! ```
 
@@ -507,10 +507,13 @@ fn main() {
     );
 
     // A map is always loaded — the basemap is half of what a rider judges. Where the product's
-    // ground has no packed map in the repo (MRMS is CONUS-only and every committed map is
+    // ground has no registered map (MRMS is CONUS-only and every registered map is
     // Alpine/Rhine), the camera simply sits off that map and the basemap renders empty: the raster
     // is then judged on its own, which the sheet's caption must say.
-    let map_path = map_path.unwrap_or_else(|| "apps/obc-sim/assets/grimsel.obcm".to_string());
+    let Some(map_path) = map_path else {
+        eprintln!("--map PATH is required when rendering (run `obc fixtures sync sim` first)");
+        process::exit(2);
+    };
     let map = Basemap::open(&map_path).unwrap_or_else(|e| {
         eprintln!("{e}");
         process::exit(1)

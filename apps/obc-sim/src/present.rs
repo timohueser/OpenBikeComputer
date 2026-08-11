@@ -351,6 +351,7 @@ mod tests {
     use embedded_graphics::pixelcolor::Rgb565;
     use obc_display::display_contracts::conformance::{self, GlassProbe};
     use obc_display::ls021::{FRAME_H, FRAME_W};
+    #[cfg(feature = "external-fixtures")]
     use obc_display::FbDevice64;
     use pollster::block_on;
 
@@ -599,6 +600,7 @@ mod tests {
     /// idle Home re-render pushes **zero** rows, a Home minute tick only the **clock's** rows, and a
     /// map pan **~all**. The oracle inside [`Present::present_now`] backs every count.
     #[test]
+    #[cfg(feature = "external-fixtures")]
     fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
         use obc_app::{App, AppState};
         use obc_ports::InputClock;
@@ -607,7 +609,7 @@ mod tests {
         // The device resolution is the single ls021 authority, not a re-declared literal.
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
-        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
@@ -675,10 +677,11 @@ mod tests {
     /// the whole write→read path on real geometry, and gives the #425 POI browser a map with POIs
     /// to browse in the sim/snapshot suite.
     #[test]
+    #[cfg(feature = "external-fixtures")]
     fn monaco_fixture_parses_populated_poi_and_nav_sections() {
         use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
-        let bytes = include_bytes!("../assets/monaco.obcm").to_vec();
+        let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm").expect("full fixture suite requires map");
         let src = SliceSource(&bytes);
         let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v11 map");
         let cache = MapCache::new();
@@ -803,6 +806,7 @@ mod tests {
     /// tick, render into the resident device-64 plane, then present. After presenting it asserts
     /// the full byte-equality postcondition and panics with diagnostics on the FIRST miss.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "external-fixtures")]
     fn tour_frame(
         app: &mut obc_app::App,
         scratch: &mut obc_render::RenderScratch,
@@ -887,6 +891,7 @@ mod tests {
     /// under the oracle (debug asserts on) *and* the full byte-equality postcondition in
     /// [`tour_frame`], so any diff miss — the pre-fix panic — fails here with row diagnostics.
     #[test]
+    #[cfg(feature = "external-fixtures")]
     fn tour_screens_dwell_with_no_present_miss() {
         use std::path::Path;
 
@@ -898,7 +903,7 @@ mod tests {
 
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
-        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
@@ -909,12 +914,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("obc626-tour-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp routes dir");
-        std::fs::write(dir.join("grimsel-climb.obcr"), include_bytes!("../assets/grimsel-climb.obcr"))
-            .expect("seed demo route");
+        std::fs::write(
+            dir.join("grimsel-climb.obcr"),
+            include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"),
+        )
+        .expect("seed demo route");
         let mut store = crate::routes::RouteStore::open(&dir);
 
-        let track =
-            Track::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.gpx"))).expect("gpx");
+        let track = Track::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx"
+        )))
+        .expect("gpx");
         let mut player = GpxPlayer::new(track);
         player.set_speed(3.0); // the page's ambient pace (obc-web-demo's `DEMO_SPEED`)
         let mut baro = BaroSensor::new();
@@ -1075,6 +1086,7 @@ mod tests {
     /// repeated presents, twice (forward to mid-climb, then backward to the start). Every present
     /// runs under the oracle + the byte-equality postcondition in [`tour_frame`].
     #[test]
+    #[cfg(feature = "external-fixtures")]
     fn demo_reset_rebuild_and_seek_present_clean() {
         use std::path::Path;
 
@@ -1085,7 +1097,7 @@ mod tests {
 
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
-        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
@@ -1094,12 +1106,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("obc626-reset-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp routes dir");
-        std::fs::write(dir.join("grimsel-climb.obcr"), include_bytes!("../assets/grimsel-climb.obcr"))
-            .expect("seed demo route");
+        std::fs::write(
+            dir.join("grimsel-climb.obcr"),
+            include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"),
+        )
+        .expect("seed demo route");
         let mut store = crate::routes::RouteStore::open(&dir);
 
-        let track =
-            Track::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.gpx"))).expect("gpx");
+        let track = Track::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx"
+        )))
+        .expect("gpx");
         let mut player = GpxPlayer::new(track);
         player.set_speed(3.0);
         let mut baro = BaroSensor::new();

@@ -8,24 +8,26 @@
 #
 # Env overrides:
 #   SIM   the obc-sim binary   (default: <repo>/target/release/obc-sim)
-#   MAP   the .obcm map        (default: the committed Grimsel showcase fixture, OBCM v7)
-#   GPX   the replay track     (default: the committed Grimsel climb fixture)
+#   MAP   the .obcm map        (default: registry scenario `grimsel`)
+#   GPX   the replay track     (default: registry scenario `grimsel`)
 #
-# The defaults are the OBCM **v7** fixtures baked into obc-sim (the Grimsel showcase
-# map + its climb replay), so the sweep runs out-of-the-box; point MAP/GPX at a local
-# map to sweep a different region. Routes come from the repo's specs/vectors/
-# fixtures. Exits non-zero on the first failing render (set -e), so a broken sim can't
-# produce a silently short sweep.
+# The registry sync makes the complete Grimsel and Monaco scenarios available;
+# point MAP/GPX at local files to sweep a different region. Exits non-zero on the
+# first failing render (set -e), so a broken sim cannot produce a short sweep.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 SIM="${SIM:-$repo_root/target/release/obc-sim}"
-MAP="${MAP:-$repo_root/apps/obc-sim/assets/grimsel.obcm}"
-GPX="${GPX:-$repo_root/apps/obc-sim/assets/grimsel-climb.gpx}"
+python3 "$repo_root/tools/fixtures.py" sync sim
+fixture_root="$(python3 "$repo_root/tools/fixtures.py" root)"
+GRIMSEL_FIXTURES="$fixture_root/sim-grimsel"
+MONACO_FIXTURES="$fixture_root/sim-monaco"
+MAP="${MAP:-$GRIMSEL_FIXTURES/grimsel.obcm}"
+GPX="${GPX:-$GRIMSEL_FIXTURES/tracks/grimsel-climb.gpx}"
 # A second, tiny replay that lies *on* specs/vectors' `route-waypoints.obcr` ("Vector Loop") — the
 # Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
 # provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
-WPTGPX="$repo_root/apps/obc-sim/assets/vector-loop-replay.gpx"
+WPTGPX="$repo_root/fixtures/sources/vector/vector-loop-replay.gpx"
 ROUTES="$repo_root/specs/vectors"
 OUT="${1:-ui-snapshots}"
 
@@ -60,7 +62,7 @@ PLAINROUTE="$(mktemp -d)"
 ETAROUTE="$(mktemp -d)"
 ETAFLAT="$(mktemp -d)"
 trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
-cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$ETAROUTE/"
+cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
 rm "$ETAFLAT/grimsel-flat.gpx"
@@ -71,8 +73,8 @@ printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
 cp "$ROUTES/route-plain.obcr" "$PLAINROUTE/"
-cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
-cp "$repo_root/apps/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
+cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
+cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -132,7 +134,7 @@ cp "$repo_root/apps/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # Resupply "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow,
 # and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws
 # once to fill the lazy snapshot, then presses the POI into its detail.
-MONACO="$repo_root/apps/obc-sim/assets/monaco.obcm"
+MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p" --png "$OUT/poi-detail.png"
 # The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
@@ -504,7 +506,7 @@ CLIMBROUTES="$(mktemp -d)"
 # The EL7 sweep below plans a route on the device and rides it; its own dir.
 ELEVDIR="$(mktemp -d)"
 trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
-cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
+cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 
 # --- Terrain-filled device-planned route (elevation epic #1068, EL7) -----------------------------
@@ -548,7 +550,7 @@ ELEVFIELDS="elevation,climbed,speed,dist-done"
 ELEVSCRIPT="B d d d w p p p b"
 "$SIM" "$MAP" --boot --gpx "$GPX" --at 1500 --baro-drift -60 --stat-fields "$ELEVFIELDS" \
     --script "$ELEVSCRIPT" --png "$OUT/elev-altimeter-fused.png"
-"$SIM" "$repo_root/apps/obc-sim/assets/monaco.obcm" --boot --gpx "$GPX" --at 1500 --baro-drift -60 \
+"$SIM" "$MONACO_FIXTURES/monaco.obcm" --boot --gpx "$GPX" --at 1500 --baro-drift -60 \
     --stat-fields "$ELEVFIELDS" --script "$ELEVSCRIPT" --png "$OUT/elev-altimeter-nofuse.png"
 
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
@@ -558,8 +560,8 @@ ELEVSCRIPT="B d d d w p p p b"
 # waypoints cover five categories, two Generic ones, and offsets on both sides of the line. The route is
 # imported at run time (`--import`), so no second `.obcr` is committed to re-cut on a format bump.
 # `f` draws one throwaway frame so the corridor snapshot lands before the next token.
-UPMAP="$repo_root/apps/obc-sim/assets/monaco.obcm"
-UPGPX="$repo_root/apps/obc-sim/assets/monaco-upahead.gpx"
+UPMAP="$MONACO_FIXTURES/monaco.obcm"
+UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
 UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES" "$ELEVDIR" "$UPROUTES"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
 UPBASE="p p p p T B w p f"
