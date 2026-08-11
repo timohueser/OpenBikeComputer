@@ -433,13 +433,13 @@
     },
     {
       "key": "wx/v2/20200810T1845Z/f15/s0-0.obcg",
-      "bytes": 35904,
-      "sha256": "f28c2d66e53c5db259fb74be35f33b607e7b6d21bbd998a4afabacea8528c1e7"
+      "bytes": 6205,
+      "sha256": "4bf4d2c0402bf07bf50c48420a0e1532b29d123c94bb77baa35066f38c9388f5"
     },
     {
       "key": "wx/v2/20200810T1845Z/f30/s0-0.obcg",
-      "bytes": 35904,
-      "sha256": "781f4a745b783364e814a5db374b8f065cdf0a51f74931e9a257ac3b7b1de3c8"
+      "bytes": 6184,
+      "sha256": "4cf8420cd270b47e31c48c8a195d4544749a2d73c6b699f52a8573d00092fb54"
     },
     {
       "key": "wx/v2/20200810T1845Z/f45/s0-0.obcg",
@@ -463,8 +463,8 @@
     },
     {
       "key": "wx/v2/manifest.json",
-      "bytes": 3887,
-      "sha256": "e0a2483c842297b54cfca298ad86a416bd5704828949f601fe36858799b50014"
+      "bytes": 3885,
+      "sha256": "22540678054f14cadbf0ba17556d58f2af3329f071d2b542ec63404fe4db8f55"
     }
   ],
   "truth_frames": [
