@@ -64,6 +64,43 @@ pub struct WeatherReader<'a, S: ByteSource + ?Sized> {
     header: Header,
 }
 
+/// Proof that one **stable** byte source was fully validated as canonical OBCW.
+///
+/// `WeatherReader::open` performs the expensive whole-object CRC and tile/layout validation once,
+/// then [`ValidatedBundle::reader`] re-borrows the same session-stable object using only its stored
+/// header and one matching-header read. This is the mount token filesystem hosts retain beside an open file;
+/// its fields are private, so callers cannot turn an unvalidated header into a fast reader.
+///
+/// The source must remain byte-stable while the token is used. The device guarantees that by
+/// holding the active A/B slot read-only and writing only the inactive slot; the simulator replaces
+/// the token whenever it replaces/re-anchors its byte vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedBundle {
+    header: Header,
+}
+
+impl ValidatedBundle {
+    pub const fn header(self) -> Header {
+        self.header
+    }
+
+    /// Open a cheap reader over the stable source this token belongs to. Length plus the complete
+    /// decoded header (including the bundle CRC) must match the validated proof, preventing a token
+    /// from being paired with another equal-length OBCW object. This is one header read, never the
+    /// whole-object CRC/tile walk.
+    pub fn reader<'a, S: ByteSource + ?Sized>(self, source: &'a S) -> Result<WeatherReader<'a, S>, Error> {
+        if source.len() != self.header.total_len {
+            return Err(FormatError::TotalLength.into());
+        }
+        let mut bytes = [0u8; HEADER_LEN];
+        source.read_at(0, &mut bytes)?;
+        if obcw::decode_header(&bytes)? != self.header {
+            return Err(FormatError::Crc.into());
+        }
+        Ok(WeatherReader { source, header: self.header })
+    }
+}
+
 impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
     #[inline(never)]
     pub fn open(source: &'a S) -> Result<Self, Error> {
@@ -79,6 +116,11 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         }
         reader.validate_sections()?;
         Ok(reader)
+    }
+
+    /// Capture the private fast-reopen proof after this reader completed full validation.
+    pub const fn validated(&self) -> ValidatedBundle {
+        ValidatedBundle { header: self.header }
     }
 
     pub const fn header(&self) -> Header {
@@ -472,6 +514,29 @@ mod tests {
         WeatherReader::open(&source).unwrap();
         assert_eq!(source.calls.get(), 269, "DWD open read_at budget");
         assert_eq!(source.bytes_read.get(), 92_848, "DWD open byte budget");
+    }
+
+    #[test]
+    fn validated_mount_reopens_without_rereading_the_bundle() {
+        let bytes = dwd_shaped_bundle();
+        let source = CountingSource { bytes: &bytes, calls: Cell::new(0), bytes_read: Cell::new(0) };
+        let reader = WeatherReader::open(&source).unwrap();
+        let mount = reader.validated();
+        let calls_after_validation = source.calls.get();
+        let bytes_after_validation = source.bytes_read.get();
+
+        let reopened = mount.reader(&source).unwrap();
+        assert_eq!(reopened.header(), reader.header());
+        assert_eq!(source.calls.get(), calls_after_validation + 1, "fast reopen reads only the header");
+        assert_eq!(source.bytes_read.get(), bytes_after_validation + HEADER_LEN, "fast reopen reads only the header");
+
+        let shorter = SliceSource(&bytes[..bytes.len() - 1]);
+        assert_eq!(mount.reader(&shorter).err(), Some(Error::Format(FormatError::TotalLength)));
+
+        let mut different = bytes.clone();
+        different[obcw::HDR_GENERATION] ^= 1;
+        let equal_length_other = SliceSource(&different);
+        assert_eq!(mount.reader(&equal_length_other).err(), Some(Error::Format(FormatError::Crc)));
     }
 
     #[test]

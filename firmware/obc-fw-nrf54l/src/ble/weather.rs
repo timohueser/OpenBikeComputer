@@ -58,6 +58,8 @@ static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// The rider opened Weather (WX11 wires the screen; the seam exists now so the screen PR is
 /// UI-only) — an urgent request, honoured even outside a ride and with refresh `Off`.
 static URGENT: AtomicBool = AtomicBool::new(false);
+/// UI-facing level from dashboard entry/scheduler raise through commit or request lapse.
+static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// A weather bundle committed (the store's finish path) — the one thing that finishes a request.
 static COMMITTED: AtomicBool = AtomicBool::new(false);
@@ -76,17 +78,23 @@ pub fn set_weather_inputs(s: WeatherSnapshot) {
     }
 }
 
-/// The rider opened Weather: raise an urgent request now (spec §11.4 reason bit 1). The WX11
-/// Weather screen's open is the caller; nothing invokes it yet.
-#[allow(dead_code)] // WX11 wires the Weather screen's open to this.
+/// The rider opened Weather: raise an urgent request now (spec §11.4 reason bit 1). The board ride
+/// loop calls this on the non-weather → Weather-dashboard transition; returning from one of the
+/// dashboard's child surfaces does not re-arm it.
 pub fn request_weather_now() {
+    IN_FLIGHT.store(true, Ordering::Relaxed);
     URGENT.store(true, Ordering::Relaxed);
     WAKE.signal(());
+}
+
+pub fn refresh_in_flight() -> bool {
+    IN_FLIGHT.load(Ordering::Relaxed)
 }
 
 /// A weather bundle committed (WX7 store, via `ObjectStore::weather_finish`): finish the pending
 /// request and re-anchor the schedule.
 pub(crate) fn note_commit() {
+    IN_FLIGHT.store(false, Ordering::Relaxed);
     COMMITTED.store(true, Ordering::Relaxed);
     WAKE.signal(());
 }
@@ -136,6 +144,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         };
 
         if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
+            IN_FLIGHT.store(true, Ordering::Relaxed);
             let ctx = build_context(&snapshot, refresh_raw, raise, bundle);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
@@ -153,10 +162,14 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         // a request just ended (commit / lapse) **or** when the stored refresh byte moved (#1221
         // F2): §11.8's refresh byte reports the rider's own setting, and a resting value frozen at
         // an older one would misreport it — `note_settings_changed`'s wake lands here.
-        if sched.pending_request_id().is_none() && (context_live || served_refresh != Some(refresh_raw)) {
-            let _ = server.set(&server.weather_request.context, &WeatherRequestContext::resting(refresh_raw).encode());
-            context_live = false;
-            served_refresh = Some(refresh_raw);
+        if sched.pending_request_id().is_none() {
+            IN_FLIGHT.store(false, Ordering::Relaxed);
+            if context_live || served_refresh != Some(refresh_raw) {
+                let _ =
+                    server.set(&server.weather_request.context, &WeatherRequestContext::resting(refresh_raw).encode());
+                context_live = false;
+                served_refresh = Some(refresh_raw);
+            }
         }
 
         match sched.next_wake_s(refresh, snapshot.ride_active, store_ready) {
