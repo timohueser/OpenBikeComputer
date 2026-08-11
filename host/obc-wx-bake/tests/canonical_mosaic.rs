@@ -576,7 +576,32 @@ fn the_observed_flag_follows_what_actually_painted_the_shard() {
     let east = emit_shard(&lattice, &mosaic, times, 0, 1).expect("emits");
     assert_eq!(obcg::validate(&west.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_OBSERVED);
     assert_eq!(obcg::validate(&east.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_FORECAST);
+    assert!(west.observed && !east.observed);
     assert!(west.fill.all_observed && east.fill.painted && !east.fill.all_observed);
+
+    // **And the second half of the rule.** The radar layer holds one frame, valid at the anchor, so
+    // `nearest()` hands it to f+15 and f+30 as well — inside `MAX_FRAME_SKEW_S`, painting the same
+    // cells from the same field. Those frames are about instants no observation of exists at bake
+    // time, so they are forecasts by persistence and must say so, however observed their cells'
+    // provenance is. Without this the western shard published three objects with three different
+    // `valid_at`s, one field between them, and Observed on all three.
+    for offset_min in [15, 30] {
+        let ahead = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert!(
+            ahead.fill.all_observed,
+            "f+{offset_min}: the frozen radar frame is still what painted it — that is the premise"
+        );
+        assert!(!ahead.observed, "f+{offset_min}: a frame ahead of the anchor is never observed");
+        assert_eq!(
+            obcg::validate(&ahead.bytes, &mut scratch).expect("valid").flags,
+            obcg::FLAG_FORECAST,
+            "f+{offset_min}"
+        );
+    }
+    // Past the skew window the frozen frame is refused outright and the shard is no-data, which is
+    // the other honest answer and also a forecast.
+    let far = emit_shard(&lattice, &mosaic, times, 45, 0).expect("emits");
+    assert!(!far.fill.painted && !far.observed);
 }
 
 /// **The failure the epic actually forbids**: a source that has fallen out of the timeline must
@@ -795,7 +820,7 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
                 object.row,
                 object.bytes.len() as u64,
                 object.object_crc32,
-                object.fill.all_observed,
+                object.observed,
             );
         }
         if object.col == 0 {

@@ -47,8 +47,8 @@
 //! a constant stating the lattice, rather than describing a per-cell source that no longer has one
 //! value.
 //!
-//! The one flag that *is* still provenance, `FLAG_OBSERVED`, is computed rather than assumed: see
-//! [`FillOutcome::all_observed`].
+//! The one flag that *is* still provenance, `FLAG_OBSERVED`, is computed rather than assumed, and
+//! it is two facts and not one: see [`shard_is_observed`].
 
 use std::time::Instant;
 
@@ -416,19 +416,21 @@ impl MosaicLayer {
 pub struct FillOutcome {
     /// Did any source paint any cell of the window? `false` is a window that is entirely no-data.
     pub painted: bool,
-    /// Is every cell of this window painted by an **observation** source frame?
+    /// Was every cell of this window painted by a source frame that was an **observation
+    /// upstream**?
     ///
-    /// This is the whole of `FLAG_OBSERVED` for the canonical dataset, and it is **exact**, not a
-    /// conservative approximation — which is why [`Mosaic::fill`] paints best-rank-first into
-    /// empty cells rather than worst-rank-first over the top. A layer that writes nothing that
-    /// survives writes nothing at all, so "every layer that owns a cell here was an observation"
-    /// is precisely "every cell here is an observation", and it costs one comparison per cell
-    /// instead of a 28 MB per-cell provenance plane — the mechanism #1242 refused to build.
+    /// **This is one of the two halves of `FLAG_OBSERVED`, not the whole of it** — see
+    /// [`CanonicalObject::observed`] for the other. It is exact rather than a conservative
+    /// approximation, which is why [`Mosaic::fill`] paints best-rank-first into empty cells rather
+    /// than worst-rank-first over the top: a layer that writes nothing that survives writes nothing
+    /// at all, so "every layer that owns a cell here was an observation" is precisely "every cell
+    /// here came from an observation", and it costs one comparison per cell instead of a 28 MB
+    /// per-cell provenance plane — the mechanism #1242 refused to build.
     ///
     /// The alternative, which this replaces, was to set `FLAG_OBSERVED` on f0 unconditionally. On a
     /// global mosaic that is a lie for ~85 % of the planet, where f0 is model fill: the same
     /// category of untruth `cell_size_m` was just retired for, and the one the device can still act
-    /// on. A shard entirely inside a radar footprint at f0 still gets it, honestly.
+    /// on.
     pub all_observed: bool,
     /// Is every cell of this window **dry** — intensity 0, and not one no-data cell among them?
     ///
@@ -612,9 +614,41 @@ pub struct CanonicalObject {
     pub offset_min: u32,
     pub bytes: Vec<u8>,
     pub object_crc32: u32,
-    /// What the mosaic managed to paint into this shard — the source of its flags, of its manifest
-    /// presence bit, and of the cycle's "nothing baked at all" gate.
+    /// What the mosaic managed to paint into this shard — the source of its manifest presence bit
+    /// and of the cycle's "nothing baked at all" gate.
     pub fill: FillOutcome,
+    /// **`FLAG_OBSERVED` as published**, and the same bit the manifest's per-shard `observed`
+    /// carries. Both read this rather than [`FillOutcome::all_observed`], so the two can never
+    /// disagree and a caller cannot forget the offset rule below.
+    pub observed: bool,
+}
+
+/// Does this shard get `FLAG_OBSERVED`?
+///
+/// Two conditions, and the second one is the one that is easy to get wrong.
+///
+/// 1. every cell came from a source frame that was an observation upstream
+///    ([`FillOutcome::all_observed`]); and
+/// 2. **this is the anchor frame.** A frame at `offset_min > 0` is about a future instant, and no
+///    observation of a future instant exists at bake time. What paints it is either a real forecast
+///    or a *frozen* observation from inside [`MAX_FRAME_SKEW_S`] — which is a persistence nowcast,
+///    which is a forecast. Flagging it observed re-stamps an old observation with a future validity
+///    and tells the device it is looking at measured weather when it is looking at an extrapolation.
+///
+/// Concretely, before this rule existed: a single-frame radar source (MRMS, either OPERA row) valid
+/// at 18:48 painted f0 **and** f+15 **and** f+30 of an 18:45 cycle, and all three objects said
+/// Observed with three different `valid_at`s over one field. The client was never fooled —
+/// `obc-wx-client`'s `observed_frame` has always been `offset_min == 0 && within skew`, mirroring
+/// the phone — so this aligns the producer with the rule both consumers already apply, per
+/// `OBCW_Spec.md` §5.1 and `OBCG_Spec.md` §3.2.
+///
+/// Note what is *not* required: that the source frame be valid at exactly `valid_at`. An
+/// observation almost never lands on the quarter hour, so demanding equality would make every f0
+/// a forecast and throw away the one provenance bit the device still acts on. Being inside the skew
+/// window is the contract, and the manifest states `max_source_skew_s` so a consumer can caveat
+/// "radar, up to N minutes old" with a number instead of a guess.
+pub fn shard_is_observed(offset_min: u32, fill: &FillOutcome) -> bool {
+    offset_min == 0 && fill.all_observed
 }
 
 /// Immutable object key for one shard of one frame:
@@ -644,12 +678,14 @@ pub fn emit_shard(
     // be a second 28 MB pass for nothing.
     let mut cells = vec![0u8; window.cells()];
     let fill = mosaic.fill(lattice, valid_at, window, &mut cells);
+    let observed = shard_is_observed(offset_min, &fill);
 
     let input = FrameInput {
-        // Measured, not assumed. See `FillOutcome::all_observed`: an f0 shard over open ocean is
-        // GFS model fill and says Forecast; one inside a radar footprint says Observed. The header
-        // requires exactly one of the two, so an all-no-data shard says Forecast.
-        flags: if fill.all_observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
+        // Measured, not assumed. See `shard_is_observed`: an f0 shard over open ocean is GFS model
+        // fill and says Forecast; one inside a radar footprint says Observed; and every frame ahead
+        // of f0 says Forecast, because an observation frozen forward is a persistence nowcast. The
+        // header requires exactly one of the two, so an all-no-data shard says Forecast.
+        flags: if observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
         valid_at,
         reference_time: times.reference_time,
         south_lat_udeg: geometry.south_lat_udeg,
@@ -691,6 +727,7 @@ pub fn emit_shard(
         object_crc32: header.object_crc32,
         bytes,
         fill,
+        observed,
     })
 }
 
@@ -846,7 +883,7 @@ pub fn run_cycle(
             object.row,
             object.bytes.len() as u64,
             object.object_crc32,
-            object.fill.all_observed,
+            object.observed,
         );
         if dry_run {
             return Ok(());

@@ -47,6 +47,13 @@ fn main() {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
+        // Reject rather than ignore. `schema --mosaic` used to mean "the canonical dataset's
+        // schema, not the multi-product one"; there is one schema now, so the flag would be muscle
+        // memory getting the right answer for the wrong reason — and the next flag someone invents
+        // would too.
+        if let Some(unknown) = args.get(1) {
+            return Err(format!("schema takes no arguments (got {unknown})\n{}", usage()));
+        }
         print!("{}", manifest_v2::schema_json());
         return Ok(());
     }

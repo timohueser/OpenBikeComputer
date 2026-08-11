@@ -7,6 +7,7 @@
 It fetches (or reads) the service manifest — `wx/v1/manifest.json`, or `wx/v2/manifest.json`
 with `--mosaic` — and answers one question: **is what the service is serving right now still usable?**
 
+**Mid-cutover, 2026-08-11 (#1246 -> WXR8 #1247).**
 The v1 half of this probe outlives the v1 *baker*, deliberately. #1246 deleted the multi-product
 path from the code, but the deployed VPS is still publishing `wx/v1` and clients are still reading
 it, and a probe that could not read what is actually being served would go blind for exactly the

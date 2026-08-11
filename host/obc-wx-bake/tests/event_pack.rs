@@ -356,13 +356,20 @@ fn the_frozen_manifest_is_one_generation_of_the_one_dataset() {
         document.attribution.iter().map(|entry| entry.source_id.as_str()).collect::<Vec<_>>(),
         vec!["mrms", "hrrr"]
     );
-    // The frames nearest the observation are observed where the radar painted them; the far end of
-    // the window is model, because MRMS has one frame and it falls out of the skew window.
+    // **Only the anchor is observed.** f0, f15 and f30 are all painted by the same 18:48 MRMS
+    // field — the skew window reaches 1,800 s and f30 is 1,620 s out — but a frame ahead of the
+    // anchor is about an instant no observation of exists, so the two frozen ones are forecasts by
+    // persistence and say so (`OBCG_Spec.md` §3.2, `canonical::shard_is_observed`). Before that
+    // rule this pack shipped three objects with three different `valid_at`s over one field, all
+    // three flagged Observed.
     assert!(document.frames[0].shards.iter().all(|shard| shard.observed), "f0 is inside the radar footprint");
-    assert!(
-        document.frames.last().expect("nine frames").shards.iter().all(|shard| !shard.observed),
-        "f120 is two hours ahead of the only observation there is"
-    );
+    for frame in &document.frames[1..] {
+        assert!(
+            frame.shards.iter().all(|shard| !shard.observed),
+            "f{} is ahead of the anchor — nothing there is an observation",
+            frame.offset_min
+        );
+    }
 
     // The window is honest in the manifest: it contains the request, and it is corridor-sized.
     let bbox = event.bake.bbox_udeg;
@@ -413,12 +420,15 @@ fn the_frames_actually_contain_the_storm() {
     // below are of the whole window and every floor sits roughly a quarter under what the bytes
     // measure, which notices a real regression while leaving room for a re-capture's drift.
     //
-    // f0 and f15 are the same 14.89 %, and that is not a copy-paste: the MRMS observation is the
-    // highest-ranked source over CONUS and it is inside `MAX_FRAME_SKEW_S` of both, so it paints
-    // both. Persistence out to +30 is the visible consequence of MRMS and HRRR being two priority
-    // rows instead of one composed product (#1246) — see `source::MOSAIC_PRIORITY`.
+    // f0, f15 **and f30** are the same 14.89 %, and that is not a copy-paste: the 18:48 MRMS
+    // observation is the highest-ranked source over CONUS and it is inside `MAX_FRAME_SKEW_S` of
+    // all three (19:15 - 18:48 = 1,620 s), so it paints all three. Persistence out to +30 — not
+    // +15 — is the visible consequence of MRMS and HRRR being two priority rows instead of one
+    // composed product (#1246); see `source::MOSAIC_PRIORITY`, and note that only f0 carries
+    // `FLAG_OBSERVED`, which `the_frozen_manifest_is_one_generation_of_the_one_dataset` pins.
     assert!(wet_fraction(&key(0)) > 0.11, "the first frame lost its storm");
     assert!(wet_fraction(&key(1)) > 0.11, "the second frame lost its storm");
+    assert!(wet_fraction(&key(2)) > 0.11, "the third frame lost its storm");
     // The far end of the window is HRRR's own forecast, and the storm has left eastward.
     // Measured 7.22 %.
     assert!(wet_fraction(&key(document.frames.len() - 1)) > 0.05, "the last frame lost its storm");
@@ -427,15 +437,19 @@ fn the_frames_actually_contain_the_storm() {
     assert!(wet_fraction(&truth(0)) > 0.11, "the first truth frame lost its storm");
     assert!(wet_fraction(&truth(event.truth_frames.len() - 1)) > 0.14, "the last truth frame lost its storm");
 
-    // Truth frames are observations on the pack's own lattice, stamped with the observation
-    // anchor, so a later scorer can line one up against the frame nearest it without arithmetic.
+    // Truth frames are observations on the pack's own lattice, **anchored on themselves**: a real
+    // observation of a real instant, which per `OBCG_Spec.md` §3.2 is the only stamping that may
+    // carry `FLAG_OBSERVED`. The ladder rung — how far ahead of the pack anchor this rung sits —
+    // lives in `event.json`, where a scorer reads it, and is checked against `window_start` below
+    // rather than being baked into a header that would then have to claim a forecast.
+    let anchor = timefmt::parse_rfc3339(&event.window_start).unwrap();
     for frame in &event.truth_frames {
         let bytes = read(&frame.path);
         let header = obcg::validate(&bytes, &mut scratch_buffer).unwrap();
         assert_eq!(header.flags, obcg::FLAG_OBSERVED, "{}", frame.path);
-        assert_eq!(header.reference_time, timefmt::parse_rfc3339(&event.window_start).unwrap());
+        assert_eq!(header.reference_time, header.valid_at, "{}: a truth frame is its own anchor", frame.path);
         assert_eq!(timefmt::rfc3339(header.valid_at), frame.valid_at);
-        assert_eq!(header.valid_at - header.reference_time, i64::from(frame.offset_min) * 60);
+        assert_eq!(header.valid_at - anchor, i64::from(frame.offset_min) * 60, "{}: the rung", frame.path);
         assert_eq!(header.cell_size_m, LATTICE_CELL_SIZE_M);
         // The requested ladder is +15 min steps; MRMS publishes every two minutes, so odd
         // requests floor onto the cadence and the pack records both numbers.
