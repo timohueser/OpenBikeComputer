@@ -11,6 +11,10 @@
 //!   `MOSAIC_PRIORITY` table that says which source wins a cell where two overlap.
 //! - [`grib`], [`idx`], [`tiff`], [`stereo`], [`lcc`], [`laea`] — pinned decode/selection/
 //!   projection primitives the adapters share.
+//! - [`flow`] + [`derive`] — the motion engine (WXR9 #1251): pyramidal Lucas-Kanade and
+//!   semi-Lagrangian advection, and the two jobs it does for the cycle — a radar-derived forecast
+//!   source, and a genuine estimate at every canonical instant an hourly source would otherwise
+//!   skip. [`skill`] is how "is this actually better" is answered with numbers.
 //! - [`canonical`] — the lattice, the priority mosaic, the sharded emit and **the cycle** (WXR3
 //!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions,
 //!   and since #1246 the only thing the bakery publishes.
@@ -27,7 +31,9 @@
 //! the bakery depends on it.
 
 pub mod canonical;
+pub mod derive;
 pub mod fetch;
+pub mod flow;
 pub mod geometry;
 pub mod grib;
 pub mod idx;
@@ -36,6 +42,7 @@ pub mod lcc;
 pub mod manifest_v2;
 pub mod pack;
 pub mod publish;
+pub mod skill;
 pub mod source;
 pub mod stereo;
 pub mod sweep;
