@@ -29,11 +29,14 @@ The fallback column is a loss of quality, not permission to relabel one product
 as another. Observation, nowcast, and forecast provenance must survive through
 normalization and baking. Missing data is never dry weather.
 
-> **Superseded in part, 2026-08-11 (WXR5 [#1244](https://github.com/timohueser/OpenBikeComputer/issues/1244), under epic [#1248](https://github.com/timohueser/OpenBikeComputer/issues/1248)).**
+> **Superseded in part, 2026-08-11 (WXR5 [#1244](https://github.com/timohueser/OpenBikeComputer/issues/1244)
+> and WXR7 [#1246](https://github.com/timohueser/OpenBikeComputer/issues/1246), under epic
+> [#1248](https://github.com/timohueser/OpenBikeComputer/issues/1248)).**
 > The *sources* above and their GO/NO-GO verdicts stand unchanged; what no longer
 > exists is the **ladder**. The tier column described a choice a client made — by
-> region, bbox containment and freshness — and both clients have now deleted that
-> code. The baker mosaics every source above onto one canonical 0.01 degree
+> region, bbox containment and freshness — and both clients deleted that code in
+> #1244, after which #1246 deleted the producer that published the products and
+> the spec sections that described them. The baker mosaics every source above onto one canonical 0.01 degree
 > lattice with a fixed priority order, and downstream there is one dataset with no
 > tier, no product id and no fallback to select. Read the tier column as the
 > baker's **priority order** for overlapping sources, not as anything a phone or a
@@ -212,10 +215,11 @@ with 26,061 positive cells. The eight first-two-hour message ranges totaled
 330,351 bytes for the captured run. Decoding the selected field took 0.02 s
 and 30.4 MB peak RSS.
 
-Do not present HRRR as an observation. In the US tier-1 timeline, the latest
-MRMS field is the observation anchor and HRRR supplies future valid times. The
-transition retains source and valid-time provenance; it is not blended into a
-fictional single model run.
+Do not present HRRR as an observation. MRMS and HRRR are two sources at two
+priority ranks (#1246 deleted the composed product that used to hold both), and
+each frame keeps its own real valid time and its own observed/forecast bit;
+neither is blended into a fictional single model run, and neither is relabelled
+as the other.
 
 ## DWD ICON-EU: European forecast
 
@@ -264,7 +268,8 @@ RSS.
 Amendment, not a rewrite: WX1 recorded no European tier-1 radar because none was
 surveyed. [#1245](https://github.com/timohueser/OpenBikeComputer/issues/1245)
 surveyed one and it is a **GO**, so the frozen table above should be read as
-having gained a `Europe, tier 1` row whose fallback ladder is ICON-EU, then GFS.
+having gained a `Europe, tier 1` row — which, per the supersession note, is a
+position in the baker's priority order and not a ladder a client walks.
 
 Objects are anonymous on CloudFerro, CC BY 4.0 (each object states its own
 licence in `GDAL_METADATA`):
