@@ -1,7 +1,7 @@
 //! **How far out is the nowcast honestly worth publishing?** — the two-event measurement (#1248).
 //!
 //! `nowcast_skill.rs` scores the engine over one storm. That storm is the 2020-08-10 derecho: fast,
-//! organised, coherent, translating at 27 m/s — the friendliest case optical-flow advection will
+//! organised, coherent, translating at 19.8 m/s — the friendliest case optical-flow advection will
 //! ever be handed, and the only evidence behind `derive::NOWCAST_MAX_LEAD_MIN`. A horizon set from
 //! one favourable event is a horizon set from a coincidence, so this harness adds the opposite case
 //! and scores **both** the same way, at every lead the packs reach and at three intensity
@@ -12,14 +12,14 @@
 //! `us-airmass-2023-06-24` — 24 June 2023, 20:00 Z (3 pm CDT) over Iowa. Scattered airmass
 //! convection: many small cells that form, rain and die inside the window, rather than one system
 //! arriving across it. ("Airmass" strictly — diurnal convection inside one air mass, not tied to a
-//! front. It is *not* a claim about storm speed; this field translates at 20.4 m/s.) The pack was
+//! front. It is *not* a claim about storm speed; this field translates at 16.1 m/s.) The pack was
 //! chosen by measurement, not by memory (the screening compared 30-odd summer afternoons over the
 //! same box), and the two events separate on every statistic that matters to an advection scheme
 //! except the one an earlier draft leaned on:
 //!
 //! | | derecho 2020-08-10 | airmass 2023-06-24 |
 //! | --- | --- | --- |
-//! | mean flow speed under rain (printed below) | 25.8 m/s | 20.4 m/s — *not* the discriminator |
+//! | mean flow speed under rain (printed below) | 19.8 m/s | 16.1 m/s — *not* the discriminator |
 //! | wet components in the crop | 62 | **235** |
 //! | mean component area | 1331 cells | **79 cells** (~10 km across) |
 //! | largest component | 79,149 cells — **one system** | 8,690 cells |
@@ -159,7 +159,11 @@ struct Case {
     id: &'static str,
     width: u32,
     height: u32,
+    /// The lattice's **label**, not a physical size. See [`Case::cell_metres`].
     cell_size_m: u16,
+    south_lat_udeg: i32,
+    cell_lat_udeg: u32,
+    cell_lon_udeg: u32,
     /// The two observations motion is estimated from, oldest first.
     earlier: Frame,
     anchor: Frame,
@@ -278,6 +282,9 @@ impl Case {
             width: header.width,
             height: header.height,
             cell_size_m: header.cell_size_m,
+            south_lat_udeg: header.south_lat_udeg,
+            cell_lat_udeg: header.cell_lat_udeg,
+            cell_lon_udeg: header.cell_lon_udeg,
             earlier,
             anchor,
             motion_from_member,
@@ -302,10 +309,28 @@ impl Case {
             .unwrap_or_else(|| panic!("{}: the model tree is empty", self.id))
     }
 
+    /// The metres one cell spans at `row`, **east-west and north-south separately**.
+    ///
+    /// **This is the trap that has now caught this measurement three times, so it lives in one
+    /// function with its name on it.** The lattice is 0.01 degrees square in *angle*, and
+    /// `header.cell_size_m` (1113) is a **label** — the metres 0.01 degrees of *latitude* spans,
+    /// which the format carries so a client can scale a bar. A cell is not square on the ground:
+    /// at the 42 N these packs sit at, 0.01 degrees of longitude is ~827 m, a quarter narrower.
+    ///
+    /// A flow field is in **cells per second**, so converting it to m/s with one scalar silently
+    /// asserts square cells. Both these storms move nearly due east, so the error lands almost
+    /// entirely on the component that matters and inflates the answer by ~35 %.
+    fn cell_metres(&self, row: u32) -> (f64, f64) {
+        const METRES_PER_DEGREE: f64 = 111_320.0;
+        let latitude = (f64::from(self.south_lat_udeg) + f64::from(row) * f64::from(self.cell_lat_udeg)) / 1e6;
+        let east_west = f64::from(self.cell_lon_udeg) / 1e6 * METRES_PER_DEGREE * latitude.to_radians().cos();
+        let north_south = f64::from(self.cell_lat_udeg) / 1e6 * METRES_PER_DEGREE;
+        (east_west, north_south)
+    }
+
     /// Mean flow speed over the nodes that sit under **rain**, in m/s.
     ///
-    /// Two traps here, both worth naming because the first one produced a wrong number that reached
-    /// three documents before it was caught.
+    /// Three traps, all of which have bitten:
     ///
     /// * [`MotionField::sample`] takes a **continuous cell position**, not a node index. Feeding it
     ///   `0..cols` samples the leftmost `cols / stride` node columns — a sliver of the west edge —
@@ -315,6 +340,7 @@ impl Case {
     ///   where the flow is zero by construction ([`flow::MAX_FILL_NODES`] leaves distant nodes
     ///   still). That is a measure of how much of the window is raining, not of how fast the rain is
     ///   moving. Only nodes with rain under them count.
+    /// * a cell is **not square on the ground** — see [`Case::cell_metres`].
     fn mean_speed_m_s(&self, motion: &MotionField) -> f64 {
         let stride = motion.stride;
         let (mut sum, mut counted) = (0.0f64, 0u64);
@@ -329,7 +355,8 @@ impl Case {
                     continue;
                 }
                 let (dx, dy) = motion.sample(x as f32, y as f32);
-                sum += f64::from(dx).hypot(f64::from(dy)) * f64::from(self.cell_size_m);
+                let (east_west, north_south) = self.cell_metres(y);
+                sum += (f64::from(dx) * east_west).hypot(f64::from(dy) * north_south);
                 counted += 1;
             }
         }
@@ -431,16 +458,13 @@ fn band_persistence(case: &Case, motion: &MotionField) -> [f64; 3] {
     rho
 }
 
-/// Advect, then damp each band by its own `rho^(lead / dt)`, then re-quantize.
+/// Re-quantize a [`damped_field`] back to intensity codes, carrying no-data through.
 ///
-/// The damping is a **filter on one input**: it removes amplitude at scales that have measurably
-/// stopped persisting. Nothing is mixed in from a second field.
-fn decayed_nowcast(case: &Case, motion: &MotionField, lead_s: f64, rho: [f64; 3]) -> Vec<u8> {
-    let advected = flow::advect(&case.anchor.cells, case.width, case.height, motion, lead_s, WRAP_X);
-    let dt = (case.anchor.valid_at - case.earlier.valid_at) as f64;
-    let steps = lead_s / dt;
-    let bands = cascade(&advected, case.width, case.height);
-    let weights = [rho[0].powf(steps) as f32, rho[1].powf(steps) as f32, rho[2].powf(steps) as f32];
+/// Split from [`damped_field`] rather than folded into it, and neither of them advects: when the
+/// decay path advected for itself, the cost block below timed a second full `advect` and a second
+/// full `cascade` inside the post-process's window, and reported it as 1.5x the advection it rides
+/// on when the work a cycle would actually add is nearer 1.1x.
+fn decayed_nowcast(damped: &[f32], advected: &[u8]) -> Vec<u8> {
     advected
         .iter()
         .enumerate()
@@ -448,8 +472,7 @@ fn decayed_nowcast(case: &Case, motion: &MotionField, lead_s: f64, rho: [f64; 3]
             if code == precip4::INTENSITY_NODATA {
                 return code;
             }
-            let value = bands[0][index] * weights[0] + bands[1][index] * weights[1] + bands[2][index] * weights[2];
-            let rounded = value.round();
+            let rounded = damped[index].round();
             if rounded <= 0.0 {
                 precip4::INTENSITY_DRY
             } else {
@@ -496,24 +519,142 @@ fn damped_field(case: &Case, advected: &[u8], lead_s: f64, rho: [f64; 3]) -> Vec
 }
 
 // ---------------------------------------------------------------------------------------------
+// Is a CSI difference bigger than the noise? — the moving-block bootstrap behind the cap.
+// ---------------------------------------------------------------------------------------------
+
+/// Block edge in cells. The domain is 1024 x 768, so this tiles it **exactly** into 16 x 12 = 192
+/// blocks with no ragged edge to special-case.
+const BOOTSTRAP_BLOCK: u32 = 64;
+const BOOTSTRAP_DRAWS: usize = 2000;
+
+/// `(event, threshold, lead, (gap, low, high, P(nowcast >= model)))` — one bootstrapped comparison.
+type Significance = (&'static str, &'static str, i64, (f64, f64, f64, f64));
+
+/// Per-block `(hits, misses, false alarms)` for one forecast at one threshold.
+fn block_counts(forecast: &[u8], truth: &[u8], width: u32, height: u32, threshold: u8) -> Vec<[u64; 3]> {
+    let (cols, rows) = (width / BOOTSTRAP_BLOCK, height / BOOTSTRAP_BLOCK);
+    let mut blocks = vec![[0u64; 3]; (cols * rows) as usize];
+    for row in 0..rows * BOOTSTRAP_BLOCK {
+        for col in 0..cols * BOOTSTRAP_BLOCK {
+            let index = (row * width + col) as usize;
+            let observed = truth[index];
+            if observed == precip4::INTENSITY_NODATA {
+                continue;
+            }
+            let predicted = forecast[index];
+            let predicted_wet = predicted != precip4::INTENSITY_NODATA && predicted >= threshold;
+            let observed_wet = observed >= threshold;
+            let block = &mut blocks[((row / BOOTSTRAP_BLOCK) * cols + col / BOOTSTRAP_BLOCK) as usize];
+            match (predicted_wet, observed_wet) {
+                (true, true) => block[0] += 1,
+                (false, true) => block[1] += 1,
+                (true, false) => block[2] += 1,
+                (false, false) => {}
+            }
+        }
+    }
+    blocks
+}
+
+fn csi_of(counts: [u64; 3]) -> f64 {
+    let denominator = counts[0] + counts[1] + counts[2];
+    if denominator == 0 {
+        0.0
+    } else {
+        counts[0] as f64 / denominator as f64
+    }
+}
+
+/// `(model - nowcast, low, high, P(nowcast >= model))` from a block bootstrap over the two fields.
+///
+/// **Why blocks and not cells.** Rain is spatially correlated over tens of kilometres, so treating
+/// 786,432 cells as independent samples would give a confidence interval far too narrow to be worth
+/// printing — every difference would look decisive. Resampling 64 x 64 km blocks with replacement
+/// keeps the correlation inside a block intact and only assumes independence between blocks, which
+/// is the standard construction for a verification score on a raster.
+///
+/// Deterministic by construction: a fixed-seed xorshift, so the interval is a property of the branch
+/// and not of the day it was run.
+fn bootstrap_gap(
+    nowcast: &[u8],
+    model: &[u8],
+    truth: &[u8],
+    width: u32,
+    height: u32,
+    threshold: u8,
+) -> (f64, f64, f64, f64) {
+    let now_blocks = block_counts(nowcast, truth, width, height, threshold);
+    let model_blocks = block_counts(model, truth, width, height, threshold);
+    let count = now_blocks.len();
+    let mut state: u64 = 0x9E3779B97F4A7C15 ^ u64::from(threshold);
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut gaps = Vec::with_capacity(BOOTSTRAP_DRAWS);
+    let mut wins = 0usize;
+    for _ in 0..BOOTSTRAP_DRAWS {
+        let (mut now_sum, mut model_sum) = ([0u64; 3], [0u64; 3]);
+        for _ in 0..count {
+            let pick = (next() % count as u64) as usize;
+            for i in 0..3 {
+                now_sum[i] += now_blocks[pick][i];
+                model_sum[i] += model_blocks[pick][i];
+            }
+        }
+        let gap = csi_of(model_sum) - csi_of(now_sum);
+        if gap <= 0.0 {
+            wins += 1;
+        }
+        gaps.push(gap);
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let point = csi_of(model_blocks.iter().fold([0u64; 3], |mut acc, b| {
+        for i in 0..3 {
+            acc[i] += b[i];
+        }
+        acc
+    })) - csi_of(now_blocks.iter().fold([0u64; 3], |mut acc, b| {
+        for i in 0..3 {
+            acc[i] += b[i];
+        }
+        acc
+    }));
+    (
+        point,
+        gaps[BOOTSTRAP_DRAWS / 40],
+        gaps[BOOTSTRAP_DRAWS - BOOTSTRAP_DRAWS / 40 - 1],
+        wins as f64 / BOOTSTRAP_DRAWS as f64,
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
 
 #[test]
 fn the_skill_table_for_both_events_at_every_lead_and_three_thresholds() {
     let mut crossovers = Vec::new();
     let mut costs = Vec::new();
+    let mut significance: Vec<Significance> = Vec::new();
     for id in EVENTS {
         let case = Case::load(id);
         let motion = case.motion();
         eprintln!(
-            "\n=== {id} — {} x {} cells of {} m ===\nobservation pair {} -> {} ({}), mean flow {:.1} m/s, peak {:.1} m/s",
+            "\n=== {id} — {} x {} cells, {:.0} m east-west by {:.0} m north-south at mid-window ===\n\
+             observation pair {} -> {} ({}), mean flow under rain {:.1} m/s",
             case.width,
             case.height,
-            case.cell_size_m,
+            case.cell_metres(case.height / 2).0,
+            case.cell_metres(case.height / 2).1,
             timefmt::rfc3339(case.earlier.valid_at),
             timefmt::rfc3339(case.anchor.valid_at),
-            if case.motion_from_member { "the pack's own motion-history member" } else { "frame 0 plus the ladder's first rung" },
+            if case.motion_from_member {
+                "the pack's own motion-history member"
+            } else {
+                "frame 0 plus the ladder's first rung"
+            },
             case.mean_speed_m_s(&motion),
-            f64::from(motion.max_speed_cells_s()) * f64::from(case.cell_size_m),
         );
         let rho = band_persistence(&case, &motion);
         eprintln!(
@@ -535,9 +676,12 @@ fn the_skill_table_for_both_events_at_every_lead_and_three_thresholds() {
             let advect_started = std::time::Instant::now();
             let nowcast = flow::advect(&case.anchor.cells, case.width, case.height, &motion, lead_s as f64, WRAP_X);
             let advect_cost = advect_started.elapsed();
+            // Everything from here to `cascade_cost` is the **post-process only**, on a field that
+            // has already been advected — which is what would actually be added to a cycle.
             let cascade_started = std::time::Instant::now();
-            let decayed = decayed_nowcast(&case, &motion, lead_s as f64, rho);
-            let matched = probability_matched(&damped_field(&case, &nowcast, lead_s as f64, rho), &nowcast);
+            let damped = damped_field(&case, &nowcast, lead_s as f64, rho);
+            let decayed = decayed_nowcast(&damped, &nowcast);
+            let matched = probability_matched(&damped, &nowcast);
             let cascade_cost = cascade_started.elapsed();
             costs.push((advect_cost, cascade_cost));
             let model = case.model_at(target.valid_at);
@@ -575,24 +719,68 @@ fn the_skill_table_for_both_events_at_every_lead_and_three_thresholds() {
                     csi(&matched, &target.cells, threshold),
                     csi(&model.cells, &target.cells, threshold),
                 ));
+                let gap = bootstrap_gap(&nowcast, &model.cells, &target.cells, case.width, case.height, threshold);
+                significance.push((id, name, lead_min, gap));
             }
         }
     }
 
-    // What the cascade would cost if it shipped. Single-threaded, on the 786,432-cell pack lattice,
-    // reported per megacell so the production domain can be reasoned about rather than guessed at.
+    // What the post-process would cost if it shipped. Single-threaded, on the 786,432-cell pack
+    // lattice, per megacell so the production domain can be reasoned about rather than guessed at.
+    //
+    // **Minimum, not mean.** These are timings taken inside a test suite that may be sharing the
+    // machine with a compile or another test binary, and load can only ever make a sample slower.
+    // The minimum over the 15 forward frames is the closest available estimate of the work itself;
+    // a mean reports how busy the machine was.
+    //
+    // **Quote the post-process's own cost, not the ratio.** `flow::advect` parallelises internally
+    // through rayon and this post-process does not, so the ratio compares a parallel operation
+    // against a serial one — it is not like for like, and it duly swings between 0.97x and 1.51x
+    // across runs of this very test while the per-megacell serial cost stays put. The budgetable
+    // number is `post-process ms/Mcell`; the ratio is printed only to show it is the same order of
+    // magnitude as the advection, not to be carried into a capacity plan.
     let cells = 1024.0 * 768.0 / 1e6;
-    let advect: f64 = costs.iter().map(|(a, _)| a.as_secs_f64()).sum::<f64>() / costs.len() as f64;
-    let cascade: f64 = costs.iter().map(|(_, c)| c.as_secs_f64()).sum::<f64>() / costs.len() as f64;
+    let least = |pick: fn(&(std::time::Duration, std::time::Duration)) -> std::time::Duration| {
+        costs.iter().map(|cost| pick(cost).as_secs_f64()).fold(f64::INFINITY, f64::min)
+    };
+    let advect = least(|cost| cost.0);
+    let cascade = least(|cost| cost.1);
     eprintln!(
-        "\ncost per forward frame, one thread: advect {:.1} ms ({:.1} ms/Mcell), \
-         cascade+decay+PMM {:.1} ms ({:.1} ms/Mcell) — {:.1}x the advection it rides on",
+        "\ncost per forward frame, fastest of {} frames: post-process (cascade+decay+PMM, serial) \
+         {3:.1} ms = {4:.1} ms/Mcell — the budgetable figure. advect (rayon-parallel) {1:.1} ms \
+         = {2:.1} ms/Mcell, ratio {5:.2}x, not like-for-like (see the comment above)",
+        costs.len(),
         advect * 1e3,
         advect * 1e3 / cells,
         cascade * 1e3,
         cascade * 1e3 / cells,
         cascade / advect,
     );
+
+    // The crossover is a point estimate on one realisation of the weather, so on its own it says
+    // less than it looks like it says. This is the interval around it.
+    eprintln!(
+        "\n=== is the gap bigger than the noise? ({BOOTSTRAP_DRAWS} draws over {} blocks of {BOOTSTRAP_BLOCK}^2 cells) ===",
+        (1024 / BOOTSTRAP_BLOCK) * (768 / BOOTSTRAP_BLOCK)
+    );
+    eprintln!("  model - nowcast, 95 % interval, and P(nowcast >= model). Negative gap = nowcast ahead.");
+    for id in EVENTS {
+        for (_, name) in THRESHOLDS {
+            for (_, _, lead, (point, low, high, wins)) in significance.iter().filter(|row| row.0 == id && row.1 == name)
+            {
+                let verdict = if *low > 0.0 {
+                    "model ahead, significant"
+                } else if *high < 0.0 {
+                    "nowcast ahead, significant"
+                } else {
+                    "not significant"
+                };
+                eprintln!(
+                    "{id:<24} {name:<7} +{lead:>3}m  {point:+.4} [{low:+.4}, {high:+.4}]  P={wins:.2}  {verdict}",
+                );
+            }
+        }
+    }
 
     eprintln!("\n=== where advected radar stops beating the model ===");
     for id in EVENTS {

@@ -100,16 +100,30 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// translated, which is what the rows above measure.)
 ///
 /// * **exactly one crossover exists**, and it is the one that matters: on the hard case at
-///   `>= 6 mm/h`, advected radar falls behind the model at **+104** (0.054 against 0.066) and stays
-///   behind at +120 (0.042 against 0.082);
+///   `>= 6 mm/h`, advected radar falls behind the model somewhere past +90 and is behind at +120;
 /// * nothing else crosses anywhere. Both events at `>= 0.25` and `>= 1.0 mm/h`, and the derecho at
 ///   every threshold, still beat the model at two hours.
 ///
-/// So +90 is the conservative reading of two events that agree about everything below the heavy
-/// threshold and disagree only about where the heavy threshold gives out. **`>= 6 mm/h` is the
-/// threshold a rider acts on** — it is the "do I shelter" question — so it is the wrong one to be
-/// wrong about, and capping here costs the derecho case skill it demonstrably has, which is the
-/// right direction to be wrong in. +120 is not justified by anything measured.
+/// **The crossover is an interval, not a lead.** A point estimate off one realisation of one storm
+/// is worth less than it looks, so `tests/nowcast_skill_events.rs` block-bootstraps the gap (2,000
+/// draws over 192 blocks of 64 x 64 cells, which keeps rain's spatial correlation inside a block).
+/// On the hard case at `>= 6 mm/h`, as `model - nowcast`:
+///
+/// | lead | gap | 95 % interval | verdict |
+/// |---|---|---|---|
+/// | +90 | -0.027 | [-0.050, -0.004] | nowcast ahead, **significant** |
+/// | +104 | +0.013 | [-0.024, +0.050] | **not significant** — the point estimate alone would say "crossed" |
+/// | +120 | +0.041 | [+0.008, +0.079] | model ahead, **significant** |
+///
+/// So the honest statement is that **the crossover lies between +90 and +120, and +90 is the last
+/// lead at which the nowcast is significantly ahead.** That is a stronger argument for this
+/// constant than "+104" was: the cap does not sit near a boundary estimated to the minute, it sits
+/// at the last lead the measurement can actually defend. +120 is on the far side of a *significant*
+/// loss, not merely of a point estimate.
+///
+/// **`>= 6 mm/h` is the threshold a rider acts on** — it is the "do I shelter" question — so it is
+/// the wrong one to be wrong about, and capping here costs the derecho case skill it demonstrably
+/// has, which is the right direction to be wrong in.
 ///
 /// `tests/nowcast_skill.rs` still enforces that this constant cannot exceed the largest lead its own
 /// ladder verifies, so the horizon cannot outrun the evidence by accident either.

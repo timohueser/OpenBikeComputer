@@ -291,7 +291,7 @@ weather, which is what makes the pair a measurement rather than two anecdotes.
 
 **What makes it hard is evolution, not slowness.** An earlier draft of this section said "weak
 flow", on a mean-speed statistic that turned out to be measured wrong (see the correction below).
-The rain on this day moves at 20.4 m/s, not far off the derecho's 25.8. What separates the two
+The rain on this day moves at 16.1 m/s, not far off the derecho's 19.8. What separates the two
 events is that the derecho's field *stays itself and leaves*, while this one's field is
 continuously rebuilt out of cells that did not exist ten minutes earlier — and advection can follow
 the first and not the second.
@@ -321,7 +321,7 @@ captured. Against the derecho, over the same window:
 
 | | derecho 2020-08-10 | airmass 2023-06-24 |
 |---|---|---|
-| mean flow speed under rain † | 25.8 m/s | 20.4 m/s — *not* the discriminator |
+| mean flow speed under rain † | 19.8 m/s | 16.1 m/s — *not* the discriminator |
 | connected wet components ‡ | 62 | **235** |
 | mean component area ‡ | 1331 cells | **79 cells** (~10 km across) |
 | largest component ‡ | 79,149 cells — **one system** | 8,690 cells |
@@ -333,13 +333,22 @@ them. ‡ measured at screening time over the requested `--bbox` crop, which is 
 are higher than the harness's — the crop is the storm, the lattice is the storm plus the tile
 alignment around it.
 
-**Correction, and the reason the speed row now carries a caveat.** The first version of this table
-claimed 29.5 against 10.4 m/s and called the second event "weak flow". Both figures were wrong:
-[`MotionField::sample`](../../src/flow.rs) takes a continuous *cell* position and the harness was
-feeding it *node indices*, so it averaged a sliver of the window's west edge instead of the storm.
-Measured properly, and restricted to nodes that actually have rain under them, the two events differ
-by 5 m/s and the airmass case is not slow. The hard-case claim never rested on that number — the
-component statistics, the growing wet fraction and the measured skill decay all say the same thing
+**Correction, and the reason the speed row now carries a caveat.** This one number has been wrong
+twice, in two different ways, which is why it is the only row in the table with a disclaimer on it
+and why the code that computes it now carries both traps by name.
+
+1. The first version claimed **29.5 against 10.4 m/s** and called the second event "weak flow".
+   [`MotionField::sample`](../../src/flow.rs) takes a continuous *cell* position and the harness was
+   feeding it *node indices*, so it averaged a sliver of the window's west edge instead of the storm.
+2. The correction to that claimed **25.8 against 20.4** — still wrong, because it converted a
+   cells-per-second flow to m/s with `header.cell_size_m`. That field is the lattice's **label**:
+   the metres 0.01 degrees of *latitude* spans. A cell is not square on the ground — at 42 N, 0.01
+   degrees of longitude is ~827 m against 1,113 m — and both these storms move nearly due east, so
+   the error landed almost entirely on the component that mattered and inflated both figures ~35 %.
+
+Measured properly — rain-weighted, and with the east-west and north-south cell sizes kept apart —
+it is **19.8 against 16.1 m/s**, and the airmass case is not slow. The hard-case claim never rested
+on that number: the component statistics, the growing wet fraction and the measured skill decay all say the same thing
 without it — but it was stated as though it did, and it had already been quoted elsewhere before it
 was caught.
 
