@@ -72,6 +72,14 @@ to do, and repeating the command inside the same quarter hour only re-bakes the 
 `--now` is what makes four *distinct* generations, which is the point at which the first deletion
 happens.
 
+Two things differ from an `--r2` cycle, both on purpose. A directory publish writes its objects
+**sequentially** rather than eight at a time, and it is **unbudgeted** — the 240 s publish and 120 s
+sweep limits an `--r2` cycle holds itself to do not apply. Both exist to bound a retry ladder over a
+network, and a local write has no ladder, no request timeout and no peer that can decline to answer;
+a deadline there would turn a slow disk into a failed rehearsal without making anything faster. So a
+rehearsal that takes its time is a disk to look at, not a publish to worry about — and conversely,
+a rehearsal cannot demonstrate that the real publish fits inside its budget.
+
 ```sh
 ssh root@wx
 export PATH="$HOME/.cargo/bin:$PATH"      # cargo is NOT on root's default PATH — see C2
