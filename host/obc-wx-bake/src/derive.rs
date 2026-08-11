@@ -85,19 +85,34 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// of the box. The second hour of horizon costs +0.1 s wall and +2 CPU-s. Cost is not the argument
 /// any more.
 ///
-/// **What stops it at +90 is that +105 and +120 are unmeasured.** The pack's clean anchor tops out
-/// there — the observation pair is 19:02/19:18 and the last truth frame is 20:48 — so a cap past it
-/// would be a trend extrapolation wearing a measurement's clothes, and the leads it would be
-/// extrapolating over are exactly where the missing decay model bites hardest: this engine holds
-/// intensity that a real, scattered, decaying convective field loses, and a derecho is the
-/// friendliest case in the catalogue. `tests/nowcast_skill.rs` enforces the rule rather than trusting
-/// this comment: it **fails** if this constant exceeds the largest lead its ladder can verify, so the
-/// horizon cannot outrun the evidence even by accident.
+/// **What stops it at +90 is a measured crossover, not a missing measurement.** This used to say
+/// "+105 and +120 are unmeasured, so extend the pack". They have since been measured. PR #1283
+/// captured the opposite kind of storm on purpose — `us-airmass-2023-06-24`, scattered afternoon
+/// convection over Iowa, mean flow 10.4 m/s against the derecho's 29.5, 235 wet components against
+/// 62, and a wet fraction that **grows** through the ladder because the cells develop in place
+/// rather than arriving — and scored both packs at every lead and three thresholds, 45 comparisons:
 ///
-/// **What unlocks +120 is therefore a second event pack** over a disorganised convective case, with
-/// a truth ladder reaching +120 — not an optimisation. (The lazy per-shard nowcast layer, advecting
-/// inside `Mosaic::fill`, is still the right long-term design and makes the horizon free; it is now
-/// a scaling question for a third radar rather than a prerequisite for anything.)
+/// * **exactly one crossover exists**, and it is the one that matters: on the hard case at
+///   `>= 6 mm/h`, advected radar falls behind the model at **+104** (0.054 against 0.066) and stays
+///   behind at +120 (0.042 against 0.082);
+/// * nothing else crosses anywhere. Both events at `>= 0.25` and `>= 1.0 mm/h`, and the derecho at
+///   every threshold, still beat the model at two hours.
+///
+/// So +90 is the conservative reading of two events that agree about everything below the heavy
+/// threshold and disagree only about where the heavy threshold gives out. **`>= 6 mm/h` is the
+/// threshold a rider acts on** — it is the "do I shelter" question — so it is the wrong one to be
+/// wrong about, and capping here costs the derecho case skill it demonstrably has, which is the
+/// right direction to be wrong in. +120 is not justified by anything measured.
+///
+/// `tests/nowcast_skill.rs` still enforces that this constant cannot exceed the largest lead its own
+/// ladder verifies, so the horizon cannot outrun the evidence by accident either.
+///
+/// Two things #1283 recommends and this branch deliberately does **not** do. A **decay +
+/// probability-matching** post-process beats plain advection at 42 of the 45 comparisons and is
+/// clearly worth having — but it does not move the crossover (+104 either way) and so does not move
+/// this constant; it is a separate change. And the **lazy per-shard nowcast layer**, advecting
+/// inside `Mosaic::fill`, remains the right long-term design; it is now a scaling question for a
+/// third radar rather than a prerequisite for anything.
 pub const NOWCAST_MAX_LEAD_MIN: u32 = 90;
 
 /// The observation pair's separation must sit in this range for the motion to be trustworthy.
@@ -365,10 +380,31 @@ fn bracket(frames: &[BakedFrame], target: i64) -> Option<(usize, usize)> {
 /// observation pair. That is a warning rather than a failure: the mosaic without it is the mosaic
 /// that shipped before WXR9.
 ///
-/// The lead times are measured from the **observation's own instant**, not from the cycle anchor.
-/// An MRMS scan at 18:48 published in a cycle anchored at 18:45 is advected 12, 27, 42 … minutes to
-/// reach the 19:00, 19:15, 19:30 … frames, not 15, 30, 45. Getting that wrong would displace every
-/// forecast by the observation's age, which is up to a whole frame step.
+/// # Every instant here is a **measurement** instant, never a cadence slot
+///
+/// This is the one arithmetic in WXR9 with a trap under it, and PR #1283 fell into the trap while
+/// scoring a second event pack, so it is worth stating twice.
+///
+/// A published OBCG frame's `valid_at` is its **place on the cadence** — `OBCG_Spec.md` §3.2 makes
+/// that normative, and it is what lets a client compute a key by arithmetic. The observation under
+/// f0 is up to `max_source_skew_s` older than that: an 18:48 MRMS scan is published as the 18:45
+/// frame. So the header is the *label*, not the measurement time, and two numbers here must come
+/// from the source frames rather than from the slot:
+///
+/// * **`dt`, the interval the motion field is divided by.** #1283's harness recovered it from two
+///   published headers, which stretched a true 840 s baseline into 1,020 s and advected the derecho
+///   **18 % too slowly** — every nowcast frame short of where the storm actually went, at every
+///   lead, with nothing visibly wrong anywhere.
+/// * **the lead each frame is advected by.** Measured from the observation's own instant, not from
+///   the cycle anchor: an 18:48 scan in a cycle anchored at 18:45 is advected 12, 27, 42 … minutes
+///   to reach the 19:00, 19:15, 19:30 … frames, not 15, 30, 45. Getting *this* one wrong displaces
+///   every forecast by the observation's age, up to a whole frame step.
+///
+/// Both come from [`BakedFrame::valid_at`], which every adapter fills from the upstream object's own
+/// decoded timestamps and never from a cadence. `the_nowcast_speed_matches_the_observed_displacement`
+/// pins the consequence — the *speed*, against a known displacement over a known interval, with the
+/// observation deliberately off the cadence — so substituting a slot instant for either fails loudly
+/// instead of shipping a field that is uniformly and invisibly short.
 pub fn radar_nowcast(source: &BakedSource, times: CycleTimes) -> Result<Option<BakedSource>, String> {
     let Some(derived) = nowcast_of(source.id) else { return Ok(None) };
     if source.motion_history.is_empty() {
@@ -397,7 +433,13 @@ pub fn radar_nowcast(source: &BakedSource, times: CycleTimes) -> Result<Option<B
 
     let width = source.geometry.width;
     let height = source.geometry.height;
+    // **Measurement instants, both of them.** See the trap in this function's docs: neither of these
+    // may ever become `times.slot(..).valid_at()`, however tempting the symmetry looks.
     let dt = (anchor.valid_at - history.valid_at) as f64;
+    debug_assert!(
+        dt >= MIN_MOTION_DT_S as f64 && dt <= MAX_MOTION_DT_S as f64,
+        "the motion baseline must be the observations' own interval"
+    );
     let params = FlowParams::for_cells(f64::from(source.geometry.cell_size_m));
     let Some(motion) = flow::estimate_motion(&history.cells, &anchor.cells, width, height, dt, params) else {
         return Err("the observation pair carries no motion signal (a dry or unscanned field)".to_string());
@@ -647,5 +689,80 @@ mod tests {
         // a nowcast from.
         assert!(nowcast.motion_history.is_empty());
         assert!(radar_nowcast(&nowcast, times).expect("no row").is_none());
+    }
+
+    /// **The speed is the observed displacement over the observed interval, and nothing else.**
+    ///
+    /// PR #1283 recovered the anchor's instant from the *published* frame header while scoring a
+    /// second event pack. A published header states the frame's place on the cadence — an 18:48 scan
+    /// is the 18:45 frame — so the baseline it computed was 1,020 s where the truth was 840 s, and
+    /// the derecho advected **18 % too slowly**: every frame short of where the storm went, at every
+    /// lead, with nothing visibly wrong in any of them. The bakery has always used the measurement
+    /// instants, and this is the test that keeps it that way.
+    ///
+    /// It is deliberately adversarial about the arithmetic. The observation sits 180 s **after** its
+    /// cycle anchor and the baseline is 600 s, so substituting the slot instant for the anchor's
+    /// would give 420 s — a 1.43x error in the speed and a different lead for every frame — and the
+    /// blob would land 10 cells wrong at f+15 and 40 at f+90. The tolerance is 3.
+    #[test]
+    fn the_nowcast_speed_matches_the_observed_displacement() {
+        // The cycle anchors at 0; the observation is at +180 s, which is where a two-minute radar
+        // cadence really puts it relative to a quarter-hour bake.
+        let times = CycleTimes::anchored_at(0);
+        let observed_at = 180i64;
+        let baseline = 600i64;
+        // 24 cells of eastward motion over the baseline: 0.04 cells/s, exactly.
+        let displacement = 24.0f32;
+        let speed = displacement / baseline as f32;
+        let start = 50i32;
+        let mut radar = source(
+            crate::source::mrms::ID,
+            observed_at,
+            vec![BakedFrame {
+                offset_min: 0,
+                valid_at: observed_at,
+                class: SourceClass::Observation,
+                cells: blob(start + displacement as i32, 96),
+            }],
+        );
+        radar.motion_history.push(BakedFrame {
+            offset_min: 0,
+            valid_at: observed_at - baseline,
+            class: SourceClass::Observation,
+            cells: blob(start, 96),
+        });
+
+        let nowcast = radar_nowcast(&radar, times).expect("a moving field").expect("mrms has a nowcast row");
+        let anchor_x = centroid_x(&radar.frames[0].cells);
+        // Only the leads that keep the whole blob on the raster: past those the centroid saturates
+        // against the east edge and would measure the window, not the motion.
+        let mut checked = 0usize;
+        let mut implied = 0.0f32;
+        for frame in &nowcast.frames {
+            // The lead is from the **observation**, not from the slot: an f+15 frame is 720 s ahead
+            // of an 18:48-style observation, not 900.
+            let lead = (frame.valid_at - observed_at) as f32;
+            let expected = anchor_x + speed * lead;
+            if expected + 22.0 >= WINDOW.width as f32 {
+                break;
+            }
+            let actual = centroid_x(&frame.cells);
+            assert!(
+                (actual - expected).abs() < 3.0,
+                "f+{} (lead {lead} s from the observation): blob at {actual}, expected {expected} at {speed} cells/s",
+                frame.offset_min
+            );
+            implied = (actual - anchor_x) / lead;
+            checked += 1;
+        }
+        assert!(checked >= 2, "only {checked} leads kept the blob on the raster — the test measures nothing");
+        // …and the implied speed, recovered from the longest usable lead, is the one that was
+        // observed — stated as a ratio so a wrong `dt` is legible as the factor it is. Under #1283's
+        // bug this ratio was 0.82.
+        assert!(
+            (implied / speed - 1.0).abs() < 0.08,
+            "the nowcast advects at {implied} cells/s where the observations moved at {speed} — a {:.0} % error",
+            (implied / speed - 1.0) * 100.0
+        );
     }
 }

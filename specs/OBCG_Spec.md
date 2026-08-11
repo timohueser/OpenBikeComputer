@@ -227,6 +227,26 @@ A derived frame MUST NOT set **Observed**, whatever its inputs were: it is an es
 nothing measured. The preceding paragraphs' rules apply to it unchanged — it is Forecast, it is
 eligible only where a forecast is eligible, and `valid_at` is its cadence instant.
 
+#### `valid_at` is a label, not a measurement time — and deriving motion from it is wrong
+
+Stated separately because it has already cost one implementation a silent, uniform error. §3.2's
+opening rule says `valid_at = reference_time + offset_min x 60`; it is the frame's **place on the
+cadence** and it is what makes an object's key computable by arithmetic. The data underneath an
+Observed f0 is up to `cadence.max_source_skew_s` *older* than that — an 18:48 radar scan is published
+as the 18:45 frame — and no field of the object states when the measurement was actually taken. That
+is the deliberate consequence of §3's no-provenance decision, not an omission.
+
+A consumer that derives motion by differencing two frames MUST therefore NOT take the interval
+between their `valid_at` values as the interval between the measurements. Doing so stretches the
+baseline by the observations' ages and divides the displacement by too large a number: measured on a
+real event, an 840-second baseline read as 1,020 seconds advected the field **18 % too slowly** at
+every lead, with no cell out of range and nothing visibly wrong in any frame. An implementation that
+needs the measurement instant must obtain it where it is stated — the producer's own frame records,
+or an event pack's `window_start` — or it must not estimate motion from published frames at all.
+
+`cadence.max_source_skew_s` bounds the error and does not remove it: it is the *worst* case for the
+generation, not this frame's own age.
+
 What distinguishes this from the frozen-observation case is not the distance: a model step valid at
 17:00 is a prediction, and the nearest prediction is a defensible answer for 17:15, whereas a radar
 scan of 16:58 is a measurement of 16:58 and is not an answer for 17:15 in any sense. A consumer that
