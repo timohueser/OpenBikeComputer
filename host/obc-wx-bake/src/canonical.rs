@@ -71,7 +71,7 @@
 //! different from the frozen observation is what the data is *about*: the nearest model step is a
 //! defensible answer for 17:15, and a radar scan of 16:58 is not an answer for 17:15 at all.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use obc_formats::obcg::{self, FrameInput};
 use obc_formats::precip4;
@@ -1039,6 +1039,22 @@ fn refuse_to_go_backwards(carried: &manifest_v2::Carried, times: CycleTimes) -> 
     Ok(())
 }
 
+/// How long the publish may take: every object written, every one proved fetchable, the manifest
+/// swapped and read back.
+///
+/// It exists because the alternative backstop is the unit's `TimeoutStartSec=600`, and that is a
+/// SIGKILL — delivered at an unknown point, quite possibly between the manifest swap and the
+/// read-back, which is the one window where nobody can say what state the bucket is in. A budget
+/// turns that into an ordinary `Err` before the swap. Sized against the measured phase (~23 s at a
+/// 40 ms round trip) with an order of magnitude of headroom, and it plus [`SWEEP_BUDGET`] leaves
+/// well over half the unit's timeout for the fetch and the mosaic.
+const PUBLISH_BUDGET: Duration = Duration::from_secs(240);
+
+/// How long the retention sweep may take. Separate from [`PUBLISH_BUDGET`] and spent *after* the
+/// cycle has already succeeded: an exhausted sweep budget is a warning about unreferenced objects
+/// the lifecycle rule will collect, never a failed cycle.
+const SWEEP_BUDGET: Duration = Duration::from_secs(120);
+
 /// **The cycle**: bake every adapter, mosaic them, publish the shard set, manifest last — then
 /// retire the generation the new manifest no longer names.
 ///
@@ -1177,6 +1193,12 @@ pub fn run_cycle(
     }
 
     if !dry_run {
+        // Everything from here to the read-back is bounded in wall-clock. The unit's
+        // `TimeoutStartSec` is a SIGKILL, and being SIGKILLed part-way through a publish is the one
+        // moment nobody can say whether the manifest swapped — so the publish gets a budget of its
+        // own and fails the ordinary way, before the swap, when it cannot meet it.
+        store.begin_phase(PUBLISH_BUDGET);
+
         // **Phase one**: every frame object, written and acknowledged. `put_all` does not return
         // until each one is durably at the destination — or until one failed, which fails the cycle
         // here, with the manifest untouched and the previous generation whole.
@@ -1219,7 +1241,9 @@ pub fn run_cycle(
         };
         published_bytes += manifest_object.bytes.len() as u64;
         published_objects += 1;
-        store.put(&manifest_object).map_err(|error| format!("{}: {error}", manifest_object.key))?;
+        // No key prefix here: every store's errors already name the key they are about, and two
+        // stores' worth of prefixes made `wx/v2/manifest.json: wx/v2/manifest.json: status 403`.
+        store.put(&manifest_object)?;
 
         // **Read the licence back before spending it.** Every one of the 216 frame objects above
         // was `head`ed at its exact length before this swap; the manifest is the object that both
@@ -1228,6 +1252,9 @@ pub fn run_cycle(
         // bucket has a recorded history of tearing bodies mid-stream. `get` + `from_json` + a byte
         // compare is one request against that.
         verify_published_manifest(store, &manifest_object.bytes)?;
+        // The publish is done and proved. The sweep gets its own, separate budget below: its
+        // failures are warnings, so it must not be able to fail a cycle that has already succeeded.
+        store.end_phase();
 
         // **After the swap, and only after it** (WXR8 #1247). The manifest above is durably in
         // place *and verified readable*, so the generations it no longer names are unreferenced and
@@ -1235,7 +1262,9 @@ pub fn run_cycle(
         // successfully parsed — and it is the only thing `sweep` will act on: a torn read never gets
         // here, because it failed the cycle before a single object was published. Sweep failures are
         // warnings; the cycle succeeded the moment the manifest landed.
+        store.begin_phase(SWEEP_BUDGET);
         swept = crate::sweep::sweep(store, lattice, times, &carried, &manifest);
+        store.end_phase();
         // Extended, not drained: `CycleReport::swept.warnings` is a documented public field, and a
         // field that is always empty because its only writer moved out of it is a lie (#1274 r1).
         warnings.extend(swept.warnings.iter().cloned());
