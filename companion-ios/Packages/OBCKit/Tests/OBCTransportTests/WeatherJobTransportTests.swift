@@ -157,10 +157,41 @@ struct WeatherWatchPolicyTests {
     @Test func aWatchMatchOnTheKnownPeripheralStartsAnAutonomousRead() {
         var policy = BLEDiscoveryIntentPolicy()
         policy.setWeatherWatch(true)
-        let action = policy.discovered(peripheralID: known, knownPeripheralID: known)
-        #expect(action == .connectForWeatherRead)
+        let action = policy.discovered(
+            peripheralID: known, knownPeripheralID: known, advertisedAsWeatherRequest: true)
+        #expect(action == .connectForWeatherRead(owner: .weatherRequest))
         #expect(policy.weatherRequestPending, "the watch raises the read intent itself")
         #expect(policy.phase == .connecting(peripheralID: known, owner: .weatherRequest))
+    }
+
+    @Test func aWeatherAdvertisementDuringForegroundReconnectStillStartsTheRead() {
+        var policy = BLEDiscoveryIntentPolicy()
+        _ = policy.requestForeground()
+
+        let action = policy.discovered(
+            peripheralID: known, knownPeripheralID: known, advertisedAsWeatherRequest: true)
+
+        #expect(action == .connectForWeatherRead(owner: .foreground))
+        #expect(
+            policy.weatherRequestPending,
+            "foreground discovery must consume an explicit request even if background weather is off"
+        )
+        #expect(policy.phase == .connecting(peripheralID: known, owner: .foreground))
+        policy.didConnect(peripheralID: known)
+        let disconnects = policy.finishWeatherRequest()
+        #expect(!disconnects, "the autonomous read must not initiate teardown of a foreground-owned link")
+    }
+
+    @Test func aControlAdvertisementDuringForegroundReconnectDoesNotInventAWeatherRead() {
+        var policy = BLEDiscoveryIntentPolicy()
+        policy.setWeatherWatch(true)
+        _ = policy.requestForeground()
+
+        let action = policy.discovered(
+            peripheralID: known, knownPeripheralID: known, advertisedAsWeatherRequest: false)
+
+        #expect(action == .connect(owner: .foreground))
+        #expect(!policy.weatherRequestPending)
     }
 
     @Test func aWatchMatchOnAStrangerIsIgnored() {
@@ -184,7 +215,8 @@ struct WeatherWatchPolicyTests {
     @Test func aFinishedReadFallsBackToTheWatchScanNotIdle() {
         var policy = BLEDiscoveryIntentPolicy()
         policy.setWeatherWatch(true)
-        _ = policy.discovered(peripheralID: known, knownPeripheralID: known)
+        _ = policy.discovered(
+            peripheralID: known, knownPeripheralID: known, advertisedAsWeatherRequest: true)
         policy.didConnect(peripheralID: known)
         let disconnects = policy.finishWeatherRequest()
         #expect(disconnects)

@@ -2494,8 +2494,13 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                                advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        let advertisedServices =
+            (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
+            + (advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? [])
         let action = discoveryPolicy.discovered(
-            peripheralID: peripheral.identifier, knownPeripheralID: discoveryStore.knownPeripheralID()
+            peripheralID: peripheral.identifier,
+            knownPeripheralID: discoveryStore.knownPeripheralID(),
+            advertisedAsWeatherRequest: advertisedServices.contains(GATT.weatherRequestService)
         )
         let owner: BLEDiscoveryIntentPolicy.Ownership
         switch action {
@@ -2503,12 +2508,12 @@ extension BLETransport: CBCentralManagerDelegate {
             return
         case .connect(let connectionOwner):
             owner = connectionOwner
-        case .connectForWeatherRead:
+        case .connectForWeatherRead(let connectionOwner):
             // The standing watch (WX9) saw the known device raise a request with no caller in
             // flight: arm the autonomous one-shot's bookkeeping (deadline, restoration intent,
             // timing evidence) — its result reaches the job engine via `weatherRequestEvents`.
             armAutonomousWeatherRead()
-            owner = .weatherRequest
+            owner = connectionOwner
         }
         central.stopScan()
         activeScanServices.removeAll()
@@ -2563,9 +2568,11 @@ extension BLETransport: CBCentralManagerDelegate {
         if discoverContinuation != nil {
             failDiscover(.notConnected)
         } else if discoveryPolicy.foregroundRequested {
-            // A background reconnect attempt failed — keep trying; the request
-            // sits pending in the controller until the device reappears.
-            central.connect(peripheral)
+            // Re-enter discovery rather than blindly retrying this cached peripheral. The next
+            // advertisement may be Weather Request rather than Control, and its UUID is the only
+            // evidence that arms the autonomous context read.
+            discoveryPolicy.didDisconnect()
+            startConnectIfReady()
         }
     }
 
@@ -2618,17 +2625,11 @@ extension BLETransport: CBCentralManagerDelegate {
             return
         }
         stateMulticast.send(discoveryPolicy.foregroundRequested ? .outOfRange : .disconnected)
-        // Reconnect (S4: the banner degrades, the link keeps trying): a connect
-        // issued now has no timeout — iOS holds it pending until the peripheral
-        // advertises again, then the normal didConnect → discovery → CoC flow
-        // publishes .connected. `disconnect()` cancels it via
-        // cancelPeripheralConnection.
-        if discoveryPolicy.foregroundRequested {
-            _ = discoveryPolicy.discovered(
-                peripheralID: peripheral.identifier, knownPeripheralID: discoveryStore.knownPeripheralID()
-            )
-            central.connect(peripheral)
-        } else if discoveryPolicy.weatherRequestPending {
+        // Reconnect through the combined service scan rather than a blind direct connect. The
+        // device may have ended this Control link specifically to advertise Weather Request; only
+        // the scan report carries the UUID that lets `didDiscover` arm the autonomous context
+        // read. An ordinary Control advertisement still reconnects as a foreground session.
+        if discoveryPolicy.foregroundRequested || discoveryPolicy.weatherRequestPending {
             startConnectIfReady()
         }
     }

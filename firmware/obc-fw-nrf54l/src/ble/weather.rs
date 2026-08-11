@@ -20,7 +20,7 @@
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::info;
+use defmt::{info, warn};
 use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -154,6 +154,9 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
                 "ble: [weather] request {=u32} raised (reason {=u16:#06x}, validity {=u16:#06x})",
                 raise.request_id, raise.reason, ctx.validity
             );
+            if ctx.validity & VALID_POSITION == 0 {
+                warn!("ble: [weather] request has no fresh GPS fix — companion cannot build a bundle");
+            }
             continue; // re-derive the next wake against the fresh pending state
         }
 
