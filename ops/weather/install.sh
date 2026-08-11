@@ -336,7 +336,7 @@ if [ "$credentials_ready" = true ]; then
 The timers are running. Next:
   1. Watch the first ticks:
        journalctl -u 'obc-wx-bake@*' -n 50 --no-pager
-  2. Confirm the manifest is public:  curl -sI \$OBC_WX_BASE_URL/wx/v1/manifest.json
+  2. Confirm the manifest is public:  curl -sI \$OBC_WX_BASE_URL/wx/v2/manifest.json
   3. The rest — bucket, lifecycle rule, token scope, freshness alerting — is in
      ops/weather/RUNBOOK.md.
 EOF
@@ -349,7 +349,7 @@ The timers are enabled but NOT started, because $ENV_FILE has no credentials yet
        journalctl -u obc-wx-bake@${enabled[0]}.service -n 50 --no-pager
   2. Start the timers:  systemctl start 'obc-wx-bake@*.timer'
      (or simply re-run this installer — it starts them once the credentials are there)
-  3. Confirm the manifest is public:  curl -sI \$OBC_WX_BASE_URL/wx/v1/manifest.json
+  3. Confirm the manifest is public:  curl -sI \$OBC_WX_BASE_URL/wx/v2/manifest.json
   4. The rest — bucket, lifecycle rule, token scope, freshness alerting — is in
      ops/weather/RUNBOOK.md.
 EOF
