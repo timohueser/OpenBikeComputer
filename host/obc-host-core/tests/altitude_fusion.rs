@@ -17,18 +17,23 @@
 //! Fixes are stepped at 1 Hz, the device's default `fix_interval_s` — the estimator's τ is
 //! expressed per fix, so a coarser replay step would stretch it and understate the correction.
 
+#![cfg(feature = "external-fixtures")]
+
 use obc_app::{App, AppState};
 use obc_elevation::{TerrainElevation, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
 use obc_host_core::{replay_step, ReplaySensors};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
-const MAP: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel.obcm");
-const TERRAIN: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel.obcd");
-const GPX: &str = include_str!("../../../apps/obc-sim/assets/grimsel-climb.gpx");
-
 /// The device's default GPS cadence — the rate [`obc_app::altitude::OFFSET_ALPHA`] is stated at.
 const FIX_DT_S: f64 = 1.0;
+
+fn fixtures() -> (Vec<u8>, Vec<u8>, String) {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let terrain = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let gpx = obc_fixtures::read("sim-grimsel", "tracks/grimsel-climb.gpx").expect("full fixture suite requires track");
+    (map, terrain, String::from_utf8(gpx).expect("fixture GPX is UTF-8"))
+}
 
 /// One replay's readings at a checkpoint: the raw barometric altitude and what the Elevation tile
 /// would show (fused once settled).
@@ -45,17 +50,17 @@ struct Reading {
 /// Ride the Grimsel replay for `until_s` at 1 Hz with `drift_m_per_h` of injected weather, sampling
 /// terrain behind every tick exactly as the board's ride loop does. Returns a reading at each
 /// checkpoint in `at_s` (ascending).
-fn ride(drift_m_per_h: f32, at_s: &[f64]) -> Vec<Reading> {
-    let src = SliceSource(MAP);
+fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx: &str) -> Vec<Reading> {
+    let src = SliceSource(map);
     let tables = obc_reader::MapTables::parse(&src).expect("the grimsel fixture parses");
     let b = tables.bbox;
     let cam = (((b.min_lon as i64 + b.max_lon as i64) / 2) as i32, ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32);
 
-    let tsrc = SliceSource(TERRAIN);
+    let tsrc = SliceSource(terrain_bytes);
     let mut terrain = TerrainElevation::<DEFAULT_TILE_SLOTS>::parse(&tsrc).expect("the grimsel terrain sidecar parses");
 
     let mut app = App::new(AppState::new(cam.0, cam.1, 1.0)); // boots Riding
-    let mut player = GpxPlayer::new(Track::parse(GPX).expect("the grimsel climb GPX parses"));
+    let mut player = GpxPlayer::new(Track::parse(gpx).expect("the grimsel climb GPX parses"));
     let mut baro = BaroSensor::new();
     baro.set_drift(drift_m_per_h);
     player.seek(0.0);
@@ -96,8 +101,9 @@ fn injected_weather_drift_walks_the_barometer_away_but_not_the_shown_elevation()
     // the divergence is unambiguous rather than realistic.
     const DRIFT_M_PER_H: f32 = -60.0;
     let checkpoints = [300.0, 600.0, 900.0, 1200.0, 1500.0, 1800.0, 2100.0];
-    let control = ride(0.0, &checkpoints);
-    let drifted = ride(DRIFT_M_PER_H, &checkpoints);
+    let (map, terrain, gpx) = fixtures();
+    let control = ride(0.0, &checkpoints, &map, &terrain, &gpx);
+    let drifted = ride(DRIFT_M_PER_H, &checkpoints, &map, &terrain, &gpx);
 
     println!(
         "\n  t      injected   raw Δ     shown Δ    offset(ctl→drift)   samples\n  \
@@ -173,7 +179,8 @@ fn injected_weather_drift_walks_the_barometer_away_but_not_the_shown_elevation()
 /// the reason a terrain file stays removable.
 #[test]
 fn without_terrain_the_shown_elevation_is_the_raw_barometer() {
-    let src = SliceSource(MAP);
+    let (map, _terrain, gpx) = fixtures();
+    let src = SliceSource(&map);
     let tables = obc_reader::MapTables::parse(&src).expect("map parses");
     let b = tables.bbox;
     let mut app = App::new(AppState::new(
@@ -182,7 +189,7 @@ fn without_terrain_the_shown_elevation_is_the_raw_barometer() {
         1.0,
     ));
     let mut null = obc_route::NullElevation;
-    let mut player = GpxPlayer::new(Track::parse(GPX).expect("GPX parses"));
+    let mut player = GpxPlayer::new(Track::parse(&gpx).expect("GPX parses"));
     let mut baro = BaroSensor::new();
     baro.set_drift(-60.0);
     player.seek(0.0);

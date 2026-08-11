@@ -4953,7 +4953,7 @@ mod tests {
 
     /// The committed Grimsel fixture bytes (3 back-to-back climbs), embedded so the `no_std` lib
     /// tests need no `std::fs`. Boundaries: 501–11067, 11067–14472, 14472–18547; total ~18.7 km.
-    const GRIMSEL: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel-climb.obcr");
+    const GRIMSEL: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
     /// Parse the fixture into a `RouteIndex` the callers pair with a `SliceSource` over [`GRIMSEL`].
     fn grimsel_index() -> RouteIndex {

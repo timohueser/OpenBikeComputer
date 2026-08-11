@@ -22,6 +22,7 @@ default = ["dem"]
 dem = ["geotiff", "fetch"]
 geotiff = ["dep:tiff"]
 fetch = ["dep:ureq"]
+external-fixtures = []
 
 [[bin]]
 name = "obc-dem"
@@ -54,3 +55,4 @@ ureq = { version = "3", optional = true }
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
 # than asserted. Already in the workspace lockfile (`obc-pack` publishes catalog digests with it).
 sha2 = "0.11"
+obc-fixtures = { path = "../obc-fixtures" }

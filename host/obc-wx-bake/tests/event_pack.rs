@@ -1,6 +1,6 @@
-//! The checked-in event pack, held to its own promises.
+//! The externally stored event pack, held to its own promises.
 //!
-//! `tests/events/us-derecho-2020-08-10/` is a real cycle of the real service over the real
+//! The `weather-event-derecho` registry package is a real cycle of the real service over the real
 //! 10 August 2020 Midwest derecho: raw archive bytes in `upstream/`, the tree the baker made of
 //! them in `service/`, and what the radar actually saw over the next two hours in `truth/`.
 //!
@@ -11,6 +11,8 @@
 //!    **byte for byte** (the baker has not drifted);
 //! 3. the frames actually contain the storm — a pack of empty grids would pass (1) and (2) and
 //!    be worth nothing.
+
+#![cfg(feature = "external-fixtures")]
 
 use std::path::PathBuf;
 
@@ -24,7 +26,7 @@ use obc_wx_bake::timefmt;
 const EVENT_ID: &str = "us-derecho-2020-08-10";
 
 fn pack_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/events").join(EVENT_ID)
+    obc_fixtures::root().join("weather-event-derecho")
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -34,7 +36,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn event() -> Event {
-    Event::read(&pack_root()).expect("the checked-in pack parses")
+    Event::read(&pack_root()).expect("the registry pack parses")
 }
 
 /// Decode one cell out of a published frame the way a corridor client would.
@@ -265,14 +267,14 @@ fn every_stored_byte_matches_its_recorded_digest() {
     }
 }
 
-/// **The pack has no external dependency left.** Every member's bytes are checked in — including
+/// **The pack has no external dependency left.** Every member's bytes are stored in the registry package — including
 /// the truth ladder's eight raw MRMS observations, which an earlier round shipped as
 /// `stored: false` provenance only.
 ///
 /// That was the wrong trade for a fixture whose whole point is durability. `service/` was already
-/// a pure re-run of checked-in bytes, but `truth/` was eight *baked artifacts* whose sources lived
+/// a pure re-run of registry-packaged bytes, but `truth/` was eight *baked artifacts* whose sources lived
 /// on a single free mirror — so the lattice and quantization work ahead would have meant
-/// re-fetching 4.3 MB from MTArchive to re-derive them. 4.3 MB in git is the cheaper half of that
+/// re-fetching 4.3 MB from MTArchive to re-derive them. 4.3 MB in the external package is the cheaper half of that
 /// trade by a wide margin.
 #[test]
 fn nothing_in_the_pack_has_to_be_fetched() {
@@ -285,13 +287,13 @@ fn nothing_in_the_pack_has_to_be_fetched() {
     );
     let report = pack::verify_digests(&pack_root(), &event).expect("digests");
     assert!(report.unmaterialized.is_empty());
-    // And the ladder's raw sources really are the checked-in half, not an empty set.
+    // And the ladder's raw sources really are the registry-packaged half, not an empty set.
     let truth_bytes: u64 = rebake::truth_members(&event).filter_map(|member| member.length).sum();
-    eprintln!("{EVENT_ID}: {truth_bytes} bytes of truth upstream checked in");
+    eprintln!("{EVENT_ID}: {truth_bytes} bytes of truth upstream stored in the registry package");
     assert!(truth_bytes > 4_000_000, "the truth ladder's raw observations are ~450 KB each");
 }
 
-/// …and because they are checked in, `truth/` is now a pure re-run too: eight observed frames
+/// …and because they are stored in the registry package, `truth/` is now a pure re-run too: eight observed frames
 /// re-derived offline from the pack's own bytes and byte-compared. A change to the observation
 /// lattice or the quantization table fails here rather than leaving eight stale frames behind.
 #[test]
@@ -299,7 +301,7 @@ fn the_truth_ladder_rebakes_byte_identically() {
     let event = event();
     let compared = rebake::verify_truth_rebake(&pack_root(), &event).expect("the truth ladder re-bakes");
     assert_eq!(compared, event.truth_frames.len());
-    eprintln!("{EVENT_ID}: {compared} truth frames re-derived from checked-in bytes");
+    eprintln!("{EVENT_ID}: {compared} truth frames re-derived from registry-packaged bytes");
 }
 
 /// The archive is not the upstream: every member names both, and the *canonical* URL is what the
@@ -323,7 +325,7 @@ fn members_record_the_canonical_url_and_the_archive_it_came_from() {
         }
     }
     assert!(rewritten > 0, "the MRMS members must come from MTArchive, not the short-retention bucket");
-    // The HRRR objects are 150-200 MB and are never checked in whole; only the `.idx`-selected
+    // The HRRR objects are 150-200 MB and are never stored in the registry package whole; only the `.idx`-selected
     // messages are, as explicit byte ranges.
     let ranges: Vec<&pack::Member> =
         event.members.iter().filter(|member| matches!(member.retrieval, Retrieval::Range { .. })).collect();
@@ -519,7 +521,7 @@ fn the_frames_actually_contain_the_storm() {
 ///
 /// `upstream/` is never touched — those are the archive's bytes, the pack's whole point. Only
 /// `service/`, `truth/` and the digests `event.json` swears to them are re-derived, from the
-/// checked-in upstream and through the production bake. The checks above then re-prove the
+/// registry-packaged upstream and through the production bake. The checks above then re-prove the
 /// result, so this hook can only ever move the pack to what today's baker really produces.
 #[test]
 #[ignore]

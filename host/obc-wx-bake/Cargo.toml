@@ -5,6 +5,9 @@ edition = "2021"
 publish = false # internal host service — never on the device or the phone
 description = "The OBC weather bakery: upstream radar/model products -> OBCG frames + manifest on R2 (WX5, specs/OBCG_Spec.md). The only place upstream weather formats are parsed."
 
+[features]
+external-fixtures = []
+
 [dependencies]
 # The OBCG byte authority and the shared WX2 intensity/tile codec. The baker never re-derives a
 # byte layout or a quantization threshold: it hands cell grids to `obc_formats::obcg` and reads
@@ -41,3 +44,6 @@ sha2 = "0.11"
 # VPS shape, and `getrusage` for a true peak-RSS high-water mark. Both are already in the
 # workspace lock; the spike adds no new third-party code to the bakery.
 rayon = "1"
+
+[dev-dependencies]
+obc-fixtures = { path = "../obc-fixtures" }

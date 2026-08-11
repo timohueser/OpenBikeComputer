@@ -35,6 +35,7 @@
       "obc-bench",
       "obc-dem",
       "obc-desktop",
+      "obc-fixtures",
       "obc-host-core",
       "obc-mkimage",
       "obc-pack",

@@ -1,8 +1,9 @@
 # WX10 rain smoothing — the #1185 comparison round
 
 Timo, on glass, on real 1 km radar: *"1 km square blobs are bigger than I thought and it does
-look very blocky — maybe we should do some interpolation/smoothing after all."* This directory is
-the answer to that, as **options to pick from**, not a decision already taken.
+look very blocky — maybe we should do some interpolation/smoothing after all."* This directory
+keeps the reproducible comparison recipe and the decision record. Generated sheets belong in the
+review or a temporary output directory, not in Git.
 
 Six scenes. Each sheet holds the **same frame** — same source data, same camera, same zoom, same
 heading — rendered four times, once per `obc_render::RainSampling` mode:
@@ -23,8 +24,7 @@ heading — rendered four times, once per `obc_render::RainSampling` mode:
 | `5-coverage-edge-60mpp` | the radar umbrella's own **coverage edge** — where smoothing would lie if it were going to. |
 | `6-heading-up-40mpp` | heading-up at 37°, so the rotated fixed-point walk is in the picture too. |
 
-Only the six sheets are committed. The 24 single 240 × 320 panels are written next to them by the
-same command and are deliberately not checked in.
+The command below writes six sheets and 24 single 240 × 320 panels to a temporary directory.
 
 ## The data is real
 
@@ -34,8 +34,8 @@ looks.
 
 > **The repro below was re-derived on 2026-08-11 for #1246**, which deleted the per-product tree
 > these sheets were originally baked from (`wx/v1/us/...` and `wx/v1/dwd-rv/...`) along with the two
-> test binaries that left it in `$TMPDIR`. The sheets themselves are unchanged and still show what
-> they showed: the same cells, from the same upstream bytes, through the same renderer. What moved
+> test binaries that left it in `$TMPDIR`. The recipe still renders the same cells, from the same
+> upstream bytes, through the same renderer. What moved
 > is where a baked object comes from — one dataset at `wx/v2/<generation>/f<offset>/s<col>-<row>.obcg`
 > — and the US half of the repro is now **more** reproducible than it was, because the event pack
 > carries its own upstream bytes.
@@ -45,17 +45,19 @@ Reading OBCG rather than assembling an OBCW bundle is deliberate. Both container
 the actual renderer with nothing in between — and it does not need `api.met.no`, which an OBCW
 assembly does.
 
-**The two sources' ground does not overlap the repo's packed maps.** MRMS is CONUS-only and every
-committed `.obcm` is Alpine/Rhine, so scenes 1 and 2 render over an empty basemap — the raster is
+**The two sources' ground does not overlap the registered maps.** MRMS is CONUS-only and every
+registered `.obcm` is Alpine/Rhine, so scenes 1 and 2 render over an empty basemap — the raster is
 judged on its own there, which is the honest way to describe them. Scenes 3–6 are painted by DWD RV,
 which does cover Grimsel, and have real streets, contours and water underneath.
 
 ## Exact repro
 
 ```sh
-# 1a. The US frame, fully offline: re-bake the checked-in event pack, which carries its own raw
-#     MRMS and HRRR bytes. f0 is the observation frame — the 1 km radar these sheets are about.
-PACK=host/obc-wx-bake/tests/events/us-derecho-2020-08-10
+# 1a. The US frame, fully offline: sync and re-bake the immutable event package, which carries
+#     its own raw MRMS and HRRR bytes. f0 is the 1 km observation frame used by these comparisons.
+python3 tools/fixtures.py sync weather-event-derecho
+FIXTURE_ROOT=$(python3 tools/fixtures.py root)
+PACK=$FIXTURE_ROOT/weather-event-derecho
 cargo run --release -p obc-wx-bake --bin obc-wx-pack -- rebake $PACK --out /tmp/wx10-us
 MRMS=/tmp/wx10-us/wx/v2/20200810T1845Z/f0/s0-0.obcg
 
@@ -71,8 +73,9 @@ DWD=/tmp/wx10-dach/wx/v2/$GEN/f0/s3-2.obcg
 # 2. Build the comparison renderer.
 cargo build --release -p obc-sim --bin rain_sampling_sheet
 BIN=./target/release/rain_sampling_sheet
-OUT=apps/obc-sim/assets/wx10-rain-smoothing
-MAP=apps/obc-sim/assets/grimsel.obcm
+python3 tools/fixtures.py sync sim-grimsel
+OUT=/tmp/obc-rain-smoothing
+MAP=$FIXTURE_ROOT/sim-grimsel/grimsel.obcm
 
 # 3. The six scenes, verbatim.
 $BIN --obcg $MRMS            --center -87760000,44320000 --mpp  60 --label 1-us-storm-60mpp        --out-dir $OUT

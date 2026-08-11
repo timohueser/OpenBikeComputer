@@ -43,7 +43,7 @@ impl ByteSource for CountingSource<'_> {
 }
 
 /// The committed Grimsel fixture (~18.7 km) — the same bytes the App-level tests ride.
-const GRIMSEL: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel-climb.obcr");
+const GRIMSEL: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
 fn grimsel_index() -> RouteIndex {
     let src = SliceSource(GRIMSEL);

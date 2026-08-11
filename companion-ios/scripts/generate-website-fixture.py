@@ -21,8 +21,8 @@ import xml.etree.ElementTree as ET
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_DIR = SCRIPT_DIR.parent.parent
-ROUTE_GPX = REPO_DIR / "apps/obc-sim/assets/grimsel-climb.gpx"
-RIDE_GPX = REPO_DIR / "apps/obc-sim/assets/grimsel-climb-demo.gpx"
+ROUTE_GPX = REPO_DIR / "fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx"
+RIDE_GPX = REPO_DIR / "fixtures/sources/sim-grimsel/tracks/grimsel-climb-demo.gpx"
 DEMO_RS = REPO_DIR / "apps/obc-web-demo/src/demo.rs"
 DISPLAY_NAME = "Grimsel Pass"
 FIXTURE_DIR = REPO_DIR / "companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures"

@@ -1063,9 +1063,9 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 // §8 record decode over the synthetic writer→reader fixtures, which stay in the Miri run.
 #[cfg_attr(miri, ignore)]
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn road_vs_mtb_diverge_over_grimsel() {
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
-        .expect("grimsel.obcm fixture present");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
     let from = (8_169_610, 46_694_536);
     let to = (8_217_309, 46_706_261);
 
@@ -1556,11 +1556,10 @@ fn a_coverage_hole_carries_the_last_height_forward() {
 // `cargo +nightly miri test -p obc-route --test nav` aborted on it.)
 #[cfg_attr(miri, ignore)]
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn a_real_grimsel_plan_carries_the_pass_road_profile() {
-    let map = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
-        .expect("grimsel.obcm fixture present");
-    let dem = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcd"))
-        .expect("grimsel.obcd terrain fixture present");
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
     let terrain_src = SliceSource(&dem);
     let mut terrain = obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src)
         .expect("the baked terrain parses");
@@ -1603,11 +1602,10 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
 /// two integrations agree.
 #[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
-    let map = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
-        .expect("grimsel.obcm fixture present");
-    let dem = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcd"))
-        .expect("grimsel.obcd terrain fixture present");
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
     let terrain_src = SliceSource(&dem);
     let mut terrain =
         obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src).unwrap();
@@ -1899,17 +1897,17 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
     assert_eq!(obcr, flat_obcr, "…and is the same route the terrain-free map plans");
 }
 
-/// **The committed-fixture pin.** `apps/obc-sim/assets/grimsel.obcm` is packed *without* `--terrain`
-/// (`assets/repack.sh` passes no such flag), so every `Ascent M` on it is `0` and the climb term
+/// **The registered-fixture pin.** `sim-grimsel:grimsel.obcm` is the canonical map revision whose
+/// ascent table this test freezes, so every `Ascent M` on it is `0` and the climb term
 /// vanishes whatever the profile's weight — even though the shipped table carries the stock
 /// Road 10 / Gravel 8 / MTB 6 / Touring 8. All four profiles' routes are therefore byte-frozen at
 /// the digests `develop` produced before EL6; if one moves, the "no terrain ⇒ no change" claim (and
 /// with it every committed UI snapshot) is broken.
 #[cfg_attr(miri, ignore)] // reads the 6.5 MB fixture from disk — Miri's isolation forbids it
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn the_terrain_free_grimsel_fixture_routes_byte_identically_on_every_profile() {
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
-        .expect("grimsel.obcm fixture present");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
     let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
     for (idx, want) in GRIMSEL_PRE_EL6_DIGESTS.iter().enumerate() {
         let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
@@ -1920,6 +1918,7 @@ fn the_terrain_free_grimsel_fixture_routes_byte_identically_on_every_profile() {
 
 /// FNV-1a of each stock profile's Innertkirchen→Grimsel route on the committed fixture, captured on
 /// `develop` at 16de566c (EL7's merge, the commit this branch forked from) and unchanged by EL6.
+#[cfg(feature = "external-fixtures")]
 const GRIMSEL_PRE_EL6_DIGESTS: [u64; 4] =
     [0xd6e8_1a83_6000_7fb9, 0xb605_bfd0_f318_e1b3, 0xfa4b_d3c0_6c4c_1e92, 0x407d_5d79_4678_0248];
 

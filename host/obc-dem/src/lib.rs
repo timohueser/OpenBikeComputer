@@ -94,7 +94,7 @@ impl BboxUdeg {
     /// directory's `(row, col)`, `Cell Min I` / `Cell Min J` — puts latitude first. Getting the two
     /// orders confused mostly produces a box that fails the range checks below; in the Alps, where
     /// both numbers are plausible longitudes, it does not, so the flag is spelled out in every
-    /// usage string and in `repack.sh`.
+    /// usage string and in `fixtures/build-map-package.sh`.
     pub fn parse(text: &str) -> Result<BboxUdeg, String> {
         let parts: Vec<&str> = text.split(',').map(str::trim).collect();
         let [min_lat, min_lon, max_lat, max_lon] = parts[..] else {

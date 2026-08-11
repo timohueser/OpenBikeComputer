@@ -14,6 +14,9 @@ pipeline, the data formats, the UI, the display protocol — lives at
 <https://openbikecomputer.com/>, which also runs the firmware's
 own render path **live in your browser** (compiled to wasm).
 
+The developer workflow, proportional verification tiers, and safe worktree/build cleanup are documented
+in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ```
   .osm.pbf  ──►  obc-pack  ──►  *.obcm (v12) ─┐
  (OSM data)    (Rust packer)   (binary map)   │
@@ -37,6 +40,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 
 | Path | What it is |
 | :-- | :-- |
+| `fixtures/` | The tracked catalog, scenario/profile definitions, provenance, and reproducible builders for large developer fixtures. Package bytes live in the dedicated fixture object store and are acquired with `obc fixtures`; see [`fixtures/README.md`](fixtures/README.md). |
 | `firmware/` | The crates the **device image actually reaches** — nothing else. See [`firmware/README.md`](firmware/README.md). |
 | `firmware/docs/` | Hardware notes that live nowhere else — the LS021 bring-up log, the FLPR blob's timing policy — plus the frozen resource baseline. Concepts belong on the [docs site](https://openbikecomputer.com/), not here. |
 | `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, and route tracking over the semantic `obc-ports` boundary. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
