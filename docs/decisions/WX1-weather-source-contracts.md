@@ -222,12 +222,24 @@ fictional single model run.
 
 What changed with the mosaic is where the honesty lives. A published frame's
 `valid_at` is its place on the 15-minute cadence, not the measurement time of
-whatever painted it, and MRMS contributes one frame — so the anchor's field also
-paints +15 and +30, inside the 30-minute skew window. Those two frames carry
-**Forecast**: an observation carried forward is a persistence nowcast, and only
-the anchor may claim to be measured weather (`OBCG_Spec.md` §3.2). The
-generation states `max_source_skew_s` once, so how old the radar under a cell
-may be is a number a consumer reads rather than assumes.
+whatever painted it. MRMS contributes one frame and it is an observation, so it
+is eligible for the anchor and for nothing else: over CONUS **f0 is 1 km radar
+and +15 through +120 are HRRR's own leads**, with GFS beneath. Priority does not
+change that — MRMS still outranks HRRR at every cell — because rank decides who
+paints a frame, not which frames a source is offered for, and a single
+observation has nothing valid at +15 to offer.
+
+An interim round (#1246, WXR7) did let the frozen MRMS field paint +15 and +30,
+inside the 30-minute skew window, flagged **Forecast**. #1248 closed that: a
+forward frame must always be a genuine prediction valid at its own instant, and
+"correctly labelled" is not the same as "true". Where nothing forecasts a
+forward frame the answer is intensity 15, not the last picture we have. The
+generation still states `max_source_skew_s` once, so how old the radar under an
+f0 cell may be is a number a consumer reads rather than assumes.
+
+Radar persistence done deliberately — extrapolated, verified, with real forward
+frames — is a separate source and a separate decision (#1251). It will be
+eligible for forward frames as a forecast source, on the same terms as HRRR.
 
 ## DWD ICON-EU: European forecast
 
