@@ -171,14 +171,26 @@ that painted a cell were from that instant is stated once, for the whole generat
 old" reads that number instead of assuming one. Re-stamping fetch or bake time as `reference_time`
 is forbidden; so is publishing a frame at an offset the cadence does not define.
 
-**A frame ahead of the anchor MUST be a forecast, and MUST NOT be an observation carried forward.**
-A frame at `offset_min > 0` is about an instant no observation of exists at bake time. What may fill
-it is only source data that is a genuine prediction *valid at that instant* — a model lead, a model
-step, or a nowcast member with its own forward validity. A single-frame observation, however recent
-and however far inside the skew window it sits, is data about one past instant and is eligible for
-the anchor alone; re-publishing it at a future `valid_at` states something about that instant that
-nothing measured or predicted. Where no forecast source reaches a forward frame, the honest answer
-is intensity 15 (§6) — never a frozen field.
+**A frame ahead of the anchor MUST be painted by forecast source data, and MUST NOT be painted by an
+observation carried forward.** A frame at `offset_min > 0` is about an instant no observation of
+exists at bake time. What may fill it is a model lead, a model step, or a nowcast member — data
+whose own validity lies ahead of the run that produced it. A single-frame observation, however
+recent and however far inside the skew window it sits, is data about one past instant and is
+eligible for the anchor alone.
+
+The rule turns on **what the source data is**, not on how near it lands. Being a forecast is the
+guarantee; being a forecast of *exactly* this instant is not, and no consumer may read it as one.
+`valid_at` states the frame's position on the cadence, while the forecast step underneath it may sit
+up to `cadence.max_source_skew_s` away — an hourly model step legitimately paints two or three
+consecutive 15-minute frames, and at a 30-minute window and a 15-minute cadence that is the ordinary
+case rather than a degraded one. What distinguishes it from the frozen-observation case is not the
+distance: a model step valid at 17:00 is a prediction, and the nearest prediction is a defensible
+answer for 17:15, whereas a radar scan of 16:58 is a measurement of 16:58 and is not an answer for
+17:15 in any sense. A consumer that needs the underlying distance reads `max_source_skew_s`; there
+is no per-frame field for it and none is coming.
+
+Where no forecast source reaches a forward frame, the honest answer is intensity 15 (§6) — never a
+frozen field.
 
 The flag then carries the honesty. A publisher MUST set **Observed** only when both hold:
 
