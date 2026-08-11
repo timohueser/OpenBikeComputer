@@ -165,6 +165,10 @@ pub struct RcloneStore {
     endpoint: String,
     envs: Vec<(&'static str, String)>,
     scratch: PathBuf,
+    /// The binary to spawn — always plain `rclone`, resolved on `PATH`, in production. It is a
+    /// field only so the absent-vs-empty regression test can point it at a stub that reproduces
+    /// one specific rclone's answers; nothing reads it from the environment.
+    program: PathBuf,
 }
 
 const RCLONE_REMOTE: &str = "obcwx";
@@ -189,7 +193,7 @@ impl RcloneStore {
             ("RCLONE_CONFIG_OBCWX_NO_CHECK_BUCKET", "true".to_string()),
         ];
         let scratch = std::env::temp_dir().join(format!("obc-wx-bake-{}", std::process::id()));
-        Ok(Self { bucket, endpoint, envs, scratch })
+        Ok(Self { bucket, endpoint, envs, scratch, program: PathBuf::from("rclone") })
     }
 
     fn target(&self, key: &str) -> String {
@@ -197,11 +201,49 @@ impl RcloneStore {
     }
 
     fn run(&self, args: &[String]) -> Result<std::process::Output, String> {
-        std::process::Command::new("rclone")
+        std::process::Command::new(&self.program)
             .envs(self.envs.iter().map(|(name, value)| (*name, value.as_str())))
             .args(args)
             .output()
             .map_err(|error| format!("rclone: {error} — publishing needs rclone on PATH (https://rclone.org/install/)"))
+    }
+
+    /// Is there an object at `key`, and how long is it? `None` is *absent*, `Some(0)` is a real
+    /// zero-byte object, and telling those two apart is this function's whole job.
+    ///
+    /// It is the one place absence is decided, because deciding it from stderr wording does not
+    /// work. The live VPS runs Debian 13's packaged **rclone v1.60.1**, and that version answers a
+    /// missing key by treating the path as an empty *directory* — no error, exit 0:
+    ///
+    /// ```text
+    /// $ rclone size --json obcwx:obc-wx/wx/v2/manifest.json   # no such object
+    /// {"count":0,"bytes":0,"sizeless":0}
+    /// EXIT=0
+    /// ```
+    ///
+    /// So `bytes` alone cannot answer the question — it is `0` for both states — and the stderr
+    /// match this used to rely on never ran at all. That cost a live bootstrap: a fresh `wx/v2`
+    /// prefix read back as a present-but-empty manifest, which
+    /// [`crate::manifest_v2::carried_generations`] correctly refuses to publish over ("exists but
+    /// did not parse as JSON"), so *every* cycle failed and the prefix could never be seeded.
+    ///
+    /// `count` is the discriminator, and it is the only one that works across versions: a
+    /// zero-byte object is `{"count":1,"bytes":0}`, an absent one is `{"count":0,...}`. `rclone
+    /// size --json` has printed `count` since it grew `--json`, long before any version that could
+    /// be on a box running this service, so a missing `count` is a loud error rather than a guess.
+    fn stat(&self, key: &str) -> Result<Option<u64>, String> {
+        let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
+        let out = self.run(&args)?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // Kept as a *second* answer, not the only one: an rclone that does fail the command for
+            // a missing key spells it "not found" / "directory not found", and both contain this.
+            if stderr.contains("not found") {
+                return Ok(None);
+            }
+            return Err(self.redact(&stderr));
+        }
+        size_json_len(key, &out.stdout)
     }
 
     /// Defensive backstop: a secret echoed back by a future rclone must never reach a log.
@@ -244,28 +286,33 @@ impl ObjectStore for RcloneStore {
     }
 
     fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
-        let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("not found") || stderr.contains("directory not found") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|error| format!("{key}: {error}"))?;
-        Ok(json.get("bytes").and_then(serde_json::Value::as_i64).and_then(|bytes| u64::try_from(bytes).ok()))
+        self.stat(key)
     }
 
+    /// `stat` first, then `cat` — because `cat` cannot answer the question on its own. On rclone
+    /// v1.60.1 an absent key cats as an empty body with exit 0, indistinguishable from a real
+    /// zero-byte object, and the difference is the one between a bootstrap and a torn read (see
+    /// [`Self::stat`], and `manifest_v2::carried_generations` for what each one licenses).
     fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let Some(len) = self.stat(key)? else { return Ok(None) };
         let args = vec!["cat".to_string(), self.target(key)];
         let out = self.run(&args)?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("not found") || stderr.contains("directory not found") {
+            // It was there a round-trip ago; if it is not now, absent is still the honest answer.
+            if stderr.contains("not found") {
                 return Ok(None);
             }
             return Err(self.redact(&stderr));
+        }
+        // A body shorter than the object is the torn read this bucket has a recorded history of,
+        // and it is worth naming as one: unchecked it reaches the caller as a valid-looking short
+        // document, and for the manifest that means a JSON parse error blamed on the wrong thing.
+        if out.stdout.len() as u64 != len {
+            return Err(format!(
+                "{key}: read back {} bytes but the store reports {len} — a torn or truncated body, not a document",
+                out.stdout.len()
+            ));
         }
         Ok(Some(out.stdout))
     }
@@ -282,9 +329,10 @@ impl ObjectStore for RcloneStore {
         let out = self.run(&args)?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            // The same two strings `head` and `get` treat as absence, for the same reason: rclone
-            // spells "no such object" this way and there is no exit code that separates it from a
-            // real failure. Absent is the outcome this call was asking for anyway.
+            // Unlike `head`/`get`, this one *can* read absence off stderr: `deletefile` genuinely
+            // fails for a key that is not there, on every rclone including the v1.60.1 whose silent
+            // exit-0 answers forced `stat` to exist — and absent is the outcome this call was
+            // asking for anyway, so a false positive here costs nothing but a `existed: false`.
             if stderr.contains("not found") || stderr.contains("directory not found") {
                 return Ok(Deleted::default());
             }
@@ -294,6 +342,31 @@ impl ObjectStore for RcloneStore {
         // the sweep's round-trips for a number nothing acts on.
         Ok(Deleted { existed: true, bytes: None })
     }
+}
+
+/// The `count`/`bytes` reading of one `rclone size --json` document. Split out from
+/// [`RcloneStore::stat`] so the absent-vs-empty distinction is testable against the exact bytes a
+/// real rclone printed, with no process to spawn.
+fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
+    let json: serde_json::Value =
+        serde_json::from_slice(stdout).map_err(|error| format!("{key}: rclone size --json: {error}"))?;
+    let Some(count) = json.get("count").and_then(serde_json::Value::as_i64) else {
+        return Err(format!(
+            "{key}: `rclone size --json` printed no `count` field ({}) — that field is how an absent object is told \
+             from a zero-byte one, and every rclone with `--json` prints it",
+            String::from_utf8_lossy(stdout).trim()
+        ));
+    };
+    if count <= 0 {
+        return Ok(None);
+    }
+    // Present, so a length it cannot state is a real failure and not an absence — the conflation
+    // that used to live in `head`, where an unreadable `bytes` returned the same `None` as "gone".
+    json.get("bytes")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .map(Some)
+        .ok_or_else(|| format!("{key}: `rclone size --json` counted {count} object(s) but printed no usable `bytes`"))
 }
 
 #[cfg(test)]
@@ -311,6 +384,7 @@ mod tests {
                 ("RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY", "hunter2".into()),
             ],
             scratch: std::env::temp_dir(),
+            program: PathBuf::from("rclone"),
         };
         assert_eq!(store.target("wx/v2/manifest.json"), "obcwx:obc-wx/wx/v2/manifest.json");
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
@@ -339,6 +413,90 @@ mod tests {
         assert_eq!(store.delete(key).expect("delete again"), Deleted { existed: false, bytes: None });
         assert!(!root.join("wx/v2/20260810T1430Z").exists(), "the swept generation left a husk of empty directories");
         assert!(root.exists(), "pruning stops at the store root");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The exact documents rclone v1.60.1 printed on the live VPS, and what each one means.
+    ///
+    /// `bytes` is `0` in two of these three and they are not the same state: reading absence off
+    /// `bytes` — or off the stderr that this version never writes — is what wedged the `wx/v2`
+    /// bootstrap on 2026-08-11.
+    #[test]
+    fn count_not_bytes_tells_an_absent_object_from_an_empty_one() {
+        let key = "wx/v2/manifest.json";
+        // Observed: `rclone size --json` on a key that does not exist. Exit 0, no stderr.
+        assert_eq!(size_json_len(key, br#"{"count":0,"bytes":0,"sizeless":0}"#), Ok(None));
+        // A real, present, zero-byte object — same `bytes`, different answer.
+        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":0,"sizeless":0}"#), Ok(Some(0)));
+        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":1743,"sizeless":0}"#), Ok(Some(1743)));
+
+        // An rclone that prints no `count` cannot answer the question at all, so it says so rather
+        // than guessing an absence — the guess is the bug.
+        let error = size_json_len(key, br#"{"bytes":0}"#).expect_err("no count is not an absence");
+        assert!(error.contains("`count`"), "{error}");
+        let error = size_json_len(key, b"").expect_err("empty stdout is not an absence");
+        assert!(error.contains("rclone size --json"), "{error}");
+    }
+
+    /// End to end through the real `stat`/`get` code path, against a stub that answers exactly the
+    /// way rclone v1.60.1 does — silently, exit 0, for a key that is not there.
+    ///
+    /// The last assertion is the live failure itself: on a fresh `wx/v2` prefix the cycle must
+    /// bootstrap, not refuse to publish because it read an empty body as a torn manifest.
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_object_reads_as_absent_not_as_an_empty_body() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("obc-wx-rclone-1601-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("obc-wx/wx/v2")).expect("fixture tree");
+        std::fs::write(root.join("obc-wx/wx/v2/manifest.json"), br#"{"version":2}"#).expect("manifest");
+        std::fs::write(root.join("obc-wx/wx/v2/empty.json"), b"").expect("zero-byte object");
+
+        // Debian 13's rclone, in the two answers that matter: a missing key is an empty directory
+        // to `size` and an empty body to `cat`, and neither writes a word to stderr or fails.
+        let stub = root.join("rclone-1.60.1-stub.sh");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\nroot='{}'\ncmd=\"$1\"\nfor target in \"$@\"; do :; done\npath=\"$root/${{target#obcwx:}}\"\n\
+                 case \"$cmd\" in\n\
+                 size) if [ -f \"$path\" ]; then printf '{{\"count\":1,\"bytes\":%s,\"sizeless\":0}}\\n' \
+                 \"$(wc -c < \"$path\" | tr -d ' ')\"; else printf '{{\"count\":0,\"bytes\":0,\"sizeless\":0}}\\n'; fi ;;\n\
+                 cat) if [ -f \"$path\" ]; then cat \"$path\"; fi ;;\n\
+                 *) echo \"stub: unsupported $cmd\" >&2; exit 2 ;;\n\
+                 esac\nexit 0\n",
+                root.display()
+            ),
+        )
+        .expect("stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("stub +x");
+
+        let mut store = RcloneStore {
+            bucket: "obc-wx".into(),
+            endpoint: "stub".into(),
+            envs: Vec::new(),
+            scratch: root.clone(),
+            program: stub,
+        };
+
+        assert_eq!(store.get("wx/v2/manifest.json").expect("get"), Some(br#"{"version":2}"#.to_vec()));
+        assert_eq!(store.head("wx/v2/manifest.json").expect("head"), Some(13));
+        // Present and empty: a body, and a `Some`.
+        assert_eq!(store.get("wx/v2/empty.json").expect("get empty"), Some(Vec::new()));
+        assert_eq!(store.head("wx/v2/empty.json").expect("head empty"), Some(0));
+        // Absent: `None` from both, where the stderr match used to return `Some(vec![])`/`Some(0)`.
+        assert_eq!(store.get("wx/v2/nothing-here.json").expect("get absent"), None);
+        assert_eq!(store.head("wx/v2/nothing-here.json").expect("head absent"), None);
+
+        let mut warnings = Vec::new();
+        let previous = store.get("wx/v2/nothing-here.json").expect("get absent");
+        let carried = crate::manifest_v2::carried_generations(previous.as_deref(), &mut warnings)
+            .expect("a fresh wx/v2 prefix must bootstrap, not fail the cycle");
+        assert!(!carried.had_predecessor(), "nothing was ever promised, so nothing may be swept");
+        assert!(warnings.is_empty(), "a genuine bootstrap is not a warning: {warnings:?}");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

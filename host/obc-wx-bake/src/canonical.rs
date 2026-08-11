@@ -1178,6 +1178,11 @@ pub fn run_cycle(
     if !dry_run {
         // Frames first, manifest last: every object the manifest is about to name must already be
         // fetchable at the destination, at its length.
+        //
+        // The two arms below really are two different failures, and only since `RcloneStore::stat`:
+        // until it existed, rclone v1.60.1 reported an absent object as 0 bytes, so an object that
+        // was never uploaded arrived here as a *length mismatch* and the `None` arm was unreachable
+        // against the live store.
         for (key, expected) in &fetchable {
             match store.head(key)? {
                 Some(remote) if remote == *expected => {}
