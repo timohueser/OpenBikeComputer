@@ -431,10 +431,30 @@ fn the_frames_actually_contain_the_storm() {
     // 18:48 published three times under three validities. A forward frame is a forecast by rule
     // now, so what stands at f15 and f30 is a model that actually predicted those instants — less
     // rain in the bytes, and a claim the frame can support.
-    assert!(wet_fraction(&key(0)) > 0.11, "the first frame lost its storm");
+    let (f0, f15, f30) = (wet_fraction(&key(0)), wet_fraction(&key(1)), wet_fraction(&key(2)));
+    assert!(f0 > 0.11, "the first frame lost its storm");
     // Measured 6.98 % and 6.91 %: HRRR's own leads, not the radar frozen forward.
-    assert!(wet_fraction(&key(1)) > 0.05, "the second frame lost its storm");
-    assert!(wet_fraction(&key(2)) > 0.05, "the third frame lost its storm");
+    assert!(f15 > 0.05, "the second frame lost its storm");
+    assert!(f30 > 0.05, "the third frame lost its storm");
+    // **The step down asserted, not merely described.** Floors alone do not pin #1248: 14.89 % also
+    // clears `> 0.05`, so a revert to the frozen observation would sail through the three lines
+    // above. Measured 0.47 and 0.46 of f0.
+    for (name, fraction) in [("f15", f15), ("f30", f30)] {
+        assert!(
+            fraction < f0 * 0.75,
+            "{name} is {:.2} % against f0's {:.2} % — that is the radar field repeated, not HRRR's forecast",
+            100.0 * fraction,
+            100.0 * f0
+        );
+    }
+    // And the exact form of the regression, since a fraction can coincide: the *cells* must differ.
+    // Under the old rule f0, f15 and f30 were one field under three validities — identical grids,
+    // different headers — so comparing bytes would have passed and comparing cells would not.
+    let cells_of = |relative: &str| all_cells(&read(relative)).1;
+    let anchor_cells = cells_of(&key(0));
+    for (name, index) in [("f15", 1usize), ("f30", 2)] {
+        assert_ne!(cells_of(&key(index)), anchor_cells, "{name} is cell-for-cell the anchor's field");
+    }
     // The far end of the window is HRRR's own forecast too, and the storm has left eastward.
     // Measured 7.22 %.
     assert!(wet_fraction(&key(document.frames.len() - 1)) > 0.05, "the last frame lost its storm");

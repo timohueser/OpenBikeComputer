@@ -12,7 +12,6 @@
 //! [`crate::lcc`] at the native 3 km cell size: one index map per cycle, shared by every frame,
 //! no smoothing and no invented sub-cell detail. Cells outside the projected domain are no-data.
 
-use obc_formats::obcg::FLAG_FORECAST;
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
@@ -21,7 +20,7 @@ use crate::geometry::GridGeometry;
 use crate::grib::{decode_field, ExpectedGrib, HRRR_CONUS_GRID_DEFINITION_HEX};
 use crate::idx::{self, MAX_INDEX_BYTES};
 use crate::lcc;
-use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, NOAA_TERMS_URL};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass, NOAA_TERMS_URL};
 
 pub const ID: &str = "hrrr";
 
@@ -232,7 +231,7 @@ pub fn bake_forward_frames(
         frames.push(BakedFrame {
             offset_min: u32::try_from(offset_seconds / 60).map_err(|_| "HRRR frame offset overflows")?,
             valid_at,
-            flags: FLAG_FORECAST,
+            class: SourceClass::Forecast,
             cells: resample(&field.values, &index_map),
         });
     }

@@ -19,6 +19,8 @@ pub mod opera;
 pub mod opera_cirrus;
 pub mod opera_nimbus;
 
+use obc_formats::obcg;
+
 use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
 
@@ -67,6 +69,39 @@ pub struct MosaicSource {
 /// nowcast composite whose +5…+120 members are forecasts and are stamped as such, so Germany's
 /// forward frames stay RV.
 ///
+/// ## What the forward frames now fall through to
+///
+/// #1248 also changed the *shape* of the fall-through, not only who answers. A radar observation
+/// used to sit above the regional models at every frame it was within skew of, so wherever a
+/// regional model was absent — outside its domain, or a failed lead — the radar masked it and the
+/// global floor was never reached. Forward frames now skip the radar row entirely, so the fall is
+/// one step longer and lands on whatever is actually beneath: **regional model, else the 27.75 km
+/// floor.** An HRRR or ICON-EU outage that used to cost nothing at f+15 and f+30 now costs those
+/// frames their resolution, visibly.
+///
+/// The permanent version of that is the four strips where a radar footprint reaches past its
+/// regional model's domain. At f+15 and f+30 these drop from radar-grade cells to the global floor;
+/// f0 and f+45 onward are unchanged (f0 is still the observation, and from f+45 the observation was
+/// already out of skew under the old rule too):
+///
+/// * **CONUS, 52.66–55.00 N** — MRMS reaches to 55 N, HRRR's Lambert domain stops at 52.66 N.
+///   Northern-tier prairie and the Canadian border strip.
+/// * **CONUS, 60.87–60.00 W** — the same mismatch on the eastern edge, a sliver of the maritime
+///   approaches.
+/// * **Europe, 70.53–73.00 N** — OPERA reaches into the Arctic, ICON-EU's domain stops at
+///   70.53 N. Finnmark (70.9 N, 29 E) is inside it, and it is the one of the four with riders in.
+/// * **Europe, 28.00–23.53 W** — OPERA's western reach past ICON-EU's west edge, over the
+///   Atlantic approaches to Iceland.
+///
+/// Those bounds are the adapters' own `GEOMETRY`/`WINDOW` edges, not measurements of a rendered
+/// frame, and `the_forward_frame_fall_through_strips_are_where_radar_outruns_its_model` derives
+/// them from the constants so a domain change moves the documented strips or fails.
+///
+/// This is accepted rather than worked around: 27.75 km model fill that is a forecast of the frame's
+/// instant is a truthful answer, and a 1 km radar image of half an hour ago published under that
+/// instant is not. Narrowing the strips means a source whose forecasts cover them, which is a
+/// [`MOSAIC_PRIORITY`] row, not an exception to the rule.
+///
 /// Adding a source is one row. Its position in this list *is* its priority; there is no separate
 /// number to keep in sync, and [`mosaic_rank`] is the only reader.
 pub const MOSAIC_PRIORITY: &[MosaicSource] = &[
@@ -104,6 +139,40 @@ pub struct Attribution {
     pub url: &'static str,
 }
 
+/// **What kind of statement a source frame is** — the classification the whole forward-frame rule
+/// turns on ([`crate::canonical::frame_is_eligible`], #1248).
+///
+/// A two-variant enum rather than a `u16` of OBCG flag bits, and that is the point. It used to be
+/// `flags: u16` with "`FLAG_OBSERVED` or `FLAG_FORECAST`" in a doc comment, which made three wrong
+/// states representable — `0`, both bits, and any reserved bit — and the mosaic read it as
+/// `flags & FLAG_OBSERVED != 0`, so **every** wrong state decoded to Forecast. An adapter that
+/// forgot the field, or wrote `0` for a genuine observation, would silently become eligible for
+/// every forward frame: the exact failure #1248 exists to make impossible, reintroduced one
+/// careless adapter later. There is no `Default`, so a new adapter cannot omit the classification;
+/// it has to say which of the two its data is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceClass {
+    /// A measurement of one past instant. Eligible for the canonical anchor and nothing else.
+    Observation,
+    /// A prediction with its own forward validity — a model lead or step, or a nowcast member.
+    Forecast,
+}
+
+impl SourceClass {
+    /// The OBCG source-class bit this maps to (`OBCG_Spec.md` §3.2), for the emitter. Exactly one
+    /// of the two is ever set, which the format requires and the enum now guarantees.
+    pub fn obcg_flag(self) -> u16 {
+        match self {
+            Self::Observation => obcg::FLAG_OBSERVED,
+            Self::Forecast => obcg::FLAG_FORECAST,
+        }
+    }
+
+    pub fn is_observation(self) -> bool {
+        matches!(self, Self::Observation)
+    }
+}
+
 /// One quantized frame: canonical WX2 intensity codes on the source's own window.
 #[derive(Debug)]
 pub struct BakedFrame {
@@ -111,8 +180,9 @@ pub struct BakedFrame {
     /// its files by; the mosaic places a frame by its `valid_at` alone.
     pub offset_min: u32,
     pub valid_at: i64,
-    /// `obc_formats::obcg::FLAG_OBSERVED` or `FLAG_FORECAST`.
-    pub flags: u16,
+    /// Observation or forecast — see [`SourceClass`], and note there is no third answer and no
+    /// default. This is what decides which canonical frames the frame may paint at all.
+    pub class: SourceClass,
     pub cells: Vec<u8>,
 }
 
