@@ -132,7 +132,18 @@ const MIN_WET_CELLS: usize = 64;
 /// node over Kansas says nothing about Maine, and a field that advects everything by it is asserting
 /// a motion nobody measured. Beyond this many nodes the flow stays zero, which advects dry ground to
 /// dry ground and leaves distant rain where it is — visibly persistence, which is what "we could not
-/// tell" should look like. Six nodes is ~96 km at the 16 km node spacing.
+/// tell" should look like.
+///
+/// **Nine nodes, derived from the horizon rather than picked** (raised from six while landing
+/// #1283's timestamp fix). A back-trace integrates the flow *along* the trajectory, so the field has
+/// to be defined everywhere the frame will be carried or the trajectory stalls part-way and the
+/// storm arrives short — measurably so: an isolated cell in an otherwise dry domain under-shot by
+/// 12 % at a 57-minute lead with the bound at six. The distance a frame can travel is what sets it:
+/// a 25 m/s system (90 km/h, above ordinary storm motion and far below the [`MAX_SPEED_M_S`] clamp)
+/// covers 135 km over [`crate::derive::NOWCAST_MAX_LEAD_MIN`], which is 8.4 nodes at the 16 km
+/// spacing. Nine covers it with a node in hand, and it is still a bound — a lone trackable node
+/// reaches ~144 km, not a continent, and only where there is rain within that distance to begin
+/// with.
 ///
 /// **To within one smoothing pass** (#1278 r2, n18). [`fill_invalid`] finishes with an unconditional
 /// 3x3 box pass over the whole node grid, so the ring of nodes immediately past the cap picks up a
@@ -140,7 +151,7 @@ const MIN_WET_CELLS: usize = 64;
 /// treatment doing its job rather than the cap leaking: the alternative is a hard edge in the
 /// trajectories at exactly the distance where confidence runs out. The bound is therefore on where
 /// the *grown* field stops, not on where the last non-zero float is.
-const MAX_FILL_NODES: u32 = 6;
+const MAX_FILL_NODES: u32 = 9;
 
 /// A dense motion field on a coarse node grid.
 ///

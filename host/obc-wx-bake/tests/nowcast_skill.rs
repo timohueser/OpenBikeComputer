@@ -154,6 +154,21 @@ fn the_nowcast_beats_persistence_and_the_model_over_the_derecho() {
     let anchor = &ladder[1];
     let dt = (anchor.valid_at - earlier.valid_at) as f64;
     assert!(dt > 0.0, "the observation pair must be ordered in time");
+    // **These are measurement instants, and the test says so out loud** (#1283). A truth frame is
+    // emitted on its own instant, so its header is the observation time — but a *published* f0
+    // states the cadence slot instead, and PR #1283 recovered a baseline from two of those and
+    // advected the derecho 18 % too slowly. Both rungs here land off the quarter hour, which is
+    // exactly what a cadence instant cannot do, so a future refactor that quietly starts reading
+    // slot times fails here rather than shipping a uniformly slow field.
+    let cadence = i64::from(FRAME_STEP_MIN) * 60;
+    for rung in [earlier, anchor] {
+        assert_ne!(
+            rung.valid_at % cadence,
+            0,
+            "{} is on the cadence — this harness must difference measurement instants, not slots",
+            timefmt::rfc3339(rung.valid_at)
+        );
+    }
     let params = FlowParams::for_cells(f64::from(header.cell_size_m));
     let motion = flow::estimate_motion(&earlier.cells, &anchor.cells, width, height, dt, params)
         .expect("a derecho is not a dry field");
