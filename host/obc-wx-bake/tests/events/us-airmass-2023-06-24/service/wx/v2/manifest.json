@@ -1,0 +1,181 @@
+{
+  "version": 2,
+  "generation": "20230624T2000Z",
+  "generated_at": "2023-06-24T20:04:00Z",
+  "reference_time": "2023-06-24T20:00:00Z",
+  "key_prefix": "wx/v2",
+  "previous_generations": [],
+  "lattice": {
+    "south_lat_udeg": 38000000,
+    "west_lon_udeg": -98080000,
+    "cell_udeg": 10000,
+    "width": 1024,
+    "height": 768,
+    "shard_width": 1024,
+    "shard_height": 768,
+    "shard_cols": 1,
+    "shard_rows": 1,
+    "tile_edge": 256,
+    "entries_per_page": 128,
+    "cell_size_m": 1113,
+    "covered_rows": {
+      "start": 0,
+      "end": 768
+    }
+  },
+  "cadence": {
+    "frame_step_min": 15,
+    "frames": 9,
+    "max_source_skew_s": 1800
+  },
+  "freshness": {
+    "manifest_max_age_s": 60,
+    "next_generation_expected_at": "2023-06-24T20:15:00Z",
+    "stale_after": "2023-06-24T22:00:00Z"
+  },
+  "attribution": [
+    {
+      "source_id": "mrms",
+      "text": "Source: NOAA/NCEP MRMS PrecipRate; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "source_id": "mrms-nowcast",
+      "text": "Source: NOAA/NCEP MRMS PrecipRate; quantized and extrapolated forward by optical-flow advection by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "source_id": "hrrr",
+      "text": "Source: NOAA/NCEP HRRR subhourly PRATE; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+      "url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    }
+  ],
+  "frames": [
+    {
+      "offset_min": 0,
+      "valid_at": "2023-06-24T20:00:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 13695,
+          "object_crc32": "0x8826C68E",
+          "observed": true
+        }
+      ]
+    },
+    {
+      "offset_min": 15,
+      "valid_at": "2023-06-24T20:15:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 14154,
+          "object_crc32": "0x7553E1CE",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 30,
+      "valid_at": "2023-06-24T20:30:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 14434,
+          "object_crc32": "0x6F95D5C6",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 45,
+      "valid_at": "2023-06-24T20:45:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 14467,
+          "object_crc32": "0x81CE467C",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 60,
+      "valid_at": "2023-06-24T21:00:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 14613,
+          "object_crc32": "0xAF71EB66",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 75,
+      "valid_at": "2023-06-24T21:15:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 15108,
+          "object_crc32": "0x88DE02A9",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 90,
+      "valid_at": "2023-06-24T21:30:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 15264,
+          "object_crc32": "0x3FD61689",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 105,
+      "valid_at": "2023-06-24T21:45:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 15264,
+          "object_crc32": "0x14452326",
+          "observed": false
+        }
+      ]
+    },
+    {
+      "offset_min": 120,
+      "valid_at": "2023-06-24T22:00:00Z",
+      "present": "01",
+      "shards": [
+        {
+          "col": 0,
+          "row": 0,
+          "bytes": 15264,
+          "object_crc32": "0x0BFE3C40",
+          "observed": false
+        }
+      ]
+    }
+  ]
+}
