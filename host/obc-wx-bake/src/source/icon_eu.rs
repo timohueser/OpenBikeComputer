@@ -139,7 +139,15 @@ impl Adapter for IconEu {
             }
             previous_field = Some((lead, field));
         }
-        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
+        // Hourly steps, like the floor: `derive::uniform_frames` fills the quarter hours between them.
+        Ok(BakedSource {
+            id: ID,
+            geometry: GEOMETRY,
+            reference_time: run,
+            attribution: ATTRIBUTION,
+            frames,
+            motion_history: Vec::new(),
+        })
     }
 }
 

@@ -50,6 +50,13 @@ pub const CONTRACT: Contract = Contract {
     cadence_seconds: 900,
     // Seventy-five minutes back, against a measured 10-minute publication lag.
     max_discovery_probes: 5,
+    // **No nowcast, and it is a cost decision.** NIMBUS is the coarser backfill under CIRRUS over
+    // largely the same ground, and a motion history for it would be a second 4.2 M-cell decode and
+    // a second resample onto the 25 M-cell window for forward frames CIRRUS's nowcast already
+    // covers almost everywhere. Where CIRRUS genuinely has nothing and NIMBUS does, the forward
+    // frames stay ICON-EU — one step coarser than they could be, over a strip whose f0 is already
+    // the 2 km product. Revisit with a measurement, not a preference.
+    motion_lag_seconds: None,
     attribution: ATTRIBUTION,
 };
 

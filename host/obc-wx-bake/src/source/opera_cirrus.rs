@@ -32,9 +32,23 @@
 
 use crate::fetch::Upstream;
 use crate::source::opera::{self, Contract, Quantity, OPERA_TERMS_URL};
-use crate::source::{Adapter, Attribution, BakedSource};
+use crate::source::{Adapter, Attribution, BakedSource, DerivedNowcast};
 
 pub const ID: &str = "opera-cirrus";
+
+/// The nowcast the bakery derives from this source (WXR9 #1251): the same 1 km field, advected.
+pub const NOWCAST: DerivedNowcast = DerivedNowcast {
+    parent: ID,
+    id: "opera-cirrus-nowcast",
+    attribution: Attribution {
+        text: "Source: EUMETNET OPERA CIRRUS maximum reflectivity composite (CC BY 4.0); converted to surface rain rate, quantized and extrapolated forward by optical-flow advection by OpenBikeComputer",
+        url: OPERA_TERMS_URL,
+    },
+};
+
+/// Three of CIRRUS's five-minute steps back — the same ten-to-fifteen-minute baseline
+/// [`super::mrms::MOTION_LAG_SECONDS`] argues for, rounded onto this product's cadence.
+pub const MOTION_LAG_SECONDS: i64 = 900;
 
 pub const ATTRIBUTION: Attribution = Attribution {
     text: "Source: EUMETNET OPERA CIRRUS maximum reflectivity composite (CC BY 4.0); reflectivity converted to surface rain rate with the Marshall-Palmer Z-R relation and an empirical column-maximum calibration, and quantized, by OpenBikeComputer",
@@ -59,6 +73,7 @@ pub const CONTRACT: Contract = Contract {
     cadence_seconds: 300,
     // Forty minutes back, against a measured 4.1-minute publication lag.
     max_discovery_probes: 8,
+    motion_lag_seconds: Some(MOTION_LAG_SECONDS),
     attribution: ATTRIBUTION,
 };
 
