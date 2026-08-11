@@ -491,6 +491,32 @@ mod tests {
         run_bounded(&items, 8, |_| Ok(())).expect("a later batch still runs");
     }
 
+    /// **A store outlives the cycle that failed on it.**
+    ///
+    /// A cycle that fails inside its publish phase returns through `?` without reaching
+    /// `end_phase`, leaving the deadline set and, a moment later, expired. The next cycle's first
+    /// act is a store read — so unless something clears it, one bad publish wedges every cycle
+    /// after it against the same store. `run_cycle` clears on entry; this pins the mechanism it
+    /// relies on.
+    #[test]
+    fn an_expired_budget_from_a_failed_phase_does_not_outlive_it() {
+        let double = crate::s3::double::Double::start();
+        double.insert("wx/v2/manifest.json", b"{}".to_vec());
+        let mut store = r2_against(&double);
+
+        // A phase that has already run out, exactly as a failed publish leaves things.
+        store.begin_phase(std::time::Duration::ZERO);
+        assert!(store.get("wx/v2/manifest.json").is_err(), "the budget is expired, so this must fail");
+
+        // What `run_cycle` does on entry.
+        store.end_phase();
+        assert_eq!(
+            store.get("wx/v2/manifest.json").expect("a new cycle reads the predecessor"),
+            Some(b"{}".to_vec()),
+            "an expired budget from a previous cycle wedged the next one"
+        );
+    }
+
     /// One item, or one worker, takes the sequential path — and must behave identically.
     #[test]
     fn a_degenerate_batch_still_honours_the_contract() {

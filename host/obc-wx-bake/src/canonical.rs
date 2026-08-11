@@ -1148,6 +1148,15 @@ pub fn run_cycle(
     let mut warnings = Vec::new();
     let times = CycleTimes::anchored_at(now);
 
+    // **Every cycle starts unbounded**, whatever the last one did. A cycle that failed inside its
+    // publish phase returned through `?` without reaching `end_phase`, so its deadline is still set
+    // and long expired — and the very first thing below is a store read. Without this line a store
+    // reused across cycles (which the fixture tests do, and a long-lived caller could) would answer
+    // "out of time" to the predecessor-manifest read forever after one bad publish: a wedge of
+    // exactly the kind the budget exists to prevent. Clearing on entry is the cheap end of that,
+    // and it belongs here rather than at every `?` in the phase.
+    store.end_phase();
+
     let mut sources = Vec::with_capacity(adapters.len());
     for adapter in adapters {
         sources.push(adapter.bake(upstream, now, &mut warnings)?);
