@@ -72,6 +72,14 @@ to do, and repeating the command inside the same quarter hour only re-bakes the 
 `--now` is what makes four *distinct* generations, which is the point at which the first deletion
 happens.
 
+Two things differ from an `--r2` cycle, both on purpose. A directory publish writes its objects
+**sequentially** rather than eight at a time, and it is **unbudgeted** — the 240 s publish and 120 s
+sweep limits an `--r2` cycle holds itself to do not apply. Both exist to bound a retry ladder over a
+network, and a local write has no ladder, no request timeout and no peer that can decline to answer;
+a deadline there would turn a slow disk into a failed rehearsal without making anything faster. So a
+rehearsal that takes its time is a disk to look at, not a publish to worry about — and conversely,
+a rehearsal cannot demonstrate that the real publish fits inside its budget.
+
 ```sh
 ssh root@wx
 export PATH="$HOME/.cargo/bin:$PATH"      # cargo is NOT on root's default PATH — see C2
@@ -405,7 +413,9 @@ sudo /root/ops/weather/install.sh --binary /tmp/obc-wx-bake
 The installer is idempotent — run it again after any change to `adapters.conf`, the unit template
 or the binary. It:
 
-* installs `rclone`, `flock`, `curl` and `unattended-upgrades` if missing;
+* installs `rclone`, `flock`, `curl` and `unattended-upgrades` if missing. The baker itself has not
+  needed `rclone` since #1279 — it speaks S3 in-process — but the by-hand recipes in this runbook
+  (**T4**'s lifecycle probe, **T5**'s scope check, §7's manifest reset) do, so it stays installed;
 * creates the `obc-wx` system user (no shell, no home) and `/var/lib/obc-wx`;
 * writes `/etc/obc-wx/r2.env` **only if it does not exist**, at 0600 root:root, and never rewrites
   it — your credentials survive every upgrade;
@@ -421,19 +431,27 @@ or the binary. It:
 * finishes with a dry-run bake (fetch + decode, publishes nothing) so a broken upstream or a wrong
   architecture is visible immediately.
 
-**Whatever rclone the distribution packages is fine — there is no version floor — and the reason
-that is true is worth one line.** Debian 13 ships **rclone v1.60.1**, and that version answers both
-`rclone cat` and `rclone size --json` for a key that *does not exist* with an empty body and exit 0,
-writing nothing to stderr. Absence cannot be read off an error message there, so the baker reads the
-`count` field of `rclone size --json` instead: `0` is no object, `1` is an object — including a real
-zero-byte one, which prints the same `"bytes":0`. Every rclone that has `--json` prints `count`,
-which is why this works everywhere rather than pinning a version.
+**Whatever rclone the distribution packages is fine — there is no version floor — and since #1279
+the baker does not use it at all.** It speaks S3 to R2 in-process, so the question "which rclone
+answers absence how" no longer has a baker-side answer: **absent is `404`**, an integer the protocol
+defines, and an object that exists and is empty is `200` with a zero-length body. Nothing about that
+can drift with a package upgrade.
 
-That is also a rule for anyone editing `publish.rs`: **absence is decided by `count`, never by a
-message.** A baker that gets it wrong cannot bootstrap a fresh `wx/v2` prefix at all — it reads the
-empty body back as a present-but-unparseable manifest, refuses to publish over it (correctly, per
-§10.4), and does that on every tick forever. Observed live on 2026-08-11; the regression test is
-`publish::tests::a_missing_object_reads_as_absent_not_as_an_empty_body`.
+It is worth knowing what that replaced, because it is the rule for anyone editing the store seam.
+Debian 13 ships **rclone v1.60.1**, and that version answers both `rclone cat` and `rclone size
+--json` for a key that *does not exist* with an empty body and exit 0, writing nothing to stderr —
+so the baker read an absent manifest back as a present-but-unparseable one, refused to publish over
+it (correctly, per §10.4), and did that on every tick forever. A fresh `wx/v2` prefix could not be
+bootstrapped at all. Observed live on 2026-08-11, fixed the same day by reading `rclone size
+--json`'s `count` (#1280), and made structurally impossible a day later by removing the subprocess
+(#1279). **The rule that survives: absence must come from a value the protocol defines, never from
+the wording of a message.** The regression test is
+`s3::tests::an_absent_key_and_an_empty_object_are_different_answers`, and it ends on
+`carried_generations` taking the bootstrap branch — the live failure itself.
+
+The runbook's own by-hand recipes below still use rclone, and those still care about its version:
+**T4**'s lifecycle probe and §7's manifest reset both read a deleted key's absence off `rclone lsl`,
+which on v1.60.1 exits 0 either way. Read the *listing*, not the exit code.
 
 Then fill in the credentials from **T5** and take the first real publish by hand:
 
@@ -472,9 +490,10 @@ cheap thing first.
    `python3 ops/weather/freshness_probe.py --url https://wx.openbikecomputer.com`
 5. **The lifecycle rule is real, not assumed.** It is a backstop now (T4), not the storage bound,
    but an unverified backstop is not one. Drop a throwaway object under the same prefix and check
-   the next day that R2 removed it. There is no config file on the box: the baker builds its
-   rclone remote entirely from the environment, so do the same by hand (as root — the env file is
-   root-only — and close the shell afterwards):
+   the next day that R2 removed it. There is no config file on the box — since #1279 the baker
+   signs its own S3 requests from the environment and spawns nothing — so build an `rclone` remote
+   by hand for this probe, out of the same variables (as root — the env file is root-only — and
+   close the shell afterwards):
    ```sh
    set -a; . /etc/obc-wx/r2.env; set +a
    export RCLONE_CONFIG_OBCWX_TYPE=s3 RCLONE_CONFIG_OBCWX_PROVIDER=Cloudflare \
@@ -502,10 +521,11 @@ cheap thing first.
    rclone lsd obcwx:obc-maps        # ← the maps bucket name; MUST fail with AccessDenied/403
    ```
    A success here means the token was created for "all buckets" — delete it and redo **T5**. Note
-   the credentials only ever reach rclone through the environment, never through `argv`; that is
-   the same rule the baker follows, and it is why none of these commands put a secret in your shell
-   history or in `ps`. It matters more than it did: the token can now delete, so its blast radius
-   is the one bucket it is scoped to.
+   the credentials only ever reach rclone through the environment, never through `argv`, which is
+   why none of these commands put a secret in your shell history or in `ps`. The baker holds itself
+   to a stricter version of the same rule: it starts no child process at all, so there is no `argv`
+   for a secret to reach. It matters more than it did: the token can now delete, so its blast
+   radius is the one bucket it is scoped to.
 
 Then let the timer run: `systemctl list-timers 'obc-wx-bake@*'`.
 
@@ -744,9 +764,11 @@ risk. Wait for the next tick before intervening.
 | :-- | :-- | :-- |
 | One upstream is broken/changed | the mosaic falls through to the next priority row for the cells that source covered — coarser weather there, not missing weather | nothing on the box. Check the provider. There is no per-source isolation to restore: one dataset means one cycle, and that trade was made deliberately in #1246 |
 | `every one of the … baked objects is entirely no-data … refusing to publish a blank cycle` | every source fell out of the skew window at once, or the global floor is gone | the previous generation still stands and is still served. Check the journal's per-source lines for which upstreams reported nothing |
-| `rclone: … 403 / AccessDenied` | token wrong, expired, or scoped to another bucket — **or** the bucket has a jurisdiction and the baker is talking to the default endpoint | read the endpoint the journal prints: if the bucket is EU-jurisdiction, set `OBC_WX_R2_ENDPOINT` (**T3**/**T5**). Otherwise §7 rotate; re-check **T5** |
+| `… status 403: …AccessDenied…` on a `wx/v2/…` key | token wrong, expired, or scoped to another bucket — **or** the bucket has a jurisdiction and the baker is talking to the default endpoint | read the endpoint the journal prints: if the bucket is EU-jurisdiction, set `OBC_WX_R2_ENDPOINT` (**T3**/**T5**). Otherwise §7 rotate; re-check **T5** |
 | `… is not fetchable — refusing to swap the manifest in` | an object this cycle just published is not readable back | the manifest is untouched and the previous generation still serves. If it repeats, suspect the lifecycle rule (**T4**) being shorter than a day, or R2 tearing a body |
 | `retention sweep: N of generation … could not be deleted` | the sweep hit store errors. **The cycle succeeded** — those objects are unreferenced, nothing serves them | one occurrence is noise. Repeating means storage is growing by a set per cycle and only T4's rule bounds it: check the token still has write scope, and read §6's guard list |
+| `retention sweep: generation … was already empty before this sweep touched it` | the generation the chain retired held nothing when the sweep sampled it — **something else collected it** | in steady state this should never appear. Check that only one baker is pointed at this prefix: `systemctl list-timers 'obc-wx-bake@*'` on this box, and confirm no second VPS or hand-run `--r2` cycle is publishing to the same bucket. Harmless in itself (the deletes are idempotent) but it means two writers share one manifest |
+| `the publish phase ran out of its time budget` | the objects, their proofs and the manifest could not be completed in 240 s | **nothing was published and nothing deleted** — the previous generation still serves. Usually R2 or the box's network, not the baker. If it repeats, check the endpoint from **T3** and R2's status; the budget exists so this is a clean failure instead of a SIGKILL at an unknown point |
 | The probe says a generation is `still fetchable` | the sweep has stopped collecting entirely | grep the journal for `retention sweep:`; if there are no warnings at all, the sweep is not running — check the deployed binary is the one this runbook describes |
 | The probe says a source is `MISSING` from `attribution[]` | not weather: the deployed binary's `MOSAIC_PRIORITY` does not have it | check what `install.sh` last deployed; roll forward, or drop the id from `OBC_WX_EXPECT_SOURCES` if the removal was deliberate |
 | The probe says `CADENCE` | the timer fires faster than the dataset's cadence — **or somebody just ran a bake by hand**, which stamps whatever phase of the step they ran it at | if you (or a step in this table) started a bake in the last 15 minutes, that is this, and it clears on the next scheduled tick. Otherwise `systemctl list-timers 'obc-wx-bake@*'` against `adapters.conf`: this is the one mistake that reaches a bill (§6) |
@@ -754,7 +776,7 @@ risk. Wait for the next tick before intervening.
 | `published but does not parse back` / `read back … not the … just written` | the manifest was written and the read-back did not match — a torn body on the way out | **the sweep did not run**, deliberately: nothing was deleted. The next tick republishes and re-verifies. If it repeats, the bucket or the endpoint is the problem, not the baker |
 | Cycle killed, `MemoryMax` in the journal | the bake exceeded its cap; the budget is ≈ 755 MB at `BAKE_THREADS = 4` against a 3G ceiling | that is a bug, not a tuning problem — file it; raise the cap in the unit template only with a measurement (`cargo test -p obc-wx-bake --release --test nowcast_cost -- --ignored`) |
 | Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop obc-wx-bake@cycle.service`, check `ps`, then `systemctl start obc-wx-bake@cycle.service` — through the unit, so the replacement takes the same lock |
-| `wx/v2/manifest.json exists but did not parse … refusing to publish` | a torn or truncated read of the manifest the baker itself wrote | **do nothing.** This is the §10.4 rule working: publishing an empty retention chain from a torn read would delete the generations in-flight clients are reading. The next tick retries. **Unless it repeats on every single tick against a prefix that is genuinely empty** — a fresh `wx/v2`, or one just reset below — in which case it is not a torn read but the baker failing to tell "absent" from "empty", and §3's note on `rclone size --json count` is the fix |
+| `wx/v2/manifest.json exists but did not parse … refusing to publish` | a torn or truncated read of the manifest the baker itself wrote | **do nothing.** This is the §10.4 rule working: publishing an empty retention chain from a torn read would delete the generations in-flight clients are reading. The next tick retries. **If it repeats on every single tick against a prefix that is genuinely empty** — a fresh `wx/v2`, or one just reset below — it is not a torn read at all but the baker failing to tell "absent" from "empty": that is the pre-#1279 bug, and the fix is to deploy a binary that reads absence off a `404` (§3) |
 | Timer "active" but nothing publishes | clock skew, or a paused system | `timedatectl` (NTP on?), then `systemctl start obc-wx-bake@cycle.service`. A clock that stepped *backwards* shows up as `refusing to publish a manifest that goes backwards` rather than as silence |
 | Everything green on the box, probe says stale | delivery, not baking: public access, custom domain, DNS or a cached 404 | re-do §4 steps 1–3 |
 
@@ -763,8 +785,9 @@ is a full reset — with one consequence that did not exist before the sweep. Lo
 in §4 step 5, then `rclone deletefile obcwx:obc-wx/wx/v2/manifest.json` and
 `systemctl start obc-wx-bake@cycle.service`.
 This is the one operation that depends on the baker reading a *deleted* key as absent rather than as
-empty (§3), so do it with a binary that postdates that fix or you have replaced a wedge with a worse
-one. The next cycle sees no predecessor, treats itself as a bootstrap, and publishes a complete
+empty (§3), so do it with a binary that postdates #1279 — one that reads absence off a `404` — or
+you have replaced a wedge with a worse one. The next cycle sees no predecessor, treats itself as a
+bootstrap, and publishes a complete
 generation with an empty `previous_generations` — which means **it will not sweep for three
 cycles**, and the generations that were current when you deleted the manifest are now orphaned. They
 are unreferenced, nothing serves them, and T4's lifecycle rule collects them within a day. That is
@@ -806,9 +829,10 @@ Record the wall-clock time here when it is done for real: `rebuild timed: ____ m
   root:root — systemd reads it as root before dropping to the `obc-wx` user, so the service account
   cannot read its own secret off disk). Never in git, never in a shell history, never in a CI
   secret — this repository's CI does **not** publish weather.
-* The baker never puts a credential in `argv` (rclone is configured through the child environment)
-  and redacts the secret from any output it forwards. Both are pinned by tests in
-  `host/obc-wx-bake/src/publish.rs`.
+* The baker never puts a credential in `argv` — since #1279 it starts no child process at all, and
+  the secret reaches the network only inside a per-request SigV4 signature, which is a value derived
+  from it and not the thing itself. It also redacts the secret from any response text it forwards.
+  Both are pinned by tests in `host/obc-wx-bake/src/s3.rs`.
 * The service receives **no rider coordinate, no user identifier and no per-user request**. It
   publishes static objects; clients read them. The only third party that ever sees a coordinate is
   MET Norway, called from the phone (WX1/WX4), not from here.
