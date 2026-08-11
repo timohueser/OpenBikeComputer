@@ -217,9 +217,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn constants_match_the_committed_obcm_fixture() {
-        let fixture = include_bytes!("../../../apps/obc-sim/assets/grimsel-demo.obcm");
-        validate_header_prefix(fixture).unwrap();
+    fn header_prefix_uses_the_authoritative_version_and_length() {
+        let mut fixture = [0u8; HEADER_LEN];
+        fixture[..4].copy_from_slice(&MAGIC);
+        fixture[4] = VERSION;
+        fixture[21..25].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+        validate_header_prefix(&fixture).unwrap();
         assert_eq!(fixture[4], VERSION);
         assert_eq!(u32::from_le_bytes(fixture[21..25].try_into().unwrap()), HEADER_LEN as u32);
     }

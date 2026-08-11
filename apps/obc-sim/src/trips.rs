@@ -170,12 +170,13 @@ mod tests {
 
     /// The committed sample route (`assets/grimsel-climb.obcr`) — the "Grimsel Climb" OBCR the fixture
     /// trip groups copies of.
-    const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.obcr");
+    const SAMPLE: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
     /// The committed fixture trip (`assets/TP1.OBT`): "Alpen Traverse", stage ids `[0, 1, 99]` —
     /// the first two are the sorted-scan ids of any two staged routes, 99 the deliberate dangling
     /// ref. Copy it into a `--routes-dir` beside two or more routes for a groupable menu; TR3's
     /// snapshot harness stages exactly this file.
-    const TRIP_ASSET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/TP1.OBT");
+    const TRIP_ASSET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sources/sim-grimsel/routes/TP1.OBT");
 
     /// Stage a routes folder with three copies of the sample route (`a`/`b`/`c`, so their sorted-scan
     /// ids are 0/1/2) plus the committed `TP1.OBT` trip grouping the first two (ids 0, 1) with one

@@ -5,6 +5,9 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "Shared std host glue for the two simulator hosts (obc-sim desktop, obc-web-demo browser): GPX replay stepping, the frame-interleaved resumable NavPlan, the in-memory byte sink, and in-memory route/ride/track stores. No GUI dependencies — this is exactly the host logic both shells drive the shared no_std core with."
 
+[features]
+external-fixtures = []
+
 [dependencies]
 obc-app = { path = "../../firmware/obc-app" }
 # Semantic replay and track ports shared by both desktop and browser hosts.
@@ -24,3 +27,6 @@ obc-replay = { path = "../obc-replay" }
 # `DrawTarget` for `RgbaFrame` — the shared browser framebuffer. Same 0.8 the render path pins;
 # this crate adds no drawing of its own, only the buffer both wasm hosts draw into.
 embedded-graphics = "0.8"
+
+[dev-dependencies]
+obc-fixtures = { path = "../obc-fixtures" }

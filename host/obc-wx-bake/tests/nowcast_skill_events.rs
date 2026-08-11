@@ -79,6 +79,8 @@
 //! The numbers are therefore current, and they are not a coincidence of either fix. Re-run them with
 //! `cargo test --release -p obc-wx-bake --test nowcast_skill_events -- --nocapture`.
 
+#![cfg(feature = "external-fixtures")]
+
 use std::path::{Path, PathBuf};
 
 use obc_formats::{obcg, precip4};
@@ -103,7 +105,11 @@ const WRAP_X: bool = false;
 const EVENTS: [&str; 2] = ["us-derecho-2020-08-10", "us-airmass-2023-06-24"];
 
 fn pack_root(id: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/events").join(id)
+    match id {
+        "us-derecho-2020-08-10" => obc_fixtures::root().join("weather-event-derecho"),
+        "us-airmass-2023-06-24" => obc_fixtures::root().join("weather-event-airmass"),
+        _ => panic!("unregistered event pack {id}"),
+    }
 }
 
 /// A private scratch directory. The counter matters: the two tests in this file both load both
