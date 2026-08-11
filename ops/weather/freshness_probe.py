@@ -73,14 +73,18 @@ BYTES_PER_MB = 1000 * 1000
 #   --max-set-bytes        30 MB  ~2x the wet-global measurement. It catches "the dataset grew" —
 #                                 a shard-size regression, a codec falling back to raw4, an adapter
 #                                 painting noise into cells that should be dry.
-#   --max-retained-bytes   90 MB  exactly 3 x the set gate, ~2x the measured resident footprint,
-#                                 and 0.9 % of R2's 10 GB free tier.
 #
-# Be clear about what the retained figure can and cannot see. It is computed from the retention
-# chain the document states, so it is bounded by 3 x the published set **by construction**: it is a
-# projection of what the bucket holds *if the sweep is working*, and no arithmetic over a manifest
-# can detect a sweep that is not. That is what SWEPT_GENERATION_PROBE below is for — one HEAD
-# against a generation the manifest no longer names — plus the monthly R2 usage check (RUNBOOK T9).
+# **There is deliberately only one storage gate.** The obvious second one — retained bytes against
+# ~90 MB — cannot fire without the set gate firing first: `retained = set x (1 + len(previous))`,
+# `len(previous)` is capped at 2 by OBCG §10.4, so the retained figure is bounded by 3 x the
+# published set by construction. It is a restatement of the same measurement, not a second opinion,
+# and a gate that arithmetically cannot fire on its own is a gate people learn to ignore. The
+# retained figure is still *printed*, because it is the number the bucket actually holds.
+#
+# What that figure cannot see at all is a sweep that stopped: it is a projection of what the bucket
+# holds *if the sweep is working*, and no arithmetic over a manifest can check that. Two things can,
+# and both are here or in the runbook — `check_sweep`'s single HEAD against a generation the
+# manifest no longer names, and T9's monthly look at R2's own stored-bytes figure.
 #
 # The mistake the old 1.5 GB gate existed to catch was a cadence fat-finger, and that mistake has
 # changed shape rather than gone away. Generations are anchored on the quarter hour, so a timer
@@ -90,7 +94,10 @@ BYTES_PER_MB = 1000 * 1000
 # times over the free tier and the first real bill this service has ever produced. Storage cannot
 # see that; `check_cadence` can, from a single sample — see its own comment.
 DEFAULT_MAX_SET_BYTES = 30 * BYTES_PER_MB
-DEFAULT_MAX_RETAINED_BYTES = 90 * BYTES_PER_MB
+# OBCG §10.4's cap, normative on readers as well as publishers: a document naming more previous
+# generations than this disagrees with the publisher's sweep about what exists, and raising it is a
+# manifest version bump rather than a configuration change.
+RETAINED_PREVIOUS_GENERATIONS = 2
 
 
 def parse_rfc3339(text: str) -> datetime:
@@ -266,6 +273,13 @@ def check_cadence(document, cadence, args, report, alerts, result) -> None:
     Hence the threshold: several times the unit's own jitter, comfortably under half a step. A
     correct timer cannot reach it; a five-times-too-fast one trips it on more than half of all
     samples, which at a 15-minute probe cadence means "within the hour".
+
+    **One legitimate way to trip it, and it is in this repository's own runbook**: a bake started by
+    hand mid-step (`systemctl start obc-wx-bake@cycle.service`) stamps whatever phase the operator
+    happened to be at, which is often most of a step. That is not a false positive worth suppressing
+    — it is a true statement about the manifest that is live — but it is self-clearing, so the alert
+    says so rather than sending someone to read `list-timers` for nothing. The runbook's §8 rows say
+    the same thing at the other end.
     """
     step_min = int(cadence["frame_step_min"])
     generated_at = parse_rfc3339(document["generated_at"])
@@ -276,9 +290,12 @@ def check_cadence(document, cadence, args, report, alerts, result) -> None:
         alerts.append(
             f"the cycle started {age_text(phase)} into its own {step_min}-minute step (limit "
             f"{args.max_timer_phase_min} min). The shipped timer fires on the step boundary with at most "
-            "60 s of randomized delay, so this is a timer running faster than the cadence: every extra "
-            "tick rewrites the whole object set, and Class A operations are the tightest line in the "
-            "budget. Check `systemctl list-timers 'obc-wx-bake@*'` against ops/weather/adapters.conf"
+            "60 s of randomized delay, so this is usually a timer running faster than the cadence: every "
+            "extra tick rewrites the whole object set, and Class A operations are the tightest line in "
+            "the budget. Check `systemctl list-timers 'obc-wx-bake@*'` against ops/weather/adapters.conf. "
+            "If someone just ran a bake by hand (`systemctl start obc-wx-bake@cycle.service` — the "
+            "runbook asks for one in several recovery steps), this is that, and it clears on the next "
+            "scheduled tick"
         )
         report.append(f"CADENCE  the cycle started {age_text(phase)} into a {step_min} min step")
     elif phase < timedelta(0):
@@ -337,7 +354,8 @@ def check_sweep(document, base_url, timeout, report, alerts, result) -> None:
 
 
 def check_cost(set_bytes, previous, args, report, alerts, result) -> None:
-    """5. Storage. See the model at the top of this file for where the two numbers come from."""
+    """5. Storage. See the model at the top of this file for where the one gate comes from, and why
+    the retained figure beside it is reported rather than gated."""
     retained_bytes = set_bytes * (1 + len(previous))
     result["published_set_bytes"] = set_bytes
     result["retained_bytes"] = retained_bytes
@@ -349,12 +367,19 @@ def check_cost(set_bytes, previous, args, report, alerts, result) -> None:
         alerts.append(
             f"the published set is {set_bytes / BYTES_PER_MB:.1f} MB, over the "
             f"{args.max_set_bytes / BYTES_PER_MB:.0f} MB guard — WXR1 measured a *wet global* cycle at "
-            "14.7 MB, so this is a dataset that grew, not weather"
+            "14.7 MB, so this is a dataset that grew, not weather. The retained footprint is three "
+            f"times it, {retained_bytes / BYTES_PER_MB:.0f} MB"
         )
-    if retained_bytes > args.max_retained_bytes:
+    # The one thing about retention a manifest *can* state wrongly, and it is a spec violation
+    # rather than a budget question: a chain longer than the cap means the document and the sweep
+    # disagree about which generations exist, and §10.4 says a reader rejects it rather than
+    # truncating. The baker refuses to publish one; this is the outside check that it did.
+    if len(previous) > RETAINED_PREVIOUS_GENERATIONS:
         alerts.append(
-            f"the retained set is {retained_bytes / BYTES_PER_MB:.0f} MB, over the "
-            f"{args.max_retained_bytes / BYTES_PER_MB:.0f} MB budget"
+            f"the manifest names {len(previous)} previous generations; OBCG §10.4 caps it at "
+            f"{RETAINED_PREVIOUS_GENERATIONS} and the cap is normative. The document and the retention "
+            "sweep now disagree about which generations exist, which is how a client gets a 404 on a "
+            "generation the manifest promised"
         )
 
 
@@ -391,9 +416,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "(e.g. dwd-rv,mrms,gfs); catches a deploy that went backwards")
     parser.add_argument("--max-set-bytes", type=int, default=DEFAULT_MAX_SET_BYTES,
                         help="alert when the currently published generation exceeds this (default: 30 MB)")
-    parser.add_argument("--max-retained-bytes", "--max-rolling-bytes", type=int, dest="max_retained_bytes",
-                        default=DEFAULT_MAX_RETAINED_BYTES,
-                        help="alert when current + retained generations exceed this (default: 90 MB)")
     parser.add_argument("--max-timer-phase-min", type=int, default=7,
                         help="alert when a cycle started this far into its own cadence step, which only a "
                              "too-fast timer can do (default: 7)")
@@ -406,6 +428,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mosaic", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--expect", default="", help=argparse.SUPPRESS)
     parser.add_argument("--adapters-conf", type=Path, default=None, help=argparse.SUPPRESS)
+    # Retired in round 1 of #1274's review: `retained = set x (1 + len(previous))` with `len` capped
+    # at 2, so it could never fire without --max-set-bytes firing first. The figure is still
+    # reported; only the gate is gone. Both spellings still parse so no invocation breaks.
+    parser.add_argument("--max-retained-bytes", "--max-rolling-bytes", type=int, dest="max_retained_bytes",
+                        default=None, help=argparse.SUPPRESS)
     return parser
 
 
@@ -505,6 +532,8 @@ def probe(args) -> int:
             report.append(f"note     sweep check skipped: {error}")
     if args.expect or args.mosaic:
         report.append("note     --expect/--mosaic are accepted and ignored: there is one dataset and it has no products")
+    if args.max_retained_bytes is not None:
+        report.append("note     --max-retained-bytes is accepted and ignored: it could never fire on its own; see --max-set-bytes")
 
     return emit(where, now, report, alerts, result, args.json)
 
