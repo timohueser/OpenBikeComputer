@@ -215,11 +215,19 @@ with 26,061 positive cells. The eight first-two-hour message ranges totaled
 330,351 bytes for the captured run. Decoding the selected field took 0.02 s
 and 30.4 MB peak RSS.
 
-Do not present HRRR as an observation. MRMS and HRRR are two sources at two
-priority ranks (#1246 deleted the composed product that used to hold both), and
-each frame keeps its own real valid time and its own observed/forecast bit;
-neither is blended into a fictional single model run, and neither is relabelled
-as the other.
+Do not present HRRR as an observation, and do not present a frozen MRMS field as
+one either. MRMS and HRRR are two sources at two priority ranks (#1246 deleted
+the composed product that used to hold both), and neither is blended into a
+fictional single model run.
+
+What changed with the mosaic is where the honesty lives. A published frame's
+`valid_at` is its place on the 15-minute cadence, not the measurement time of
+whatever painted it, and MRMS contributes one frame — so the anchor's field also
+paints +15 and +30, inside the 30-minute skew window. Those two frames carry
+**Forecast**: an observation carried forward is a persistence nowcast, and only
+the anchor may claim to be measured weather (`OBCG_Spec.md` §3.2). The
+generation states `max_source_skew_s` once, so how old the radar under a cell
+may be is a number a consumer reads rather than assumes.
 
 ## DWD ICON-EU: European forecast
 
