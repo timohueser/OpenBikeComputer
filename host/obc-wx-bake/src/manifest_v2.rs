@@ -305,12 +305,20 @@ pub struct Builder {
 }
 
 impl Builder {
+    /// `previous_candidates` is the **uncapped** list of generations the predecessor named
+    /// ([`Carried::named`]), newest first — *not* a list already truncated to
+    /// [`RETAINED_PREVIOUS_GENERATIONS`].
+    ///
+    /// This is the one place the cap is applied, and it is applied *after* the own-generation
+    /// filter. Capping before the filter is the round-1 defect described on [`Carried::named`]: it
+    /// silently costs a re-bake one retained generation and makes the sweep collect it a cycle
+    /// early. The order here is filter, then take — never the other way round.
     pub fn new(
         lattice: &Lattice,
         times: CycleTimes,
         generated_at: i64,
         attribution: Vec<AttributionEntry>,
-        previous_generations: Vec<String>,
+        previous_candidates: Vec<String>,
     ) -> Self {
         let generation = generation_id(times.reference_time);
         let covered = lattice.covered_rows();
@@ -328,11 +336,12 @@ impl Builder {
                 shards: Vec::new(),
             })
             .collect::<Vec<_>>();
-        let previous_generations = previous_generations
+        let previous_generations = previous_candidates
             .into_iter()
             // A re-bake of the same reference time is the *same* generation, not its own
             // predecessor: listing it would make the sweep's keep-set one generation short.
             .filter(|previous| previous != &generation)
+            // …and the cap goes here, after that filter, never before it. See the doc comment.
             .take(RETAINED_PREVIOUS_GENERATIONS)
             .collect();
         Self {
@@ -429,20 +438,26 @@ pub struct Carried {
 }
 
 impl Carried {
-    /// The chain the *next* manifest promises: newest first, capped at
-    /// [`RETAINED_PREVIOUS_GENERATIONS`]. This is what [`Builder::new`] takes.
-    pub fn chain(&self) -> Vec<String> {
-        self.named.iter().take(RETAINED_PREVIOUS_GENERATIONS).cloned().collect()
-    }
-
-    /// Every generation the predecessor named, newest first and **uncapped** — the sweep's
-    /// candidate set, and the reason this is not just [`Carried::chain`].
+    /// Every generation the predecessor named, newest first and **uncapped**. It is both the
+    /// sweep's candidate set and the candidate list [`Builder::new`] builds the next chain from,
+    /// and it is deliberately the *only* view: there is no capped accessor, because round 1 of
+    /// #1274's review found the bug that having one causes.
     ///
-    /// In steady state it is one entry longer than the chain, and that extra entry is exactly the
-    /// generation this cycle retires: the predecessor named N-1, N-2 and N-3; the manifest about to
-    /// be published names N, N-1 and N-2; the difference is N-3. Truncating here instead would hide
-    /// the one generation the sweep exists to collect, and it would leak a full object set per
-    /// cycle, forever, behind a retention contract that reads as if it were being honoured.
+    /// Two things need it uncapped, for different reasons.
+    ///
+    /// * **The sweep.** In steady state this is one entry longer than what the next manifest will
+    ///   promise, and that extra entry is exactly the generation this cycle retires: the
+    ///   predecessor named N-1, N-2 and N-3; the manifest about to be published names N, N-1 and
+    ///   N-2; the difference is N-3. Truncating here would hide the one generation the sweep exists
+    ///   to collect, and leak a full object set per cycle forever behind a retention contract that
+    ///   reads as if it were being honoured.
+    /// * **The next chain**, and this is the subtler one. [`Builder::new`] drops the generation
+    ///   being published before it takes two, because a re-bake of a reference time is the *same*
+    ///   generation and not its own predecessor. Cap first and a re-bake loses a slot: `[N, N-1,
+    ///   N-2]` capped to `[N, N-1]`, filtered to `[N-1]` — a manifest promising current **+1**,
+    ///   and a sweep that retires N-2 a full cycle early, cutting §10.4's overlap from ~45 minutes
+    ///   to ~30 for the clients most likely to need it. The truncation has to happen *after* the
+    ///   filter, so it happens in exactly one place: `Builder::new`.
     pub fn named(&self) -> &[String] {
         &self.named
     }
@@ -518,9 +533,23 @@ pub fn carried_generations(previous: Option<&[u8]>, warnings: &mut Vec<String>) 
             named.push(entry.to_string());
         }
     }
-    // Deliberately **not** truncated here: `Carried::chain` caps what the next manifest promises,
-    // and `Carried::named` keeps the full list because its last entry is the generation the sweep
-    // is about to collect. See `Carried::named`.
+    // §10.4's cap is normative on the *reader* too: "a consumer that saw more would disagree with
+    // the publisher's sweep about which generations exist", and raising it is a version bump. So a
+    // longer list is refused rather than truncated — truncating would reintroduce exactly the leak
+    // `Carried::named` exists to prevent, and accepting it would make the next line's work
+    // unbounded. A document naming 500 generations is 108,000 delete spawns, which is not a sweep,
+    // it is a baker that has stopped baking while holding the lock.
+    if named.len() > RETAINED_PREVIOUS_GENERATIONS + 1 {
+        return Err(format!(
+            "{MANIFEST_KEY} names {} generations ({} previous), and §10.4 caps it at \
+             {RETAINED_PREVIOUS_GENERATIONS} — refusing to publish against a chain this baker \
+             cannot reconcile with its own sweep",
+            named.len(),
+            named.len() - 1
+        ));
+    }
+    // Deliberately **not** truncated: `Builder::new` caps what the next manifest promises, after
+    // filtering, and the sweep needs the entry that cap would drop. See `Carried::named`.
     Ok(Carried { named, had_predecessor: true })
 }
 
@@ -618,17 +647,18 @@ mod tests {
         .finish();
         let mut warnings = Vec::new();
         let carried = carried_generations(Some(to_json(&previous).as_bytes()), &mut warnings).expect("parses");
-        assert_eq!(carried.chain(), vec!["20260810T1445Z", "20260810T1430Z"]);
-        // …and the uncapped view keeps the third one, which is precisely what the sweep collects.
+        // The candidate list is uncapped — the third entry is precisely what the sweep collects —
+        // and the *builder* is what caps it, after filtering.
         assert_eq!(carried.named(), ["20260810T1445Z", "20260810T1430Z", "20260810T1415Z"]);
         assert!(carried.had_predecessor());
-        let current = Builder::new(&CANONICAL, times, 0, Vec::new(), carried.chain()).finish();
+        let current = Builder::new(&CANONICAL, times, 0, Vec::new(), carried.named().to_vec()).finish();
         assert_eq!(current.previous_generations, vec!["20260810T1445Z", "20260810T1430Z"]);
 
-        // Re-baking 15:00 must not carry 15:00 as its own predecessor.
-        let chain = carried_generations(Some(to_json(&current).as_bytes()), &mut warnings).expect("parses").chain();
-        let repeat = Builder::new(&CANONICAL, times, 0, Vec::new(), chain).finish();
-        assert_eq!(repeat.previous_generations, vec!["20260810T1445Z"]);
+        // Re-baking 15:00 must not carry 15:00 as its own predecessor — and must not lose a slot
+        // doing it (#1274 r1: filter first, then cap).
+        let chain = carried_generations(Some(to_json(&current).as_bytes()), &mut warnings).expect("parses");
+        let repeat = Builder::new(&CANONICAL, times, 0, Vec::new(), chain.named().to_vec()).finish();
+        assert_eq!(repeat.previous_generations, vec!["20260810T1445Z", "20260810T1430Z"]);
         assert!(warnings.is_empty());
     }
 
@@ -687,6 +717,45 @@ mod tests {
                 .expect_err("a chain this baker cannot vouch for fails the cycle");
             assert!(error.contains("cannot vouch for"), "{error}");
         }
+    }
+
+    /// §10.4's cap binds the reader too: a longer chain is refused, never truncated. Truncating
+    /// would drop the entry the sweep needs and leak an object set per cycle; accepting would make
+    /// the sweep's work unbounded (each generation is `shard_count x frames` deletes under the
+    /// cycle's lock).
+    #[test]
+    fn a_chain_longer_than_the_cap_is_refused_rather_than_truncated() {
+        let mut warnings = Vec::new();
+        let at_the_cap = br#"{"version":2,"generation":"20260810T1500Z","previous_generations":["20260810T1445Z","20260810T1430Z"]}"#;
+        assert_eq!(carried_generations(Some(at_the_cap), &mut warnings).expect("at the cap").named().len(), 3);
+
+        let over = br#"{"version":2,"generation":"20260810T1500Z","previous_generations":["20260810T1445Z","20260810T1430Z","20260810T1415Z"]}"#;
+        let error = carried_generations(Some(over), &mut warnings).expect_err("over the cap");
+        assert!(error.contains("caps it at"), "{error}");
+    }
+
+    /// **The round-1 blocker, at the level it actually happened.** Capping the candidate list
+    /// before the own-generation filter costs a re-bake one retained generation — the manifest
+    /// promises current + 1, and the sweep collects the third a cycle early. The composition below
+    /// is exactly `run_cycle`'s, which is the point: the first version of this test hand-built the
+    /// republished chain and therefore could not see it.
+    #[test]
+    fn a_rebake_republishes_the_same_two_previous_generations() {
+        let times = CycleTimes { reference_time: crate::timefmt::parse_key_timestamp("20260810T1545Z").expect("ts") };
+        let first =
+            Builder::new(&CANONICAL, times, 0, Vec::new(), vec!["20260810T1530Z".into(), "20260810T1515Z".into()])
+                .finish();
+        assert_eq!(first.previous_generations, vec!["20260810T1530Z", "20260810T1515Z"]);
+
+        let mut warnings = Vec::new();
+        let carried = carried_generations(Some(to_json(&first).as_bytes()), &mut warnings).expect("parses");
+        assert_eq!(carried.named(), ["20260810T1545Z", "20260810T1530Z", "20260810T1515Z"]);
+        let republished = Builder::new(&CANONICAL, times, 0, Vec::new(), carried.named().to_vec()).finish();
+        assert_eq!(
+            republished.previous_generations,
+            vec!["20260810T1530Z", "20260810T1515Z"],
+            "the re-bake dropped a generation it had already promised to keep"
+        );
     }
 
     /// The schema's pattern and the runtime checker are one rule stated twice; this is where they

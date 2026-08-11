@@ -830,6 +830,77 @@ impl CycleReport {
     }
 }
 
+/// Read the just-published manifest back and prove it is the document we wrote.
+///
+/// The frames get this treatment already — `head` at the exact length, before the swap, "every
+/// object the manifest is about to name must already be fetchable". This is the same rule applied
+/// to the one object that was exempt from it, and it is the object that matters most: unreadable,
+/// it wedges every subsequent cycle by §10.4's torn-read rule *and* it is what licenses the sweep
+/// standing directly below this call.
+///
+/// A failure here fails the cycle. That is deliberate even though the objects and the manifest are
+/// already published: what this detects is a manifest at the live key that is not the one this
+/// process intended, which is a state an operator needs in the journal now rather than as a wedged
+/// cycle in fifteen minutes. Nothing is deleted, so the previous generations all still stand.
+fn verify_published_manifest(store: &mut dyn ObjectStore, written: &[u8]) -> Result<(), String> {
+    let key = manifest_v2::MANIFEST_KEY;
+    let Some(readback) = store.get(key)? else {
+        return Err(format!(
+            "{key}: published, then read back as absent — refusing to sweep against a manifest that is not there"
+        ));
+    };
+    if readback != written {
+        return Err(format!(
+            "{key}: read back {} bytes, not the {} just written — refusing to sweep against a \
+             manifest that is not the one this cycle published",
+            readback.len(),
+            written.len()
+        ));
+    }
+    manifest_v2::from_json(&readback)
+        .map(|_| ())
+        .map_err(|error| format!("{key}: published but does not parse back ({error}) — refusing to sweep"))
+}
+
+/// **A cycle must never publish a manifest older than the one already at the key.**
+///
+/// Round 1 of #1274's review reproduced why. The sweep itself is correct at every step — it only
+/// ever deletes generations *its own* manifest does not name — but a manifest that goes *backwards*
+/// republishes an old chain over a newer one, and that old chain names generations the newer cycles
+/// legitimately swept. By `OBCG_Spec.md` §10.3 a 404 on a named generation is an **error**, not a
+/// degradation, so every client that falls back gets one; and it persists two more cycles, because
+/// the next cycle faithfully carries the bad chain forward.
+///
+/// Two ways in, and neither needs a race between timers:
+///
+/// * a bake started **by hand** while another is running. The unit serializes instances with
+///   `flock`, but the lock is in `ExecStart`, not in this binary, so a bare `obc-wx-bake cycle
+///   --r2` typed into a shell is outside it. The runbook now routes every manual bake through
+///   `systemctl start`; this is the half of that fix that does not depend on anyone reading it.
+/// * a **backwards clock step** of one cadence step or more, with no concurrency at all
+///   (`ProtectClock=yes` stops the *service* changing the clock, not the host).
+///
+/// One comparison collapses the whole class into a lost tick, with the same fail-closed posture
+/// §10.4 already demands of a torn read. Equality is fine: re-baking a reference time is the
+/// idempotent republish the whole design rests on.
+fn refuse_to_go_backwards(carried: &manifest_v2::Carried, times: CycleTimes) -> Result<(), String> {
+    let Some(previous) = carried.named().first() else { return Ok(()) };
+    let Some(previous_time) = timefmt::parse_key_timestamp(previous) else { return Ok(()) };
+    if previous_time > times.reference_time {
+        return Err(format!(
+            "the published manifest is generation {previous} ({}), which is newer than the {} this \
+             cycle is anchored at ({}) — refusing to publish a manifest that goes backwards, because \
+             its retention chain would name generations a later cycle already swept. Check the box's \
+             clock, and that no bake was started by hand outside `systemctl start \
+             obc-wx-bake@cycle.service` (the flock lives in the unit, not in this binary)",
+            timefmt::rfc3339(previous_time),
+            manifest_v2::generation_id(times.reference_time),
+            timefmt::rfc3339(times.reference_time),
+        ));
+    }
+    Ok(())
+}
+
 /// **The cycle**: bake every adapter, mosaic them, publish the shard set, manifest last — then
 /// retire the generation the new manifest no longer names.
 ///
@@ -883,7 +954,12 @@ pub fn run_cycle(
     // there but unreadable fails the cycle rather than publishing an empty chain — see
     // `manifest_v2::carried_generations`, where the reasoning lives.
     let carried = manifest_v2::carried_generations(store.get(manifest_v2::MANIFEST_KEY)?.as_deref(), &mut warnings)?;
-    let mut document = manifest_v2::Builder::new(lattice, times, now, attribution, carried.chain());
+    refuse_to_go_backwards(&carried, times)?;
+    // The **uncapped** candidate list, not a capped chain: `Builder::new` filters the generation
+    // being published out before it takes two, and capping first costs a re-bake a retained
+    // generation (round 1 of #1274's review). `manifest_v2::Carried` deliberately has no capped
+    // accessor to pass here by mistake.
+    let mut document = manifest_v2::Builder::new(lattice, times, now, attribution, carried.named().to_vec());
 
     let mut published_objects = 0usize;
     let mut published_bytes = 0u64;
@@ -965,14 +1041,24 @@ pub fn run_cycle(
         published_objects += 1;
         store.put(&planned).map_err(|error| format!("{}: {error}", planned.key))?;
 
+        // **Read the licence back before spending it.** Every one of the 216 frame objects above
+        // was `head`ed at its exact length before this swap; the manifest is the object that both
+        // wedges the next cycle if it is unreadable *and* is the entire authority for ~216
+        // deletions, and until round 1 of #1274's review it was the only one nobody checked. This
+        // bucket has a recorded history of tearing bodies mid-stream. `get` + `from_json` + a byte
+        // compare is one request against that.
+        verify_published_manifest(store, &planned.bytes)?;
+
         // **After the swap, and only after it** (WXR8 #1247). The manifest above is durably in
-        // place, so the generations it no longer names are unreferenced and may go. `carried` is
-        // the §10.4 licence — a chain read out of a predecessor this cycle successfully parsed —
-        // and it is the only thing `sweep` will act on: a torn read never gets here, because it
-        // failed the cycle before a single object was published. Sweep failures are warnings; the
-        // cycle succeeded the moment the manifest landed.
+        // place *and verified readable*, so the generations it no longer names are unreferenced and
+        // may go. `carried` is the §10.4 licence — a chain read out of a predecessor this cycle
+        // successfully parsed — and it is the only thing `sweep` will act on: a torn read never gets
+        // here, because it failed the cycle before a single object was published. Sweep failures are
+        // warnings; the cycle succeeded the moment the manifest landed.
         swept = crate::sweep::sweep(store, lattice, times, &carried, &manifest);
-        warnings.append(&mut swept.warnings);
+        // Extended, not drained: `CycleReport::swept.warnings` is a documented public field, and a
+        // field that is always empty because its only writer moved out of it is a lie (#1274 r1).
+        warnings.extend(swept.warnings.iter().cloned());
     }
 
     Ok(CycleReport {
