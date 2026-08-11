@@ -10,10 +10,12 @@
 //! ## The second event, and why it is the hard case
 //!
 //! `us-airmass-2023-06-24` — 24 June 2023, 20:00 Z (3 pm CDT) over Iowa. Scattered airmass
-//! convection: cells that form, rain and die roughly where they stand instead of translating
-//! across the window. The pack was chosen by measurement, not by memory (the screening compared
-//! 30-odd summer afternoons over the same box), and the two events separate cleanly on every
-//! statistic that matters to an advection scheme:
+//! convection: many small cells that form, rain and die inside the window, rather than one system
+//! arriving across it. ("Airmass" strictly — diurnal convection inside one air mass, not tied to a
+//! front. It is *not* a claim about storm speed; this field translates at 20.4 m/s.) The pack was
+//! chosen by measurement, not by memory (the screening compared 30-odd summer afternoons over the
+//! same box), and the two events separate on every statistic that matters to an advection scheme
+//! except the one an earlier draft leaned on:
 //!
 //! | | derecho 2020-08-10 | airmass 2023-06-24 |
 //! | --- | --- | --- |
