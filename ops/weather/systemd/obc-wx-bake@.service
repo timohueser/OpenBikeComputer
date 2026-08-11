@@ -43,11 +43,13 @@ ExecStart=/usr/bin/flock --wait 240 /var/lib/obc-wx/bake.lock /usr/local/bin/obc
 
 # Re-derived for the mosaic + sweep (WXR8 #1247); it was set when a cycle was four small products
 # and a 2 s bake. One cycle is now: seven upstream fetches, a 648 M-cell mosaic (WXR1 #1254 measured
-# 12.4 s of bake on 8 cores, so under a minute on the 4-vCPU box), then ~217 rclone `copyto` spawns,
-# ~217 `size` spawns proving every object fetchable, and up to 216 `deletefile` spawns retiring the
-# generation that fell off the chain — ~650 process spawns at ~0.2 s each ≈ 130 s. 300 s had ~20 %
-# headroom over that; 600 s has a comfortable multiple, and the timer is 900 s apart so a cycle that
-# needs it still cannot collide with its successor.
+# 12.4 s of bake on 8 cores, so under a minute on the 4-vCPU box), then ~217 object PUTs, ~217 HEADs
+# proving every object fetchable, and up to 216 DELETEs retiring the generation that fell off the
+# chain. Until #1279 each of those ~650 requests was an `rclone` process spawn, which measured at
+# 220 s of wall-clock for a 155 s-of-CPU cycle; they are now requests on one pooled connection set,
+# eight at a time through the upload phase, and the whole publish is round-trip bound. 600 s is now
+# a large multiple rather than a snug fit — deliberately, because it is also the ceiling protecting
+# the 15-minute cadence when an *upstream* is slow, which is the term this change did not shrink.
 #
 # A SIGKILL mid-sweep is safe by construction: the sweep runs only after the manifest swap, so
 # everything it is deleting is already unreferenced, and whatever it did not reach is collected by
