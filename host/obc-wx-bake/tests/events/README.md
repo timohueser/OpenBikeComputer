@@ -9,7 +9,7 @@ synthetic blobs.
 wx-events/<event-id>/
   event.json    the pack manifest: window, bake parameters, coverage, and per-member provenance
   upstream/     raw archive bytes, byte-identical to what the archive served
-  service/      the baked tree: wx/v1/manifest.json + wx/v1/<product>/<gen>/f*.obcg
+  service/      the baked tree: wx/v2/manifest.json + wx/v2/<gen>/f<off>/s<col>-<row>.obcg
   truth/        the OBSERVED frames at the truth offsets — ground truth for later scoring
 ```
 

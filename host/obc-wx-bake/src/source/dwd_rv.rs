@@ -27,14 +27,14 @@ pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv
 /// chosen to make the cells square over Germany). Cells outside the projected raster are no-data,
 /// and the mosaic reads that as "not covered" and falls through to the next-priority source.
 ///
-/// **This const is frozen until the cutover.** It is what the live `wx/v1/dwd-rv` product is
-/// published on, so moving it onto the canonical 0.01 degree lattice — which would buy the
-/// canonical path one nearest-neighbour hop from the stereographic raster instead of a
-/// nearest-neighbour of a nearest-neighbour — would also move the live product's lattice, change
-/// the shape of the German corridor under a live client, and make the
-/// `cell_size_m = 1_000` this path still emits wrong in both axes. WXR7 #1246 deletes the v1 path
-/// wholesale; the alignment belongs in the same push, not before it. Until then the mosaic pays
-/// the second hop, which is ~1 km of positional slop on a ~1 km source.
+/// **Not yet lattice-aligned, and now nothing is stopping it.** This window used to be what the
+/// live per-product tree published on, so moving it onto the 0.01 degree lattice would have moved
+/// a live product's lattice under a shipped client. #1246 deleted that tree, so the only thing left
+/// in the way is the work: at 9,000 x 14,000 udeg the mosaic resamples nearest-neighbour from a
+/// window that was itself a nearest-neighbour of the stereographic raster, which is ~1 km of
+/// positional slop on a ~1 km source. Aligning the window to the lattice collapses the two hops
+/// into one and is a bakery-only change now — one constant set, one re-measure of the German cells
+/// against `stereo::native_index`, and nothing downstream to coordinate with.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 45_680_000,
     west_lon_udeg: 1_460_000,
