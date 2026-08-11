@@ -150,7 +150,13 @@ pub struct Crop {
     pub height: u32,
     /// Row-major, rows advancing **north** — the same orientation as OBCG and OBCW.
     pub cells: Vec<u8>,
-    /// Some in-bounds cell is unavailable, or the crop is short of the corridor.
+    /// Some in-bounds cell is unavailable, or the crop is short of the corridor — **per shard**.
+    ///
+    /// Evidence about this object, and deliberately *not* the frame's answer: a crop is short
+    /// whenever the corridor reaches past its own shard's edge, which is the normal case the moment
+    /// a corridor straddles a seam and its neighbour supplies exactly the missing cells. The frame's
+    /// partial-coverage flag is computed over the assembled frame in `bundle::rain_frame`, where a
+    /// cell no shard and no dry rectangle reached is the thing that is actually true.
     pub partial: bool,
 }
 

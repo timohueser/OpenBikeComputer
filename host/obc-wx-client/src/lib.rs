@@ -57,6 +57,11 @@ pub enum NoRainMap {
     Expired,
     /// The manifest itself could not be had.
     ServiceUnavailable,
+    /// Every frame this generation publishes is outside the window the rain map answers — too old
+    /// to be a current observation, or further ahead than two hours. Nothing failed; the data on
+    /// offer is about a different time. Distinct from [`NoRainMap::FramesUnavailable`] because
+    /// wearing that label would have said "failed" about a service that answered perfectly.
+    OutsideWindow,
     /// Every shard of every frame failed to fetch or verify. A present object that 404s, comes back
     /// short or fails its CRC is an **error**, never an absence of rain.
     FramesUnavailable,
@@ -69,6 +74,7 @@ impl std::fmt::Display for NoRainMap {
             NoRainMap::Uncovered => write!(f, "no source covers this position"),
             NoRainMap::Expired => write!(f, "the published weather expired and nothing replaced it"),
             NoRainMap::ServiceUnavailable => write!(f, "the weather service is unreachable"),
+            NoRainMap::OutsideWindow => write!(f, "every published frame is outside the two-hour window"),
             NoRainMap::FramesUnavailable => write!(f, "every frame failed to fetch or verify"),
         }
     }
@@ -96,6 +102,10 @@ pub struct Diagnostics {
     /// Shards the manifest measured as dry, so no request was made. Evidence that "no rain" was
     /// *measured*, which is the difference between a dry map and a missing one.
     pub dry_shards: u32,
+    /// Shards whose manifest entry says a radar painted them, rather than model fill. Per shard
+    /// because that is where the fact is true — and it stays a counter: OBCW carries one quality
+    /// flag per *frame*, so no per-shard bit may set it (see `read_plan`).
+    pub observed_shards: u32,
     pub dropped_oversize_frames: u32,
     /// The generation this bundle was built from, for the dev panel. Not on the device.
     pub generation: Option<String>,
@@ -242,7 +252,14 @@ impl WeatherClient {
                     // empty and *mean nothing*, and rendering that as a dry map is the failure the
                     // whole epic exists to make impossible.
                     PlanOutcome::Covered => {
-                        let frames = self.read_plan(http, &manifest, &plan, corridor, now, &mut diagnostics);
+                        let (frames, outside_window) =
+                            self.read_plan(http, &manifest, &plan, corridor, now, &mut diagnostics);
+                        // Nothing failed and nothing is left: every frame this generation publishes
+                        // is outside the window the rain map answers. That is a different sentence
+                        // from "the objects would not come", so it gets a different reason.
+                        if frames.is_empty() && diagnostics.failed_frames == 0 && outside_window > 0 {
+                            diagnostics.no_rain_map = Some(NoRainMap::OutsideWindow);
+                        }
                         (!frames.is_empty()).then(|| (Lattice::from(&manifest.grid), frames))
                     }
                     PlanOutcome::OutOfDomain => {
@@ -300,10 +317,12 @@ impl WeatherClient {
 
     /// Turn a plan into frames: fetch what exists, paint what is dry, count what failed.
     ///
-    /// A frame is kept as long as *something* is known about it — a dry shard is knowledge, and the
-    /// frame it belongs to is a rain-free frame rather than a hole in the timeline. Only a frame
-    /// where every present shard failed and nothing was dry disappears, and losing every frame that
-    /// way is what [`NoRainMap::FramesUnavailable`] means.
+    /// A frame is kept as long as *something* is known about it — a dry shard is knowledge, and a
+    /// failed shard is a **hole in its frame**, not the loss of the frame. Dropping the frame would
+    /// throw away the eight shards that did arrive to punish the one that did not; the hole is
+    /// no-data, which is distinguishable from dry at every layer below, so keeping it cannot make
+    /// an outage look rain-free. Only a frame where every present shard failed and nothing was dry
+    /// disappears, and losing every frame that way is [`NoRainMap::FramesUnavailable`].
     fn read_plan<H: Http>(
         &mut self,
         http: &mut H,
@@ -312,21 +331,39 @@ impl WeatherClient {
         corridor: &Corridor,
         now: i64,
         diagnostics: &mut Diagnostics,
-    ) -> Vec<FrameInput> {
+    ) -> (Vec<FrameInput>, u32) {
         let origin = self.origin.clone();
         let mut frames: BTreeMap<u32, FrameInput> = BTreeMap::new();
+        let mut outside_window = 0u32;
         // Frames outside the usable window are not fetched: two hours ahead is the question the
         // rain map answers, and an observation older than six hours would be a lie told with a
         // true timestamp. Both are properties of the timeline, not of any product.
-        let usable = |offset_min: u32| -> Option<i64> {
+        let usable = |offset_min: u32, outside: &mut u32| -> Option<i64> {
             let frame = manifest.frame(offset_min)?;
-            (frame.valid_at <= now + HORIZON_S && frame.valid_at >= now - MAX_OBSERVATION_AGE_S)
-                .then_some(frame.valid_at)
+            let inside = frame.valid_at <= now + HORIZON_S && frame.valid_at >= now - MAX_OBSERVATION_AGE_S;
+            if !inside {
+                *outside += 1;
+            }
+            inside.then_some(frame.valid_at)
         };
+        // The quality flag follows the frame's **temporal nature**, not its content and not the
+        // per-shard `observed` bits. An OBCW frame carries one flag for a mosaic that is radar over
+        // the rider and model fill across the seam, so no content rule can be true of all of it —
+        // and a content rule made an all-dry frame's flag depend on whether the baker happened to
+        // publish an object, which is how the two clients came to disagree about the commonest scene
+        // there is. So: the frame at offset 0 whose validity is within the dataset's own
+        // `max_source_skew_s` of now is the **analysis** and says observed; every forward frame is a
+        // forecast and says so. An all-dry radar scan is still an observation; an all-dry forecast
+        // frame is still a forecast. The per-shard bits stay in the diagnostics, where they are true.
+        let skew = manifest.cadence.max_source_skew_s.max(0);
+        let observed_frame = |offset_min: u32, valid_at: i64| offset_min == 0 && (now - valid_at).abs() <= skew;
 
         for read in &plan.fetch {
-            let Some(valid_at) = usable(read.offset_min) else { continue };
+            let Some(valid_at) = usable(read.offset_min, &mut outside_window) else { continue };
             let Some(geometry) = manifest.grid.shard_geometry(read.shard) else { continue };
+            if read.observed {
+                diagnostics.observed_shards += 1;
+            }
             let shard = ShardRead {
                 key: read.key.clone(),
                 geometry,
@@ -335,24 +372,36 @@ impl WeatherClient {
                 valid_at,
                 observed: read.observed,
             };
+            let entry = frames.entry(read.offset_min).or_insert(FrameInput {
+                valid_at,
+                observed: observed_frame(read.offset_min, valid_at),
+                ..FrameInput::default()
+            });
             match corridor::crop_frame_cached(http, &origin, &shard, &corridor.bounds, &mut self.frames) {
-                Ok(crop) => frames
-                    .entry(read.offset_min)
-                    .or_insert(FrameInput { valid_at, ..FrameInput::default() })
-                    .crops
-                    .push(crop),
+                Ok(crop) => entry.crops.push(crop),
                 // One bad shard is one hole in one frame, not a failed job.
                 Err(_) => diagnostics.failed_frames += 1,
             }
         }
         for (offset_min, shard) in &plan.dry {
-            let Some(valid_at) = usable(*offset_min) else { continue };
+            let Some(valid_at) = usable(*offset_min, &mut outside_window) else { continue };
             let Some(bounds) = manifest.grid.shard_geometry(*shard).map(|geometry| geometry.bounds()) else {
                 continue;
             };
             diagnostics.dry_shards += 1;
-            frames.entry(*offset_min).or_insert(FrameInput { valid_at, ..FrameInput::default() }).dry.push(bounds);
+            frames
+                .entry(*offset_min)
+                .or_insert(FrameInput {
+                    valid_at,
+                    observed: observed_frame(*offset_min, valid_at),
+                    ..FrameInput::default()
+                })
+                .dry
+                .push(bounds);
         }
-        frames.into_values().collect()
+        // A frame every one of whose shards failed is not a frame: it would be an all-no-data image
+        // claiming a timestamp. It goes, and its absence is counted by `failed_frames` above.
+        frames.retain(|_, frame| !frame.crops.is_empty() || !frame.dry.is_empty());
+        (frames.into_values().collect(), outside_window)
     }
 }

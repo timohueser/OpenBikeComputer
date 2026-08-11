@@ -1882,8 +1882,9 @@ that knows none of it behaves exactly as it did before.
    field so the two connections can be correlated.
 
 The shape is what makes it affordable on a phone's background budget: two short
-connections with the network work outside both of them, and a payload the upload
-is not an event either side has to plan around. That payload grew with WXR5
+connections with the network work outside both of them, and a payload small
+enough that the upload is not an event either side has to plan around. That
+payload grew with WXR5
 (#1244): a corridor of the one uniform dataset is 162 x 162 cells in every frame,
 so a bundle is tens of kB in practice and up to 256 KiB by the phone's producer
 policy — **roughly 10-13 s on the CoC at the ~20-25 kB/s §11.1 estimates, against

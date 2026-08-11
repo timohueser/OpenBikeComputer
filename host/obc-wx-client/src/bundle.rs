@@ -126,6 +126,14 @@ impl From<&Grid> for Lattice {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameInput {
     pub valid_at: i64,
+    /// Is this frame an **observation**? Decided by the caller from the frame's place in the
+    /// timeline — offset 0 within the dataset's own source skew — and deliberately **not** from its
+    /// content or from the per-shard `observed` bits. OBCW carries one flag for a frame that is
+    /// radar over the rider and model fill across the seam, so no content rule can be true of all
+    /// of it; and a content rule made an all-dry frame's flag depend on whether the baker happened
+    /// to publish an object at all. An all-dry radar scan is an observation. See
+    /// `WeatherClient::read_plan`, which is the one place that decides this.
+    pub observed: bool,
     /// Fetched shard crops, all on the lattice. Up to four, when the corridor straddles a seam.
     pub crops: Vec<Crop>,
     /// Shard rectangles the manifest says are dry everywhere.
@@ -135,14 +143,6 @@ pub struct FrameInput {
 impl FrameInput {
     fn is_empty(&self) -> bool {
         self.crops.is_empty() && self.dry.is_empty()
-    }
-
-    /// A frame is an observation only if **every** patch of it is: a mosaic frame that is radar
-    /// over the rider and model fill fifty kilometres east is a forecast as far as one per-frame
-    /// quality flag can say. Dry shards carry no `observed` flag — the baker published nothing to
-    /// hang one on — so a frame with no fetched shards at all cannot claim to be observed.
-    fn observed(&self) -> bool {
-        !self.crops.is_empty() && self.crops.iter().all(|crop| crop.observed)
     }
 }
 
@@ -200,7 +200,11 @@ fn ceil_div(numerator: i64, denominator: i64) -> i64 {
 
 /// The lattice-aligned window covering `corridor`, intersected with the lattice. `None` when the
 /// corridor and the lattice do not overlap at all.
-fn initial_window(lattice: &Lattice, corridor: &Bbox, anchor: (i32, i32)) -> Option<Window> {
+///
+/// (This was `initial_window` under v1, where its job was to *choose* the coarsest crop's lattice
+/// out of a heterogeneous set. The name went with the choice: there is one lattice now, and the
+/// window is where the corridor lands on it.)
+fn lattice_window(lattice: &Lattice, corridor: &Bbox, anchor: (i32, i32)) -> Option<Window> {
     let cell = lattice.cell_udeg;
     let first_col = floor_div(corridor.west_udeg - lattice.west_udeg, cell).max(0);
     let last_col = ceil_div(corridor.east_udeg - lattice.west_udeg, cell).min(i64::from(lattice.width));
@@ -249,7 +253,7 @@ pub fn build(
     usable.dedup_by_key(|frame| frame.valid_at);
 
     let mut window = match scene.filter(|_| !usable.is_empty()).and_then(|scene| {
-        initial_window(&scene.lattice, corridor, anchor).map(|window| (window, scene.lattice.cell_size_m))
+        lattice_window(&scene.lattice, corridor, anchor).map(|window| (window, scene.lattice.cell_size_m))
     }) {
         Some((window, cell_size_m)) => {
             report.source_columns = window.src_cols;
@@ -429,8 +433,14 @@ fn rain_frame(frame: &FrameInput, window: &Window, cell_size_m: u16) -> Prepared
         }
     }
 
-    let mut quality = if frame.observed() { QUALITY_OBSERVED } else { QUALITY_FORECAST };
-    if saw_no_data || frame.crops.iter().any(|crop| crop.partial) {
+    // Partial coverage is decided over the **assembled** frame, not per crop. A shard crop is
+    // "clipped" whenever the corridor reaches past that shard's own edge, which is the normal case
+    // the moment a corridor straddles a seam — and under v1 a crop was the whole frame, so the flag
+    // used to mean the same thing. Trusting it now would mark every seam-straddling frame partially
+    // covered while its neighbour shard was supplying exactly the cells it was missing. What is
+    // true of the frame is what is left over: a cell no shard and no dry rectangle reached.
+    let mut quality = if frame.observed { QUALITY_OBSERVED } else { QUALITY_FORECAST };
+    if saw_no_data {
         quality |= QUALITY_PARTIAL_COVERAGE;
     }
     (frame.valid_at, width as u16, height as u16, cell_size_m, quality, tiles)

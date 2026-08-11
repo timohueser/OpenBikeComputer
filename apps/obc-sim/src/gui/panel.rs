@@ -830,7 +830,10 @@ impl SimGui {
             ui.weak(format!("{} shard(s) measured dry — no object to fetch, and not a failure", report.dry_shards));
         }
         if let Some((width_km, height_km)) = report.corridor_km {
-            ui.label(format!("corridor  {width_km:.0} x {height_km:.0} km disc"));
+            ui.label(format!(
+                "corridor  {width_km:.0} x {height_km:.0} km disc{}",
+                if report.corridor_clamped { " (cut at the date line or a pole)" } else { "" }
+            ));
         }
         // Two costs, never one number: the OBC half is coordinate-free Range reads, the MET half
         // is one document that carries the rider's position. Both are *this fetch* — mixing a
