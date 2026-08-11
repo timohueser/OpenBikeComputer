@@ -72,6 +72,79 @@ pub struct Deleted {
 /// objects, small enough that a burst of eight is not a self-inflicted rate-limit.
 pub const UPLOAD_CONCURRENCY: usize = 8;
 
+/// Apply `op` to every item, at most `concurrency` at a time, returning **the first error recorded**
+/// and only after every worker has stopped.
+///
+/// This is the one concurrent construct in the crate, so it is a named function with its own tests
+/// rather than a closure inside the one caller that needs it. Its contract is four things:
+///
+/// * **It joins.** `std::thread::scope` cannot return until every worker has. When this returns —
+///   `Ok` or `Err` — nothing is still running. That is what lets `run_cycle` treat the boundary
+///   between the upload phase and the `head` proofs as a hard edge rather than a hope.
+/// * **First error wins.** Workers record into one slot with `get_or_insert`, so the error the
+///   caller sees is the first one recorded and later failures cannot overwrite it with something
+///   less informative.
+/// * **A failure stops new work.** Once the slot is filled no worker takes another item. The cycle
+///   is over either way, and spending another 200 objects' worth of requests to arrive at the same
+///   `Err` is time the next tick wants.
+/// * **A panic is an error, not an abort.** A panicking worker would otherwise unwind through the
+///   scope's join, poisoning the failure mutex on its way and taking the process with it — during
+///   the one phase where "what state is the bucket in?" needs an answer. Caught here, it fails the
+///   cycle the ordinary way: before the swap, previous generation intact.
+fn run_bounded<T: Sync>(
+    items: &[T],
+    concurrency: usize,
+    op: impl Fn(&T) -> Result<(), String> + Sync,
+) -> Result<(), String> {
+    if items.len() < 2 || concurrency < 2 {
+        return items.iter().try_for_each(&op);
+    }
+    let next = AtomicUsize::new(0);
+    let failure: Mutex<Option<String>> = Mutex::new(None);
+    let record = |error: String| {
+        // Deliberately not `.expect()`: if a previous panic poisoned this lock, the recovered
+        // guard still holds a usable slot, and losing the *reason the cycle failed* to a
+        // second-order panic is the worst possible outcome here.
+        let mut slot = failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.get_or_insert(error);
+    };
+    let failed = || failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
+    std::thread::scope(|scope| {
+        for _ in 0..concurrency.min(items.len()) {
+            scope.spawn(|| loop {
+                if failed() {
+                    return;
+                }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(index) else { return };
+                // `AssertUnwindSafe` is the honest annotation: `op` borrows shared state, and a
+                // panic mid-way could leave it arbitrary. That is exactly why the answer is to
+                // fail the whole phase rather than to carry on with the remaining items.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| op(item))) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        record(error);
+                        return;
+                    }
+                    Err(payload) => {
+                        let what = payload
+                            .downcast_ref::<&str>()
+                            .map(|text| (*text).to_string())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "a non-string panic payload".to_string());
+                        record(format!("a publish worker panicked ({what}) — failing the cycle before the swap"));
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    match failure.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 /// Somewhere weather objects can be put, re-checked, read back and retired.
 pub trait ObjectStore {
     /// Human-readable destination with any credential redacted.
@@ -95,6 +168,19 @@ pub trait ObjectStore {
         }
         Ok(())
     }
+
+    /// Bound everything from here until the next [`Self::end_phase`] to `budget` of wall-clock.
+    ///
+    /// A store that cannot enforce it ignores it, which is right for [`DirStore`] — a local write
+    /// has no way to hang for four minutes. It matters for anything that talks to a network, where
+    /// the alternative backstop is systemd's `TimeoutStartSec` and a SIGKILL at an unknown point in
+    /// the publish. `run_cycle` gives the object phase and the sweep separate budgets, because they
+    /// have different consequences: the first must fail the cycle, the second may only warn.
+    fn begin_phase(&mut self, budget: std::time::Duration) {
+        let _ = budget;
+    }
+
+    fn end_phase(&mut self) {}
     /// Size of the object at `key`, or `None` if it is not there — the pre-manifest fetchability
     /// proof.
     fn head(&mut self, key: &str) -> Result<Option<u64>, String>;
@@ -230,6 +316,14 @@ impl ObjectStore for R2Store {
         format!("r2 bucket {} via {}", self.s3.bucket(), self.s3.endpoint())
     }
 
+    fn begin_phase(&mut self, budget: std::time::Duration) {
+        self.s3.set_deadline(std::time::Instant::now() + budget);
+    }
+
+    fn end_phase(&mut self) {
+        self.s3.clear_deadline();
+    }
+
     fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
         self.s3.put(&object.key, &object.bytes, object.cache_control, object.content_type)
     }
@@ -251,35 +345,10 @@ impl ObjectStore for R2Store {
     /// Failing halfway is exactly as safe as failing on one `put` was: the manifest has not moved,
     /// so whatever was written is unreferenced and the previous generation still stands whole.
     fn put_all(&mut self, objects: &[PlannedObject]) -> Result<(), String> {
-        if objects.len() < 2 {
-            return objects.iter().try_for_each(|object| self.put(object));
-        }
-        let next = AtomicUsize::new(0);
-        let failure: Mutex<Option<String>> = Mutex::new(None);
         let s3 = &self.s3;
-        std::thread::scope(|scope| {
-            for _ in 0..UPLOAD_CONCURRENCY.min(objects.len()) {
-                scope.spawn(|| loop {
-                    // Stop taking work once anything has failed: the cycle is over either way, and
-                    // spending another 200 objects' worth of requests to arrive at the same `Err`
-                    // is time the next tick wants.
-                    if failure.lock().expect("upload failure lock").is_some() {
-                        return;
-                    }
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(object) = objects.get(index) else { return };
-                    if let Err(error) = s3.put(&object.key, &object.bytes, object.cache_control, object.content_type) {
-                        let mut slot = failure.lock().expect("upload failure lock");
-                        slot.get_or_insert(error);
-                        return;
-                    }
-                });
-            }
-        });
-        match failure.into_inner().expect("upload failure lock") {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        run_bounded(objects, UPLOAD_CONCURRENCY, |object| {
+            s3.put(&object.key, &object.bytes, object.cache_control, object.content_type)
+        })
     }
 
     fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
@@ -327,6 +396,107 @@ mod tests {
         };
         assert_eq!(store.describe(), "r2 bucket obc-wx via https://acct.r2.cloudflarestorage.com");
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
+    }
+
+    fn planned(count: usize) -> Vec<PlannedObject> {
+        (0..count)
+            .map(|index| PlannedObject {
+                key: format!("wx/v2/20260810T1430Z/f0/s{index}-0.obcg"),
+                bytes: vec![index as u8; index + 1],
+                cache_control: FRAME_CACHE_CONTROL,
+                content_type: "application/octet-stream",
+            })
+            .collect()
+    }
+
+    fn r2_against(double: &crate::s3::double::Double) -> R2Store {
+        R2Store { s3: S3::new(&double.endpoint, "obc-wx", "auto", "id", "secret", UPLOAD_CONCURRENCY).expect("client") }
+    }
+
+    /// **The concurrent path, driven directly** (#1282 review M2). `R2Store::put_all` is the only
+    /// new concurrent code in this change; a test that hand-rolls its own thread scope proves
+    /// nothing about it.
+    #[test]
+    fn a_concurrent_batch_lands_every_object_exactly_once() {
+        let double = crate::s3::double::Double::start();
+        let mut store = r2_against(&double);
+        let objects = planned(64);
+
+        store.put_all(&objects).expect("put_all");
+
+        assert_eq!(double.len(), objects.len(), "an object was dropped or two keys collided");
+        for object in &objects {
+            assert_eq!(double.get(&object.key).as_ref(), Some(&object.bytes), "{}", object.key);
+            assert_eq!(double.requests("PUT", &object.key), 1, "{} was put more than once", object.key);
+        }
+    }
+
+    /// A batch that fails mid-way surfaces the **first error recorded**, stops taking new work, and
+    /// leaves nothing running past the join. That last part is the one the manifest swap depends
+    /// on: `run_cycle` writes the manifest immediately after this returns.
+    #[test]
+    fn a_failed_batch_aborts_with_the_first_error_and_leaves_nothing_in_flight() {
+        let double = crate::s3::double::Double::start();
+        // Fails early on purpose: the point of the last assertion is that the *rest* is abandoned,
+        // and a failure near the end would leave nothing to abandon.
+        double.fail_key("s2-0");
+        let mut store = r2_against(&double);
+        let objects = planned(64);
+
+        let error = store.put_all(&objects).expect_err("a 403 fails the batch");
+        assert!(error.contains("s2-0"), "the error must name the object that failed: {error}");
+        assert!(error.contains("AccessDenied"), "{error}");
+
+        // Nothing is still running: whatever landed, landed before this returned. If a worker were
+        // still in flight the count would move.
+        let settled = double.len();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert_eq!(double.len(), settled, "a worker was still writing after put_all returned");
+
+        // And it stopped early rather than grinding through the rest.
+        assert!(settled < objects.len(), "the batch ran to completion despite a failure ({settled} landed)");
+    }
+
+    /// `get_or_insert` and not `insert`: when several workers fail, the caller must see the first
+    /// error recorded rather than whichever one happened to finish last.
+    #[test]
+    fn the_first_error_recorded_is_the_one_the_caller_sees() {
+        let outcomes: Vec<Result<(), String>> =
+            vec![Ok(()), Err("the first failure".into()), Err("a later, less useful failure".into())];
+        // Serialized through a single worker, so "first" is a fact rather than a race.
+        let error = run_bounded(&outcomes, 1, |outcome| outcome.clone()).expect_err("it fails");
+        assert_eq!(error, "the first failure");
+    }
+
+    /// **A panicking worker is an error, not an abort** (#1282 review M2).
+    ///
+    /// Left to unwind, it would tear through the scope's join, poison the failure mutex and take
+    /// the process down in the middle of the publish — the one phase where "did the manifest swap?"
+    /// needs an answer. Caught, it fails the cycle the ordinary way, before the swap.
+    #[test]
+    fn a_panicking_worker_fails_the_batch_rather_than_the_process() {
+        let items: Vec<usize> = (0..32).collect();
+        let error = run_bounded(&items, 8, |item| {
+            if *item == 7 {
+                panic!("the encoder handed us a shard of the wrong width");
+            }
+            Ok(())
+        })
+        .expect_err("a panic must surface as a failed batch");
+        assert!(error.contains("panicked"), "{error}");
+        assert!(error.contains("wrong width"), "the panic's own message is the useful part: {error}");
+        assert!(error.contains("before the swap"), "{error}");
+
+        // And the runner is still usable afterwards — the poisoned-lock path does not wedge it.
+        run_bounded(&items, 8, |_| Ok(())).expect("a later batch still runs");
+    }
+
+    /// One item, or one worker, takes the sequential path — and must behave identically.
+    #[test]
+    fn a_degenerate_batch_still_honours_the_contract() {
+        assert_eq!(run_bounded::<usize>(&[], 8, |_| Ok(())), Ok(()));
+        assert_eq!(run_bounded(&[1usize], 8, |_| Err("no".into())), Err("no".to_string()));
+        assert_eq!(run_bounded(&[1usize, 2, 3], 1, |_| Ok(())), Ok(()));
     }
 
     /// The upload phase is a batch, and the batch must put **every** object exactly once whether it

@@ -565,8 +565,16 @@ pub fn is_generation_id(text: &str) -> bool {
         && bytes[13] == b'Z'
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+/// Lowercase hex, the one implementation in this crate. [`crate::s3`] signs with it too — SigV4 is
+/// hex from end to end — and a second spelling of it is a second thing to get wrong.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // `write!` to a String cannot fail, and this avoids a `format!` allocation per byte.
+        use std::fmt::Write;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 #[cfg(test)]
