@@ -356,8 +356,26 @@ impl WeatherClient {
         // `max_source_skew_s` of now is the **analysis** and says observed; every forward frame is a
         // forecast and says so. An all-dry radar scan is still an observation; an all-dry forecast
         // frame is still a forecast. The per-shard bits stay in the diagnostics, where they are true.
+        //
+        // **The temporal test is necessary and not sufficient, since WXR9** (#1251/#1278 m6). It
+        // used to be the whole rule, and the baker could not then publish an f0 that was neither an
+        // observation nor a real model step. It can now: in a region with only the hourly floor and
+        // a cycle anchored off the hour — three quarters of them — `derive::uniform_frames` inserts
+        // a **morphed** f0, correctly published `FLAG_FORECAST` with every shard's manifest
+        // `observed` bit clear, and this rule showed it to the rider as an observation.
+        //
+        // So the manifest's bits get a veto, and only a veto: a frame may claim observed if the
+        // temporal test passes **and** at least one of the published shards under it says observed.
+        // That is deliberately not "all of them" — a corridor that is radar over the rider and model
+        // across a seam is exactly the case the paragraph above exists to keep saying observed, and
+        // an AND would flip it. And a frame with *no* published shards is the all-dry scene, whose
+        // bits do not exist because a dry shard is not published; it keeps the temporal answer,
+        // which is the whole point of not having a content rule. The veto can only ever clear the
+        // flag, never set one, so nothing that was a forecast becomes an observation here.
         let skew = manifest.cadence.max_source_skew_s.max(0);
         let observed_frame = |offset_min: u32, valid_at: i64| offset_min == 0 && (now - valid_at).abs() <= skew;
+        // `(published shards, observed among them)` per frame, for the veto.
+        let mut provenance: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
 
         for read in &plan.fetch {
             let Some(valid_at) = usable(read.offset_min, &mut outside_window) else { continue };
@@ -365,6 +383,9 @@ impl WeatherClient {
             if read.observed {
                 diagnostics.observed_shards += 1;
             }
+            let counts = provenance.entry(read.offset_min).or_insert((0, 0));
+            counts.0 += 1;
+            counts.1 += u32::from(read.observed);
             let shard = ShardRead {
                 key: read.key.clone(),
                 geometry,
@@ -399,6 +420,14 @@ impl WeatherClient {
                 })
                 .dry
                 .push(bounds);
+        }
+        // The manifest's veto, applied once every contributing shard is known (see `observed_frame`).
+        for (offset_min, frame) in frames.iter_mut() {
+            if let Some((published, observed)) = provenance.get(offset_min) {
+                if *published > 0 && *observed == 0 {
+                    frame.observed = false;
+                }
+            }
         }
         // A frame every one of whose shards failed is not a frame: it would be an all-no-data image
         // claiming a timestamp. It goes, and its absence is counted by `failed_frames` above.

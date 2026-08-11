@@ -255,7 +255,15 @@ impl Adapter for Hrrr {
             warnings.push(format!("hrrr: run {run} has no lead inside the +{HORIZON_SECONDS} s window ahead of {now}"));
         }
         let frames = bake_forward_frames(upstream, run, run, &leads)?;
-        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
+        // HRRR's sub-hourly leads are already on the 15-minute cadence, so `derive` leaves it alone.
+        Ok(BakedSource {
+            id: ID,
+            geometry: GEOMETRY,
+            reference_time: run,
+            attribution: ATTRIBUTION,
+            frames,
+            motion_history: Vec::new(),
+        })
     }
 }
 

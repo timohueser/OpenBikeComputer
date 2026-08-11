@@ -10,6 +10,11 @@ use std::path::PathBuf;
 
 use obc_wx_bake::grib::{decode_bzip2_field, decode_field, decode_gzip_field};
 use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms};
+
+/// The wall clock the RV tar is baked against. Since #1251 the adapter selects its members
+/// by canonical instant, so a bake needs one; the fuzz corpus only cares that a mutated tar
+/// is rejected, and any fixed instant does that.
+const RV_NOW: i64 = 1_775_745_600;
 use obc_wx_bake::{idx, tiff};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -49,7 +54,7 @@ fn mutated_rv_tars_error_and_never_panic() {
     let mut rejected = 0usize;
     for _ in 0..24 {
         let mutated = mutate(&good, &mut rng);
-        if dwd_rv::bake_tar(&mutated).is_err() {
+        if dwd_rv::bake_tar(&mutated, RV_NOW).is_err() {
             rejected += 1;
         }
     }
@@ -57,7 +62,7 @@ fn mutated_rv_tars_error_and_never_panic() {
     assert!(rejected >= 18, "only {rejected}/24 mutated tars were rejected");
     // Degenerate shapes.
     for garbage in [vec![], vec![0u8; 5], vec![0xFF; 10_000]] {
-        assert!(dwd_rv::bake_tar(&garbage).is_err());
+        assert!(dwd_rv::bake_tar(&garbage, RV_NOW).is_err());
     }
 }
 

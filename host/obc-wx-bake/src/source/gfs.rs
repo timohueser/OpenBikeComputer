@@ -252,7 +252,16 @@ impl Adapter for GfsFloor {
             });
             previous_field = Some((lead, field));
         }
-        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
+        // The floor's hourly steps are what `derive::uniform_frames` interpolates between; it has no
+        // observation to nowcast from, so no motion history.
+        Ok(BakedSource {
+            id: ID,
+            geometry: GEOMETRY,
+            reference_time: run,
+            attribution: ATTRIBUTION,
+            frames,
+            motion_history: Vec::new(),
+        })
     }
 }
 

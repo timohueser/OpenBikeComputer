@@ -427,6 +427,9 @@ pub fn bake_truth_frame(upstream: &mut dyn Upstream, lattice: &Lattice, valid_at
         reference_time: valid_at,
         attribution: mrms::ATTRIBUTION,
         frames: vec![frame],
+        // A truth frame is one observation emitted on its own instant: no derivation runs over it,
+        // and giving it a motion history would invite one.
+        motion_history: Vec::new(),
     };
     let mosaic = Mosaic::from_sources(vec![source])?;
     let object = emit_shard(lattice, &mosaic, CycleTimes { reference_time: valid_at }, 0, 0)?;

@@ -21,9 +21,28 @@ use std::fmt::Write as _;
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_gzip_field, ExpectedGrib, MAX_COMPRESSED_BYTES, MRMS_CONUS_GRID_DEFINITION_HEX};
-use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass, NOAA_TERMS_URL};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, DerivedNowcast, SourceClass, NOAA_TERMS_URL};
 
 pub const ID: &str = "mrms";
+
+/// The nowcast the bakery derives from this source (WXR9 #1251): the same 1 km field, advected.
+pub const NOWCAST: DerivedNowcast = DerivedNowcast {
+    parent: ID,
+    id: "mrms-nowcast",
+    attribution: Attribution {
+        text: "Source: NOAA/NCEP MRMS PrecipRate; quantized and extrapolated forward by optical-flow advection by OpenBikeComputer; no NOAA endorsement is implied",
+        url: NOAA_TERMS_URL,
+    },
+};
+
+/// How far before the anchor observation the motion-history frame is fetched from, in seconds.
+///
+/// Ten minutes, which is five of MRMS's two-minute steps. The trade is between two errors: a short
+/// baseline measures a displacement of a couple of cells and is mostly reading quantization noise,
+/// and a long one measures the motion of a field that has changed shape in the meantime. Ten
+/// minutes puts a 20 m/s storm twelve 1 km cells along — a displacement the estimator resolves
+/// comfortably — while keeping the two images recognisably the same weather.
+pub const MOTION_LAG_SECONDS: i64 = 600;
 
 pub const BUCKET: &str = "https://noaa-mrms-pds.s3.amazonaws.com";
 
@@ -132,6 +151,36 @@ pub fn bake_observation(upstream: &mut dyn Upstream, valid_at: i64) -> Result<Ba
     Ok(BakedFrame { offset_min: 0, valid_at, class: SourceClass::Observation, cells: quantize(&field.values) })
 }
 
+/// The earlier observation [`crate::derive::radar_nowcast`] estimates motion from, or an empty
+/// vector with a warning.
+///
+/// **Best-effort by design.** One HEAD probe decides it, and everything from here on tolerates
+/// failure: a missing object, a decode that disagrees with its own timestamps, or an upstream that
+/// simply has not kept ten minutes of history. None of those may cost the cycle its MRMS anchor —
+/// the observation is the thing riders over CONUS actually see at f0, and losing it to make a
+/// forecast layer possible would be exactly backwards. What is lost instead is the nowcast layer,
+/// and the mosaic falls back to HRRR at f+15, which is where it was before WXR9.
+///
+/// One probe rather than a walk backwards, too. Discovery already walks; this asks for one specific
+/// instant, so a cycle whose upstream is healthy pays a single extra HEAD and a single extra body.
+fn motion_history(upstream: &mut dyn Upstream, observation: i64, warnings: &mut Vec<String>) -> Vec<BakedFrame> {
+    let earlier = observation - MOTION_LAG_SECONDS;
+    let url = object_url(earlier);
+    match upstream.exists(&url) {
+        Ok(true) => match bake_observation(upstream, earlier) {
+            Ok(frame) => return vec![frame],
+            Err(error) => warnings.push(format!(
+                "mrms: the {MOTION_LAG_SECONDS} s motion-history frame failed to bake ({error}); no nowcast this cycle"
+            )),
+        },
+        Ok(false) => warnings.push(format!(
+            "mrms: no observation published at {url}, so this cycle has no motion baseline and no nowcast"
+        )),
+        Err(error) => warnings.push(format!("mrms: probing for the motion-history frame failed ({error})")),
+    }
+    Vec::new()
+}
+
 pub struct Mrms;
 
 impl Adapter for Mrms {
@@ -139,7 +188,7 @@ impl Adapter for Mrms {
         ID
     }
 
-    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, warnings: &mut Vec<String>) -> Result<BakedSource, String> {
         // Discovery is HEAD probes only, so finding the newest published object costs a request
         // and no body bytes.
         let observation =
@@ -151,6 +200,7 @@ impl Adapter for Mrms {
             reference_time: observation,
             attribution: ATTRIBUTION,
             frames: vec![frame],
+            motion_history: motion_history(upstream, observation, warnings),
         })
     }
 }
