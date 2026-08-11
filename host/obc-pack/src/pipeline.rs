@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::coverage::{coverage_simplify_fills_with, CoverageStats, Eliminate};
+use crate::coverage::{coverage_simplify_fills_with, CoverageStats, Eliminate, PredissolveCache};
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
@@ -185,6 +185,11 @@ fn run(
         Some(s) => s,
         None => &mut null,
     };
+    // Shared by the coverage tiers: they dissolve the same classes over the same fills, and only
+    // the decimation below that differs per tier (see `crate::coverage::PredissolveCache`). It is
+    // cleared at the first tier that does not want the pass — the coarse tiers come first, and the
+    // fine ones, where the pack's memory peak lives, have no use for what it holds.
+    let predissolved = PredissolveCache::new();
     let file = std::fs::File::create(output).map_err(|e| format!("create {out_name}: {e}"))?;
     let mut w = std::io::BufWriter::new(file);
     // The per-LOD closure runs inside the serializer, which has no error channel
@@ -202,6 +207,9 @@ fn run(
         terrain,
         |i| {
             let lod = &config.lods[i];
+            if !lod.coverage_simplify {
+                predissolved.clear();
+            }
             progress.stage(Phase::Quadtree, format!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m));
             // The cheapest and most valuable checkpoint in the whole pipeline: a
             // cancelled build has one to three of these LODs still ahead of it,
@@ -290,6 +298,7 @@ fn run(
                     &fill_classes,
                     tol,
                     Eliminate::new(cull_mpp, min_area_px),
+                    &predissolved,
                     progress,
                 );
                 report_coverage(progress, c);

@@ -59,7 +59,7 @@ use obc_formats::obcm::VERSION as OBCM_VERSION;
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
-use crate::coverage::{coverage_simplify_fills_with, Eliminate};
+use crate::coverage::{coverage_simplify_fills_with, Eliminate, PredissolveCache};
 use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
@@ -317,8 +317,13 @@ pub fn cut_ingested(
         );
 
         // Per-band preparation, done once and read by every cell of the band.
+        // One memo per band: a band's coverage tiers dissolve the same classes over the same fills
+        // (see `crate::coverage::PredissolveCache`), and it dies with the band rather than sitting on
+        // memory through the cells.
+        let predissolved = PredissolveCache::new();
         let lod_sets: Vec<LodSet<'_>> =
-            band.lods.iter().map(|&l| prepare_lod(ing, config, l, band.cell_log2, progress)).collect();
+            band.lods.iter().map(|&l| prepare_lod(ing, config, l, band.cell_log2, &predissolved, progress)).collect();
+        drop(predissolved);
         let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
         progress.check()?;
@@ -439,7 +444,14 @@ struct LodSet<'a> {
 /// of building one global arrangement, which is *stronger* than per-cell simplify (every cell
 /// clips the identical glued geometry), so what it produced is marked in `presimplified` and
 /// [`LodSet::cell_tree`] leaves it alone.
-fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u32, progress: &Progress) -> LodSet<'a> {
+fn prepare_lod<'a>(
+    ing: &'a Ingested,
+    config: &Config,
+    lod: usize,
+    cell_log2: u32,
+    predissolved: &PredissolveCache,
+    progress: &Progress,
+) -> LodSet<'a> {
     let l = &config.lods[lod];
     // `Geom::bounds` panics on an empty geometry, and a merge pass can hand one back, so empties are
     // dropped here — exactly where `build_lod_with` drops them on the whole-extract path.
@@ -473,7 +485,8 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
             // below resolves it — on a coverage tier `min_area_px` absorbs a small face into its
             // neighbour instead of deleting it (see [`crate::coverage`]).
             let eliminate = Eliminate::new(config.lods.get(lod + 1).and_then(|n| n.max_mpp), l.min_area_px);
-            let (covered, c) = coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, eliminate, progress);
+            let (covered, c) =
+                coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, eliminate, predissolved, progress);
             crate::pipeline::report_coverage(progress, c);
             let mut kept = Vec::with_capacity(covered.len());
             let mut pre = Vec::with_capacity(covered.len());

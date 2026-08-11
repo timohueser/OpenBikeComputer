@@ -93,22 +93,28 @@
 //! step and the pass ends with nothing under the threshold left — where one sweep would leave every
 //! speck settled on the speck next door and the threshold binding nothing at all.
 //!
-//! An **uncovered** face under the same threshold is absorbed too — into a *covered* neighbour,
-//! never the other way round. That is what closes the micro-gaps the decimation pre-pass opens,
-//! and it closes the ones OSM ships with as well: two landcover polygons digitised a few metres
-//! apart leave a crack that is nothing but backdrop at any zoom. At a tier this coarse a complete
-//! rendering of crude shapes beats a faithful one full of slivers. The direction of the rule is
-//! what keeps it honest: absorbing *into* a gap would delete map content, and a gap at or above
-//! the threshold — a real unmapped basin, the sea beyond a coastline — is left exactly as it is.
+//! An **uncovered** face is absorbed too — into a *covered* neighbour, never the other way round —
+//! but only if it is a **sliver**, and that qualifier is the whole of the rule. Healing exists to
+//! close the micro-gaps the decimation pre-pass opens, and the ones OSM ships with (two landcover
+//! polygons digitised a few metres apart leave a crack that is nothing but backdrop at any zoom).
+//! Both are *thin*: a gap the pre-pass can open is at most two decimation tolerances wide. Merely
+//! *small* is a different thing entirely — at the coarse tier the elimination threshold is 40 km²,
+//! and a bay, a tarn, a fjord below that is geography, not an artefact. So an uncovered face joins a
+//! neighbour only when its mean half-width (area over perimeter) is under
+//! [`HEAL_WIDTH_TOLERANCES`] decimation tolerances **and** it is under the tier's threshold — a
+//! strict subset of what the covered rule takes. Compact water stays water however small it is, and
+//! the direction of the rule keeps the rest honest: absorbing *into* a gap would delete map content,
+//! so it never happens.
 //!
 //! **What the threshold measures is decided by the pre-dissolve** ([`predissolve`]), and that is
-//! the one place these cost levers change the picture rather than just the bill. Without it a class
-//! arrives as its individual parcels, so a plain of fragmented farmland is a plain of faces that are
-//! each under the threshold, and the fixed point walks them one by one into whatever is around them
-//! — on the Rhine valley, into the `natural.land` base underneath, until the far-zoom tier shows
-//! bare ground where every finer tier shows farmland. With it, contiguous farmland is one face of
-//! its true size and it survives. Elimination is supposed to drop what is too small **to see**, and
-//! only a dissolved class states that size honestly.
+//! the one place these cost levers change the picture rather than just the bill. Fragmented
+//! same-class landcover has to survive elimination at its **true contiguous size**, not parcel by
+//! parcel. Without the dissolve a class arrives as its individual parcels, so a plain of fragmented
+//! farmland is a plain of faces that are each under the threshold, and the fixed point walks them
+//! one by one into whatever is around them — on the Rhine valley, into the `natural.land` base
+//! underneath, until the far-zoom tier shows bare ground where every finer tier shows farmland.
+//! With it, contiguous farmland is one face of its real size and it stays. Elimination is supposed
+//! to drop what is too small **to see**, and only a dissolved class states that size honestly.
 //!
 //! The caller's cull is then skipped for everything this pass produced (see
 //! [`coverage_simplify_fills_with`]'s return contract) — it has already been applied, in the one
@@ -184,6 +190,18 @@ const STRTREE_NODE_CAPACITY: usize = 10;
 /// smaller ones are point-tested directly. See [`assign_faces`].
 const PREPARE_ABOVE_COORDS: usize = 64;
 
+/// How many decimation tolerances of **mean half-width** an uncovered face may have and still be
+/// healed into a covered neighbour (see the module docs and [`sliver_half_width_m`]).
+///
+/// The bound comes from what the pre-pass can actually do. Two neighbours' copies of a shared
+/// boundary are decimated independently, so each may move a full tolerance, in opposite directions:
+/// the widest gap it can open is `2 × dec_tol`, and a ribbon of width `w` has mean half-width `w/2`,
+/// so `dec_tol` is the worst case. Two doubles it, which covers a sliver that is fatter at a
+/// junction than along its length while staying far away from anything with geography in it — a
+/// compact shape's mean half-width grows with its size (a disc's is `r/2`, a square's `s/4`), so a
+/// bay wide enough to be a bay fails this test long before its *area* would have saved it.
+const HEAL_WIDTH_TOLERANCES: f64 = 2.0;
+
 /// The decimation pre-pass runs at the tier's tolerance divided by this — small enough to be
 /// deeply sub-pixel at the scale the tier is drawn at, large enough to take an order of magnitude
 /// of vertices out of the arrangement. See the module docs.
@@ -251,6 +269,51 @@ enum Prep {
     Decimated(Geom),
 }
 
+/// A face's **mean half-width** on the ground, in metres: its area divided by its perimeter.
+///
+/// That ratio is the shape test healing needs and an area test cannot give. For a ribbon of width
+/// `w` it is `w/2` however long the ribbon runs; for a disc of radius `r` it is `r/2`; for a square
+/// of side `s`, `s/4`. So it separates "thin" from "small": a hundred-metre crack a kilometre long
+/// and a compact kilometre-wide bay have similar areas and utterly different answers here.
+///
+/// Both quantities are measured in degrees with longitude foreshortened at the face's own mean
+/// latitude, then scaled by `M_PER_DEG` — the same metric [`eliminate_small_faces`] measures shared
+/// edges with. One cosine for the whole face is exact enough: a face this test can pass is, by
+/// construction, small. Holes count against the area and towards the perimeter, which is the honest
+/// reading (a ring-shaped gap is thin). A non-polygon or a degenerate ring answers infinity, so it
+/// is never healed.
+fn sliver_half_width_m(g: &Geom) -> f64 {
+    let Geom::Polygon { exterior, interiors } = g else { return f64::INFINITY };
+    let rings = || std::iter::once(exterior).chain(interiors.iter());
+    let (mut lat_sum, mut n) = (0.0f64, 0usize);
+    for r in rings() {
+        for &(_, y) in r {
+            lat_sum += y;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    let cos_lat = (lat_sum / n as f64).to_radians().cos().abs().max(0.01);
+    let (mut area, mut perimeter) = (0.0f64, 0.0f64);
+    for (sign, ring) in std::iter::once((1.0, exterior)).chain(interiors.iter().map(|h| (-1.0, h))) {
+        let mut shoelace = 0.0f64;
+        for i in 0..ring.len() {
+            let (ax, ay) = ring[i];
+            let (bx, by) = ring[(i + 1) % ring.len()];
+            let (ax, bx) = (ax * cos_lat, bx * cos_lat);
+            shoelace += ax * by - bx * ay;
+            perimeter += ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        }
+        area += sign * (shoelace * 0.5).abs();
+    }
+    if perimeter <= 0.0 || area <= 0.0 {
+        return f64::INFINITY;
+    }
+    area / perimeter * M_PER_DEG
+}
+
 /// Ring positions in a polygon — the unit the overlay's cost is measured in.
 fn vertex_count(g: &Geom) -> usize {
     match g {
@@ -258,6 +321,91 @@ fn vertex_count(g: &Geom) -> usize {
         Geom::Line(c) => c.len(),
         Geom::Multi(parts) => parts.iter().map(vertex_count).sum(),
         Geom::Empty => 0,
+    }
+}
+
+/// The identity of a tier's participating fill set, so [`PredissolveCache`] can tell whether the
+/// dissolve it is holding was computed from the same thing.
+///
+/// Two parts, and both must match. `composition` is every fill's `(seq, style_id)` in order,
+/// compared exactly: it is the set as the tier presented it, so a preset whose two coverage tiers
+/// admit different features — a different `min_lod` cut, a line merge that lands differently —
+/// gives a different list and misses the cache. `geometry` is a hash over every coordinate, the
+/// guard for the one thing the composition cannot see: that the shapes behind those seqs are the
+/// shapes the cached dissolve was built from. A miss only costs the work again, so this errs
+/// towards missing.
+#[derive(PartialEq, Eq)]
+struct FillSetId {
+    composition: Vec<(u32, u8)>,
+    geometry: u64,
+}
+
+impl FillSetId {
+    fn of(fills: &[Fill]) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut composition = Vec::with_capacity(fills.len());
+        for f in fills {
+            composition.push((f.seq as u32, f.style_id));
+            let Geom::Polygon { exterior, interiors } = &f.geom else { continue };
+            for ring in std::iter::once(exterior).chain(interiors.iter()) {
+                ring.len().hash(&mut h);
+                for &(x, y) in ring {
+                    x.to_bits().hash(&mut h);
+                    y.to_bits().hash(&mut h);
+                }
+            }
+        }
+        FillSetId { composition, geometry: h.finish() }
+    }
+}
+
+/// A memo for [`predissolve`], shared by the coverage tiers of one build.
+///
+/// Every coverage tier dissolves the same classes over (usually) the same fills — on the shipped
+/// preset both far-zoom tiers take the identical 237 196 polygons down to the identical 89 512 —
+/// and that dissolve is a parallel GEOS union over the whole extract, which is a large part of the
+/// pass' allocator churn. Only the *decimation* below it is per tier, because only the tolerance
+/// differs. So the undecimated dissolve is computed once and shared.
+///
+/// It holds an `Arc` rather than handing out clones: the arrangement only ever reads the fills.
+/// [`PredissolveCache::clear`] drops it, and the caller is expected to call that once the last
+/// coverage tier is behind it — the fine tiers are where the pack's peak lives, and they have no
+/// use for a hundred megabytes of dissolved coarse-tier geometry.
+#[derive(Default)]
+pub struct PredissolveCache {
+    entry: std::sync::Mutex<Option<(FillSetId, std::sync::Arc<Vec<Fill>>)>>,
+}
+
+impl PredissolveCache {
+    /// An empty cache. One per build; sharing it across builds would be sound but pointless.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forget what is held. Cheap, and idempotent.
+    pub fn clear(&self) {
+        if let Ok(mut slot) = self.entry.lock() {
+            *slot = None;
+        }
+    }
+
+    /// The dissolve of `fills` — from the memo if it was computed from exactly this set, otherwise
+    /// computed now and memoised. A poisoned lock falls through to computing it, since the cache is
+    /// an optimisation and never the source of truth.
+    fn dissolve(&self, fills: Vec<Fill>) -> std::sync::Arc<Vec<Fill>> {
+        let id = FillSetId::of(&fills);
+        let Ok(mut slot) = self.entry.lock() else { return std::sync::Arc::new(predissolve(fills)) };
+        if let Some((cached, dissolved)) = slot.as_ref() {
+            if *cached == id {
+                return std::sync::Arc::clone(dissolved);
+            }
+        }
+        // Drop whatever else was held *before* building the replacement, so the two never coexist.
+        *slot = None;
+        let dissolved = std::sync::Arc::new(predissolve(fills));
+        *slot = Some((id, std::sync::Arc::clone(&dissolved)));
+        dissolved
     }
 }
 
@@ -390,7 +538,7 @@ pub fn coverage_simplify_fills(
     tol: f64,
     eliminate: Option<Eliminate>,
 ) -> (Vec<(u8, Geom, bool)>, CoverageStats) {
-    coverage_simplify_fills_with(features, classes, tol, eliminate, &Progress::silent())
+    coverage_simplify_fills_with(features, classes, tol, eliminate, &PredissolveCache::new(), &Progress::silent())
 }
 
 /// [`coverage_simplify_fills`], abandonable.
@@ -405,6 +553,7 @@ pub fn coverage_simplify_fills_with(
     classes: &HashMap<u8, (ClassKey, u8)>,
     tol: f64,
     eliminate: Option<Eliminate>,
+    cache: &PredissolveCache,
     progress: &Progress,
 ) -> (Vec<(u8, Geom, bool)>, CoverageStats) {
     // --- Phase 1: lay out slots and collect the participants, both in input order. ---
@@ -452,9 +601,12 @@ pub fn coverage_simplify_fills_with(
     // what closes the micro-gaps decimating independently opens: without it the pre-pass would
     // trade the tear this whole module exists to remove for a cheaper arrangement, which is no
     // trade at all. The two levers are one lever. ---
-    let fills = predissolve(fills);
+    let fills = cache.dissolve(fills);
     stats.dissolved = fills.len();
     let dec_tol = if eliminate.is_some() { decimation_tol(tol) } else { 0.0 };
+    // The sliver bound healing measures uncovered faces against, in metres. It is derived from the
+    // decimation tolerance, so a tier that does not decimate opens no gaps and heals none.
+    let heal_half_width_m = HEAL_WIDTH_TOLERANCES * dec_tol * M_PER_DEG;
     let preps = prepare_fills(&fills, dec_tol);
     stats.vertices_arranged = fills
         .iter()
@@ -473,15 +625,13 @@ pub fn coverage_simplify_fills_with(
     // `!Send`); only plain `Geom` crosses a thread boundary. ---
     let results: Vec<Option<ComponentOut>> = components
         .par_iter()
-        .map(
-            |comp| {
-                if progress.is_cancelled() {
-                    None
-                } else {
-                    coverage_component(&fills, &preps, comp, tol, eliminate)
-                }
-            },
-        )
+        .map(|comp| {
+            if progress.is_cancelled() {
+                None
+            } else {
+                coverage_component(&fills, &preps, comp, tol, eliminate, heal_half_width_m)
+            }
+        })
         .collect();
 
     // --- Phase 4: emit in slot order, each class's polygons at its first member's position. ---
@@ -640,6 +790,7 @@ fn coverage_component(
     comp: &[usize],
     tol: f64,
     eliminate: Option<Eliminate>,
+    heal_half_width_m: f64,
 ) -> Option<ComponentOut> {
     // The members as GEOS polygons — also the inputs of the point-in-polygon assignment.
     let mut members: Vec<Geometry> = Vec::with_capacity(comp.len());
@@ -695,7 +846,7 @@ fn coverage_component(
     // *uncovered* face under the threshold joins a covered neighbour the same way, which is what
     // closes the micro-gaps decimation opens (see the module docs). ---
     let (eliminated, healed) = match eliminate {
-        Some(e) => eliminate_small_faces(&faces, &mut winners, e),
+        Some(e) => eliminate_small_faces(&faces, &mut winners, e, heal_half_width_m),
         None => (0, 0),
     };
     // After elimination, because healing is exactly the operation that turns an uncovered face
@@ -890,13 +1041,20 @@ fn assign_faces(
 /// Deterministic throughout: the merge order is (area, cluster id) and the target is (shared
 /// length, cluster id), both total orders, so the pass cannot depend on hash or thread order.
 ///
-/// **The direction of the rule is what keeps it honest.** An uncovered face ([`assign_faces`] found
-/// nothing covering it) may be absorbed *into* a covered neighbour — that is the healing the module
-/// docs describe, and it is how the micro-gaps decimation opens are closed — but never the reverse:
-/// the target of every absorption is a covered cluster, so a covered face can never be swallowed by
-/// a gap and lose its fill. An uncovered cluster therefore never grows, and a gap at or above the
-/// threshold, or one with no covered neighbour at all, is left exactly as it is.
-fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Eliminate) -> (usize, usize) {
+/// **Uncovered faces play one role only, and only if they are slivers.** An uncovered face
+/// ([`assign_faces`] found nothing covering it) may be absorbed *into* a covered neighbour when its
+/// [`sliver_half_width_m`] is under `heal_half_width_m` — that is the healing the module docs
+/// describe, and it is how the micro-gaps decimation opens are closed. Never the reverse: the target
+/// of every absorption is a covered cluster, so a covered face can never be swallowed by a gap and
+/// lose its fill. An uncovered cluster therefore never grows, and a gap that is compact rather than
+/// thin, or at or above the threshold, or with no covered neighbour at all, is left exactly as it
+/// is. `heal_half_width_m <= 0.0` turns healing off entirely.
+fn eliminate_small_faces(
+    faces: &[Geom],
+    winners: &mut [Option<usize>],
+    e: Eliminate,
+    heal_half_width_m: f64,
+) -> (usize, usize) {
     let n = faces.len();
     // --- adjacency: undirected segment -> the face(s) carrying it ---
     //
@@ -978,12 +1136,17 @@ fn eliminate_small_faces(faces: &[Geom], winners: &mut [Option<usize>], e: Elimi
     let mut area: Vec<f64> = faces.iter().map(|f| footprint_area_px(f, e.mpp)).collect();
     // A min-heap over (area, id) with lazy invalidation: a cluster is re-pushed whenever it grows,
     // and a pop whose area no longer matches the live one is a stale entry and is discarded.
-    // Uncovered faces are seeded too: a micro-gap is exactly a face under the threshold that
-    // nobody covers, and healing it is the same absorption with the same tie-breaks.
+    // Uncovered faces are seeded too, but only the **thin** ones: healing exists for the cracks
+    // decimation opens and OSM ships with, and `sliver_half_width_m` is what tells those apart from
+    // a small piece of geography. The area threshold still applies on top, so a healed face is
+    // always a subset of what a covered face at the same size would be.
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(OrdF64, usize)>> = faces
         .iter()
         .enumerate()
-        .filter(|(i, _)| area[*i] < e.min_area_px)
+        .filter(|(i, f)| {
+            area[*i] < e.min_area_px
+                && (winners[*i].is_some() || (heal_half_width_m > 0.0 && sliver_half_width_m(f) < heal_half_width_m))
+        })
         .map(|(i, _)| std::cmp::Reverse((OrdF64(area[i]), i)))
         .collect();
 
@@ -1372,76 +1535,112 @@ mod tests {
 
     // --- healing -------------------------------------------------------------------------------
 
-    /// A big fill with a small unmapped hole in it, plus a neighbour so the component is a real
-    /// arrangement rather than the single-member shortcut. Polygonize turns the hole into its own
-    /// face, which nothing covers — the shape of every micro-gap decimation can open.
-    fn gap_fixture() -> Vec<(u8, Geom)> {
+    /// A 10x10 fill with an unmapped `w` x `h` hole at its centre, plus a neighbour of a second
+    /// class so the component is a real arrangement rather than the single-member shortcut.
+    /// Polygonize turns the hole into its own face, which nothing covers — the shape of every
+    /// micro-gap decimation can open, with its aspect ratio under the test's control.
+    fn host_with_hole(w: f64, h: f64) -> Vec<(u8, Geom)> {
+        let (x0, x1) = (5.0 - w * 0.5, 5.0 + w * 0.5);
+        let (y0, y1) = (5.0 - h * 0.5, 5.0 + h * 0.5);
         let host = Geom::Polygon {
             exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
-            interiors: vec![vec![(4.9, 4.9), (5.1, 4.9), (5.1, 5.1), (4.9, 5.1), (4.9, 4.9)]],
+            interiors: vec![vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]],
         };
         vec![(1u8, host), (2u8, rect(10.0, 0.0, 11.0, 1.0))]
     }
 
-    /// **The healing test.** A gap under the threshold is absorbed by the covered face around it,
-    /// so the tier renders complete ground instead of a speck of backdrop. The hole's 0.04 deg² is
-    /// *added* to the map — the one place this pass invents fill, and only below the size at which
-    /// the same threshold is already deleting whole classes.
+    /// The tier the healing tests run at: `tol` 0.08° decimates at 0.01° (an eighth of it), so the
+    /// sliver bound is `HEAL_WIDTH_TOLERANCES` x 0.01° of mean half-width. A hole 0.03° thick is
+    /// comfortably under that and comfortably over the decimation tolerance itself, so the fixture
+    /// exercises the test rather than the pre-pass.
+    const HEAL_TOL: f64 = 0.08;
+
+    /// **The healing test.** A decimation-scale crack — thin, and under the tier's threshold — is
+    /// absorbed by the covered face around it, so the tier renders complete ground instead of a
+    /// hairline of backdrop.
     #[test]
-    fn a_micro_gap_is_healed_into_its_neighbour() {
+    fn a_decimation_scale_sliver_is_healed() {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
-        let mpp = 100.0;
-        // 0.5 deg²: above the 0.04 deg² hole, below the 1 deg² neighbour and the ~100 deg² host.
-        let (out, stats) = coverage_simplify_fills(gap_fixture(), &classes, 0.0, Some(threshold_for(0.5, mpp)));
+        // 4° x 0.03°: mean half-width ~0.0149°, under the 0.02° bound. Area 0.12°², under the 0.5°²
+        // threshold and far under the 1°² neighbour.
+        let e = Some(threshold_for(0.5, 100.0));
+        let (out, stats) = coverage_simplify_fills(host_with_hole(4.0, 0.03), &classes, HEAL_TOL, e);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
-        assert_eq!(stats.healed, 1, "exactly the hole was healed: {stats:?}");
+        assert_eq!(stats.healed, 1, "the crack was healed: {stats:?}");
         assert_eq!(stats.dropped_faces, 0, "and nothing is left uncovered: {stats:?}");
-        assert!((area(&out) - 101.0).abs() < 1e-9, "the 0.04 deg² hole is now ground: {}", area(&out));
-        let holes: usize = out
-            .iter()
-            .map(|(_, g, _)| match g {
-                Geom::Polygon { interiors, .. } => interiors.len(),
-                _ => 0,
-            })
-            .sum();
-        assert_eq!(holes, 0, "the hole is gone, not merely relabelled: {out:?}");
+        assert!(area(&out) > 100.0, "the ground is whole: {}", area(&out));
     }
 
-    /// **The threshold boundary.** The same gap, with the threshold moved below it, is left alone:
-    /// what decides is the tier's own elimination size, not the fact of being a hole.
+    /// **The coastal test, and the reason the rule is about width and not size.** A compact gap of
+    /// the *same area* as the sliver above — a bay, a tarn, an unmapped basin — is left alone even
+    /// though it sits far below the elimination threshold. Nothing about being small makes a piece
+    /// of water into an artefact.
     #[test]
-    fn a_gap_above_the_threshold_is_left_alone() {
+    fn a_compact_gap_is_not_healed_even_far_below_the_threshold() {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
-        let mpp = 100.0;
-        // 0.01 deg²: below the 0.04 deg² hole.
-        let (out, stats) = coverage_simplify_fills(gap_fixture(), &classes, 0.0, Some(threshold_for(0.01, mpp)));
+        // 0.35° x 0.35°: area 0.122°² — within a percent of the sliver's — but mean half-width
+        // 0.087°, more than four times the bound.
+        let e = Some(threshold_for(0.5, 100.0));
+        let (_out, stats) = coverage_simplify_fills(host_with_hole(0.35, 0.35), &classes, HEAL_TOL, e);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
-        assert_eq!(stats.healed, 0, "the gap is over the threshold: {stats:?}");
-        assert_eq!(stats.dropped_faces, 1, "and stays a gap: {stats:?}");
-        assert!((area(&out) - 100.96).abs() < 1e-9, "the hole is still missing from the ground: {}", area(&out));
+        assert_eq!(stats.healed, 0, "a compact gap is geography, not a crack: {stats:?}");
+        assert_eq!(stats.dropped_faces, 1, "and it stays a gap: {stats:?}");
+    }
+
+    /// **The area cap still binds.** Thin is necessary, not sufficient: a sliver whose area is over
+    /// the tier's elimination threshold is left alone, so healing can never take more ground than
+    /// the covered rule would at the same size.
+    #[test]
+    fn a_sliver_over_the_area_threshold_is_not_healed() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        // The same 0.12°² crack, with the threshold moved below it.
+        let e = Some(threshold_for(0.05, 100.0));
+        let (_out, stats) = coverage_simplify_fills(host_with_hole(4.0, 0.03), &classes, HEAL_TOL, e);
+        assert_eq!(stats.fallbacks, 0, "{stats:?}");
+        assert_eq!(stats.healed, 0, "over the threshold, however thin: {stats:?}");
+        assert_eq!(stats.dropped_faces, 1, "{stats:?}");
+    }
+
+    /// The measure itself, on shapes whose answer is arithmetic: a ribbon reports half its width
+    /// however long it runs, a square a quarter of its side. That is the whole reason healing tests
+    /// this and not area.
+    #[test]
+    fn mean_half_width_separates_thin_from_small() {
+        let ribbon = rect(0.0, 0.0, 4.0, 0.02); // width 0.02° ⇒ 0.01° ⇒ ~1113 m
+        let square = rect(0.0, 0.0, 0.3, 0.3); // side 0.3° ⇒ 0.075° ⇒ ~8349 m
+        let w = sliver_half_width_m(&ribbon);
+        let q = sliver_half_width_m(&square);
+        assert!((w - 0.01 * M_PER_DEG).abs() < 0.02 * M_PER_DEG * 0.05, "a ribbon reports half its width: {w}");
+        assert!((q - 0.075 * M_PER_DEG).abs() < 0.075 * M_PER_DEG * 0.05, "a square a quarter of its side: {q}");
+        assert!(w < q, "and the ribbon is the thin one even though it has 8x the area");
+        assert_eq!(
+            sliver_half_width_m(&Geom::Line(vec![(0.0, 0.0), (1.0, 1.0)])),
+            f64::INFINITY,
+            "a line is never a sliver"
+        );
     }
 
     /// Healing never runs the other way: a **covered** face under the threshold whose only
-    /// neighbour is a gap keeps its fill rather than being swallowed by it. The rule that makes the
-    /// pass safe to point at real coastlines.
+    /// neighbour is a gap keeps its fill rather than being swallowed by it. With healing switched
+    /// on and the gap far too fat to qualify, this is the rule that makes the pass safe to point at
+    /// a real coastline.
     #[test]
     fn a_gap_never_absorbs_a_covered_face() {
         let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
-        // A ring-shaped host with a hole, and a speck of another class sitting inside that hole so
-        // its only neighbour is the uncovered rest of the hole.
+        // A host with a 6x6 hole, and a 1x1 speck of another class sitting inside that hole so its
+        // only neighbour is the uncovered rest of the hole.
         let host = Geom::Polygon {
             exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
             interiors: vec![vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)]],
         };
-        let speck = rect(4.0, 4.0, 4.2, 4.2); // 0.04 deg², wholly inside the hole
-        let mpp = 100.0;
-        // Above the speck, below the 36 deg² hole around it.
-        let (out, stats) =
-            coverage_simplify_fills(vec![(1, host), (2, speck)], &classes, 0.0, Some(threshold_for(0.5, mpp)));
+        let speck = rect(4.0, 4.0, 5.0, 5.0); // 1 deg², wholly inside the hole
+                                              // 2 deg²: over the speck, under the 35 deg² hole and the 64 deg² ring around it.
+        let e = Some(threshold_for(2.0, 100.0));
+        let (out, stats) = coverage_simplify_fills(vec![(1, host), (2, speck)], &classes, HEAL_TOL, e);
         assert_eq!(stats.fallbacks, 0, "{stats:?}");
-        assert_eq!(stats.healed, 0, "the hole is far over the threshold: {stats:?}");
+        assert_eq!(stats.healed, 0, "the hole is nowhere near thin: {stats:?}");
         let by = |sid: u8| area(&out.iter().filter(|(s, _, _)| *s == sid).cloned().collect::<Vec<_>>());
-        assert!((by(2) - 0.04).abs() < 1e-9, "the speck kept its fill instead of being eaten by the gap: {out:?}");
+        assert!(by(2) > 0.5, "the speck kept its fill instead of being eaten by the gap: {out:?}");
     }
 
     // --- pre-dissolve --------------------------------------------------------------------------
@@ -1474,6 +1673,87 @@ mod tests {
         let (out, stats) = coverage_simplify_fills(feats, &classes, 0.0, None);
         assert_eq!((stats.inputs, stats.dissolved), (3, 3), "nothing to dissolve: {stats:?}");
         assert!((area(&out) - 3.0).abs() < 1e-9);
+    }
+
+    // --- the pre-dissolve cache -----------------------------------------------------------------
+
+    /// One `Fill`, for the identity tests.
+    fn a_fill(seq: usize, style_id: u8, g: Geom) -> Fill {
+        let bounds = g.bounds();
+        Fill { seq, style_id, canonical: style_id, key: (0, 0, 0), geom: g, bounds }
+    }
+
+    /// The cache key sees **both** halves of what it claims to identify. Composition alone would
+    /// miss a preset that fed different shapes under the same seqs; geometry alone would miss two
+    /// tiers whose fills differ only in which style ids are present.
+    #[test]
+    fn a_fill_set_id_sees_composition_and_geometry() {
+        let base = vec![a_fill(0, 1, rect(0.0, 0.0, 1.0, 1.0)), a_fill(3, 2, rect(2.0, 0.0, 3.0, 1.0))];
+        let id = FillSetId::of(&base);
+        assert!(id == FillSetId::of(&base), "the same set is the same id");
+
+        let moved = vec![a_fill(0, 1, rect(0.0, 0.0, 1.0, 1.0)), a_fill(3, 2, rect(2.0, 0.0, 3.0, 1.001))];
+        assert!(id != FillSetId::of(&moved), "a moved vertex is a different set");
+
+        let restyled = vec![a_fill(0, 1, rect(0.0, 0.0, 1.0, 1.0)), a_fill(3, 9, rect(2.0, 0.0, 3.0, 1.0))];
+        assert!(id != FillSetId::of(&restyled), "a different style id is a different set");
+
+        let reseq = vec![a_fill(0, 1, rect(0.0, 0.0, 1.0, 1.0)), a_fill(4, 2, rect(2.0, 0.0, 3.0, 1.0))];
+        assert!(id != FillSetId::of(&reseq), "a different position in the tier is a different set");
+
+        assert!(id != FillSetId::of(&base[..1]), "a shorter set is a different set");
+    }
+
+    /// **The cache may never answer for a set it did not dissolve.** A second tier with a different
+    /// fill set — the `min_lod` cut that admits one more feature — must get its own dissolve, and
+    /// the proof is that it matches what a cold cache produces for it.
+    #[test]
+    fn the_predissolve_cache_misses_on_a_different_fill_set() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let coarse = || vec![(1u8, rect(0.0, 0.0, 1.0, 1.0)), (1u8, rect(1.0, 0.0, 2.0, 1.0))];
+        // The finer tier admits one more feature, so its set is not the coarse one.
+        let fine = || {
+            let mut v = coarse();
+            v.push((2u8, rect(2.0, 0.0, 3.0, 1.0)));
+            v
+        };
+        let key = |v: &[(u8, Geom, bool)]| v.iter().map(|(s, g, d)| (*s, verts(g), *d)).collect::<Vec<_>>();
+
+        let shared = PredissolveCache::new();
+        let (_, c0) = coverage_simplify_fills_with(coarse(), &classes, 0.0, None, &shared, &Progress::silent());
+        let (warm, c1) = coverage_simplify_fills_with(fine(), &classes, 0.0, None, &shared, &Progress::silent());
+        let (cold, c2) =
+            coverage_simplify_fills_with(fine(), &classes, 0.0, None, &PredissolveCache::new(), &Progress::silent());
+
+        assert_eq!(c0.dissolved, 1, "the coarse tier dissolved to one polygon: {c0:?}");
+        assert_eq!(c1, c2, "the fine tier's counters do not depend on what the cache held");
+        assert_eq!(key(&warm), key(&cold), "nor its geometry");
+    }
+
+    /// And when the set *is* the same — the ordinary case, two coverage tiers over one extract —
+    /// the cache changes nothing about the answer. It is a memo, not a mode.
+    #[test]
+    fn the_predissolve_cache_changes_nothing_it_serves() {
+        let classes = merge_classes(&[fill_style(1, 0, 0x0001), fill_style(2, 5, 0x0002)]);
+        let build = || {
+            let mut v: Vec<(u8, Geom)> = (0..6).map(|i| (1u8, rect(i as f64, 0.0, i as f64 + 1.0, 1.0))).collect();
+            v.push((2, rect(0.0, 1.0, 6.0, 2.0)));
+            v
+        };
+        let key = |v: &[(u8, Geom, bool)]| v.iter().map(|(s, g, d)| (*s, verts(g), *d)).collect::<Vec<_>>();
+        let shared = PredissolveCache::new();
+        // Two different tolerances over the same fills: the dissolve is shared, the decimation and
+        // the simplify are not.
+        let (a, sa) = coverage_simplify_fills_with(build(), &classes, 0.05, None, &shared, &Progress::silent());
+        let (b, sb) =
+            coverage_simplify_fills_with(build(), &classes, 0.05, None, &PredissolveCache::new(), &Progress::silent());
+        assert_eq!(sa, sb, "same counters warm or cold");
+        assert_eq!(key(&a), key(&b), "same geometry warm or cold");
+
+        shared.clear();
+        let (c, sc) = coverage_simplify_fills_with(build(), &classes, 0.05, None, &shared, &Progress::silent());
+        assert_eq!(sa, sc, "and clearing it is not observable either");
+        assert_eq!(key(&a), key(&c));
     }
 
     // --- decimation ----------------------------------------------------------------------------
