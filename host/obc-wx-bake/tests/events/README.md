@@ -296,6 +296,11 @@ events is that the derecho's field *stays itself and leaves*, while this one's f
 continuously rebuilt out of cells that did not exist ten minutes earlier — and advection can follow
 the first and not the second.
 
+The pack id says `airmass` in the strict sense — diurnal convection inside one air mass, not tied to
+a front — and **not** in the loose sense of "slow-moving". The id is kept because it is already
+cited from `derive::NOWCAST_MAX_LEAD_MIN` and stamped into the fixture, but nothing in this pack's
+argument rests on storm speed and nothing should be inferred from the name about it.
+
 | | |
 |---|---|
 | capture instant (`--at`) | `2023-06-24T20:04:00Z` |
