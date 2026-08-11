@@ -12,11 +12,18 @@
 //!   reader — is the real code.
 //! - the two byte-identity guarantees: a tier with no participating fills packs exactly as it
 //!   did before the pass existed, and the flag's mere presence in a config changes nothing.
+//!
+//! The last section is the branch's **adversarial probes**, adopted from the review round — the
+//! degenerate-input and thread-safety sweeps over the raw GEOS wrapper, the elimination stress
+//! fixture, and the two probes that found real defects, kept here inverted so the fixes stay fixed.
 
 use obc_elevation::NullElevation;
+use obc_map_scene::M_PER_DEG;
 use obc_pack::config::Config;
-use obc_pack::coverage::coverage_simplify_fills;
-use obc_pack::geom::{topology_preserve_simplify, Geom};
+use obc_pack::coverage::{coverage_simplify_fills, Eliminate};
+use obc_pack::geom::{
+    coverage_is_valid, coverage_simplify_vw, footprint_below, strip_small_holes, topology_preserve_simplify, Geom,
+};
 use obc_pack::merge::merge_classes;
 use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::Progress;
@@ -303,4 +310,304 @@ fn a_coverage_cut_is_deterministic_and_stays_glued() {
         seam_band(&decoded[1].1),
         "the two classes leave the cutter with the same seam"
     );
+}
+
+// --- adversarial probes -----------------------------------------------------------------
+//
+// Adopted from the branch's review round, where they were written to break the pass' claimed
+// properties. Three of them held; two found real defects and are kept here inverted, pinning the
+// fixed behaviour. They work on bare geometry through the public API rather than through a pack,
+// because what they are about is the operator, not the file.
+
+/// A plain-fill style at a chosen `z_index` — the paint-order key the probes need to vary.
+fn probe_fill(id: u8, z_index: i8, color: u16) -> Style {
+    Style { z_index, ..fill(id, color) }
+}
+
+fn probe_poly(ring: &[(f64, f64)]) -> Geom {
+    let mut exterior = ring.to_vec();
+    if exterior.first() != exterior.last() {
+        exterior.push(exterior[0]);
+    }
+    Geom::Polygon { exterior, interiors: vec![] }
+}
+
+/// An axis-aligned box in raw degrees (these fixtures are not on the Freiburg grid the seam
+/// fixtures above use — they are about areas and thresholds, not about a place).
+fn probe_rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Geom {
+    probe_poly(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+}
+
+/// `deg2` square degrees expressed as the `(mpp, min_area_px)` pair the tier culls with.
+fn threshold_for(deg2: f64, mpp: f64) -> Eliminate {
+    Eliminate { mpp, min_area_px: deg2 * (M_PER_DEG / mpp) * (M_PER_DEG / mpp) }
+}
+
+/// **An isolated sub-threshold face escapes neither operator.** On a coverage tier `min_area_px`
+/// is an elimination threshold and the caller's `footprint_below` drop is suppressed for
+/// everything the pass produced — so a face with no *covered* neighbour to be absorbed into used
+/// to satisfy neither and survive at any size. That is the mechanism behind the measured
+/// `--no-land` blow-up: a 0.35° x 0.20° Freiburg crop packed without the `natural.land` base fill
+/// emitted **1069** fill polygons at LOD 0, against **21** once the cull below runs.
+///
+/// The pass now applies the cull to exactly those faces itself: an island is part of no tiling, so
+/// dropping it opens no hole.
+#[test]
+fn an_isolated_small_face_is_culled_by_the_pass_itself() {
+    let classes = merge_classes(&[probe_fill(1, 0, 0x0001), probe_fill(2, 5, 0x0002)]);
+    let mpp = 100.0;
+    let e = threshold_for(0.5, mpp);
+
+    // A speck far away from everything: its own bbox component, no neighbour at all.
+    let speck = probe_rect(50.0, 50.0, 50.01, 50.01); // 1e-4 deg², 5000x under the threshold
+    let anchor = probe_rect(0.0, 0.0, 1.0, 1.0);
+    assert!(footprint_below(&speck, e.mpp, e.min_area_px), "the fixture really is under the tier's threshold");
+
+    let (out, stats) = coverage_simplify_fills(vec![(1, anchor), (2, speck)], &classes, 0.0, Some(e));
+    assert_eq!(stats.fallbacks, 0, "{stats:?}");
+    assert_eq!(stats.eliminated, 0, "there was nothing to absorb it into: {stats:?}");
+    assert_eq!(stats.uneliminable_culled, 1, "so the pass culled it: {stats:?}");
+    assert!(
+        !out.iter().any(|(sid, g, _)| *sid == 2 && !g.is_empty()),
+        "the speck must not reach the tier at all — it would cost a span, a ring and its points \
+         and never be culled downstream: {out:?}"
+    );
+    assert!(out.iter().any(|(sid, _, _)| *sid == 1), "and the anchor is untouched: {out:?}");
+}
+
+/// **The hole trim may not paint out a kept face.** A face between the threshold and whatever
+/// looser floor a hole trim used would survive elimination *deliberately* — and if it is a hole in
+/// a higher-`z` neighbour's dissolved polygon, filling that hole makes the neighbour paint over it:
+/// the kept face is in the file, costs bytes, and is invisible. The coverage tier's hole floor is
+/// therefore exactly the elimination threshold and not a multiple of it.
+#[test]
+fn the_hole_trim_keeps_the_hole_of_a_kept_lower_z_face() {
+    // z 2 inside, z 6 around it — the preset's own landuse.residential (z 2) inside a z-6 class.
+    let classes = merge_classes(&[probe_fill(1, 2, 0x0001), probe_fill(2, 6, 0x0002)]);
+    let mpp = 100.0;
+    let e = threshold_for(0.02, mpp); // threshold 0.02 deg²
+
+    let inner = probe_rect(4.0, 4.0, 4.25, 4.25); // 0.0625 deg² — 3.1x the threshold: kept, on purpose
+    let around = Geom::Polygon {
+        exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+        interiors: vec![vec![(4.0, 4.0), (4.25, 4.0), (4.25, 4.25), (4.0, 4.25), (4.0, 4.0)]],
+    };
+    let (out, stats) = coverage_simplify_fills(vec![(1, inner), (2, around)], &classes, 0.0, Some(e));
+    assert_eq!(stats.fallbacks, 0, "{stats:?}");
+    assert_eq!(stats.eliminated, 0, "the inner face is over the threshold and is kept: {stats:?}");
+
+    let (_, mut enclosing, _) =
+        out.iter().find(|(sid, _, _)| *sid == 2).cloned().expect("the enclosing class survives");
+    let holes = |g: &Geom| match g {
+        Geom::Polygon { interiors, .. } => interiors.len(),
+        _ => 0,
+    };
+    assert_eq!(holes(&enclosing), 1, "it carries the inner face as a hole: {enclosing:?}");
+
+    // This is exactly what `pipeline.rs` / `cut.rs` do to a `from_coverage` feature.
+    let stripped = strip_small_holes(&mut enclosing, e.mpp, e.min_area_px);
+    assert_eq!(stripped, 0, "the hole of a kept face survives, or z 6 would paint z 2 out of existence");
+    assert_eq!(holes(&enclosing), 1, "and it is still there: {enclosing:?}");
+    assert!(out.iter().any(|(sid, _, _)| *sid == 1), "with the face it belongs to: {out:?}");
+
+    // The trim is not dead: a hole genuinely under the threshold — one no kept face can correspond
+    // to, because such a face would have been absorbed into the class around it — still goes.
+    let mut speck_hole = Geom::Polygon {
+        exterior: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+        interiors: vec![vec![(4.0, 4.0), (4.05, 4.0), (4.05, 4.05), (4.0, 4.05), (4.0, 4.0)]],
+    };
+    assert_eq!(strip_small_holes(&mut speck_hole, e.mpp, e.min_area_px), 1, "a 0.0025 deg² hole is still trimmed");
+}
+
+/// Every early-return / degenerate path of `geom::coverage_api`, back to back and repeatedly, so a
+/// missing free or a double free shows as a crash or unbounded RSS growth under a leak checker.
+/// `PROBE_ROUNDS` turns it up for a deliberate leak hunt.
+#[test]
+fn the_coverage_api_survives_degenerate_inputs() {
+    let square = probe_rect(0.0, 0.0, 1.0, 1.0);
+    let line = Geom::Line(vec![(0.0, 0.0), (1.0, 1.0)]);
+    let empty = Geom::Empty;
+    let stub = Geom::Polygon { exterior: vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)], interiors: vec![] };
+    let two_pt = Geom::Polygon { exterior: vec![(0.0, 0.0), (1.0, 0.0)], interiors: vec![] };
+    let bowtie = probe_poly(&[(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)]);
+    let nan = probe_poly(&[(0.0, 0.0), (f64::NAN, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+    let inf = probe_poly(&[(0.0, 0.0), (f64::INFINITY, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+    let holed = Geom::Polygon {
+        exterior: vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+        // an unclosed hole ring: `build_ring` closes it rather than refusing
+        interiors: vec![vec![(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]],
+    };
+    let bad_hole = Geom::Polygon {
+        exterior: vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+        interiors: vec![vec![(1.0, 1.0), (2.0, 1.0)]], // too short: build_ring returns null
+    };
+    let multi = Geom::Multi(vec![probe_rect(0.0, 0.0, 1.0, 1.0), probe_rect(2.0, 0.0, 3.0, 1.0)]);
+    let overlapping = [&square, &probe_rect(0.5, 0.5, 1.5, 1.5)];
+
+    let rounds = std::env::var("PROBE_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200u32);
+    for _ in 0..rounds {
+        assert!(coverage_simplify_vw(&[], 0.1, false).is_none(), "empty input");
+        assert!(!coverage_is_valid(&[], 0.0), "empty input is not a valid coverage");
+
+        for g in [&line, &empty, &stub, &two_pt, &nan, &inf, &bad_hole, &multi] {
+            // Each of these makes `build_polygon` (or GEOS) refuse; the whole call must bail out
+            // with everything freed rather than crash.
+            let _ = coverage_simplify_vw(&[g], 0.1, false);
+            let _ = coverage_is_valid(&[g], 0.0);
+            let _ = coverage_simplify_vw(&[&square, g], 0.1, false);
+            let _ = coverage_is_valid(&[&square, g], 0.0);
+        }
+        // Invalid-but-buildable geometry: GEOS accepts the polygon, then throws inside the
+        // coverage algorithm.
+        let _ = coverage_simplify_vw(&[&bowtie], 0.1, false);
+        let _ = coverage_is_valid(&[&bowtie, &square], 0.0);
+        // A ring GEOS has to close for us.
+        assert!(coverage_simplify_vw(&[&holed], 0.1, false).is_some(), "an unclosed hole ring is closed, not lost");
+        // Not a coverage at all: overlapping members.
+        assert!(!coverage_is_valid(&overlapping, 0.0), "overlaps are not a valid coverage");
+        let _ = coverage_simplify_vw(&overlapping, 0.1, false);
+        // The happy path, so the loop also exercises the success free.
+        let ok = coverage_simplify_vw(&[&square, &probe_rect(1.0, 0.0, 2.0, 1.0)], 0.01, false);
+        assert_eq!(ok.expect("a real coverage simplifies").len(), 2, "element count and order are preserved");
+        assert!(coverage_is_valid(&[&square, &probe_rect(1.0, 0.0, 2.0, 1.0)], 0.0));
+    }
+}
+
+/// The same wrapper under rayon: many threads, each creating and destroying its own GEOS context.
+#[test]
+fn the_coverage_api_is_thread_safe_under_rayon() {
+    use rayon::prelude::*;
+    let out: Vec<usize> = (0..2000u32)
+        .into_par_iter()
+        .map(|i| {
+            let x = i as f64;
+            let a = probe_rect(x, 0.0, x + 1.0, 1.0);
+            let b = probe_rect(x + 1.0, 0.0, x + 2.0, 1.0);
+            let bad = Geom::Line(vec![(x, 0.0), (x + 1.0, 1.0)]);
+            let _ = coverage_simplify_vw(&[&a, &bad], 0.01, false);
+            let _ = coverage_is_valid(&[&a, &b], 0.0);
+            coverage_simplify_vw(&[&a, &b], 0.01, false).map(|v| v.len()).unwrap_or(0)
+        })
+        .collect();
+    assert!(out.iter().all(|&n| n == 2), "every parallel call returned both elements");
+}
+
+/// Elimination under stress: a deterministic pseudo-random cluster of overlapping parcels across
+/// several classes, with a threshold that binds on almost everything. The fixed point must
+/// terminate, two runs must agree coordinate for coordinate, and the ground must be conserved —
+/// elimination is a relabelling, and the base fill under everything means nothing is uneliminable.
+#[test]
+fn elimination_terminates_conserves_and_is_deterministic() {
+    let styles: Vec<Style> = (1..=6).map(|i| probe_fill(i, i as i8, 0x0100 + i as u16)).collect();
+    let classes = merge_classes(&styles);
+
+    let build = || {
+        // xorshift, so the fixture is identical every run and every process.
+        let mut s: u64 = 0x2545F491_4F6CDD1D;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut v: Vec<(u8, Geom)> = vec![(1u8, probe_rect(0.0, 0.0, 20.0, 20.0))]; // a base "land" fill
+        for i in 0..600 {
+            let x = next() * 19.0;
+            let y = next() * 19.0;
+            let w = 0.02 + next() * 0.6;
+            let h = 0.02 + next() * 0.6;
+            v.push(((i % 5 + 2) as u8, probe_rect(x, y, x + w, y + h)));
+        }
+        v
+    };
+
+    let e = Some(threshold_for(0.35, 100.0)); // binds on most parcels, not on the base
+    let (a, sa) = coverage_simplify_fills(build(), &classes, 0.02, e);
+    let (b, sb) = coverage_simplify_fills(build(), &classes, 0.02, e);
+    assert_eq!(sa, sb, "two runs, same counters: {sa:?} vs {sb:?}");
+    assert_eq!(sa.fallbacks, 0, "no GEOS failure: {sa:?}");
+    assert_eq!(sa.uneliminable_culled, 0, "the base fill is a neighbour to everything: {sa:?}");
+
+    let key = |v: &[(u8, Geom, bool)]| {
+        v.iter()
+            .map(|(s, g, d)| {
+                let mut pts = Vec::new();
+                fn walk(g: &Geom, out: &mut Vec<(u64, u64)>) {
+                    match g {
+                        Geom::Polygon { exterior, interiors } => {
+                            for r in std::iter::once(exterior).chain(interiors.iter()) {
+                                out.extend(r.iter().map(|&(x, y)| (x.to_bits(), y.to_bits())));
+                            }
+                        }
+                        Geom::Line(c) => out.extend(c.iter().map(|&(x, y)| (x.to_bits(), y.to_bits()))),
+                        Geom::Multi(p) => p.iter().for_each(|p| walk(p, out)),
+                        Geom::Empty => {}
+                    }
+                }
+                walk(g, &mut pts);
+                (*s, pts, *d)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(key(&a), key(&b), "two runs, same bytes");
+
+    // Ground conservation: the union of the inputs is 20x20 (the base covers everything), and the
+    // pass is a relabelling, so the output must still cover 400 deg².
+    fn area_of(v: &[(u8, Geom, bool)]) -> f64 {
+        fn ring(r: &[(f64, f64)]) -> f64 {
+            let mut s = 0.0;
+            for i in 0..r.len() {
+                let (x1, y1) = r[i];
+                let (x2, y2) = r[(i + 1) % r.len()];
+                s += x1 * y2 - x2 * y1;
+            }
+            (s * 0.5).abs()
+        }
+        let mut t = 0.0;
+        for (_, g, _) in v {
+            if let Geom::Polygon { exterior, interiors } = g {
+                t += ring(exterior);
+                for h in interiors {
+                    t -= ring(h);
+                }
+            }
+        }
+        t
+    }
+    let got = area_of(&a);
+    assert!((got - 400.0).abs() < 0.5, "the ground is conserved through elimination: {got}");
+}
+
+/// **How wide an uncovered face the healing gate really admits.** The derived worst case is one
+/// decimation tolerance of *mean half-width* (two neighbours each moving a full tolerance, in
+/// opposite directions, opens a crack `2 x dec_tol` wide, and a ribbon's mean half-width is half
+/// its width). `HEAL_WIDTH_TOLERANCES = 2.0` doubles that as margin, so the admitted ribbon is up
+/// to `4 x dec_tol` wide — at the shipped preset's coarse tier (2200 m simplify, 275 m decimation)
+/// that is a kilometre. This pins the number, because it is the one the docs have to state
+/// honestly.
+#[test]
+fn healing_admits_a_ribbon_twice_the_widest_crack() {
+    let classes = merge_classes(&[probe_fill(1, 0, 0x0001), probe_fill(2, 5, 0x0002)]);
+    // The shipped LOD 0: 2200 m simplify.
+    let tol = 2200.0 / M_PER_DEG;
+    let dec_tol = tol / 8.0; // 275 m
+    let widest_real_crack_deg = 2.0 * dec_tol; // both sides move a full tolerance, opposite ways
+
+    // An uncovered ribbon of *twice* that width still heals.
+    let w = 2.0 * widest_real_crack_deg * 0.98;
+    let host = Geom::Polygon {
+        exterior: vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)],
+        interiors: vec![vec![(0.5, 1.0), (1.5, 1.0), (1.5, 1.0 + w), (0.5, 1.0 + w), (0.5, 1.0)]],
+    };
+    let feats = vec![(1u8, host), (2u8, probe_rect(2.0, 0.0, 3.0, 1.0))];
+    let e = Some(threshold_for(0.5, 100.0));
+    let (_out, stats) = coverage_simplify_fills(feats, &classes, tol, e);
+    assert_eq!(stats.fallbacks, 0, "{stats:?}");
+    let width_m = w * M_PER_DEG;
+    assert_eq!(
+        stats.healed, 1,
+        "an uncovered ribbon {width_m:.0} m wide — twice the widest gap decimation can open — is \
+         still filled in with a neighbour's class: {stats:?}"
+    );
+    assert!(width_m > 1000.0, "and that is over a kilometre: {width_m}");
 }
