@@ -1454,6 +1454,24 @@
             }
           ],
           "verdict": "accepted"
+        },
+        {
+          "name": "two-entries-name-one-shard",
+          "why": "the second entry is rewritten to name the first one's shard, so the bitmap claims one more shard than the list distinctly names. Duplicate entries are where a sort's stability decides which bytes and which CRC a rider fetches, so both clients pin the same answer rather than the same luck",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/shards/1/col",
+              "value": 0
+            },
+            {
+              "op": "set",
+              "path": "/frames/0/shards/1/row",
+              "value": 0
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
         }
       ]
     },

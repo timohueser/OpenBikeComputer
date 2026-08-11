@@ -1,4 +1,5 @@
 import Foundation
+import OBCDomain
 import Testing
 @testable import OBCWeather
 @testable import OBCWeatherWire
@@ -23,6 +24,12 @@ struct WeatherServiceClientTests {
     static let seamCorridor = WeatherCorridor(bounds: WeatherBoundingBox(
         southMicrodegrees: 47_560_000, westMicrodegrees: 7_560_000,
         northMicrodegrees: 47_720_000, eastMicrodegrees: 7_720_000))
+
+    /// Every shard of the default builder's 2 x 2 lattice.
+    static let everyShard: Set<WeatherShardID> = [
+        WeatherShardID(column: 0, row: 0), WeatherShardID(column: 1, row: 0),
+        WeatherShardID(column: 0, row: 1), WeatherShardID(column: 1, row: 1),
+    ]
 
     static func client(
         _ builder: ManifestV2Builder
@@ -153,10 +160,7 @@ struct WeatherServiceClientTests {
     @Test
     func aFullyDryFrameIsAnAllZeroFrameNotAMissingOne() async throws {
         var builder = ManifestV2Builder()
-        builder.frames[0].dryShards = [
-            WeatherShardID(column: 0, row: 0), WeatherShardID(column: 1, row: 0),
-            WeatherShardID(column: 0, row: 1), WeatherShardID(column: 1, row: 1),
-        ]
+        builder.frames[0].dryShards = Self.everyShard
         let (service, _) = try Self.client(builder)
         let outcome = try await service.precipitation(for: Self.seamCorridor, now: Self.now)
         let selection = try #require(outcome.selection)
@@ -167,11 +171,128 @@ struct WeatherServiceClientTests {
         #expect(selection.crops.count == 2)
     }
 
-    /// A corridor reaching past the lattice is answered for the part that exists and *flagged*. The
-    /// alternative — quietly returning a smaller map — is how "DRY FOR 2 HOURS" gets claimed over
-    /// cells nobody looked at.
+    /// **The frame's quality flag follows its place in the timeline, not its content and not the
+    /// per-shard `observed` bits.**
+    ///
+    /// OBCW carries one flag for a mosaic that is radar over the rider and model fill across the
+    /// seam, so no content rule can be true of all of it — and a content rule made an all-dry
+    /// frame's flag depend on whether the baker happened to publish an object, which is how the two
+    /// clients came to disagree about the commonest scene there is (a dry day). The rule is: offset
+    /// 0 within the dataset's own `max_source_skew_s` of now is the analysis; every forward frame is
+    /// a forecast. An all-dry radar scan is still an observation.
     @Test
-    func aCorridorReachingPastTheLatticeIsMarkedPartial() async throws {
+    func aFullyDryFrameIsObservedAtOffsetZeroAndAForecastAhead() async throws {
+        var builder = ManifestV2Builder()
+        builder.frames[0].dryShards = Self.everyShard
+        builder.frames[1].dryShards = Self.everyShard
+        let (service, http) = try Self.client(builder)
+        let selection = try #require(
+            (try await service.precipitation(for: Self.seamCorridor, now: Self.now)).selection)
+        #expect(selection.crops.count == 2, "two dry frames are two real frames")
+        #expect(http.requests(forPathSuffix: ".obcg").isEmpty, "nothing was published to fetch")
+        #expect(selection.crops.allSatisfy { crop in
+            crop.cells.allSatisfy { $0 == OBCPrecipitationTileCodec.dry }
+        })
+        #expect(selection.crops[0].quality.contains(.observed),
+                "an all-dry radar scan IS an observation")
+        #expect(!selection.crops[0].quality.contains(.forecast))
+        #expect(selection.crops[1].quality.contains(.forecast),
+                "an all-dry forecast frame is NOT")
+        #expect(!selection.crops[1].quality.contains(.observed))
+    }
+
+    /// The other half of the same rule: the per-shard bits are a **diagnostics counter**, and a
+    /// forward frame whose every shard claims radar is still a forecast.
+    @Test
+    func thePerShardObservedBitsAreACounterAndNeverTheFrameFlag() async throws {
+        var builder = ManifestV2Builder()
+        // Every shard of the forward frame says a radar painted it...
+        builder.frames[1].observed = true
+        let (service, _) = try Self.client(builder)
+        let outcome = try await service.precipitation(for: Self.corridor, now: Self.now)
+        let selection = try #require(outcome.selection)
+        #expect(selection.crops[0].quality.contains(.observed))
+        // ...and it is still a forecast, because offset 15 is fifteen minutes ahead of now.
+        #expect(selection.crops[1].quality.contains(.forecast))
+        #expect(!selection.crops[1].quality.contains(.observed))
+        #expect(outcome.diagnostics.observedShards == 2,
+                "the bits survive as evidence, one per shard, and nothing branches on them")
+    }
+
+    /// And offset 0 is only the analysis *while it is one*: past the dataset's own
+    /// `max_source_skew_s` the same frame is no longer an observation of now.
+    @Test
+    func anAgedOffsetZeroFrameStopsClaimingToBeAnObservation() async throws {
+        var builder = ManifestV2Builder()
+        builder.staleAfter = ManifestV2Builder.referenceDate.addingTimeInterval(4 * 3_600)
+        builder.nextGenerationExpectedAt = builder.staleAfter
+        let (service, _) = try Self.client(builder)
+
+        // 1,800 s is the fixture's stated skew: at the edge the frame is still the analysis.
+        let atTheEdge = try #require((try await service.precipitation(
+            for: Self.corridor, now: Self.now.addingTimeInterval(1_800))).selection)
+        #expect(atTheEdge.crops[0].quality.contains(.observed))
+        // A second past it, it is a forecast — a stale scan, honestly labelled.
+        let past = try #require((try await service.precipitation(
+            for: Self.corridor, now: Self.now.addingTimeInterval(1_801))).selection)
+        #expect(past.crops[0].quality.contains(.forecast))
+        #expect(!past.crops[0].quality.contains(.observed))
+    }
+
+    /// **A lattice that is not a whole number of shards wide, fetched.**
+    ///
+    /// `edgeShardsAreShortAndTheirGeometryIsDerived` tests the arithmetic; this drives the bytes.
+    /// The derived narrow geometry is what the fetched header is checked against, so if the client
+    /// rounded an edge shard up to a full square it would refuse every edge shard on the planet —
+    /// and every other fetch test here uses a lattice that divides exactly, so nothing would say so.
+    @Test
+    func aShortEdgeShardIsFetchedAndItsNarrowGeometryAccepted() async throws {
+        var builder = ManifestV2Builder()
+        builder.width = 70   // 64 + 6: the last shard column is six cells wide
+        builder.height = 70
+        builder.coveredRows = 0..<70
+        let (service, http) = try Self.client(builder)
+
+        let edgeShard = WeatherShardID(column: 1, row: 0)
+        #expect(builder.shardColumns == 2 && builder.shardRows == 2)
+        let object = try #require(builder.objects()[
+            builder.key(offsetMinutes: 0, shard: edgeShard)])
+        #expect(try OBCGridCodec.validate(object).width == 6, "the published object is short")
+
+        // Cells 60...69 in longitude straddle the seam onto the six-cell column.
+        let corridor = WeatherCorridor(bounds: WeatherBoundingBox(
+            southMicrodegrees: 47_000_000 + 60 * 10_000,
+            westMicrodegrees: 7_000_000 + 60 * 10_000,
+            northMicrodegrees: 47_000_000 + 70 * 10_000,
+            eastMicrodegrees: 7_000_000 + 70 * 10_000))
+        let selection = try #require(
+            (try await service.precipitation(for: corridor, now: Self.now)).selection)
+        let crop = try #require(selection.crops.first)
+        #expect(!http.requests(forPathSuffix: "f0/s1-0.obcg").isEmpty,
+                "the short shard was read, not refused for disagreeing with a width nobody publishes")
+        #expect(!crop.cells.contains(OBCPrecipitationTileCodec.noData),
+                "every cell of the window exists on the lattice")
+        for row in 0..<crop.height {
+            for column in 0..<crop.width {
+                #expect(crop.cells[row * crop.width + column]
+                    == builder.cellValue(0, 60 + column, 60 + row))
+            }
+        }
+    }
+
+    /// A corridor reaching past the lattice is answered **short**, and short is not partial.
+    ///
+    /// This test used to assert the opposite, and the hazard its old comment named is real — quietly
+    /// returning a smaller map is how "DRY FOR 2 HOURS" could get claimed over cells nobody looked
+    /// at. What changed is where that hazard is answered. `OBCW_Spec.md` §5.1 defines partial
+    /// coverage as some **in-bounds** cell being unavailable, and every cell of a clamped window is
+    /// known, so raising the flag here tells the device that cells it can see are unknown. Nor is
+    /// the flag what protects the dry claim: `obc-app`'s `rain_outlook` never reads it — the claim
+    /// is refused by no-data *samples* and by `pos_in_grid`/`current_pos_in_grid`, which are
+    /// geometric, so a ride leaving the stated window cannot be claimed dry whatever this flag says.
+    /// Rust decides it the same way, and the two now pin each other.
+    @Test
+    func aCorridorReachingPastTheLatticeIsAnsweredShortRatherThanFlagged() async throws {
         let builder = ManifestV2Builder()
         let (service, _) = try Self.client(builder)
         // The lattice ends at 48.28 / 8.28; this corridor runs past both.
@@ -181,8 +302,9 @@ struct WeatherServiceClientTests {
         let selection = try #require(
             (try await service.precipitation(for: edge, now: Self.now)).selection)
         let crop = try #require(selection.crops.first)
-        #expect(crop.quality.contains(.partialCoverage))
-        #expect(crop.width == 8 && crop.height == 8, "clipped to the lattice, and said so")
+        #expect(crop.width == 8 && crop.height == 8, "clamped to the lattice — the window really is short")
+        #expect(!crop.cells.contains(OBCPrecipitationTileCodec.noData), "…and every cell of it is known")
+        #expect(!crop.quality.contains(.partialCoverage), "so nothing in bounds is unavailable")
     }
 
     // MARK: - The four states that are not "no rain"
@@ -224,6 +346,98 @@ struct WeatherServiceClientTests {
         #expect(http.requests(forPathSuffix: ".obcg").isEmpty)
     }
 
+    /// **Frames outside the window are not fetched, and "outside the window" is not "failed".**
+    ///
+    /// Two hours ahead is the question the rain map answers, and an observation older than six hours
+    /// would be a lie told with a true timestamp; both are properties of the timeline. When *every*
+    /// published frame is outside it and nothing failed, the rider is owed a sentence about time
+    /// rather than one about a download — `framesUnavailable` there would blame a service that
+    /// answered perfectly.
+    @Test
+    func everyFrameOutsideTheWindowIsItsOwnReasonRatherThanAFailure() async throws {
+        var builder = ManifestV2Builder()
+        let base = ManifestV2Builder.referenceDate
+        builder.frames = [
+            // Seven hours old: past `maximumObservationAge`.
+            ManifestV2Builder.FrameSpec(
+                offsetMinutes: 0, validAt: base.addingTimeInterval(-7 * 3_600), observed: true),
+            // Three hours ahead: past `horizon`.
+            ManifestV2Builder.FrameSpec(
+                offsetMinutes: 15, validAt: base.addingTimeInterval(3 * 3_600), observed: false),
+        ]
+        // The oldest frame's validity has to sit at or after the generation's upstream run
+        // (OBCG §1), so the run moves back with it.
+        builder.referenceTime = base.addingTimeInterval(-8 * 3_600)
+        builder.staleAfter = base.addingTimeInterval(4 * 3_600)
+        builder.nextGenerationExpectedAt = builder.staleAfter
+        let (service, http) = try Self.client(builder)
+
+        let outcome = try await service.precipitation(for: Self.corridor, now: Self.now)
+        #expect(outcome.selection == nil)
+        if case let .unavailable(reason, _) = outcome {
+            #expect(reason == .outsideWindow, "nothing failed; the data is about a different time")
+        }
+        #expect(outcome.diagnostics.framesOutsideWindow == 2)
+        #expect(outcome.diagnostics.failedShards == 0)
+        #expect(http.requests(forPathSuffix: ".obcg").isEmpty,
+                "a frame nobody can use is not worth a Range read")
+    }
+
+    /// And the filter is per frame, not per timeline: the usable half of a straddling generation
+    /// still ships.
+    @Test
+    func aFrameInsideTheWindowSurvivesOneOutsideIt() async throws {
+        var builder = ManifestV2Builder()
+        let base = ManifestV2Builder.referenceDate
+        builder.frames[1].validAt = base.addingTimeInterval(3 * 3_600)
+        builder.staleAfter = base.addingTimeInterval(4 * 3_600)
+        builder.nextGenerationExpectedAt = builder.staleAfter
+        let (service, http) = try Self.client(builder)
+
+        let outcome = try await service.precipitation(for: Self.corridor, now: Self.now)
+        let selection = try #require(outcome.selection)
+        #expect(selection.crops.count == 1, "only the frame inside the window")
+        #expect(outcome.diagnostics.framesOutsideWindow == 1)
+        #expect(http.requests(forPathSuffix: "f15/s0-0.obcg").isEmpty)
+        #expect(!http.requests(forPathSuffix: "f0/s0-0.obcg").isEmpty)
+    }
+
+    /// **A whole fetch at a date-line-clamped corridor.**
+    ///
+    /// The corridor is cut at ±180° rather than wrapped (`OBCW_Spec.md` §1 forbids a wrapped bundle
+    /// window), and the ordinary 47 °N path never exercises that: the Range reads, the corridor
+    /// extraction and the window arithmetic all run against a clamped bbox here, on a lattice whose
+    /// east edge *is* the date line.
+    @Test
+    func aCorridorClampedAtTheDateLineIsFetchedEndToEnd() async throws {
+        var builder = ManifestV2Builder()
+        // 128 cells of 0.01° ending exactly on 180°.
+        builder.latticeWestMicrodegrees = 180_000_000 - 128 * 10_000
+        let (service, http) = try Self.client(builder)
+        let rider = Coordinate(latitude: 47.6, longitude: 179.9)
+        let corridor = try #require(WeatherCorridor.around(
+            WeatherRequest(requestID: 1, position: rider, fixTime: Self.now)) as WeatherCorridor?)
+        #expect(corridor.bounds.eastMicrodegrees == 180_000_000, "the disc is cut, not wrapped")
+        #expect(corridor.bounds.westMicrodegrees < corridor.bounds.eastMicrodegrees)
+
+        let outcome = try await service.precipitation(for: corridor, now: Self.now)
+        let selection: PrecipitationSelection = try #require(outcome.selection)
+        let crop: PrecipitationCrop = try #require(selection.crops.first)
+        #expect(crop.bounds.eastMicrodegrees <= 180_000_000, "no window may cross the antimeridian")
+        #expect(!http.requests(forPathSuffix: ".obcg").isEmpty, "real Range reads were issued")
+        // The east edge cells are the lattice's own, read out of the shard that owns them.
+        let lastColumn = crop.width - 1
+        let column = Int((crop.westMicrodegrees - Int64(builder.latticeWestMicrodegrees)) / 10_000)
+            + lastColumn
+        let row = Int((crop.southMicrodegrees - Int64(builder.latticeSouthMicrodegrees)) / 10_000)
+        #expect(crop.cells[lastColumn] == builder.cellValue(0, column, row))
+        // The disc reaches past the lattice, so the answer is **short** — and short is not partial.
+        // Every cell of the window it does state has data, and §5.1's flag is about in-bounds cells
+        // being unavailable. Flagging here would tell the device that cells it can see are unknown.
+        #expect(!crop.quality.contains(.partialCoverage), "a clamped window is smaller, not less certain")
+        #expect(!crop.cells.contains(OBCPrecipitationTileCodec.noData))
+    }
+
     @Test
     func anUnreachableManifestIsAServiceOutageNotACrash() async throws {
         let (service, http) = try Self.client(ManifestV2Builder())
@@ -245,9 +459,47 @@ struct WeatherServiceClientTests {
 
     // MARK: - Refusals
 
+    /// **A present shard that fails is a hole in its frame, and the frame still ships.**
+    ///
+    /// This is the granularity Rust's `read_plan` settled on and the phone now matches: dropping the
+    /// frame would throw away the three shards that arrived to punish the one that did not, and a
+    /// shorter timeline is a worse answer than a frame with a stated hole. The hole is no-data,
+    /// which is distinguishable from dry at every layer below, so it can never make an outage look
+    /// rain-free — and it raises partial coverage, which is the flag that says so.
+    @Test
+    func oneFailedShardIsAHoleInItsFrameRatherThanTheLossOfTheFrame() async throws {
+        let builder = ManifestV2Builder()
+        let (service, http) = try Self.client(builder)
+        // The north-east quarter of the seam corridor 404s at f0 only; f15 is untouched.
+        http.mutate(builder.key(offsetMinutes: 0, shard: WeatherShardID(column: 1, row: 1))) {
+            $0.status = 404
+        }
+        let outcome = try await service.precipitation(for: Self.seamCorridor, now: Self.now)
+        let selection = try #require(outcome.selection)
+        #expect(selection.crops.count == 2, "the timeline keeps its length")
+        #expect(outcome.diagnostics.failedShards == 1)
+        #expect(outcome.diagnostics.dryShards == 0, "nothing here was measured dry")
+
+        let holed = selection.crops[0]
+        // The three shards that answered are real, cell for cell...
+        #expect(holed.cells[0] == builder.cellValue(0, 56, 56))
+        #expect(holed.cells[7 * 16 + 7] == builder.cellValue(0, 63, 63))
+        // ...and the quarter that failed is no-data end to end. Not one cell of it is dry.
+        for row in 8..<16 {
+            for column in 8..<16 {
+                #expect(holed.cells[row * 16 + column] == OBCPrecipitationTileCodec.noData,
+                        "a failed shard's cell (\(column), \(row)) must be no-data, never dry")
+            }
+        }
+        #expect(holed.quality.contains(.partialCoverage), "the hole is declared")
+        // The untouched frame is whole.
+        #expect(!selection.crops[1].cells.contains(OBCPrecipitationTileCodec.noData))
+        #expect(!selection.crops[1].quality.contains(.partialCoverage))
+    }
+
     /// **A present shard that fails is an error, never dry.** Every way an object can betray the
-    /// manifest fails its frame; losing every frame is `framesUnavailable`, which is a state the
-    /// rider is shown — and is not a map of zeroes.
+    /// manifest costs its shard; losing every shard of every frame is `framesUnavailable`, which is
+    /// a state the rider is shown — and is not a map of zeroes.
     @Test
     func aPresentShardThatFailsIsAnErrorRatherThanDry() async throws {
         let builder = ManifestV2Builder()
@@ -281,6 +533,10 @@ struct WeatherServiceClientTests {
             if case let .unavailable(reason, _) = outcome {
                 #expect(reason == .framesUnavailable, "\(why)")
             }
+            // The corridor is one shard wide, so "every shard of every frame failed" is two
+            // failures — and none of them was counted, or painted, as dry.
+            #expect(outcome.diagnostics.failedShards == 2, "\(why)")
+            #expect(outcome.diagnostics.dryShards == 0, "\(why)")
         }
     }
 
@@ -411,6 +667,135 @@ struct WeatherServiceClientTests {
     }
 
     // MARK: - The writer this suite depends on
+
+    /// **The writer is anchored to Rust-produced bytes, not just to our own reader.**
+    ///
+    /// `everySynthesisedShardPassesFullObjectValidation` proves the objects are *acceptable*, but
+    /// acceptance is a same-language check: a writer and a decoder sharing one misunderstanding
+    /// would pass it together. So the writer is pointed at a committed vector — bytes
+    /// `host/obc-wx-bake`'s encoder produced — given nothing but that object's own geometry and its
+    /// decoded cells, and the result must be the object back, byte for byte. Every canonical choice
+    /// is in scope: the header field layout, the directory page's zero-padded entries and trailing
+    /// CRC, tight payload packing in tile order, the raw4/RLE4 threshold, the dry sentinel, and both
+    /// object CRCs with their stamping order.
+    ///
+    /// The four vectors are the deflate-free ones, and between them they cover every canonical
+    /// choice this writer makes: a raw4 tile, two RLE4 tiles (one of them the threshold case), and
+    /// a dry sentinel. Codec 2 is deliberately out of scope — the app decodes DEFLATE and never
+    /// produces it, so no test writer should either.
+    @Test
+    func theWriterReproducesCommittedVectorsByteForByte() throws {
+        for name in [
+            "grid-raw-tile.obcg", "grid-rle-tile.obcg", "grid-rle-wins.obcg",
+            "grid-minimal-dry.obcg",
+        ] {
+            let vector = try WeatherFixtures.vector(name)
+            let header = try OBCGridCodec.validate(vector)
+
+            // Read the object back out through the shipping decoder, tile by tile.
+            let edge = Int(header.tileEdge)
+            var cells = [UInt8](
+                repeating: OBCPrecipitationTileCodec.noData,
+                count: Int(header.width) * Int(header.height))
+            for index in 0..<header.tileCount {
+                let page = header.pageOfEntry(index)
+                let pageOffset = try #require(header.pageOffset(page))
+                let pageBytes = try #require(
+                    vector.readBytes(at: pageOffset, count: header.pageBytes))
+                let entry = try OBCGridCodec.decodeEntry(
+                    page: pageBytes, indexInPage: index - page * Int(header.entriesPerPage))
+                var payload = Data()
+                if !entry.isDry {
+                    let range = try OBCGridCodec.payloadRange(header: header, entry: entry)
+                    payload = try #require(
+                        vector.readBytes(at: range.lowerBound, count: range.count))
+                }
+                let tile = try OBCGridCodec.decodeTileCells(
+                    header: header, entry: entry, payload: payload)
+                for localRow in 0..<edge {
+                    let row = (index / header.tileColumns) * edge + localRow
+                    guard row < Int(header.height) else { continue }
+                    for localColumn in 0..<edge {
+                        let column = (index % header.tileColumns) * edge + localColumn
+                        guard column < Int(header.width) else { continue }
+                        cells[row * Int(header.width) + column] =
+                            tile[localRow * edge + localColumn]
+                    }
+                }
+            }
+
+            let rewritten = OBCGridWriter.encode(OBCGridWriter.Spec(
+                southMicrodegrees: header.southLatitudeMicrodegrees,
+                westMicrodegrees: header.westLongitudeMicrodegrees,
+                cellMicrodegrees: header.cellLatitudeStrideMicrodegrees,
+                cellLongitudeMicrodegrees: header.cellLongitudeStrideMicrodegrees,
+                width: header.width, height: header.height, tileEdge: header.tileEdge,
+                entriesPerPage: header.entriesPerPage, cellSizeMetres: header.cellSizeMetres,
+                productID: header.productID, tier: header.tier,
+                validAt: Date(timeIntervalSince1970: TimeInterval(header.validAtUnixSeconds)),
+                referenceTime: Date(
+                    timeIntervalSince1970: TimeInterval(header.referenceTimeUnixSeconds)),
+                observed: header.flags & OBCGridCodec.flagObserved != 0, cells: cells))
+            #expect(rewritten == vector,
+                    "\(name): the test writer and the Rust encoder must agree byte for byte")
+        }
+    }
+
+    /// **The production tile geometry, with the multi-page directory arithmetic it implies.**
+    ///
+    /// Everything else in this suite runs at `tile_edge: 16 / entries_per_page: 8`, where a shard is
+    /// one or two pages of small tiles; the shipping lattice is `256 / 128`, where a page boundary
+    /// falls after 128 tiles of 65,536 cells each. A square lattice with 129 tiles would be 8.5
+    /// million cells to synthesise, so this one is a single cell row 129 tiles wide — the cheapest
+    /// shape that has two directory pages at the real numbers — and the corridor is placed across
+    /// the boundary so both pages are read.
+    @Test
+    func aCorridorSpansTwoDirectoryPagesAtTheProductionTileGeometry() async throws {
+        var builder = ManifestV2Builder()
+        builder.tileEdge = 256
+        builder.entriesPerPage = 128
+        // 129 tile columns. The cell pitch is shrunk so 33,024 cells still land inside ±180°;
+        // `cell_size_m` is nominal metadata and nothing here reads it as a ground truth.
+        builder.cellMicrodegrees = 10
+        builder.width = 129 * 256
+        builder.height = 1
+        builder.shardWidth = builder.width
+        builder.shardHeight = 1
+        builder.coveredRows = 0..<1
+        builder.frames = [builder.frames[0]]
+
+        let (service, http) = try Self.client(builder)
+        // Cells 32,760...32,775 — the last of tile 127 and the first of tile 128, so the corridor
+        // needs an entry from each directory page.
+        let west = Int64(builder.latticeWestMicrodegrees) + 32_760 * 10
+        let corridor = WeatherCorridor(bounds: WeatherBoundingBox(
+            southMicrodegrees: Int64(builder.latticeSouthMicrodegrees),
+            westMicrodegrees: west,
+            northMicrodegrees: Int64(builder.latticeSouthMicrodegrees) + 10,
+            eastMicrodegrees: west + 16 * 10))
+        let selection = try #require(
+            (try await service.precipitation(for: corridor, now: Self.now)).selection)
+        let crop = try #require(selection.crops.first)
+        #expect(crop.height == 1)
+        for column in 0..<crop.width {
+            #expect(crop.cells[column] == builder.cellValue(0, 32_760 + column, 0),
+                    "cell \(column) across the page boundary")
+        }
+
+        // Two pages, and the byte ledger says so: at 128 entries per page the boundary is a
+        // 1,540-byte step, and a client that guessed one page would decode the wrong entry.
+        let key = builder.key(offsetMinutes: 0, shard: WeatherShardID(column: 0, row: 0))
+        let header = try OBCGridCodec.decodeHeader(try #require(builder.objects()[key]))
+        #expect(header.pageCount == 2)
+        #expect(header.pageOfEntry(127) == 0 && header.pageOfEntry(128) == 1)
+        let fetched = CorridorExtraction.coalesce(
+            http.requests(forPathSuffix: "s0-0.obcg").compactMap(\.byteRange))
+        let pages = [try #require(header.pageOffset(0)), try #require(header.pageOffset(1))]
+        for page in pages {
+            #expect(fetched.contains { $0.lowerBound <= page && $0.upperBound >= page + header.pageBytes },
+                    "directory page at \(page) was never read")
+        }
+    }
 
     /// The synthesised shards are real OBCG objects by the codec's own acceptance check. Without
     /// this, every assertion above could be passing against bytes only the writer and the reader

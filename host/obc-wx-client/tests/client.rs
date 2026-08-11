@@ -425,6 +425,15 @@ fn a_fetch_at_the_date_line_reads_the_clamped_window_and_nothing_beyond_it() {
     let header = obc_weather::WeatherReader::open(&source).expect("valid").header();
     assert!(header.east_lon_udeg <= 180_000_000, "the stated window must not cross the antimeridian");
     assert!(header.west_lon_udeg < header.east_lon_udeg, "…nor read as wrapped");
+    // Short is not partial. Every cell of the window this bundle states has data, and §5.1's flag
+    // is about *in-bounds* cells being unavailable — so a corridor cut at the date line loses
+    // window, not certainty. Pinned in both languages because Swift raised the flag here.
+    assert_eq!(
+        frame_quality(&bundle.bytes, 0) & obc_formats::obcw::QUALITY_PARTIAL_COVERAGE,
+        0,
+        "a clamped window is smaller, not less certain"
+    );
+    assert!(!frame_cells(&bundle.bytes, 0).contains(&INTENSITY_NODATA));
 }
 
 /// The last column and row of the lattice are **short** shards, and `shard_geometry`'s clamp is what

@@ -426,7 +426,7 @@ struct ManifestV2Tests {
         let manifest = try Self.parsed()
         let lattice = manifest.lattice
 
-        let interior = lattice.geometry(of: WeatherShardID(column: 3, row: 2))
+        let interior = try #require(lattice.geometry(of: WeatherShardID(column: 3, row: 2)))
         #expect(interior.width == 6_144 && interior.height == 4_608)
         #expect(interior.westMicrodegrees == -180_000_000 + 3 * 6_144 * 10_000)
         #expect(interior.southMicrodegrees == -90_000_000 + 2 * 4_608 * 10_000)
@@ -435,11 +435,194 @@ struct ManifestV2Tests {
         #expect(interior.cellSizeMetres == 1_113)
 
         // 36,000 / 6,144 = 5 full columns plus 5,280; 18,000 / 4,608 = 3 full rows plus 4,176.
-        let corner = lattice.geometry(of: WeatherShardID(column: 5, row: 3))
+        let corner = try #require(lattice.geometry(of: WeatherShardID(column: 5, row: 3)))
         #expect(corner.width == 36_000 - 5 * 6_144)
         #expect(corner.height == 18_000 - 3 * 4_608)
         #expect(corner.bounds.eastMicrodegrees == 180_000_000)
         #expect(corner.bounds.northMicrodegrees == 90_000_000)
+
+        // A shard off the lattice has no geometry, and asking is not a crash. Without the guard
+        // `width - columnOrigin` underflows and Swift traps — reachable through `bounds(of:)`,
+        // which is public. Rust's `shard_geometry` opens with the same `bit_of(shard)?`.
+        #expect(lattice.geometry(of: WeatherShardID(column: 6, row: 0)) == nil)
+        #expect(lattice.geometry(of: WeatherShardID(column: 0, row: 4)) == nil)
+        #expect(lattice.bounds(of: WeatherShardID(column: 99, row: 99)) == nil)
+    }
+
+    /// Two entries for one shard: **which one survives is the document's order, not the sort's.**
+    ///
+    /// Rust's `sort_by_key` is stable and its `dedup_by_key` keeps the first of a run, so a
+    /// duplicated shard resolves to the entry written first. Swift's `Array.sort` is not stable, so
+    /// without an index tiebreak the two clients would disagree about a shard's `bytes` and
+    /// `object_crc32` — one of them then refusing an object the other fetches.
+    @Test
+    func aDuplicatedShardEntryResolvesToTheFirstOneTheDocumentWrote() throws {
+        var document = try JSONSerialization.jsonObject(
+            with: Self.repositoryFile("specs/vectors/wx-manifest-v2.json")) as! [String: Any]
+        var frames = try #require(document["frames"] as? [[String: Any]])
+        var first = frames[0]
+        var shards = try #require(first["shards"] as? [[String: Any]])
+        // Repeat the frame's first shard with different integrity data. The bitmap still names it
+        // once, so the popcount check still passes and the frame survives.
+        var repeated = shards[0]
+        repeated["bytes"] = 4_242
+        repeated["object_crc32"] = "0xdeadbeef"
+        shards.append(repeated)
+        first["shards"] = shards
+        frames[0] = first
+        document["frames"] = frames
+
+        let manifest = try WeatherManifestV2.parse(
+            JSONSerialization.data(withJSONObject: document))
+        #expect(manifest.skippedFrames == 0)
+        let original = try #require(shards[0]["bytes"] as? Int)
+        let f0 = try #require(manifest.frame(offsetMinutes: 0))
+        let shard = WeatherShardID(
+            column: try #require(shards[0]["col"] as? UInt32),
+            row: try #require(shards[0]["row"] as? UInt32))
+        guard case let .present(_, byteLength, _, _) = f0.state(of: shard, in: manifest.lattice)
+        else {
+            Issue.record("the duplicated shard must still be present")
+            return
+        }
+        #expect(byteLength == original, "the first entry the document wrote is the one that survives")
+    }
+
+    // MARK: - The shared rejection corpus
+
+    /// **The other half of the cross-client contract.** `bbox_equivalence` pins what the two clients
+    /// compute; this pins what they *refuse* — and the review that asked for it found five documents
+    /// the two answered differently and two that crashed this one outright.
+    ///
+    /// A manifest is the first thing a rider's phone fetches from a network nobody controls, so
+    /// "does not crash" is the floor and "answers identically" is the contract. Every case is a
+    /// mutation of the shared fixture, and the verdicts live in the fixture directory rather than
+    /// here, so this suite cannot quietly diverge from
+    /// `host/obc-wx-client/tests/manifest_v2.rs::the_shared_rejection_corpus_is_answered_identically`
+    /// by testing a different list.
+    @Test
+    func theSharedRejectionCorpusIsAnsweredIdentically() throws {
+        let directory = try JSONSerialization.jsonObject(
+            with: Self.repositoryFile("specs/vectors/manifest.json")) as! [String: Any]
+        let block = try #require(directory["wx_manifest_v2"] as? [String: Any])
+        let corpus = try #require(block["rejection_equivalence"] as? [String: Any])
+        let cases = try #require(corpus["cases"] as? [[String: Any]])
+        #expect(cases.count >= 20,
+                "the corpus must not shrink; it is the only pin on rejection parity")
+        let base = try JSONSerialization.jsonObject(
+            with: Self.repositoryFile("specs/vectors/wx-manifest-v2.json"))
+
+        for testCase in cases {
+            let name = try #require(testCase["name"] as? String)
+            var document = base
+            for operation in try #require(testCase["patch"] as? [[String: Any]]) {
+                let pointer = try #require(operation["path"] as? String)
+                let steps = pointer.split(separator: "/", omittingEmptySubsequences: false)
+                    .dropFirst().map(String.init)
+                document = Self.patched(
+                    document, path: steps[...],
+                    operation: try #require(operation["op"] as? String),
+                    value: operation["value"] ?? NSNull())
+            }
+            let bytes = Data(Self.serialised(document).utf8)
+            // A pointer the walker silently failed to follow would leave the happy path behind and
+            // "pass" every rejected case for the wrong reason. Every case mutates the document.
+            #expect(bytes != Data(Self.serialised(base).utf8), "\(name): the patch changed nothing")
+
+            switch try #require(testCase["verdict"] as? String) {
+            case "rejected":
+                #expect(throws: (any Error).self, "\(name): must be refused, parsed instead") {
+                    try WeatherManifestV2.parse(bytes)
+                }
+            case "accepted":
+                do {
+                    let manifest = try WeatherManifestV2.parse(bytes)
+                    #expect(manifest.skippedFrames == (testCase["skipped_frames"] as? Int) ?? 0,
+                            "\(name): skipped frames")
+                } catch {
+                    Issue.record("\(name): must parse, got \(error)")
+                }
+            case let other:
+                Issue.record("\(name): unknown verdict \(other)")
+            }
+        }
+    }
+
+    /// Apply one corpus patch op to a decoded JSON tree. RFC 6901 pointers, `set` and `remove`.
+    ///
+    /// Deliberately tiny and deliberately hand-rolled rather than a JSON-Patch package: the whole
+    /// value of the corpus is that two *independent* implementations answer the same way, and a
+    /// library on this side against Rust's own hand walker on the other is exactly the asymmetry
+    /// that would make a "cross-language" fixture test one language.
+    static func patched(
+        _ node: Any, path: ArraySlice<String>, operation: String, value: Any
+    ) -> Any {
+        guard let step = path.first else { return node }
+        let rest = path.dropFirst()
+        if var object = node as? [String: Any] {
+            if rest.isEmpty {
+                if operation == "remove" { object.removeValue(forKey: step) } else {
+                    object[step] = value
+                }
+            } else if let child = object[step] {
+                object[step] = patched(child, path: rest, operation: operation, value: value)
+            }
+            return object
+        }
+        if var array = node as? [Any], let index = Int(step), array.indices.contains(index) {
+            if rest.isEmpty {
+                if operation == "remove" { array.remove(at: index) } else { array[index] = value }
+            } else {
+                array[index] = patched(
+                    array[index], path: rest, operation: operation, value: value)
+            }
+            return array
+        }
+        return node
+    }
+
+    /// A minimal JSON writer, because `JSONSerialization` **would erase the point of two cases**: it
+    /// re-serialises the `Double` 2.0 as `2`, which turns `version-is-a-float` into a document
+    /// indistinguishable from the happy path and makes the case vacuous. serde_json writes `2.0`, so
+    /// this writes `2.0` — the float-ness of a wire number is exactly what the corpus is about.
+    static func serialised(_ node: Any) -> String {
+        if node is NSNull { return "null" }
+        if let number = node as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            return CFNumberIsFloatType(number)
+                ? String(number.doubleValue) : String(number.int64Value)
+        }
+        if let text = node as? String { return quoted(text) }
+        if let array = node as? [Any] {
+            return "[" + array.map(serialised).joined(separator: ",") + "]"
+        }
+        if let object = node as? [String: Any] {
+            // Sorted so a failure is reproducible; JSON object order carries no meaning.
+            return "{" + object.keys.sorted().map { "\(quoted($0)):\(serialised(object[$0]!))" }
+                .joined(separator: ",") + "}"
+        }
+        return "null"
+    }
+
+    private static func quoted(_ text: String) -> String {
+        var out = "\""
+        for character in text.unicodeScalars {
+            switch character {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            case let scalar where scalar.value < 0x20:
+                out += String(format: "\\u%04x", scalar.value)
+            // Everything else goes out as itself, including non-ASCII: the corpus feeds this a
+            // multi-byte `present` string on purpose, and escaping it would test a different one.
+            case let scalar: out.unicodeScalars.append(scalar)
+            }
+        }
+        return out + "\""
     }
 
     private func replace(_ document: inout [String: Any], path: [String], with value: Any) {

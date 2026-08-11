@@ -16,12 +16,20 @@ enum OBCGridWriter {
     struct Spec {
         var southMicrodegrees: Int32
         var westMicrodegrees: Int32
+        /// The latitude stride, and the longitude stride too unless one is stated separately. The
+        /// v2 lattice is square in degrees; the checked-in vectors are not, and the byte anchor
+        /// re-encodes one of those.
         var cellMicrodegrees: UInt32
+        var cellLongitudeMicrodegrees: UInt32?
         var width: UInt32
         var height: UInt32
         var tileEdge: UInt16 = 16
         var entriesPerPage: UInt16 = 4
         var cellSizeMetres: UInt16 = 1_113
+        /// Provenance bytes, copied rather than assumed by the byte anchor: they are two bytes of
+        /// the header this writer must reproduce, and the v2 bakery's values are not the vectors'.
+        var productID: UInt8 = 1
+        var tier: UInt8 = OBCGridCodec.tierMosaic
         var validAt: Date
         var referenceTime: Date
         var observed: Bool
@@ -66,7 +74,9 @@ enum OBCGridWriter {
                 entries.append(nil)
                 continue
             }
-            let encoded = try! OBCPrecipitationTileCodec.encode(tile)
+            // The generalized entry point, not the 256-cell one: OBCG picks a per-product tile
+            // edge, and the production lattice's is 256, whose tile is 65,536 cells.
+            let encoded = try! OBCPrecipitationTileCodec.encodeCells(tile)
             entries.append((
                 offset: UInt32(dataOffset + payloads.count),
                 length: UInt16(encoded.bytes.count), codec: encoded.codec,
@@ -98,8 +108,8 @@ enum OBCGridWriter {
         write(&header, at: 4, littleEndian(UInt16(1)))
         write(&header, at: 6, littleEndian(UInt16(OBCGridCodec.headerLength)))
         write(&header, at: 8, littleEndian(UInt32(dataOffset + payloads.count)))
-        header[12] = 1                                        // product id: provenance only
-        header[13] = OBCGridCodec.tierMosaic                  // the one tier code the bakery writes
+        header[12] = spec.productID                           // product id: provenance only
+        header[13] = spec.tier
         write(&header, at: 14, littleEndian(
             spec.observed ? OBCGridCodec.flagObserved : OBCGridCodec.flagForecast))
         write(&header, at: 16, littleEndian(
@@ -109,7 +119,7 @@ enum OBCGridWriter {
         write(&header, at: 32, littleEndian(UInt32(bitPattern: spec.southMicrodegrees)))
         write(&header, at: 36, littleEndian(UInt32(bitPattern: spec.westMicrodegrees)))
         write(&header, at: 40, littleEndian(spec.cellMicrodegrees))
-        write(&header, at: 44, littleEndian(spec.cellMicrodegrees))
+        write(&header, at: 44, littleEndian(spec.cellLongitudeMicrodegrees ?? spec.cellMicrodegrees))
         write(&header, at: 48, littleEndian(spec.width))
         write(&header, at: 52, littleEndian(spec.height))
         write(&header, at: 56, littleEndian(spec.cellSizeMetres))

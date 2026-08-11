@@ -207,6 +207,11 @@ public enum NoRainMapReason: Codable, Equatable, Sendable {
     case expired(staleAfter: Date)
     /// The manifest could not be fetched or parsed: a service outage, cleanly degraded.
     case serviceUnavailable
+    /// Every frame this generation publishes is outside the window the rain map answers — too old
+    /// to be a current observation, or further ahead than ``WeatherCorridor/horizon``. **Nothing
+    /// failed**; the data on offer is about a different time. Distinct from ``framesUnavailable``
+    /// because wearing that label would say "failed" about a service that answered perfectly.
+    case outsideWindow
     /// The manifest answered, but not one frame's shards could be fetched and verified.
     case framesUnavailable
 }
@@ -252,6 +257,18 @@ public struct WeatherDiagnostics: Equatable, Sendable {
     /// for them and intensity 0 was painted instead. Evidence that a dry map came from the bitmap
     /// rather than from a failure nobody noticed.
     public var dryShards: Int
+    /// Shards that failed to fetch or verify. **One is a hole in one frame, never a failed job** —
+    /// the cells it would have painted stay no-data, which is distinguishable from dry at every
+    /// layer, so counting a failure here can never make an outage look rain-free.
+    public var failedShards: Int
+    /// Shards whose manifest entry says a radar painted them, rather than model fill. Per shard
+    /// because that is where the fact is true — and it stays a **counter**: OBCW carries one quality
+    /// flag per *frame*, so no per-shard bit may set it.
+    public var observedShards: Int
+    /// Planned frames not fetched because their validity is outside
+    /// `[now - maximumObservationAge, now + horizon]`. Nothing failed; the frames are about a
+    /// different time.
+    public var framesOutsideWindow: Int
     /// Frames dropped because the finished bundle would otherwise exceed the producer cap.
     public var droppedOversizeFrames: Int
     /// True when the manifest's own `generated_at` is meaningfully in this device's future, which
@@ -261,12 +278,17 @@ public struct WeatherDiagnostics: Equatable, Sendable {
 
     public init(
         serviceRequests: Int = 0, serviceBytes: Int = 0, skippedManifestFrames: Int = 0,
-        dryShards: Int = 0, droppedOversizeFrames: Int = 0, clockSkewSuspected: Bool = false
+        dryShards: Int = 0, failedShards: Int = 0, observedShards: Int = 0,
+        framesOutsideWindow: Int = 0, droppedOversizeFrames: Int = 0,
+        clockSkewSuspected: Bool = false
     ) {
         self.serviceRequests = serviceRequests
         self.serviceBytes = serviceBytes
         self.skippedManifestFrames = skippedManifestFrames
         self.dryShards = dryShards
+        self.failedShards = failedShards
+        self.observedShards = observedShards
+        self.framesOutsideWindow = framesOutsideWindow
         self.droppedOversizeFrames = droppedOversizeFrames
         self.clockSkewSuspected = clockSkewSuspected
     }
