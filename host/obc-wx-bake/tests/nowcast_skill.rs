@@ -169,7 +169,9 @@ fn the_nowcast_beats_persistence_and_the_model_over_the_derecho() {
             timefmt::rfc3339(rung.valid_at)
         );
     }
-    let params = FlowParams::for_cells(f64::from(header.cell_size_m));
+    let midpoint_lat =
+        (f64::from(header.south_lat_udeg) + (f64::from(header.height) / 2.0) * f64::from(header.cell_lat_udeg)) / 1e6;
+    let params = FlowParams::for_geographic_cells(header.cell_lat_udeg, header.cell_lon_udeg, midpoint_lat);
     let motion = flow::estimate_motion(&earlier.cells, &anchor.cells, width, height, dt, params)
         .expect("a derecho is not a dry field");
 
@@ -180,11 +182,12 @@ fn the_nowcast_beats_persistence_and_the_model_over_the_derecho() {
         timefmt::rfc3339(anchor.valid_at),
     );
     eprintln!(
-        "peak motion {:.1} m/s; flow grid {} x {} nodes at stride {}",
-        f64::from(motion.max_speed_cells_s()) * f64::from(header.cell_size_m),
+        "peak raster motion {:.4} cells/s; flow grid {} x {} nodes at strides {} x {}",
+        motion.max_speed_cells_s(),
         motion.cols,
         motion.rows,
-        motion.stride
+        motion.stride_x,
+        motion.stride_y
     );
     eprintln!("\n lead  method       CSI>=.25  CSI>=2.0  FSS>=.25  FSS>=2.0  cover");
 
@@ -315,7 +318,9 @@ fn a_morphed_frame_publishes_only_values_its_parent_actually_held() {
     let (earlier, target, later) = (&ladder[0], &ladder[1], &ladder[2]);
     let dt = (later.valid_at - earlier.valid_at) as f64;
     let offset = (target.valid_at - earlier.valid_at) as f64;
-    let params = FlowParams::for_cells(f64::from(header.cell_size_m));
+    let midpoint_lat =
+        (f64::from(header.south_lat_udeg) + (f64::from(header.height) / 2.0) * f64::from(header.cell_lat_udeg)) / 1e6;
+    let params = FlowParams::for_geographic_cells(header.cell_lat_udeg, header.cell_lon_udeg, midpoint_lat);
     let motion = flow::estimate_motion(&earlier.cells, &later.cells, width, height, dt, params)
         .expect("a derecho is not a dry field");
     let span = flow::Span { dt_seconds: dt, offset_seconds: offset, wrap_x: false };

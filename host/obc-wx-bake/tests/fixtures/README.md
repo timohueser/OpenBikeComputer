@@ -13,7 +13,7 @@ data, no endorsement implied) for the NOAA ones and CC BY 4.0 for EUMETNET OPERA
 record lives in
 [`docs/decisions/WX1-weather-source-contracts.md`](../../../../docs/decisions/WX1-weather-source-contracts.md).
 
-Total checked-in fixture bytes: 17,188,399.
+Total checked-in fixture bytes: 18,850,678.
 
 ## DWD RV composite
 
@@ -78,19 +78,19 @@ Upstream object lengths (the `Content-Length` the range arithmetic is bounded by
 - `hrrr-conus-20260809T15-prate-t225.grib2` — 36,177 bytes, bytes `136058399-136094575` of that object, sha256 `6db4d678576f3c8a540c3e22569e75e6b72e56387ef7d33d089496109a0a94af`.
 - `hrrr-conus-20260809T15-prate-t240.grib2` — 37,839 bytes, bytes `191463451-191501289` of that object, sha256 `f0909ee821ed3275b6fa06eefb498ee700b6fa32c7f04892c7e04a1ae85dec11`.
 
-## NOAA GFS APCP (worldwide floor)
+## NOAA GFS instantaneous PRATE (worldwide floor)
 
-The 2026-08-09 12Z run's first sixteen hourly indexes and the exact `APCP:surface:0-N hour acc
-fcst` spans. Objects are
+The 2026-08-09 12Z run's first sixteen hourly indexes and the exact
+`PRATE:surface:N hour fcst` messages. Objects are
 `https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260809/12/atmos/gfs.t12z.pgrb2.0p25.fFFF`
 (`.idx` for the indexes), retrieved 2026-08-09 17:05-17:20 UTC. Each object is ~540 MB and is
-never checked in. Leads 1-6 resolve to a two-message span (NOAA advertises the record twice and
-both copies must decode identically); leads 7-12 resolve to a single message.
+never checked in. The PRATE messages below were retrieved from those same immutable objects on
+2026-08-11 after the time-semantics review replaced de-accumulated APCP with point-valid rate.
 
 Upstream object lengths: f001 537,540,348, f002 538,822,727, f003 539,798,514, f004 540,724,755,
 f005 542,923,155, f006 544,451,780, f007 542,096,820, f008 543,890,390, f009 543,734,730,
 f010 544,255,893, f011 544,322,108, f012 545,133,960, f013 541,397,261, f014 541,818,663,
-f015 542,144,204, f016 546,445,777. The sixteen selected spans total 8,287,888
+f015 542,144,204, f016 546,445,777. The sixteen selected messages total 9,950,167
 bytes, inside WX1's 15,500,000-byte per-run ceiling.
 
 - `gfs-global-20260809T12-f001.idx` — 40,472 bytes, sha256 `ec6d58b4e473899badbe152fce6cebe5bdc2858113b2b1ad80d598804b91a1b7`.
@@ -110,22 +110,22 @@ bytes, inside WX1's 15,500,000-byte per-run ceiling.
 - `gfs-global-20260809T12-f015.idx` — 41,259 bytes, sha256 `df11f12232a448d766e417446380075f55dc483a565c709cf54455c4c3d6aa4b`.
 - `gfs-global-20260809T12-f016.idx` — 41,260 bytes, sha256 `753a98a61cd672e375152abf50359e100ed0b5a7a0088bbb710fcea49098bd9f`.
 
-- `gfs-global-20260809T12-apcp-f001.grib2` — 488,920 bytes, bytes `427603385-428092304` of that object, sha256 `35fce3acac40fd09b314f7fe6210c33cb8541c54e736189e45a10a39dd454ebb`.
-- `gfs-global-20260809T12-apcp-f002.grib2` — 587,546 bytes, bytes `428091880-428679425` of that object, sha256 `aba63ddc21e014b083aad91a87eaa532a4c85ad1022d5d8e43808bffb237df05`.
-- `gfs-global-20260809T12-apcp-f003.grib2` — 645,428 bytes, bytes `428475805-429121232` of that object, sha256 `bfce292b647a5afd04ad94ef491837743b070d550d2b49fcaff488e7be31a64a`.
-- `gfs-global-20260809T12-apcp-f004.grib2` — 688,958 bytes, bytes `428752482-429441439` of that object, sha256 `eec9efe8e1e5dd237abcf17c968a2adf0f8092748ee782fce4ed6a2b5ed86d0a`.
-- `gfs-global-20260809T12-apcp-f005.grib2` — 723,720 bytes, bytes `430080077-430803796` of that object, sha256 `2b2688e6128b3f284c1b54f91584d17ebf6d9beb6d9a8661c333cf4e76bb6d3e`.
-- `gfs-global-20260809T12-apcp-f006.grib2` — 754,116 bytes, bytes `431023684-431777799` of that object, sha256 `398b845d2c08df6129b8bfada11c9642eef21118cebf5694a23218084a7e1927`.
-- `gfs-global-20260809T12-apcp-f007.grib2` — 393,493 bytes, bytes `432070312-432463804` of that object, sha256 `7bf9eab443b44be33eb0b9d434d05991218065c1fd7f0dd46c36a726411c1add`.
-- `gfs-global-20260809T12-apcp-f008.grib2` — 405,659 bytes, bytes `433033986-433439644` of that object, sha256 `3db99fe1e87142e12d06bc96ace6b77b363b4944a6b26ebfccbf4549d087ae49`.
-- `gfs-global-20260809T12-apcp-f009.grib2` — 416,142 bytes, bytes `432288308-432704449` of that object, sha256 `a44ff265140ace460a64281c969aee6ddbe0cc5b9fb39f9a2fe27bdef1c36c41`.
-- `gfs-global-20260809T12-apcp-f010.grib2` — 426,897 bytes, bytes `432328102-432754998` of that object, sha256 `420707baa4f956e9271bb22fc3d702206d86572377a47668d8b43989f2d46927`.
-- `gfs-global-20260809T12-apcp-f011.grib2` — 436,221 bytes, bytes `431989179-432425399` of that object, sha256 `5b6f2f1c50b0f5e4881687e7e386cc5087bee40852c1cfcb168ea368f0b1c894`.
-- `gfs-global-20260809T12-apcp-f012.grib2` — 448,745 bytes, bytes `432276114-432724858` of that object, sha256 `821310bd859a37fadaa9ba8c62474101591d9c3fbb64af00575d9d705eef1472`.
-- `gfs-global-20260809T12-apcp-f013.grib2` — 457,103 bytes, bytes `431060039-431517141` of that object, sha256 `b3141a045fc4435ff478bad6870d5f6a89f8c79c1464bee7f79f570e7204df74`.
-- `gfs-global-20260809T12-apcp-f014.grib2` — 464,512 bytes, bytes `430713865-431178376` of that object, sha256 `02d1f90586bde0915faba346ed56dd1cf604864090e1a2ed57e3da8ac18bc1c6`.
-- `gfs-global-20260809T12-apcp-f015.grib2` — 471,616 bytes, bytes `430643461-431115076` of that object, sha256 `d8f6b8684ed74a24ef42c7271c16409f3fa33894ad15c2d361363cc9a7745aff`.
-- `gfs-global-20260809T12-apcp-f016.grib2` — 478,812 bytes, bytes `433214890-433693701` of that object, sha256 `2acff7f2ceea49f019d3228315555da7a156c7fdf70b96839c81897cdf63abe1`.
+- `gfs-global-20260809T12-prate-f001.grib2` — 685,198 bytes, bytes `425522639-426207836`, sha256 `9ff7233197fc256df2b25da3d6dfa9dbf73fc7837caa7ada8e82b18623cdfb3c`.
+- `gfs-global-20260809T12-prate-f002.grib2` — 606,818 bytes, bytes `426107249-426714066`, sha256 `3cee0e89a81d62d9719757237f6422b71e81c13b1b8bcd2567c0193d6a44fa2a`.
+- `gfs-global-20260809T12-prate-f003.grib2` — 605,410 bytes, bytes `426416776-427022185`, sha256 `a2741bc79cdc82b29d1784f1467c7ebb428d27c734ee866ca020690d9e97cab1`.
+- `gfs-global-20260809T12-prate-f004.grib2` — 602,199 bytes, bytes `426700119-427302317`, sha256 `104084b692f54e585bd1364f5ca2aa4c151265156be07c9e70a13bb507a84756`.
+- `gfs-global-20260809T12-prate-f005.grib2` — 600,287 bytes, bytes `428037470-428637756`, sha256 `eaa3e6a0f6b2f2fa89c8370c86d81ab7485adb5b27b7dcc829ad329be5a748fe`.
+- `gfs-global-20260809T12-prate-f006.grib2` — 684,759 bytes, bytes `428864376-429549134`, sha256 `84f62ec4cee80728f2d4f45b8ce84624c6c06114a354f327f3b44927cc32c430`.
+- `gfs-global-20260809T12-prate-f007.grib2` — 681,644 bytes, bytes `429766627-430448270`, sha256 `ddc0c988289bdfb5a3300bf3016ff07dc1286090dd8e77988d000932f3930a80`.
+- `gfs-global-20260809T12-prate-f008.grib2` — 591,454 bytes, bytes `430793964-431385417`, sha256 `0c6fe17b52dd71874b2d336cd67aba22bdefb3d1fe487918625b3b3f1871590d`.
+- `gfs-global-20260809T12-prate-f009.grib2` — 584,044 bytes, bytes `430037496-430621539`, sha256 `5dccf86a479920df946e2feb5d3e15278e47131f5a87d38f6633c359047a1c34`.
+- `gfs-global-20260809T12-prate-f010.grib2` — 592,549 bytes, bytes `430052839-430645387`, sha256 `e4dc5afde6e4b208fc4c48f1809886848fd930c52ce31a8d6c9b57f67dff9b22`.
+- `gfs-global-20260809T12-prate-f011.grib2` — 584,120 bytes, bytes `429709935-430294054`, sha256 `f61cc885fa07fb8dd1b4b104f755c720c3137e4efd9026e2424ca6943b06a7e3`.
+- `gfs-global-20260809T12-prate-f012.grib2` — 673,567 bytes, bytes `429803547-430477113`, sha256 `2ba059a876e88b72e66698002d6b4f5563224f59434a21f89a1eab5b8acbd344`.
+- `gfs-global-20260809T12-prate-f013.grib2` — 591,602 bytes, bytes `428939943-429531544`, sha256 `8af7fef0cfb4231e6dca2711c0d383a8ebdd7a7f9777e6ad2385ca07c6202bfa`.
+- `gfs-global-20260809T12-prate-f014.grib2` — 586,737 bytes, bytes `428485546-429072282`, sha256 `bc705ab9f059f1bb4168555ca7ddcd346310f4187c6f37b9862d9a4ac4b25b77`.
+- `gfs-global-20260809T12-prate-f015.grib2` — 597,010 bytes, bytes `428388965-428985974`, sha256 `45e1dfcd51813fc881a8db3d52c5706308a92b047afc133e4bd3f787224308db`.
+- `gfs-global-20260809T12-prate-f016.grib2` — 682,769 bytes, bytes `430855401-431538169`, sha256 `8f7654210b08ee5b99b58ff2c581d96532581b9daa4f1d9919cb4f3e562ff9e9`.
 
 Corrupt-upstream negatives are derived in-test by truncating/flipping/splicing these bytes; no
 corrupt fixture is checked in.

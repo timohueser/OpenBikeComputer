@@ -29,6 +29,16 @@
 //! reading "no rain" off a region no radar can see. Only the mosaic's global floor source may
 //! fill a no-coverage cell, and it can only do that if the cell arrives marked no-data.
 //!
+//! ## Quality is validated, not thresholded
+//!
+//! Band 1 is OPERA's `pl.imgw.quality.qi_total`. The bakery validates its identity, fill value,
+//! units and population without retaining a second image-sized buffer. It deliberately does not
+//! turn a low quality index into no-data: a 24-frame evidence pass on 2026-08-10 found CIRRUS's
+//! quality absent on every covered-dry pixel and below 0.6 on more than 90 % of its finite echoes.
+//! A textbook 0.6 filter would therefore delete most of CIRRUS's rain and make covered-dry cells
+//! impossible to quality-filter consistently. The index stays an upstream-contract alarm until a
+//! multi-event validation establishes a product-specific decision rule.
+//!
 //! ## Coverage is static, and it is read per frame anyway
 //!
 //! Measured over four CIRRUS frames spanning 18 hours of 2026-08-10: 50.34 %, 50.34 %, 50.21 %,
@@ -72,16 +82,16 @@ pub const NODATA: f64 = -9_999_000.0;
 pub const ZR_A: f64 = 200.0;
 pub const ZR_B: f64 = 1.6;
 
-/// The column-max to surface-rate correction applied to CIRRUS reflectivity — a **first-cut
-/// empirical calibration, not physics**.
+/// The column-max to surface-rate correction applied to CIRRUS reflectivity — an **empirical
+/// calibration, not physics**.
 ///
 /// Marshall-Palmer relates *surface* reflectivity to *surface* rain rate, and it is exactly what
 /// OPERA applies to the near-surface `PPI` that becomes NIMBUS. CIRRUS is a different measured
 /// quantity: a column **maximum**, which carries cores aloft and, in stratiform rain, the bright
 /// band. Feeding it a surface relation therefore overstates the rate, and it does so by a
-/// measurable amount: over the 149,527 cells where both products saw an echo in the
-/// 2026-08-10T00:00 pair, the median CIRRUS/NIMBUS rate ratio is **2.2** — a full intensity band,
-/// continent-wide and permanent, at the moment a rider is deciding whether to shelter.
+/// measurable amount: over the cells where both products saw an echo in the 2026-08-10T00:00
+/// pair, the median CIRRUS/NIMBUS rate ratio is **2.2** — a full intensity band at the moment a
+/// rider is deciding whether to shelter.
 ///
 /// So the reflectivity path divides its Marshall-Palmer rate by that measured ratio, which is
 /// identical to using an effective coefficient `a_eff = 200 x 2.2^1.6 = 706.2` (equivalently
@@ -89,13 +99,12 @@ pub const ZR_B: f64 = 1.6;
 /// inside the published range for non-surface and convective relations, and it makes the two
 /// products agree with each other — which the shared-lattice story needs anyway.
 ///
-/// **This is one number from one frame pair and it should not stay that way.** What would settle
-/// it: split the CIRRUS/NIMBUS ratio by regime (stratiform versus convective, at a 30 dBZ
-/// threshold) over a full day. A regime-flat ratio means a scalar is exactly right; a much larger
-/// ratio in the stratiform population means bright-band contamination, and a scalar is still a
-/// large improvement but a regime-aware correction is better. The available ground truth is
-/// gauge-adjusted `dwd-rv` over Germany, and scoring both OPERA products against it also answers
-/// the open question of whether CIRRUS belongs above or below `dwd-rv` in the mosaic.
+/// The follow-up full-day pass is recorded in
+/// `docs/decisions/WX-opera-evidence-20260810.md`: 3.68 M positive overlap cells had a pooled
+/// median ratio of 1.985, hourly medians 1.616..=2.218, while an independent DWD-RV comparison
+/// weakly preferred `/2.2` to `/2.0`. The ratio is reflectivity-dependent, but a hard regime
+/// switch would make rate non-monotone at its threshold. So 2.2 stays as the simple, conservative
+/// scalar until several weather regimes plus gauge truth can earn a monotone replacement.
 pub const MAX_TO_SURFACE_RATIO: f64 = 2.2;
 
 /// `R = (Z/a)^(1/b)` for a reflectivity in dBZ, `Z = 10^(dBZ/10)` — Marshall-Palmer exactly as
@@ -315,6 +324,31 @@ impl Contract {
         }
         if item("DESCRIPTION") != Some(self.quantity.wire_name()) {
             return Err(format!("{id}: band 0 is {:?}, not {}", item("DESCRIPTION"), self.quantity.wire_name()));
+        }
+        // Band 1 is not decorative: validate the exact per-sample metadata rather than merely
+        // checking `SamplesPerPixel = 2`. We do not threshold it; see the module-level evidence
+        // note. A silent replacement or rescaling must still stop the bake.
+        let quality_item = |name: &str| tiff::metadata_item_for_sample(&cog.metadata, name, 1);
+        if quality_item("task") != Some("pl.imgw.quality.qi_total") {
+            return Err(format!("{id}: band 1 task is {:?}, not pl.imgw.quality.qi_total", quality_item("task")));
+        }
+        if quality_item("DESCRIPTION") != Some("quality1") {
+            return Err(format!("{id}: band 1 is {:?}, not quality1", quality_item("DESCRIPTION")));
+        }
+        let quality_fill = quality_item("_FillValue").and_then(|value| value.parse::<f64>().ok());
+        if quality_fill != Some(NODATA) {
+            return Err(format!("{id}: band 1 fill value is {:?}, not {NODATA}", quality_item("_FillValue")));
+        }
+        let quality = cog.band1.ok_or_else(|| format!("{id}: band 1 was not decoded"))?;
+        let pixels = u64::from(cog.width) * u64::from(cog.height);
+        if quality.finite + quality.nodata + quality.non_finite != pixels {
+            return Err(format!("{id}: band 1 accounts for the wrong number of samples"));
+        }
+        let invalid = quality.non_finite + quality.outside_unit_interval;
+        if invalid as f64 > MAX_INSANE_FRACTION * pixels as f64 {
+            return Err(format!(
+                "{id}: {invalid} of {pixels} quality samples are not nodata or a finite index in 0..=1"
+            ));
         }
         // ODIM `product`: `MAX` is a column maximum, `PPI` a near-surface plan position. Which of
         // the two it is decides whether the Marshall-Palmer relation applies as OPERA declares it

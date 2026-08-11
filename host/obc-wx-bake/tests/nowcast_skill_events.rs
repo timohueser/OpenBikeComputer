@@ -1,7 +1,7 @@
 //! **How far out is the nowcast honestly worth publishing?** — the two-event measurement (#1248).
 //!
 //! `nowcast_skill.rs` scores the engine over one storm. That storm is the 2020-08-10 derecho: fast,
-//! organised, coherent, translating at 19.8 m/s — the friendliest case optical-flow advection will
+//! organised, coherent, translating at 19.4 m/s — the friendliest case optical-flow advection will
 //! ever be handed, and the only evidence behind `derive::NOWCAST_MAX_LEAD_MIN`. A horizon set from
 //! one favourable event is a horizon set from a coincidence, so this harness adds the opposite case
 //! and scores **both** the same way, at every lead the packs reach and at three intensity
@@ -12,14 +12,14 @@
 //! `us-airmass-2023-06-24` — 24 June 2023, 20:00 Z (3 pm CDT) over Iowa. Scattered airmass
 //! convection: many small cells that form, rain and die inside the window, rather than one system
 //! arriving across it. ("Airmass" strictly — diurnal convection inside one air mass, not tied to a
-//! front. It is *not* a claim about storm speed; this field translates at 16.1 m/s.) The pack was
+//! front. It is *not* a claim about storm speed; this field translates at 15.6 m/s.) The pack was
 //! chosen by measurement, not by memory (the screening compared 30-odd summer afternoons over the
 //! same box), and the two events separate on every statistic that matters to an advection scheme
 //! except the one an earlier draft leaned on:
 //!
 //! | | derecho 2020-08-10 | airmass 2023-06-24 |
 //! | --- | --- | --- |
-//! | mean flow speed under rain (printed below) | 19.8 m/s | 16.1 m/s — *not* the discriminator |
+//! | mean flow speed under rain (printed below) | 19.4 m/s | 15.6 m/s — *not* the discriminator |
 //! | wet components in the crop | 62 | **235** |
 //! | mean component area | 1331 cells | **79 cells** (~10 km across) |
 //! | largest component | 79,149 cells — **one system** | 8,690 cells |
@@ -160,7 +160,6 @@ struct Case {
     width: u32,
     height: u32,
     /// The lattice's **label**, not a physical size. See [`Case::cell_metres`].
-    cell_size_m: u16,
     south_lat_udeg: i32,
     cell_lat_udeg: u32,
     cell_lon_udeg: u32,
@@ -281,7 +280,6 @@ impl Case {
             id,
             width: header.width,
             height: header.height,
-            cell_size_m: header.cell_size_m,
             south_lat_udeg: header.south_lat_udeg,
             cell_lat_udeg: header.cell_lat_udeg,
             cell_lon_udeg: header.cell_lon_udeg,
@@ -296,7 +294,9 @@ impl Case {
     fn motion(&self) -> MotionField {
         let dt = (self.anchor.valid_at - self.earlier.valid_at) as f64;
         assert!(dt > 0.0, "{}: the observation pair must be ordered in time", self.id);
-        let params = FlowParams::for_cells(f64::from(self.cell_size_m));
+        let midpoint_lat =
+            (f64::from(self.south_lat_udeg) + (f64::from(self.height) / 2.0) * f64::from(self.cell_lat_udeg)) / 1e6;
+        let params = FlowParams::for_geographic_cells(self.cell_lat_udeg, self.cell_lon_udeg, midpoint_lat);
         flow::estimate_motion(&self.earlier.cells, &self.anchor.cells, self.width, self.height, dt, params)
             .unwrap_or_else(|| panic!("{}: neither observation is a dry field", self.id))
     }
@@ -342,11 +342,11 @@ impl Case {
     ///   moving. Only nodes with rain under them count.
     /// * a cell is **not square on the ground** — see [`Case::cell_metres`].
     fn mean_speed_m_s(&self, motion: &MotionField) -> f64 {
-        let stride = motion.stride;
+        let (stride_x, stride_y) = (motion.stride_x, motion.stride_y);
         let (mut sum, mut counted) = (0.0f64, 0u64);
         for row in 0..motion.rows {
             for col in 0..motion.cols {
-                let (x, y) = (col * stride + stride / 2, row * stride + stride / 2);
+                let (x, y) = (col * stride_x + stride_x / 2, row * stride_y + stride_y / 2);
                 if x >= self.width || y >= self.height {
                     continue;
                 }
