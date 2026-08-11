@@ -21,7 +21,8 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+import urllib.error
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 
 OPS = Path(__file__).resolve().parents[1]
@@ -49,6 +50,33 @@ def run(document: dict, *extra: str) -> tuple[int, str]:
 
 def healthy() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+@contextmanager
+def fake_head(answer):
+    """Stand in for the one HEAD `check_sweep` issues. `answer(url)` returns the fetch tuple or
+    raises, which is the whole of the branch space that check has."""
+    real = probe.fetch
+    probe.fetch = lambda url, timeout, method="GET": answer(url)
+    try:
+        yield
+    finally:
+        probe.fetch = real
+
+
+@contextmanager
+def http_status(code: str):
+    """An `HTTPError` raiser whose error object is closed afterwards — `HTTPError` is file-like, and
+    leaking one turns every run of this suite into a `ResourceWarning`."""
+    error = urllib.error.HTTPError("https://wx.example/probe", code, "test", None, io.BytesIO(b""))
+
+    def raise_it(_url):
+        raise error
+
+    try:
+        yield raise_it
+    finally:
+        error.close()
 
 
 class ProbeTests(unittest.TestCase):
@@ -132,7 +160,10 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("over the 10 MB guard", output)
         self.assertIn("wet global", output, "the alert must carry the measurement it is derived from")
 
-    def test_the_retained_gate_is_the_set_times_the_retention_chain(self):
+    def test_the_retained_figure_is_reported_but_never_gated(self):
+        """`retained = set x (1 + len(previous))` and `len(previous) <= 2`, so a retained gate could
+        not fire without the set gate firing first. The figure is the number the bucket actually
+        holds, so it is printed; the gate was theatre, so it is gone."""
         document = healthy()
         set_bytes = sum(shard["bytes"] for frame in document["frames"] for shard in frame["shards"])
         code, output = run(document, "--json")
@@ -141,16 +172,28 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(payload["published_set_bytes"], set_bytes)
         self.assertEqual(payload["retained_bytes"], set_bytes * 3, "current plus two, per OBCG §10.4")
 
-    def test_the_defaults_are_derived_from_wxr1s_measurement(self):
-        """14.69 MB per wet global cycle, retained three deep. The gates are ~2x each, and they are
-        constants rather than arguments so that changing one is a diff someone reviews."""
-        self.assertEqual(probe.DEFAULT_MAX_SET_BYTES, 30 * probe.BYTES_PER_MB)
-        self.assertEqual(probe.DEFAULT_MAX_RETAINED_BYTES, 3 * probe.DEFAULT_MAX_SET_BYTES)
+    def test_a_chain_longer_than_the_cap_is_an_alert(self):
+        """The one thing about retention a manifest can state wrongly. §10.4's cap is normative on
+        readers, and a longer chain means the document and the sweep disagree about what exists."""
+        document = healthy()
+        document["previous_generations"] = ["20260810T1415Z", "20260810T1400Z", "20260810T1345Z"]
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("§10.4 caps it at 2", output)
 
-    def test_the_old_rolling_bytes_spelling_still_parses(self):
-        """A stale OBC_WX_PROBE_ARGS must not crash the alarm during the cutover."""
+    def test_the_default_is_derived_from_wxr1s_measurement(self):
+        """14.69 MB per wet global cycle. The gate is ~2x it, and it is a constant rather than an
+        argument so that changing it is a diff someone reviews."""
+        self.assertEqual(probe.DEFAULT_MAX_SET_BYTES, 30 * probe.BYTES_PER_MB)
+        self.assertEqual(probe.RETAINED_PREVIOUS_GENERATIONS, 2)
+
+    def test_the_retired_byte_gates_still_parse_and_say_they_did_nothing(self):
+        """A stale OBC_WX_PROBE_ARGS must not crash the alarm, and must not look obeyed either."""
         args = probe.build_parser().parse_args(["--manifest", "x", "--max-rolling-bytes", "123"])
         self.assertEqual(args.max_retained_bytes, 123)
+        code, output = run(healthy(), "--max-retained-bytes", "1")
+        self.assertEqual(code, 0, output)
+        self.assertIn("--max-retained-bytes is accepted and ignored", output)
 
     # ── The cadence guard ─────────────────────────────────────────────────────────────────────
 
@@ -213,6 +256,35 @@ class ProbeTests(unittest.TestCase):
         probe.check_sweep(document, "https://example.invalid", 0.01, report, alerts, result)
         self.assertEqual(alerts, [])
         self.assertIn("nothing has fallen off the chain yet", report[0])
+
+    def test_a_swept_generation_that_is_still_fetchable_is_the_alarm(self):
+        """The branch the whole check exists for. A 200 on a generation the manifest stopped naming
+        means the sweep is not collecting — and nothing computed from the manifest can see that."""
+        document = healthy()
+        with fake_head(lambda url: (b"", "")):
+            report, alerts, result = [], [], {}
+            probe.check_sweep(document, "https://wx.example", 1.0, report, alerts, result)
+        self.assertEqual(len(alerts), 1, report)
+        self.assertIn("retention sweep is not collecting", alerts[0])
+        self.assertIn("SWEEP", report[0])
+
+    def test_a_404_on_the_swept_generation_is_the_healthy_answer(self):
+        document = healthy()
+        report, alerts, result = [], [], {}
+        with http_status(404) as gone, fake_head(gone):
+            probe.check_sweep(document, "https://wx.example", 1.0, report, alerts, result)
+        self.assertEqual(alerts, [])
+        self.assertIn("ok       swept: 20260810T1345Z is gone", report[0])
+
+    def test_a_non_404_http_error_is_inconclusive_rather_than_an_alarm(self):
+        """What a misconfigured public-access setting looks like. The probe must not report a
+        sweep failure it cannot actually see."""
+        document = healthy()
+        report, alerts, result = [], [], {}
+        with http_status(500) as broken, fake_head(broken):
+            probe.check_sweep(document, "https://wx.example", 1.0, report, alerts, result)
+        self.assertEqual(alerts, [])
+        self.assertIn("inconclusive: HTTP 500", report[0])
 
     def test_the_sweep_witness_probes_the_shard_that_is_always_published(self):
         """Shard row 0 reaches below `covered_rows.start`, so it always holds no-data cells, and a

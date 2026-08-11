@@ -65,22 +65,36 @@ issue about a service that is working fine. Clear the repository variable `OBC_W
 all. **C8 restores it.** While it is cleared, the only weather monitoring is your own eyes on the
 journal; do not leave it cleared overnight.
 
-**C1 — Rehearse into a directory, on the box, publishing nothing.**
+**C1 — Rehearse into a directory, on the box, publishing nothing — and rehearse the *sweep*.**
 `--store <dir>` is a first-class destination, not a debug mode: it writes the identical tree R2
-gets.
+gets. One run is not enough: a fresh directory has no predecessor manifest, so the sweep has nothing
+to do, and repeating the command inside the same quarter hour only re-bakes the same generation.
+`--now` is what makes four *distinct* generations, which is the point at which the first deletion
+happens.
 
 ```sh
 ssh root@wx
 export PATH="$HOME/.cargo/bin:$PATH"      # cargo is NOT on root's default PATH — see C2
-sudo -u obc-wx /tmp/obc-wx-bake cycle --store /var/lib/obc-wx/rehearsal
-python3 ops/weather/freshness_probe.py --manifest /var/lib/obc-wx/rehearsal/wx/v2/manifest.json
+REH=/var/lib/obc-wx/rehearsal; rm -rf $REH
+# Four anchors walking *forward* to now, so upstream actually has data for each and each cycle is
+# newer than the last (a cycle older than the published manifest refuses to publish — by design).
+for M in 45 30 15 0; do
+  sudo -u obc-wx /tmp/obc-wx-bake cycle --store $REH --now "$(date -u -d "-$M min" +%Y-%m-%dT%H:%M:00Z)"
+done
+ls $REH/wx/v2/                # EXACTLY three generation directories + manifest.json
+python3 ops/weather/freshness_probe.py --manifest $REH/wx/v2/manifest.json
 ```
 
-The probe must exit `0`. Then read the tree the way a client does — `rclone serve` answers Range
-requests, which `python3 -m http.server` does not, and Range is the whole of corridor extraction:
+The fourth run must print `retired <the first generation> (N objects)` and the listing must show
+**three** generations, not four — that is the whole retention contract executed end to end, against
+a store you can delete with `rm -rf`, before the first destructive operation this crate has ever had
+runs against live R2. The probe must exit `0`.
+
+Then read the tree the way a client does — `rclone serve` answers Range requests, which
+`python3 -m http.server` does not, and Range is the whole of corridor extraction:
 
 ```sh
-rclone serve http --addr 127.0.0.1:8080 /var/lib/obc-wx/rehearsal &
+rclone serve http --addr 127.0.0.1:8080 $REH &
 obc-wx-client --service http://127.0.0.1:8080 --lat 48.0 --lon 7.85   # or the sim's --weather live
 ```
 
@@ -118,13 +132,23 @@ systemctl list-timers --all 'obc-wx-bake@*'    # expect obc-wx-bake@cycle.timer,
 **C4 — Watch the first real cycle.**
 
 ```sh
-sudo systemctl start obc-wx-bake@cycle.service
+sudo systemctl start obc-wx-bake@cycle.service      # ALWAYS through the unit — never `obc-wx-bake cycle --r2`
 sudo journalctl -u obc-wx-bake@cycle.service -n 80 --no-pager
 ```
 
 A healthy first publish prints `publishing to r2 bucket obc-wx via https://<account>.r2…`, a line
 per mosaic source, then `published … objects / … bytes`. There is **no** `retired …` line on the
 first three cycles and that is correct: nothing has fallen off the retention chain yet.
+
+Two things about that command are worth knowing before you type it anywhere else in this runbook.
+**Start bakes through the unit, always.** The `flock` that stops two cycles overlapping lives in the
+unit's `ExecStart`, not in the binary, so a bare `obc-wx-bake cycle --r2` runs outside it — and the
+loser of that race republishes an older manifest over a newer one, naming generations the newer
+cycle's sweep already deleted. The baker refuses to publish a manifest older than the one at the key,
+so the mistake costs a tick rather than an outage, but the lock is what stops it arising.
+**And a hand-started bake trips the cadence guard once** (§5): it stamps whatever phase of the
+15-minute step you happened to run it at. That is a true statement about the live manifest, and it
+clears itself on the next scheduled tick.
 
 **C5 — Verify the first generation on R2, by hand.** These are §4's checks against the new tree; do
 them now rather than trusting the journal.
@@ -176,10 +200,25 @@ export RCLONE_CONFIG_OBCWX_TYPE=s3 RCLONE_CONFIG_OBCWX_PROVIDER=Cloudflare \
        RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID="$OBC_WX_R2_ACCESS_KEY_ID" \
        RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY="$OBC_WX_R2_SECRET_ACCESS_KEY"
 
-rclone size   obcwx:obc-wx/wx/v1/          # look at it before you delete it
-rclone purge  obcwx:obc-wx/wx/v1/          # the whole prefix, in one call
-rclone lsd    obcwx:obc-wx/wx/             # expect only v2/
+# 1. Re-prove the blast radius. This token must NOT be able to see any other bucket — it is the
+#    only thing that bounds a slip of these commands to the weather bucket.
+rclone lsd obcwx:obc-maps                    # MUST fail with AccessDenied/403. If it succeeds, STOP.
+
+# 2. Look at what you are about to delete, twice, two different ways.
+rclone size obcwx:obc-wx/wx/v1/              # note the object count and the total
+rclone purge --dry-run obcwx:obc-wx/wx/v1/   # read the LAST line: same count, and every key under wx/v1/
+
+# 3. Only if step 2's two counts agree and every path printed starts with `wx/v1/`:
+rclone purge obcwx:obc-wx/wx/v1/
+rclone lsd   obcwx:obc-wx/wx/                # expect only v2/
 ```
+
+The dangerous mistake here is **not** a typo — it is a *shortened* prefix. `obcwx:obc-wx/wx/` is a
+plausible thing to type and takes v2 with it, and a bare `rclone size` on it would print a
+believable number rather than an obvious error. That is what the `--dry-run` is for: it names keys,
+and `wx/v2/…` appearing in that output is unmissable in a way a byte total is not. The `lsd` in step
+1 is the outer bound — if the token can only see `obc-wx`, the worst a slip can reach is a tree the
+baker rebuilds within one tick.
 
 `purge` is the right verb here and the wrong one anywhere else: it is a prefix operation, typed by
 a human, once, against a prefix nothing publishes to any more. The baker has no such operation and
@@ -197,17 +236,22 @@ must never grow one.
 Then run the workflow once by hand (*Actions → Weather freshness → Run workflow*) and read the
 summary rather than waiting for the schedule.
 
-**C9 — Rollback, and what it means at each point.** The published objects are derived data with no
-state in them, which is what makes every step of this reversible:
+**C9 — Rollback, and what it costs *the clients*, not the baker.** No published object has any
+state in it, so the box is trivially reversible at every step — but that is the least interesting
+half. What decides how expensive a rollback is, is which tree the phones in people's pockets are
+reading, and that changes at **C6**:
 
-| You are at | Rollback | Cost |
+| You are at | Rollback | Cost to riders |
 | :-- | :-- | :-- |
 | before C2 | nothing to undo | none |
-| C2-C6, v1 tree still there | `cp /usr/local/bin/obc-wx-bake.prev /usr/local/bin/obc-wx-bake`, then re-run `install.sh` **from the old checkout** — it reads `adapters.conf` from the tree it is run out of, so the old per-adapter rows come back with it | one tick. The orphaned `wx/v2` tree is collected by the bucket's 1-day lifecycle rule (T4); nothing sweeps it, because nothing publishes to it |
-| after C7, v1 deleted | the same command. The old baker is stateless: it finds no `wx/v1/manifest.json`, rebakes every product from upstream, and republishes the tree within one tick of each timer | one tick of freshness, plus a gap for any client still pinned to v1 during it. **The deletion is not what makes a rollback expensive** — there is no state in that tree to lose |
+| C2–C5 (v2 publishing, clients still on v1) | `cp /usr/local/bin/obc-wx-bake.prev /usr/local/bin/obc-wx-bake`, then re-run `install.sh` **from the old checkout** — it reads `adapters.conf` from the tree it is run out of, so the old per-adapter rows come back with it | **none.** Every shipped client is still reading `wx/v1`, which never stopped being published. The orphaned `wx/v2` tree is collected by the 1-day lifecycle rule (T4); nothing sweeps it, because nothing publishes to it |
+| **after C6** (clients updated), v1 still there | the same command | **a weather outage for everyone who updated**, lasting until you roll forward — not one tick. Their build reads `wx/v2` only (v2-only since WXR5), and the rolled-back baker does not publish it. Riders see MET's hourly data and **WEATHER UPDATE NEEDED**, never wrong weather, but they see it for as long as the rollback lasts |
+| after C7, v1 deleted | the same command. The old baker is stateless: it finds no `wx/v1/manifest.json`, rebakes from upstream and republishes the tree within one tick of each timer | the same outage as the row above, and **the deletion adds nothing to it** — there is no state in that tree to lose, only one tick to rebuild it. The people *not* affected are the ones who never updated, which after C6 is the minority |
 
-The genuinely one-way step is none of these. It is C8's variable edit, and it is one-way only in
-the sense that you have to remember to redo it.
+**C6 is the one-way-ish boundary**, and it is the step to be sure about — not C8's variable edit,
+which is one-way only in the sense that you have to remember to redo it, and not C7's deletion,
+which costs a tick. Roll forward rather than back once clients have moved: the fix for a bad v2
+baker is a better v2 baker.
 
 ---
 
@@ -382,7 +426,7 @@ Then fill in the credentials from **T5** and take the first real publish by hand
 ```sh
 sudo nano /etc/obc-wx/r2.env          # OBC_WX_R2_ACCOUNT_ID / ACCESS_KEY_ID / SECRET_ACCESS_KEY,
                                       # plus OBC_WX_R2_ENDPOINT for a jurisdiction bucket (T3/T5)
-sudo systemctl start obc-wx-bake@cycle.service
+sudo systemctl start obc-wx-bake@cycle.service   # through the unit — §7 says why never by hand
 sudo journalctl -u obc-wx-bake@cycle.service -n 60 --no-pager
 ```
 
@@ -514,7 +558,9 @@ The drill must prove the *alert path*, not the probe's arithmetic:
    workflow* with `probe_args = --now <three hours from now>`.)
 3. Expect a new issue "Weather service: manifest stale" and its e-mail. Check the device story at
    the same time: it must say **WEATHER UPDATE NEEDED**, never "dry".
-4. `sudo systemctl start obc-wx-bake@cycle.timer` and run one bake by hand to recover immediately.
+4. `sudo systemctl start obc-wx-bake@cycle.timer`, then `sudo systemctl start
+   obc-wx-bake@cycle.service` to recover immediately (through the unit — §7 says why). Expect one
+   `CADENCE` alert on the next probe; it clears on the following scheduled tick.
 5. The next scheduled probe comments and closes the issue. **No R2 surgery is needed to recover** —
    if any was, that is a bug, not an operational step.
 
@@ -568,14 +614,19 @@ ever produce. Storage cannot see that mistake; `generated_at − reference_time`
 sample, and 7 minutes into a 15-minute step is a phase a correct timer (60 s randomized delay)
 cannot reach.
 
-The probe's two storage gates, then, are **30 MB** for the published set (≈ 2× the wet-global
-measurement — it catches a dataset that *grew*: a codec regression, an adapter painting noise into
-cells that should be dry) and **90 MB** for the retained footprint (3 × the set gate, ≈ 2× the
-measured resident figure). Be clear about what the second one cannot see: it is computed from the
-retention chain the manifest states, so it is bounded by 3 × the published set by construction. It
-is a projection of what the bucket holds *if the sweep is working*, and no arithmetic over a
-manifest can detect a sweep that is not. The two things that can are the probe's sweep check (one
-`HEAD` against a generation the manifest no longer names, §5) and T9's monthly look at the bill.
+The probe therefore carries exactly **one** storage gate: **30 MB** for the published set, ≈ 2× the
+wet-global measurement, catching a dataset that *grew* — a codec regression, an adapter painting
+noise into cells that should be dry. The obvious second gate, retained bytes against ~90 MB, was
+written and then removed: `retained = set × (1 + len(previous))` and §10.4 caps `len(previous)` at
+2, so it is bounded by 3 × the published set *by construction* and cannot fire without the set gate
+firing first. It was a restatement of the same measurement wearing a second gate's clothes, and a
+gate that arithmetically cannot fire on its own is one people learn to ignore. The retained figure
+is still printed, because it is the number the bucket actually holds.
+
+What no arithmetic over a manifest can see is a sweep that stopped — the retained figure is a
+projection of what the bucket holds *if the sweep is working*. Two things can see it, and both are
+real checks rather than gates: the probe's sweep witness (one `HEAD` against a generation the
+manifest no longer names, §5) and T9's monthly look at R2's own stored-bytes figure.
 
 Record the **actual** metered numbers here after the first full month (an epic closeout item):
 
@@ -616,6 +667,16 @@ systemctl show -p NRestarts -p ExecMainStatus obc-wx-bake@cycle.service
 Every tick prints its own report: one line per mosaic source with its priority rank and how many
 frames it contributed, bytes fetched, objects published, dry shards omitted, elapsed ms, then —
 from the fourth cycle on — a `retired <generation> (N objects)` line, then any warnings.
+
+**Run a bake by hand only as `systemctl start obc-wx-bake@cycle.service`, never as a bare
+`obc-wx-bake cycle --r2`.** The `flock` that serializes cycles is in the unit's `ExecStart`, not in
+the binary: a hand-typed invocation runs outside it, and if it overlaps a timer tick the loser
+republishes an older manifest over a newer one — a document naming generations the newer cycle's
+sweep already deleted, which by `OBCG_Spec.md` §10.3 is an error for every client that falls back to
+one. The baker refuses to publish a manifest older than the one already at the key, so the mistake
+costs a tick and a journal line instead; the lock is what stops it arising at all. Expect the
+cadence guard (§5) to fire once after any hand-started bake — it is stating a true thing about the
+live manifest's phase, and it clears on the next scheduled tick.
 
 **Upgrade the binary.** Rolling back is the same command with an older ref, and needs no R2 work:
 the published objects a good release made stay valid, and the next tick of an older binary simply
@@ -674,16 +735,19 @@ risk. Wait for the next tick before intervening.
 | `retention sweep: N of generation … could not be deleted` | the sweep hit store errors. **The cycle succeeded** — those objects are unreferenced, nothing serves them | one occurrence is noise. Repeating means storage is growing by a set per cycle and only T4's rule bounds it: check the token still has write scope, and read §6's guard list |
 | The probe says a generation is `still fetchable` | the sweep has stopped collecting entirely | grep the journal for `retention sweep:`; if there are no warnings at all, the sweep is not running — check the deployed binary is the one this runbook describes |
 | The probe says a source is `MISSING` from `attribution[]` | not weather: the deployed binary's `MOSAIC_PRIORITY` does not have it | check what `install.sh` last deployed; roll forward, or drop the id from `OBC_WX_EXPECT_SOURCES` if the removal was deliberate |
-| The probe says `CADENCE` | the timer fires faster than the dataset's cadence | `systemctl list-timers 'obc-wx-bake@*'` against `adapters.conf`. This is the one mistake that reaches a bill (§6) |
+| The probe says `CADENCE` | the timer fires faster than the dataset's cadence — **or somebody just ran a bake by hand**, which stamps whatever phase of the step they ran it at | if you (or a step in this table) started a bake in the last 15 minutes, that is this, and it clears on the next scheduled tick. Otherwise `systemctl list-timers 'obc-wx-bake@*'` against `adapters.conf`: this is the one mistake that reaches a bill (§6) |
+| `refusing to publish a manifest that goes backwards` | this cycle is anchored earlier than the generation already published — a clock that stepped back, or a bake started outside the unit's `flock` while another was running | nothing was published and nothing was deleted; the live manifest still stands. `timedatectl` first, then check nobody is running `obc-wx-bake cycle --r2` by hand (§7). It clears itself on the next tick once the clock is right |
+| `published but does not parse back` / `read back … not the … just written` | the manifest was written and the read-back did not match — a torn body on the way out | **the sweep did not run**, deliberately: nothing was deleted. The next tick republishes and re-verifies. If it repeats, the bucket or the endpoint is the problem, not the baker |
 | Cycle killed, `MemoryMax` in the journal | the bake exceeded its cap; the budget is ≈ 398 MB at `BAKE_THREADS = 4` | that is a bug, not a tuning problem — file it; raise the cap in the unit template only with a measurement |
-| Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop obc-wx-bake@cycle.service`, check `ps`, then start one by hand |
+| Every tick logs `flock`/timeout | a bake is wedged holding the lock | `systemctl stop obc-wx-bake@cycle.service`, check `ps`, then `systemctl start obc-wx-bake@cycle.service` — through the unit, so the replacement takes the same lock |
 | `wx/v2/manifest.json exists but did not parse … refusing to publish` | a torn or truncated read of the manifest the baker itself wrote | **do nothing.** This is the §10.4 rule working: publishing an empty retention chain from a torn read would delete the generations in-flight clients are reading. The next tick retries |
-| Timer "active" but nothing publishes | clock skew, or a paused system | `timedatectl` (NTP on?), then run one bake by hand |
+| Timer "active" but nothing publishes | clock skew, or a paused system | `timedatectl` (NTP on?), then `systemctl start obc-wx-bake@cycle.service`. A clock that stepped *backwards* shows up as `refusing to publish a manifest that goes backwards` rather than as silence |
 | Everything green on the box, probe says stale | delivery, not baking: public access, custom domain, DNS or a cached 404 | re-do §4 steps 1–3 |
 
 **Wedged state, last resort.** The published manifest is the service's *only* state, and deleting it
 is a full reset — with one consequence that did not exist before the sweep. Load the environment as
-in §4 step 5, then `rclone deletefile obcwx:obc-wx/wx/v2/manifest.json` and run one bake by hand.
+in §4 step 5, then `rclone deletefile obcwx:obc-wx/wx/v2/manifest.json` and
+`systemctl start obc-wx-bake@cycle.service`.
 The next cycle sees no predecessor, treats itself as a bootstrap, and publishes a complete
 generation with an empty `previous_generations` — which means **it will not sweep for three
 cycles**, and the generations that were current when you deleted the manifest are now orphaned. They
