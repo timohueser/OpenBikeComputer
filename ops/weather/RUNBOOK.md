@@ -3,6 +3,17 @@
 Everything needed to build, run, watch, repair and rebuild the weather bakery. WX18 (#1206) of
 epic #1185.
 
+> **Mid-cutover, 2026-08-11 (#1246 → WXR8 #1247).** The baker in `develop` publishes **only** the
+> one mosaic dataset at `wx/v2/`: the per-product subcommands, the `wx/v1` tree and the tier ladder
+> clients selected products by are deleted from the code. The **deployed VPS is still running the
+> previous build**, so `wx/v1` is still being published and still being read, and every v1 procedure
+> below is therefore still live and still correct — it describes what is running, not what the
+> repository builds. WXR8 #1247 owns the cutover: deploy the new binary, re-run `install.sh` (which
+> replaces the per-adapter timers with the single `cycle` timer this repo's `adapters.conf` now
+> describes), move the clients, stop the old timers, then delete the `wx/v1` tree by hand. Nothing
+> in §§3–8 changes before that, and the baker's own retention sweep must never be the thing that
+> removes the v1 tree.
+
 The service is **one stateless publisher**: a small VPS runs `obc-wx-bake` on systemd timers, each
 tick fetches upstream radar/model data, bakes OBCG frames, and swaps one `manifest.json` in R2.
 Nothing else exists — no database, no accounts, no per-request compute, no rider coordinate ever
@@ -16,8 +27,8 @@ reaching it. That shape is what makes the failure story boring:
 | Where | What |
 | :-- | :-- |
 | `ops/weather/install.sh` | Idempotent installer: user, dirs, binary, units, journal caps |
-| `ops/weather/adapters.conf` | The cadence table — the one place a schedule is defined |
-| `ops/weather/systemd/obc-wx-bake@.service` | The hardened one-shot bake unit (`%i` = adapter) |
+| `ops/weather/adapters.conf` | The cadence table — the one place a schedule is defined (one `cycle` row since #1246) |
+| `ops/weather/systemd/obc-wx-bake@.service` | The hardened one-shot bake unit (`%i` = the subcommand) |
 | `ops/weather/freshness_probe.py` | The external probe; also runnable by hand |
 | `.github/workflows/wx-freshness.yml` | Runs the probe every 15 min, opens/closes one alert issue |
 | `host/obc-wx-bake/` | The baker itself (WX5 #1215); `specs/OBCG_Spec.md` is its output contract |
@@ -280,7 +291,8 @@ deadlines (`freshness.next_generation_expected_at` — the service is late; `fre
 the generation can no longer answer anything), a count of published shards against the grid the
 manifest states, and a retained-bytes figure taken from the retention chain (`generation` plus
 `previous_generations`), which is exactly the set a lifecycle sweep is allowed to keep. Both trees
-are live until #1246 deletes v1, so run both.
+are live until the cutover retires v1, so run both. After it, `--mosaic` is the only probe that
+means anything and the v1 half of the probe goes with the tree — WXR8 #1247's last step.
 
 ### Drill it (WX15 gate, epic closeout)
 

@@ -1,7 +1,7 @@
 //! The host weather client: what the phone does, in Rust, for the simulator.
 //!
 //! ```text
-//!   wx/v2/manifest.json ──►  plan            (expiry + bbox ÷ shard grid; no product, no tier)
+//!   wx/v2/manifest.json ──►  plan            (expiry + bbox ÷ shard grid; nothing selectable)
 //!        │                     │
 //!        │                     ▼
 //!        │             OBCG corridor reads   (header + covering pages + needed tiles, Range)
@@ -18,8 +18,9 @@
 //!   epic allows to see one.
 //! - **Nothing chooses.** There is one dataset on one lattice at one cadence, so "which objects
 //!   cover me" is four divisions ([`manifest_v2::Grid::shards_for`]) and not a policy. WXR5 #1244
-//!   deleted the tier ladder, bbox containment, expired-product shadowing and the lattice-nesting
-//!   refusal that existed only because a client used to compose heterogeneous products.
+//!   deleted the client half of that — the tier ladder, bbox containment, expired-product
+//!   shadowing and the lattice-nesting refusal — and WXR7 #1246 deleted the producer half and the
+//!   spec text, so none of it exists anywhere any more.
 //!
 //! This is a second implementation of the contract the iOS companion implements; the phone stays
 //! the reference. Where the two could drift, this crate's tests pin the shared vectors both read —
@@ -337,7 +338,7 @@ impl WeatherClient {
         let mut outside_window = 0u32;
         // Frames outside the usable window are not fetched: two hours ahead is the question the
         // rain map answers, and an observation older than six hours would be a lie told with a
-        // true timestamp. Both are properties of the timeline, not of any product.
+        // true timestamp. Both are properties of the timeline.
         let usable = |offset_min: u32, outside: &mut u32| -> Option<i64> {
             let frame = manifest.frame(offset_min)?;
             let inside = frame.valid_at <= now + HORIZON_S && frame.valid_at >= now - MAX_OBSERVATION_AGE_S;

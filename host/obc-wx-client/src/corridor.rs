@@ -36,7 +36,8 @@ pub const METRES_PER_DEGREE_LAT: f64 = 111_320.0;
 /// question about a place rather than about a heading. There is no projection, no bearing and no
 /// speed any more: under one uniform lattice a bigger window costs bytes and nothing else, where a
 /// directed cone used to change *which product answered* — the tier ladder's real reason for
-/// existing, and the thing #1248 deleted.
+/// existing, and the thing epic #1248 deleted from the clients (#1244) and then from the producer
+/// and the spec (#1246).
 pub const CORRIDOR_RADIUS_M: f64 = 90_000.0;
 
 /// The window one fetch asks about, in integer microdegrees.

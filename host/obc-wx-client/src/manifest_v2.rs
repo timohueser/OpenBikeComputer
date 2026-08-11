@@ -1,8 +1,8 @@
 //! The client's view of `wx/v2/manifest.json` (OBCG §10) — **selection as arithmetic** (#1243).
 //!
-//! v1's reader exists to *choose*: it ranks products by tier, tests bbox containment and compares
-//! staleness. None of that survives here, because there is nothing to choose between. This module
-//! answers exactly two questions, and neither is a policy:
+//! The reader this replaced existed to *choose*: it ranked products by tier, tested bbox
+//! containment and compared staleness. None of that survives — and since #1246 there is no
+//! producer for it either. This module answers exactly two questions, and neither is a policy:
 //!
 //! 1. **which shards cover my bbox** — [`Grid::shards_for`], a handful of divisions;
 //! 2. **what is at that shard** — [`Frame::state_of`]: an object to fetch, a dry shard, or a shard

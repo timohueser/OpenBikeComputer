@@ -79,7 +79,7 @@ impl WeatherAlertScreen {
                     // underneath: normally the card is *replaced*; when the rider was already on
                     // the rain map the card simply pops back to it (review F4 — replacing would
                     // stack two identical rain maps). Either way the view lands on the current
-                    // frame, inside the product's zoom regime.
+                    // frame, inside the rain grid's zoom regime.
                     cx.state.rain_step = 0;
                     cx.state.clamp_rain_zoom();
                     if self.over_rain_map {

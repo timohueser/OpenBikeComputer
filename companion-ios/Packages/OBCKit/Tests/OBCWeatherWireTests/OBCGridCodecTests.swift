@@ -259,7 +259,7 @@ struct OBCGridCodecTests {
             let bytes = try fixture(name)
             #expect(throws: (any Error).self, "accepted \(name)") { try OBCGridCodec.validate(bytes) }
         }
-        #expect(Self.negatives.count == 24)
+        #expect(Self.negatives.count == 25)
     }
 
     /// OBCG_Spec.md §7: a corridor consumer reads the header, the covering directory pages, and

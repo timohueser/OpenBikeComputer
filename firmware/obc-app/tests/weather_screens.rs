@@ -136,10 +136,10 @@ fn menu_reaches_every_weather_surface() {
 }
 
 /// The rain map's zoom-out clamp (owner tuning round 2): entry snaps a wider-out camera to the
-/// product's regime floor, an Inspect zoom-out stops at the floor instead of leaving the regime,
-/// zooming in stays free, and with no rain product the clamp is disengaged.
+/// rain grid's regime floor, an Inspect zoom-out stops at the floor instead of leaving the regime,
+/// zooming in stays free, and with no rain grid the clamp is disengaged.
 #[test]
-fn rain_map_zoom_clamps_to_the_product_regime_floor() {
+fn rain_map_zoom_clamps_to_the_rain_grid_regime_floor() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     // The host-fed floor (the sim/board derive it from `WeatherSnapshot::rain_zoom_floor`).
     app.state.rain_zoom_min = 0.02;
@@ -162,14 +162,14 @@ fn rain_map_zoom_clamps_to_the_product_regime_floor() {
     app.apply_gesture(Gesture::Step(-1));
     assert!(app.state.zoom > 0.02, "zooming back in is free");
 
-    // No rain product: the floor is 0.0 and the clamp disengages (the defensive banner remains
+    // No rain grid: the floor is 0.0 and the clamp disengages (the defensive banner remains
     // the backstop for that configuration).
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.state.zoom = 0.004;
     open_dashboard(&mut app);
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
-    assert_eq!(app.state.zoom, 0.004, "no product, no clamp");
+    assert_eq!(app.state.zoom, 0.004, "no rain grid, no clamp");
 }
 
 /// The alert card: host-pushed, re-fires update in place (never stack), VIEW RAIN MAP replaces

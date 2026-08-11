@@ -230,9 +230,9 @@ else
     die "no binary: pass --binary PATH or --from-source"
 fi
 
-# Does this binary know an adapter? A known subcommand with no destination fails with the
-# destination complaint; an unknown one fails with the usage text. That is the whole probe, and
-# it is what keeps the WX6 rows in adapters.conf inert until the binary grows them.
+# Does this binary know a subcommand? A known one with no destination fails with the destination
+# complaint; an unknown one fails with the usage text. That is the whole probe, and it is what lets
+# a row land in adapters.conf before the binary that answers to it is deployed.
 supports_adapter() {
     local out
     out=$("$BIN_PATH" "$1" 2>&1 || true)
