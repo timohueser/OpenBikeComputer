@@ -27,29 +27,37 @@ pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv
 /// #1246 deleted the live per-product tree that used to publish on it — **a window of the canonical
 /// lattice**. The pitch is [`crate::canonical::CELL_UDEG`] in both axes and the origin is a whole
 /// number of canonical cells from [`crate::canonical::CANONICAL`]'s -90/-180 origin, so every cell
-/// here *is* a canonical cell: the mosaic copies from this window rather than resampling it,
-/// exactly as it already does for [`crate::source::mrms`]. Cells outside the projected raster are
-/// no-data, and the mosaic reads that as "not covered" and falls through to the next-priority
-/// source.
+/// here *is* a canonical cell: the nearest-neighbour pick `Mosaic::fill` makes for a lattice cell
+/// lands on that cell itself, which is what [`crate::source::mrms`] already had. It is an identity
+/// resample and not a fast path — `fill` has no alignment branch and wants none; what the alignment
+/// buys is positional accuracy, not speed. Cells outside the projected raster are no-data, and the
+/// mosaic reads that as "not covered" and falls through to the next-priority source.
 ///
 /// **What the alignment replaced.** The window used to be 9,000 x 14,000 udeg — square ~1 km cells
 /// chosen to suit the native raster rather than the lattice — which cost every published German
 /// cell a *second* nearest-neighbour hop: the lattice cell picked the nearest window cell, which
-/// had itself picked the nearest stereographic cell. Two independent roundings of a ~1 km field is
-/// up to ~1 km of positional slop on a source whose whole value is that it resolves a kilometre.
-/// On the lattice there is one rounding and only one: [`source_index_map`] projects the lattice
-/// cell's own centre through [`stereo::native_index`], and nothing downstream rounds again.
+/// had itself picked the nearest stereographic cell. Two independent roundings of a ~1 km field put
+/// the worst case at ~1 km — 501 m lattice-to-window plus 500 m window-to-native — on a source
+/// whose whole value is that it resolves a kilometre. On the lattice there is one rounding and only
+/// one, so the worst case halves to 500 m: [`source_index_map`] projects the lattice cell's own
+/// centre through [`stereo::native_index`], and nothing downstream rounds again. A lattice centre
+/// can no longer land on a window cell boundary either — it is offset half a cell from one by
+/// construction — so the half-open edge rule `canonical::source_column` documents cannot bite here.
 ///
 /// The extent covers everything the old window did and a shade more, because it is the old extent
 /// rounded **outwards** onto the lattice and never inwards: north 55.868 -> 55.87 N, east
 /// 18.736 -> 18.74 E, with the south-west corner already on it.
 ///
-/// What this rectangle does **not** take in — unchanged by the alignment and pre-dating it — is the
-/// raster's north bulge. A polar-stereographic north edge curves poleward away from its corners, so
-/// the frame reaches 56.219 N at 10 E against the 55.862 N its UL corner reports, and the top
-/// ~0.35 degrees of it — Denmark and the western Baltic, no German ground — falls outside and is
-/// answered by the next-priority source. Widening to take it in is a coverage decision rather than
-/// an alignment one, so it is not made here.
+/// What this rectangle does **not** take in — and the old one did not either — is the raster's
+/// north bulge. A polar-stereographic north edge curves poleward away from its corners, so the
+/// frame reaches 56.219 N at 10 E against the 55.862 N its UL corner reports. The strip above the
+/// top row's centre is a crescent from 1.565 E to 18.444 E, ~0.35 degrees thick in the middle and
+/// tapering to nothing at both ends: **29,083 native cells, 2.20 %** of the raster, all of it
+/// Denmark, the North Sea and the western Baltic — no German ground, which tops out at 55.058 N.
+/// Those cells are answered by the next-priority source. This window clips 166 fewer of them than
+/// the old one did, incidentally rather than by design; taking the bulge in outright costs 35 more
+/// rows (`height: 1_054`, +3.4 %) and is a **coverage** decision rather than an alignment one, so
+/// it is not made here.
 ///
 /// `cell_size_m` stays the source's nominal native resolution — 1 km, the figure MRMS states on the
 /// identical pitch — and is descriptive here; a published frame states
@@ -177,10 +185,12 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
 ///
 /// Since [`GEOMETRY`] is a window of the canonical lattice, the centre this projects is the
 /// **lattice** cell's own centre, and this is therefore the only rounding standing between the
-/// stereographic raster and a published German cell. `canonical_mosaic.rs`'s
-/// `every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_source` asserts that
-/// equality of centres cell by cell, so a window that drifted off the lattice — reintroducing the
-/// second hop this pass exists without — fails a test rather than quietly blurring Germany.
+/// stereographic raster and a published German cell. Two tests in `canonical_mosaic.rs` keep it
+/// that way — `every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_source`
+/// re-derives the equality of centres at every cell it samples, and
+/// `the_dwd_window_is_a_window_of_the_canonical_lattice` states it against [`GEOMETRY`] itself — so
+/// a window that drifted off the lattice, reintroducing the second hop this pass exists without,
+/// fails a test rather than quietly blurring Germany.
 fn source_index_map() -> Vec<u32> {
     let mut map = vec![u32::MAX; GEOMETRY.cells()];
     for row in 0..GEOMETRY.height {
