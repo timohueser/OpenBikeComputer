@@ -2,20 +2,20 @@
 //!
 //! This is the pack format's load-bearing property, and it is deliberately cheap to state: the
 //! replay is a [`FixtureUpstream`] — the same offline seam the checked-in fixture cycles use — and
-//! the bake is [`run_cycle`] with the production adapters. Nothing about packs leaks into the
-//! bakery, so "the pack re-bakes byte-identically" really does mean "the baker still produces
-//! these bytes from these upstream bytes".
+//! the bake is [`run_cycle`] with the production adapters over the pack's own lattice. Nothing
+//! about packs leaks into the bakery, so "the pack re-bakes byte-identically" really does mean
+//! "the baker still produces these bytes from these upstream bytes".
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::cycle::{run_cycle, CycleReport};
+use crate::canonical::{run_cycle, CycleReport};
 use crate::fetch::FixtureUpstream;
-use crate::manifest;
-use crate::pack::crop::CroppedAdapter;
+use crate::pack::window::sub_lattice;
 use crate::pack::{archive, resolve, Event, Member, Retrieval, Role, SERVICE_DIR};
 use crate::publish::DirStore;
-use crate::source::{us::UsComposite, Adapter};
+use crate::source::{hrrr, mrms, Adapter};
+use crate::timefmt;
 
 /// Load the pack's stored service members into an offline upstream, keyed by the **canonical**
 /// URLs the baker asks for (never the archive URLs the bytes came from).
@@ -77,27 +77,22 @@ pub struct RebakeReport {
 }
 
 pub fn bake_into(root: &Path, event: &Event, destination: &Path) -> Result<RebakeReport, String> {
-    if event.bake.adapter != crate::source::us::ID {
+    if event.bake.sources != archive::SUPPORTED_SOURCES {
         return Err(format!(
-            "pack adapter {:?} cannot be replayed yet (supported: {})",
-            event.bake.adapter,
-            archive::SUPPORTED_ADAPTERS.join(", ")
+            "pack sources {:?} cannot be replayed yet (supported: {})",
+            event.bake.sources,
+            archive::SUPPORTED_SOURCES.join(", ")
         ));
     }
-    let now = manifest::parse_rfc3339(&event.bake.now)
+    let now = timefmt::parse_rfc3339(&event.bake.now)
         .ok_or_else(|| format!("event.json: bake.now {:?} is not RFC 3339", event.bake.now))?;
+    let lattice = sub_lattice(&event.bake.bbox_udeg)?;
     let mut upstream = replay_upstream(root, event)?;
     let mut store = DirStore::new(destination);
-    let base = UsComposite;
-    let cropped;
-    let adapter: &dyn Adapter = match event.bake.bbox_udeg {
-        Some(bbox) => {
-            cropped = CroppedAdapter::new(&base, bbox);
-            &cropped
-        }
-        None => &base,
-    };
-    let cycle = run_cycle(&[adapter], &mut upstream, &mut store, now, false)?;
+    let mrms_adapter = mrms::Mrms;
+    let hrrr_adapter = hrrr::Hrrr;
+    let adapters: Vec<&dyn Adapter> = vec![&mrms_adapter, &hrrr_adapter];
+    let cycle = run_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 1, false)?;
     Ok(RebakeReport { cycle, requests: upstream.requests })
 }
 
@@ -180,22 +175,18 @@ pub fn verify_truth_rebake(root: &Path, event: &Event) -> Result<usize, String> 
     if event.truth_frames.is_empty() {
         return Ok(0);
     }
-    let anchor = manifest::parse_rfc3339(&event.window_start)
+    let anchor = timefmt::parse_rfc3339(&event.window_start)
         .ok_or_else(|| format!("event.json: window_start {:?} is not RFC 3339", event.window_start))?;
+    let lattice = sub_lattice(&event.bake.bbox_udeg)?;
     let mut upstream = truth_upstream(root, event)?;
     for frame in &event.truth_frames {
-        let valid_at = manifest::parse_rfc3339(&frame.valid_at)
+        let valid_at = timefmt::parse_rfc3339(&frame.valid_at)
             .ok_or_else(|| format!("{}: valid_at {:?} is not RFC 3339", frame.path, frame.valid_at))?;
         if valid_at - anchor != i64::from(frame.offset_min) * 60 {
             return Err(format!("{}: offset_min disagrees with valid_at - window_start", frame.path));
         }
-        let baked = crate::pack::capture::bake_truth_frame(
-            &mut upstream,
-            anchor,
-            frame.offset_min,
-            valid_at,
-            event.bake.bbox_udeg,
-        )?;
+        let baked =
+            crate::pack::capture::bake_truth_frame(&mut upstream, &lattice, anchor, frame.offset_min, valid_at)?;
         let stored = std::fs::read(crate::pack::resolve(root, &frame.path)?)
             .map_err(|error| format!("{}: {error}", frame.path))?;
         if baked != stored {
@@ -208,6 +199,52 @@ pub fn verify_truth_rebake(root: &Path, event: &Event) -> Result<usize, String> 
         }
     }
     Ok(event.truth_frames.len())
+}
+
+/// Re-derive `service/` and `truth/` **in place** from the pack's own stored `upstream/`, and
+/// rewrite the parts of `event.json` that describe them.
+///
+/// The counterpart of [`verify_rebake`], and it exists for the same reason that check does: the
+/// baked halves of a pack are a pure function of bytes the pack already carries, so a deliberate
+/// change to the lattice, the emitter or the quantization is absorbed by re-running the function
+/// rather than by going back to a free mirror for the raw observations. It touches no network and
+/// records no members — `upstream/` and the provenance in `members[]` are the pack's evidence and
+/// this must never rewrite them.
+pub fn regenerate(root: &Path, event: &mut Event) -> Result<(), String> {
+    let service_root = root.join(SERVICE_DIR);
+    for directory in [&service_root, &root.join(crate::pack::TRUTH_DIR)] {
+        if directory.exists() {
+            std::fs::remove_dir_all(directory).map_err(|error| format!("{}: {error}", directory.display()))?;
+        }
+    }
+    bake_into(root, event, &service_root)?;
+
+    let lattice = sub_lattice(&event.bake.bbox_udeg)?;
+    event.bake.sources = archive::SUPPORTED_SOURCES.iter().map(|id| (*id).to_string()).collect();
+    event.manifest_key = crate::manifest_v2::MANIFEST_KEY.to_string();
+    event.coverage_udeg = crate::pack::capture::pack_coverage(&lattice);
+    event.service = crate::pack::read_tree(&service_root)?
+        .iter()
+        .map(|(key, bytes)| crate::pack::ServiceObject {
+            key: key.clone(),
+            bytes: bytes.len() as u64,
+            sha256: crate::pack::sha256(bytes),
+        })
+        .collect();
+
+    let anchor = timefmt::parse_rfc3339(&event.window_start)
+        .ok_or_else(|| format!("event.json: window_start {:?} is not RFC 3339", event.window_start))?;
+    let mut upstream = truth_upstream(root, event)?;
+    for frame in &mut event.truth_frames {
+        let valid_at = timefmt::parse_rfc3339(&frame.valid_at)
+            .ok_or_else(|| format!("{}: valid_at {:?} is not RFC 3339", frame.path, frame.valid_at))?;
+        let bytes =
+            crate::pack::capture::bake_truth_frame(&mut upstream, &lattice, anchor, frame.offset_min, valid_at)?;
+        crate::pack::write_file(&crate::pack::resolve(root, &frame.path)?, &bytes)?;
+        frame.bytes = bytes.len() as u64;
+        frame.sha256 = crate::pack::sha256(&bytes);
+    }
+    event.write(root)
 }
 
 /// Every member the pack records but has not checked in, with the archive URL that restores it.

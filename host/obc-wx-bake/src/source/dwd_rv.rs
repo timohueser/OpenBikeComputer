@@ -8,7 +8,7 @@
 
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File as Hdf5File};
-use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED, PRODUCT_DWD_RV, TIER_RADAR};
+use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED};
 use obc_formats::precip4;
 use std::collections::HashMap;
 use std::io::Read;
@@ -16,8 +16,7 @@ use std::io::Read;
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{MAX_COMPRESSED_BYTES, MAX_DECOMPRESSED_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource};
 use crate::stereo;
 
 pub const ID: &str = "dwd-rv";
@@ -83,46 +82,15 @@ impl Adapter for DwdRv {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        _now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
-        let previous_etag = previous.and_then(|product| product.upstream_etag.as_deref());
-        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, previous_etag)? {
-            FetchOutcome::Unchanged => return Ok(AdapterOutcome::Unchanged),
+    fn bake(&self, upstream: &mut dyn Upstream, _now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+        // No conditional request and no ETag short-circuit: the mosaic needs this source's cells
+        // every cycle, so "unchanged" would only save a download it has to do anyway (#1246).
+        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, None)? {
+            FetchOutcome::Unchanged => return Err("DWD RV LATEST returned 304 without a validator".into()),
             FetchOutcome::Body(fetched) => fetched,
         };
         let (run, frames) = bake_tar(&fetched.bytes)?;
-        // A validator can miss (or the fixture upstream can serve the same bytes without one):
-        // the run identity itself is the second short-circuit, keys being immutable per run.
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        // Upstream regression: LATEST served an older run than the one already published (a
-        // withdrawn or re-published archive). Never regress reference_time/staleness — keep the
-        // published product and wait for a genuinely newer run.
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "dwd-rv: upstream serves run {run} older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
-            id: ID,
-            product_code: PRODUCT_DWD_RV,
-            tier: TIER_RADAR,
-            geometry: GEOMETRY,
-            reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
-            attribution: ATTRIBUTION,
-            upstream_etag: fetched.etag,
-            frames,
-        })))
+        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
     }
 }
 
@@ -171,7 +139,6 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
                 offset_min: lead_minutes,
                 valid_at: member_run + i64::from(lead_minutes) * 60,
                 flags: if lead_minutes == 0 { FLAG_OBSERVED } else { FLAG_FORECAST },
-                source: None,
                 cells: resample(&member, &index_map),
             });
         }

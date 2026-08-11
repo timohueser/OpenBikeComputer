@@ -4,13 +4,11 @@ import Foundation
 /// Decoded OBCG v1 fixed header.
 ///
 /// Every derived count below is checked arithmetic over these fields, so a corridor consumer
-/// computes directory-page and tile byte ranges from the 128 header bytes alone. Product id and
-/// tier are provenance only — nothing branches on either, staleness and attribution are manifest
-/// data, and an unknown nonzero value in either is never a rejection reason.
+/// computes directory-page and tile byte ranges from the 128 header bytes alone. An object carries
+/// **no provenance**: #1246 deleted the product id and tier fields, bytes 12–13 are reserved and
+/// must be zero, and everything else a rider sees (staleness, attribution) is manifest data.
 public struct OBCGridHeader: Equatable, Sendable {
     public var totalLength: UInt32
-    public var productID: UInt8
-    public var tier: UInt8
     public var flags: UInt16
     /// Real upstream UTC frame validity timestamp; never a re-stamped fetch or bake time.
     public var validAtUnixSeconds: Int64
@@ -31,7 +29,7 @@ public struct OBCGridHeader: Equatable, Sendable {
     public var headerCRC32: UInt32
 
     public init(
-        totalLength: UInt32, productID: UInt8, tier: UInt8, flags: UInt16,
+        totalLength: UInt32, flags: UInt16,
         validAtUnixSeconds: Int64, referenceTimeUnixSeconds: Int64,
         southLatitudeMicrodegrees: Int32, westLongitudeMicrodegrees: Int32,
         cellLatitudeStrideMicrodegrees: UInt32, cellLongitudeStrideMicrodegrees: UInt32,
@@ -40,8 +38,6 @@ public struct OBCGridHeader: Equatable, Sendable {
         objectCRC32: UInt32, headerCRC32: UInt32
     ) {
         self.totalLength = totalLength
-        self.productID = productID
-        self.tier = tier
         self.flags = flags
         self.validAtUnixSeconds = validAtUnixSeconds
         self.referenceTimeUnixSeconds = referenceTimeUnixSeconds
@@ -254,12 +250,6 @@ public enum OBCGridCodec {
     public static let flagObserved: UInt16 = 1 << 0
     public static let flagForecast: UInt16 = 1 << 1
 
-    /// The one tier code the bakery writes (OBCG §3's registry). The radar/model/floor **ladder** is
-    /// gone with product selection (#1244): there is one mosaic dataset, so there is nothing to rank
-    /// and no code here may be branched on. The header field itself stays until OBCG §3/§3.1 drop it
-    /// in WXR7, and a nonzero value this build has never seen is still not a rejection reason.
-    public static let tierMosaic: UInt8 = 4
-
     /// Tile codec ids (OBCG_Spec.md §4.1/§5). 0 and 1 are the shared raw4/RLE4 pair; 2 is raw
     /// DEFLATE (RFC 1951) over the tile's raw4 nibble image and exists only in OBCG.
     public static let codecRaw4 = OBCPrecipitationTileCodec.raw4
@@ -286,13 +276,16 @@ public enum OBCGridCodec {
         guard headerCRC(head) == (try require(head.readUInt32LE(at: headerCRCOffset))) else {
             throw OBCWeatherWireError.crcMismatch
         }
-        guard try require(head.readUInt16LE(at: 62)) == 0, head.allZero(in: 84..<headerLength) else {
+        // Bytes 12–13 are the Product ID / Tier pair #1246 deleted. They are reserved now, so a
+        // nonzero value there is a malformed object rather than an unknown code to tolerate.
+        guard try require(head.readUInt16LE(at: 12)) == 0,
+              try require(head.readUInt16LE(at: 62)) == 0,
+              head.allZero(in: 84..<headerLength)
+        else {
             throw OBCWeatherWireError.malformed
         }
         let header = OBCGridHeader(
             totalLength: try require(head.readUInt32LE(at: 8)),
-            productID: try require(head.readUInt8(at: 12)),
-            tier: try require(head.readUInt8(at: 13)),
             flags: try require(head.readUInt16LE(at: 14)),
             validAtUnixSeconds: try require(head.readInt64LE(at: 16)),
             referenceTimeUnixSeconds: try require(head.readInt64LE(at: 24)),
@@ -593,7 +586,6 @@ public enum OBCGridCodec {
     // MARK: - Private
 
     private static func validateSemantics(_ header: OBCGridHeader) throws {
-        guard header.productID != 0, header.tier != 0 else { throw OBCWeatherWireError.malformed }
         let known = flagObserved | flagForecast
         guard header.flags & ~known == 0,
               (header.flags & flagObserved != 0) != (header.flags & flagForecast != 0)

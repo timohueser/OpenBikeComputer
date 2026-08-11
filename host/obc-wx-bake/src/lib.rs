@@ -11,35 +11,30 @@
 //!   `MOSAIC_PRIORITY` table that says which source wins a cell where two overlap.
 //! - [`grib`], [`idx`], [`tiff`], [`stereo`], [`lcc`], [`laea`] — pinned decode/selection/
 //!   projection primitives the adapters share.
-//! - [`canonical`] — the canonical lattice, the priority mosaic and the sharded emit (WXR3
-//!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions.
-//! - [`emit`] — cell grids → OBCG bytes through the `obc-formats` byte authority.
-//! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
-//! - [`manifest_v2`] — `wx/v2/manifest.json`: the canonical dataset's manifest (WXR4 #1243), with
-//!   nothing selectable in it — generation, grid constants, shard presence and deadlines.
-//! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
-//! - [`cycle`] — the idempotent orchestrator a systemd timer invokes.
+//! - [`canonical`] — the lattice, the priority mosaic, the sharded emit and **the cycle** (WXR3
+//!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions,
+//!   and since #1246 the only thing the bakery publishes.
+//! - [`manifest_v2`] — `wx/v2/manifest.json`: the dataset's manifest (WXR4 #1243), with nothing
+//!   selectable in it — generation, grid constants, shard presence and deadlines.
+//! - [`timefmt`] — the one UTC formatting convention every timestamp and key segment uses.
+//! - [`publish`] — objects-first, manifest-last object stores (directory and R2).
 //!
-//! Two things here are *not* the service. [`pack`] freezes a real past event — raw archive bytes,
+//! One thing here is *not* the service: [`pack`] freezes a real past event — raw archive bytes,
 //! the tree the real baker makes of them, and what actually happened next — so the simulator and
 //! the tests can run against real radar. It is driven by the `obc-wx-pack` binary and nothing in
-//! the bakery depends on it. [`spike`] is the WXR1 (#1240) measurement harness: throwaway, off the
-//! checked-in fixtures, reachable only through the `spike` subcommand, and deleted by WXR7.
+//! the bakery depends on it.
 
 pub mod canonical;
-pub mod cycle;
-pub mod emit;
 pub mod fetch;
 pub mod geometry;
 pub mod grib;
 pub mod idx;
 pub mod laea;
 pub mod lcc;
-pub mod manifest;
 pub mod manifest_v2;
 pub mod pack;
 pub mod publish;
 pub mod source;
-pub mod spike;
 pub mod stereo;
 pub mod tiff;
+pub mod timefmt;

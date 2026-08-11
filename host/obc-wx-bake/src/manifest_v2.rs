@@ -44,7 +44,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{self, CycleTimes, Lattice};
-use crate::manifest::{key_timestamp, rfc3339};
+use crate::timefmt::{key_timestamp, rfc3339};
 
 /// The mutable document key, beside the immutable objects it names.
 pub const MANIFEST_KEY: &str = "wx/v2/manifest.json";
@@ -542,7 +542,7 @@ mod tests {
     /// moment the generation can answer nothing, and one frame step is when its successor is due.
     #[test]
     fn the_freshness_deadlines_are_derived_from_the_time_axis() {
-        let times = CycleTimes::anchored_at(crate::manifest::parse_rfc3339("2026-08-10T14:37:00Z").expect("ts"));
+        let times = CycleTimes::anchored_at(crate::timefmt::parse_rfc3339("2026-08-10T14:37:00Z").expect("ts"));
         let manifest = Builder::new(&CANONICAL, times, times.reference_time, Vec::new(), Vec::new()).finish();
         assert_eq!(manifest.reference_time, "2026-08-10T14:30:00Z");
         assert_eq!(manifest.generation, "20260810T1430Z");
@@ -555,10 +555,10 @@ mod tests {
     /// time is not its own predecessor.
     #[test]
     fn the_generation_chain_keeps_exactly_the_two_before_it() {
-        let times = CycleTimes::anchored_at(crate::manifest::parse_rfc3339("2026-08-10T15:00:00Z").expect("ts"));
+        let times = CycleTimes::anchored_at(crate::timefmt::parse_rfc3339("2026-08-10T15:00:00Z").expect("ts"));
         let previous = Builder::new(
             &CANONICAL,
-            CycleTimes::anchored_at(crate::manifest::parse_rfc3339("2026-08-10T14:45:00Z").expect("ts")),
+            CycleTimes::anchored_at(crate::timefmt::parse_rfc3339("2026-08-10T14:45:00Z").expect("ts")),
             0,
             Vec::new(),
             vec!["20260810T1430Z".into(), "20260810T1415Z".into()],

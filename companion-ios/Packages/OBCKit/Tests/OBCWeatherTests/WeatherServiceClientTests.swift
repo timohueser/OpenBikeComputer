@@ -731,7 +731,6 @@ struct WeatherServiceClientTests {
                 cellLongitudeMicrodegrees: header.cellLongitudeStrideMicrodegrees,
                 width: header.width, height: header.height, tileEdge: header.tileEdge,
                 entriesPerPage: header.entriesPerPage, cellSizeMetres: header.cellSizeMetres,
-                productID: header.productID, tier: header.tier,
                 validAt: Date(timeIntervalSince1970: TimeInterval(header.validAtUnixSeconds)),
                 referenceTime: Date(
                     timeIntervalSince1970: TimeInterval(header.referenceTimeUnixSeconds)),

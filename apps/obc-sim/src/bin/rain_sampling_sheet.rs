@@ -215,14 +215,14 @@ impl Basemap {
 // Survey: what is in the object, and where is the weather?
 // ---------------------------------------------------------------------------------------------
 
-/// Print the product's geometry, its intensity histogram, and the wettest windows — so a frame is
+/// Print the frame's geometry, its intensity histogram, and the wettest windows — so a frame is
 /// aimed at real rain rather than at an empty quarter of a continent.
 fn survey(product: &mut ObcgSource, window: u32) {
     let h = product.header;
     let grid = product.grid_of();
     println!(
-        "product {} tier {} flags {:#06x} | {} x {} cells of {} m | valid_at {} ref {}",
-        h.product_id, h.tier, h.flags, h.width, h.height, h.cell_size_m, h.valid_at, h.reference_time
+        "flags {:#06x} | {} x {} cells of {} m | valid_at {} ref {}",
+        h.flags, h.width, h.height, h.cell_size_m, h.valid_at, h.reference_time
     );
     println!(
         "bbox lon {:.4}..{:.4} lat {:.4}..{:.4} | cell {:.5} x {:.5} deg | tile edge {}",

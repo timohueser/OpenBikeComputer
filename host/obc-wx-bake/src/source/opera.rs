@@ -50,8 +50,7 @@ use std::fmt::Write as _;
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::laea;
-use crate::manifest::Product;
-use crate::source::{AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::source::{Attribution, BakedFrame, BakedSource};
 use crate::tiff::{self, Cog};
 
 /// The live 24-hour bucket. Anonymous, no credentials, CC BY 4.0.
@@ -175,7 +174,6 @@ impl Quantity {
 #[derive(Debug, Clone, Copy)]
 pub struct Contract {
     pub id: &'static str,
-    pub product_code: u8,
     pub quantity: Quantity,
     /// The composite's own name in `GDAL_METADATA`, e.g. `OPERA CIRRUS maximum reflectivity
     /// composite`. Pinning it is how a swapped product under a familiar key is caught.
@@ -211,7 +209,6 @@ pub struct Contract {
     pub cadence_seconds: i64,
     /// How far back discovery probes before giving up.
     pub max_discovery_probes: usize,
-    pub staleness_seconds: i64,
     pub attribution: Attribution,
 }
 
@@ -439,7 +436,6 @@ pub fn bake_frame_on(
         offset_min: 0,
         valid_at,
         flags: FLAG_OBSERVED,
-        source: None,
         cells: resample(contract, &cog, geometry, warnings)?,
     })
 }
@@ -538,51 +534,29 @@ fn resample(
     Ok(cells)
 }
 
-/// One idempotent bake: discover the newest composite, short-circuit if it is the published one,
-/// otherwise fetch it and lay it on the window.
+/// One idempotent bake: discover the newest composite, fetch it and lay it on the window.
 pub fn bake(
     contract: &Contract,
     upstream: &mut dyn Upstream,
-    previous: Option<&Product>,
     now: i64,
     warnings: &mut Vec<String>,
-) -> Result<AdapterOutcome, String> {
+) -> Result<BakedSource, String> {
     let id = contract.id;
     let valid_at = discover_latest(contract, upstream, now)?
         .ok_or_else(|| format!("{id}: no composite published within the discovery window"))?;
-    let previous_reference = previous.and_then(|product| product.reference_unix());
-    if previous_reference == Some(valid_at) {
-        return Ok(AdapterOutcome::Unchanged);
-    }
-    // Upstream regression: the newest object is older than the one already published (a withdrawn
-    // object, or a clock going backwards). Never move reference_time or the staleness deadline
-    // into the past while published frames stand.
-    if previous_reference.is_some_and(|published| published > valid_at) {
-        warnings.push(format!(
-            "{id}: newest composite {valid_at} is older than the published {}; keeping the published product",
-            previous_reference.expect("checked")
-        ));
-        return Ok(AdapterOutcome::Unchanged);
-    }
     let url = contract.object_url(valid_at);
     let fetched = match upstream.fetch(&url, tiff::MAX_OBJECT_BYTES, None)? {
         FetchOutcome::Body(fetched) => fetched,
         FetchOutcome::Unchanged => return Err(format!("{id}: object fetch returned 304 without a validator")),
     };
     let frame = bake_frame(contract, &fetched.bytes, valid_at, warnings)?;
-    Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
+    Ok(BakedSource {
         id,
-        product_code: contract.product_code,
-        tier: obc_formats::obcg::TIER_RADAR,
         geometry: contract.geometry(),
         reference_time: valid_at,
-        staleness_deadline: valid_at + contract.staleness_seconds,
         attribution: contract.attribution,
-        // Keys are immutable per composite time, so run identity is the short-circuit; an ETag
-        // from one key would be meaningless against the next one.
-        upstream_etag: None,
         frames: vec![frame],
-    })))
+    })
 }
 
 #[cfg(test)]
@@ -610,7 +584,7 @@ mod tests {
 
     #[test]
     fn object_keys_follow_the_pinned_schema() {
-        let valid_at = crate::manifest::parse_rfc3339("2026-08-10T00:00:00Z").expect("timestamp");
+        let valid_at = crate::timefmt::parse_rfc3339("2026-08-10T00:00:00Z").expect("timestamp");
         assert_eq!(
             opera_cirrus::CONTRACT.object_url(valid_at),
             "https://s3.waw3-1.cloudferro.com/openradar-24h/2026/08/10/OPERA/COMP/OPERA@20260810T0000@0@DBZH.tiff"
