@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::canonical::{
-    bake_cycle, emit_shard, run_cycle, source_column, source_reaches, CycleTimes, Lattice, Mosaic, MosaicLayer,
-    BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
+    bake_cycle, emit_shard, run_cycle, source_column, source_reaches, source_row, CycleTimes, Lattice, Mosaic,
+    MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
@@ -177,8 +177,9 @@ fn icon_expected_field() -> ExpectedGrib {
 /// an independent one — it would agree with a shared sign error. What is genuinely independent is
 /// the *value* half: the DWD branch reads the raw ODIM raster out of the tar and re-implements the
 /// gain/offset/quantize chain, and it reaches the raster through `stereo::native_index` from the
-/// source cell's own centre, which pins the DWD window's alignment against the projection rather
-/// than against the mosaic. The ICON branch differences two independently decoded GRIB fields.
+/// lattice cell's own centre — which the caller first proves is also the source cell's centre — so
+/// it pins the DWD window against the projection rather than against the mosaic. The ICON branch
+/// differences two independently decoded GRIB fields.
 /// The wrap and edge rules that `fill` alone owns are pinned separately, by
 /// `the_floor_covers_every_column_once_the_antimeridian_wraps` and
 /// `a_lattice_centre_on_a_source_outer_edge_is_outside_the_window`.
@@ -237,12 +238,21 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
             let row = window.row0 + local_row;
 
             // The oracle, in priority order: the radar answers unless it has no data there. The
-            // DWD window is *not* on the canonical lattice (it is the shipped 9,000 x 14,000 µdeg
-            // one, frozen until the cutover — see `dwd_rv::GEOMETRY`), so the published cell is the
-            // stereographic sample taken at the **source cell's** centre, not at the lattice
-            // cell's. Getting that wrong is exactly the double-hop this test exists to describe.
+            // DWD window is now a window of this lattice (`dwd_rv::GEOMETRY`), so the source
+            // cell's centre **is** the lattice cell's centre and the published cell is the
+            // stereographic sample taken there — one rounding, not two. That equality is asserted
+            // rather than assumed: it is the whole content of the alignment, and a window that
+            // drifted back off the lattice would otherwise reintroduce the old double hop while
+            // this test went on passing against it.
+            let lat_deg = lattice.centre_lat_udeg(row) as f64 / 1e6;
+            let lon_deg = lattice.centre_lon_udeg(col) as f64 / 1e6;
             let radar = source_index(&dwd_window, &lattice, col, row).map(|(_, column, source_row)| {
-                dwd_expected(dwd_window.center_lat_deg(source_row), dwd_window.center_lon_deg(column), &raw)
+                assert_eq!(
+                    (dwd_window.center_lat_deg(source_row), dwd_window.center_lon_deg(column)),
+                    (lat_deg, lon_deg),
+                    "the DWD source cell sampled for lattice cell ({col},{row}) is not that cell"
+                );
+                dwd_expected(lat_deg, lon_deg, &raw)
             });
             let model = source_index(&icon_window, &lattice, col, row).map(|(index, _, _)| {
                 precip4::quantize_rate_mm_per_hour(f64::from(f008.values[index]) - f64::from(f007.values[index]))
@@ -273,6 +283,73 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
     assert!(radar_cells > 1_000, "the window must contain cells the radar answers");
     assert!(model_cells > 1_000, "the window must contain cells only the model answers");
     assert!(wet_cells > 0, "the captured run must contain rain for the agreement to mean anything");
+}
+
+/// **The DWD RV window is a window of the canonical lattice** — the property the test above
+/// exercises over one 512 x 384 corner, stated here against the constant itself so it holds for the
+/// whole trapezoid and not merely for the corner the fixture covers.
+///
+/// It is three claims, and the third is the one that keeps the first two honest:
+///
+/// 1. same pitch, lattice-aligned origin — so a canonical cell centre falls on a source cell centre
+///    everywhere, and the mosaic's nearest-neighbour pick is the identity rather than a second
+///    rounding of the reprojection;
+/// 2. it still covers the ground the 9,000 x 14,000 µdeg window did, because the old extent was
+///    rounded **outwards** onto the lattice;
+/// 3. it was rounded outwards by *less than one cell*, **on all four edges**. Without this a future
+///    edit could keep both claims above while padding the window out over half of Europe — every
+///    added cell is a trigonometric projection per cycle and a cell of no-data the mosaic walks for
+///    nothing.
+#[test]
+fn the_dwd_window_is_a_window_of_the_canonical_lattice() {
+    let window = dwd_rv::GEOMETRY;
+    window.validate().expect("the source window is within the OBCG limits");
+
+    // 1. The lattice's pitch, on the lattice's own grid.
+    assert_eq!((window.cell_lat_udeg, window.cell_lon_udeg), (CELL_UDEG, CELL_UDEG));
+    let cell = i64::from(CELL_UDEG);
+    let row0 = i64::from(window.south_lat_udeg) - i64::from(CANONICAL.south_lat_udeg);
+    let col0 = i64::from(window.west_lon_udeg) - i64::from(CANONICAL.west_lon_udeg);
+    assert_eq!((row0 % cell, col0 % cell), (0, 0), "the origin is not a whole number of canonical cells");
+
+    // 2 and 3. The old window: south-west 45.68 N / 1.46 E, 1,234 x 1,132 cells of 9,000 x 14,000
+    // µdeg — north 55.868, east 18.736. Every edge is outside the old one by less than one cell,
+    // south and west included: a window may not buy its alignment by growing.
+    let (old_south, old_west, old_north, old_east) = (45_680_000i64, 1_460_000i64, 55_868_000i64, 18_736_000i64);
+    let (south, west) = (i64::from(window.south_lat_udeg), i64::from(window.west_lon_udeg));
+    let (north, east) = (window.north_lat_udeg(), window.east_lon_udeg());
+    assert!(south <= old_south && old_south - south < cell, "south: {south}");
+    assert!(west <= old_west && old_west - west < cell, "west: {west}");
+    assert!(north >= old_north && north - old_north < cell, "north: {north}");
+    assert!(east >= old_east && east - old_east < cell, "east: {east}");
+
+    // And the consequence, through the mosaic's own selection functions and stated against
+    // `CANONICAL` rather than against the window's own origin. Both halves of that are load-bearing
+    // and were checked by mutation:
+    //
+    // * probing from `window.south_lat_udeg` instead would pass for a window sitting 3 mdeg off the
+    //   lattice, because `div_euclid` still returns the same *index* — it is the **centre** that has
+    //   to coincide, which is what the mosaic actually samples at;
+    // * and going through `source_column`/`source_row` catches what the constant-only asserts above
+    //   cannot: give `source_column` a round-to-nearest-boundary rule instead of `div_euclid` and
+    //   the window is still perfectly aligned while every German cell shifts one column east.
+    let (row0, col0) = ((row0 / cell) as u32, (col0 / cell) as u32);
+    for (col, row) in
+        [(0u32, 0u32), (1, 1), (window.width / 2, window.height / 2), (window.width - 1, window.height - 1)]
+    {
+        let lat_udeg = CANONICAL.centre_lat_udeg(row0 + row);
+        let lon_udeg = CANONICAL.centre_lon_udeg(col0 + col);
+        let (Some(source_col), Some(source_row)) = (source_column(&window, lon_udeg), source_row(&window, lat_udeg))
+        else {
+            panic!("the window does not reach canonical cell ({}, {})", col0 + col, row0 + row);
+        };
+        assert_eq!((source_col, source_row), (col, row), "canonical cell ({col},{row}) selects the wrong source cell");
+        assert_eq!(
+            (window.center_lat_deg(source_row), window.center_lon_deg(source_col)),
+            (lat_udeg as f64 / 1e6, lon_udeg as f64 / 1e6),
+            "the source cell selected for canonical cell ({col},{row}) has a different centre"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
