@@ -7,7 +7,7 @@
 //! Three things are proven here, and together they are what makes the pack usable as evidence:
 //!
 //! 1. every stored byte still hashes to what `event.json` swears (provenance);
-//! 2. re-baking `upstream/` through [`obc_wx_bake::cycle::run_cycle`] reproduces `service/`
+//! 2. re-baking `upstream/` through [`obc_wx_bake::canonical::run_cycle`] reproduces `service/`
 //!    **byte for byte** (the baker has not drifted);
 //! 3. the frames actually contain the storm — a pack of empty grids would pass (1) and (2) and
 //!    be worth nothing.
@@ -16,9 +16,10 @@ use std::path::PathBuf;
 
 use obc_formats::obcg;
 use obc_formats::precip4;
-use obc_wx_bake::manifest::{self, SourceClass};
-use obc_wx_bake::pack::{self, rebake, Event, Retrieval, Role};
-use obc_wx_bake::source::mrms;
+use obc_wx_bake::canonical::LATTICE_CELL_SIZE_M;
+use obc_wx_bake::manifest_v2;
+use obc_wx_bake::pack::{self, rebake, window::sub_lattice, Event, Retrieval, Role};
+use obc_wx_bake::timefmt;
 
 const EVENT_ID: &str = "us-derecho-2020-08-10";
 
@@ -136,7 +137,7 @@ fn the_pack_rebakes_byte_identically() {
 #[test]
 fn no_service_member_was_published_after_the_capture_instant() {
     let event = event();
-    let at = manifest::parse_rfc3339(&event.bake.now).expect("bake.now is RFC 3339");
+    let at = timefmt::parse_rfc3339(&event.bake.now).expect("bake.now is RFC 3339");
     let mut suppressed = 0usize;
     for member in event.service_members() {
         let published =
@@ -155,7 +156,7 @@ fn no_service_member_was_published_after_the_capture_instant() {
             published <= at,
             "{} was published at {} — after the capture instant {}",
             member.url,
-            manifest::rfc3339(published),
+            timefmt::rfc3339(published),
             event.bake.now
         );
     }
@@ -164,7 +165,7 @@ fn no_service_member_was_published_after_the_capture_instant() {
 
     // The truth ladder is the deliberate exception: it *is* the future, and every rung must be.
     for frame in &event.truth_frames {
-        let valid = manifest::parse_rfc3339(&frame.valid_at).unwrap();
+        let valid = timefmt::parse_rfc3339(&frame.valid_at).unwrap();
         assert!(valid > at, "truth frame {} is not ahead of the capture instant", frame.path);
     }
 }
@@ -177,22 +178,26 @@ fn the_pack_stays_on_the_basemap_it_names() {
     assert_eq!(event.basemap_region, pack::US_BASEMAP_REGION);
     let map = pack::US_BASEMAP_BBOX;
     let coverage = event.coverage_udeg;
-    let request = event.bake.bbox_udeg.expect("this pack is cropped");
+    let request = event.bake.bbox_udeg;
 
     // What this actually bounds, stated honestly. Coverage exceeds the basemap for two independent
     // reasons, and only one of them is tile alignment:
     //
     //   1. the *requested* `--bbox` may already sit outside Iowa — for this pack the request's east
-    //      edge is 90.000 W against Iowa's 90.140 W, so +0.140 of the +0.200 total east overhang is
-    //      the request, before a single tile is aligned;
-    //   2. crops then align outward to whole tiles of each frame's own lattice, adding up to one
-    //      more tile stride (0.64 degrees on the 1 km observation).
+    //      edge is 90.000 W against Iowa's 90.140 W, so 0.140 degrees of the east overhang is the
+    //      request, before a single tile is aligned;
+    //   2. a pack's window then aligns outward to whole tiles of the **published** lattice, and
+    //      since #1246 that is one tile edge of 256 canonical cells — 2.56 degrees, four times the
+    //      stride the per-product observation lattice used to align to. The pack buys production
+    //      tile geometry and pays for it in overhang; the objects stay small because the extra
+    //      ground is dry or model fill.
     //
     // So the bound is `request overshoot + one tile`, not `one tile`. It is still a real tripwire —
     // it is what fails if someone captures a Kansas storm against the Iowa basemap — but it does not
     // claim tile alignment is the only thing being tolerated.
-    let tile = i64::from(mrms::GEOMETRY.tile_edge) * i64::from(mrms::GEOMETRY.cell_lat_udeg);
-    assert_eq!(tile, 640_000, "the observation's tile stride is 0.64 degrees");
+    let lattice = sub_lattice(&event.bake.bbox_udeg).expect("the pack's lattice");
+    let tile = i64::from(lattice.tile_edge) * i64::from(lattice.cell_udeg);
+    assert_eq!(tile, 2_560_000, "the published lattice's tile stride is 2.56 degrees");
     for (edge, over, requested_over) in [
         ("south", map.south_udeg - coverage.south_udeg, map.south_udeg - request.south_udeg),
         ("west", map.west_udeg - coverage.west_udeg, map.west_udeg - request.west_udeg),
@@ -321,36 +326,57 @@ fn members_record_the_canonical_url_and_the_archive_it_came_from() {
     }
 }
 
-/// The composed timeline the pack froze: one MRMS observation anchoring eight HRRR forward
-/// frames at their own real valid times, on their own native lattices.
+/// The generation the pack froze: nine mosaic frames of one shard, over the pack's own lattice.
+///
+/// This was `the_frozen_manifest_is_the_real_composed_us_timeline` until #1246, and what it lost
+/// is the composition it was named for. The MRMS observation and the HRRR forward frames used to
+/// be one published product with a different lattice per frame; they are two *sources* now, and
+/// what the pack publishes is what production publishes — one lattice, one cell size, nine frames
+/// at a fixed 15-minute step, and no way to tell from the bytes which source painted a cell.
 #[test]
-fn the_frozen_manifest_is_the_real_composed_us_timeline() {
+fn the_frozen_manifest_is_one_generation_of_the_one_dataset() {
     let event = event();
-    let document = manifest::from_json(&read(&format!("service/{}", event.manifest_key))).expect("manifest parses");
-    assert_eq!(document.products.len(), 1);
-    let product = &document.products[0];
-    assert_eq!(product.id, "us");
-    // 18:48, not the 18:52 the capture was clocked at: MRMS takes ~3 minutes to publish, so 18:48
-    // is the newest observation that existed at the capture instant. The as-of guard is what makes
-    // that the answer rather than a wish.
-    assert_eq!(product.reference_time, "2020-08-10T18:48:00Z");
-    assert_eq!(product.frames.len(), 9);
-    assert_eq!(product.frames[0].source_class, SourceClass::Observation);
-    assert_eq!(product.frames[0].geometry.cell_size_m, 1_000);
-    // The forward frames keep HRRR's own 15-minute steps — the 17Z run's +120..+225 leads, which
-    // land 12, 27, 42 ... minutes ahead of an 18:48 observation. Nothing is re-spaced onto a round
-    // cadence, and the run is 17Z because the 18Z set was still publishing.
-    let forward: Vec<u32> = product.frames[1..].iter().map(|frame| frame.offset_min).collect();
-    assert_eq!(forward, vec![12, 27, 42, 57, 72, 87, 102, 117]);
-    for frame in &product.frames[1..] {
-        assert_eq!(frame.source_class, SourceClass::Forecast);
-        assert_eq!(frame.geometry.cell_size_m, 3_000);
+    let document =
+        manifest_v2::from_json(&read(&format!("service/{}", event.manifest_key))).expect("the v2 manifest parses");
+    assert_eq!(document.version, 2);
+    // 18:45, the quarter hour at or before the 18:52 capture instant. The pack's `window_start` is
+    // a different thing and deliberately so: it is the newest MRMS observation that existed at the
+    // capture instant (18:48 — MRMS takes ~3 minutes to publish, and the as-of guard is what makes
+    // that the answer rather than a wish), which is what the truth ladder is anchored on.
+    assert_eq!(document.generation, "20200810T1845Z");
+    assert_eq!(event.window_start, "2020-08-10T18:48:00Z");
+    assert_eq!(document.frames.len(), 9);
+    let offsets: Vec<u32> = document.frames.iter().map(|frame| frame.offset_min).collect();
+    assert_eq!(offsets, vec![0, 15, 30, 45, 60, 75, 90, 105, 120], "a fixed cadence, not a source's own steps");
+    assert_eq!(document.lattice.cell_size_m, LATTICE_CELL_SIZE_M);
+    assert_eq!(document.lattice.cell_udeg, sub_lattice(&event.bake.bbox_udeg).expect("lattice").cell_udeg);
+    assert_eq!((document.lattice.shard_cols, document.lattice.shard_rows), (1, 1), "a pack is one shard");
+    // Both CONUS sources are creditable, in priority order, and neither is selectable.
+    assert_eq!(
+        document.attribution.iter().map(|entry| entry.source_id.as_str()).collect::<Vec<_>>(),
+        vec!["mrms", "hrrr"]
+    );
+    // **Only the anchor is observed.** f0, f15 and f30 are all painted by the same 18:48 MRMS
+    // field — the skew window reaches 1,800 s and f30 is 1,620 s out — but a frame ahead of the
+    // anchor is about an instant no observation of exists, so the two frozen ones are forecasts by
+    // persistence and say so (`OBCG_Spec.md` §3.2, `canonical::shard_is_observed`). Before that
+    // rule this pack shipped three objects with three different `valid_at`s over one field, all
+    // three flagged Observed.
+    assert!(document.frames[0].shards.iter().all(|shard| shard.observed), "f0 is inside the radar footprint");
+    for frame in &document.frames[1..] {
+        assert!(
+            frame.shards.iter().all(|shard| !shard.observed),
+            "f{} is ahead of the anchor — nothing there is an observation",
+            frame.offset_min
+        );
     }
-    // The crop is honest in the manifest: the product bbox is the cropped window, not CONUS.
-    let bbox = event.bake.bbox_udeg.expect("this pack is cropped");
-    assert!(product.bbox_udeg.south_udeg <= bbox.south_udeg && product.bbox_udeg.north_udeg >= bbox.north_udeg);
-    assert!(product.bbox_udeg.west_udeg <= bbox.west_udeg && product.bbox_udeg.east_udeg >= bbox.east_udeg);
-    assert!(product.bbox_udeg.north_udeg - product.bbox_udeg.south_udeg < 5_000_000, "the crop must be corridor-sized");
+
+    // The window is honest in the manifest: it contains the request, and it is corridor-sized.
+    let bbox = event.bake.bbox_udeg;
+    let coverage = event.coverage_udeg;
+    assert!(coverage.south_udeg <= bbox.south_udeg && coverage.north_udeg >= bbox.north_udeg);
+    assert!(coverage.west_udeg <= bbox.west_udeg && coverage.east_udeg >= bbox.east_udeg);
+    assert!(coverage.north_udeg - coverage.south_udeg < 10_000_000, "the window must stay corridor-sized");
 }
 
 /// A pack of empty grids would pass every structural check above and be worthless. The derecho
@@ -379,47 +405,68 @@ fn the_frames_actually_contain_the_storm() {
     // against a 36.9 % observation — a pack that lost nine tenths of its precipitation would have
     // sailed through. These sit roughly a quarter below what the bytes actually contain, which
     // notices a real regression while leaving room for a re-capture's honest drift.
-    let document = manifest::from_json(&read(&format!("service/{}", event.manifest_key))).expect("manifest parses");
-    let product = &document.products[0];
-    let key = |index: usize| format!("service/{}", product.frames[index].key);
+    let document =
+        manifest_v2::from_json(&read(&format!("service/{}", event.manifest_key))).expect("the v2 manifest parses");
+    let key = |index: usize| {
+        let frame = &document.frames[index];
+        let shard = frame.shards.first().expect("a pack shard is always published");
+        format!(
+            "service/{}",
+            manifest_v2::shard_key(&document.key_prefix, &document.generation, frame.offset_min, shard.col, shard.row)
+        )
+    };
 
-    // The observation: a mature derecho fills a third of the window. Measured 36.92 %.
-    assert!(wet_fraction(&key(0)) > 0.28, "the observation frame lost its storm");
-    // The model's view of the same storm at its first step, and at the far end of the window.
-    // Measured 15.06 % and 8.57 % — the forecast lattice is coarser and the storm leaves eastward.
-    assert!(wet_fraction(&key(1)) > 0.11, "the first forecast frame lost its storm");
-    assert!(wet_fraction(&key(product.frames.len() - 1)) > 0.06, "the last forecast frame lost its storm");
-    // …and the ground truth at both ends of the ladder. Measured 37.90 % and 18.26 %.
+    // The window is 2.56-degree tile-aligned, so it reaches well past the storm; the fractions
+    // below are of the whole window and every floor sits roughly a quarter under what the bytes
+    // measure, which notices a real regression while leaving room for a re-capture's drift.
+    //
+    // f0, f15 **and f30** are the same 14.89 %, and that is not a copy-paste: the 18:48 MRMS
+    // observation is the highest-ranked source over CONUS and it is inside `MAX_FRAME_SKEW_S` of
+    // all three (19:15 - 18:48 = 1,620 s), so it paints all three. Persistence out to +30 — not
+    // +15 — is the visible consequence of MRMS and HRRR being two priority rows instead of one
+    // composed product (#1246); see `source::MOSAIC_PRIORITY`, and note that only f0 carries
+    // `FLAG_OBSERVED`, which `the_frozen_manifest_is_one_generation_of_the_one_dataset` pins.
+    assert!(wet_fraction(&key(0)) > 0.11, "the first frame lost its storm");
+    assert!(wet_fraction(&key(1)) > 0.11, "the second frame lost its storm");
+    assert!(wet_fraction(&key(2)) > 0.11, "the third frame lost its storm");
+    // The far end of the window is HRRR's own forecast, and the storm has left eastward.
+    // Measured 7.22 %.
+    assert!(wet_fraction(&key(document.frames.len() - 1)) > 0.05, "the last frame lost its storm");
+    // …and the ground truth at both ends of the ladder. Measured 15.74 % and 19.36 %.
     let truth = |index: usize| event.truth_frames[index].path.clone();
-    assert!(wet_fraction(&truth(0)) > 0.28, "the first truth frame lost its storm");
-    assert!(wet_fraction(&truth(event.truth_frames.len() - 1)) > 0.13, "the last truth frame lost its storm");
+    assert!(wet_fraction(&truth(0)) > 0.11, "the first truth frame lost its storm");
+    assert!(wet_fraction(&truth(event.truth_frames.len() - 1)) > 0.14, "the last truth frame lost its storm");
 
-    // Truth frames are observations on the observation lattice, stamped with the cycle's anchor,
-    // so a later scorer can line one up against the forecast frame nearest it without arithmetic.
+    // Truth frames are observations on the pack's own lattice, **anchored on themselves**: a real
+    // observation of a real instant, which per `OBCG_Spec.md` §3.2 is the only stamping that may
+    // carry `FLAG_OBSERVED`. The ladder rung — how far ahead of the pack anchor this rung sits —
+    // lives in `event.json`, where a scorer reads it, and is checked against `window_start` below
+    // rather than being baked into a header that would then have to claim a forecast.
+    let anchor = timefmt::parse_rfc3339(&event.window_start).unwrap();
     for frame in &event.truth_frames {
         let bytes = read(&frame.path);
         let header = obcg::validate(&bytes, &mut scratch_buffer).unwrap();
         assert_eq!(header.flags, obcg::FLAG_OBSERVED, "{}", frame.path);
-        assert_eq!(header.product_id, obcg::PRODUCT_MRMS);
-        assert_eq!(header.reference_time, manifest::parse_rfc3339(&event.window_start).unwrap());
-        assert_eq!(manifest::rfc3339(header.valid_at), frame.valid_at);
-        assert_eq!(header.valid_at - header.reference_time, i64::from(frame.offset_min) * 60);
-        assert_eq!(header.cell_size_m, 1_000);
+        assert_eq!(header.reference_time, header.valid_at, "{}: a truth frame is its own anchor", frame.path);
+        assert_eq!(timefmt::rfc3339(header.valid_at), frame.valid_at);
+        assert_eq!(header.valid_at - anchor, i64::from(frame.offset_min) * 60, "{}: the rung", frame.path);
+        assert_eq!(header.cell_size_m, LATTICE_CELL_SIZE_M);
         // The requested ladder is +15 min steps; MRMS publishes every two minutes, so odd
         // requests floor onto the cadence and the pack records both numbers.
         assert!(frame.offset_min <= frame.requested_offset_min);
         assert!(i64::from(frame.requested_offset_min - frame.offset_min) * 60 < event.truth.cadence_seconds);
     }
 
-    // The observation frame and the truth frames share one lattice: same origin, same cell size,
-    // same dimensions. Scoring is then a cell-by-cell comparison, with no resampling in between.
-    let observation = obcg::decode_header(read(&key(0))[..obcg::HEADER_LEN].try_into().unwrap()).unwrap();
+    // Every published frame and every truth frame share one lattice: same origin, same cell size,
+    // same dimensions. Scoring is then a cell-by-cell comparison, with no resampling in between —
+    // which is what one lattice bought, and it is now true by construction rather than by care.
+    let published = obcg::decode_header(read(&key(0))[..obcg::HEADER_LEN].try_into().unwrap()).unwrap();
     for frame in &event.truth_frames {
         let truth = obcg::decode_header(read(&frame.path)[..obcg::HEADER_LEN].try_into().unwrap()).unwrap();
         assert_eq!(
             (truth.south_lat_udeg, truth.west_lon_udeg, truth.width, truth.height),
-            (observation.south_lat_udeg, observation.west_lon_udeg, observation.width, observation.height),
-            "{} is not on the observation lattice",
+            (published.south_lat_udeg, published.west_lon_udeg, published.width, published.height),
+            "{} is not on the published lattice",
             frame.path
         );
     }
@@ -427,7 +474,8 @@ fn the_frames_actually_contain_the_storm() {
 
 /// Rewrite the pack's baked halves after a deliberate format change, the way
 /// `cargo test -p obc-vectors regenerate -- --ignored` rewrites `specs/vectors/`:
-/// `cargo test -p obc-wx-bake --test event_pack regenerate -- --ignored`.
+/// `cargo test -p obc-wx-bake --test event_pack regenerate -- --ignored`, or the equivalent
+/// `obc-wx-pack rebake <pack> --write`.
 ///
 /// `upstream/` is never touched — those are the archive's bytes, the pack's whole point. Only
 /// `service/`, `truth/` and the digests `event.json` swears to them are re-derived, from the
@@ -438,38 +486,7 @@ fn the_frames_actually_contain_the_storm() {
 fn regenerate() {
     let root = pack_root();
     let mut event = event();
-    let scratch = scratch("regenerate");
-
-    // service/: the whole tree, replaced with what the baker makes of upstream/ today.
-    rebake::bake_into(&root, &event, &scratch).expect("the pack re-bakes");
-    let rebaked = pack::read_tree(&scratch).expect("the fresh service tree");
-    std::fs::remove_dir_all(root.join("service")).expect("clear the stale service tree");
-    for (key, bytes) in &rebaked {
-        pack::write_file(&root.join("service").join(key), bytes).expect("write the service object");
-    }
-    event.service = rebaked
-        .iter()
-        .map(|(key, bytes)| pack::ServiceObject {
-            key: key.clone(),
-            bytes: bytes.len() as u64,
-            sha256: pack::sha256(bytes),
-        })
-        .collect();
-
-    // truth/: each observed frame re-derived from the pack's own stored MRMS bytes.
-    let anchor = manifest::parse_rfc3339(&event.window_start).expect("window_start");
-    let mut upstream = rebake::truth_upstream(&root, &event).expect("the truth replay");
-    for frame in &mut event.truth_frames {
-        let valid_at = manifest::parse_rfc3339(&frame.valid_at).expect("valid_at");
-        let baked =
-            pack::capture::bake_truth_frame(&mut upstream, anchor, frame.offset_min, valid_at, event.bake.bbox_udeg)
-                .expect("truth frame re-bakes");
-        pack::write_file(&pack::resolve(&root, &frame.path).expect("truth path"), &baked).expect("write");
-        frame.bytes = baked.len() as u64;
-        frame.sha256 = pack::sha256(&baked);
-    }
-
-    event.write(&root).expect("event.json");
+    rebake::regenerate(&root, &mut event).expect("the pack re-derives from its own upstream");
     eprintln!(
         "{EVENT_ID}: {} service objects and {} truth frames rewritten",
         event.service.len(),

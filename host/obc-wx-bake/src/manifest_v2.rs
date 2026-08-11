@@ -44,7 +44,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{self, CycleTimes, Lattice};
-use crate::manifest::{key_timestamp, rfc3339};
+use crate::timefmt::{key_timestamp, rfc3339};
 
 /// The mutable document key, beside the immutable objects it names.
 pub const MANIFEST_KEY: &str = "wx/v2/manifest.json";
@@ -244,9 +244,11 @@ pub struct Shard {
     /// The OBCG whole-object CRC-32 (`0x` + 8 uppercase hex digits).
     #[schemars(pattern(CRC32_PATTERN))]
     pub object_crc32: String,
-    /// Was **every** cell of this shard painted by an observation? Per shard rather than per
-    /// frame, because a mosaic frame is radar over Germany and model over the Atlantic at the same
-    /// instant — this mirrors the object's own `FLAG_OBSERVED`, which the baker measures.
+    /// Is this shard an observation of `valid_at`? True only when every cell came from an
+    /// observation **and** the frame is the anchor — see [`crate::canonical::shard_is_observed`],
+    /// which is the one place that decides it. Per shard rather than per frame, because a mosaic
+    /// frame is radar over Germany and model over the Atlantic at the same instant. This mirrors
+    /// the object's own `FLAG_OBSERVED` exactly; the two are written from the same value.
     pub observed: bool,
 }
 
@@ -542,7 +544,7 @@ mod tests {
     /// moment the generation can answer nothing, and one frame step is when its successor is due.
     #[test]
     fn the_freshness_deadlines_are_derived_from_the_time_axis() {
-        let times = CycleTimes::anchored_at(crate::manifest::parse_rfc3339("2026-08-10T14:37:00Z").expect("ts"));
+        let times = CycleTimes::anchored_at(crate::timefmt::parse_rfc3339("2026-08-10T14:37:00Z").expect("ts"));
         let manifest = Builder::new(&CANONICAL, times, times.reference_time, Vec::new(), Vec::new()).finish();
         assert_eq!(manifest.reference_time, "2026-08-10T14:30:00Z");
         assert_eq!(manifest.generation, "20260810T1430Z");
@@ -555,10 +557,10 @@ mod tests {
     /// time is not its own predecessor.
     #[test]
     fn the_generation_chain_keeps_exactly_the_two_before_it() {
-        let times = CycleTimes::anchored_at(crate::manifest::parse_rfc3339("2026-08-10T15:00:00Z").expect("ts"));
+        let times = CycleTimes::anchored_at(crate::timefmt::parse_rfc3339("2026-08-10T15:00:00Z").expect("ts"));
         let previous = Builder::new(
             &CANONICAL,
-            CycleTimes::anchored_at(crate::manifest::parse_rfc3339("2026-08-10T14:45:00Z").expect("ts")),
+            CycleTimes::anchored_at(crate::timefmt::parse_rfc3339("2026-08-10T14:45:00Z").expect("ts")),
             0,
             Vec::new(),
             vec!["20260810T1430Z".into(), "20260810T1415Z".into()],

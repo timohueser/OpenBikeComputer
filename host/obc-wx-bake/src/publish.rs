@@ -1,11 +1,12 @@
-//! Atomic weather publishing: frames first, manifest last.
+//! Atomic weather publishing: the object stores the cycle puts through.
 //!
-//! The obc-bake pattern (`host/obc-bake/src/publish.rs`), specialized for the weather bucket:
-//! every frame object the new manifest references is uploaded **and re-verified at the
-//! destination** before the one mutable `wx/v1/manifest.json` is replaced. A failure anywhere
-//! earlier leaves the previous manifest — and therefore the previous, complete weather set —
-//! exactly as it was. Frame keys are immutable per upstream run, so re-publishing the same run
-//! is a checksum-skip, which is what makes every cycle idempotent.
+//! The obc-bake pattern (`host/obc-bake/src/publish.rs`), specialized for the weather bucket.
+//! Ordering is [`crate::canonical::run_cycle`]'s: every shard object the new manifest references
+//! is uploaded **and re-verified at the destination** before the one mutable
+//! `wx/v2/manifest.json` is replaced, so a failure anywhere earlier leaves the previous manifest —
+//! and therefore the previous, complete generation — exactly as it was. Object keys are immutable
+//! per generation, so re-publishing one is a checksum-skip, which is what makes every cycle
+//! idempotent.
 //!
 //! [`RcloneStore`] talks to Cloudflare R2 over the S3 API through `rclone`, with the remote
 //! defined entirely by environment variables on the child process — nothing secret in argv, no
@@ -36,44 +37,6 @@ pub trait ObjectStore {
     fn head(&mut self, key: &str) -> Result<Option<u64>, String>;
     /// Read an object back (the previous manifest at cycle start). `None` if absent.
     fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String>;
-}
-
-/// Publish `frames` then `manifest`, in that order, with a remote existence/size check between.
-/// `carried` names the already-published objects the new manifest still references (unchanged
-/// products' frames): they upload nothing, but they are head-verified all the same, so a
-/// lifecycle misconfiguration that expired them is caught **before** the manifest swears they
-/// exist. Returns the number of objects uploaded and their byte total (manifest included).
-pub fn publish(
-    store: &mut dyn ObjectStore,
-    frames: &[PlannedObject],
-    carried: &[(String, u64)],
-    manifest: &PlannedObject,
-) -> Result<(usize, u64), String> {
-    let mut bytes = 0u64;
-    for object in frames {
-        store.put(object).map_err(|error| format!("{}: {error}", object.key))?;
-        bytes += object.bytes.len() as u64;
-    }
-    let expectations = frames
-        .iter()
-        .map(|object| (object.key.as_str(), object.bytes.len() as u64))
-        .chain(carried.iter().map(|(key, bytes)| (key.as_str(), *bytes)));
-    for (key, expected) in expectations {
-        match store.head(key)? {
-            Some(remote) if remote == expected => {}
-            Some(remote) => {
-                return Err(format!(
-                    "{key}: published as {remote} bytes but the manifest expects {expected} — refusing to swap the manifest in"
-                ));
-            }
-            None => {
-                return Err(format!("{key}: not fetchable — refusing to swap the manifest in"));
-            }
-        }
-    }
-    store.put(manifest).map_err(|error| format!("{}: {error}", manifest.key))?;
-    bytes += manifest.bytes.len() as u64;
-    Ok((frames.len() + 1, bytes))
 }
 
 /// Publish into a local directory: the dry-run target, the test target, and a real one for any
@@ -266,77 +229,8 @@ mod tests {
             ],
             scratch: std::env::temp_dir(),
         };
-        assert_eq!(store.target("wx/v1/manifest.json"), "obcwx:obc-wx/wx/v1/manifest.json");
+        assert_eq!(store.target("wx/v2/manifest.json"), "obcwx:obc-wx/wx/v2/manifest.json");
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
         assert_eq!(store.redact("secret_access_key=hunter2: 403"), "secret_access_key=***: 403");
-    }
-
-    #[test]
-    fn a_failed_frame_verification_never_replaces_the_manifest() {
-        struct BrokenStore;
-        impl ObjectStore for BrokenStore {
-            fn describe(&self) -> String {
-                "broken".into()
-            }
-            fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-                if object.key.ends_with("manifest.json") {
-                    panic!("the manifest must never be uploaded after a failed verification");
-                }
-                Ok(())
-            }
-            fn head(&mut self, _key: &str) -> Result<Option<u64>, String> {
-                Ok(None) // uploaded object is not fetchable
-            }
-            fn get(&mut self, _key: &str) -> Result<Option<Vec<u8>>, String> {
-                Ok(None)
-            }
-        }
-        let frame = PlannedObject {
-            key: "wx/v1/x/20270101T0000Z/f0.obcg".into(),
-            bytes: vec![1, 2, 3],
-            cache_control: FRAME_CACHE_CONTROL,
-            content_type: "application/octet-stream",
-        };
-        let manifest = PlannedObject {
-            key: "wx/v1/manifest.json".into(),
-            bytes: b"{}".to_vec(),
-            cache_control: MANIFEST_CACHE_CONTROL,
-            content_type: "application/json",
-        };
-        let error = publish(&mut BrokenStore, &[frame], &[], &manifest).unwrap_err();
-        assert!(error.contains("refusing to swap the manifest in"), "{error}");
-    }
-
-    /// A carried-forward frame an unchanged product still references must be fetchable, or the
-    /// manifest swap is refused — a lifecycle misconfiguration must not outrun the manifest.
-    #[test]
-    fn a_missing_carried_frame_never_replaces_the_manifest() {
-        struct EmptyStore;
-        impl ObjectStore for EmptyStore {
-            fn describe(&self) -> String {
-                "empty".into()
-            }
-            fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-                if object.key.ends_with("manifest.json") {
-                    panic!("the manifest must never be uploaded past a missing carried frame");
-                }
-                Ok(())
-            }
-            fn head(&mut self, _key: &str) -> Result<Option<u64>, String> {
-                Ok(None)
-            }
-            fn get(&mut self, _key: &str) -> Result<Option<Vec<u8>>, String> {
-                Ok(None)
-            }
-        }
-        let manifest = PlannedObject {
-            key: "wx/v1/manifest.json".into(),
-            bytes: b"{}".to_vec(),
-            cache_control: MANIFEST_CACHE_CONTROL,
-            content_type: "application/json",
-        };
-        let carried = vec![("wx/v1/x/20270101T0000Z/f0.obcg".to_string(), 3u64)];
-        let error = publish(&mut EmptyStore, &[], &carried, &manifest).unwrap_err();
-        assert!(error.contains("refusing to swap the manifest in"), "{error}");
     }
 }

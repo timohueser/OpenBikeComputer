@@ -8,7 +8,7 @@
 
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File as Hdf5File};
-use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED, PRODUCT_DWD_RV, TIER_RADAR};
+use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED};
 use obc_formats::precip4;
 use std::collections::HashMap;
 use std::io::Read;
@@ -16,8 +16,7 @@ use std::io::Read;
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{MAX_COMPRESSED_BYTES, MAX_DECOMPRESSED_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource};
 use crate::stereo;
 
 pub const ID: &str = "dwd-rv";
@@ -28,14 +27,14 @@ pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv
 /// chosen to make the cells square over Germany). Cells outside the projected raster are no-data,
 /// and the mosaic reads that as "not covered" and falls through to the next-priority source.
 ///
-/// **This const is frozen until the cutover.** It is what the live `wx/v1/dwd-rv` product is
-/// published on, so moving it onto the canonical 0.01 degree lattice — which would buy the
-/// canonical path one nearest-neighbour hop from the stereographic raster instead of a
-/// nearest-neighbour of a nearest-neighbour — would also move the live product's lattice, change
-/// the shape of the German corridor under a live client, and make the
-/// `cell_size_m = 1_000` this path still emits wrong in both axes. WXR7 #1246 deletes the v1 path
-/// wholesale; the alignment belongs in the same push, not before it. Until then the mosaic pays
-/// the second hop, which is ~1 km of positional slop on a ~1 km source.
+/// **Not yet lattice-aligned, and now nothing is stopping it.** This window used to be what the
+/// live per-product tree published on, so moving it onto the 0.01 degree lattice would have moved
+/// a live product's lattice under a shipped client. #1246 deleted that tree, so the only thing left
+/// in the way is the work: at 9,000 x 14,000 udeg the mosaic resamples nearest-neighbour from a
+/// window that was itself a nearest-neighbour of the stereographic raster, which is ~1 km of
+/// positional slop on a ~1 km source. Aligning the window to the lattice collapses the two hops
+/// into one and is a bakery-only change now — one constant set, one re-measure of the German cells
+/// against `stereo::native_index`, and nothing downstream to coordinate with.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 45_680_000,
     west_lon_udeg: 1_460_000,
@@ -83,46 +82,15 @@ impl Adapter for DwdRv {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        _now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
-        let previous_etag = previous.and_then(|product| product.upstream_etag.as_deref());
-        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, previous_etag)? {
-            FetchOutcome::Unchanged => return Ok(AdapterOutcome::Unchanged),
+    fn bake(&self, upstream: &mut dyn Upstream, _now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+        // No conditional request and no ETag short-circuit: the mosaic needs this source's cells
+        // every cycle, so "unchanged" would only save a download it has to do anyway (#1246).
+        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, None)? {
+            FetchOutcome::Unchanged => return Err("DWD RV LATEST returned 304 without a validator".into()),
             FetchOutcome::Body(fetched) => fetched,
         };
         let (run, frames) = bake_tar(&fetched.bytes)?;
-        // A validator can miss (or the fixture upstream can serve the same bytes without one):
-        // the run identity itself is the second short-circuit, keys being immutable per run.
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        // Upstream regression: LATEST served an older run than the one already published (a
-        // withdrawn or re-published archive). Never regress reference_time/staleness — keep the
-        // published product and wait for a genuinely newer run.
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "dwd-rv: upstream serves run {run} older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
-            id: ID,
-            product_code: PRODUCT_DWD_RV,
-            tier: TIER_RADAR,
-            geometry: GEOMETRY,
-            reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
-            attribution: ATTRIBUTION,
-            upstream_etag: fetched.etag,
-            frames,
-        })))
+        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
     }
 }
 
@@ -171,7 +139,6 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
                 offset_min: lead_minutes,
                 valid_at: member_run + i64::from(lead_minutes) * 60,
                 flags: if lead_minutes == 0 { FLAG_OBSERVED } else { FLAG_FORECAST },
-                source: None,
                 cells: resample(&member, &index_map),
             });
         }

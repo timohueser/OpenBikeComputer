@@ -1,66 +1,22 @@
-//! `--bbox`: crop the **baked** output, never the raw upstream.
+//! `--bbox`: the pack's own lattice, cut out of the published one.
 //!
-//! A full-domain US pack is hundreds of megabytes of OBCG — the MRMS observation alone is a
-//! 7,000 x 3,500 grid. An event pack that lives in the repo has to be a corridor-sized window, so
-//! the capture tool crops what the baker emits. Two rules keep the crop from becoming a second
-//! resampler:
+//! A global cycle is 24 shards of 6,144 x 4,608 cells; an event pack that lives in the repo has to
+//! be a corridor-sized window. So a pack bakes **the real cycle over a smaller lattice** — same
+//! cell pitch, same origin phase, same tile edge and paging, same mosaic, same emitter, same
+//! publisher — rather than cropping objects after the fact. Two rules make that window honest:
 //!
-//! * **Cells are copied, never recomputed.** The crop is a sub-rectangle memcpy of the quantized
-//!   cell grid the adapter produced; no interpolation, no re-quantization, no smoothing.
-//! * **The window is aligned outward to the frame's tile edge.** Tile boundaries then land in
-//!   exactly the same places as in the full bake, so every retained tile's payload bytes are
-//!   identical to the uncropped object's. The crop is a *subset* of the full bake, not a
-//!   different bake — which is the property that lets a cropped pack still be evidence about the
-//!   real product.
+//! * **The window is a whole number of lattice cells of the published lattice**, at the published
+//!   pitch, so a pack cell is one canonical cell and no second resampling happens anywhere.
+//! * **It is aligned outward to the tile edge**, so tile boundaries land exactly where the global
+//!   bake puts them and a pack tile is the tile a production object would carry for that ground.
 //!
-//! The crop rides in as an [`Adapter`] wrapper, so [`crate::cycle::run_cycle`], [`crate::emit`],
-//! the manifest and the publisher stay exactly the code that runs in production. Nothing in the
-//! bakery learns that packs exist.
+//! Before #1246 this module cropped a *baked product* instead, because the baker published one
+//! object per product per frame on the product's own lattice and a pack was a sub-rectangle of it.
+//! There is one lattice now, so choosing a window of it is the whole of what cropping meant.
 
-use crate::fetch::Upstream;
+use crate::canonical::{Lattice, CANONICAL};
 use crate::geometry::GridGeometry;
-use crate::manifest::Product;
 use crate::pack::BboxUdeg;
-use crate::source::{verify_frames_nest, Adapter, AdapterOutcome, BakedFrame, BakedProduct, FrameSource};
-
-/// An adapter that bakes exactly like `inner` and then crops the result to `bbox`.
-pub struct CroppedAdapter<'a> {
-    inner: &'a dyn Adapter,
-    bbox: BboxUdeg,
-}
-
-impl<'a> CroppedAdapter<'a> {
-    pub fn new(inner: &'a dyn Adapter, bbox: BboxUdeg) -> Self {
-        Self { inner, bbox }
-    }
-}
-
-impl Adapter for CroppedAdapter<'_> {
-    fn id(&self) -> &'static str {
-        self.inner.id()
-    }
-
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
-        match self.inner.bake(upstream, previous, now, warnings)? {
-            AdapterOutcome::Unchanged => Ok(AdapterOutcome::Unchanged),
-            AdapterOutcome::Baked(product) => {
-                let cropped = crop_product(*product, self.bbox)?;
-                // The inner adapter proved its frames nest before it returned; the crop moved
-                // every origin, so prove it again rather than assume the property survived. It
-                // does survive whenever each frame's tile stride is a multiple of the finest
-                // cell — which is true today and is exactly what this catches if it stops being.
-                verify_frames_nest(&cropped)?;
-                Ok(AdapterOutcome::Baked(Box::new(cropped)))
-            }
-        }
-    }
-}
 
 /// The retained window of `geometry`, in cell indices: `[col0, col1)` x `[row0, row1)`, aligned
 /// outward to `tile_edge` so retained tiles are whole tiles of the uncropped grid.
@@ -168,62 +124,42 @@ pub fn crop_geometry(geometry: &GridGeometry, bbox: &BboxUdeg) -> Result<(GridGe
     Ok((cropped, window))
 }
 
-/// Crop one grid and its cells.
-pub fn crop_grid(geometry: &GridGeometry, cells: &[u8], bbox: &BboxUdeg) -> Result<(GridGeometry, Vec<u8>), String> {
-    if cells.len() != geometry.cells() {
-        return Err("crop: cell count disagrees with the geometry".into());
+/// The pack's lattice: the published lattice restricted to `bbox`, as **one shard**.
+///
+/// Same origin phase, same 0.01 degree pitch, same tile edge and paging as [`CANONICAL`], so every
+/// object a pack holds is the shape production emits and every cell is a canonical cell. One shard
+/// because a pack is corridor-sized by construction: `s0-0` is the whole window, and the manifest
+/// it publishes is a real manifest with a one-bit presence bitmap.
+pub fn sub_lattice(bbox: &BboxUdeg) -> Result<Lattice, String> {
+    let full = CANONICAL.geometry(crate::canonical::LatticeWindow {
+        col0: 0,
+        row0: 0,
+        width: CANONICAL.width,
+        height: CANONICAL.height,
+    });
+    let cut = window(&full, bbox)?;
+    // Widen before multiplying, like `axis()` above and for the same reason: `overflow-checks` is
+    // off in this workspace, so a `u32` product that wrapped would come back as a confident wrong
+    // origin rather than a panic. Today's bounds cannot reach it; the standard should not differ
+    // by twenty lines within one file.
+    let shift = |index: u32, origin: i32| -> Result<i32, String> {
+        i32::try_from(i64::from(origin) + i64::from(index) * i64::from(CANONICAL.cell_udeg))
+            .map_err(|_| "the pack lattice origin overflows microdegrees".to_string())
+    };
+    let lattice = Lattice {
+        south_lat_udeg: shift(cut.row0, CANONICAL.south_lat_udeg)?,
+        west_lon_udeg: shift(cut.col0, CANONICAL.west_lon_udeg)?,
+        width: cut.width(),
+        height: cut.height(),
+        shard_width: cut.width(),
+        shard_height: cut.height(),
+        ..CANONICAL
+    };
+    lattice.validate()?;
+    if lattice.shard_count() != 1 {
+        return Err(format!("a pack lattice must be one shard, not {}", lattice.shard_count()));
     }
-    let (cropped, window) = crop_geometry(geometry, bbox)?;
-    let mut out = Vec::with_capacity(cropped.cells());
-    for row in window.row0..window.row1 {
-        let start = row as usize * geometry.width as usize;
-        out.extend_from_slice(&cells[start + window.col0 as usize..start + window.col1 as usize]);
-    }
-    Ok((cropped, out))
-}
-
-/// Crop a whole baked product: every frame on its own lattice, plus the product's nominal one.
-pub fn crop_product(product: BakedProduct, bbox: BboxUdeg) -> Result<BakedProduct, String> {
-    let BakedProduct {
-        id,
-        product_code,
-        tier,
-        geometry,
-        reference_time,
-        staleness_deadline,
-        attribution,
-        upstream_etag,
-        frames,
-    } = product;
-    let mut cropped_frames = Vec::with_capacity(frames.len());
-    for frame in frames {
-        let frame_geometry = frame.source.map_or(geometry, |source| source.geometry);
-        let (new_geometry, cells) = crop_grid(&frame_geometry, &frame.cells, &bbox)
-            .map_err(|error| format!("{id} f{}: {error}", frame.offset_min))?;
-        cropped_frames.push(BakedFrame {
-            offset_min: frame.offset_min,
-            valid_at: frame.valid_at,
-            flags: frame.flags,
-            // A frame that carried its own provenance keeps it, on its own cropped lattice. A
-            // frame that inherited the product's stays inheriting.
-            source: frame.source.map(|source| FrameSource { geometry: new_geometry, ..source }),
-            cells,
-        });
-    }
-    // The nominal lattice is cropped the same way, so the manifest's product bbox stays the
-    // honest intersection of what the timeline actually answers.
-    let (nominal, _) = crop_geometry(&geometry, &bbox)?;
-    Ok(BakedProduct {
-        id,
-        product_code,
-        tier,
-        geometry: nominal,
-        reference_time,
-        staleness_deadline,
-        attribution,
-        upstream_etag,
-        frames: cropped_frames,
-    })
+    Ok(lattice)
 }
 
 #[cfg(test)]
@@ -243,10 +179,6 @@ mod tests {
         entries_per_page: 512,
     };
 
-    fn cells() -> Vec<u8> {
-        (0..GRID.cells()).map(|index| (index % 13) as u8).collect()
-    }
-
     #[test]
     fn the_window_is_aligned_outward_to_whole_tiles() {
         // A bbox one cell inside the grid's south-west corner still starts at tile 0.
@@ -261,7 +193,7 @@ mod tests {
         assert_eq!(window.row0 % 16, 0);
         assert_eq!(window.col0, 0);
         assert_eq!(window.row0, 0);
-        // East edge 50 cells in → col1 rounds up to 64; north edge 35 cells in → row1 = 48.
+        // East edge 50 cells in -> col1 rounds up to 64; north edge 35 cells in -> row1 = 48.
         assert_eq!(window.col1, 64);
         assert_eq!(window.row1, 48);
     }
@@ -319,22 +251,11 @@ mod tests {
     /// `BboxUdeg::validate` now rejects these at the boundary, so this is reachable only by
     /// constructing a `BboxUdeg` directly — but the workspace sets no `[profile.release]`, so a
     /// release build has `overflow-checks` off and a wrapped subtraction here comes back as a
-    /// confident answer rather than a panic.
-    ///
-    /// Measured against the real MRMS lattice, the old `i64` version wrapped on exactly two of the
-    /// four extremes, and they are **not** the two the review cited:
-    ///
-    /// | edge | old `i64` (wrapping) | correct |
-    /// |---|---|---|
-    /// | `west = i64::MIN` (lon origin negative) | `Some((0, 4032))` | same — no overflow |
-    /// | `north = i64::MAX` (lat origin positive) | `Some((2048, 3500))` | same — no overflow |
-    /// | `east = i64::MAX` (lon origin negative) | `None` | `Some((3328, 7000))` |
-    /// | `south = i64::MIN` (lat origin positive) | `None` | `Some((0, 2368))` |
-    ///
-    /// So the arithmetic hazard was a *false disjointness* — fail-safe, if wrong. The genuinely
-    /// dangerous half of this defect is the one `BboxUdeg::validate` fixes: `1e30` saturates to
-    /// `i64::MAX`, which does not overflow, and a fat-fingered decimal therefore cropped half of
-    /// CONUS silently instead of being refused.
+    /// confident answer rather than a panic. Measured against the real lattice, the old `i64`
+    /// version wrapped on exactly two of the four extremes, and the failure mode was a *false
+    /// disjointness* — fail-safe, if wrong. The genuinely dangerous half of the defect is the one
+    /// `BboxUdeg::validate` fixes: `1e30` saturates to `i64::MAX`, which does not overflow, so a
+    /// fat-fingered decimal cropped half a continent silently instead of being refused.
     #[test]
     fn saturated_bbox_edges_cannot_wrap_the_axis_arithmetic() {
         let grid = crate::source::mrms::GEOMETRY;
@@ -374,65 +295,60 @@ mod tests {
         assert!(error.contains("does not intersect"), "{error}");
     }
 
-    /// The real geometries, the real crop: the US product's two lattices must still nest after
-    /// the crop moved both origins, or a client holding the bundle drops the 1 km radar frame.
+    /// A pack lattice is the published lattice, restricted: same pitch, same origin phase, same
+    /// tile edge and paging, and one shard. If any of those drifted, a pack would stop being
+    /// evidence about what production emits.
     #[test]
-    fn cropping_preserves_the_us_products_lattice_nesting() {
-        use crate::source::{hrrr, mrms};
+    fn a_pack_lattice_is_the_published_one_restricted_to_the_bbox() {
         let bbox =
             BboxUdeg { south_udeg: 40_500_000, west_udeg: -96_500_000, north_udeg: 43_500_000, east_udeg: -90_000_000 };
-        let (observation, _) = crop_geometry(&mrms::GEOMETRY, &bbox).expect("the observation crops");
-        let (forecast, _) = crop_geometry(&hrrr::GEOMETRY, &bbox).expect("the forecast crops");
-        assert!(observation.cell_area() < forecast.cell_area());
-        assert!(
-            observation.nests_under(&forecast),
-            "cropped lattices stopped nesting: observation={observation:?} forecast={forecast:?}"
-        );
+        let lattice = sub_lattice(&bbox).expect("Iowa is on the lattice");
+        assert_eq!(lattice.cell_udeg, CANONICAL.cell_udeg);
+        assert_eq!(lattice.cell_size_m, CANONICAL.cell_size_m);
+        assert_eq!((lattice.tile_edge, lattice.entries_per_page), (CANONICAL.tile_edge, CANONICAL.entries_per_page));
+        assert_eq!(lattice.shard_count(), 1);
+        // Origin phase and tile alignment against the global lattice, in cells.
+        let col0 =
+            (i64::from(lattice.west_lon_udeg) - i64::from(CANONICAL.west_lon_udeg)) / i64::from(CANONICAL.cell_udeg);
+        let row0 =
+            (i64::from(lattice.south_lat_udeg) - i64::from(CANONICAL.south_lat_udeg)) / i64::from(CANONICAL.cell_udeg);
+        assert_eq!(col0 % i64::from(CANONICAL.tile_edge), 0, "the window must start on a global tile boundary");
+        assert_eq!(row0 % i64::from(CANONICAL.tile_edge), 0, "the window must start on a global tile boundary");
+        // And it must actually contain the bbox it was asked for.
+        assert!(i64::from(lattice.west_lon_udeg) <= bbox.west_udeg);
+        assert!(i64::from(lattice.south_lat_udeg) <= bbox.south_udeg);
+        let geometry = lattice.geometry(lattice.shard(0).expect("one shard"));
+        assert!(geometry.east_lon_udeg() >= bbox.east_udeg);
+        assert!(geometry.north_lat_udeg() >= bbox.north_udeg);
     }
 
-    /// The crop copies cells and re-anchors the origin: every retained cell keeps its ground
-    /// position to the microdegree.
+    /// Tile alignment is the point: a pack object's tiles must encode to the bytes a full-lattice
+    /// object would carry for the same ground, or a pack stops being evidence about the real bake.
     #[test]
-    fn cropped_cells_are_the_same_cells_at_the_same_coordinates() {
-        let bbox = BboxUdeg {
-            south_udeg: 20_300_000,
-            west_udeg: -129_400_000,
-            north_udeg: 20_700_000,
-            east_udeg: -128_900_000,
-        };
-        let (geometry, cropped) = crop_grid(&GRID, &cells(), &bbox).unwrap();
-        let window = window(&GRID, &bbox).unwrap();
-        assert_eq!((geometry.width, geometry.height), (window.width(), window.height()));
-        assert_eq!(cropped.len(), geometry.cells());
-        for row in 0..geometry.height {
-            for col in 0..geometry.width {
-                let source = (row + window.row0) as usize * GRID.width as usize + (col + window.col0) as usize;
-                assert_eq!(cropped[(row * geometry.width + col) as usize], cells()[source]);
-                // Same ground, to the microdegree.
-                assert!((geometry.center_lat_deg(row) - GRID.center_lat_deg(row + window.row0)).abs() < 1e-12);
-                assert!((geometry.center_lon_deg(col) - GRID.center_lon_deg(col + window.col0)).abs() < 1e-12);
-            }
-        }
-    }
-
-    /// Tile alignment is the whole point: a cropped object's retained tiles must encode to the
-    /// same bytes as the full object's, so a cropped pack is a subset of the real bake.
-    #[test]
-    fn retained_tiles_encode_identically_to_the_uncropped_object() {
-        let full_cells = cells();
+    fn tiles_of_an_aligned_window_encode_identically_to_the_uncropped_object() {
+        let full_cells: Vec<u8> = (0..GRID.cells()).map(|index| (index % 13) as u8).collect();
         let bbox = BboxUdeg {
             south_udeg: 20_320_000,
             west_udeg: -129_360_000,
             north_udeg: 20_640_000,
             east_udeg: -129_040_000,
         };
-        let (cropped_geometry, cropped_cells) = crop_grid(&GRID, &full_cells, &bbox).unwrap();
-        let window = window(&GRID, &bbox).unwrap();
+        let cut = window(&GRID, &bbox).unwrap();
+        let cropped_geometry = GridGeometry {
+            south_lat_udeg: GRID.south_lat_udeg + (cut.row0 * GRID.cell_lat_udeg) as i32,
+            west_lon_udeg: GRID.west_lon_udeg + (cut.col0 * GRID.cell_lon_udeg) as i32,
+            width: cut.width(),
+            height: cut.height(),
+            ..GRID
+        };
+        let mut cropped_cells = Vec::with_capacity(cropped_geometry.cells());
+        for row in cut.row0..cut.row1 {
+            let start = row as usize * GRID.width as usize;
+            cropped_cells.extend_from_slice(&full_cells[start + cut.col0 as usize..start + cut.col1 as usize]);
+        }
 
         let encode = |geometry: &GridGeometry, cells: &[u8]| {
             let input = obcg::FrameInput {
-                product_id: obcg::PRODUCT_EXPERIMENTAL,
-                tier: obcg::TIER_RADAR,
                 flags: obcg::FLAG_OBSERVED,
                 valid_at: 1_800_000_000,
                 reference_time: 1_800_000_000,
@@ -477,7 +393,7 @@ mod tests {
             for tile_col in 0..tiles_across {
                 assert_eq!(
                     read_tile(&cropped, tile_col, tile_row),
-                    read_tile(&full, tile_col + window.col0 / edge, tile_row + window.row0 / edge),
+                    read_tile(&full, tile_col + cut.col0 / edge, tile_row + cut.row0 / edge),
                     "tile ({tile_col},{tile_row}) is not the uncropped object's tile"
                 );
             }

@@ -323,7 +323,7 @@
           "pattern": "^0x[0-9A-F]{8}$"
         },
         "observed": {
-          "description": "Was **every** cell of this shard painted by an observation? Per shard rather than per\nframe, because a mosaic frame is radar over Germany and model over the Atlantic at the same\ninstant — this mirrors the object's own `FLAG_OBSERVED`, which the baker measures.",
+          "description": "Is this shard an observation of `valid_at`? True only when every cell came from an\nobservation **and** the frame is the anchor — see [`crate::canonical::shard_is_observed`],\nwhich is the one place that decides it. Per shard rather than per frame, because a mosaic\nframe is radar over Germany and model over the Atlantic at the same instant. This mirrors\nthe object's own `FLAG_OBSERVED` exactly; the two are written from the same value.",
           "type": "boolean"
         }
       },

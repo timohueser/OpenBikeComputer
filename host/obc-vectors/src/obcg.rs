@@ -6,18 +6,23 @@
 //! corrupted bytes so structural validation can never hide behind an integrity check.
 
 use obc_crc::Crc32;
-use obc_formats::obcg::{
-    self, FrameInput, FLAG_FORECAST, FLAG_OBSERVED, HEADER_LEN, PRODUCT_DWD_RV, PRODUCT_ICON_EU, TIER_MODEL, TIER_RADAR,
-};
+use obc_formats::obcg::{self, FrameInput, FLAG_FORECAST, FLAG_OBSERVED, HEADER_LEN};
 use obc_formats::precip4::INTENSITY_NODATA;
 
 /// Shared semantic seed: 2027-01-15T08:00:00Z, a run five minutes earlier.
 pub const VALID_AT: i64 = 1_800_000_000;
 pub const REFERENCE_TIME: i64 = VALID_AT - 300;
+/// A lattice-aligned south-west corner: every vector is a window of the **one** published lattice,
+/// so the fixtures cannot pin a shape the dataset can no longer take (#1246). The old 9,000 x
+/// 14,000 udeg DWD trapezoid was a per-source window and is not expressible any more.
 pub const SOUTH: i32 = 47_000_000;
 pub const WEST: i32 = 7_000_000;
-pub const CELL_LAT: u32 = 9_000;
-pub const CELL_LON: u32 = 14_000;
+/// The canonical cell: 0.01 degrees in both axes.
+pub const CELL_LAT: u32 = 10_000;
+pub const CELL_LON: u32 = 10_000;
+/// The one value `cell_size_m` takes: 0.01 degrees of latitude in metres. It states the lattice,
+/// never a source.
+pub const CELL_SIZE_M: u16 = 1_113;
 
 fn encode(input: &FrameInput<'_>) -> Vec<u8> {
     let mut scratch = vec![0u8; usize::from(input.tile_edge) * usize::from(input.tile_edge)];
@@ -28,10 +33,10 @@ fn encode(input: &FrameInput<'_>) -> Vec<u8> {
     bytes
 }
 
-fn radar_frame(width: u32, height: u32, tile_edge: u16, entries_per_page: u16, cells: &[u8]) -> Vec<u8> {
+/// A window of the published lattice, observed. Every positive vector is one of these or the
+/// forecast twin below: one lattice, one cell size, no provenance.
+fn observed_frame(width: u32, height: u32, tile_edge: u16, entries_per_page: u16, cells: &[u8]) -> Vec<u8> {
     encode(&FrameInput {
-        product_id: PRODUCT_DWD_RV,
-        tier: TIER_RADAR,
         flags: FLAG_OBSERVED,
         valid_at: VALID_AT,
         reference_time: REFERENCE_TIME,
@@ -41,7 +46,7 @@ fn radar_frame(width: u32, height: u32, tile_edge: u16, entries_per_page: u16, c
         cell_lon_udeg: CELL_LON,
         width,
         height,
-        cell_size_m: 1_000,
+        cell_size_m: CELL_SIZE_M,
         tile_edge,
         entries_per_page,
         cells,
@@ -50,7 +55,7 @@ fn radar_frame(width: u32, height: u32, tile_edge: u16, entries_per_page: u16, c
 
 /// A 32 x 32 all-dry frame at tile edge 32: one all-zero sentinel entry, zero payload bytes.
 pub fn minimal_dry() -> Vec<u8> {
-    radar_frame(32, 32, 32, 8, &vec![0u8; 32 * 32])
+    observed_frame(32, 32, 32, 8, &vec![0u8; 32 * 32])
 }
 
 /// Deterministic pseudo-random intensities over the valid alphabet (0...12 plus no-data). Any
@@ -73,22 +78,21 @@ fn incompressible_cells(count: usize) -> Vec<u8> {
         .collect()
 }
 
-/// One 16 x 16 incompressible tile: the raw4 codec under a model/forecast header.
+/// One 16 x 16 incompressible tile: the raw4 codec under a forecast header (the other half of
+/// §3.2's source-class bit, and the only positive that is not an observation).
 pub fn raw_tile() -> Vec<u8> {
     let cells = incompressible_cells(256);
     encode(&FrameInput {
-        product_id: PRODUCT_ICON_EU,
-        tier: TIER_MODEL,
         flags: FLAG_FORECAST,
         valid_at: VALID_AT + 3_600,
         reference_time: REFERENCE_TIME,
         south_lat_udeg: SOUTH,
         west_lon_udeg: WEST,
-        cell_lat_udeg: 62_500,
-        cell_lon_udeg: 62_500,
+        cell_lat_udeg: CELL_LAT,
+        cell_lon_udeg: CELL_LON,
         width: 16,
         height: 16,
-        cell_size_m: 6_500,
+        cell_size_m: CELL_SIZE_M,
         tile_edge: 16,
         entries_per_page: 4,
         cells: &cells,
@@ -98,7 +102,7 @@ pub fn raw_tile() -> Vec<u8> {
 /// One uniform moderate-heavy tile: a 16-byte RLE4 payload. Deflate4 also reaches 16 bytes here,
 /// so this vector pins §5's tie-break — equal lengths go to the **lower codec id**.
 pub fn rle_tile() -> Vec<u8> {
-    radar_frame(16, 16, 16, 4, &[6u8; 256])
+    observed_frame(16, 16, 16, 4, &[6u8; 256])
 }
 
 /// Sixteen varied 8-cell runs: RLE4 is 32 bytes and deflate4 is 46, so RLE4 wins outright. This
@@ -106,7 +110,7 @@ pub fn rle_tile() -> Vec<u8> {
 /// the overlong and noncanonical RLE negatives.
 pub fn rle_wins() -> Vec<u8> {
     let cells: Vec<u8> = (0..256).map(|index| ((index / 8) % 13) as u8).collect();
-    radar_frame(16, 16, 16, 4, &cells)
+    observed_frame(16, 16, 16, 4, &cells)
 }
 
 /// A second legal byte image of [`deflate_tile`], differing only in the **padding bits** of its
@@ -176,7 +180,7 @@ pub fn deflate_edge256() -> Vec<u8> {
             blocks[(row / 16) * 16 + col / 16]
         })
         .collect();
-    radar_frame(256, 256, 256, 128, &cells)
+    observed_frame(256, 256, 256, 128, &cells)
 }
 
 /// A 64 x 64 tile of coarse data upsampled onto a fine lattice — 8 x 8 blocks of one value, the
@@ -190,12 +194,12 @@ pub fn deflate_tile() -> Vec<u8> {
             (((row / 8) * 8 + (col / 8)) % 13) as u8
         })
         .collect();
-    radar_frame(64, 64, 64, 128, &cells)
+    observed_frame(64, 64, 64, 128, &cells)
 }
 
 /// One all-no-data tile. Unavailable is encoded, never the dry sentinel.
 pub fn nodata_tile() -> Vec<u8> {
-    radar_frame(16, 16, 16, 4, &[INTENSITY_NODATA; 256])
+    observed_frame(16, 16, 16, 4, &[INTENSITY_NODATA; 256])
 }
 
 /// The 40 x 40 grid at tile edge 16 and two entries per page: 3 x 3 tiles over five directory
@@ -205,7 +209,7 @@ pub fn multipage() -> Vec<u8> {
     let mut cells = vec![0u8; 40 * 40];
     cells[0] = 6; // (col 0, row 0): south-west corner
     cells[39 * 40 + 39] = 9; // (col 39, row 39): north-east corner, inside an edge-padded tile
-    radar_frame(40, 40, 16, 2, &cells)
+    observed_frame(40, 40, 16, 2, &cells)
 }
 
 /// A 24 x 24 grid at tile edge 16: every tile is a partial edge tile whose padding must decode
@@ -215,7 +219,7 @@ pub fn edge_padding() -> Vec<u8> {
     for (col, row, value) in [(3u32, 4u32, 2u8), (20, 4, 5), (3, 20, 8), (20, 20, 12)] {
         cells[(row * 24 + col) as usize] = value;
     }
-    radar_frame(24, 24, 16, 8, &cells)
+    observed_frame(24, 24, 16, 8, &cells)
 }
 
 fn header(bytes: &[u8]) -> obcg::Header {
@@ -307,10 +311,11 @@ pub fn invalid_object_crc() -> Vec<u8> {
     bytes
 }
 
-/// A header field changed without recomputing the header CRC.
+/// A header field changed without recomputing the header CRC: the frame's declared cell size is
+/// doubled, which is a lie a header-only reader must catch before it plans a single Range read.
 pub fn invalid_header_crc() -> Vec<u8> {
     let mut bytes = multipage();
-    bytes[obcg::HDR_TIER] = TIER_MODEL;
+    put_u16(&mut bytes, obcg::HDR_CELL_SIZE_M, CELL_SIZE_M * 2);
     bytes
 }
 
@@ -516,7 +521,7 @@ pub fn invalid_dry_encoded() -> Vec<u8> {
 /// no-data, never dry. Built by rewriting an 8 x 8 single-partial-tile object as if the producer
 /// had emitted the sentinel — every CRC is honest, so only the edge rule can reject it.
 pub fn invalid_dry_sentinel_edge_tile() -> Vec<u8> {
-    let mut bytes = radar_frame(8, 8, 16, 4, &[0u8; 64]);
+    let mut bytes = observed_frame(8, 8, 16, 4, &[0u8; 64]);
     let h = header(&bytes);
     bytes.truncate(128 + h.page_bytes() as usize);
     let entry = entry_offset(&h, 0);
@@ -555,6 +560,16 @@ pub fn invalid_tile_crc() -> Vec<u8> {
 pub fn invalid_reserved() -> Vec<u8> {
     let mut bytes = multipage();
     bytes[obcg::HDR_RESERVED] = 1;
+    refresh_object_and_header_crc(&mut bytes);
+    bytes
+}
+
+/// Bytes 12-13 — the Product ID and Tier the header carried until #1246 — are reserved and MUST be
+/// zero. An object that states provenance there is malformed, not an object carrying a code this
+/// build has not heard of: the field has no meaning left to be forward-compatible about.
+pub fn invalid_reserved_provenance() -> Vec<u8> {
+    let mut bytes = multipage();
+    put_u16(&mut bytes, obcg::HDR_RESERVED_PROVENANCE, 0x0102);
     refresh_object_and_header_crc(&mut bytes);
     bytes
 }
@@ -607,6 +622,7 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("grid-invalid-dry-sentinel-edge-tile.obcg", invalid_dry_sentinel_edge_tile()),
         ("grid-invalid-tile-crc.obcg", invalid_tile_crc()),
         ("grid-invalid-reserved.obcg", invalid_reserved()),
+        ("grid-invalid-reserved-provenance.obcg", invalid_reserved_provenance()),
         ("grid-invalid-flags.obcg", invalid_flags()),
     ]
 }

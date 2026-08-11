@@ -12,9 +12,9 @@ use crate::{checked_add, checked_mul, Error, FormatError, WeatherReader};
 pub const DIRECTORY_WINDOW_ENTRIES: usize = 4;
 
 /// The hard ceiling on how long **any** rain frame counts as current past its own timestamp, in
-/// seconds (see [`WeatherReader::current_frame`]; a product with a finer measured cadence is
-/// bounded by that instead). 15 minutes — the radar-tier cadence: a frame older than this is
-/// weather history, whatever the table's spacing claims, and a single-frame product (no spacing
+/// seconds (see [`WeatherReader::current_frame`]; a bundle with a finer measured cadence is
+/// bounded by that instead). 15 minutes — the dataset's cadence: a frame older than this is
+/// weather history, whatever the table's spacing claims, and a single-frame bundle (no spacing
 /// to measure) gets exactly this.
 pub const FRAME_CURRENT_CAP_S: i64 = 900;
 
@@ -154,10 +154,10 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
     /// `cap = min(smallest inter-frame spacing in the table, FRAME_CURRENT_CAP_S)`. Bounding by
     /// the *minimum* spacing (never a gap-inflated last-two spacing) and applying it to every
     /// frame is what makes the gate fail **closed** against irregular tables: a bake gap in the
-    /// middle of the table goes dark once its preceding frame ages past the product's real
+    /// middle of the table goes dark once its preceding frame ages past the bundle's real
     /// cadence, and a gap before the last frame cannot extend that frame's life (adversarial
     /// review of PR #1213 demonstrated both against the earlier last-frame-only rule). A
-    /// single-frame product has no spacing to measure and gets [`FRAME_CURRENT_CAP_S`] outright.
+    /// single-frame bundle has no spacing to measure and gets [`FRAME_CURRENT_CAP_S`] outright.
     /// No synthetic validity is invented beyond the cap; whether missing rain may be *claimed*
     /// dry is decision logic (WX12), not rendering.
     ///

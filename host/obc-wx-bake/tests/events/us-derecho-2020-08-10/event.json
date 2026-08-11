@@ -6,7 +6,10 @@
   "window_start": "2020-08-10T18:48:00Z",
   "window_end": "2020-08-10T20:48:00Z",
   "bake": {
-    "adapter": "us",
+    "sources": [
+      "mrms",
+      "hrrr"
+    ],
     "now": "2020-08-10T18:52:00Z",
     "bbox_udeg": {
       "south_udeg": 40500000,
@@ -16,10 +19,10 @@
     }
   },
   "coverage_udeg": {
-    "south_udeg": 40480000,
-    "west_udeg": -96660000,
-    "north_udeg": 43680000,
-    "east_udeg": -89940000
+    "south_udeg": 38000000,
+    "west_udeg": -98080000,
+    "north_udeg": 45680000,
+    "east_udeg": -87840000
   },
   "basemap_region": "north-america/us/iowa",
   "truth": {
@@ -411,57 +414,57 @@
       "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
     }
   ],
-  "manifest_key": "wx/v1/manifest.json",
+  "manifest_key": "wx/v2/manifest.json",
   "service": [
     {
-      "key": "wx/v1/manifest.json",
-      "bytes": 6082,
-      "sha256": "ab35c31c7b7c0db19150422270838a06bc89d3a77d03a93a0149919c57baf1b4"
+      "key": "wx/v2/20200810T1845Z/f0/s0-0.obcg",
+      "bytes": 35904,
+      "sha256": "114c9d0984658b78f7d8ab6b4166f5d8e965cc07a4842ce613881914bf7feb7c"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f0.obcg",
-      "bytes": 26790,
-      "sha256": "e3112da4bd0d63a19e4b5337ea5bff66de0b23f8e7e8906c94a840fb625a7040"
+      "key": "wx/v2/20200810T1845Z/f105/s0-0.obcg",
+      "bytes": 6961,
+      "sha256": "cb5a069c8e7b5c16ace4904c45518d9f43b54c889209ca0496767c1dfd71b2b3"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f102.obcg",
-      "bytes": 7606,
-      "sha256": "d36198e490bdc426d5ae73a0227011f1c7fc318ae3e0b2b161f45bd3ea7d6d02"
+      "key": "wx/v2/20200810T1845Z/f120/s0-0.obcg",
+      "bytes": 6824,
+      "sha256": "6c02fdeed7909da95299d1a3cf832206baa752ba21c38583ae8026cf1fa0ccb4"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f117.obcg",
-      "bytes": 7405,
-      "sha256": "352606a803bba1c808e708e11ca86be1da3194b86c4ff2c54bdb5bc733ecd449"
+      "key": "wx/v2/20200810T1845Z/f15/s0-0.obcg",
+      "bytes": 35904,
+      "sha256": "f28c2d66e53c5db259fb74be35f33b607e7b6d21bbd998a4afabacea8528c1e7"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f12.obcg",
-      "bytes": 7995,
-      "sha256": "1899eb9780e95ae7d86f6574702a366186556d86e04b98d8b7cbdcf4fcad4c1e"
+      "key": "wx/v2/20200810T1845Z/f30/s0-0.obcg",
+      "bytes": 35904,
+      "sha256": "781f4a745b783364e814a5db374b8f065cdf0a51f74931e9a257ac3b7b1de3c8"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f27.obcg",
-      "bytes": 7968,
-      "sha256": "413147190d8172a6db1dbced382aec7893062bf67c8423d344fa00f182c203cb"
+      "key": "wx/v2/20200810T1845Z/f45/s0-0.obcg",
+      "bytes": 6279,
+      "sha256": "22ef633694a9e4b65b4811c8a625ab31a6e3ca124b5cc5ea01fb9c65505d9176"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f42.obcg",
-      "bytes": 7965,
-      "sha256": "696b04191ff780f2f190baadc204bd6b6bd75a62b4129227ffee5c45248ec8ac"
+      "key": "wx/v2/20200810T1845Z/f60/s0-0.obcg",
+      "bytes": 6381,
+      "sha256": "be3881379a8088b9f3000e422c9193131e40d2a8802c0b00aba68af8798b8569"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f57.obcg",
-      "bytes": 7986,
-      "sha256": "fcb354e539566db86a90dc2890d5966c85e62a3c830d069b42509672ca089588"
+      "key": "wx/v2/20200810T1845Z/f75/s0-0.obcg",
+      "bytes": 6811,
+      "sha256": "72c9586f953eba741a2728ba539bb3d58b5a8589ce67468def8a7c775f795dba"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f72.obcg",
-      "bytes": 7970,
-      "sha256": "412d577418ab927bbb86a65f7a681d0e91e435dd2501c6b5c5def97c715cf51e"
+      "key": "wx/v2/20200810T1845Z/f90/s0-0.obcg",
+      "bytes": 6858,
+      "sha256": "f3757fa5b91eb50303bdb1527bff1696640ecc444c1d0e644b24fca28d822d76"
     },
     {
-      "key": "wx/v1/us/20200810T1848Z/f87.obcg",
-      "bytes": 7846,
-      "sha256": "fa5611384201a654b394a8720263ffb5a2725103887131ae72beb57ab997dc0d"
+      "key": "wx/v2/manifest.json",
+      "bytes": 3887,
+      "sha256": "e0a2483c842297b54cfca298ad86a416bd5704828949f601fe36858799b50014"
     }
   ],
   "truth_frames": [
@@ -470,64 +473,64 @@
       "offset_min": 14,
       "valid_at": "2020-08-10T19:02:00Z",
       "path": "truth/f14.obcg",
-      "bytes": 27485,
-      "sha256": "c2ff92d219fbc4b619da69f03ec0682c59aea81eb7cfc8f89a5fcb49207a8b30"
+      "bytes": 38369,
+      "sha256": "7f5e80b75f489c84b8f59602678bdd333b1b9e9441ac9411509661f5d08e17bb"
     },
     {
       "requested_offset_min": 30,
       "offset_min": 30,
       "valid_at": "2020-08-10T19:18:00Z",
       "path": "truth/f30.obcg",
-      "bytes": 27276,
-      "sha256": "d534100b8b54cbaaa5aeef81f597218b7c396752942e4431128a0528953475db"
+      "bytes": 40113,
+      "sha256": "ac2befb77e20c4ec81cd9dadbdaacf767f910d5ec693c6453073e3ef72b82765"
     },
     {
       "requested_offset_min": 45,
       "offset_min": 44,
       "valid_at": "2020-08-10T19:32:00Z",
       "path": "truth/f44.obcg",
-      "bytes": 26787,
-      "sha256": "9e21ed5064cc182d0348c483fddf23e7be15dbddc84a9988d31ad2ab579b2253"
+      "bytes": 41215,
+      "sha256": "6a20a3663481d7a77a12c4f9214867d9e94201e7074d7ee34279069e790c9872"
     },
     {
       "requested_offset_min": 60,
       "offset_min": 60,
       "valid_at": "2020-08-10T19:48:00Z",
       "path": "truth/f60.obcg",
-      "bytes": 24978,
-      "sha256": "bf57cef5d8118787246c8ae9858031cf4a2bca3c840b36049abcf8884047e365"
+      "bytes": 42291,
+      "sha256": "907f3c4463eb4e294c954620cbf6e1240142064305cbe143aa018bfd4fb8d374"
     },
     {
       "requested_offset_min": 75,
       "offset_min": 74,
       "valid_at": "2020-08-10T20:02:00Z",
       "path": "truth/f74.obcg",
-      "bytes": 22790,
-      "sha256": "607cfc0151f1b3714fcdd347a968db38c980883db5ad702d2b70e53d0b0df2e9"
+      "bytes": 42052,
+      "sha256": "6e8f63d64a847f9c74eda38fa85bf44c5cb31739718ac1d1f8755274a98e8c13"
     },
     {
       "requested_offset_min": 90,
       "offset_min": 90,
       "valid_at": "2020-08-10T20:18:00Z",
       "path": "truth/f90.obcg",
-      "bytes": 20613,
-      "sha256": "c039307d7a13ab3c331cbae94790b9fec36cdebfcd196e1fbbe5f4a898a5e95b"
+      "bytes": 43451,
+      "sha256": "259a66ad3424b6be8e81f07f59ce4ba3f941abd4fe89b5bc28b5ed617e9f59b6"
     },
     {
       "requested_offset_min": 105,
       "offset_min": 104,
       "valid_at": "2020-08-10T20:32:00Z",
       "path": "truth/f104.obcg",
-      "bytes": 18138,
-      "sha256": "d8ac91ecd258e7be306d03c09a535ebb0170f824dcf5945962097bd163660462"
+      "bytes": 43499,
+      "sha256": "75f6c3169fa927d212b99bf8dabd666e956a34940b0a5209dfe55a09f663764d"
     },
     {
       "requested_offset_min": 120,
       "offset_min": 120,
       "valid_at": "2020-08-10T20:48:00Z",
       "path": "truth/f120.obcg",
-      "bytes": 15888,
-      "sha256": "dfe2366b71a5c4eb79b998a994baa2d14e9df13fc73cdb9573e9485e6adce481"
+      "bytes": 43067,
+      "sha256": "bfaf811574a014a7831c1f1cfd879b9e648e212d9e05a41c0830cb62892f8323"
     }
   ]
 }
