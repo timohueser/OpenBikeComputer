@@ -26,8 +26,14 @@ chrono = "0.4.34"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 schemars = { version = "1", features = ["preserve_order"] }
-# The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack.
+# The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack. It is
+# also what publishes since #1279: R2 is spoken to over its S3 API from this process, one pooled
+# connection set for the whole cycle, instead of one `rclone` spawn per object.
 ureq = "3"
+# HMAC-SHA256 for the SigV4 signature (`src/s3.rs`). `ring` is already linked into this binary —
+# rustls, and therefore ureq, is built on it — so this is a direct name for code that was already
+# here, not a new dependency in the graph or a line in THIRD-PARTY.md.
+ring = "0.17"
 # Event-pack provenance: every captured upstream member records the sha256 of its exact bytes,
 # the same digest discipline `tests/fixtures/README.md` already holds checked-in fixtures to.
 sha2 = "0.11"

@@ -26,7 +26,7 @@
 use obc_wx_bake::canonical::{run_cycle, BAKE_THREADS, CANONICAL};
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest_v2;
-use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
+use obc_wx_bake::publish::{DirStore, ObjectStore, R2Store};
 use obc_wx_bake::source::{
     dwd_rv::DwdRv, gfs::GfsFloor, hrrr::Hrrr, icon_eu::IconEu, mrms::Mrms, opera_cirrus::OperaCirrus,
     opera_nimbus::OperaNimbus, Adapter,
@@ -98,7 +98,7 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut store: Box<dyn ObjectStore> = match (store_dir, use_r2) {
         (Some(dir), false) => Box::new(DirStore::new(dir)),
-        (None, true) => Box::new(RcloneStore::from_env()?),
+        (None, true) => Box::new(R2Store::from_env()?),
         (None, false) => return Err(format!("pick a destination: --store <dir> or --r2\n{}", usage())),
         (Some(_), true) => return Err("--store and --r2 are mutually exclusive".into()),
     };
