@@ -187,6 +187,20 @@ at a future instant, which is the one thing a source class exists to prevent.
 A consumer MUST NOT infer anything further from the flag than those two facts, and in particular
 MUST NOT read Forecast as "unmeasured" or Observed as "exact at `valid_at`".
 
+**Cross-reference: this rule is deliberately stricter than `OBCW_Spec.md` §5.1's, and the
+divergence is safe in one direction.** Both require `offset_min == 0`, which is the condition that
+stops an observation being re-stamped at a future validity — the failure either flag exists to
+prevent. They differ on *content*. An OBCG object is one shard, so "every cell came from an
+observation" is a checkable property of the object, and this section requires it. An OBCW frame is
+**assembled** from several shards over a rider's corridor and is radar over the rider and model
+across a seam at the same instant, so no rule about its content can be true of all of it; §5.1's
+producer policy is positional only, which is why its wording is "based primarily on". The
+consequence is one-way and is the safe way round: every Observed OBCG shard lands in an Observed
+OBCW frame, and never the reverse. An OBCW frame may say Observed over cells whose OBCG shard said
+Forecast, and that is bounded by OBCW §5's standing rule that no claim, alert, alert-clear or dry
+decision may derive from what the rider is *shown*. Neither spec should be edited to match the
+other.
+
 ## 4. Paged tile directory
 
 Tiles are indexed row-major over `tile_rows x tile_cols` with row 0 at the **south** edge:
