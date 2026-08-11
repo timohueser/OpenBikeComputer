@@ -88,21 +88,46 @@ use crate::source::{nowcast_of, BakedFrame, BakedSource, SourceClass};
 /// **What stops it at +90 is a measured crossover, not a missing measurement.** This used to say
 /// "+105 and +120 are unmeasured, so extend the pack". They have since been measured. PR #1283
 /// captured the opposite kind of storm on purpose — `us-airmass-2023-06-24`, scattered afternoon
-/// convection over Iowa, mean flow 10.4 m/s against the derecho's 29.5, 235 wet components against
-/// 62, and a wet fraction that **grows** through the ladder because the cells develop in place
-/// rather than arriving — and scored both packs at every lead and three thresholds, 45 comparisons:
+/// convection over Iowa: 235 wet components against 62, a mean component area of 79 cells against
+/// 1331, persistence decaying twice as fast (CSI 0.192 against 0.343 at +60), and a wet fraction
+/// that **grows** through the ladder because the cells develop in place rather than arriving — and
+/// scored both packs at every lead and three thresholds, 45 comparisons:
+///
+/// (This paragraph used to quote a mean flow speed, and that number was wrong **twice** — first
+/// "10.4 against 29.5", from sampling the motion field at node indices rather than cell positions,
+/// then "20.4 against 25.8", from converting a cells-per-second field to m/s with
+/// `header.cell_size_m`, which is the lattice's *label* — the metres 0.01 degrees of **latitude**
+/// spans — while a cell at 42 N is ~829 m east-west and both storms move nearly due east. It is
+/// 16.1 against 19.8, the hard case is **not** the slow one, and the speed is not what makes it
+/// hard: its field is continuously rebuilt rather than translated, which is what the rows above
+/// measure. The figure is not quoted here any more for the same reason it took three attempts to
+/// get right — nothing in this argument needs it.)
 ///
 /// * **exactly one crossover exists**, and it is the one that matters: on the hard case at
-///   `>= 6 mm/h`, advected radar falls behind the model at **+104** (0.054 against 0.066) and stays
-///   behind at +120 (0.042 against 0.082);
+///   `>= 6 mm/h`, advected radar falls behind the model somewhere past +90 and is behind at +120;
 /// * nothing else crosses anywhere. Both events at `>= 0.25` and `>= 1.0 mm/h`, and the derecho at
 ///   every threshold, still beat the model at two hours.
 ///
-/// So +90 is the conservative reading of two events that agree about everything below the heavy
-/// threshold and disagree only about where the heavy threshold gives out. **`>= 6 mm/h` is the
-/// threshold a rider acts on** — it is the "do I shelter" question — so it is the wrong one to be
-/// wrong about, and capping here costs the derecho case skill it demonstrably has, which is the
-/// right direction to be wrong in. +120 is not justified by anything measured.
+/// **The crossover is an interval, not a lead.** A point estimate off one realisation of one storm
+/// is worth less than it looks, so `tests/nowcast_skill_events.rs` block-bootstraps the gap (2,000
+/// draws over 192 blocks of 64 x 64 cells, which keeps rain's spatial correlation inside a block).
+/// On the hard case at `>= 6 mm/h`, as `model - nowcast`:
+///
+/// | lead | gap | 95 % interval | verdict |
+/// |---|---|---|---|
+/// | +90 | -0.027 | [-0.050, -0.004] | nowcast ahead, **significant** |
+/// | +104 | +0.013 | [-0.024, +0.050] | **not significant** — the point estimate alone would say "crossed" |
+/// | +120 | +0.041 | [+0.008, +0.079] | model ahead, **significant** |
+///
+/// So the honest statement is that **the crossover lies between +90 and +120, and +90 is the last
+/// lead at which the nowcast is significantly ahead.** That is a stronger argument for this
+/// constant than "+104" was: the cap does not sit near a boundary estimated to the minute, it sits
+/// at the last lead the measurement can actually defend. +120 is on the far side of a *significant*
+/// loss, not merely of a point estimate.
+///
+/// **`>= 6 mm/h` is the threshold a rider acts on** — it is the "do I shelter" question — so it is
+/// the wrong one to be wrong about, and capping here costs the derecho case skill it demonstrably
+/// has, which is the right direction to be wrong in.
 ///
 /// `tests/nowcast_skill.rs` still enforces that this constant cannot exceed the largest lead its own
 /// ladder verifies, so the horizon cannot outrun the evidence by accident either.
