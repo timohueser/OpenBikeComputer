@@ -127,8 +127,19 @@ public enum RFC3339 {
         return formatter
     }()
 
+    /// **The date-time separator must be `T`.**
+    ///
+    /// RFC 3339 §5.6 lets an application accept a space there, and chrono — the Rust client's
+    /// parser — does; `ISO8601DateFormatter` does not. Left implicit, that is a rejection
+    /// divergence between the two clients over the one document every rider fetches first, so it is
+    /// stated rather than inherited: both sides now require `T` (or `t`) at index 10, and the
+    /// shared `rejection_equivalence` corpus pins it. The baker writes `T`, so nothing legitimate is
+    /// refused.
     public static func parse(_ value: String) -> Date? {
-        formatter.date(from: value) ?? fractional.date(from: value)
+        let bytes = Array(value.utf8)
+        guard bytes.count > 10, bytes[10] == UInt8(ascii: "T") || bytes[10] == UInt8(ascii: "t")
+        else { return nil }
+        return formatter.date(from: value) ?? fractional.date(from: value)
     }
 
     public static func string(from date: Date) -> String { formatter.string(from: date) }

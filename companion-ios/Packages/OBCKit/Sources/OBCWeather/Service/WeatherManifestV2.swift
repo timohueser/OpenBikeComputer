@@ -56,6 +56,12 @@ public struct WeatherManifestV2: Equatable, Sendable {
     public static let supportedVersion = 2
     /// OBCG §10.4's retention cap, mirrored here because the reader enforces it.
     public static let retainedPreviousGenerations = 2
+    /// The most shards a document may claim. The production layout is 24 (a 6 x 4 grid); this is
+    /// three orders of magnitude above it and bounds both the presence bitmap (8 KiB of hex) and
+    /// every `UInt32` the shard arithmetic multiplies. It exists because `width` and `shard_width`
+    /// arrive from a network and their quotient is otherwise unbounded — the Swift twin of
+    /// `manifest_v2::MAX_SHARDS`.
+    public static let maximumShards: UInt32 = 65_536
     /// How far the device clock may lead the manifest before freshness arithmetic stops being
     /// trustworthy. Dataset-level, so it survived the deletion of product selection. Beyond it the
     /// client still answers (the document's own deadlines are intact) but says so in diagnostics
@@ -241,12 +247,26 @@ public struct WeatherLattice: Equatable, Sendable {
         self.generation = generation
     }
 
-    public var shardCount: UInt32 { shardColumns * shardRows }
+    /// How many shards this lattice has.
+    ///
+    /// Overflow-checked rather than a plain product: a parsed lattice can never overflow here
+    /// (``WeatherManifestV2/maximumShards`` is enforced at parse time), but this type is public and
+    /// constructible directly, and a trapping multiplication in a reader whose input is a document
+    /// off the network is the wrong failure mode to leave lying around. A saturated count answers
+    /// "more shards than any document may claim", which every caller already refuses.
+    public var shardCount: UInt32 {
+        let (product, overflowed) = shardColumns.multipliedReportingOverflow(by: shardRows)
+        return overflowed ? UInt32.max : product
+    }
 
     /// The bit index of a shard in a frame's presence bitmap.
     public func bit(of shard: WeatherShardID) -> UInt32? {
         guard shard.column < shardColumns, shard.row < shardRows else { return nil }
-        return shard.row * shardColumns + shard.column
+        // Widened for the same reason `shardCount` is: `row * shardColumns` is bounded by the
+        // shard count, which is bounded only for a *parsed* lattice.
+        let index = UInt64(shard.row) * UInt64(shardColumns) + UInt64(shard.column)
+        guard index <= UInt64(UInt32.max) else { return nil }
+        return UInt32(index)
     }
 
     /// The object key of one shard of one frame. Composed, never read from the document.
@@ -254,10 +274,10 @@ public struct WeatherLattice: Equatable, Sendable {
         "\(keyPrefix)/\(generation)/f\(offsetMinutes)/s\(shard.column)-\(shard.row).obcg"
     }
 
-    /// The geographic window of one shard, half-open `[south, north) x [west, east)`.
-    public func bounds(of shard: WeatherShardID) -> WeatherBoundingBox {
-        let geometry = self.geometry(of: shard)
-        return geometry.bounds
+    /// The geographic window of one shard, half-open `[south, north) x [west, east)`. `nil` for a
+    /// shard off the lattice, for the same reason ``geometry(of:)`` is optional.
+    public func bounds(of shard: WeatherShardID) -> WeatherBoundingBox? {
+        geometry(of: shard)?.bounds
     }
 
     /// The OBCG geometry a shard object must declare — the manifest's arithmetic, so a corridor's
@@ -268,7 +288,12 @@ public struct WeatherLattice: Equatable, Sendable {
     /// the last column and the last row carry `width = lattice.width - col * shardWidth` cells.
     /// Assuming a full square there is how a client reads a neighbouring shard's bytes as this
     /// shard's north edge.
-    public func geometry(of shard: WeatherShardID) -> WeatherFrameGeometry {
+    ///
+    /// `nil` for a shard that is not on this lattice — the twin of `Grid::shard_geometry`'s opening
+    /// `self.bit_of(shard)?`. Without that guard `width - columnOrigin` underflows for an off-grid
+    /// column and the arithmetic traps, which is reachable through the public ``bounds(of:)``.
+    public func geometry(of shard: WeatherShardID) -> WeatherFrameGeometry? {
+        guard bit(of: shard) != nil else { return nil }
         let columnOrigin = UInt64(shard.column) * UInt64(shardWidth)
         let rowOrigin = UInt64(shard.row) * UInt64(shardHeight)
         let shardCells = UInt64(cellMicrodegrees)
@@ -412,6 +437,16 @@ func floorDivide(_ numerator: Int64, _ denominator: Int64) -> Int64 {
 func ceilDivide(_ numerator: Int64, _ denominator: Int64) -> Int64 {
     precondition(denominator > 0)
     return -floorDivide(-numerator, denominator)
+}
+
+/// Ceiling division over unsigned wire values, **without the `(value + divisor - 1)` step**.
+///
+/// That step is the classic overflow: with `width` straight off the network and near `UInt32.max`
+/// the addition traps. Rust reaches for `div_ceil`, which cannot overflow; this is the same
+/// arithmetic spelled out.
+func divideRoundingUp(_ value: UInt32, _ divisor: UInt32) -> UInt32 {
+    precondition(divisor > 0)
+    return value / divisor + (value % divisor == 0 ? 0 : 1)
 }
 
 // MARK: - Cadence and freshness
@@ -674,6 +709,17 @@ public extension WeatherManifestV2 {
     /// - a **frame** is lenient — a frame this build cannot make sense of is skipped and counted,
     ///   never fatal. One malformed frame must not cost a rider the whole timeline.
     static func parse(_ data: Data) throws -> WeatherManifestV2 {
+        // **`2.0` is not `2`.** `JSONDecoder` folds an integral `Double` into `Int`, so a document
+        // saying `"version": 2.0` would decode as version 2 and be answered as a format it is not
+        // written to; serde refuses it outright. The distinction survives nowhere in the decoded
+        // model — only in the raw JSON number — so it is read there, and `CFNumberIsFloatType` is
+        // the only way to ask `JSONSerialization` what the wire actually spelled.
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw WeatherManifestError.malformed
+        }
+        if let version = root["version"] as? NSNumber, CFNumberIsFloatType(version) {
+            throw WeatherManifestError.malformed
+        }
         let document: Document
         do {
             document = try JSONDecoder().decode(Document.self, from: data)
@@ -769,14 +815,30 @@ public extension WeatherManifestV2 {
             generated_at = try container.decode(String.self, forKey: .generated_at)
             reference_time = try container.decode(String.self, forKey: .reference_time)
             key_prefix = try container.decode(String.self, forKey: .key_prefix)
-            previous_generations = try container.decodeIfPresent(
-                [String].self, forKey: .previous_generations) ?? []
+            previous_generations = try Self.optionalList(
+                [String].self, container, .previous_generations)
             lattice = try container.decode(LatticeEntry.self, forKey: .lattice)
             cadence = try container.decode(CadenceEntry.self, forKey: .cadence)
             freshness = try container.decode(FreshnessEntry.self, forKey: .freshness)
-            attribution = try container.decodeIfPresent(
-                [AttributionEntry].self, forKey: .attribution) ?? []
+            attribution = try Self.optionalList([AttributionEntry].self, container, .attribution)
             frames = try container.decode([LenientFrameEntry].self, forKey: .frames)
+        }
+
+        /// A list the schema lets a document omit — **omit**, not null.
+        ///
+        /// `decodeIfPresent` conflates the two, and they are not the same statement: a missing
+        /// `previous_generations` is the first generation ever published, while an explicit
+        /// `null` is a document asserting something that is not a list. serde refuses the null and
+        /// defaults only the absence, so this reader does too, or the two clients keep different
+        /// documents (`rejection_equivalence` pins both halves).
+        private static func optionalList<T: Decodable>(
+            _ type: T.Type, _ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys
+        ) throws -> T where T: ExpressibleByArrayLiteral {
+            guard container.contains(key) else { return [] }
+            guard try !container.decodeNil(forKey: key) else {
+                throw WeatherManifestError.malformed
+            }
+            return try container.decode(T.self, forKey: key)
         }
 
         enum CodingKeys: String, CodingKey {
@@ -817,11 +879,33 @@ public extension WeatherManifestV2 {
         /// The lattice is **document-level**: a client that cannot address the dataset has nothing to
         /// degrade to, so an unusable one is a hard failure rather than a skipped entry.
         func validated(keyPrefix: String, generation: String) throws -> WeatherLattice {
-            guard cell_udeg > 0, width > 0, height > 0, shard_width > 0, shard_height > 0,
-                  // The shard grid must be exactly the one that tiles the lattice, or the client's
-                  // arithmetic and the baker's disagree about which object holds a cell.
-                  shard_cols == (width + shard_width - 1) / shard_width,
-                  shard_rows == (height + shard_height - 1) / shard_height,
+            guard cell_udeg > 0, width > 0, height > 0, shard_width > 0, shard_height > 0
+            else { throw WeatherManifestError.malformed }
+            // **Bound the lattice, not just the shard, and bound it before dividing by it.** Every
+            // number below arrives straight off the wire as a `UInt32`, and a document is free to
+            // say `width: 4294967295`: `(width + shard_width - 1)` then overflows and Swift *traps*,
+            // which is a crash reachable from the one document every rider fetches first. Two
+            // bounds, both geometric rather than arbitrary, both mirroring `validate_grid`:
+            //
+            // - an axis cannot hold more cells than 360 (or 180) degrees do at the lattice's own
+            //   cell pitch, so anything past that is not a description of this planet;
+            // - a shard grid is capped at ``WeatherManifestV2/maximumShards``, which is three orders
+            //   of magnitude above the production layout and still keeps the presence bitmap a few
+            //   kilobytes.
+            func axisLimit(_ degrees: UInt32) -> UInt32 { degrees * 1_000_000 / cell_udeg + 1 }
+            guard width <= axisLimit(360), height <= axisLimit(180) else {
+                throw WeatherManifestError.malformed
+            }
+            let (shardTotal, shardOverflow) = shard_cols.multipliedReportingOverflow(by: shard_rows)
+            guard !shardOverflow, shardTotal <= WeatherManifestV2.maximumShards else {
+                throw WeatherManifestError.malformed
+            }
+            guard // The shard grid must be exactly the one that tiles the lattice, or the client's
+                  // arithmetic and the baker's disagree about which object holds a cell. Written as
+                  // a remainder test rather than `(width + shard_width - 1) / shard_width` so it
+                  // cannot overflow whatever the axis bound above lets through.
+                  shard_cols == divideRoundingUp(width, shard_width),
+                  shard_rows == divideRoundingUp(height, shard_height),
                   // OBCG §1/§3, checked before a byte is fetched: a shard the header could only
                   // reject is not worth a Range read.
                   UInt64(shard_width) * UInt64(shard_height) <= OBCGridCodec.maximumGridCells,
@@ -877,11 +961,13 @@ public extension WeatherManifestV2 {
             guard let validAt = RFC3339.parse(valid_at), let presence = unhex(present) else {
                 return nil
             }
-            let count = lattice.shardCount
-            guard presence.count == Int((count + 7) / 8) else { return nil }
+            // `UInt64` throughout: `shardCount` saturates at `UInt32.max` for a lattice nobody
+            // validated, and `(count + 7)` would then trap on the way to the byte count.
+            let count = UInt64(lattice.shardCount)
+            guard UInt64(presence.count) == (count + 7) / 8 else { return nil }
             // Bits past the last shard must be zero, or "how many shards are there" has two answers.
-            for bit in count..<UInt32(presence.count * 8)
-            where presence[Int(bit / 8)] & (1 << (bit % 8)) != 0 { return nil }
+            for bit in count..<(UInt64(presence.count) * 8)
+            where presence[Int(bit / 8)] & (UInt8(1) << UInt8(bit % 8)) != 0 { return nil }
 
             var entries: [WeatherManifestShard] = []
             entries.reserveCapacity(shards.count)
@@ -892,17 +978,24 @@ public extension WeatherManifestV2 {
                       // refused rather than reconciled: silently trusting either one is how a dry
                       // shard becomes a missing object, or the reverse.
                       presence[Int(bit / 8)] & (1 << (bit % 8)) != 0,
-                      shard.object_crc32.hasPrefix("0x"),
-                      let crc = UInt32(shard.object_crc32.dropFirst(2), radix: 16),
+                      let crc = parseCRC32(shard.object_crc32),
                       shard.bytes > 0, shard.bytes <= UInt64(Int32.max)
                 else { return nil }
                 entries.append(WeatherManifestShard(
                     id: id, byteLength: Int(shard.bytes), objectCRC32: crc,
                     observed: shard.observed))
             }
-            entries.sort { $0.id < $1.id }
+            // **Stable, and stable on purpose.** `Array.sort` is not, so with two entries for one
+            // shard which of them survived the dedup below was luck — while Rust's `sort_by_key` is
+            // stable and keeps the first in document order. Two clients disagreeing about which
+            // `bytes`/`object_crc32` a duplicated shard has is one of them refusing an object the
+            // other fetches, so the tie is broken by the document's own order.
+            let ordered = entries.enumerated()
+                .sorted { $0.element.id == $1.element.id ? $0.offset < $1.offset
+                                                         : $0.element.id < $1.element.id }
+                .map(\.element)
             var deduplicated: [WeatherManifestShard] = []
-            for entry in entries where deduplicated.last?.id != entry.id {
+            for entry in ordered where deduplicated.last?.id != entry.id {
                 deduplicated.append(entry)
             }
             let flagged = presence.reduce(0) { $0 + $1.nonzeroBitCount }
@@ -932,6 +1025,22 @@ private func isSafeKeyPrefix(_ text: String) -> Bool {
     !text.isEmpty && !text.hasPrefix("/") && !text.hasSuffix("/") && !text.contains("..")
         && text.split(separator: "/", omittingEmptySubsequences: false)
             .allSatisfy { isSafeKeySegment(String($0)) }
+}
+
+/// A `0x`-prefixed 32-bit hex integer, and nothing else.
+///
+/// Swift's `UInt32(_:radix:)` accepts a leading `+`, exactly as Rust's `from_str_radix` does, so
+/// `"0x+1A00000"` used to parse in both clients — the review found them agreeing on an answer
+/// neither had decided. A CRC is at most eight hex digits; a sign is not one of them. The `0x` is
+/// lowercase because that is what the document writes, and `0X` is a different string this reader
+/// does not normalise.
+private func parseCRC32(_ text: String) -> UInt32? {
+    guard text.hasPrefix("0x") else { return nil }
+    let digits = text.dropFirst(2)
+    guard !digits.isEmpty, digits.count <= 8,
+          digits.allSatisfy({ $0.isHexDigit && $0.isASCII })
+    else { return nil }
+    return UInt32(digits, radix: 16)
 }
 
 private func unhex(_ text: String) -> [UInt8]? {

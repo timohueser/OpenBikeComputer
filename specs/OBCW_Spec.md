@@ -220,6 +220,20 @@ the separation with a test that runs the whole decision path under every display
 Exactly one of Observed or Forecast MUST be set. These flags say what the data means; they MUST
 NOT identify DWD, NOAA or another provider.
 
+**How the phone producer decides Observed, since WXR5 (#1244).** A producer policy, not a reader
+rule — a reader takes the flag as given — but it is written down here because two independent
+producers implement it and they disagreed once already. Under one mosaic dataset a frame is radar
+over the rider and model fill across the seam at the same instant, so no rule about a frame's
+*content* can be true of all of it. The flag therefore follows the frame's position in the timeline:
+the frame at offset 0 whose validity is within the dataset's stated source skew is the analysis and
+sets **Observed**; every forward frame sets **Forecast**. Dryness is not part of it in either
+direction — an all-dry radar scan is an observation, and an all-dry forecast frame is not one.
+
+Partial coverage is likewise decided over the **assembled** frame: a cell no source object and no
+measured-dry region reached. A producer composing one frame from several objects must not raise it
+merely because one of those objects stopped at its own edge, where a neighbouring object supplies
+exactly the cells it was missing.
+
 ## 6. Tile directory and payloads
 
 Each tile-directory entry is 12 bytes:

@@ -135,6 +135,9 @@ public enum WeatherCopy {
             return "the rain map expired at \(absolute(staleAfter, locale: locale))"
         case .serviceUnavailable:
             return "the \(serviceName) couldn't be reached"
+        case .outsideWindow:
+            // Nothing failed here, and the sentence must not imply it did.
+            return "the published rain map is for a different time"
         case .framesUnavailable:
             return "the rain-map frames couldn't be downloaded"
         }

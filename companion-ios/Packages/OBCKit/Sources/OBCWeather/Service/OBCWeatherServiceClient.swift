@@ -75,7 +75,6 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
             return .unavailable(.expired(staleAfter: manifest.freshness.staleAfter), diagnostics)
         case .covered: break
         }
-        diagnostics.dryShards = plan.dry.count
 
         // The frame window is the corridor on the lattice, derived from the same arithmetic the
         // shard set is, so the shards planned for cover exactly the cells the frame declares.
@@ -85,20 +84,34 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
 
         var crops: [PrecipitationCrop] = []
         for frame in manifest.frames {
-            let reads = plan.fetch.filter { $0.offsetMinutes == frame.offsetMinutes }
-            let dry = plan.dry.filter { $0.offsetMinutes == frame.offsetMinutes }
-            do {
-                crops.append(try await self.crop(
-                    frame: frame, reads: reads, dry: dry, window: window,
-                    lattice: manifest.lattice, diagnostics: &diagnostics))
-            } catch {
-                // One bad frame is not a bad dataset: the rest of the timeline is still genuine, and
-                // the missing timestamps show up as a shorter timeline rather than as a gap silently
-                // filled in. Only losing *every* frame removes the rain map.
+            // Frames outside the usable window are not fetched: two hours ahead is the question the
+            // rain map answers, and an observation older than six hours would be a lie told with a
+            // true timestamp. Both are properties of the *timeline*, not of any product, which is
+            // why the two constants live on ``WeatherCorridor`` beside the radius.
+            guard frame.validAt <= now.addingTimeInterval(WeatherCorridor.horizon),
+                  frame.validAt >= now.addingTimeInterval(-WeatherCorridor.maximumObservationAge)
+            else {
+                diagnostics.framesOutsideWindow += 1
                 continue
             }
+            let reads = plan.fetch.filter { $0.offsetMinutes == frame.offsetMinutes }
+            let dry = plan.dry.filter { $0.offsetMinutes == frame.offsetMinutes }
+            if let crop = await self.crop(
+                frame: frame, reads: reads, dry: dry, window: window,
+                lattice: manifest.lattice, cadence: manifest.cadence, now: now,
+                diagnostics: &diagnostics) {
+                crops.append(crop)
+            }
         }
-        guard !crops.isEmpty else { return .unavailable(.framesUnavailable, diagnostics) }
+        guard !crops.isEmpty else {
+            // Nothing failed and nothing is left: every frame this generation publishes is about a
+            // different time. Saying "the frames couldn't be downloaded" there would blame a
+            // service that answered perfectly, so it gets its own sentence.
+            if diagnostics.failedShards == 0, diagnostics.framesOutsideWindow > 0 {
+                return .unavailable(.outsideWindow, diagnostics)
+            }
+            return .unavailable(.framesUnavailable, diagnostics)
+        }
 
         return .selected(
             PrecipitationSelection(
@@ -170,16 +183,21 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
     /// part of the window it covers, each dry shard contributes intensity 0, and any cell no shard
     /// reaches stays no-data and raises the partial-coverage flag.
     ///
-    /// Throwing here fails **this frame only**. It is what a present shard failing must do: the
-    /// manifest promised the object, so its absence is an error, and the one thing it may never
-    /// become is a hole full of zeroes.
+    /// **A failed shard is a hole in its frame, not the loss of the frame.** The manifest promised
+    /// the object, so its absence is an error and is counted — but the eight shards that did arrive
+    /// are not thrown away to punish the one that did not. The hole stays no-data, which is
+    /// distinguishable from dry at every layer below, so keeping it cannot make an outage look
+    /// rain-free; it also raises the partial-coverage flag. `nil` — the frame disappearing
+    /// entirely — happens only when *every* present shard failed and nothing was dry, because that
+    /// frame would be an all-no-data image claiming a timestamp.
     private func crop(
         frame: WeatherManifestFrame, reads: [WeatherPlannedRead], dry: [WeatherFrameShard],
-        window: WeatherCellWindow, lattice: WeatherLattice,
+        window: WeatherCellWindow, lattice: WeatherLattice, cadence: WeatherCadence, now: Date,
         diagnostics: inout WeatherDiagnostics
-    ) async throws -> PrecipitationCrop {
+    ) async -> PrecipitationCrop? {
         var cells = [UInt8](repeating: OBCPrecipitationTileCodec.noData,
                             count: window.width * window.height)
+        var known = 0
 
         for entry in dry {
             // Dry is *painted*, not skipped. A shard the baker measured as dry everywhere is
@@ -187,6 +205,8 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
             // all-zero frame — which is how "no rain" reaches the glass.
             guard let local = shardWindow(shard: entry.shard, window: window, lattice: lattice)
             else { continue }
+            diagnostics.dryShards += 1
+            known += 1
             paint(&cells, window: window, region: local.region) { _, _ in
                 OBCPrecipitationTileCodec.dry
             }
@@ -195,21 +215,44 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
         for read in reads {
             guard let local = shardWindow(shard: read.shard, window: window, lattice: lattice)
             else { continue }
-            let shardCells = try await shardCrop(
-                read: read, frame: frame, geometry: local.geometry, cellWindow: local.cellWindow,
-                diagnostics: &diagnostics)
-            paint(&cells, window: window, region: local.region) { column, row in
-                shardCells[row * local.cellWindow.width + column]
+            if read.observed { diagnostics.observedShards += 1 }
+            do {
+                let shardCells = try await shardCrop(
+                    read: read, frame: frame, geometry: local.geometry,
+                    cellWindow: local.cellWindow, diagnostics: &diagnostics)
+                paint(&cells, window: window, region: local.region) { column, row in
+                    shardCells[row * local.cellWindow.width + column]
+                }
+                known += 1
+            } catch {
+                // Counted, and left as no-data. Never painted dry, and never allowed to remove the
+                // shards that did arrive.
+                diagnostics.failedShards += 1
             }
         }
+        guard known > 0 else { return nil }
 
-        // Observed only when every shard that contributed data says so — one modelled shard makes
-        // the frame a forecast, because the rider cannot see the seam. A frame with no present
-        // shards at all is observed by the same rule, and that is right: the baker *measured* every
-        // cell as dry, which is an observation of no rain rather than a prediction of it.
-        var quality: PrecipitationQuality =
-            reads.allSatisfy(\.observed) ? .observed : .forecast
-        if window.isClipped { quality.insert(.partialCoverage) }
+        // **The quality flag follows the frame's temporal nature**, not its content and not the
+        // per-shard `observed` bits. An OBCW frame carries one flag for a mosaic that is radar over
+        // the rider and model fill across the seam, so no content rule can be true of all of it —
+        // and a content rule made an all-dry frame's flag depend on whether the baker happened to
+        // publish an object, which is how the two clients came to disagree about the commonest
+        // scene there is. So: the frame at offset 0 whose validity is within the dataset's own
+        // `max_source_skew_s` of now is the analysis and says observed; every forward frame is a
+        // forecast and says so. An all-dry radar scan is still an observation; an all-dry forecast
+        // frame is still a forecast. The per-shard bits stay in the diagnostics, where they are true.
+        let skew = Swift.max(0, cadence.maximumSourceSkew)
+        let observed = frame.offsetMinutes == 0
+            && abs(now.timeIntervalSince(frame.validAt)) <= skew
+        // Partial coverage is decided over the **assembled** frame, and over nothing else:
+        // `OBCW_Spec.md` §5.1 defines it as some *in-bounds* cell being unavailable, and in-bounds
+        // means inside the window this bundle states. A corridor clamped to the lattice edge — at
+        // the date line, or against a lattice that does not reach the rider — produces a smaller
+        // window whose every cell has data, so raising the flag there would tell the device that
+        // cells it can see are unknown when all of them are known. What the rider lost is window,
+        // not certainty, and `window.isClipped` stays evidence for the diagnostics rather than a
+        // claim about the frame. Rust decides it the same way, in `bundle::rain_frame`.
+        var quality: PrecipitationQuality = observed ? .observed : .forecast
         if cells.contains(OBCPrecipitationTileCodec.noData) { quality.insert(.partialCoverage) }
 
         return PrecipitationCrop(
@@ -230,7 +273,7 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
         shard: WeatherShardID, window: WeatherCellWindow, lattice: WeatherLattice
     ) -> (geometry: WeatherFrameGeometry, cellWindow: CorridorExtraction.CellWindow,
           region: (column: Int, row: Int, width: Int, height: Int))? {
-        let geometry = lattice.geometry(of: shard)
+        guard let geometry = lattice.geometry(of: shard) else { return nil }
         let originColumn = Int(shard.column * lattice.shardWidth)
         let originRow = Int(shard.row * lattice.shardHeight)
         let firstColumn = Swift.max(window.columnMinimum, originColumn)
@@ -367,6 +410,9 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
 
         // Cached as a crop so a second corridor over the same shard window costs no HTTP at all;
         // the geographic fields are the shard's own, which is what makes the entry self-describing.
+        // So is the quality: this is one *shard*, and the manifest's per-shard `observed` bit is
+        // true of it. It does not reach the frame's flag — only `crop(frame:...)` decides that, from
+        // the frame's place in the timeline — and only `cells` is ever read back out of here.
         await cache.store(
             PrecipitationCrop(
                 validAt: frame.validAt,

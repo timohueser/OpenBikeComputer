@@ -210,33 +210,51 @@ struct WeatherBundleBuilderTests {
         }
     }
 
-    /// **The normalisation guard (#1254 phase 4a-norm), two-sided.**
+    /// **The normalisation guard (#1254 phase 4a-norm), two-sided and driven by the shared vector.**
     ///
-    /// Bytes alone would pass for the rejected integer-merge mechanism too, which produced 1,428 m
-    /// cells at Frankfurt and stepped 2x across 48.19 °N. So this asserts the *pitch* as well: a
-    /// 90 km disc must be 162 x 162 cells with an east–west ground pitch within 2 % of the lattice's
-    /// own north–south pitch, at every latitude people ride.
+    /// Every number asserted here comes out of `specs/vectors/manifest.json`'s
+    /// `wx_manifest_v2.resample_equivalence`, which is the same file
+    /// `host/obc-wx-client/tests/client.rs::the_resampled_corridor_matches_the_shared_vector_at_every_latitude`
+    /// reads — so "the two clients agree to the byte" is a checked fact rather than two suites
+    /// happening to print the same numbers. The block's `scenario` string is normative and this is
+    /// its Swift implementation.
+    ///
+    /// Three things are pinned, because no two of them are enough:
+    ///
+    /// - **bytes**, against the row and against a 200 KiB budget — the mechanism was chosen for it;
+    /// - **the pitch**, because the rejected `round(1/cos φ)` max-merge also fit a byte budget and
+    ///   what killed it was 1,428 m cells at Frankfurt and a 2x step across 48.19 °N;
+    /// - **the decoded cell image**, because at the raw4 worst case every tile is 128 bytes whatever
+    ///   is in it, so a half-cell drift in the nearest-neighbour column map would move which cells a
+    ///   rider sees while every length and every budget still passed.
+    ///
+    /// A mismatch here is a **cross-language divergence**, not a number to update: the fixture is
+    /// Rust's measurement and the two readers are supposed to be mirrors.
     @Test
-    func aNinetyKilometreDiscIsSquareCellsAndBoundedBytesAtEveryLatitude() throws {
+    func aNinetyKilometreDiscMatchesTheSharedResampleVectorAtEveryLatitude() throws {
         let northSouthPitch = 0.01 * 111_320.0  // 1,113.2 m, the lattice's own cell height
-        for latitude in [0.0, 41.9, 50.1, 59.9, 64.1, 69.6] {
-            let rider = Coordinate(latitude: latitude, longitude: 8.0)
+        let directory = try JSONSerialization.jsonObject(
+            with: ManifestV2Tests.repositoryFile("specs/vectors/manifest.json")) as! [String: Any]
+        let block = try #require(directory["wx_manifest_v2"] as? [String: Any])
+        let vector = try #require(block["resample_equivalence"] as? [String: Any])
+        let rows = try #require(vector["rows"] as? [[String: Any]])
+        #expect(rows.count >= 9, "the sweep must keep its latitudes")
+
+        for row in rows {
+            let latitude = try #require(row["lat_deg"] as? Double)
+            let rider = Coordinate(latitude: latitude, longitude: 7.9)
             let request = WeatherRequest(requestID: 1, position: rider, fixTime: Self.now)
             let corridor = try #require(WeatherCorridor.around(request))
 
-            // A crop covering the whole lattice-aligned window the corridor rounds out to, filled
-            // with texture rather than dry: the guard must hold for a genuinely wet day.
+            // One crop per frame covering the whole lattice-aligned corridor window, filled with
+            // deliberately incompressible texture: a uniform field would RLE4 down to nothing and
+            // the byte budget would pass without measuring anything. The window arithmetic is the
+            // scenario's, cell for cell, and it is the Rust helper's.
             let bounds = corridor.bounds
-            let south = floorDivide(bounds.southMicrodegrees + 90_000_000, Self.cell) * Self.cell
-                - 90_000_000
-            let north = ceilDivide(bounds.northMicrodegrees + 90_000_000, Self.cell) * Self.cell
-                - 90_000_000
-            let west = floorDivide(bounds.westMicrodegrees + 180_000_000, Self.cell) * Self.cell
-                - 180_000_000
-            let east = ceilDivide(bounds.eastMicrodegrees + 180_000_000, Self.cell) * Self.cell
-                - 180_000_000
-            let width = Int((east - west) / Self.cell)
-            let height = Int((north - south) / Self.cell)
+            let south = floorDivide(bounds.southMicrodegrees, Self.cell) * Self.cell
+            let west = floorDivide(bounds.westMicrodegrees, Self.cell) * Self.cell
+            let height = Int(floorDivide(bounds.northMicrodegrees - south, Self.cell) + 1)
+            let width = Int(floorDivide(bounds.eastMicrodegrees - west, Self.cell) + 1)
             var crops: [PrecipitationCrop] = []
             for index in 0..<9 {
                 var cells = [UInt8](repeating: 0, count: width * height)
@@ -254,25 +272,73 @@ struct WeatherBundleBuilderTests {
             let built = try build(
                 precipitation: Self.selection(crops), request: request, corridor: corridor)
             let frame = try #require(built.bundle.rainFrames.first)
+            let window = built.bundle.bounds
+            let site = "\(latitude) N"
 
-            // (ii) pitch
-            let spanDegrees = Double(
-                built.bundle.bounds.eastLongitudeMicrodegrees
-                    - built.bundle.bounds.westLongitudeMicrodegrees) / 1_000_000
-            let pitch = spanDegrees * 111_320 * Foundation.cos(latitude * .pi / 180)
-                / Double(frame.width)
-            let site = "\(latitude) N: \(built.bytes.count) B, "
-                + "\(frame.width)x\(frame.height) cells, \(Int(pitch.rounded())) m pitch"
+            // The source lattice columns the window spans — read back out of the *bundle*, since
+            // the window's east edge is `west + sourceColumns * cell` by construction.
+            let sourceColumns = Int(
+                (Int64(window.eastLongitudeMicrodegrees)
+                    - Int64(window.westLongitudeMicrodegrees)) / Self.cell)
+            #expect(sourceColumns == (try #require(row["source_columns"] as? Int)),
+                    "\(site): source columns")
+            let pinnedWindow = try #require(row["window"] as? [Int])
+            #expect(Int(frame.width) == pinnedWindow[0], "\(site): output width")
+            #expect(Int(frame.height) == pinnedWindow[1], "\(site): output height")
+            #expect(built.bytes.count == (try #require(row["bundle_bytes"] as? Int)),
+                    "\(site): bundle length")
+            #expect(Self.cellsHash(frame) == (try #require(row["frame0_cells_fnv1a64"] as? String)),
+                    "\(site): the decoded cell image moved")
 
-            // (i) bytes
-            #expect(built.bytes.count <= 200 * 1_024, "\(site)")
+            // The guard the mechanism was chosen for, both sides of it. The pitch is read off the
+            // bundle's own declared window rather than off the builder's intention.
+            #expect(built.bytes.count <= 200 * 1_024, "\(site): byte budget")
             #expect(built.bundle.rainFrames.count == 9,
                     "\(site): every timestamp must survive without the shrink loop firing")
-            // (iii) grid — 162, with 163 allowed where the outward rounding lands a cell wide
-            #expect((162...163).contains(Int(frame.width)), "\(site)")
-            #expect((162...163).contains(Int(frame.height)), "\(site)")
-            #expect(abs(pitch - northSouthPitch) / northSouthPitch < 0.02, "\(site)")
+            let spanDegrees = Double(
+                Int64(window.eastLongitudeMicrodegrees)
+                    - Int64(window.westLongitudeMicrodegrees)) / 1_000_000
+            let pitch = spanDegrees * 111_320 * Foundation.cos(latitude * .pi / 180)
+                / Double(frame.width)
+            #expect(abs(pitch - northSouthPitch) / northSouthPitch < 0.02,
+                    "\(site): \(Int(pitch.rounded())) m east-west against \(northSouthPitch) m")
+            #expect(frame.cellSizeMetres == Self.cellSizeMetres,
+                    "\(site): the frame states the lattice's own cell size")
         }
+    }
+
+    /// FNV-1a 64 over one decoded frame's cells, row-major with row 0 south — the hash
+    /// `resample_equivalence` pins, defined by its `cells_hash` note.
+    ///
+    /// Chosen because it is four lines in any language: the whole point of the row is that Swift
+    /// computes the same number over the same cells as Rust does, and a hash needing a library would
+    /// have been a hash one of the two suites quietly skipped. The cells come back out of the
+    /// *encoded bundle* through the wire decoder, so this measures what a device would read.
+    static func cellsHash(_ frame: OBCWeatherRainFrame) -> String {
+        let edge = OBCPrecipitationTileCodec.tileEdge
+        let width = Int(frame.width)
+        let height = Int(frame.height)
+        let tileColumns = (width + edge - 1) / edge
+        var cells = [UInt8](repeating: OBCPrecipitationTileCodec.noData, count: width * height)
+        for (index, tile) in frame.tiles.enumerated() {
+            let tileColumn = index % tileColumns
+            let tileRow = index / tileColumns
+            for localRow in 0..<edge {
+                let row = tileRow * edge + localRow
+                guard row < height else { continue }
+                for localColumn in 0..<edge {
+                    let column = tileColumn * edge + localColumn
+                    guard column < width else { continue }
+                    cells[row * width + column] = tile[localRow * edge + localColumn]
+                }
+            }
+        }
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for cell in cells {
+            hash ^= UInt64(cell)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(format: "%016llx", hash)
     }
 
     @Test

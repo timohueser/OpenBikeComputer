@@ -51,8 +51,13 @@ public struct WeatherCorridor: Equatable, Sendable {
     /// is the radius. **Dataset-level, not a product policy** — which is why it survived #1244 while
     /// the projection constants did not, and why `host/obc-wx-client` keeps its twin `HORIZON_S`.
     /// The timeline's actual depth is the manifest's `cadence`, read per document; this states the
-    /// question both clients are sizing for.
+    /// question both clients are sizing for, and ``OBCWeatherServiceClient`` filters the planned
+    /// frames against it so a manifest publishing further out costs no Range reads.
     public static let horizon: TimeInterval = 2 * 3_600
+    /// How old a frame may be and still be worth fetching — the twin of `MAX_OBSERVATION_AGE_S`.
+    /// Past it a "current" frame would be a lie told with a true timestamp, so it is not fetched and
+    /// the rider is told the published frames are outside the window rather than shown stale rain.
+    public static let maximumObservationAge: TimeInterval = 6 * 3_600
     /// The disc's radius. One number, no policy.
     public static let corridorRadiusMetres: Double = 90_000
 
