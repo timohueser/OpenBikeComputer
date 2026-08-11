@@ -473,6 +473,11 @@ pub struct RcloneStore {
     /// The child's `RCLONE_CONFIG_OBCR2_*` remote definition. The secret lives
     /// here and nowhere else.
     envs: Vec<(&'static str, String)>,
+    /// The binary to spawn — always plain `rclone`, resolved on `PATH`, in
+    /// production. It is a field only so the absent-vs-empty test can point it
+    /// at a stub that answers the way one real rclone does; nothing reads it
+    /// from the environment.
+    program: PathBuf,
 }
 
 /// The ephemeral remote's name — matches the `RCLONE_CONFIG_OBCR2_*` variables.
@@ -499,7 +504,7 @@ impl RcloneStore {
             ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret),
             ("RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET", "true".to_string()),
         ];
-        Ok(Self { bucket, prefix, endpoint, envs })
+        Ok(Self { bucket, prefix, endpoint, envs, program: PathBuf::from("rclone") })
     }
 
     fn target(&self, key: &str) -> String {
@@ -511,7 +516,7 @@ impl RcloneStore {
     }
 
     fn run(&self, args: &[String]) -> Result<std::process::Output, String> {
-        std::process::Command::new("rclone")
+        std::process::Command::new(&self.program)
             .envs(self.envs.iter().map(|(k, v)| (*k, v.as_str())))
             .args(args)
             .output()
@@ -563,21 +568,70 @@ impl ObjectStore for RcloneStore {
         Ok(())
     }
 
+    /// The pre-swap fetchability proof, and **`count` is what answers it — not
+    /// `bytes`, and not rclone's stderr wording.**
+    ///
+    /// Some rclone versions do not fail this command for a key that is not
+    /// there; they treat the path as an empty directory and exit 0:
+    ///
+    /// ```text
+    /// $ rclone size --json obcr2:obc-maps/cells/fine/1204/1052.obcm   # no such object
+    /// {"count":0,"bytes":0,"sizeless":0}
+    /// EXIT=0
+    /// ```
+    ///
+    /// Debian 13's packaged v1.60.1 is one of them, which is not a hypothetical:
+    /// it is what the weather VPS runs, and the same substring match there cost a
+    /// live bootstrap before `obc-wx-bake`'s copy of this store was fixed the same
+    /// way. Here it is milder — an object that never uploaded reports 0 bytes, the
+    /// caller's length compare still refuses to swap `catalog.json` in, and the
+    /// only casualty is the "not fetchable after upload" arm never being taken and
+    /// the operator reading a length mismatch instead. Milder is not correct.
+    ///
+    /// `count` separates the two states on every version: `0` is absent, `1` is
+    /// present — including a real zero-byte object, which prints the same
+    /// `"bytes":0`. The stderr match stays as a *second* answer for versions that
+    /// do fail the command.
     fn head(&self, key: &str) -> Result<Option<u64>, String> {
         let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
         let out = self.run(&args)?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            // rclone reports a missing object as an error; that is a `None`, not a
-            // publish failure — the caller turns it into the loud message.
-            if stderr.contains("not found") || stderr.contains("directory not found") {
+            // "directory not found" contains it too — one check covers both.
+            if stderr.contains("not found") {
                 return Ok(None);
             }
             return Err(self.redact(&stderr));
         }
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{key}: {e}"))?;
-        Ok(json.get("bytes").and_then(serde_json::Value::as_i64).and_then(|b| u64::try_from(b).ok()))
+        size_json_len(key, &out.stdout)
     }
+}
+
+/// The `count`/`bytes` reading of one `rclone size --json` document, split out
+/// from [`RcloneStore::head`] so the absent-vs-empty distinction is testable
+/// against the exact bytes a real rclone printed, with no process to spawn.
+fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
+    let json: serde_json::Value =
+        serde_json::from_slice(stdout).map_err(|e| format!("{key}: rclone size --json: {e}"))?;
+    let Some(count) = json.get("count").and_then(serde_json::Value::as_i64) else {
+        return Err(format!(
+            "{key}: `rclone size --json` printed no `count` field ({}) — that field is how an absent object is told \
+             from a zero-byte one, and every rclone with `--json` prints it",
+            String::from_utf8_lossy(stdout).trim()
+        ));
+    };
+    if count <= 0 {
+        return Ok(None);
+    }
+    // Present, so a length it cannot state is a real failure and not an absence —
+    // the conflation this function replaced, where an unreadable `bytes` returned
+    // the same `None` as "gone", and `None` here licenses nothing less than
+    // refusing the publish.
+    json.get("bytes")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|b| u64::try_from(b).ok())
+        .map(Some)
+        .ok_or_else(|| format!("{key}: `rclone size --json` counted {count} object(s) but printed no usable `bytes`"))
 }
 
 #[cfg(test)]
@@ -597,6 +651,7 @@ mod tests {
                 ("RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID", "abc".into()),
                 ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret.into()),
             ],
+            program: PathBuf::from("rclone"),
         }
     }
 
@@ -656,5 +711,66 @@ mod tests {
         assert_eq!(preview.content_type(), "image/png");
         assert!(preview.cache_control().contains("max-age=31536000"));
         assert!(preview.cache_control().contains("immutable"));
+    }
+
+    /// `bytes` is `0` in two of these three and they mean different things: no
+    /// object at all, and a real zero-byte one. Only `count` separates them, and
+    /// reading absence off `bytes` — or off a stderr some rclone versions never
+    /// write — is what wedged the weather baker on 2026-08-11.
+    #[test]
+    fn count_not_bytes_tells_an_absent_object_from_an_empty_one() {
+        let key = "cells/fine/1204/1052.obcm";
+        // Observed from rclone v1.60.1 on a key that does not exist: exit 0, no stderr.
+        assert_eq!(size_json_len(key, br#"{"count":0,"bytes":0,"sizeless":0}"#), Ok(None));
+        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":0,"sizeless":0}"#), Ok(Some(0)));
+        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":8321,"sizeless":0}"#), Ok(Some(8321)));
+
+        // An rclone that prints no `count` cannot answer the question, so it says
+        // so rather than guessing an absence — the guess is the bug.
+        let e = size_json_len(key, br#"{"bytes":0}"#).expect_err("no count is not an absence");
+        assert!(e.contains("`count`"), "{e}");
+        let e = size_json_len(key, b"").expect_err("empty stdout is not an absence");
+        assert!(e.contains("rclone size --json"), "{e}");
+    }
+
+    /// End to end through the real `head`, against a stub that answers the way
+    /// rclone v1.60.1 does for a missing key: silently, exit 0, `"count":0`. The
+    /// verify loop before the catalog swap is the only reader of this, and it must
+    /// see `None` — "not fetchable after upload" — rather than a phantom 0-byte
+    /// object.
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_object_heads_as_absent_not_as_zero_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("obc-bake-rclone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("obc-maps/cells")).expect("fixture tree");
+        std::fs::write(root.join("obc-maps/cells/present.obcm"), vec![0u8; 8321]).expect("object");
+        std::fs::write(root.join("obc-maps/cells/empty.obcm"), b"").expect("zero-byte object");
+
+        let stub = root.join("rclone-stub.sh");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\nroot='{}'\nfor target in \"$@\"; do :; done\npath=\"$root/${{target#obcr2:}}\"\n\
+                 if [ -f \"$path\" ]; then printf '{{\"count\":1,\"bytes\":%s,\"sizeless\":0}}\\n' \
+                 \"$(wc -c < \"$path\" | tr -d ' ')\"; else printf '{{\"count\":0,\"bytes\":0,\"sizeless\":0}}\\n'; fi\nexit 0\n",
+                root.display()
+            ),
+        )
+        .expect("stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("stub +x");
+
+        let mut store = r2_store("stub", "hunter2");
+        store.program = stub;
+
+        assert_eq!(store.head("cells/present.obcm").expect("head"), Some(8321));
+        assert_eq!(store.head("cells/empty.obcm").expect("head empty"), Some(0));
+        // The regression: this used to come back `Some(0)`, so the publish failed
+        // with a length mismatch and the operator was told the wrong thing.
+        assert_eq!(store.head("cells/never-uploaded.obcm").expect("head absent"), None);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
