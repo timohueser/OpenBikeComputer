@@ -1078,9 +1078,98 @@ fn a_store_that_refuses_to_delete_still_publishes_a_good_cycle() {
     assert_eq!(report.swept.deleted_objects, 0);
     assert_eq!(report.warnings.len(), 1, "one warning for the generation, not one per key");
     assert!(report.warnings[0].contains("retention sweep"), "{}", report.warnings[0]);
+    // The report's own field carries it too — it is public and documented, so draining it into
+    // `warnings` and leaving it empty would be a lie (#1274 r1 finding 12).
+    assert_eq!(report.swept.warnings, report.warnings);
     // …and the manifest is the one this cycle published, byte for byte the good outcome.
     let raw = std::fs::read(dir.join(manifest_v2::MANIFEST_KEY)).expect("the manifest");
     assert_eq!(manifest_v2::from_json(&raw).expect("v2").generation, "20260809T1515Z");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A cycle must refuse to publish a manifest older than the one already at the key** (#1274 r1
+/// blocker 2). The sweep is correct at every individual step, so this is not about a wrong delete:
+/// it is about a *stale republish* putting an old chain back over a newer one, naming generations
+/// later cycles legitimately swept — and by §10.3 a 404 on a named generation is an error every
+/// falling-back client receives.
+///
+/// Reachable without any concurrency at all: a backwards clock step, or a bake started by hand
+/// outside the unit's `flock`. Both look like this.
+#[test]
+fn a_cycle_older_than_the_published_manifest_refuses_to_publish() {
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
+    let dwd = dwd_rv::DwdRv;
+    let icon = icon_eu::IconEu;
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = std::env::temp_dir().join(format!("obc-wx-backwards-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store = DirStore::new(&dir);
+
+    let now = ts("2026-08-09T15:00:00Z");
+    run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, now, 2, false).expect("the good cycle");
+    let before = published_tree(&dir);
+
+    // A stalled racer, or a clock that stepped back one cadence step.
+    let error = run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, now - 900, 2, false)
+        .expect_err("a manifest that goes backwards must not be published");
+    assert!(error.contains("refusing to publish a manifest that goes backwards"), "{error}");
+    assert!(error.contains("20260809T1500Z") && error.contains("20260809T1445Z"), "names both: {error}");
+    assert_eq!(published_tree(&dir), before, "the refused cycle wrote nothing at all");
+
+    // Re-baking the *same* reference time is the idempotent republish the design rests on, and
+    // stays allowed — equality is not going backwards.
+    run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, now, 2, false).expect("a re-bake is fine");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The manifest is read back before it licenses 216 deletes** (#1274 r1 finding 3). Every frame
+/// object is `head`ed at its exact length before the swap; until round 1 the one object that both
+/// wedges the next cycle when unreadable *and* authorises the whole sweep was the only one nobody
+/// checked, on a bucket with a recorded history of tearing bodies.
+#[test]
+fn a_manifest_that_does_not_read_back_stops_the_sweep() {
+    use obc_wx_bake::publish::{Deleted, ObjectStore, PlannedObject};
+
+    /// A directory store that corrupts the manifest the instant it is written — the shape of a
+    /// torn body, applied to the one key that matters.
+    struct TearsTheManifest(DirStore);
+    impl ObjectStore for TearsTheManifest {
+        fn describe(&self) -> String {
+            self.0.describe()
+        }
+        fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
+            self.0.put(object)?;
+            if object.key == manifest_v2::MANIFEST_KEY {
+                let half = object.bytes.len() / 2;
+                self.0.put(&PlannedObject { bytes: object.bytes[..half].to_vec(), ..object.clone() })?;
+            }
+            Ok(())
+        }
+        fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
+            self.0.head(key)
+        }
+        fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            self.0.get(key)
+        }
+        fn delete(&mut self, _key: &str) -> Result<Deleted, String> {
+            panic!("the sweep must not run against a manifest that did not read back");
+        }
+    }
+
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
+    let dwd = dwd_rv::DwdRv;
+    let icon = icon_eu::IconEu;
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = std::env::temp_dir().join(format!("obc-wx-torn-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store = TearsTheManifest(DirStore::new(&dir));
+
+    let error =
+        run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, ts("2026-08-09T14:30:00Z"), 2, false)
+            .expect_err("a manifest that does not read back fails the cycle");
+    assert!(error.contains("refusing to sweep"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

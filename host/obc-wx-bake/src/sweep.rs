@@ -61,11 +61,24 @@ use crate::canonical::{CycleTimes, Lattice};
 use crate::manifest_v2::{self, Carried, Manifest};
 use crate::publish::ObjectStore;
 
+/// The most generations one cycle will retire, and it is a refusal rather than a truncation.
+///
+/// `manifest_v2::carried_generations` enforces §10.4's cap on the way in, so a delete set larger
+/// than this is unreachable from any document this baker would accept. It is checked anyway
+/// because the failure is not "a wrong object is deleted" — the keys are still all under
+/// `wx/v2/<named generation>/` — it is *time*: each generation is `shard_count x frames` process
+/// spawns held under the cycle's lock, so a document naming a few hundred is a baker that has
+/// stopped baking.
+pub const MAX_GENERATIONS_PER_SWEEP: usize = manifest_v2::RETAINED_PREVIOUS_GENERATIONS + 1;
+
 /// What one [`sweep`] retired.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SweepReport {
     /// The generations collected, newest first. Empty is the normal answer for the first three
-    /// cycles after a bootstrap, and for any re-bake of a reference time.
+    /// cycles after a bootstrap, and for a re-bake of a reference time — the latter *only* because
+    /// `Builder::new` filters the republished generation out before capping the chain, so the
+    /// keep-set stays whole. Getting that order wrong makes a re-bake sweep a generation early;
+    /// see [`Carried::named`](crate::manifest_v2::Carried::named).
     pub generations: Vec<String>,
     /// Objects that were there and are gone. A full generation is `shard_count x frames` minus its
     /// dry shards, so a number well under that is normal and a *zero* against a named generation is
@@ -145,19 +158,44 @@ pub fn sweep(
     published: &Manifest,
 ) -> SweepReport {
     let mut report = SweepReport::default();
-    for generation in delete_set(carried, published) {
+    let doomed = delete_set(carried, published);
+    // Bounded work, refused rather than truncated. `carried_generations` already enforces §10.4's
+    // cap, so this is unreachable — but the cost of being wrong is a baker that stops baking:
+    // every extra generation is another `shard_count x frames` process spawns while holding the
+    // cycle's lock. Refusing keeps the leak visible; truncating would hide it, which is the trade
+    // `Carried::named` exists to refuse.
+    if doomed.len() > MAX_GENERATIONS_PER_SWEEP {
+        report.warnings.push(format!(
+            "retention sweep: the delete set names {} generations, over the {MAX_GENERATIONS_PER_SWEEP} \
+             a single cycle can be asked to retire — sweeping nothing rather than spending the cycle's \
+             lock on it. The generations are unreferenced and the bucket's 1-day lifecycle rule collects \
+             them",
+            doomed.len()
+        ));
+        return report;
+    }
+    for generation in doomed {
         let mut failures = 0usize;
         let mut first_error: Option<String> = None;
+        let mut deleted_here = 0usize;
+        let prefix = format!("{}/{generation}/", manifest_v2::KEY_PREFIX);
         for key in generation_keys(lattice, times, &generation) {
-            // The last guard, and it is cheap: a key this sweep deletes must be inside the
-            // generation it is collecting, which is a generation the published manifest does not
-            // name. `shard_key` composes it, so this can only fail if that composition changes
-            // under us — which is exactly the change that should stop a delete.
-            debug_assert!(key.starts_with(&format!("{}/{generation}/", manifest_v2::KEY_PREFIX)), "{key}");
+            // The last guard, and it is a **runtime** one: a key this sweep deletes must be inside
+            // the generation it is collecting, which is a generation the published manifest does
+            // not name. `shard_key` composes it, so this can only fail if that composition changes
+            // under us — which is exactly the change that should stop a delete. It was a
+            // `debug_assert!` until round 1 of #1274's review pointed out that `install.sh` builds
+            // `--release`, so on the box the "last thing between a bad string and a delete" was
+            // nothing at all. A string compare against a process spawn is free.
+            if !key.starts_with(&prefix) {
+                failures += 1;
+                first_error.get_or_insert(format!("{key}: not under {prefix} — refusing to delete it"));
+                continue;
+            }
             match store.delete(&key) {
                 Ok(deleted) => {
                     if deleted.existed {
-                        report.deleted_objects += 1;
+                        deleted_here += 1;
                         report.accounted_bytes += deleted.bytes.unwrap_or(0);
                     }
                 }
@@ -167,12 +205,24 @@ pub fn sweep(
                 }
             }
         }
+        report.deleted_objects += deleted_here;
         if let Some(error) = first_error {
             report.warnings.push(format!(
                 "retention sweep: {failures} of generation {generation}'s objects could not be deleted \
                  (first: {error}). They are unreferenced, so nothing serves them; the bucket's 1-day \
                  lifecycle rule collects the leak. Next cycle will not retry them — this generation is \
                  already off the manifest chain"
+            ));
+        } else if deleted_here == 0 {
+            // A generation the chain named should have had objects. Zero means it was already
+            // collected — or, less comfortably, that the store answered "not found" for a reason
+            // that is not absence: `RcloneStore` infers absence from a substring of stderr, and an
+            // endpoint replying "bucket not found" would read as a clean sweep of nothing. Saying
+            // so costs one line and is the difference between a silent no-op and a question.
+            report.warnings.push(format!(
+                "retention sweep: generation {generation} had nothing to delete. Either it was already \
+                 collected, or every delete was answered with something this store reads as absence — \
+                 check the bucket and prefix in the destination line above"
             ));
         }
         report.generations.push(generation);
@@ -187,20 +237,14 @@ mod tests {
     use crate::manifest_v2::Builder;
     use crate::publish::{Deleted, PlannedObject};
 
+    /// A document with a **hand-written** chain. Useful for stating a starting state, but note it
+    /// is *not* the composition the cycle runs — that is [`republish`], and the difference is where
+    /// round 1's blocker hid.
     fn manifest(generation: &str, previous: &[&str]) -> Manifest {
-        let reference_time = crate::timefmt::parse_rfc3339(&format!(
-            "{}-{}-{}T{}:{}:00Z",
-            &generation[0..4],
-            &generation[4..6],
-            &generation[6..8],
-            &generation[9..11],
-            &generation[11..13]
-        ))
-        .expect("a generation id is a timestamp");
         let mut document = Builder::new(
             &CANONICAL,
-            CycleTimes { reference_time },
-            reference_time,
+            CycleTimes { reference_time: reference_time(generation) },
+            0,
             Vec::new(),
             previous.iter().map(|id| (*id).to_string()).collect(),
         )
@@ -208,6 +252,29 @@ mod tests {
         assert_eq!(document.generation, generation);
         document.frames.truncate(1);
         document
+    }
+
+    fn reference_time(generation: &str) -> i64 {
+        crate::timefmt::parse_key_timestamp(generation).expect("a generation id is a timestamp")
+    }
+
+    /// **The real composition**, end to end: read the predecessor back the way `run_cycle` does,
+    /// hand its *uncapped* candidate list to the builder, finish. Every retention assertion that
+    /// matters has to go through this — a test that hand-builds `previous_generations` is asserting
+    /// about a manifest the baker cannot produce.
+    fn republish(predecessor: &Manifest, generation: &str) -> (Carried, Manifest) {
+        let carried = carried(predecessor);
+        let mut document = Builder::new(
+            &CANONICAL,
+            CycleTimes { reference_time: reference_time(generation) },
+            0,
+            Vec::new(),
+            carried.named().to_vec(),
+        )
+        .finish();
+        assert_eq!(document.generation, generation);
+        document.frames.truncate(1);
+        (carried, document)
     }
 
     /// Build a `Carried` the only way anything can: by parsing a document a publisher wrote.
@@ -260,6 +327,34 @@ mod tests {
         assert_eq!(delete_set(&carried(&predecessor), &published), vec!["20260810T1415Z"]);
     }
 
+    /// **A re-bake retires nothing, and it promises the same two generations it did before.**
+    ///
+    /// Round 1 of #1274's review reproduced the opposite, and the reason it got past the first
+    /// version of this suite is instructive: the old re-bake case hand-built the published document
+    /// with an explicit two-entry chain, which is a manifest the baker could not produce. Driven
+    /// through the real composition — `carried_generations` -> `Builder::new(named())` -> `finish`
+    /// -> `delete_set` — a capped-then-filtered chain publishes `previous = [N-1]` and sweeps N-2 a
+    /// full cycle early, halving §10.4's overlap for exactly the clients it exists for.
+    #[test]
+    fn a_rebake_keeps_its_whole_chain_and_sweeps_nothing() {
+        let predecessor = manifest("20260810T1545Z", &["20260810T1530Z", "20260810T1515Z"]);
+        let (carried, republished) = republish(&predecessor, "20260810T1545Z");
+        assert_eq!(
+            republished.previous_generations,
+            vec!["20260810T1530Z", "20260810T1515Z"],
+            "a republished manifest must promise the same two generations, not one"
+        );
+        assert!(
+            delete_set(&carried, &republished).is_empty(),
+            "a re-bake retired a generation the previous publish had promised to keep"
+        );
+
+        // And the ordinary step, through the same composition, still retires exactly N-3.
+        let (carried, next) = republish(&predecessor, "20260810T1600Z");
+        assert_eq!(next.previous_generations, vec!["20260810T1545Z", "20260810T1530Z"]);
+        assert_eq!(delete_set(&carried, &next), vec!["20260810T1515Z"]);
+    }
+
     /// **The invariant.** Whatever the predecessor said, nothing the published manifest names may
     /// end up in the delete set — including the pathological case where the predecessor named the
     /// generation being published (a re-bake) and the one where the chains fully overlap.
@@ -279,6 +374,21 @@ mod tests {
             let set = delete_set(&carried(&predecessor), &published);
             for generation in &set {
                 assert!(!named.contains(generation.as_str()), "{generation} is still referenced by the new manifest");
+            }
+        }
+        // The same property over the composition the cycle actually runs, for every predecessor
+        // shape: a document built from `named()` can never name something its own sweep collects.
+        for (predecessor, generation) in [
+            (manifest("20260810T1445Z", &["20260810T1430Z", "20260810T1415Z"]), "20260810T1500Z"),
+            (manifest("20260810T1500Z", &["20260810T1445Z", "20260810T1430Z"]), "20260810T1500Z"),
+            (manifest("20260810T1430Z", &[]), "20260810T1445Z"),
+        ] {
+            let (carried, document) = republish(&predecessor, generation);
+            let keep: BTreeSet<&str> = std::iter::once(document.generation.as_str())
+                .chain(document.previous_generations.iter().map(String::as_str))
+                .collect();
+            for doomed in delete_set(&carried, &document) {
+                assert!(!keep.contains(doomed.as_str()), "{doomed} is still referenced by the new manifest");
             }
         }
         // …and the same, at the level the deletion actually happens: not one key the sweep issues
@@ -354,6 +464,40 @@ mod tests {
         // The keys that did not fail were still collected: a partial store failure is partial.
         assert!(store.deleted.iter().all(|key| !key.contains("f0/")));
         assert_eq!(store.deleted.len(), CANONICAL.shard_count() as usize * 8);
+    }
+
+    /// A named generation that yields nothing is reported rather than passed over. `RcloneStore`
+    /// infers absence from a substring of stderr, so an endpoint answering "bucket not found" for
+    /// every key would otherwise read as a clean sweep of zero objects — a silent no-op where a
+    /// question belongs.
+    #[test]
+    fn a_generation_that_deleted_nothing_says_so() {
+        let mut store = RecordingStore::default();
+        let predecessor = manifest("20260810T1445Z", &["20260810T1430Z", "20260810T1415Z"]);
+        let published = manifest("20260810T1500Z", &["20260810T1445Z", "20260810T1430Z"]);
+        let report =
+            sweep(&mut store, &CANONICAL, CycleTimes { reference_time: 0 }, &carried(&predecessor), &published);
+        assert_eq!(report.deleted_objects, 0);
+        assert_eq!(report.generations, vec!["20260810T1415Z"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("had nothing to delete"), "{}", report.warnings[0]);
+    }
+
+    /// The work bound. `carried_generations` already refuses a chain this long, so the constant is
+    /// a backstop — but it must be a refusal and never a truncation, because truncating is how the
+    /// leak `Carried::named` exists to prevent gets back in.
+    #[test]
+    fn the_sweep_refuses_an_implausibly_large_delete_set_rather_than_truncating_it() {
+        assert_eq!(MAX_GENERATIONS_PER_SWEEP, manifest_v2::RETAINED_PREVIOUS_GENERATIONS + 1);
+        // The only way to a longer chain is a document `carried_generations` would refuse, which is
+        // where the real enforcement lives; pinned there by
+        // `a_chain_longer_than_the_cap_is_refused_rather_than_truncated`.
+        let mut warnings = Vec::new();
+        let long = format!(
+            r#"{{"version":2,"generation":"20260810T1500Z","previous_generations":{}}}"#,
+            serde_json::to_string(&["20260810T1445Z", "20260810T1430Z", "20260810T1415Z"]).unwrap()
+        );
+        assert!(manifest_v2::carried_generations(Some(long.as_bytes()), &mut warnings).is_err());
     }
 
     /// The sweep computes keys for **this baker's** tree and refuses anything else, so a document
