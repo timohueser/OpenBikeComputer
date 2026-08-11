@@ -49,6 +49,21 @@ observation therefore comes from Iowa State's MTArchive mirror, and every member
 URLs: `url`, the canonical key the baker requests and the replay serves it under, and
 `archive_url`, where the bytes actually came from. The rewrite lives in `src/pack/archive.rs`.
 
+**And the mirror has since gone.** Re-checked 2026-08-11 while adding WXR9's motion-history probe:
+MTArchive now answers 404 for *every* `PrecipRate` key of 2020-08-10, including the ones whose bytes
+this pack already carries. The paragraph above about `--store-truth-upstream` was written as a
+precaution and has been cashed in — the derecho pack is now unreconstructible from any source but
+itself, and the checked-in `upstream/` is the only reason it still re-bakes.
+
+That has one visible consequence in `event.json`. WXR9 (#1251) made the MRMS adapter probe, once,
+for the observation ten minutes before its anchor, to estimate motion from. That probe is recorded
+here as `Retrieval::Probe { object_length: null }` — a genuine 404, because that is exactly what the
+archive returned when it was asked. The pack therefore carries **no** motion baseline, and its
+re-bake exercises WXR9's honest fallback: no baseline, no nowcast layer, a published tree
+byte-identical to the one from before the nowcast existed. A pack captured against a live upstream
+carries the frame and produces the layer; this one is the regression test for the other branch, and
+`tests/nowcast_skill.rs` scores the engine off `truth/` instead.
+
 **A pack must not contain the future.** An archive holds the whole day, so a naive replay lets run
 discovery select a run and an observation that had not been published yet at the capture instant —
 and a pack like that ships a model baseline with an extra hour of assimilation and radar the device

@@ -208,6 +208,13 @@ pub struct Contract {
     pub cadence_seconds: i64,
     /// How far back discovery probes before giving up.
     pub max_discovery_probes: usize,
+    /// How far before the anchor composite to fetch the motion-history frame WXR9's nowcast is
+    /// estimated from, or `None` for a product this bakery does not nowcast.
+    ///
+    /// A multiple of [`Contract::cadence_seconds`], and long enough that a 20 m/s system has moved
+    /// a dozen 1 km cells rather than two — see [`crate::source::mrms::MOTION_LAG_SECONDS`] for the
+    /// same trade written out. `None` on NIMBUS is a cost decision, not a capability one.
+    pub motion_lag_seconds: Option<i64>,
     pub attribution: Attribution,
 }
 
@@ -549,13 +556,56 @@ pub fn bake(
         FetchOutcome::Unchanged => return Err(format!("{id}: object fetch returned 304 without a validator")),
     };
     let frame = bake_frame(contract, &fetched.bytes, valid_at, warnings)?;
+    let motion_history = match contract.motion_lag_seconds {
+        Some(lag) => motion_history(contract, upstream, valid_at, lag, warnings),
+        None => Vec::new(),
+    };
     Ok(BakedSource {
         id,
         geometry: contract.geometry(),
         reference_time: valid_at,
         attribution: contract.attribution,
         frames: vec![frame],
+        motion_history,
     })
+}
+
+/// The earlier composite [`crate::derive::radar_nowcast`] estimates motion from (WXR9 #1251), or an
+/// empty vector with a warning.
+///
+/// Best-effort on exactly the terms [`crate::source::mrms`]'s equivalent is, and for the same
+/// reason: the anchor observation is what a rider over Europe sees at f0 and it must never be put at
+/// risk to make a forecast layer possible. One extra HEAD, and one extra object — which for OPERA is
+/// a second 16.7 M-cell COG decode and a second resample onto the 25 M-cell window, the most
+/// expensive thing WXR9 adds to the cycle. That cost is why only CIRRUS carries a lag: NIMBUS is the
+/// coarser backfill under it, and paying it twice over largely the same ground buys very little.
+fn motion_history(
+    contract: &Contract,
+    upstream: &mut dyn Upstream,
+    valid_at: i64,
+    lag: i64,
+    warnings: &mut Vec<String>,
+) -> Vec<BakedFrame> {
+    let id = contract.id;
+    let earlier = valid_at - lag;
+    let url = contract.object_url(earlier);
+    match upstream.exists(&url) {
+        Ok(true) => match upstream.fetch(&url, tiff::MAX_OBJECT_BYTES, None) {
+            Ok(FetchOutcome::Body(fetched)) => match bake_frame(contract, &fetched.bytes, earlier, warnings) {
+                Ok(frame) => return vec![frame],
+                Err(error) => warnings.push(format!("{id}: the motion-history composite failed to bake ({error})")),
+            },
+            Ok(FetchOutcome::Unchanged) => {
+                warnings.push(format!("{id}: the motion-history fetch returned 304 without a validator"))
+            }
+            Err(error) => warnings.push(format!("{id}: the motion-history composite failed to fetch ({error})")),
+        },
+        Ok(false) => warnings.push(format!(
+            "{id}: no composite published at {url}, so this cycle has no motion baseline and no nowcast"
+        )),
+        Err(error) => warnings.push(format!("{id}: probing for the motion-history composite failed ({error})")),
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
