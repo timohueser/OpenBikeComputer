@@ -1129,8 +1129,15 @@ reject a compressible tile mislabeled `raw4`, preserving byte-stable re-encoding
 compression boundary is the RAM story: [`obc-weather`](src:firmware/obc-weather) retains only a
 parsed header, reads at most 128 encoded bytes, and expands into a caller-owned 256-byte tile. A
 96 × 96 × nine-frame raw DWD-shaped
-bundle is 46,480 bytes (45.39 KiB), inside the phone producer's separate 64 KiB policy without
-making 64 KiB a reader or format limit.
+bundle is 46,480 bytes (45.39 KiB).
+
+That shape was a provider's, and the phone no longer produces one. Under a single uniform dataset
+the bundle is the rider's 90 km corridor at a uniform ~1,113 m pitch — **162 × 162 cells in every
+frame, at every latitude** — so nine forced-raw4 frames come to 153,580 bytes worst case, and a
+real corridor measures far below that (55.5 kB was the largest over a 0–80° sweep). The phone
+producer's separate policy cap rose with it, from 64 KiB to **256 KiB**, without making either
+number a reader or format limit: the device's reader never holds more than a header and one tile,
+so what a bigger bundle costs is transfer time, not RAM.
 
 Every accepted object passes the internal whole-bundle CRC and structural checks: checked offset
 arithmetic, canonical non-overlap, ordered timestamps, possible tile counts, defined nibbles, and
@@ -1178,6 +1185,24 @@ a global floor last — decides each cell. The resampling still happens exactly 
 nearest-neighbour, which is what the format always required; what changed is that it happens in
 the baker instead of being pushed onto every consumer. Downstream there are no products, no tiers,
 no bboxes and no resolutions to choose between, so there is no composition left to get wrong.
+
+Both clients are that much smaller for it. What used to be a tier ladder, a containment test, an
+expired-product shadowing rule and a refusal to bundle a frame whose lattice did not tile the
+window is now four divisions: which shards cover this bounding box. The corridor stopped being a
+cone projected along the rider's heading and became a plain 90 km disc, because the shape used to
+decide *which product answered* and now decides only how many objects are read.
+
+One transformation survives on the phone, and it is a bound rather than a choice. A 0.01° column
+is `1,113 × cos φ` metres wide while a 0.01° row is 1,113 m everywhere, so a corridor of fixed
+ground radius costs more and more columns the further north the rider is — 253 at Frankfurt, 465
+at Tromsø — for detail no source produced. The phone therefore resamples the corridor window onto
+a column pitch equal to the lattice's row height, nearest-neighbour, rows untouched. A 90 km disc
+is then 162 × 162 cells at every latitude, its cells are square to within half a percent, and
+`cell_size_m = 1113` is simply true. It costs a bounded loss — a rain feature narrower than the
+output pitch can be dropped, which is below the scale of the phenomenon, below every source's own
+resolution, and sub-pixel on a device that draws about three pixels per cell — and it buys the end
+of an otherwise open-ended ladder, where every degree of latitude supported would have wanted
+another producer-cap raise.
 
 Two consequences are worth stating because they look like losses and are not. A frame mixing 1 km
 radar with 6.5 km model fill has no single true source resolution, so `cell_size_m` stops

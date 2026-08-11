@@ -283,7 +283,7 @@ pub fn decode(bytes: &[u8], now: i64) -> Result<Hourly, MetError> {
         flags: 0,
     }; HOURLY_COUNT];
     for (index, entry) in series.iter().enumerate() {
-        let time = crate::manifest::parse_rfc3339(&entry.time)
+        let time = crate::manifest_v2::parse_rfc3339(&entry.time)
             .ok_or_else(|| MetError::Malformed(format!("hour {index} timestamp")))?;
         if index == 0 {
             valid_from = time;

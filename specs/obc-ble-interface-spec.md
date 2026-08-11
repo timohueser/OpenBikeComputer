@@ -1882,9 +1882,15 @@ that knows none of it behaves exactly as it did before.
    field so the two connections can be correlated.
 
 The shape is what makes it affordable on a phone's background budget: two short
-connections with the network work outside both of them, and a payload small enough
-(~46 KiB, a couple of seconds on the CoC) that the upload is not an event either
-side has to plan around. Nothing in the exchange is a new transfer mechanism —
+connections with the network work outside both of them, and a payload small
+enough that the upload is not an event either side has to plan around. That
+payload grew with WXR5
+(#1244): a corridor of the one uniform dataset is 162 x 162 cells in every frame,
+so a bundle is tens of kB in practice and up to 256 KiB by the phone's producer
+policy — **roughly 10-13 s on the CoC at the ~20-25 kB/s §11.1 estimates, against
+§11.3's 60 s advertising window**, where a 46 KiB bundle was a couple of seconds.
+It fits with room, and the headroom is one of the things the on-glass pass
+measures rather than trusts. Nothing in the exchange is a new transfer mechanism —
 step 4 is an ordinary §4.2 upload with an ordinary whole-object CRC-32 and an
 ordinary `transferResult`.
 

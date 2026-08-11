@@ -29,6 +29,17 @@ The fallback column is a loss of quality, not permission to relabel one product
 as another. Observation, nowcast, and forecast provenance must survive through
 normalization and baking. Missing data is never dry weather.
 
+> **Superseded in part, 2026-08-11 (WXR5 [#1244](https://github.com/timohueser/OpenBikeComputer/issues/1244), under epic [#1248](https://github.com/timohueser/OpenBikeComputer/issues/1248)).**
+> The *sources* above and their GO/NO-GO verdicts stand unchanged; what no longer
+> exists is the **ladder**. The tier column described a choice a client made — by
+> region, bbox containment and freshness — and both clients have now deleted that
+> code. The baker mosaics every source above onto one canonical 0.01 degree
+> lattice with a fixed priority order, and downstream there is one dataset with no
+> tier, no product id and no fallback to select. Read the tier column as the
+> baker's **priority order** for overlapping sources, not as anything a phone or a
+> device can see. The last sentence is the part that survives untouched and got
+> stronger: missing data is never dry weather, and neither is an expired one.
+
 ## Architecture boundary
 
 WX1 proved, with a disposable Rust contract validator, that a host can

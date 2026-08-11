@@ -1,29 +1,60 @@
-//! Crops + hourly → one OBCW bundle, through the shared `obc_formats::obcw` encoder.
+//! Shard crops + hourly → one OBCW bundle, through the shared `obc_formats::obcw` encoder.
 //!
-//! The one interesting decision is the **common window**. OBCW states a single geographic window
-//! in its header and lets each frame declare its own cell count over it, which is what makes a
-//! composed product (a 1 km radar observation followed by 3 km model frames) representable at
-//! all. The window is therefore built on the **coarsest** crop's lattice: only a coarse lattice's
-//! own cells can tile a window exactly, and deriving it from a fine frame would make every model
-//! frame untileable and drop the whole forward half of the timeline.
+//! Under one uniform lattice there is no window *choice* left to make. Every frame is the same
+//! 0.01° grid, so the window is arithmetic on the corridor: align it outward to lattice cells,
+//! intersect it with the lattice, and state it. The coarsest-lattice search, the tie-break, and the
+//! four remainder guards that used to drop a frame that could not tile the window are all gone with
+//! the heterogeneity that made them necessary — one lattice cannot fail to tile itself.
 //!
-//! A frame whose lattice does not tile that window exactly is **dropped and counted**, never
-//! resampled. That is the epic's no-fabricated-precision rule taken literally: a frame we cannot
-//! place on the grid without inventing cell edges does not go in the bundle.
+//! ## The one transformation left: a uniform east-west pitch
+//!
+//! A 0.01° **column** is `1,113 x cos φ` metres wide — 715 m at 50°N, 387 m at Tromsø — while a
+//! 0.01° **row** is 1,113 m everywhere. The degree lattice therefore oversamples east-west by
+//! `1/cos φ`, and a corridor of fixed *ground* radius costs more and more columns the further north
+//! the rider is, for detail that no source produces. Left alone, a 90 km disc is 253 columns at
+//! Frankfurt and 465 at Tromsø, and the producer cap has to climb one rung per degree of latitude
+//! supported (256 KiB tops out at 55.8°N, 512 KiB at 74.15°N).
+//!
+//! So the window is resampled onto a column pitch equal to the lattice's north-south cell height —
+//! **nearest neighbour**, the rule `OBCG_Spec` §6 and `OBCW_Spec` §5 already mandate everywhere
+//! else — and rows are untouched. A 90 km disc is then **162 x 162 cells at every latitude**, cells
+//! are square to within 0.4 %, and `cell_size_m = 1113` is simply true.
+//!
+//! This **bounds** the bundle rather than shrinking it: 162 x 162 is what a 180 km box costs once
+//! its cells are ~1,113 m on both axes, which is what the lattice already gives at the equator
+//! (where the map is the identity). The trade is real and stated: nearest neighbour can drop a rain
+//! feature narrower than the output pitch, which is below the scale of the phenomenon (convective
+//! cells are 2-10 km), below the scale of every source, and sub-pixel on a device that renders
+//! ~3 px per cell. Measured in #1254 across a 0-80°N sweep, the raw4 worst case is 153.58 kB
+//! uniformly — 41 % under the cap.
+//!
+//! The column map is **integer arithmetic on purpose**: `src_col = (2j+1) * src_cols / (2 * cols)`.
+//! The phone computes the same expression, and two implementations rounding a float differently
+//! would silently disagree about which source column a rider's cell came from.
 
 use obc_formats::obcw::{
     encode_format, encoded_len, BundleInput, RainFrameInput, HOURLY_COUNT, QUALITY_FORECAST, QUALITY_OBSERVED,
     QUALITY_PARTIAL_COVERAGE, TILE_CELLS,
 };
-use obc_formats::precip4::{INTENSITY_NODATA, TILE_EDGE};
+use obc_formats::precip4::{INTENSITY_DRY, INTENSITY_NODATA, TILE_EDGE};
 
 use crate::corridor::Crop;
-use crate::manifest::{Bbox, SourceClass};
+use crate::manifest_v2::{Bbox, Grid};
 use crate::met::Hourly;
 
-/// The OBCW v1 producer cap (`OBCW_Spec.md` §2). The window shrinks until the bundle fits.
-pub const PRODUCER_CAP: usize = 65_536;
+/// The OBCW producer cap (`OBCW_Spec.md` §2). The window shrinks until the bundle fits.
+///
+/// Raised to 256 KiB by WXR5 #1244. §2 already called 65,536 "a phone producer policy, separate
+/// from the format", so this is a policy number and nothing about the container moved: the device's
+/// weather reader is a windowed streamer whose resident bytes are independent of bundle size. What
+/// it does cost is BLE time — roughly 10-13 s instead of 2 s against §11.3's 60 s advertising
+/// window — which is measured on glass, not argued from a ratio.
+pub const PRODUCER_CAP: usize = 262_144;
 /// How many times the window may shrink before the builder starts dropping frames instead.
+///
+/// Kept as the backstop it always was. With the uniform pitch above it should never fire: the
+/// swept worst case is 153.58 kB against a 256 KiB cap. It exists for the case the sweep did not
+/// imagine, and `report.shrinks` says loudly when that happens.
 pub const MAX_SHRINK_ATTEMPTS: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +80,6 @@ impl std::fmt::Display for BuildError {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BuildReport {
-    /// Frames whose lattice could not tile the common window. Never resampled.
-    pub dropped_incompatible: u32,
     /// Frames dropped, furthest-future first, to fit the producer cap.
     pub dropped_oversize: u32,
     /// How many times the window shrank.
@@ -58,51 +87,178 @@ pub struct BuildReport {
     pub frames: u32,
     pub window_width: u32,
     pub window_height: u32,
+    /// The source columns the window spans, before the east-west resample. Equal to
+    /// `window_width` at the equator and larger everywhere else; the ratio *is* `cos φ`.
+    pub source_columns: u32,
+}
+
+/// The lattice every frame lives on, as the manifest states it. The client holds no copy of these
+/// numbers: re-cutting the dataset is a baker deploy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lattice {
+    pub south_udeg: i64,
+    pub west_udeg: i64,
+    pub cell_udeg: i64,
+    pub width: u32,
+    pub height: u32,
+    pub cell_size_m: u16,
+}
+
+impl From<&Grid> for Lattice {
+    fn from(grid: &Grid) -> Self {
+        Self {
+            south_udeg: i64::from(grid.south_lat_udeg),
+            west_udeg: i64::from(grid.west_lon_udeg),
+            cell_udeg: i64::from(grid.cell_udeg),
+            width: grid.width,
+            height: grid.height,
+            cell_size_m: grid.cell_size_m,
+        }
+    }
+}
+
+/// One frame of the timeline, as the plan resolved it.
+///
+/// `dry` is not decoration and not an optimisation: a shard the baker measured as dry publishes no
+/// object, so a frame whose corridor is entirely dry arrives here with **no crops at all**. Dropping
+/// it would put a hole in the timeline where the honest answer is a rain-free frame, so the dry
+/// rectangles are painted as intensity 0 and the frame ships.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrameInput {
+    pub valid_at: i64,
+    /// Is this frame an **observation**? Decided by the caller from the frame's place in the
+    /// timeline — offset 0 within the dataset's own source skew — and deliberately **not** from its
+    /// content or from the per-shard `observed` bits. OBCW carries one flag for a frame that is
+    /// radar over the rider and model fill across the seam, so no content rule can be true of all
+    /// of it; and a content rule made an all-dry frame's flag depend on whether the baker happened
+    /// to publish an object at all. An all-dry radar scan is an observation. See
+    /// `WeatherClient::read_plan`, which is the one place that decides this.
+    pub observed: bool,
+    /// Fetched shard crops, all on the lattice. Up to four, when the corridor straddles a seam.
+    pub crops: Vec<Crop>,
+    /// Shard rectangles the manifest says are dry everywhere.
+    pub dry: Vec<Bbox>,
+}
+
+impl FrameInput {
+    fn is_empty(&self) -> bool {
+        self.crops.is_empty() && self.dry.is_empty()
+    }
+}
+
+/// The rain half of a bundle: the lattice it lives on and the timeline over it.
+#[derive(Debug, Clone, Copy)]
+pub struct Scene<'a> {
+    pub lattice: Lattice,
+    pub frames: &'a [FrameInput],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Window {
+    /// South-west corner, on the lattice.
     south: i64,
     west: i64,
-    lat_stride: i64,
-    lon_stride: i64,
-    cols: u32,
+    cell: i64,
+    /// Lattice columns the window spans, and lattice rows (rows are never resampled).
+    src_cols: u32,
     rows: u32,
+    /// Output columns after the uniform east-west resample.
+    cols: u32,
 }
 
 impl Window {
     fn north(&self) -> i64 {
-        self.south + i64::from(self.rows) * self.lat_stride
+        self.south + i64::from(self.rows) * self.cell
     }
 
     fn east(&self) -> i64 {
-        self.west + i64::from(self.cols) * self.lon_stride
+        self.west + i64::from(self.src_cols) * self.cell
     }
 }
 
-/// Build the bundle. `anchor` is the rider's `(lat, lon)` in microdegrees — a shrunken window
-/// re-centres on it, because a window that shrinks toward the corridor midpoint walks off the
-/// back of a fast rider. `corridor` is the region the job asked about, and is what an
-/// **hourly-only** bundle declares: the screens then say *hourly only here* over the area the
-/// question was actually about, exactly as the phone's builder does.
+/// How many ~1,113 m columns span `src_cols` lattice columns at latitude `lat_udeg`.
+///
+/// `round(src_cols * cos φ)`, floored at one and capped at `src_cols`: the resample only ever
+/// *decimates*, because a lattice column is already the finest thing any source produced and
+/// stretching it would be inventing detail. At the equator this is the identity.
+fn output_columns(src_cols: u32, lat_udeg: i32) -> u32 {
+    let cos = (f64::from(lat_udeg) / 1e6).to_radians().cos();
+    let scaled = (f64::from(src_cols) * cos).round();
+    if !scaled.is_finite() || scaled < 1.0 {
+        return 1;
+    }
+    (scaled as u32).clamp(1, src_cols)
+}
+
+fn floor_div(numerator: i64, denominator: i64) -> i64 {
+    numerator.div_euclid(denominator)
+}
+
+fn ceil_div(numerator: i64, denominator: i64) -> i64 {
+    -(-numerator).div_euclid(denominator)
+}
+
+/// The lattice-aligned window covering `corridor`, intersected with the lattice. `None` when the
+/// corridor and the lattice do not overlap at all.
+///
+/// (This was `initial_window` under v1, where its job was to *choose* the coarsest crop's lattice
+/// out of a heterogeneous set. The name went with the choice: there is one lattice now, and the
+/// window is where the corridor lands on it.)
+fn lattice_window(lattice: &Lattice, corridor: &Bbox, anchor: (i32, i32)) -> Option<Window> {
+    let cell = lattice.cell_udeg;
+    let first_col = floor_div(corridor.west_udeg - lattice.west_udeg, cell).max(0);
+    let last_col = ceil_div(corridor.east_udeg - lattice.west_udeg, cell).min(i64::from(lattice.width));
+    let first_row = floor_div(corridor.south_udeg - lattice.south_udeg, cell).max(0);
+    let last_row = ceil_div(corridor.north_udeg - lattice.south_udeg, cell).min(i64::from(lattice.height));
+    if first_col >= last_col || first_row >= last_row {
+        return None;
+    }
+    let src_cols = (last_col - first_col) as u32;
+    Some(Window {
+        south: lattice.south_udeg + first_row * cell,
+        west: lattice.west_udeg + first_col * cell,
+        cell,
+        src_cols,
+        rows: (last_row - first_row) as u32,
+        cols: output_columns(src_cols, anchor.0),
+    })
+}
+
+/// Build the bundle. `anchor` is the rider's `(lat, lon)` in microdegrees — it re-centres a shrunken
+/// window, because one that shrinks toward the corridor midpoint walks off the back of a fast rider,
+/// and its latitude sets the resample pitch. `corridor` is the region the job asked about, and is
+/// what an **hourly-only** bundle declares: the screens then say *hourly only here* over the area
+/// the question was actually about.
+///
+/// `scene` is `None` when there is no rain half at all — an unreachable service, an expired
+/// generation, a corridor off the map. That is deliberately not the same value as a scene whose
+/// frames are all dry, which is a real, all-zero timeline.
 pub fn build(
     generation: u32,
     request_id: u32,
     generated_at: i64,
     anchor: (i32, i32),
     corridor: &Bbox,
-    crops: &[Crop],
+    scene: Option<Scene<'_>>,
     hourly: &Hourly,
 ) -> Result<(Vec<u8>, BuildReport), BuildError> {
     let mut report = BuildReport::default();
 
     // One frame per timestamp, ascending — OBCW requires strictly increasing `valid_at`.
-    let mut usable: Vec<&Crop> = crops.iter().collect();
-    usable.sort_by_key(|crop| crop.valid_at);
-    usable.dedup_by_key(|crop| crop.valid_at);
+    let mut usable: Vec<&FrameInput> = match scene {
+        Some(scene) => scene.frames.iter().filter(|frame| !frame.is_empty()).collect(),
+        None => Vec::new(),
+    };
+    usable.sort_by_key(|frame| frame.valid_at);
+    usable.dedup_by_key(|frame| frame.valid_at);
 
-    let mut window = match initial_window(&usable) {
-        Some(window) => window,
+    let mut window = match scene.filter(|_| !usable.is_empty()).and_then(|scene| {
+        lattice_window(&scene.lattice, corridor, anchor).map(|window| (window, scene.lattice.cell_size_m))
+    }) {
+        Some((window, cell_size_m)) => {
+            report.source_columns = window.src_cols;
+            Some((window, cell_size_m))
+        }
         // No rain at all: an hourly-only bundle still states a region, so the screens can say
         // *hourly only here* instead of guessing. One cell spanning the **corridor** — the region
         // the job asked about — rather than an invented degree around the anchor.
@@ -112,25 +268,17 @@ pub fn build(
             if lat_span <= 0 || lon_span <= 0 {
                 return Err(BuildError::InvalidCorridor);
             }
-            Window {
-                south: corridor.south_udeg,
-                west: corridor.west_udeg,
-                lat_stride: lat_span,
-                lon_stride: lon_span,
-                cols: 1,
-                rows: 1,
-            }
+            usable.clear();
+            None
         }
     };
 
     let mut attempt = 0u32;
     loop {
-        let mut incompatible = 0u32;
         let mut partial_frames = Vec::new();
-        for crop in &usable {
-            match rain_frame(crop, &window) {
-                Some(frame) => partial_frames.push(frame),
-                None => incompatible += 1,
+        if let Some((window, cell_size_m)) = &window {
+            for frame in &usable {
+                partial_frames.push(rain_frame(frame, window, *cell_size_m));
             }
         }
         let frames: Vec<RainFrameInput<'_>> = partial_frames
@@ -151,18 +299,22 @@ pub fn build(
             .max()
             .unwrap_or(valid_from)
             .max(valid_from + HOURLY_COUNT as i64 * 3_600);
+        let (south, west, north, east) = match &window {
+            Some((window, _)) => (window.south, window.west, window.north(), window.east()),
+            None => (corridor.south_udeg, corridor.west_udeg, corridor.north_udeg, corridor.east_udeg),
+        };
         let input = BundleInput {
             generation,
             request_id,
             generated_at,
             valid_from,
             valid_until,
-            south_lat_udeg: window.south as i32,
-            west_lon_udeg: window.west as i32,
-            north_lat_udeg: window.north() as i32,
-            east_lon_udeg: window.east() as i32,
-            grid_origin_lat_udeg: window.south as i32,
-            grid_origin_lon_udeg: window.west as i32,
+            south_lat_udeg: south as i32,
+            west_lon_udeg: west as i32,
+            north_lat_udeg: north as i32,
+            east_lon_udeg: east as i32,
+            grid_origin_lat_udeg: south as i32,
+            grid_origin_lon_udeg: west as i32,
             flags: 0,
             hourly: &hourly.records,
             frames: &frames,
@@ -173,10 +325,11 @@ pub fn build(
             let written =
                 encode_format(&input, &mut bytes).map_err(|error| BuildError::Encode(format!("{error:?}")))?;
             bytes.truncate(written);
-            report.dropped_incompatible = incompatible;
             report.frames = frames.len() as u32;
-            report.window_width = window.cols;
-            report.window_height = window.rows;
+            if let Some((window, _)) = &window {
+                report.window_width = window.cols;
+                report.window_height = window.rows;
+            }
             return Ok((bytes, report));
         }
         drop(frames);
@@ -184,11 +337,13 @@ pub fn build(
         // Trimming the window beats dropping a frame: a shorter corridor still answers every
         // timestamp, while a missing frame puts a hole in the two-hour timeline.
         if attempt < MAX_SHRINK_ATTEMPTS {
-            if let Some(shrunk) = shrink(&window, anchor) {
-                window = shrunk;
-                attempt += 1;
-                report.shrinks += 1;
-                continue;
+            if let Some((current, cell_size_m)) = window {
+                if let Some(shrunk) = shrink(&current, anchor) {
+                    window = Some((shrunk, cell_size_m));
+                    attempt += 1;
+                    report.shrinks += 1;
+                    continue;
+                }
             }
         }
         if usable.len() > 1 {
@@ -201,84 +356,75 @@ pub fn build(
     }
 }
 
-/// The coarsest crop's own extent: the only lattice every other crop has a chance of tiling.
+/// Trim an eighth off each axis, re-centred on the rider.
 ///
-/// Ties on cell area are broken by the **latest** `valid_at`, the phone's rule: among lattices
-/// that cost the same to represent, the window is stated over the most recent one, so the frames
-/// most likely to survive the tiling test are the ones nearest the rider's now. (The inverse — an
-/// earliest-first tie-break — silently anchors the window on the oldest of the equal frames and
-/// can drop a different set than the phone drops for the same manifest.)
-fn initial_window(crops: &[&Crop]) -> Option<Window> {
-    let coarsest = crops
-        .iter()
-        .max_by_key(|crop| (u64::from(crop.cell_lat_udeg) * u64::from(crop.cell_lon_udeg), crop.valid_at))?;
-    Some(Window {
-        south: coarsest.south_udeg,
-        west: coarsest.west_udeg,
-        lat_stride: i64::from(coarsest.cell_lat_udeg),
-        lon_stride: i64::from(coarsest.cell_lon_udeg),
-        cols: coarsest.width,
-        rows: coarsest.height,
-    })
-}
-
+/// The trim happens in **source-lattice cells**, so the window's corners stay lattice-aligned
+/// integers and the output column count is re-derived from the smaller span. Shrinking the output
+/// grid directly would leave the window's east edge on a fractional cell boundary, and the two
+/// implementations would then have to agree on how to round it.
 fn shrink(window: &Window, anchor: (i32, i32)) -> Option<Window> {
-    let drop_cols = (window.cols / 8).max(1);
+    let drop_cols = (window.src_cols / 8).max(1);
     let drop_rows = (window.rows / 8).max(1);
-    let cols = window.cols.checked_sub(drop_cols).filter(|cols| *cols > 0)?;
+    let src_cols = window.src_cols.checked_sub(drop_cols).filter(|cols| *cols > 0)?;
     let rows = window.rows.checked_sub(drop_rows).filter(|rows| *rows > 0)?;
-    let anchor_col = ((i64::from(anchor.1) - window.west) / window.lon_stride).clamp(0, i64::from(window.cols) - 1);
-    let anchor_row = ((i64::from(anchor.0) - window.south) / window.lat_stride).clamp(0, i64::from(window.rows) - 1);
-    let first_col = (anchor_col - i64::from(cols) / 2).clamp(0, i64::from(window.cols - cols));
+    let anchor_col = ((i64::from(anchor.1) - window.west) / window.cell).clamp(0, i64::from(window.src_cols) - 1);
+    let anchor_row = ((i64::from(anchor.0) - window.south) / window.cell).clamp(0, i64::from(window.rows) - 1);
+    let first_col = (anchor_col - i64::from(src_cols) / 2).clamp(0, i64::from(window.src_cols - src_cols));
     let first_row = (anchor_row - i64::from(rows) / 2).clamp(0, i64::from(window.rows - rows));
     Some(Window {
-        south: window.south + first_row * window.lat_stride,
-        west: window.west + first_col * window.lon_stride,
-        lat_stride: window.lat_stride,
-        lon_stride: window.lon_stride,
-        cols,
+        south: window.south + first_row * window.cell,
+        west: window.west + first_col * window.cell,
+        cell: window.cell,
+        src_cols,
         rows,
+        cols: output_columns(src_cols, anchor.0),
     })
 }
 
 type PreparedFrame = (i64, u16, u16, u16, u32, Vec<[u8; TILE_CELLS]>);
 
-/// Lay one crop onto the common window as 16 × 16 OBCW tiles, or refuse it.
-fn rain_frame(crop: &Crop, window: &Window) -> Option<PreparedFrame> {
-    let lat_stride = i64::from(crop.cell_lat_udeg);
-    let lon_stride = i64::from(crop.cell_lon_udeg);
-    // Exact tiling or nothing: the window's origin must sit on this crop's lattice and its
-    // extent must be a whole number of this crop's cells.
-    if (window.south - crop.south_udeg).rem_euclid(lat_stride) != 0
-        || (window.west - crop.west_udeg).rem_euclid(lon_stride) != 0
-        || (window.north() - window.south).rem_euclid(lat_stride) != 0
-        || (window.east() - window.west).rem_euclid(lon_stride) != 0
-    {
-        return None;
-    }
-    let width = (window.east() - window.west) / lon_stride;
-    let height = (window.north() - window.south) / lat_stride;
-    if width <= 0 || height <= 0 || width > u16::MAX as i64 || height > u16::MAX as i64 {
-        return None;
-    }
-    let (width, height) = (width as u32, height as u32);
-    let col_offset = (window.west - crop.west_udeg) / lon_stride;
-    let row_offset = (window.south - crop.south_udeg) / lat_stride;
-
+/// Lay one frame's shards onto the window as 16 × 16 OBCW tiles, resampling east-west.
+///
+/// Three paints, in this order, and the order is the semantics: everything starts **no-data**, dry
+/// shards become **intensity 0**, and fetched cells overwrite both. A cell no shard covers stays
+/// no-data — never dry — and marks the frame partially covered.
+fn rain_frame(frame: &FrameInput, window: &Window, cell_size_m: u16) -> PreparedFrame {
+    let (width, height) = (window.cols, window.rows);
     let edge = TILE_EDGE as u32;
     let tile_cols = width.div_ceil(edge);
     let tile_rows = height.div_ceil(edge);
     let mut tiles = vec![[INTENSITY_NODATA; TILE_CELLS]; (tile_cols * tile_rows) as usize];
     let mut saw_no_data = false;
+
     for row in 0..height {
+        // Rows are never resampled: the lattice's north-south pitch is the output pitch.
+        let cell_south = window.south + i64::from(row) * window.cell;
         for col in 0..width {
-            let source_col = col_offset + i64::from(col);
-            let source_row = row_offset + i64::from(row);
-            let value = if source_col >= 0 && source_row >= 0 {
-                crop.cell(source_col as u32, source_row as u32).unwrap_or(INTENSITY_NODATA)
-            } else {
-                INTENSITY_NODATA
-            };
+            // Nearest neighbour by cell centre, in exact integer arithmetic.
+            let source_col = ((2 * u64::from(col) + 1) * u64::from(window.src_cols) / (2 * u64::from(window.cols)))
+                .min(u64::from(window.src_cols) - 1) as i64;
+            let cell_west = window.west + source_col * window.cell;
+
+            let mut value = INTENSITY_NODATA;
+            if frame.dry.iter().any(|rect| {
+                rect.south_udeg <= cell_south
+                    && cell_south < rect.north_udeg
+                    && rect.west_udeg <= cell_west
+                    && cell_west < rect.east_udeg
+            }) {
+                value = INTENSITY_DRY;
+            }
+            for crop in &frame.crops {
+                let local_col = (cell_west - crop.west_udeg) / i64::from(crop.cell_lon_udeg);
+                let local_row = (cell_south - crop.south_udeg) / i64::from(crop.cell_lat_udeg);
+                if local_col < 0 || local_row < 0 {
+                    continue;
+                }
+                if let Some(cell) = crop.cell(local_col as u32, local_row as u32) {
+                    value = cell;
+                    break;
+                }
+            }
             if value == INTENSITY_NODATA {
                 saw_no_data = true;
             }
@@ -286,14 +432,18 @@ fn rain_frame(crop: &Crop, window: &Window) -> Option<PreparedFrame> {
             tiles[tile as usize][((row % edge) * edge + col % edge) as usize] = value;
         }
     }
-    let mut quality = match crop.source_class {
-        SourceClass::Observation => QUALITY_OBSERVED,
-        SourceClass::Forecast => QUALITY_FORECAST,
-    };
-    if saw_no_data || crop.partial {
+
+    // Partial coverage is decided over the **assembled** frame, not per crop. A shard crop is
+    // "clipped" whenever the corridor reaches past that shard's own edge, which is the normal case
+    // the moment a corridor straddles a seam — and under v1 a crop was the whole frame, so the flag
+    // used to mean the same thing. Trusting it now would mark every seam-straddling frame partially
+    // covered while its neighbour shard was supplying exactly the cells it was missing. What is
+    // true of the frame is what is left over: a cell no shard and no dry rectangle reached.
+    let mut quality = if frame.observed { QUALITY_OBSERVED } else { QUALITY_FORECAST };
+    if saw_no_data {
         quality |= QUALITY_PARTIAL_COVERAGE;
     }
-    Some((crop.valid_at, width as u16, height as u16, crop.cell_size_m, quality, tiles))
+    (frame.valid_at, width as u16, height as u16, cell_size_m, quality, tiles)
 }
 
 /// A bundle with no rain frames at all — the explicit hourly-only state, built through the same
@@ -306,5 +456,5 @@ pub fn hourly_only(
     corridor: &Bbox,
     hourly: &Hourly,
 ) -> Result<Vec<u8>, BuildError> {
-    build(generation, request_id, generated_at, anchor, corridor, &[], hourly).map(|(bytes, _)| bytes)
+    build(generation, request_id, generated_at, anchor, corridor, None, hourly).map(|(bytes, _)| bytes)
 }

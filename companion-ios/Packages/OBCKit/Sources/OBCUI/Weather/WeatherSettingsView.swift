@@ -162,11 +162,11 @@ public struct WeatherSettingsView: View {
                 iconColor: OBCTheme.water,
                 label: "Service data",
                 value: model.serviceValue,
-                showsDivider: !model.products.isEmpty || !model.attributions.isEmpty
+                showsDivider: model.dataset != nil || !model.attributions.isEmpty
             )
             .accessibilityIdentifier("weather.serviceData")
-            ForEach(Array(model.products.enumerated()), id: \.element.id) { index, product in
-                productRow(product, isLast: index == model.products.count - 1)
+            if let dataset = model.dataset {
+                datasetRow(dataset)
             }
             ForEach(Array(model.attributions.enumerated()), id: \.offset) { index, row in
                 attributionRow(
@@ -175,30 +175,34 @@ public struct WeatherSettingsView: View {
         }
     }
 
-    private func productRow(_ product: WeatherServiceProductStatus, isLast: Bool) -> some View {
-        HStack(spacing: 12) {
+    /// The one published dataset. A single row rather than a list, because there is a single
+    /// dataset: the generation names the bake, and the summary states its resolution and depth.
+    private func datasetRow(_ dataset: WeatherServiceStatus) -> some View {
+        let fresh = dataset.isFresh(at: model.clockNow)
+        return HStack(spacing: 12) {
             OBCIconTile(
-                systemImage: product.isFresh(at: model.clockNow) ? "dot.radiowaves.up.forward" : "clock.badge.exclamationmark",
-                color: product.isFresh(at: model.clockNow) ? OBCTheme.wood : OBCTheme.amber)
+                systemImage: fresh ? "dot.radiowaves.up.forward" : "clock.badge.exclamationmark",
+                color: fresh ? OBCTheme.wood : OBCTheme.amber)
             VStack(alignment: .leading, spacing: 2) {
-                Text(product.id)
+                Text(dataset.generation)
                     .font(.obcMono(size: 13))
                     .foregroundStyle(OBCTheme.ink)
-                Text(WeatherCopy.productSummary(product))
+                Text(WeatherCopy.datasetSummary(dataset))
                     .font(.system(size: 12.5))
                     .foregroundStyle(OBCTheme.inkFaint)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(WeatherCopy.productFreshness(product, now: model.clockNow))
+            Text(WeatherCopy.datasetFreshness(dataset, now: model.clockNow))
                 .font(.system(size: 12.5))
                 .multilineTextAlignment(.trailing)
-                .foregroundStyle(product.isFresh(at: model.clockNow) ? OBCTheme.inkFaint : OBCTheme.warning)
+                .foregroundStyle(fresh ? OBCTheme.inkFaint : OBCTheme.warning)
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 16)
         .frame(minHeight: 52)
+        .accessibilityIdentifier("weather.dataset")
         .overlay(alignment: .bottom) {
-            if !isLast || !model.attributions.isEmpty {
+            if !model.attributions.isEmpty {
                 OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
             }
         }

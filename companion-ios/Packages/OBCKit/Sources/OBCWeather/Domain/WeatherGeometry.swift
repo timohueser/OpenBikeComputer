@@ -29,14 +29,6 @@ public struct WeatherBoundingBox: Equatable, Sendable {
         self.eastMicrodegrees = eastMicrodegrees
     }
 
-    /// True when this box fully contains `other`. Product selection uses **containment**, never
-    /// overlap: a product that covers half the corridor cannot answer the corridor's question, and
-    /// pretending otherwise is how a rider gets a rain map that stops at an invisible border.
-    public func contains(_ other: WeatherBoundingBox) -> Bool {
-        other.southMicrodegrees >= southMicrodegrees && other.northMicrodegrees <= northMicrodegrees
-            && other.westMicrodegrees >= westMicrodegrees && other.eastMicrodegrees <= eastMicrodegrees
-    }
-
     public func contains(latitudeMicrodegrees: Int64, longitudeMicrodegrees: Int64) -> Bool {
         latitudeMicrodegrees >= southMicrodegrees && latitudeMicrodegrees <= northMicrodegrees
             && longitudeMicrodegrees >= westMicrodegrees && longitudeMicrodegrees <= eastMicrodegrees
@@ -48,20 +40,41 @@ public struct WeatherBoundingBox: Equatable, Sendable {
             && westMicrodegrees >= -180_000_000 && eastMicrodegrees <= 180_000_000
     }
 
-    public func union(_ other: WeatherBoundingBox) -> WeatherBoundingBox {
-        WeatherBoundingBox(
-            southMicrodegrees: Swift.min(southMicrodegrees, other.southMicrodegrees),
-            westMicrodegrees: Swift.min(westMicrodegrees, other.westMicrodegrees),
-            northMicrodegrees: Swift.max(northMicrodegrees, other.northMicrodegrees),
-            eastMicrodegrees: Swift.max(eastMicrodegrees, other.eastMicrodegrees))
+    /// The window check the manifest reader applies before any shard arithmetic — the Swift twin of
+    /// `Bbox::validate`.
+    ///
+    /// Looser than ``isWellFormed`` in exactly one place, and deliberately: `west > east` is not
+    /// malformed here, it **means the window crosses the antimeridian** (OBCG §10.2). Every other
+    /// spelling of that idea — a 0..360 longitude, a west below -180, an east above 180 — is
+    /// ``WeatherBboxError/outOfRange``, because a client that silently reinterprets one answers a
+    /// corridor from the wrong hemisphere with no error anywhere.
+    public func validateAsWindow() throws {
+        guard (-90_000_000...90_000_000).contains(southMicrodegrees),
+              (-90_000_000...90_000_000).contains(northMicrodegrees),
+              (-180_000_000...180_000_000).contains(westMicrodegrees),
+              (-180_000_000...180_000_000).contains(eastMicrodegrees)
+        else { throw WeatherBboxError.outOfRange }
+        guard southMicrodegrees < northMicrodegrees, westMicrodegrees != eastMicrodegrees else {
+            throw WeatherBboxError.empty
+        }
     }
 
-    /// The box around one coordinate, grown by `metres` in every direction.
+    /// The box around one coordinate, grown by `metres` in every direction — the Swift twin of
+    /// `Bbox::around`, and bit-identical to it by construction.
     ///
     /// Longitude degrees shrink with latitude, so the east/west growth divides by `cos(latitude)`;
-    /// near the poles that blows up, hence the clamp on the cosine. This is a *request corridor*,
-    /// not a rendering projection — being slightly generous costs one more tile read, while being
-    /// short would drop rain the rider is about to ride into.
+    /// near the poles that blows up, hence the clamp on the cosine. Spans round **outward** (`ceil`)
+    /// in integer microdegrees: this is a *request corridor*, not a rendering projection — being
+    /// slightly generous costs one more tile read, while being short would drop rain the rider is
+    /// about to ride into.
+    ///
+    /// **The two clamps are the honest edges of the disc, not an afterthought.** `OBCW_Spec.md` §1
+    /// forbids a bundle window crossing the antimeridian, so a disc that reaches past the date line
+    /// is cut there and the sliver beyond reads as not-covered; near a pole the latitude clamps, and
+    /// `covered_rows` then makes the plan answer ``WeatherPlanOutcome/uncovered`` rather than
+    /// producing an illegal window. Full antimeridian *wrap* support still lives in the manifest
+    /// reader, where a `west > east` bbox is served by splitting — it is the corridor, not the
+    /// lattice, that refuses to wrap.
     public static func around(
         latitudeMicrodegrees: Int64, longitudeMicrodegrees: Int64, metres: Double
     ) -> WeatherBoundingBox {

@@ -488,12 +488,16 @@ pub struct ObjectStore {
 static WEATHER_TX: BlockingMutex<CriticalSectionRawMutex, core::cell::RefCell<Option<weather_store::WeatherUpload>>> =
     BlockingMutex::new(core::cell::RefCell::new(None));
 
-/// The announce-time ceiling on a weather bundle's `total_len` (#1221 F6). OBCW v1's densest real
-/// product (the DWD nine-frame 96×96 shape) is ~46 KiB and the phone producer's own v1 policy cap
-/// is 64 KiB (`OBCW_Spec.md` — deliberately *not* a reader or format limit); 4× that leaves a
-/// future denser product room without a firmware change, while a megabyte-scale length — which no
-/// OBCW producer can mean — is refused before a byte streams instead of being streamed to the card
-/// for minutes and then failing validation.
+/// The announce-time ceiling on a weather bundle's `total_len` (#1221 F6). A megabyte-scale
+/// length — which no OBCW producer can mean — is refused before a byte streams, instead of being
+/// streamed to the card for minutes and then failing validation.
+///
+/// **This is now exactly the phone producer's own policy cap, not 4× it.** WXR5 (#1244) raised
+/// that cap from 64 KiB to 256 KiB when the phone's corridor became 162 × 162 cells of one uniform
+/// dataset (raw4 worst case ~150 KiB), so the margin this constant used to carry is spent. It is
+/// still the right number — a conforming bundle cannot exceed the producer policy, and the device
+/// pays nothing for the size because its reader is a windowed streamer — but a *further* producer
+/// raise is now a firmware change, which it deliberately was not before.
 const WEATHER_BUNDLE_MAX_LEN: u32 = 256 * 1024;
 
 impl ObjectStore {
@@ -1353,12 +1357,10 @@ impl ObjectStore {
         if desc.object_id != obc_ble::WEATHER_BUNDLE_OBJECT_ID {
             return Err(TransferStatus::NotFound);
         }
-        // Announce-time size cap, before any byte streams. OBCW v1's densest real product (the
-        // DWD nine-frame 96×96 shape) is ~46 KiB and the phone producer's own policy cap is
-        // 64 KiB; [`WEATHER_BUNDLE_MAX_LEN`] allows 4× that so a future denser product needs no
-        // firmware change, while a length in the megabytes — which no OBCW producer can mean —
-        // is refused with the typed `error` a malformed announce gets (a retry would reproduce
-        // it; the fault is the sender's).
+        // Announce-time size cap, before any byte streams. [`WEATHER_BUNDLE_MAX_LEN`] is the
+        // phone producer's own policy cap, so a conforming bundle always fits, while a length in
+        // the megabytes — which no OBCW producer can mean — is refused with the typed `error` a
+        // malformed announce gets (a retry would reproduce it; the fault is the sender's).
         if desc.total_len > WEATHER_BUNDLE_MAX_LEN {
             return Err(TransferStatus::Error);
         }

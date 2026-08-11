@@ -4,16 +4,20 @@ import Testing
 @testable import OBCWeather
 @testable import OBCWeatherWire
 
-/// The OBCG → OBCW re-encode, and the hourly section's unit contract.
+/// The OBCG → OBCW re-encode, the uniform east–west resample, and the hourly section's unit contract.
 struct WeatherBundleBuilderTests {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
-    static let corridor = WeatherServiceClientTests.corridor
+    /// The canonical lattice's cell: 0.01° on both axes, ~1,113 m north–south at every latitude.
+    static let cell: Int64 = 10_000
+    static let cellSizeMetres: UInt16 = 1_113
+
+    static let rider = Coordinate(latitude: 47.27, longitude: 7.42)
+    static let corridor = WeatherCorridor(bounds: WeatherBoundingBox(
+        southMicrodegrees: 47_180_000, westMicrodegrees: 7_280_000,
+        northMicrodegrees: 47_380_000, eastMicrodegrees: 7_480_000))
 
     static func request() -> WeatherRequest {
-        WeatherRequest(
-            requestID: 4_242,
-            position: Coordinate(latitude: 47.27, longitude: 7.42),
-            fixTime: now, bearingDegrees: 45, speedMetresPerSecond: 5.5)
+        WeatherRequest(requestID: 4_242, position: rider, fixTime: now)
     }
 
     /// 24 hours with a deliberate mix of present and absent optionals.
@@ -37,36 +41,34 @@ struct WeatherBundleBuilderTests {
 
     static func crop(
         validAt: Date = now, south: Int64 = 47_180_000, west: Int64 = 7_280_000,
-        latitudeStride: UInt32 = 9_000, longitudeStride: UInt32 = 14_000,
-        width: Int = 20, height: Int = 20, cellSizeMetres: UInt16 = 1_000,
+        width: Int = 20, height: Int = 20,
         quality: PrecipitationQuality = .observed, seed: UInt8 = 0
     ) -> PrecipitationCrop {
-        let cells = (0..<(width * height)).map { index in
-            UInt8((index + Int(seed)) % 13)
-        }
+        let cells = (0..<(width * height)).map { index in UInt8((index + Int(seed)) % 13) }
         return PrecipitationCrop(
             validAt: validAt, southMicrodegrees: south, westMicrodegrees: west,
-            latitudeStrideMicrodegrees: latitudeStride, longitudeStrideMicrodegrees: longitudeStride,
+            latitudeStrideMicrodegrees: UInt32(cell), longitudeStrideMicrodegrees: UInt32(cell),
             width: width, height: height, cellSizeMetres: cellSizeMetres, quality: quality,
             cells: cells)
     }
 
     static func selection(_ crops: [PrecipitationCrop]) -> PrecipitationSelection {
         PrecipitationSelection(
-            productID: "dwd-rv", tier: .radar, nominalCellMetres: 1_000,
-            attribution: WeatherAttribution(
+            generation: "20260810T1430Z", nominalCellMetres: cellSizeMetres,
+            attributions: [WeatherAttribution(
                 text: "Source: Deutscher Wetterdienst (DWD)",
-                url: "https://creativecommons.org/licenses/by/4.0/"),
+                url: "https://creativecommons.org/licenses/by/4.0/", sourceID: "dwd-rv")],
             referenceTime: now.addingTimeInterval(-300), generatedAt: now,
             stalenessDeadline: now.addingTimeInterval(900), crops: crops)
     }
 
     private func build(
         precipitation: PrecipitationSelection?, hourly: HourlyForecast = hourly(),
-        reason: NoRainMapReason? = nil, generation: UInt32 = 9
+        reason: NoRainMapReason? = nil, generation: UInt32 = 9,
+        request: WeatherRequest = request(), corridor: WeatherCorridor = corridor
     ) throws -> BuiltWeatherBundle {
         try WeatherBundleBuilder().build(
-            request: Self.request(), corridor: Self.corridor, hourly: hourly,
+            request: request, corridor: corridor, hourly: hourly,
             precipitation: precipitation, noRainMapReason: reason, generation: generation,
             now: Self.now)
     }
@@ -143,38 +145,200 @@ struct WeatherBundleBuilderTests {
 
     // MARK: - Rain section
 
+    /// At the equator the resample is the identity, so this is the copy test the old cell-for-cell
+    /// one was: rows 1:1, columns 1:1, every value the crop's own.
     @Test
-    func theRainSectionIsACellForCellCopyOfTheCrop() throws {
-        let crop = Self.crop()
-        let built = try build(precipitation: Self.selection([crop]))
+    func atTheEquatorTheRainSectionIsACellForCellCopyOfTheCrop() throws {
+        let crop = Self.crop(south: -100_000, west: 200_000)
+        let corridor = WeatherCorridor(bounds: crop.bounds)
+        let request = WeatherRequest(
+            requestID: 1, position: Coordinate(latitude: 0.0, longitude: 0.3), fixTime: Self.now)
+        let built = try build(
+            precipitation: Self.selection([crop]), request: request, corridor: corridor)
         let frame = try #require(built.bundle.rainFrames.first)
-        #expect(frame.width == 20 && frame.height == 20)
-        #expect(frame.cellSizeMetres == 1_000)
+        #expect(frame.width == 20 && frame.height == 20, "cos(0) = 1: no columns are dropped")
+        #expect(frame.cellSizeMetres == Self.cellSizeMetres)
         #expect(frame.validAtUnixSeconds == Int64(crop.validAt.timeIntervalSince1970))
-        #expect(built.bundle.bounds.southLatitudeMicrodegrees == 47_180_000)
-        #expect(built.bundle.bounds.northLatitudeMicrodegrees == 47_180_000 + 20 * 9_000)
-        #expect(built.bundle.bounds.eastLongitudeMicrodegrees == 7_280_000 + 20 * 14_000)
+        #expect(built.bundle.bounds.southLatitudeMicrodegrees == -100_000)
+        #expect(built.bundle.bounds.northLatitudeMicrodegrees == -100_000 + 20 * 10_000)
+        #expect(built.bundle.bounds.eastLongitudeMicrodegrees == 200_000 + 20 * 10_000)
         #expect(built.bundle.bounds.gridOriginLatitudeMicrodegrees
             == built.bundle.bounds.southLatitudeMicrodegrees)
 
-        // Rebuild the grid out of the 16 x 16 tiles and compare it to the crop, cell for cell.
         let edge = OBCPrecipitationTileCodec.tileEdge
         let tileColumns = (Int(frame.width) + edge - 1) / edge
         for row in 0..<Int(frame.height) {
             for column in 0..<Int(frame.width) {
                 let tile = (row / edge) * tileColumns + (column / edge)
-                let value = frame.tiles[tile][(row % edge) * edge + (column % edge)]
-                #expect(value == crop.cells[row * crop.width + column])
+                #expect(frame.tiles[tile][(row % edge) * edge + (column % edge)]
+                    == crop.cells[row * crop.width + column])
             }
         }
         // Padding outside the declared grid is the no-data intensity, never dry (OBCW §5).
-        let lastTile = try #require(frame.tiles.last)
-        #expect(lastTile[edge * edge - 1] == OBCPrecipitationTileCodec.noData)
+        #expect(try #require(frame.tiles.last)[edge * edge - 1]
+            == OBCPrecipitationTileCodec.noData)
         #expect(frame.quality.contains(.observed))
-        // Tile padding lies *outside* the declared grid, so it is not "partial coverage" — that
-        // flag means in-bounds cells are unavailable, and claiming it here would make every frame
-        // whose width is not a multiple of 16 look degraded.
+        // Tile padding lies *outside* the declared grid, so it is not "partial coverage" — that flag
+        // means in-bounds cells are unavailable, and claiming it here would make every frame whose
+        // width is not a multiple of 16 look degraded.
         #expect(!frame.quality.contains(.partialCoverage))
+    }
+
+    /// **The resample is nearest neighbour on an integer map, and every output column is a real
+    /// source column.** No averaging, no maximum-of-a-group, no interpolation: a value that reaches
+    /// the device is a value a source measured.
+    @Test
+    func theResampleIsNearestNeighbourAndDropsColumnsRatherThanMergingThem() throws {
+        let crop = Self.crop(width: 32, height: 8)
+        let corridor = WeatherCorridor(bounds: crop.bounds)
+        let built = try build(precipitation: Self.selection([crop]), corridor: corridor)
+        let frame = try #require(built.bundle.rainFrames.first)
+        let cosine = Foundation.cos(Self.rider.latitude * .pi / 180)
+        #expect(frame.width == UInt16((32.0 * cosine).rounded()))
+        #expect(frame.height == 8, "rows are untouched")
+
+        let edge = OBCPrecipitationTileCodec.tileEdge
+        let tileColumns = (Int(frame.width) + edge - 1) / edge
+        for output in 0..<Int(frame.width) {
+            let source = ((2 * output + 1) * 32) / (2 * Int(frame.width))
+            for row in 0..<8 {
+                let tile = (row / edge) * tileColumns + (output / edge)
+                #expect(frame.tiles[tile][(row % edge) * edge + (output % edge)]
+                    == crop.cells[row * 32 + source],
+                    "output column \(output) must be source column \(source) verbatim")
+            }
+        }
+    }
+
+    /// **The normalisation guard (#1254 phase 4a-norm), two-sided and driven by the shared vector.**
+    ///
+    /// Every number asserted here comes out of `specs/vectors/manifest.json`'s
+    /// `wx_manifest_v2.resample_equivalence`, which is the same file
+    /// `host/obc-wx-client/tests/client.rs::the_resampled_corridor_matches_the_shared_vector_at_every_latitude`
+    /// reads — so "the two clients agree to the byte" is a checked fact rather than two suites
+    /// happening to print the same numbers. The block's `scenario` string is normative and this is
+    /// its Swift implementation.
+    ///
+    /// Three things are pinned, because no two of them are enough:
+    ///
+    /// - **bytes**, against the row and against a 200 KiB budget — the mechanism was chosen for it;
+    /// - **the pitch**, because the rejected `round(1/cos φ)` max-merge also fit a byte budget and
+    ///   what killed it was 1,428 m cells at Frankfurt and a 2x step across 48.19 °N;
+    /// - **the decoded cell image**, because at the raw4 worst case every tile is 128 bytes whatever
+    ///   is in it, so a half-cell drift in the nearest-neighbour column map would move which cells a
+    ///   rider sees while every length and every budget still passed.
+    ///
+    /// A mismatch here is a **cross-language divergence**, not a number to update: the fixture is
+    /// Rust's measurement and the two readers are supposed to be mirrors.
+    @Test
+    func aNinetyKilometreDiscMatchesTheSharedResampleVectorAtEveryLatitude() throws {
+        let northSouthPitch = 0.01 * 111_320.0  // 1,113.2 m, the lattice's own cell height
+        let directory = try JSONSerialization.jsonObject(
+            with: ManifestV2Tests.repositoryFile("specs/vectors/manifest.json")) as! [String: Any]
+        let block = try #require(directory["wx_manifest_v2"] as? [String: Any])
+        let vector = try #require(block["resample_equivalence"] as? [String: Any])
+        let rows = try #require(vector["rows"] as? [[String: Any]])
+        #expect(rows.count >= 9, "the sweep must keep its latitudes")
+
+        for row in rows {
+            let latitude = try #require(row["lat_deg"] as? Double)
+            let rider = Coordinate(latitude: latitude, longitude: 7.9)
+            let request = WeatherRequest(requestID: 1, position: rider, fixTime: Self.now)
+            let corridor = try #require(WeatherCorridor.around(request))
+
+            // One crop per frame covering the whole lattice-aligned corridor window, filled with
+            // deliberately incompressible texture: a uniform field would RLE4 down to nothing and
+            // the byte budget would pass without measuring anything. The window arithmetic is the
+            // scenario's, cell for cell, and it is the Rust helper's.
+            let bounds = corridor.bounds
+            let south = floorDivide(bounds.southMicrodegrees, Self.cell) * Self.cell
+            let west = floorDivide(bounds.westMicrodegrees, Self.cell) * Self.cell
+            let height = Int(floorDivide(bounds.northMicrodegrees - south, Self.cell) + 1)
+            let width = Int(floorDivide(bounds.eastMicrodegrees - west, Self.cell) + 1)
+            var crops: [PrecipitationCrop] = []
+            for index in 0..<9 {
+                var cells = [UInt8](repeating: 0, count: width * height)
+                for offset in 0..<cells.count {
+                    cells[offset] = UInt8((offset &* 7 &+ index) % 13)
+                }
+                crops.append(PrecipitationCrop(
+                    validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
+                    southMicrodegrees: south, westMicrodegrees: west,
+                    latitudeStrideMicrodegrees: UInt32(Self.cell),
+                    longitudeStrideMicrodegrees: UInt32(Self.cell),
+                    width: width, height: height, cellSizeMetres: Self.cellSizeMetres,
+                    quality: index == 0 ? .observed : .forecast, cells: cells))
+            }
+            let built = try build(
+                precipitation: Self.selection(crops), request: request, corridor: corridor)
+            let frame = try #require(built.bundle.rainFrames.first)
+            let window = built.bundle.bounds
+            let site = "\(latitude) N"
+
+            // The source lattice columns the window spans — read back out of the *bundle*, since
+            // the window's east edge is `west + sourceColumns * cell` by construction.
+            let sourceColumns = Int(
+                (Int64(window.eastLongitudeMicrodegrees)
+                    - Int64(window.westLongitudeMicrodegrees)) / Self.cell)
+            #expect(sourceColumns == (try #require(row["source_columns"] as? Int)),
+                    "\(site): source columns")
+            let pinnedWindow = try #require(row["window"] as? [Int])
+            #expect(Int(frame.width) == pinnedWindow[0], "\(site): output width")
+            #expect(Int(frame.height) == pinnedWindow[1], "\(site): output height")
+            #expect(built.bytes.count == (try #require(row["bundle_bytes"] as? Int)),
+                    "\(site): bundle length")
+            #expect(Self.cellsHash(frame) == (try #require(row["frame0_cells_fnv1a64"] as? String)),
+                    "\(site): the decoded cell image moved")
+
+            // The guard the mechanism was chosen for, both sides of it. The pitch is read off the
+            // bundle's own declared window rather than off the builder's intention.
+            #expect(built.bytes.count <= 200 * 1_024, "\(site): byte budget")
+            #expect(built.bundle.rainFrames.count == 9,
+                    "\(site): every timestamp must survive without the shrink loop firing")
+            let spanDegrees = Double(
+                Int64(window.eastLongitudeMicrodegrees)
+                    - Int64(window.westLongitudeMicrodegrees)) / 1_000_000
+            let pitch = spanDegrees * 111_320 * Foundation.cos(latitude * .pi / 180)
+                / Double(frame.width)
+            #expect(abs(pitch - northSouthPitch) / northSouthPitch < 0.02,
+                    "\(site): \(Int(pitch.rounded())) m east-west against \(northSouthPitch) m")
+            #expect(frame.cellSizeMetres == Self.cellSizeMetres,
+                    "\(site): the frame states the lattice's own cell size")
+        }
+    }
+
+    /// FNV-1a 64 over one decoded frame's cells, row-major with row 0 south — the hash
+    /// `resample_equivalence` pins, defined by its `cells_hash` note.
+    ///
+    /// Chosen because it is four lines in any language: the whole point of the row is that Swift
+    /// computes the same number over the same cells as Rust does, and a hash needing a library would
+    /// have been a hash one of the two suites quietly skipped. The cells come back out of the
+    /// *encoded bundle* through the wire decoder, so this measures what a device would read.
+    static func cellsHash(_ frame: OBCWeatherRainFrame) -> String {
+        let edge = OBCPrecipitationTileCodec.tileEdge
+        let width = Int(frame.width)
+        let height = Int(frame.height)
+        let tileColumns = (width + edge - 1) / edge
+        var cells = [UInt8](repeating: OBCPrecipitationTileCodec.noData, count: width * height)
+        for (index, tile) in frame.tiles.enumerated() {
+            let tileColumn = index % tileColumns
+            let tileRow = index / tileColumns
+            for localRow in 0..<edge {
+                let row = tileRow * edge + localRow
+                guard row < height else { continue }
+                for localColumn in 0..<edge {
+                    let column = tileColumn * edge + localColumn
+                    guard column < width else { continue }
+                    cells[row * width + column] = tile[localRow * edge + localColumn]
+                }
+            }
+        }
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for cell in cells {
+            hash ^= UInt64(cell)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(format: "%016llx", hash)
     }
 
     @Test
@@ -190,83 +354,69 @@ struct WeatherBundleBuilderTests {
         #expect(built.bundle.rainFrames[0].validAtUnixSeconds < built.bundle.validFromUnixSeconds)
     }
 
-    /// A frame whose lattice cannot tile the common window is **dropped and counted**, never
-    /// resampled onto it. A sub-cell shift is exactly the fabricated precision the epic forbids.
+    /// With one lattice **no frame can fail to tile the window**, so none is ever dropped. The two
+    /// nesting tests this replaces asserted the opposite behaviour for a heterogeneous product set
+    /// that no longer exists (#1244); asserting the *absence* of a drop is what keeps a resampling
+    /// or dropping branch from creeping back in.
     @Test
-    func anIncompatibleLatticeIsDroppedRatherThanResampled() throws {
-        let fine = Self.crop(validAt: Self.now)
-        let coarse = Self.crop(
-            validAt: Self.now.addingTimeInterval(3_600), south: 47_000_000, west: 7_000_000,
-            latitudeStride: 62_500, longitudeStride: 62_500, width: 16, height: 16,
-            cellSizeMetres: 6_500, quality: .forecast, seed: 2)
-        let built = try build(precipitation: Self.selection([fine, coarse]))
-        #expect(built.bundle.rainFrames.count == 1)
-        #expect(built.bundle.rainFrames[0].cellSizeMetres == 6_500, "the coarse window survives")
-        #expect(built.state.diagnostics.droppedIncompatibleFrames == 1)
-    }
-
-    /// The finer frames of a product whose lattices *do* nest keep all their detail.
-    @Test
-    func aNestedFinerLatticeIsKeptAtFullResolution() throws {
-        let coarse = Self.crop(
-            validAt: Self.now, south: 47_180_000, west: 7_280_000,
-            latitudeStride: 27_000, longitudeStride: 42_000, width: 6, height: 6,
-            cellSizeMetres: 3_000, quality: .forecast)
-        let fine = Self.crop(
-            validAt: Self.now.addingTimeInterval(900), south: 47_180_000, west: 7_280_000,
-            latitudeStride: 9_000, longitudeStride: 14_000, width: 18, height: 18, seed: 4)
-        let built = try build(precipitation: Self.selection([coarse, fine]))
-        #expect(built.bundle.rainFrames.count == 2)
-        #expect(built.bundle.rainFrames[0].width == 6)
-        #expect(built.bundle.rainFrames[1].width == 18, "three fine cells per coarse cell")
-        #expect(built.state.diagnostics.droppedIncompatibleFrames == 0)
+    func everyFrameOfOneDatasetSurvivesTheWindow() throws {
+        let crops = (0..<9).map { index in
+            Self.crop(
+                validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
+                seed: UInt8(index))
+        }
+        let built = try build(precipitation: Self.selection(crops))
+        #expect(built.bundle.rainFrames.count == 9)
+        #expect(built.state.diagnostics.droppedOversizeFrames == 0)
+        let widths = Set(built.bundle.rainFrames.map(\.width))
+        let heights = Set(built.bundle.rainFrames.map(\.height))
+        #expect(widths.count == 1 && heights.count == 1,
+                "one lattice, one window: every frame is the same shape")
     }
 
     @Test
     func anOversizeCorridorShrinksTheWindowBeforeDroppingFrames() throws {
-        // Nine 15-minute frames over a 400 x 400-cell corridor is far past the 64 KiB policy.
+        // Nine 15-minute frames over a 900 x 900-cell corridor is far past the producer policy even
+        // after the resample.
         let crops = (0..<9).map { index in
             Self.crop(
                 validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
-                width: 400, height: 400, seed: UInt8(index))
+                width: 900, height: 900, seed: UInt8(index))
         }
-        let built = try build(precipitation: Self.selection(crops))
+        let corridor = WeatherCorridor(bounds: crops[0].bounds)
+        let built = try build(precipitation: Self.selection(crops), corridor: corridor)
         #expect(built.bytes.count <= OBCWeatherCodec.producerPolicyMaximumLength)
         #expect(built.bundle.rainFrames.count == 9, "every timestamp survives; the window shrinks")
         #expect(built.state.diagnostics.droppedOversizeFrames == 0)
-        let frame = try #require(built.bundle.rainFrames.first)
-        #expect(frame.width < 400)
+        #expect(try #require(built.bundle.rainFrames.first).width < 900)
         // The rider's own cell stays inside the shrunken window.
         let bounds = built.bundle.bounds
-        #expect(bounds.southLatitudeMicrodegrees <= 47_270_000)
-        #expect(bounds.northLatitudeMicrodegrees >= 47_270_000)
-        #expect(bounds.westLongitudeMicrodegrees <= 7_420_000)
-        #expect(bounds.eastLongitudeMicrodegrees >= 7_420_000)
+        #expect(Int64(bounds.southLatitudeMicrodegrees) <= Self.rider.latitudeMicrodegrees)
+        #expect(Int64(bounds.northLatitudeMicrodegrees) > Self.rider.latitudeMicrodegrees)
+        #expect(Int64(bounds.westLongitudeMicrodegrees) <= Self.rider.longitudeMicrodegrees)
+        #expect(Int64(bounds.eastLongitudeMicrodegrees) > Self.rider.longitudeMicrodegrees)
+        // Shrinking happens in **source** cells, so the window's corners stay lattice-aligned.
+        #expect((Int64(bounds.southLatitudeMicrodegrees) - 47_180_000) % Self.cell == 0)
+        #expect((Int64(bounds.westLongitudeMicrodegrees) - 7_280_000) % Self.cell == 0)
+        #expect((Int64(bounds.northLatitudeMicrodegrees)
+            - Int64(bounds.southLatitudeMicrodegrees)) % Self.cell == 0)
     }
 
     /// Regression, adversarial review finding 1: the shrink must keep the **rider** inside, not the
     /// corridor's midpoint.
-    ///
-    /// A corridor is projected *ahead* of the rider, so for anyone moving quickly its midpoint sits
-    /// tens of kilometres up the road. Anchoring the shrink there walked the window off the back of
-    /// the rider entirely — the bundle carried rain for where they were going and none at all for
-    /// where they were.
     @Test
     func theShrinkKeepsTheRiderInsideNotTheCorridorMidpoint() throws {
         let rider = Coordinate(latitude: 47.19, longitude: 7.29)
         let crops = (0..<9).map { index in
             Self.crop(
                 validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
-                width: 400, height: 400, seed: UInt8(index))
+                width: 900, height: 900, seed: UInt8(index))
         }
         let bounds = crops[0].bounds
-        let request = WeatherRequest(
-            requestID: 1, position: rider, fixTime: Self.now, bearingDegrees: 0,
-            speedMetresPerSecond: 15)
-        let built = try WeatherBundleBuilder().build(
-            request: request, corridor: WeatherCorridor(bounds: bounds, isUndirected: false),
-            hourly: Self.hourly(), precipitation: Self.selection(crops), noRainMapReason: nil,
-            generation: 1, now: Self.now)
+        let built = try build(
+            precipitation: Self.selection(crops),
+            request: WeatherRequest(requestID: 1, position: rider, fixTime: Self.now),
+            corridor: WeatherCorridor(bounds: bounds))
 
         #expect(built.bytes.count <= OBCWeatherCodec.producerPolicyMaximumLength)
         #expect(built.bundle.rainFrames.count == 9, "every timestamp is still answered")
@@ -279,20 +429,19 @@ struct WeatherBundleBuilderTests {
         #expect(Int64(window.northLatitudeMicrodegrees) < bounds.northMicrodegrees)
     }
 
-    /// With no fix there is no rider cell, so the corridor's midpoint is the honest fallback.
+    /// With no fix there is no rider cell, so the corridor's midpoint is the honest fallback — for
+    /// the shrink anchor *and* for the latitude the resample is computed at.
     @Test
-    func withoutAFixTheShrinkFallsBackToTheCorridorMidpoint() throws {
+    func withoutAFixTheWindowFallsBackToTheCorridorMidpoint() throws {
         let crops = (0..<9).map { index in
             Self.crop(
                 validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
-                width: 400, height: 400, seed: UInt8(index))
+                width: 900, height: 900, seed: UInt8(index))
         }
         let bounds = crops[0].bounds
-        let built = try WeatherBundleBuilder().build(
-            request: WeatherRequest(requestID: 1),
-            corridor: WeatherCorridor(bounds: bounds, isUndirected: true),
-            hourly: Self.hourly(), precipitation: Self.selection(crops), noRainMapReason: nil,
-            generation: 1, now: Self.now)
+        let built = try build(
+            precipitation: Self.selection(crops), request: WeatherRequest(requestID: 1),
+            corridor: WeatherCorridor(bounds: bounds))
         let window = built.bundle.bounds
         let midpoint = (bounds.southMicrodegrees + bounds.northMicrodegrees) / 2
         #expect(Int64(window.southLatitudeMicrodegrees) <= midpoint)
@@ -302,11 +451,11 @@ struct WeatherBundleBuilderTests {
     // MARK: - The two halves are independent
 
     @Test
-    func anAbsentRainProductNeverDiscardsTheHourlyForecast() throws {
-        let built = try build(precipitation: nil, reason: .corridorNotCovered)
+    func anAbsentRainMapNeverDiscardsTheHourlyForecast() throws {
+        let built = try build(precipitation: nil, reason: .outOfDomain)
         #expect(built.bundle.hourly.count == 24)
         #expect(built.bundle.rainFrames.isEmpty)
-        #expect(built.state.noRainMapReason == .corridorNotCovered)
+        #expect(built.state.noRainMapReason == .outOfDomain)
         #expect(built.state.precipitation == nil)
         #expect(built.state.attributions == [.met])
         // The bundle still states the region it describes.
@@ -314,12 +463,37 @@ struct WeatherBundleBuilderTests {
             == Int32(Self.corridor.bounds.southMicrodegrees))
     }
 
+    /// A **dry** map is not an absent one: nine all-zero frames still ship, still carry the dataset's
+    /// credit, and carry no ``NoRainMapReason`` at all.
+    @Test
+    func aFullyDryTimelineIsNineRealFramesNotAnAbsentRainMap() throws {
+        let crops = (0..<9).map { index in
+            PrecipitationCrop(
+                validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
+                southMicrodegrees: 47_180_000, westMicrodegrees: 7_280_000,
+                latitudeStrideMicrodegrees: UInt32(Self.cell),
+                longitudeStrideMicrodegrees: UInt32(Self.cell),
+                width: 20, height: 20, cellSizeMetres: Self.cellSizeMetres, quality: .observed,
+                cells: [UInt8](repeating: OBCPrecipitationTileCodec.dry, count: 400))
+        }
+        let built = try build(precipitation: Self.selection(crops))
+        #expect(built.bundle.rainFrames.count == 9)
+        #expect(built.state.noRainMapReason == nil)
+        for frame in built.bundle.rainFrames {
+            let declared = Int(frame.width) * Int(frame.height)
+            let dry = frame.tiles.flatMap { $0 }
+                .filter { $0 == OBCPrecipitationTileCodec.dry }.count
+            #expect(dry == declared, "every declared cell is intensity 0")
+            #expect(!frame.quality.contains(.partialCoverage))
+        }
+    }
+
     @Test
     func bothAttributionsSurviveWhenBothHalvesAnswered() throws {
         let built = try build(precipitation: Self.selection([Self.crop()]))
         #expect(built.state.attributions.count == 2)
         #expect(built.state.attributions.first == .met)
-        #expect(built.state.attributions.last?.text == "Source: Deutscher Wetterdienst (DWD)")
+        #expect(built.state.attributions.last?.sourceID == "dwd-rv")
         #expect(built.state.noRainMapReason == nil)
     }
 

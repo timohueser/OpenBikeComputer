@@ -73,8 +73,9 @@ A drift on any side fails that side's tests — the files are the contract.
 
 The eight positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-only dry,
 96 × 96 × nine-frame DWD shape, coarse native model times, a genuine four-hour-latent observation
-before the current hourly base, all-no-data, raw4, RLE4, and the exact 65,536-byte producer-policy
-boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
+before the current hourly base, all-no-data, raw4, RLE4, and the exact 262,144-byte
+producer-policy boundary (raised from 65,536 by WXR5 #1244; it is a phone policy, not a format
+limit). The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
 
 The thirteen `weather-invalid-*` files isolate truncation, a bad section offset, section overlap,
 nonzero hourly flags/reserved bytes, a reserved intensity nibble, RLE expansion beyond 256 cells,
@@ -147,6 +148,32 @@ Three obligations, recorded in `manifest.json`'s `wx_manifest_v2` block:
   several different answers and only one of them is about rain;
 - a listed-but-missing shard is an error, a bitmap-absent shard is dry, and a shard off the grid is
   out of domain. A 404 is never dry, in either language.
+
+WXR5 (#1244) added two more blocks beside those, both driven from `manifest.json` by both suites so
+neither language can quietly test a different list.
+
+**`rejection_equivalence`** — 28 hostile mutations of the fixture, each with a verdict both clients
+must reach. `bbox_equivalence` pins what the two readers *compute*; this pins what they **refuse**,
+which is where two JSON stacks actually rot apart. It exists because a review ran a corpus like it
+through both readers and found five documents they answered differently and three that crashed one
+of them outright — an unbounded `width` overflowing a shard-grid division, a shard count overflowing
+its own multiplication, and a `present` string with a non-ASCII character being sliced by byte. A
+manifest is the first thing a phone fetches from a network nobody controls, so *does not crash* is
+the floor and *answers identically* is the contract. The cases also pin the type coercions the
+document/entry strictness split could not state: an integral float is not an integer version, an
+explicit `null` is not an absent key, a space is not the `T` in RFC 3339, and a `+` is not a hex
+digit. Each case is `{name, why, patch, verdict}` where the patch is a list of `{op, path, value}`
+over RFC 6901 pointers, and each suite applies it with its own small walker — deliberately
+hand-rolled on both sides, because a JSON-Patch library against a hand walker is the asymmetry that
+makes a "cross-language" fixture test one language.
+
+**`resample_equivalence`** — nine latitudes of WXR5's uniform east-west resample, pinned by output
+rather than by arithmetic: source columns, output window, exact bundle length, and an FNV-1a 64 of
+frame 0's decoded cells. The hash is the load-bearing column. At the raw4 worst case every tile is
+128 bytes whatever is in it, so byte lengths alone would let a half-cell drift in the
+nearest-neighbour column map move which cells a rider sees while every length still matched. FNV-1a
+is chosen because it is four lines in any language: a hash needing a library is a hash one of the
+two suites quietly skips.
 
 Because §5 leaves compressed bytes to the encoder, the deflate4 fixtures' root of trust is the
 exact `miniz_oxide` version the workspace lock pins (`=0.8.9` in `firmware/obc-formats` and

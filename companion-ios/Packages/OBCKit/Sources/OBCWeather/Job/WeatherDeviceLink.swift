@@ -64,6 +64,11 @@ public struct WeatherDeviceRequestSnapshot: Codable, Equatable, Sendable {
     /// The assembler's input, mapped from the wire groups. A cleared position group becomes
     /// `position == nil` here — the job then fails as ``WeatherJobFailure/noPosition`` rather than
     /// fetching for the Gulf of Guinea.
+    ///
+    /// Bearing, speed and route id stay on the snapshot but **do not** reach the assembler: the
+    /// corridor is a plain 90 km disc (#1244), so nothing downstream has a use for them. They are
+    /// still read off the wire because §11.2 puts them there and the diagnostics ring shows what the
+    /// device said, not what the phone found convenient.
     public var weatherRequest: WeatherRequest {
         var position: Coordinate?
         if let latitudeMicrodegrees, let longitudeMicrodegrees {
@@ -74,9 +79,7 @@ public struct WeatherDeviceRequestSnapshot: Codable, Equatable, Sendable {
         return WeatherRequest(
             requestID: requestID,
             position: position,
-            fixTime: fixUnixSeconds.map { Date(timeIntervalSince1970: TimeInterval($0)) },
-            bearingDegrees: bearingDegrees,
-            speedMetresPerSecond: speedMetresPerSecond)
+            fixTime: fixUnixSeconds.map { Date(timeIntervalSince1970: TimeInterval($0)) })
     }
 
     /// The generation the next built bundle must carry: serially one past whatever the device

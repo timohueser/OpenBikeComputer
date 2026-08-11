@@ -39,15 +39,21 @@ public struct HourlyCondition: Equatable, Sendable {
     }
 }
 
-/// Who to credit and where the licence lives. Manifest data for grid products, a WX1 constant for
+/// Who to credit and where the licence lives. Manifest data for the rain dataset, a WX1 constant for
 /// MET; the device never sees either (OBCW carries no strings) — this is the phone's to display.
+///
+/// `sourceID` is the manifest's own name for the upstream, carried because the dataset is a *mosaic*
+/// of several: every source that may have painted a cell must be credited, and there is no per-cell
+/// provenance to narrow it to. It is provenance only, never a switch.
 public struct WeatherAttribution: Equatable, Sendable, Hashable {
     public var text: String
     public var url: String
+    public var sourceID: String?
 
-    public init(text: String, url: String) {
+    public init(text: String, url: String, sourceID: String? = nil) {
         self.text = text
         self.url = url
+        self.sourceID = sourceID
     }
 
     /// The exact credit line the MET licence requires (WX1 decision record).
@@ -78,21 +84,6 @@ public struct HourlyForecast: Equatable, Sendable {
         self.providerUpdatedAt = providerUpdatedAt
         self.isFromCache = isFromCache
     }
-}
-
-/// Radar / model / floor, as the manifest states it. The numbers are the OBCG §3 tier codes; a tier
-/// this build has never heard of is still ordered by its number, because adding a source must never
-/// need an app release.
-public struct WeatherTier: Equatable, Sendable, Comparable, Hashable {
-    public var rawValue: UInt8
-    public init(rawValue: UInt8) { self.rawValue = rawValue }
-
-    public static let radar = WeatherTier(rawValue: 1)
-    public static let model = WeatherTier(rawValue: 2)
-    public static let floor = WeatherTier(rawValue: 3)
-
-    /// Lower tier numbers are better; `<` therefore means "preferred over".
-    public static func < (lhs: WeatherTier, rhs: WeatherTier) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
 /// What a frame's bytes mean. Mirrors the OBCW §5.1 semantic flags — never a provider identity.
@@ -158,31 +149,35 @@ public struct PrecipitationCrop: Equatable, Sendable {
     public var hasNoDataCells: Bool { cells.contains(OBCPrecipitationTileCodec.noData) }
 }
 
-/// The precipitation product chosen for one corridor, with everything needed to label it truthfully.
+/// The precipitation the corridor was answered with, with everything needed to label it truthfully.
+///
+/// There is nothing here naming a *product*, because there is no longer a product: one dataset, one
+/// lattice, one generation (#1244). What remains is provenance — which generation answered, what its
+/// upstream run was, when it stops being usable, and every source that may have painted a cell.
 public struct PrecipitationSelection: Equatable, Sendable {
-    /// The manifest's product id. Carried for diagnostics and cache keys only — **never** branched
-    /// on: selection is tier, bbox and staleness, so a new region is a baker deploy.
-    public var productID: String
-    public var tier: WeatherTier
+    /// The manifest's generation string. Provenance and cache-key material only — never branched on.
+    public var generation: String
+    /// The stated ground resolution of the lattice, for truthful UI.
     public var nominalCellMetres: UInt16
-    public var attribution: WeatherAttribution
-    /// Upstream run/reference time of the product.
+    /// Every credit the mosaic owes. Plural because the dataset is a mosaic and no per-cell
+    /// provenance exists to narrow it to one.
+    public var attributions: [WeatherAttribution]
+    /// Upstream run/reference time of the generation.
     public var referenceTime: Date
-    /// When the baker produced this product entry.
+    /// When the baker produced this generation.
     public var generatedAt: Date
-    /// The moment the product must stop being used if no fresh manifest replaced it.
+    /// The moment the generation must stop being used if no fresh manifest replaced it.
     public var stalenessDeadline: Date
     public var crops: [PrecipitationCrop]
 
     public init(
-        productID: String, tier: WeatherTier, nominalCellMetres: UInt16,
-        attribution: WeatherAttribution, referenceTime: Date, generatedAt: Date,
-        stalenessDeadline: Date, crops: [PrecipitationCrop]
+        generation: String, nominalCellMetres: UInt16, attributions: [WeatherAttribution],
+        referenceTime: Date, generatedAt: Date, stalenessDeadline: Date,
+        crops: [PrecipitationCrop]
     ) {
-        self.productID = productID
-        self.tier = tier
+        self.generation = generation
         self.nominalCellMetres = nominalCellMetres
-        self.attribution = attribution
+        self.attributions = attributions
         self.referenceTime = referenceTime
         self.generatedAt = generatedAt
         self.stalenessDeadline = stalenessDeadline
@@ -194,20 +189,31 @@ public struct PrecipitationSelection: Equatable, Sendable {
 /// the explicit no-rain-map screen, WX13 the diagnostics) — never a silent empty map, and never a
 /// dry claim.
 ///
+/// The first three mirror ``WeatherPlanOutcome`` exactly, and that is the point: the manifest reader
+/// already refuses to collapse "off the map", "no source here ever" and "no weather at all" into one
+/// another, so the rendering-facing type must not either. **None of them is "no rain"** — a genuinely
+/// dry corridor produces an all-zero frame in the bundle, not an absent one.
+///
 /// `Codable` because the WX13 history ring persists it: the alternative — flattening it to
 /// `String(describing:)` on the way in — printed Swift's debug spelling on glass and destroyed the
 /// one associated value a reader wants as a time (#1198 review).
 public enum NoRainMapReason: Codable, Equatable, Sendable {
-    /// The manifest lists no product whose bbox covers this corridor.
-    case corridorNotCovered
-    /// Products cover the corridor, but every one of them is past its staleness deadline.
-    case allCoveringProductsExpired(latestDeadline: Date)
+    /// The corridor is off the dataset's lattice, or is not a window this client will interpret.
+    case outOfDomain
+    /// On the lattice, but every row it touches is outside the manifest's `covered_rows`: no source
+    /// reaches it in any frame, ever, so every cell would decode to "we do not know".
+    case uncovered
+    /// The generation is past its `stale_after` and no fresher manifest replaced it.
+    case expired(staleAfter: Date)
     /// The manifest could not be fetched or parsed: a service outage, cleanly degraded.
     case serviceUnavailable
-    /// A covering, fresh product existed but its frames could not be fetched or verified.
+    /// Every frame this generation publishes is outside the window the rain map answers — too old
+    /// to be a current observation, or further ahead than ``WeatherCorridor/horizon``. **Nothing
+    /// failed**; the data on offer is about a different time. Distinct from ``framesUnavailable``
+    /// because wearing that label would say "failed" about a service that answered perfectly.
+    case outsideWindow
+    /// The manifest answered, but not one frame's shards could be fetched and verified.
     case framesUnavailable
-    /// The manifest listed a covering fresh product with no frame inside the two-hour window.
-    case noFramesInWindow
 }
 
 /// The complete weather state one job produced: an hourly section that always stands on its own and
@@ -244,15 +250,26 @@ public struct WeatherDiagnostics: Equatable, Sendable {
     public var serviceRequests: Int
     /// Bytes read from the OBC weather service (Range reads included).
     public var serviceBytes: Int
-    /// Products the manifest listed that cover the corridor but had expired.
-    public var expiredCoveringProducts: [String]
-    /// Manifest entries this build could not make sense of and skipped. Never fatal — one bad
-    /// product must not cost a rider every other region — but never silent either.
-    public var skippedManifestProducts: Int
-    /// Frames dropped because their lattice could not tile the common OBCW window without
-    /// resampling. Reported rather than silently resampled.
-    public var droppedIncompatibleFrames: Int
-    /// Frames dropped because the finished bundle would otherwise exceed the 64 KiB producer cap.
+    /// Manifest frames this build could not make sense of and skipped. Never fatal — one bad frame
+    /// must not cost a rider the whole timeline — but never silent either.
+    public var skippedManifestFrames: Int
+    /// `(frame, shard)` pairs the manifest's presence bitmap said were dry, so nothing was fetched
+    /// for them and intensity 0 was painted instead. Evidence that a dry map came from the bitmap
+    /// rather than from a failure nobody noticed.
+    public var dryShards: Int
+    /// Shards that failed to fetch or verify. **One is a hole in one frame, never a failed job** —
+    /// the cells it would have painted stay no-data, which is distinguishable from dry at every
+    /// layer, so counting a failure here can never make an outage look rain-free.
+    public var failedShards: Int
+    /// Shards whose manifest entry says a radar painted them, rather than model fill. Per shard
+    /// because that is where the fact is true — and it stays a **counter**: OBCW carries one quality
+    /// flag per *frame*, so no per-shard bit may set it.
+    public var observedShards: Int
+    /// Planned frames not fetched because their validity is outside
+    /// `[now - maximumObservationAge, now + horizon]`. Nothing failed; the frames are about a
+    /// different time.
+    public var framesOutsideWindow: Int
+    /// Frames dropped because the finished bundle would otherwise exceed the producer cap.
     public var droppedOversizeFrames: Int
     /// True when the manifest's own `generated_at` is meaningfully in this device's future, which
     /// means the clock cannot be trusted for freshness arithmetic. Surfaced, never silently
@@ -260,15 +277,18 @@ public struct WeatherDiagnostics: Equatable, Sendable {
     public var clockSkewSuspected: Bool
 
     public init(
-        serviceRequests: Int = 0, serviceBytes: Int = 0, expiredCoveringProducts: [String] = [],
-        skippedManifestProducts: Int = 0, droppedIncompatibleFrames: Int = 0,
-        droppedOversizeFrames: Int = 0, clockSkewSuspected: Bool = false
+        serviceRequests: Int = 0, serviceBytes: Int = 0, skippedManifestFrames: Int = 0,
+        dryShards: Int = 0, failedShards: Int = 0, observedShards: Int = 0,
+        framesOutsideWindow: Int = 0, droppedOversizeFrames: Int = 0,
+        clockSkewSuspected: Bool = false
     ) {
         self.serviceRequests = serviceRequests
         self.serviceBytes = serviceBytes
-        self.expiredCoveringProducts = expiredCoveringProducts
-        self.skippedManifestProducts = skippedManifestProducts
-        self.droppedIncompatibleFrames = droppedIncompatibleFrames
+        self.skippedManifestFrames = skippedManifestFrames
+        self.dryShards = dryShards
+        self.failedShards = failedShards
+        self.observedShards = observedShards
+        self.framesOutsideWindow = framesOutsideWindow
         self.droppedOversizeFrames = droppedOversizeFrames
         self.clockSkewSuspected = clockSkewSuspected
     }

@@ -20,9 +20,13 @@ do not occur anywhere in v1.
 
 - Format offsets and lengths are `uint32`. A reader MUST use checked addition and multiplication
   and MUST reject a value it cannot represent or address.
-- A **phone producer policy**, separate from the format, caps v1 objects at 65,536 bytes. A
-  conforming reader MUST NOT treat 65,536 as a format limit. Future transports may carry a larger
-  valid v1 object without changing the byte layout.
+- A **phone producer policy**, separate from the format, caps v1 objects at 262,144 bytes. A
+  conforming reader MUST NOT treat 262,144 as a format limit. Future transports may carry a larger
+  valid v1 object without changing the byte layout. The number was 65,536 until WXR5 (#1244): under
+  one uniform 1 km dataset the phone's corridor is 162 x 162 cells in every frame, whose raw4 worst
+  case is ~153.6 kB, and the policy was raised to hold it with headroom. Nothing about the byte
+  layout moved, and the device's reader is a windowed streamer whose resident bytes do not depend
+  on object size — what a bigger object costs is transfer time.
 - Rain tiles are fixed at 16 x 16 cells and independently addressable. A reader needs one
   128-byte encoded-tile buffer and one caller-owned 256-byte decoded-tile buffer; it never needs a
   whole frame in RAM.
@@ -216,6 +220,20 @@ the separation with a test that runs the whole decision path under every display
 Exactly one of Observed or Forecast MUST be set. These flags say what the data means; they MUST
 NOT identify DWD, NOAA or another provider.
 
+**How the phone producer decides Observed, since WXR5 (#1244).** A producer policy, not a reader
+rule — a reader takes the flag as given — but it is written down here because two independent
+producers implement it and they disagreed once already. Under one mosaic dataset a frame is radar
+over the rider and model fill across the seam at the same instant, so no rule about a frame's
+*content* can be true of all of it. The flag therefore follows the frame's position in the timeline:
+the frame at offset 0 whose validity is within the dataset's stated source skew is the analysis and
+sets **Observed**; every forward frame sets **Forecast**. Dryness is not part of it in either
+direction — an all-dry radar scan is an observation, and an all-dry forecast frame is not one.
+
+Partial coverage is likewise decided over the **assembled** frame: a cell no source object and no
+measured-dry region reached. A producer composing one frame from several objects must not raise it
+merely because one of those objects stopped at its own edge, where a neighbouring object supplies
+exactly the cells it was missing.
+
 ## 6. Tile directory and payloads
 
 Each tile-directory entry is 12 bytes:
@@ -324,7 +342,7 @@ malformed data.
 Checked-in files live in `specs/vectors/` and are described in its `manifest.json` and README.
 Positive vectors cover a dry hourly-only bundle, raw and compressed tiles, a no-data tile, a
 four-hour-latent observation with a current hourly base, a coarse-model shape, a 96 x 96 x
-nine-frame DWD-shaped raw bundle, and the exact 65,536-byte producer-policy boundary. Negative
+nine-frame DWD-shaped raw bundle, and the exact 262,144-byte producer-policy boundary. Negative
 vectors isolate truncation, bad offsets, overlapping sections, nonzero hourly flags/reserved
 bytes, reserved intensity nibbles, compressible raw4, overlong and noncanonical RLE, CRC mismatch,
 timestamp disorder, a nonpositive frame time and a frame beyond the overall ceiling.
@@ -337,8 +355,14 @@ exact bytes. Both must reject every negative. Vector provenance is recorded besi
 A 96 x 96 frame has `6 x 6 = 36` tiles. Forced raw4 costs `36 x (12 + 128) = 5,040` bytes per
 frame. Nine frames cost 45,360 bytes. Header + hourly + descriptors cost
 `112 + 24 x 24 + 9 x 48 = 1,120` bytes, for **46,480 bytes (45.39 KiB)** total. Real RLE4 can only
-reduce it. This is the locked approximately 44-46 KiB DWD-shaped estimate and leaves 19,056 bytes
-under the 64 KiB producer policy.
+reduce it. This is the locked approximately 44-46 KiB DWD-shaped estimate.
+
+The shape a phone actually produces since WXR5 (#1244) is bigger and no longer provider-shaped: one
+uniform dataset, a 90 km corridor, and a uniform ~1,113 m cell pitch on both axes give **162 x 162
+cells** in every frame at every latitude. That is `11 x 11 = 121` tiles, so forced raw4 costs
+`121 x (12 + 128) = 16,940` bytes per frame and nine frames plus the same 1,120-byte fixed part
+come to **153,580 bytes (150.0 KiB)** — 41 % under the 256 KiB producer policy. A real corridor
+measures well below it: the largest bundle #1254 measured over a 0-80 degree sweep was 55.5 kB.
 
 The allocation-free Rust reader validates CRC in 512-byte chunks, hourly records four at a time,
 and canonical tile directories/payloads in four-tile windows. Its largest explicit simultaneously
