@@ -137,6 +137,39 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         Ok(obcw::decode_hourly_record(&bytes)?)
     }
 
+    /// Read the fixed hourly section in the same four-record windows used by validation.
+    ///
+    /// A snapshot always needs all 24 records. Calling [`Self::hourly`] for each one turns that
+    /// contiguous 576-byte section into 24 small SD transactions; six bounded 96-byte reads carry
+    /// the exact same decoded records without growing the reader or allocating.
+    pub fn hourly_records(&self) -> Result<[HourlyRecord; HOURLY_COUNT], Error> {
+        let mut records = [HourlyRecord {
+            valid_time_offset_s: 0,
+            temperature_deci_c: 0,
+            precipitation_tenth_mm: 0,
+            precipitation_probability_pct: 0,
+            condition: 0,
+            wind_from_deg: 0,
+            wind_speed_deci_ms: 0,
+            wind_gust_deci_ms: 0,
+            flags: 0,
+        }; HOURLY_COUNT];
+        let mut bytes = [0u8; OPEN_HOURLY_WINDOW_RECORDS * HOURLY_RECORD_LEN];
+        for first in (0..HOURLY_COUNT).step_by(OPEN_HOURLY_WINDOW_RECORDS) {
+            let count = (HOURLY_COUNT - first).min(OPEN_HOURLY_WINDOW_RECORDS);
+            let byte_len = count * HOURLY_RECORD_LEN;
+            let offset = checked_add(HEADER_LEN as u32, checked_mul(first as u32, HOURLY_RECORD_LEN as u32)?)?;
+            self.source.read_at(offset, &mut bytes[..byte_len])?;
+            for local in 0..count {
+                let start = local * HOURLY_RECORD_LEN;
+                records[first + local] = obcw::decode_hourly_record(
+                    bytes[start..start + HOURLY_RECORD_LEN].try_into().map_err(|_| FormatError::Bounds)?,
+                )?;
+            }
+        }
+        Ok(records)
+    }
+
     pub fn frame(&self, index: usize) -> Result<FrameDescriptor, Error> {
         if index >= self.header.frame_count as usize {
             return Err(FormatError::Bounds.into());
@@ -537,6 +570,20 @@ mod tests {
         different[obcw::HDR_GENERATION] ^= 1;
         let equal_length_other = SliceSource(&different);
         assert_eq!(mount.reader(&equal_length_other).err(), Some(Error::Format(FormatError::Crc)));
+    }
+
+    #[test]
+    fn complete_hourly_section_uses_six_bounded_reads() {
+        let bytes = dwd_shaped_bundle();
+        let source = CountingSource { bytes: &bytes, calls: Cell::new(0), bytes_read: Cell::new(0) };
+        let reader = WeatherReader::open(&source).unwrap();
+        source.calls.set(0);
+        source.bytes_read.set(0);
+
+        let records = reader.hourly_records().unwrap();
+        assert_eq!(source.calls.get(), 6);
+        assert_eq!(source.bytes_read.get(), HOURLY_COUNT * HOURLY_RECORD_LEN);
+        assert_eq!(records, core::array::from_fn(|index| reader.hourly(index).unwrap()));
     }
 
     #[test]

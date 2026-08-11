@@ -514,8 +514,8 @@ pub enum ClockTrust {
 
 /// How stale the last GPS fix may be (map-plane ms) and still serve in the weather request context
 /// as "where the rider is" (WX8, #1193): a 30-second-old fix is still the rider to within metres,
-/// while a tunnel or indoor stop past that reads as *no position* — the phone then fetches by its
-/// own location, which is the spec's cold-start answer.
+/// while a tunnel or indoor stop past that reads as *no position*. The request still raises for
+/// diagnostics/retry, but today's companion cannot fetch until a fresh device fix arrives.
 pub const WEATHER_FIX_FRESH_MS: u32 = 30_000;
 
 pub struct App {

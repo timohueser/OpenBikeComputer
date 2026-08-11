@@ -8,7 +8,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_app::weather::{rain_outlook, RainOutlook, RideProjection, WeatherSnapshot, RAIN_MIN_INTENSITY};
 use obc_app::RainOverlayAdapter;
-use obc_formats::io::SliceSource;
+use obc_formats::io::{ByteSource, Error as SourceError, SliceSource};
 use obc_formats::obcw::{
     encode_format, encoded_len, BundleInput, HourlyRecord, RainFrameInput, HOURLY_COUNT, QUALITY_FORECAST, TILE_CELLS,
 };
@@ -22,6 +22,25 @@ use common::{build_min_obcm, Buf};
 
 const T0: i64 = 1_800_000_000;
 const GRID: usize = 48;
+
+struct CountingSource<'a> {
+    bytes: &'a [u8],
+    calls: std::cell::Cell<usize>,
+}
+
+impl ByteSource for CountingSource<'_> {
+    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), SourceError> {
+        let start = offset as usize;
+        let end = start.checked_add(out.len()).ok_or(SourceError::BadOffset)?;
+        out.copy_from_slice(self.bytes.get(start..end).ok_or(SourceError::BadOffset)?);
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+
+    fn len(&self) -> u32 {
+        self.bytes.len() as u32
+    }
+}
 
 /// The committed Grimsel fixture (~18.7 km) — the same bytes the App-level tests ride.
 const GRIMSEL: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel-climb.obcr");
@@ -297,6 +316,38 @@ fn the_claim_corridor_widens_with_the_horizon_while_warnings_do_not() {
         rain_outlook(&riding, T0),
         RainOutlook::UpdateNeeded,
         "one cell would have said DRY; the rider's plausible position spread refuses it"
+    );
+}
+
+/// The deliberately expensive case is a completely covered, dry nine-frame forecast: every
+/// claim corridor has to run to its end. Pin its random-access transaction budget so a future
+/// cleanup cannot quietly restore the duplicate first-step probes or 24 one-record hourly reads.
+#[test]
+fn clean_projected_snapshot_io_budget_is_pinned() {
+    let idx = grimsel_index();
+    let route_source = SliceSource(GRIMSEL);
+    let route = RouteReader::new(&idx, &route_source);
+    let bbox = padded_route_bbox(&route, 200_000);
+    let bytes = bundle(bbox, |_| Vec::new());
+    let source = CountingSource { bytes: &bytes, calls: std::cell::Cell::new(0) };
+    let reader = WeatherReader::open(&source).unwrap();
+    source.calls.set(0);
+
+    let start = route.position_at(0).unwrap();
+    let projection = RideProjection { progress_m: 0, speed_cms: 200, now: T0 };
+    let snapshot = WeatherSnapshot::sample_along(
+        &reader,
+        &mut WeatherCache::new(),
+        Some((start.lat, start.lon)),
+        Some((&route, projection)),
+    )
+    .unwrap();
+
+    assert_eq!(rain_outlook(&snapshot, T0), RainOutlook::Dry);
+    assert_eq!(
+        source.calls.get(),
+        60,
+        "the pre-batching/first-step-reuse path took 78 transactions; audit before changing this budget"
     );
 }
 

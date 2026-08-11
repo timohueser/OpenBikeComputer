@@ -620,6 +620,30 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         armWeatherRequestDeadline(until: deadline)
     }
 
+    /// Convert the live-link notification into the ordinary authenticated read transaction. The
+    /// notification payload is deliberately not accepted as the request: firmware keeps the hint
+    /// pending until this read response is served, giving the exchange an acknowledgement instead
+    /// of losing a request after merely enqueueing an ATT notification.
+    private func beginNotifiedWeatherRequestRead() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !discoveryPolicy.weatherRequestPending,
+              let knownID = discoveryStore.knownPeripheralID(),
+              peripheral?.identifier == knownID,
+              peripheral?.state == .connected
+        else { return }
+
+        let now = weatherRequestClock.now
+        guard discoveryPolicy.requestWeather(
+            knownPeripheralID: knownID,
+            connectedPeripheralID: knownID
+        ) == .readOnExistingConnection else { return }
+        armAutonomousWeatherRead()
+        weatherRequestDiscoveredAt = now
+        weatherRequestConnectedAt = now
+        weatherRequestReusedForeground = true
+        beginWeatherRequestReadIfReady()
+    }
+
     // MARK: One-shot Weather Bundle upload (spec §11.5, WX9)
 
     /// Arm or disarm the **standing weather watch**: scan for the Weather Request UUID whenever
@@ -1660,6 +1684,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             deliverAnnounce(descriptor)
             return
         }
+        if case .weatherRequest = message {
+            beginNotifiedWeatherRequestRead()
+            return
+        }
         if let index = statusWaiters.firstIndex(where: { $0.pred(message) }) {
             statusWaiters.remove(at: index).cont.resume(returning: message)
             return
@@ -1673,7 +1701,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             // re-reconcile its "on device" badges when the device's store
             // moves under an open app (on-device delete, epic #447 P6).
             storeChangedMulticast.send(change)
-        case .downloadAnnounce, .unknown:
+        case .downloadAnnounce, .weatherRequest, .unknown:
             break  // announce is handled above (unreachable here); unknowns aren't buffered
         }
     }
@@ -1702,6 +1730,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                     + "id=\(descriptor.objectID) len=\(descriptor.totalLen) "
                     + "crc=\(String(format: "%08X", descriptor.crc32))"
             )
+        case .weatherRequest:
+            print("[OBC BLE status] weatherRequest")
         case .unknown(let discriminator):
             print("[OBC BLE status] unknown discriminator=\(discriminator)")
         }
@@ -1805,7 +1835,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 case .weatherRequest: GATT.weatherRequestService
                 }
             }
-            central.scanForPeripherals(withServices: cbServices)
+            // For an already-authenticated foreground peer, its opaque identifier is the filter.
+            // An unfiltered scan is a recovery path for firmware/app UUID skew and CoreBluetooth
+            // advertisement-dictionary quirks; `discovered` rejects every other peripheral. The
+            // standing background watch remains UUID-filtered, as iOS requires for wake-ups.
+            let scanServices: [CBUUID]? =
+                discoveryPolicy.foregroundRequested && discoveryStore.knownPeripheralID() != nil
+                ? nil : cbServices
+            central.scanForPeripherals(withServices: scanServices)
         case .poweredOff:
             failRadioUnavailable(.bluetoothUnavailable(.poweredOff))
         case .unauthorized:
@@ -1841,9 +1878,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             failAuthenticate(.notConnected)
             return
         }
-        // v2: one notify surface — `status` alone. `transferControl` is write-only
-        // (the download announce it once notified now rides `status` as `msg = 4`),
-        // so its CCCD subscribe path — and the split-CCCD ordering it created — is gone.
+        // v2's sole pairing-gated notify remains `status`; Weather Request uses msg 5 on this same
+        // ordering domain. A second CCCD would recreate split-CCCD ordering and retry complexity.
         if let statusCharacteristic = characteristics[GATT.status] {
             peripheral.setNotifyValue(true, for: statusCharacteristic)
         }
@@ -2494,13 +2530,9 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                                advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let advertisedServices =
-            (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
-            + (advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? [])
         let action = discoveryPolicy.discovered(
             peripheralID: peripheral.identifier,
-            knownPeripheralID: discoveryStore.knownPeripheralID(),
-            advertisedAsWeatherRequest: advertisedServices.contains(GATT.weatherRequestService)
+            knownPeripheralID: discoveryStore.knownPeripheralID()
         )
         let owner: BLEDiscoveryIntentPolicy.Ownership
         switch action {
@@ -2509,9 +2541,9 @@ extension BLETransport: CBCentralManagerDelegate {
         case .connect(let connectionOwner):
             owner = connectionOwner
         case .connectForWeatherRead(let connectionOwner):
-            // The standing watch (WX9) saw the known device raise a request with no caller in
-            // flight: arm the autonomous one-shot's bookkeeping (deadline, restoration intent,
-            // timing evidence) — its result reaches the job engine via `weatherRequestEvents`.
+            // A standing watch or known-peer foreground recovery needs an autonomous probe: arm
+            // its bookkeeping (deadline, restoration intent, timing evidence). Its result reaches
+            // the job engine via `weatherRequestEvents`; resting contexts are filtered there.
             armAutonomousWeatherRead()
             owner = connectionOwner
         }
@@ -2625,10 +2657,9 @@ extension BLETransport: CBCentralManagerDelegate {
             return
         }
         stateMulticast.send(discoveryPolicy.foregroundRequested ? .outOfRange : .disconnected)
-        // Reconnect through the combined service scan rather than a blind direct connect. The
-        // device may have ended this Control link specifically to advertise Weather Request; only
-        // the scan report carries the UUID that lets `didDiscover` arm the autonomous context
-        // read. An ordinary Control advertisement still reconnects as a foreground session.
+        // Reconnect through discovery rather than a blind direct connect. For a known foreground
+        // peer the peripheral identifier is authoritative and the reconnect probes the request
+        // context, so recovery does not depend on CoreBluetooth preserving an advertised UUID.
         if discoveryPolicy.foregroundRequested || discoveryPolicy.weatherRequestPending {
             startConnectIfReady()
         }
@@ -2749,9 +2780,9 @@ extension BLETransport: CBPeripheralDelegate {
             return
         }
         // Typed device → app `status` messages — the sole device → app channel in
-        // v2 (transferResult / storeChanged / commandResult / **downloadAnnounce**).
-        // The download announce arrives here as `msg = 4`; `deliverStatus` routes
-        // it to the announce waiter (`transferControl` is write-only now).
+        // v2 (transferResult / storeChanged / commandResult / **downloadAnnounce** /
+        // weatherRequest). `deliverStatus` routes msg 4 to the announce waiter and
+        // msg 5 to an authenticated Weather Request context read.
         if uuid == GATT.status {
             if let data = characteristic.value, let message = try? StatusMessage(decoding: data) { deliverStatus(message) }
             return

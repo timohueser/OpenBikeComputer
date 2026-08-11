@@ -143,7 +143,7 @@ not be reused**:
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
 | `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16` — routes (1) and trips (9); a trip delete is **non-cascading**, members become top-level, unknown id → `notFound`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below), `setClock` (cmd 5: `utc u32 · offset_min i16` — stamp the trusted wall clock every connect, auto-expiry below), `setRouteRetention` (cmd 6: `object_id u16 · retention u8` — set a route's expiry policy, below) — spec §4.4 |
-| `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult / **downloadAnnounce**) — the **sole** device → app channel, spec §4.3 |
+| `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult / **downloadAnnounce** / weatherRequest) — the **sole** device → app channel, spec §4.3 |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
 | `0005` | `transferControl` | **write** | open / abort a CoC object transfer (§ below) — **write-only, no CCCD** in v2 |
 | `0007` | `psm` | read | the dynamically-assigned L2CAP CoC PSM the app opens the channel on |
@@ -243,7 +243,7 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    numbers} · revision u32` — each store keeps its **own** monotonic-per-boot
    revision, so a UI-composed "delete trip & routes" cascade emits **both** a route
    and a trip signal; unknown store types are ignored), `commandResult` (msg 3), and
-   the **`downloadAnnounce`** (msg 4) messages — unknown discriminators are ignored,
+   the **`downloadAnnounce`** (msg 4), and weather-request hint (msg 5) messages — unknown discriminators are ignored,
    and an unknown *status* code decodes as a generic device error (forward compat).
    `storageFull` covers whichever catalog the upload targeted (routes: cap 64,
    trips: cap 16).
