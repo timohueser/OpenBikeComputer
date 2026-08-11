@@ -164,7 +164,7 @@ private func dataset(
 private func historyEntry(
     outcome: WeatherJobHistoryEntry.Outcome, failure: WeatherJobFailure? = nil,
     phase: WeatherJobPhase = .uploading, minutesAgo: Double = 12, attempts: Int = 1,
-    productID: String? = "dwd-rv"
+    generation: String? = "20260810T1430Z"
 ) -> WeatherJobHistoryEntry {
     WeatherJobHistoryEntry(
         startedAt: clock.addingTimeInterval(-minutesAgo * 60 - 20),
@@ -172,7 +172,7 @@ private func historyEntry(
         requestID: 42, outcome: outcome, failureReason: failure, phaseReached: phase,
         attempts: attempts, bundleByteCount: 41_200, readConnectedMilliseconds: 1_800,
         uploadConnectedMilliseconds: outcome == .committed ? 2_600 : nil,
-        precipitationGeneration: productID)
+        precipitationGeneration: generation)
 }
 
 @MainActor

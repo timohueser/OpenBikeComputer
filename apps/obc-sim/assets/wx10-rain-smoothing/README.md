@@ -51,8 +51,9 @@ does cover Grimsel, and have real streets, contours and water underneath.
 cargo test --release -p obc-wx-bake --test us_gfs_cycle    # -> .../obc-wx-bake-wx6-<pid>-cycle-a
 cargo test --release -p obc-wx-bake --test cycle           # -> .../obc-wx-bake-test-<pid>-cycle-a
 
-MRMS=$(ls -dt ${TMPDIR:-/tmp}/obc-wx-bake-wx6-*-cycle-a | head -1)/wx/v1/us/20260809T1658Z/f0.obcg
-DWD=$(ls -dt ${TMPDIR:-/tmp}/obc-wx-bake-test-*-cycle-a | head -1)/wx/v1/dwd-rv/20260809T1420Z/f0.obcg
+# Key shapes as of #1246: one dataset, `wx/v2/<generation>/f<offset>/s<col>-<row>.obcg`.
+MRMS=$(ls -dt ${TMPDIR:-/tmp}/obc-wx-canonical-*-0 | head -1)/wx/v2/20260809T1645Z/f0/s0-0.obcg
+DWD=$(ls -dt ${TMPDIR:-/tmp}/obc-wx-canonical-*-0 | head -1)/wx/v2/20260809T1430Z/f0/s0-0.obcg
 
 # 2. Build the comparison renderer.
 cargo build --release -p obc-sim --bin rain_sampling_sheet
