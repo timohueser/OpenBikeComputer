@@ -8,11 +8,15 @@
 //! per generation, so re-publishing one is a checksum-skip, which is what makes every cycle
 //! idempotent.
 //!
-//! [`RcloneStore`] talks to Cloudflare R2 over the S3 API through `rclone`, with the remote
-//! defined entirely by environment variables on the child process — nothing secret in argv, no
-//! connection-string parser (the exact lesson the map publisher already paid for).
+//! [`R2Store`] talks to Cloudflare R2 over the S3 API directly ([`crate::s3`]), signing each
+//! request from credentials this process holds and never writes anywhere — no connection-string
+//! parser, nothing secret in an `argv`, and since #1279 no child process at all.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+use crate::s3::S3;
 
 /// Frames are immutable timestamped objects: cache them hard.
 pub const FRAME_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -33,26 +37,64 @@ pub struct PlannedObject {
 /// outcome is a value rather than a `()`: the sweep ([`crate::sweep`]) walks every key a retired
 /// generation could hold and most cycles find every one of them, but a generation that was baked
 /// before a shard grid changed, or one whose cycle died mid-publish, is genuinely short a few.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Deliberately **not** `Default`: the derived one would be `existed: None`, which now means "this
+/// backend cannot tell" — the one answer no store should ever give by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deleted {
-    /// Was there an object at that key? `false` is **not** an error: the operation's contract is
-    /// that the key does not exist afterwards, and a key that already did not is that.
-    pub existed: bool,
+    /// Was there an object at that key?
+    ///
+    /// `Some(false)` is **not** an error: the operation's contract is that the key does not exist
+    /// afterwards, and a key that already did not is that.
+    ///
+    /// `None` is "this backend cannot tell", and it is a value rather than a guess because S3
+    /// `DeleteObject` is *defined* to be idempotent: R2 answers `204` whether or not anything was
+    /// there. [`DirStore`] can tell (it stats the file it is about to unlink) and does; [`R2Store`]
+    /// cannot without paying a `head` per key for a figure only a report line reads. Before #1279
+    /// this field claimed to know against R2 by reading rclone's stderr for "not found" — a string
+    /// match that was already wrong on rclone 1.60.1, which is precisely the class of bug the typed
+    /// client exists to end. Not knowing, and saying so, is the honest replacement.
+    pub existed: Option<bool>,
     /// Its length, when the backend knew it *without paying for a second round-trip*.
     ///
     /// [`DirStore`] does — one `metadata` call on a local file, which is what makes the
-    /// bake-to-a-directory rehearsal in `ops/weather/RUNBOOK.md` report a real number. The rclone
-    /// backend does not: S3 `DeleteObject` answers with no length, and a `head` per key would
-    /// double a 216-key sweep's process spawns to learn a figure nothing acts on. So this is
-    /// `None` against R2 by design, and the object *count* is the number that matters there.
+    /// bake-to-a-directory rehearsal in `ops/weather/RUNBOOK.md` report a real number. S3 does not:
+    /// `DeleteObject` answers with no length. So this is `None` against R2 by design, and the
+    /// object *count* is the number that matters there.
     pub bytes: Option<u64>,
 }
+
+/// How many objects [`R2Store`] has in flight at once.
+///
+/// The upload phase is the only place in the cycle where concurrency is allowed, and it is
+/// **network** concurrency, not compute: the box has 4 cores and was measured at 0.7 of one while
+/// publishing, because every request spent its time waiting. Eight is chosen against R2's per-
+/// connection round-trip rather than the core count — enough to keep the pipe full for ~75 KB
+/// objects, small enough that a burst of eight is not a self-inflicted rate-limit.
+pub const UPLOAD_CONCURRENCY: usize = 8;
 
 /// Somewhere weather objects can be put, re-checked, read back and retired.
 pub trait ObjectStore {
     /// Human-readable destination with any credential redacted.
     fn describe(&self) -> String;
     fn put(&mut self, object: &PlannedObject) -> Result<(), String>;
+    /// Store every object, returning only once **all** of them are durably written — or `Err`
+    /// having written some unknown subset of them.
+    ///
+    /// This is a batch and not a loop over [`Self::put`] because it is the one phase of the cycle
+    /// that may run several requests at once (#1279). The safety property it must not touch is the
+    /// *phase boundary*: `run_cycle` joins here completely before it heads a single key, and heads
+    /// every key before the manifest is written. Failing halfway is exactly as safe as failing on
+    /// one `put` was — the manifest has not moved, so every object written is unreferenced and the
+    /// previous generation still stands whole.
+    ///
+    /// The default is the sequential loop, which is what [`DirStore`] wants: local writes are
+    /// microseconds and threads would only add contention.
+    fn put_all(&mut self, objects: &[PlannedObject]) -> Result<(), String> {
+        for object in objects {
+            self.put(object)?;
+        }
+        Ok(())
+    }
     /// Size of the object at `key`, or `None` if it is not there — the pre-manifest fetchability
     /// proof.
     fn head(&mut self, key: &str) -> Result<Option<u64>, String>;
@@ -141,16 +183,20 @@ impl ObjectStore for DirStore {
         match std::fs::remove_file(&dest) {
             Ok(()) => {
                 self.prune_empty_parents(&dest);
-                Ok(Deleted { existed: true, bytes })
+                Ok(Deleted { existed: Some(true), bytes })
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Deleted::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Deleted { existed: Some(false), bytes: None })
+            }
             Err(error) => Err(format!("{key}: {error}")),
         }
     }
 }
 
-/// Cloudflare R2 (bucket `obc-wx`) through `rclone`'s S3 backend. The ephemeral remote is
-/// defined by `RCLONE_CONFIG_OBCWX_*` variables in the child environment:
+/// Cloudflare R2 (bucket `obc-wx`) over the S3 API, signed in-process ([`crate::s3`]).
+///
+/// The destination is read from the environment, unchanged from the rclone era so the box's
+/// credential file needs no edit:
 ///
 /// ```text
 /// OBC_WX_R2_ACCOUNT_ID        Cloudflare account id (builds the endpoint)
@@ -160,20 +206,11 @@ impl ObjectStore for DirStore {
 /// OBC_WX_R2_ENDPOINT          optional, overrides the derived endpoint — a jurisdiction bucket
 ///                             (https://<account>.eu.r2.cloudflarestorage.com), or a test double
 /// ```
-pub struct RcloneStore {
-    bucket: String,
-    endpoint: String,
-    envs: Vec<(&'static str, String)>,
-    scratch: PathBuf,
-    /// The binary to spawn — always plain `rclone`, resolved on `PATH`, in production. It is a
-    /// field only so the absent-vs-empty regression test can point it at a stub that reproduces
-    /// one specific rclone's answers; nothing reads it from the environment.
-    program: PathBuf,
+pub struct R2Store {
+    s3: S3,
 }
 
-const RCLONE_REMOTE: &str = "obcwx";
-
-impl RcloneStore {
+impl R2Store {
     pub fn from_env() -> Result<Self, String> {
         let var = |name: &str| std::env::var(name).map_err(|_| format!("{name} is not set"));
         let bucket = std::env::var("OBC_WX_R2_BUCKET").unwrap_or_else(|_| "obc-wx".to_string());
@@ -183,190 +220,92 @@ impl RcloneStore {
             Ok(endpoint) => endpoint,
             Err(_) => format!("https://{}.r2.cloudflarestorage.com", var("OBC_WX_R2_ACCOUNT_ID")?),
         };
-        let envs = vec![
-            ("RCLONE_CONFIG_OBCWX_TYPE", "s3".to_string()),
-            ("RCLONE_CONFIG_OBCWX_PROVIDER", "Cloudflare".to_string()),
-            ("RCLONE_CONFIG_OBCWX_REGION", "auto".to_string()),
-            ("RCLONE_CONFIG_OBCWX_ENDPOINT", endpoint.clone()),
-            ("RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID", access),
-            ("RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY", secret),
-            ("RCLONE_CONFIG_OBCWX_NO_CHECK_BUCKET", "true".to_string()),
-        ];
-        let scratch = std::env::temp_dir().join(format!("obc-wx-bake-{}", std::process::id()));
-        Ok(Self { bucket, endpoint, envs, scratch, program: PathBuf::from("rclone") })
-    }
-
-    fn target(&self, key: &str) -> String {
-        format!("{RCLONE_REMOTE}:{}/{key}", self.bucket)
-    }
-
-    fn run(&self, args: &[String]) -> Result<std::process::Output, String> {
-        std::process::Command::new(&self.program)
-            .envs(self.envs.iter().map(|(name, value)| (*name, value.as_str())))
-            .args(args)
-            .output()
-            .map_err(|error| format!("rclone: {error} — publishing needs rclone on PATH (https://rclone.org/install/)"))
-    }
-
-    /// Is there an object at `key`, and how long is it? `None` is *absent*, `Some(0)` is a real
-    /// zero-byte object, and telling those two apart is this function's whole job.
-    ///
-    /// It is the one place absence is decided, because deciding it from stderr wording does not
-    /// work. The live VPS runs Debian 13's packaged **rclone v1.60.1**, and that version answers a
-    /// missing key by treating the path as an empty *directory* — no error, exit 0:
-    ///
-    /// ```text
-    /// $ rclone size --json obcwx:obc-wx/wx/v2/manifest.json   # no such object
-    /// {"count":0,"bytes":0,"sizeless":0}
-    /// EXIT=0
-    /// ```
-    ///
-    /// So `bytes` alone cannot answer the question — it is `0` for both states — and the stderr
-    /// match this used to rely on never ran at all. That cost a live bootstrap: a fresh `wx/v2`
-    /// prefix read back as a present-but-empty manifest, which
-    /// [`crate::manifest_v2::carried_generations`] correctly refuses to publish over ("exists but
-    /// did not parse as JSON"), so *every* cycle failed and the prefix could never be seeded.
-    ///
-    /// `count` is the discriminator, and it is the only one that works across versions: a
-    /// zero-byte object is `{"count":1,"bytes":0}`, an absent one is `{"count":0,...}`. `rclone
-    /// size --json` has printed `count` since it grew `--json`, long before any version that could
-    /// be on a box running this service, so a missing `count` is a loud error rather than a guess.
-    fn stat(&self, key: &str) -> Result<Option<u64>, String> {
-        let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // Kept as a *second* answer, not the only one: an rclone that does fail the command for
-            // a missing key spells it "not found" / "directory not found", and both contain this.
-            if stderr.contains("not found") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        size_json_len(key, &out.stdout)
-    }
-
-    /// Defensive backstop: a secret echoed back by a future rclone must never reach a log.
-    fn redact(&self, text: &str) -> String {
-        match self.envs.iter().find(|(name, _)| name.ends_with("_SECRET_ACCESS_KEY")).map(|(_, value)| value.as_str()) {
-            Some(secret) if !secret.is_empty() => text.replace(secret, "***"),
-            _ => text.to_string(),
-        }
+        // R2 has one region and its name is "auto"; it is signed into every request all the same.
+        Ok(Self { s3: S3::new(endpoint, bucket, "auto", access, secret, UPLOAD_CONCURRENCY)? })
     }
 }
 
-impl ObjectStore for RcloneStore {
+impl ObjectStore for R2Store {
     fn describe(&self) -> String {
-        format!("r2 bucket {} via {}", self.bucket, self.endpoint)
+        format!("r2 bucket {} via {}", self.s3.bucket(), self.s3.endpoint())
     }
 
     fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-        // rclone copies files, so stage the bytes; `--checksum` skips an identical remote
-        // object, which makes re-publishing an unchanged run's immutable frames free.
-        std::fs::create_dir_all(&self.scratch).map_err(|error| format!("{}: {error}", self.scratch.display()))?;
-        let staged = self.scratch.join("object.tmp");
-        std::fs::write(&staged, &object.bytes).map_err(|error| format!("{}: {error}", staged.display()))?;
-        let args = vec![
-            "copyto".to_string(),
-            "--checksum".to_string(),
-            "--s3-no-check-bucket".to_string(),
-            "--header-upload".to_string(),
-            format!("Cache-Control: {}", object.cache_control),
-            "--header-upload".to_string(),
-            format!("Content-Type: {}", object.content_type),
-            staged.to_string_lossy().into_owned(),
-            self.target(&object.key),
-        ];
-        let out = self.run(&args)?;
-        let _ = std::fs::remove_file(&staged);
-        if !out.status.success() {
-            return Err(self.redact(&String::from_utf8_lossy(&out.stderr)));
+        self.s3.put(&object.key, &object.bytes, object.cache_control, object.content_type)
+    }
+
+    /// The upload phase, and the **only** concurrent thing this crate does outside the mosaic.
+    ///
+    /// A fixed set of workers pulls from one cursor over the slice; the first error stops the
+    /// others from starting new work and is what the caller sees. Two properties matter, and both
+    /// are structural rather than hoped for:
+    ///
+    /// * **It joins.** `std::thread::scope` cannot return until every worker has, so when this
+    ///   returns `Ok` every object is written — there is no request still in flight to race the
+    ///   `head` proofs or the manifest that [`crate::canonical::run_cycle`] does next.
+    /// * **It reorders nothing.** One batch is independent immutable keys with no relationship to
+    ///   each other. The ordering the epic paid for is between *phases* — objects, then their
+    ///   `head` proofs, then the manifest, then the sweep — and every one of those boundaries is a
+    ///   full join in `run_cycle`, unchanged.
+    ///
+    /// Failing halfway is exactly as safe as failing on one `put` was: the manifest has not moved,
+    /// so whatever was written is unreferenced and the previous generation still stands whole.
+    fn put_all(&mut self, objects: &[PlannedObject]) -> Result<(), String> {
+        if objects.len() < 2 {
+            return objects.iter().try_for_each(|object| self.put(object));
         }
-        Ok(())
+        let next = AtomicUsize::new(0);
+        let failure: Mutex<Option<String>> = Mutex::new(None);
+        let s3 = &self.s3;
+        std::thread::scope(|scope| {
+            for _ in 0..UPLOAD_CONCURRENCY.min(objects.len()) {
+                scope.spawn(|| loop {
+                    // Stop taking work once anything has failed: the cycle is over either way, and
+                    // spending another 200 objects' worth of requests to arrive at the same `Err`
+                    // is time the next tick wants.
+                    if failure.lock().expect("upload failure lock").is_some() {
+                        return;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(object) = objects.get(index) else { return };
+                    if let Err(error) = s3.put(&object.key, &object.bytes, object.cache_control, object.content_type) {
+                        let mut slot = failure.lock().expect("upload failure lock");
+                        slot.get_or_insert(error);
+                        return;
+                    }
+                });
+            }
+        });
+        match failure.into_inner().expect("upload failure lock") {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
-        self.stat(key)
+        self.s3.head(key)
     }
 
-    /// `stat` first, then `cat` — because `cat` cannot answer the question on its own. On rclone
-    /// v1.60.1 an absent key cats as an empty body with exit 0, indistinguishable from a real
-    /// zero-byte object, and the difference is the one between a bootstrap and a torn read (see
-    /// [`Self::stat`], and `manifest_v2::carried_generations` for what each one licenses).
+    /// One `GetObject`. Absence is the `404` and nothing else — the difference between a bootstrap
+    /// and a torn read, which #1280 needed two round-trips and a JSON field to establish over
+    /// rclone and the protocol states outright (see [`crate::s3::S3::get`], and
+    /// `manifest_v2::carried_generations` for what each answer licenses).
     fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        let Some(len) = self.stat(key)? else { return Ok(None) };
-        let args = vec!["cat".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // It was there a round-trip ago; if it is not now, absent is still the honest answer.
-            if stderr.contains("not found") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        // A body shorter than the object is the torn read this bucket has a recorded history of,
-        // and it is worth naming as one: unchecked it reaches the caller as a valid-looking short
-        // document, and for the manifest that means a JSON parse error blamed on the wrong thing.
-        if out.stdout.len() as u64 != len {
-            return Err(format!(
-                "{key}: read back {} bytes but the store reports {len} — a torn or truncated body, not a document",
-                out.stdout.len()
-            ));
-        }
-        Ok(Some(out.stdout))
+        self.s3.get(key)
     }
 
-    /// `rclone deletefile` — exactly one object, never a prefix. Same env-only credentials and the
-    /// same `redact()` path as every other call here.
+    /// One `DeleteObject` — exactly one object, never a prefix. The S3 call has no way to spell
+    /// "and everything under it", which is the same structural guarantee `rclone deletefile` gave
+    /// and now costs one request on a live connection instead of a process spawn.
     ///
     /// `DeleteObject` is a **free** operation on R2 (Cloudflare lists it beside `DeleteBucket` and
     /// `AbortMultipartUpload`, in neither Class A nor Class B), so a sweep may issue as many as
-    /// correctness wants. What it does cost is a process spawn per key; see `crate::sweep` for the
-    /// wall-clock that buys, and why it is paid after the manifest swap where nothing waits on it.
+    /// correctness wants. It is also idempotent — 204 whether or not anything was there — which is
+    /// why `existed` is `None`; see [`Deleted::existed`].
     fn delete(&mut self, key: &str) -> Result<Deleted, String> {
-        let args = vec!["deletefile".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // Unlike `head`/`get`, this one *can* read absence off stderr: `deletefile` genuinely
-            // fails for a key that is not there, on every rclone including the v1.60.1 whose silent
-            // exit-0 answers forced `stat` to exist — and absent is the outcome this call was
-            // asking for anyway, so a false positive here costs nothing but a `existed: false`.
-            if stderr.contains("not found") || stderr.contains("directory not found") {
-                return Ok(Deleted::default());
-            }
-            return Err(self.redact(&stderr));
-        }
-        // S3 answers a delete with no length, and paying a `head` per key to learn one would double
-        // the sweep's round-trips for a number nothing acts on.
-        Ok(Deleted { existed: true, bytes: None })
+        self.s3.delete(key)?;
+        Ok(Deleted { existed: None, bytes: None })
     }
-}
-
-/// The `count`/`bytes` reading of one `rclone size --json` document. Split out from
-/// [`RcloneStore::stat`] so the absent-vs-empty distinction is testable against the exact bytes a
-/// real rclone printed, with no process to spawn.
-fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
-    let json: serde_json::Value =
-        serde_json::from_slice(stdout).map_err(|error| format!("{key}: rclone size --json: {error}"))?;
-    let Some(count) = json.get("count").and_then(serde_json::Value::as_i64) else {
-        return Err(format!(
-            "{key}: `rclone size --json` printed no `count` field ({}) — that field is how an absent object is told \
-             from a zero-byte one, and every rclone with `--json` prints it",
-            String::from_utf8_lossy(stdout).trim()
-        ));
-    };
-    if count <= 0 {
-        return Ok(None);
-    }
-    // Present, so a length it cannot state is a real failure and not an absence — the conflation
-    // that used to live in `head`, where an unreadable `bytes` returned the same `None` as "gone".
-    json.get("bytes")
-        .and_then(serde_json::Value::as_i64)
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .map(Some)
-        .ok_or_else(|| format!("{key}: `rclone size --json` counted {count} object(s) but printed no usable `bytes`"))
 }
 
 #[cfg(test)]
@@ -374,21 +313,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_credential_reaches_argv_or_a_log() {
-        let store = RcloneStore {
-            bucket: "obc-wx".into(),
-            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
-            envs: vec![
-                ("RCLONE_CONFIG_OBCWX_ENDPOINT", "https://acct.r2.cloudflarestorage.com".into()),
-                ("RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID", "abc".into()),
-                ("RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY", "hunter2".into()),
-            ],
-            scratch: std::env::temp_dir(),
-            program: PathBuf::from("rclone"),
+    fn the_destination_line_names_the_bucket_and_never_the_credential() {
+        let store = R2Store {
+            s3: S3::new(
+                "https://acct.r2.cloudflarestorage.com",
+                "obc-wx",
+                "auto",
+                "abc",
+                "hunter2",
+                UPLOAD_CONCURRENCY,
+            )
+            .expect("a well-formed endpoint"),
         };
-        assert_eq!(store.target("wx/v2/manifest.json"), "obcwx:obc-wx/wx/v2/manifest.json");
+        assert_eq!(store.describe(), "r2 bucket obc-wx via https://acct.r2.cloudflarestorage.com");
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
-        assert_eq!(store.redact("secret_access_key=hunter2: 403"), "secret_access_key=***: 403");
+    }
+
+    /// The upload phase is a batch, and the batch must put **every** object exactly once whether it
+    /// runs on one thread or eight. `DirStore` takes the default sequential path; the concurrent
+    /// one is `R2Store`'s and shares this contract.
+    #[test]
+    fn a_batch_publishes_every_object_it_was_given() {
+        let root = std::env::temp_dir().join(format!("obc-wx-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = DirStore::new(&root);
+        let objects: Vec<PlannedObject> = (0..17)
+            .map(|index| PlannedObject {
+                key: format!("wx/v2/20260810T1430Z/f0/s{index}-0.obcg"),
+                bytes: vec![index as u8; index + 1],
+                cache_control: FRAME_CACHE_CONTROL,
+                content_type: "application/octet-stream",
+            })
+            .collect();
+        store.put_all(&objects).expect("put_all");
+        for object in &objects {
+            assert_eq!(store.head(&object.key).expect("head"), Some(object.bytes.len() as u64), "{}", object.key);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Deleting is idempotent, it reports the bytes it reclaimed, and it leaves no empty
@@ -408,95 +369,11 @@ mod tests {
             })
             .expect("put");
 
-        assert_eq!(store.delete(key).expect("delete"), Deleted { existed: true, bytes: Some(11) });
+        assert_eq!(store.delete(key).expect("delete"), Deleted { existed: Some(true), bytes: Some(11) });
         // Idempotent: the second call is the same request and it succeeds having found nothing.
-        assert_eq!(store.delete(key).expect("delete again"), Deleted { existed: false, bytes: None });
+        assert_eq!(store.delete(key).expect("delete again"), Deleted { existed: Some(false), bytes: None });
         assert!(!root.join("wx/v2/20260810T1430Z").exists(), "the swept generation left a husk of empty directories");
         assert!(root.exists(), "pruning stops at the store root");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// The exact documents rclone v1.60.1 printed on the live VPS, and what each one means.
-    ///
-    /// `bytes` is `0` in two of these three and they are not the same state: reading absence off
-    /// `bytes` — or off the stderr that this version never writes — is what wedged the `wx/v2`
-    /// bootstrap on 2026-08-11.
-    #[test]
-    fn count_not_bytes_tells_an_absent_object_from_an_empty_one() {
-        let key = "wx/v2/manifest.json";
-        // Observed: `rclone size --json` on a key that does not exist. Exit 0, no stderr.
-        assert_eq!(size_json_len(key, br#"{"count":0,"bytes":0,"sizeless":0}"#), Ok(None));
-        // A real, present, zero-byte object — same `bytes`, different answer.
-        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":0,"sizeless":0}"#), Ok(Some(0)));
-        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":1743,"sizeless":0}"#), Ok(Some(1743)));
-
-        // An rclone that prints no `count` cannot answer the question at all, so it says so rather
-        // than guessing an absence — the guess is the bug.
-        let error = size_json_len(key, br#"{"bytes":0}"#).expect_err("no count is not an absence");
-        assert!(error.contains("`count`"), "{error}");
-        let error = size_json_len(key, b"").expect_err("empty stdout is not an absence");
-        assert!(error.contains("rclone size --json"), "{error}");
-    }
-
-    /// End to end through the real `stat`/`get` code path, against a stub that answers exactly the
-    /// way rclone v1.60.1 does — silently, exit 0, for a key that is not there.
-    ///
-    /// The last assertion is the live failure itself: on a fresh `wx/v2` prefix the cycle must
-    /// bootstrap, not refuse to publish because it read an empty body as a torn manifest.
-    #[cfg(unix)]
-    #[test]
-    fn a_missing_object_reads_as_absent_not_as_an_empty_body() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = std::env::temp_dir().join(format!("obc-wx-rclone-1601-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("obc-wx/wx/v2")).expect("fixture tree");
-        std::fs::write(root.join("obc-wx/wx/v2/manifest.json"), br#"{"version":2}"#).expect("manifest");
-        std::fs::write(root.join("obc-wx/wx/v2/empty.json"), b"").expect("zero-byte object");
-
-        // Debian 13's rclone, in the two answers that matter: a missing key is an empty directory
-        // to `size` and an empty body to `cat`, and neither writes a word to stderr or fails.
-        let stub = root.join("rclone-1.60.1-stub.sh");
-        std::fs::write(
-            &stub,
-            format!(
-                "#!/bin/sh\nroot='{}'\ncmd=\"$1\"\nfor target in \"$@\"; do :; done\npath=\"$root/${{target#obcwx:}}\"\n\
-                 case \"$cmd\" in\n\
-                 size) if [ -f \"$path\" ]; then printf '{{\"count\":1,\"bytes\":%s,\"sizeless\":0}}\\n' \
-                 \"$(wc -c < \"$path\" | tr -d ' ')\"; else printf '{{\"count\":0,\"bytes\":0,\"sizeless\":0}}\\n'; fi ;;\n\
-                 cat) if [ -f \"$path\" ]; then cat \"$path\"; fi ;;\n\
-                 *) echo \"stub: unsupported $cmd\" >&2; exit 2 ;;\n\
-                 esac\nexit 0\n",
-                root.display()
-            ),
-        )
-        .expect("stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("stub +x");
-
-        let mut store = RcloneStore {
-            bucket: "obc-wx".into(),
-            endpoint: "stub".into(),
-            envs: Vec::new(),
-            scratch: root.clone(),
-            program: stub,
-        };
-
-        assert_eq!(store.get("wx/v2/manifest.json").expect("get"), Some(br#"{"version":2}"#.to_vec()));
-        assert_eq!(store.head("wx/v2/manifest.json").expect("head"), Some(13));
-        // Present and empty: a body, and a `Some`.
-        assert_eq!(store.get("wx/v2/empty.json").expect("get empty"), Some(Vec::new()));
-        assert_eq!(store.head("wx/v2/empty.json").expect("head empty"), Some(0));
-        // Absent: `None` from both, where the stderr match used to return `Some(vec![])`/`Some(0)`.
-        assert_eq!(store.get("wx/v2/nothing-here.json").expect("get absent"), None);
-        assert_eq!(store.head("wx/v2/nothing-here.json").expect("head absent"), None);
-
-        let mut warnings = Vec::new();
-        let previous = store.get("wx/v2/nothing-here.json").expect("get absent");
-        let carried = crate::manifest_v2::carried_generations(previous.as_deref(), &mut warnings)
-            .expect("a fresh wx/v2 prefix must bootstrap, not fail the cycle");
-        assert!(!carried.had_predecessor(), "nothing was ever promised, so nothing may be swept");
-        assert!(warnings.is_empty(), "a genuine bootstrap is not a warning: {warnings:?}");
-
         let _ = std::fs::remove_dir_all(&root);
     }
 }

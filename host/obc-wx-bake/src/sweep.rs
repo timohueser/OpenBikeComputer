@@ -40,11 +40,13 @@
 //! ## What it costs
 //!
 //! `DeleteObject` is **free** on R2 — neither Class A nor Class B — so the number of objects a
-//! sweep deletes is not a budget question at all. What it does cost is one `rclone` process spawn
-//! per key: a full generation is `shard_count x frames` = 216 keys, ~0.2 s each, so ~45 s of
-//! wall-clock. That is paid after the manifest is already in place, with nothing waiting on it, on
-//! a 15-minute cadence. It is not worth a `list` (which would need a new store capability) or a
-//! `head` per key (which would double it) to shave.
+//! sweep deletes is not a budget question at all. What it costs is one request per key: a full
+//! generation is `shard_count x frames` = 216 keys. Until #1279 each of those was an `rclone`
+//! process spawn at ~0.2 s, so ~45 s of wall-clock; they are now requests on the connection pool
+//! the publish phase already warmed, which is round-trip time and little else. Either way it is
+//! paid after the manifest is in place, with nothing waiting on it, on a 15-minute cadence, and it
+//! is still not worth a `list` (which would need a new store capability) or a `head` per key
+//! (which would double it) to shave further.
 //!
 //! ## What it deliberately does not collect
 //!
@@ -178,6 +180,7 @@ pub fn sweep(
         let mut failures = 0usize;
         let mut first_error: Option<String> = None;
         let mut deleted_here = 0usize;
+        let mut cannot_tell = false;
         let prefix = format!("{}/{generation}/", manifest_v2::KEY_PREFIX);
         for key in generation_keys(lattice, times, &generation) {
             // The last guard, and it is a **runtime** one: a key this sweep deletes must be inside
@@ -193,12 +196,22 @@ pub fn sweep(
                 continue;
             }
             match store.delete(&key) {
-                Ok(deleted) => {
-                    if deleted.existed {
+                Ok(deleted) => match deleted.existed {
+                    // The store knows there was an object and it is gone.
+                    Some(true) => {
                         deleted_here += 1;
                         report.accounted_bytes += deleted.bytes.unwrap_or(0);
                     }
-                }
+                    // The store knows there was nothing. Not an error — see `Deleted::existed`.
+                    Some(false) => {}
+                    // The store cannot tell, because `DeleteObject` is idempotent and answers the
+                    // same either way. Count the key as retired: it is, and the alternative is a
+                    // report that says every R2 sweep deleted nothing.
+                    None => {
+                        deleted_here += 1;
+                        cannot_tell = true;
+                    }
+                },
                 Err(error) => {
                     failures += 1;
                     first_error.get_or_insert(format!("{key}: {error}"));
@@ -213,16 +226,17 @@ pub fn sweep(
                  lifecycle rule collects the leak. Next cycle will not retry them — this generation is \
                  already off the manifest chain"
             ));
-        } else if deleted_here == 0 {
-            // A generation the chain named should have had objects. Zero means it was already
-            // collected — or, less comfortably, that the store answered "not found" for a reason
-            // that is not absence: `RcloneStore` infers absence from a substring of stderr, and an
-            // endpoint replying "bucket not found" would read as a clean sweep of nothing. Saying
-            // so costs one line and is the difference between a silent no-op and a question.
+        } else if deleted_here == 0 && !cannot_tell {
+            // A generation the chain named should have had objects, so zero means it was already
+            // collected. This used to carry a second, darker reading — that the store had answered
+            // "not found" for a reason that was not absence, because the R2 backend inferred
+            // absence from a substring of rclone's stderr and an endpoint replying "bucket not
+            // found" would have read as a clean sweep of nothing. Since #1279 that reading is gone:
+            // absence is a 404 and a wrong bucket or a dead credential is a 403/404 on the request
+            // itself, which arrives above as a failure. What is left is the honest question.
             report.warnings.push(format!(
-                "retention sweep: generation {generation} had nothing to delete. Either it was already \
-                 collected, or every delete was answered with something this store reads as absence — \
-                 check the bucket and prefix in the destination line above"
+                "retention sweep: generation {generation} had nothing to delete — it was already collected, \
+                 or it never published (check the bucket and prefix in the destination line above)"
             ));
         }
         report.generations.push(generation);
@@ -314,7 +328,7 @@ mod tests {
                 return Err("503 slow down".into());
             }
             self.deleted.push(key.to_string());
-            Ok(Deleted { existed: self.present.remove(key), bytes: Some(9) })
+            Ok(Deleted { existed: Some(self.present.remove(key)), bytes: Some(9) })
         }
     }
 

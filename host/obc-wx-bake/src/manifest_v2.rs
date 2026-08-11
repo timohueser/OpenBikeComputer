@@ -475,7 +475,7 @@ impl Carried {
 /// **Three states, and conflating two of them deletes live data.** `previous_generations: []` is not
 /// a shrug — §10.4 makes it a normative instruction to the sweep that no previous generation exists,
 /// so publishing it deletes the generations in-flight clients are still Range-reading, and a 404 on
-/// a set presence bit is an error. One torn `rclone cat` body would be enough, and R2 tearing bodies
+/// a set presence bit is an error. One torn response body would be enough, and R2 tearing bodies
 /// mid-stream in bursts is a thing this repo has actually seen.
 ///
 /// So:

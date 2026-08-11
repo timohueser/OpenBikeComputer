@@ -36,6 +36,7 @@ pub mod lcc;
 pub mod manifest_v2;
 pub mod pack;
 pub mod publish;
+pub mod s3;
 pub mod source;
 pub mod stereo;
 pub mod sweep;

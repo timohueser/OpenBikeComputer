@@ -3079,6 +3079,7 @@ dependencies = [
  "obc-crc",
  "obc-formats",
  "rayon",
+ "ring",
  "schemars",
  "serde",
  "serde_json",

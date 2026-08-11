@@ -1102,7 +1102,13 @@ pub fn run_cycle(
     let mut published_objects = 0usize;
     let mut published_bytes = 0u64;
     let mut swept = crate::sweep::SweepReport::default();
-    let mut fetchable: Vec<(String, u64)> = Vec::new();
+    // The whole generation, staged in memory, and then published as **one batch** (#1279). It is
+    // ~16 MB against a cycle that peaks near 400 MB on the mosaic, so the cost is noise; what it
+    // buys is a phase the store can run several requests at a time over, which is the difference
+    // between a 220 s cycle and a 50 s one on a box measured at 18 % utilization while publishing.
+    // Nothing about the ordering changes: this vector is filled, then written, then every key in it
+    // is proved fetchable, and only then does the manifest move.
+    let mut planned: Vec<PlannedObject> = Vec::new();
     let mut painted_objects = 0usize;
     let mut blank_forward_objects = 0usize;
     let mut dry_shards = 0usize;
@@ -1139,17 +1145,12 @@ pub fn run_cycle(
         if dry_run {
             return Ok(());
         }
-        let planned = PlannedObject {
+        planned.push(PlannedObject {
             key: object.key.clone(),
             bytes: object.bytes,
             cache_control: publish::FRAME_CACHE_CONTROL,
             content_type: "application/octet-stream",
-        };
-        let len = planned.bytes.len() as u64;
-        store.put(&planned).map_err(|error| format!("{}: {error}", planned.key))?;
-        published_objects += 1;
-        published_bytes += len;
-        fetchable.push((planned.key, len));
+        });
         Ok(())
     })?;
 
@@ -1176,16 +1177,28 @@ pub fn run_cycle(
     }
 
     if !dry_run {
-        // Frames first, manifest last: every object the manifest is about to name must already be
-        // fetchable at the destination, at its length.
+        // **Phase one**: every frame object, written and acknowledged. `put_all` does not return
+        // until each one is durably at the destination — or until one failed, which fails the cycle
+        // here, with the manifest untouched and the previous generation whole.
+        store.put_all(&planned)?;
+        published_objects += planned.len();
+        published_bytes += planned.iter().map(|object| object.bytes.len() as u64).sum::<u64>();
+
+        // **Phase two**: frames first, manifest last. Every object the manifest is about to name
+        // must already be fetchable at the destination, at its length. Sequential and unbatched on
+        // purpose — this is the proof, and it reads back what phase one claims it wrote.
         //
-        // The two arms below really are two different failures, and only since `RcloneStore::stat`:
-        // until it existed, rclone v1.60.1 reported an absent object as 0 bytes, so an object that
-        // was never uploaded arrived here as a *length mismatch* and the `None` arm was unreachable
-        // against the live store.
-        for (key, expected) in &fetchable {
+        // The two arms below really are two different failures, and #1280 is why that is worth
+        // saying: rclone v1.60.1 reported an absent object as 0 bytes, so an object that was never
+        // uploaded arrived here as a *length mismatch* and the `None` arm was unreachable against
+        // the live store. #1280 fixed that by reading `count` out of `rclone size --json`; #1279
+        // removed the subprocess the question was being asked through, so `None` is now a 404 and
+        // nothing else can produce it.
+        for object in &planned {
+            let key = &object.key;
+            let expected = object.bytes.len() as u64;
             match store.head(key)? {
-                Some(remote) if remote == *expected => {}
+                Some(remote) if remote == expected => {}
                 Some(remote) => {
                     return Err(format!(
                         "{key}: published as {remote} bytes but the manifest expects {expected} — refusing to swap the manifest in"
@@ -1194,16 +1207,19 @@ pub fn run_cycle(
                 None => return Err(format!("{key}: not fetchable — refusing to swap the manifest in")),
             }
         }
+        // **Phase three**: the one mutable object, alone, on its own `put`. It is never part of a
+        // batch and never concurrent with one — the swap is the moment the new generation becomes
+        // the answer, and it happens after phase two returned for every key.
         let manifest = document.finish();
-        let planned = PlannedObject {
+        let manifest_object = PlannedObject {
             key: manifest_v2::MANIFEST_KEY.to_string(),
             bytes: manifest_v2::to_json(&manifest).into_bytes(),
             cache_control: publish::MANIFEST_CACHE_CONTROL,
             content_type: "application/json",
         };
-        published_bytes += planned.bytes.len() as u64;
+        published_bytes += manifest_object.bytes.len() as u64;
         published_objects += 1;
-        store.put(&planned).map_err(|error| format!("{}: {error}", planned.key))?;
+        store.put(&manifest_object).map_err(|error| format!("{}: {error}", manifest_object.key))?;
 
         // **Read the licence back before spending it.** Every one of the 216 frame objects above
         // was `head`ed at its exact length before this swap; the manifest is the object that both
@@ -1211,7 +1227,7 @@ pub fn run_cycle(
         // deletions, and until round 1 of #1274's review it was the only one nobody checked. This
         // bucket has a recorded history of tearing bodies mid-stream. `get` + `from_json` + a byte
         // compare is one request against that.
-        verify_published_manifest(store, &planned.bytes)?;
+        verify_published_manifest(store, &manifest_object.bytes)?;
 
         // **After the swap, and only after it** (WXR8 #1247). The manifest above is durably in
         // place *and verified readable*, so the generations it no longer names are unreferenced and
