@@ -5,8 +5,9 @@
 //! 1. **No smoothing, still provably** — every published cell equals the quantized
 //!    nearest-neighbour source cell *of whichever source won the mosaic there*, checked against
 //!    independently decoded upstream bytes. This is `tests/cycle.rs`'s
-//!    `published_cells_equal_quantized_nearest_neighbour_source_cells` carried across the rewrite:
-//!    the mosaic changed *which* source answers a cell, never *how*.
+//!    `published_cells_equal_quantized_nearest_neighbour_source_cells` carried across the rewrite
+//!    (that file is gone with the multi-product path, #1246): the mosaic changed *which* source
+//!    answers a cell, never *how*.
 //! 2. **The priority table decides, and nothing else does** — two overlapping sources, deliberately
 //!    ranked against their cell sizes, so a mosaic that quietly preferred the finer lattice fails.
 //! 3. **A floor outage is code 15, never dry** — the one distinction the no-provenance decision
@@ -15,8 +16,9 @@
 //! Every test drives the production code path. What they shrink is the lattice *extent*: a
 //! sub-window of the canonical lattice, same cell pitch and a lattice-aligned origin, so its cells
 //! are canonical cells and a debug build can still encode them. The full 36,000 x 18,000 lattice
-//! and its 24 shards are asserted arithmetically in `canonical`'s own unit tests, and measured end
-//! to end by the WXR1 spike.
+//! and its 24 shards are asserted arithmetically in `canonical`'s own unit tests, and were measured
+//! end to end by the WXR1 spike (#1240, whose numbers are recorded in #1254 and whose harness
+//! #1246 deleted).
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -25,18 +27,16 @@ use std::path::PathBuf;
 use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::canonical::{
-    bake_cycle, emit_shard, run_canonical_cycle, source_column, source_reaches, CycleTimes, Lattice, Mosaic,
-    MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
+    bake_cycle, emit_shard, run_cycle, source_column, source_reaches, CycleTimes, Lattice, Mosaic, MosaicLayer,
+    BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
 use obc_wx_bake::grib::{decode_bzip2_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
 use obc_wx_bake::publish::DirStore;
-use obc_wx_bake::source::{
-    dwd_rv, gfs, hrrr, icon_eu, mrms, us, Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct,
-};
+use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms, Adapter, Attribution, BakedFrame, BakedSource};
 use obc_wx_bake::stereo;
-use obc_wx_bake::{manifest, manifest_v2};
+use obc_wx_bake::{manifest_v2, timefmt};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -44,7 +44,7 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 fn ts(text: &str) -> i64 {
-    manifest::parse_rfc3339(text).expect("test timestamp")
+    timefmt::parse_rfc3339(text).expect("test timestamp")
 }
 
 /// A small window of the canonical lattice, driven through the identical production code.
@@ -114,16 +114,13 @@ fn european_upstream() -> FixtureUpstream {
     upstream
 }
 
-fn bake(adapter: &dyn Adapter, upstream: &mut FixtureUpstream, now: i64) -> BakedProduct {
+fn bake(adapter: &dyn Adapter, upstream: &mut FixtureUpstream, now: i64) -> BakedSource {
     let mut warnings = Vec::new();
-    match adapter.bake(upstream, None, now, &mut warnings).expect("fixture bake") {
-        AdapterOutcome::Baked(product) => *product,
-        AdapterOutcome::Unchanged => panic!("{}: fixture bake reported Unchanged", adapter.id()),
-    }
+    adapter.bake(upstream, now, &mut warnings).expect("fixture bake")
 }
 
-/// The raw DWD RV lead-0 member, straight out of the fixture tar — the same independent oracle
-/// `tests/cycle.rs` uses, unchanged by the rewrite.
+/// The raw DWD RV lead-0 member, straight out of the fixture tar — the independent oracle the
+/// no-smoothing proof rests on, decoded here rather than through any bakery code.
 fn dwd_native_raster() -> Vec<u32> {
     let tar_bytes = fixture("composite_rv_20260809_1420.tar");
     let mut archive = tar::Archive::new(tar_bytes.as_slice());
@@ -212,7 +209,7 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
     let icon = bake(&icon_eu::IconEu, &mut upstream, now);
     let dwd_window = dwd.geometry;
     let icon_window = icon.geometry;
-    let mosaic = Mosaic::from_products(vec![dwd, icon]).expect("both sources are in MOSAIC_PRIORITY");
+    let mosaic = Mosaic::from_sources(vec![dwd, icon]).expect("both sources are in MOSAIC_PRIORITY");
     // Pinned rather than `anchored_at`, which would round 14:20Z down to the 14:15Z quarter-hour
     // and make f0 a *nearest* radar frame instead of the observation itself. The anchoring rule is
     // unit-tested in `canonical`; what this test needs is an exactly known frame pick.
@@ -283,7 +280,7 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
 // ---------------------------------------------------------------------------------------------
 
 /// A synthetic source on one window, one **forecast** frame, filled from `value`.
-fn synthetic(id: &'static str, window: GridGeometry, valid_at: i64, value: impl Fn(u32, u32) -> u8) -> BakedProduct {
+fn synthetic(id: &'static str, window: GridGeometry, valid_at: i64, value: impl Fn(u32, u32) -> u8) -> BakedSource {
     synthetic_frames(id, window, &[(valid_at, obcg::FLAG_FORECAST)], value)
 }
 
@@ -294,28 +291,23 @@ fn synthetic_frames(
     window: GridGeometry,
     frames: &[(i64, u16)],
     value: impl Fn(u32, u32) -> u8,
-) -> BakedProduct {
+) -> BakedSource {
     let cells = (0..window.height)
         .flat_map(|row| (0..window.width).map(move |col| (col, row)))
         .map(|(col, row)| value(col, row))
         .collect::<Vec<u8>>();
     let reference_time = frames.first().map_or(0, |(valid_at, _)| *valid_at);
-    BakedProduct {
+    BakedSource {
         id,
-        product_code: obcg::PRODUCT_MOSAIC,
-        tier: obcg::TIER_RADAR,
         geometry: window,
         reference_time,
-        staleness_deadline: reference_time + 3_600,
         attribution: Attribution { text: "synthetic", url: "https://example.invalid" },
-        upstream_etag: None,
         frames: frames
             .iter()
             .map(|(valid_at, flags)| BakedFrame {
                 offset_min: ((valid_at - reference_time) / 60) as u32,
                 valid_at: *valid_at,
                 flags: *flags,
-                source: None,
                 cells: cells.clone(),
             })
             .collect(),
@@ -354,7 +346,7 @@ fn the_priority_table_decides_the_overlap_not_the_cell_size() {
             INTENSITY_NODATA
         }
     });
-    let mosaic = Mosaic::from_products(vec![fine, coarse]).expect("both ids are in MOSAIC_PRIORITY");
+    let mosaic = Mosaic::from_sources(vec![fine, coarse]).expect("both ids are in MOSAIC_PRIORITY");
     let times = CycleTimes { reference_time: valid_at };
     let object = emit_shard(&lattice, &mosaic, times, 0, 0).expect("the shard emits");
     let shard = lattice.shard(0).expect("shard 0");
@@ -375,7 +367,7 @@ fn the_priority_table_decides_the_overlap_not_the_cell_size() {
         }
     });
     let fine = synthetic(gfs::ID, window(45_680_000, 1_460_000, 10_000, 128, 128), valid_at, |_, _| 7);
-    let mosaic = Mosaic::from_products(vec![fine, holed]).expect("both ids are in MOSAIC_PRIORITY");
+    let mosaic = Mosaic::from_sources(vec![fine, holed]).expect("both ids are in MOSAIC_PRIORITY");
     let object = emit_shard(&lattice, &mosaic, times, 0, 0).expect("the shard emits");
     // Coarse column 0..8 is lattice columns 0..32: holed, so the floor shows through.
     assert_eq!(published_cell(&object.bytes, 5, 5), 7);
@@ -395,7 +387,7 @@ fn a_coarse_source_cell_replicates_into_an_exact_block() {
     // 0.04 degree cells = a 4 x 4 block of lattice cells each; value = the coarse column index.
     let coarse =
         synthetic(gfs::ID, window(45_680_000, 1_460_000, 40_000, 16, 16), valid_at, |col, _| (col % 8) as u8 + 1);
-    let mosaic = Mosaic::from_products(vec![coarse]).expect("gfs is in MOSAIC_PRIORITY");
+    let mosaic = Mosaic::from_sources(vec![coarse]).expect("gfs is in MOSAIC_PRIORITY");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: valid_at }, 0, 0).expect("emits");
     for col in 0..32u32 {
         for row in 0..8u32 {
@@ -423,7 +415,7 @@ fn a_floor_outage_publishes_code_fifteen_and_never_dry() {
     let times = CycleTimes { reference_time: valid_at };
 
     // Healthy: the floor answers everywhere the radar does not, and it answers "dry".
-    let healthy = Mosaic::from_products(vec![radar(), floor()]).expect("both ids are ranked");
+    let healthy = Mosaic::from_sources(vec![radar(), floor()]).expect("both ids are ranked");
     let object = emit_shard(&lattice, &healthy, times, 0, 0).expect("emits");
     assert_eq!(published_cell(&object.bytes, 4, 4), 4, "the radar still wins its own footprint");
     assert_eq!(published_cell(&object.bytes, 30, 30), INTENSITY_DRY, "the floor answers, and it says dry");
@@ -431,7 +423,7 @@ fn a_floor_outage_publishes_code_fifteen_and_never_dry() {
 
     // Outage: the floor source produced nothing this cycle. The cells it used to answer must read
     // as no-data, and must not silently read as dry.
-    let degraded = Mosaic::from_products(vec![radar()]).expect("the radar is ranked");
+    let degraded = Mosaic::from_sources(vec![radar()]).expect("the radar is ranked");
     let object = emit_shard(&lattice, &degraded, times, 0, 0).expect("emits");
     assert_eq!(published_cell(&object.bytes, 4, 4), 4, "the radar is unaffected by the floor's outage");
     assert_eq!(published_cell(&object.bytes, 30, 30), INTENSITY_NODATA, "missing must never read as dry");
@@ -439,7 +431,7 @@ fn a_floor_outage_publishes_code_fifteen_and_never_dry() {
 
     // A source frame too far from the canonical frame's validity is the same kind of absence: it
     // is not sampled, and the cells fall through rather than carrying a stale value.
-    let stale = Mosaic::from_products(vec![radar(), {
+    let stale = Mosaic::from_sources(vec![radar(), {
         let mut product = floor();
         product.frames[0].valid_at = valid_at + 4 * 3_600;
         product
@@ -539,7 +531,7 @@ fn a_forecast_beats_an_equally_close_observation_on_a_forward_frame() {
         &[(t0 - 900, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)],
         |_, _| 5,
     );
-    let mosaic = Mosaic::from_products(vec![composed]).expect("ranked");
+    let mosaic = Mosaic::from_sources(vec![composed]).expect("ranked");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
     let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
     let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
@@ -549,7 +541,7 @@ fn a_forecast_beats_an_equally_close_observation_on_a_forward_frame() {
     // where it is the observation *of* that instant.
     let exact =
         synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)], |_, _| 5);
-    let mosaic = Mosaic::from_products(vec![exact]).expect("ranked");
+    let mosaic = Mosaic::from_sources(vec![exact]).expect("ranked");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
     let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
     assert_eq!(header.flags, obcg::FLAG_OBSERVED, "an observation valid at the target instant is the answer");
@@ -576,7 +568,7 @@ fn the_observed_flag_follows_what_actually_painted_the_shard() {
         &[(t0, obcg::FLAG_FORECAST)],
         |_, _| INTENSITY_DRY,
     );
-    let mosaic = Mosaic::from_products(vec![radar, floor]).expect("ranked");
+    let mosaic = Mosaic::from_sources(vec![radar, floor]).expect("ranked");
     let times = CycleTimes { reference_time: t0 };
     let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
 
@@ -584,7 +576,32 @@ fn the_observed_flag_follows_what_actually_painted_the_shard() {
     let east = emit_shard(&lattice, &mosaic, times, 0, 1).expect("emits");
     assert_eq!(obcg::validate(&west.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_OBSERVED);
     assert_eq!(obcg::validate(&east.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_FORECAST);
+    assert!(west.observed && !east.observed);
     assert!(west.fill.all_observed && east.fill.painted && !east.fill.all_observed);
+
+    // **And the second half of the rule.** The radar layer holds one frame, valid at the anchor, so
+    // `nearest()` hands it to f+15 and f+30 as well — inside `MAX_FRAME_SKEW_S`, painting the same
+    // cells from the same field. Those frames are about instants no observation of exists at bake
+    // time, so they are forecasts by persistence and must say so, however observed their cells'
+    // provenance is. Without this the western shard published three objects with three different
+    // `valid_at`s, one field between them, and Observed on all three.
+    for offset_min in [15, 30] {
+        let ahead = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert!(
+            ahead.fill.all_observed,
+            "f+{offset_min}: the frozen radar frame is still what painted it — that is the premise"
+        );
+        assert!(!ahead.observed, "f+{offset_min}: a frame ahead of the anchor is never observed");
+        assert_eq!(
+            obcg::validate(&ahead.bytes, &mut scratch).expect("valid").flags,
+            obcg::FLAG_FORECAST,
+            "f+{offset_min}"
+        );
+    }
+    // Past the skew window the frozen frame is refused outright and the shard is no-data, which is
+    // the other honest answer and also a forecast.
+    let far = emit_shard(&lattice, &mosaic, times, 45, 0).expect("emits");
+    assert!(!far.fill.painted && !far.observed);
 }
 
 /// **The failure the epic actually forbids**: a source that has fallen out of the timeline must
@@ -600,7 +617,7 @@ fn a_stale_source_falls_through_to_the_next_priority_layer() {
     let model = synthetic_frames(icon_eu::ID, germany, &[(t0, obcg::FLAG_FORECAST)], |_, _| 3);
     let floor =
         synthetic_frames(gfs::ID, window(45_680_000, 1_460_000, 250_000, 8, 8), &[(t0, obcg::FLAG_FORECAST)], |_, _| 1);
-    let mosaic = Mosaic::from_products(vec![stale_radar, model, floor]).expect("all three are ranked");
+    let mosaic = Mosaic::from_sources(vec![stale_radar, model, floor]).expect("all three are ranked");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: t0 }, 0, 0).expect("emits");
     for (col, row) in [(0u32, 0u32), (15, 15), (31, 31)] {
         let value = published_cell(&object.bytes, col, row);
@@ -626,7 +643,7 @@ fn a_cycle_that_paints_nothing_refuses_to_publish() {
         &[(t0 - 4 * 3_600, obcg::FLAG_FORECAST)],
         |_, _| 2,
     );
-    let mosaic = Mosaic::from_products(vec![stale]).expect("ranked");
+    let mosaic = Mosaic::from_sources(vec![stale]).expect("ranked");
     let times = CycleTimes { reference_time: t0 };
     let mut painted = 0usize;
     let mut total = 0usize;
@@ -652,13 +669,12 @@ fn every_published_frame_states_the_lattice_cell_size_and_pitch() {
     let valid_at = ts("2026-08-09T14:00:00Z");
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
     let coarse = synthetic(gfs::ID, window(45_680_000, 1_460_000, 250_000, 4, 4), valid_at, |_, _| 2);
-    let mosaic = Mosaic::from_products(vec![coarse]).expect("gfs is ranked");
+    let mosaic = Mosaic::from_sources(vec![coarse]).expect("gfs is ranked");
     let object = emit_shard(&lattice, &mosaic, CycleTimes { reference_time: valid_at }, 0, 0).expect("emits");
     let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
     let header = obcg::validate(&object.bytes, &mut scratch).expect("valid object");
     assert_eq!(header.cell_size_m, LATTICE_CELL_SIZE_M, "the frame states the lattice, not the 27.75 km source");
     assert_eq!((header.cell_lat_udeg, header.cell_lon_udeg), (CELL_UDEG, CELL_UDEG));
-    assert_eq!(header.product_id, obcg::PRODUCT_MOSAIC);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -707,7 +723,7 @@ fn a_canonical_cycle_publishes_exactly_what_its_manifest_says_and_repeats_itself
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = DirStore::new(&dir);
         let mut upstream = european_upstream();
-        let report = run_canonical_cycle(&lattice, &adapters, &mut upstream, &mut store, now, BAKE_THREADS, false)
+        let report = run_cycle(&lattice, &adapters, &mut upstream, &mut store, now, BAKE_THREADS, false)
             .expect("the canonical cycle publishes");
         let baked = usize::try_from(lattice.shard_count()).unwrap() * usize::try_from(CYCLE_FRAMES).unwrap();
         assert_eq!(
@@ -761,8 +777,6 @@ fn a_canonical_cycle_publishes_exactly_what_its_manifest_says_and_repeats_itself
                     let header = obcg::validate(bytes, &mut scratch).unwrap_or_else(|e| panic!("{key}: {e:?}"));
                     assert_eq!(format!("0x{:08X}", header.object_crc32), listed.object_crc32, "{key}: CRC");
                     assert_eq!(header.cell_size_m, LATTICE_CELL_SIZE_M);
-                    assert_eq!(header.product_id, obcg::PRODUCT_MOSAIC);
-                    assert_eq!(header.tier, obcg::TIER_MOSAIC, "the mosaic is not a tier");
                     assert_eq!(listed.observed, header.flags & obcg::FLAG_OBSERVED != 0, "{key}: observed");
                     named.insert(key);
                 }
@@ -790,7 +804,7 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
     // The western 16 columns, entirely dry. The eastern 16 have no source at all.
     let west =
         synthetic_frames(gfs::ID, window(45_680_000, 1_460_000, CELL_UDEG, 16, 32), &frames, |_, _| INTENSITY_DRY);
-    let mosaic = Mosaic::from_products(vec![west]).expect("ranked");
+    let mosaic = Mosaic::from_sources(vec![west]).expect("ranked");
     let times = CycleTimes { reference_time: t0 };
     let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
     let mut seen = 0usize;
@@ -806,7 +820,7 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
                 object.row,
                 object.bytes.len() as u64,
                 object.object_crc32,
-                object.fill.all_observed,
+                object.observed,
             );
         }
         if object.col == 0 {
@@ -845,6 +859,77 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
     }
 }
 
+/// **A corrupt upstream publishes nothing, and the previous generation stands byte for byte.**
+///
+/// Carried over from the multi-product suite #1246 deleted, and it says something simpler than it
+/// used to. That version had to prove *isolation*: one broken adapter must not cost the other
+/// products their publication, because the manifest listed four independently selectable products
+/// and a per-adapter systemd timer published one of them. There is one dataset now and the mosaic
+/// needs every source's cells, so isolation is neither available nor wanted — a cycle that cannot
+/// bake a source cannot bake a complete dataset, and publishing a partial one would swap in a
+/// manifest claiming the service is current over a hole.
+///
+/// So what survives is the half that always mattered: **fail-closed**. A truncated tar, a flipped
+/// byte inside an HDF5 member, a short model lead — each fails the cycle, moves no object, and
+/// leaves the previously published generation and its manifest exactly as they were. One cycle of
+/// freshness is the whole cost, and the next tick recovers.
+#[test]
+fn a_corrupt_upstream_publishes_nothing_and_leaves_the_previous_generation_standing() {
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
+    let now = ts("2026-08-09T14:30:00Z");
+    let dwd = dwd_rv::DwdRv;
+    let icon = icon_eu::IconEu;
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = std::env::temp_dir().join(format!("obc-wx-corrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store = DirStore::new(&dir);
+
+    // A good generation to protect.
+    run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, now, 2, false).expect("the good cycle");
+    let published = published_tree(&dir);
+    assert!(published.len() > 1, "the good cycle published objects and a manifest");
+
+    let truncated_tar = || {
+        let mut tar = fixture("composite_rv_20260809_1420.tar");
+        tar.truncate(tar.len() / 2);
+        tar
+    };
+    let flipped_tar = || {
+        let mut tar = fixture("composite_rv_20260809_1420.tar");
+        let middle = tar.len() / 2;
+        tar[middle] ^= 0x40;
+        tar
+    };
+    let short_lead = || {
+        let mut lead = fixture("icon-eu-2026080906_005.grib2.bz2");
+        lead.truncate(lead.len() - 100);
+        lead
+    };
+
+    for (name, broken) in [
+        ("a truncated RV tar", Box::new(truncated_tar) as Box<dyn Fn() -> Vec<u8>>),
+        ("a flipped byte inside an HDF5 member", Box::new(flipped_tar)),
+    ] {
+        let mut upstream = european_upstream();
+        upstream.insert(dwd_rv::LATEST_URL, broken(), Some("\"changed\""));
+        let error = run_cycle(&lattice, &adapters, &mut upstream, &mut store, now + 900, 2, false)
+            .expect_err("a corrupt source must fail the cycle");
+        eprintln!("{name}: {error}");
+        assert_eq!(published_tree(&dir), published, "{name}: the previous generation must be untouched");
+    }
+
+    // The same for the other side of the mosaic: a model lead that stops mid-stream.
+    let mut upstream = european_upstream();
+    upstream.insert(icon_eu::lead_url(ts(ICON_RUN), 5), short_lead(), None);
+    let error = run_cycle(&lattice, &adapters, &mut upstream, &mut store, now + 1_800, 2, false)
+        .expect_err("a short model lead must fail the cycle");
+    eprintln!("a truncated ICON lead: {error}");
+    assert_eq!(published_tree(&dir), published, "a broken model must not move an object either");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The retention contract WXR8's sweep derives its delete set from: a generation names the two
 /// before it, newest first, and nothing older. The baker keeps no state, so this is read back out
 /// of the manifest it published last time and nowhere else.
@@ -863,7 +948,7 @@ fn each_generation_names_the_two_before_it() {
     for step in 0..4 {
         let now = ts("2026-08-09T14:30:00Z") + step * 900;
         let mut upstream = european_upstream();
-        run_canonical_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 2, false).expect("publishes");
+        run_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 2, false).expect("publishes");
         let raw = std::fs::read(dir.join(manifest_v2::MANIFEST_KEY)).expect("the manifest");
         let document = manifest_v2::from_json(&raw).expect("v2");
         chains.push((document.generation, document.previous_generations));
@@ -958,33 +1043,32 @@ fn american_upstream() -> FixtureUpstream {
     upstream
 }
 
-/// **The `us` composite in a mosaic, from real fixtures.** It is the one layer whose frames carry
-/// a *different window each* — `mrms::GEOMETRY` at f0, `hrrr::GEOMETRY` ahead of it — which is the
-/// interesting branch of `MosaicLayer::from_product` and was previously unexercised, and it sits
-/// over the real GFS floor so the CONUS radar edge (MRMS `NO_COVERAGE` → 15 → fall through) is a
-/// real fall-through rather than a synthetic one.
+/// **The two CONUS sources and the real floor, mosaicked from real fixtures.**
+///
+/// MRMS (1 km observation) and HRRR (3 km model) were one composed `us` product until #1246, whose
+/// frames carried a *different window each*. They are two layers now, at two ranks, on two
+/// windows — which is what the mosaic wanted all along — and they sit over the real GFS floor so
+/// the CONUS radar edge (MRMS `NO_COVERAGE` → 15 → fall through) is a real fall-through rather
+/// than a synthetic one.
 #[test]
-fn the_us_composite_and_the_real_floor_mosaic_over_conus() {
+fn the_conus_sources_and_the_real_floor_mosaic_over_conus() {
     let now = ts("2026-08-09T17:00:00Z");
     let mut upstream = american_upstream();
-    let us_product = bake(&us::UsComposite, &mut upstream, now);
+    let mrms_source = bake(&mrms::Mrms, &mut upstream, now);
+    let hrrr_source = bake(&hrrr::Hrrr, &mut upstream, now);
     let gfs_product = bake(&gfs::GfsFloor, &mut upstream, now);
-    // The composed product really does change window between frames — the premise of this test.
-    let windows: Vec<(u32, u32)> = us_product
-        .frames
-        .iter()
-        .map(|frame| {
-            let window = frame.source.map_or(us_product.geometry, |source| source.geometry);
-            (window.width, window.height)
-        })
-        .collect();
-    assert!(
-        windows.contains(&(mrms::GEOMETRY.width, mrms::GEOMETRY.height))
-            && windows.contains(&(hrrr::GEOMETRY.width, hrrr::GEOMETRY.height)),
-        "the us layer must carry both windows: {windows:?}"
+    assert_eq!(
+        (mrms_source.geometry.width, mrms_source.geometry.height),
+        (mrms::GEOMETRY.width, mrms::GEOMETRY.height)
     );
+    assert_eq!(
+        (hrrr_source.geometry.width, hrrr_source.geometry.height),
+        (hrrr::GEOMETRY.width, hrrr::GEOMETRY.height)
+    );
+    assert_eq!(mrms_source.frames.len(), 1, "MRMS contributes one observation");
+    assert!(!hrrr_source.frames.is_empty(), "HRRR contributes the forward window");
 
-    let mosaic = Mosaic::from_products(vec![us_product, gfs_product]).expect("both are ranked");
+    let mosaic = Mosaic::from_sources(vec![mrms_source, hrrr_source, gfs_product]).expect("all three are ranked");
     let times = CycleTimes::anchored_at(now);
     // Kansas: deep inside CONUS, and inside the GFS floor too.
     let lattice = sub_lattice(37_000_000, -100_000_000, 256, 192);
@@ -1000,7 +1084,7 @@ fn the_us_composite_and_the_real_floor_mosaic_over_conus() {
             let value = published_cell(&object.bytes, col - window.col0, row - window.row0);
             assert_ne!(value, INTENSITY_NODATA, "({col},{row}) is inside the floor and must not be no-data");
             match mosaic.winner_at(&lattice, times.valid_at(0), col, row) {
-                Some(id) if id == us::ID => radar_or_model += 1,
+                Some(id) if id == mrms::ID || id == hrrr::ID => radar_or_model += 1,
                 Some(id) if id == gfs::ID => floor_cells += 1,
                 other => panic!("unexpected winner {other:?} at ({col},{row})"),
             }
@@ -1025,6 +1109,6 @@ fn the_us_composite_and_the_real_floor_mosaic_over_conus() {
 fn an_unranked_source_refuses_to_join_the_mosaic() {
     let valid_at = ts("2026-08-09T14:00:00Z");
     let orphan = synthetic("not-a-source", window(45_680_000, 1_460_000, 10_000, 4, 4), valid_at, |_, _| 1);
-    let error = MosaicLayer::from_product(orphan).expect_err("an unranked source must be refused");
+    let error = MosaicLayer::from_source(orphan).expect_err("an unranked source must be refused");
     assert!(error.contains("MOSAIC_PRIORITY"), "{error}");
 }

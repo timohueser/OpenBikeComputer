@@ -775,7 +775,7 @@
     "spec": "OBCG_Spec.md",
     "format_version": 1,
     "provenance": {
-      "semantic_seed": "WX5 issue #1190; valid_at=1800000000; reference 300 s earlier; south-west corner 47N,7E",
+      "semantic_seed": "WX5 issue #1190, re-cut on the one published lattice by #1246; valid_at=1800000000; reference 300 s earlier; south-west corner 47N,7E; cells 10,000 x 10,000 udeg and cell_size_m 1113 in every vector, because the dataset has one lattice and an object carries no provenance",
       "rust_builder": "host/obc-vectors/src/obcg.rs using the obc-formats byte authority",
       "rust_consumer": "firmware/obc-formats obcg::validate + corridor helpers",
       "swift_consumer": "companion-ios/Packages/OBCKit/Sources/OBCWeatherWire/OBCGridCodec.swift",
@@ -784,69 +784,69 @@
     "positives": {
       "grid-minimal-dry.obcg": {
         "byte_len": 228,
-        "object_crc32": "0x2E08A044",
-        "sha256": "ef66c865e1be84420a359795b918dab247a19b35978f6385df40ac0ef0e6ac57",
+        "object_crc32": "0x5442F251",
+        "sha256": "8fd626d0f402e9b0ffd96950106d0477112d29dee5b2c90c127186825f5c3a53",
         "shape": "32x32 at tile edge 32: one all-zero dry sentinel entry; data_len 0"
       },
       "grid-raw-tile.obcg": {
         "byte_len": 308,
-        "object_crc32": "0xA1E61BAF",
-        "sha256": "db192f22f5712a1a7a8de9d81bbcacdf65ab28bf0bd7c83f6a4acf755d5fdf27",
-        "shape": "16x16 ICON-EU-shaped forecast frame; one 128-byte raw4 tile of pseudo-random intensities (structured fills all compress, so only random cells keep codec 0 reachable)"
+        "object_crc32": "0x5E5B5311",
+        "sha256": "ee8e0cbdae7fadb7988abff83d4b3a1ebf2c0e981f04d2cb567ac7ba88e3c180",
+        "shape": "16x16 forecast frame (the only positive that is not an observation, so \u00a73.2's other source-class bit is covered); one 128-byte raw4 tile of pseudo-random intensities \u2014 structured fills all compress, so only random cells keep codec 0 reachable"
       },
       "grid-rle-tile.obcg": {
         "byte_len": 196,
-        "object_crc32": "0x4879AADD",
-        "sha256": "0f10c659fc1b9c9cd3afbe188e4712cabe975810286c9ec6cee5f4c2040421d6",
-        "shape": "16x16 radar frame; one 16-byte RLE4 tile of intensity 6 \u2014 deflate4 ties at 16 bytes, so this pins the low-codec-id tie-break"
+        "object_crc32": "0x3551A5A4",
+        "sha256": "1e8f68745d98e9924420a21e68fd792cd87439f9fedf9e742e6563ef6ed34708",
+        "shape": "16x16 observed frame; one 16-byte RLE4 tile of intensity 6 \u2014 deflate4 ties at 16 bytes, so this pins the low-codec-id tie-break"
       },
       "grid-rle-wins.obcg": {
         "byte_len": 212,
-        "object_crc32": "0x8CDE9C28",
-        "sha256": "1bf4eb19da6f522dc0c73cee97cba555d5a332b7944de5a2399b4168d400e38f",
+        "object_crc32": "0xD9AE9866",
+        "sha256": "b22503d4f72e979bd45b2787481191ac96a9afbde5feb0dd99e4fd72480c5b43",
         "shape": "16x16 of sixteen varied 8-cell runs: 32-byte RLE4 against 46-byte deflate4, so codec 1 wins outright"
       },
       "grid-deflate-tile.obcg": {
         "byte_len": 1745,
-        "object_crc32": "0x5389CB3F",
-        "sha256": "201840a4f5b508655e6ae06d635dd357202d07fbfce1f29cd704a9e75208fcc8",
+        "object_crc32": "0xA2223CC2",
+        "sha256": "65b00ad3a760d118c8aa9369f34254324e476d2562b41a4c00d6be15773481f2",
         "shape": "64x64 at tile edge 64 and 128 entries/page: coarse data upsampled in 8x8 blocks; 2,048 raw4 / 512 RLE4 / 77 deflate4 bytes"
       },
       "grid-deflate-padding-bits.obcg": {
         "byte_len": 1745,
-        "object_crc32": "0xBE31481F",
-        "sha256": "fc33317a225e25593b7873b2acfdc992f426ae4686b54e8f3821be1ac584cb65",
+        "object_crc32": "0x4F9ABFE2",
+        "sha256": "7fbbcfa5260f06012b8201c77d68e975e9a261fef5f14b43daa9a67e0c0ecfbb",
         "shape": "grid-deflate-tile with bit 7 of its final payload byte flipped: a second legal byte image of the same 4,096 cells, because a deflate stream's trailing padding bits are not data and MUST NOT be validated"
       },
       "grid-deflate-edge256.obcg": {
         "byte_len": 2178,
-        "object_crc32": "0x60CC3040",
-        "sha256": "036232e30c248a82f989bd18f21f73ccd4ed7f98fed2c0a4f80a688b656b59cc",
+        "object_crc32": "0x751FEF24",
+        "sha256": "322722093b65b2f9b9574cf55261f46f8184f4d0a5708c530de541d9848d94eb",
         "shape": "256x256 at tile edge 256 (WXR1's production geometry) and 128 entries/page: 16x16 blocks of pseudo-random intensity; 32,768 raw4 bytes against a 510-byte deflate4 payload, the only vector whose payload length exceeds a uint8"
       },
       "grid-nodata-tile.obcg": {
         "byte_len": 195,
-        "object_crc32": "0x47F53E9A",
-        "sha256": "fcb06997de8f04add57edeba9129e43374ecf3dfca1ab2e660c1d8843e8be687",
+        "object_crc32": "0x6864F615",
+        "sha256": "1c23f5f8922f27d9d87f5b57f24f06018f302e88c94665ab99ae0c163a8e46b8",
         "shape": "16x16 all-no-data tile (deflate4, 15 bytes): unavailable is encoded, never the dry sentinel"
       },
       "grid-multipage.obcg": {
         "byte_len": 375,
-        "object_crc32": "0x446DC053",
-        "sha256": "b566936b4ef53f54affadbea14725d3507c59c0a313aea0ccb3993d0b12bbfea",
+        "object_crc32": "0xB8FB4EB7",
+        "sha256": "68ee702a9bd16edfbb66ae839b7e307ece7b3ea22fc70a50c70fa9b06475dbc2",
         "shape": "40x40 at tile edge 16, 2 entries/page: 9 tiles over 5 pages with last-page padding; wet SW+NE corners; corridor request-accounting target"
       },
       "grid-edge-padding.obcg": {
         "byte_len": 316,
-        "object_crc32": "0x0C5E6E35",
-        "sha256": "d271a27354d726bbe6d20edc22957db6b3572bdd3dc4f5f967a3d4fd5878ec81",
+        "object_crc32": "0x76037888",
+        "sha256": "e1cd9d76f4aec2a1884c6ca531fb104dd8487d610410977d4b927619b6153889",
         "shape": "24x24 at tile edge 16: every tile edge-padded with no-data; one wet cell per quadrant"
       }
     },
     "negatives": {
       "grid-invalid-truncated.obcg": "last byte missing while total_len remains unchanged",
       "grid-invalid-object-crc.obcg": "payload byte changed without updating any CRC covering it",
-      "grid-invalid-header-crc.obcg": "tier changed without recomputing the header CRC",
+      "grid-invalid-header-crc.obcg": "declared cell_size_m doubled without recomputing the header CRC",
       "grid-invalid-page-crc.obcg": "entry byte changed; object+header CRCs refreshed, page CRC stale",
       "grid-invalid-bad-offset.obcg": "first payload offset shifted by one; all CRCs honest",
       "grid-invalid-overlap.obcg": "second wet entry aliases the first payload; all CRCs honest",
@@ -867,6 +867,7 @@
       "grid-invalid-dry-sentinel-edge-tile.obcg": "dry sentinel at a partial edge tile whose padding is no-data; all CRCs honest",
       "grid-invalid-tile-crc.obcg": "payload byte changed; object+header CRCs refreshed, tile CRC stale",
       "grid-invalid-reserved.obcg": "nonzero reserved header byte; all CRCs honest",
+      "grid-invalid-reserved-provenance.obcg": "bytes 12-13 nonzero: the Product ID and Tier fields the header carried until #1246 are reserved now, so provenance there is a malformed object rather than an unknown code a reader must tolerate; all CRCs honest",
       "grid-invalid-flags.obcg": "Observed and Forecast both set; all CRCs honest"
     }
   },

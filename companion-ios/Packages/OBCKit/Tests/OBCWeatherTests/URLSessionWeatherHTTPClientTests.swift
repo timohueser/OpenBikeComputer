@@ -46,7 +46,7 @@ struct URLSessionWeatherHTTPClientTests {
     @Test
     func theRequestCarriesTheIdentifyingAgentTheRangeAndTheValidators() async throws {
         let response = try await Self.client().perform(WeatherHTTPRequest(
-            url: URL(string: "https://wx.example.invalid/wx/v1/x/f0.obcg")!,
+            url: URL(string: "https://wx.example.invalid/wx/v2/20260810T1430Z/f0/s0-0.obcg")!,
             byteRange: 128..<256, entityTag: "\"v1\"",
             ifModifiedSince: "Sun, 09 Aug 2026 08:27:39 GMT"))
 

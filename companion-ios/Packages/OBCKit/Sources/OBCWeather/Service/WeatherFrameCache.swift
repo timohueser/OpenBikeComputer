@@ -4,7 +4,7 @@ import Foundation
 /// cropped out of it.
 ///
 /// Both halves matter. The object key is immutable by the WX5 publishing contract, which is why a
-/// cached frame is **never revalidated** — the bytes behind `wx/v1/dwd-rv/20260809T1130Z/f15.obcg`
+/// cached frame is **never revalidated** — the bytes behind `wx/v2/20260809T1130Z/f15/s2-1.obcg`
 /// cannot change, so a conditional request against them would be pure latency. The window makes the
 /// entry answer only the question it was stored for; a wider corridor is a miss, not a wrong answer.
 public struct WeatherFrameCacheKey: Hashable, Sendable {

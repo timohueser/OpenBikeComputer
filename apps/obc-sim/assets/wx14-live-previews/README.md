@@ -5,6 +5,14 @@ These frames were rendered by `--weather live` against the **production** weathe
 reproduced byte-for-byte: the weather has moved on. They exist to show that real service bytes
 reach the production screens, and nothing pins them.
 
+**They are also the last description of tier selection in the tree (dated 2026-08-11, #1246).**
+The captions below narrate the service choosing `dwd-rv` over `icon-eu` by tier and bbox
+containment; that machinery no longer exists in either client or in the baker. There is one dataset
+on one lattice, so a corridor near a former product edge is now four divisions and the same answer
+everywhere. The frames still show real service bytes reaching the production screens, which is what
+they were captured for — but read the selection sentences as a record of how it worked in August
+2026, not as behaviour. WXR8 #1247 re-captures them after the cutover.
+
 They were also shot before the corridor became a *projection*: the frames that pass no
 `--weather-radius-km` used a fixed 15 km disc, where the default today is the phone's undirected
 10 km disc (and a directed corridor once the fix vouches for a bearing and a speed). What they show

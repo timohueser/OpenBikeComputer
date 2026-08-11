@@ -12,10 +12,9 @@ use std::path::PathBuf;
 use obc_formats::precip4::{INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
-use obc_wx_bake::manifest::{self, AttributionEntry, Bbox, Cell, Product};
 use obc_wx_bake::source::opera::{self, Contract};
 use obc_wx_bake::source::opera_cirrus::OperaCirrus;
-use obc_wx_bake::source::{opera_cirrus, opera_nimbus, Adapter, AdapterOutcome};
+use obc_wx_bake::source::{opera_cirrus, opera_nimbus, Adapter};
 use obc_wx_bake::tiff;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -281,32 +280,16 @@ fn replace_once(bytes: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
     patched
 }
 
-fn published(id: &str, reference_time: i64) -> Product {
-    Product {
-        id: id.to_string(),
-        tier: 1,
-        bbox_udeg: Bbox {
-            south_udeg: 34_000_000,
-            west_udeg: -28_000_000,
-            north_udeg: 73_000_000,
-            east_udeg: 36_000_000,
-        },
-        cell: Cell { lat_udeg: 10_000, lon_udeg: 10_000, nominal_m: 1_000 },
-        reference_time: manifest::rfc3339(reference_time),
-        generated_at: manifest::rfc3339(reference_time),
-        staleness_deadline: manifest::rfc3339(reference_time + 1_800),
-        attribution: AttributionEntry { text: "test".into(), url: "https://example.invalid".into() },
-        upstream_etag: None,
-        frames: Vec::new(),
-    }
-}
-
-/// Discovery walks the immutable key schema backwards at the product's own cadence, and the two
-/// short-circuits fire before a single byte of a 3 MB object moves: the published composite is
-/// recognised by run identity, and an upstream that regresses to an older composite keeps the
-/// published product rather than moving `reference_time` into the past.
+/// Discovery walks the immutable key schema backwards at the source's own cadence, and it does it
+/// with HEAD probes only — so finding the newest composite costs requests and no body bytes, and
+/// finding nothing is an honest error rather than an empty source.
+///
+/// The unchanged and regression short-circuits this used to also cover are gone with #1246: they
+/// compared against a previously *published product entry*, and the mosaic needs every source's
+/// cells every cycle, so there is nothing to short-circuit against and nothing that would be saved
+/// by it.
 #[test]
-fn discovery_probes_backwards_and_both_short_circuits_fire_before_any_fetch() {
+fn discovery_probes_backwards_with_head_requests_and_fails_honestly() {
     // `now` is eleven minutes past a composite that exists; the two newer five-minute slots do
     // not, which is exactly the 4.1-minute publication lag plus a slow cycle.
     let now = VALID_AT + 11 * 60;
@@ -316,23 +299,10 @@ fn discovery_probes_backwards_and_both_short_circuits_fire_before_any_fetch() {
     assert_eq!(upstream.requests.len(), 3, "probed {:?}", upstream.requests);
     assert!(upstream.requests.iter().all(|request| request.starts_with("HEAD ")), "discovery must not GET");
 
+    // Nothing published within the discovery window is an honest error, not an empty source.
     let mut warnings = Vec::new();
-    let outcome = OperaCirrus
-        .bake(&mut upstream, Some(&published(opera_cirrus::ID, VALID_AT)), now, &mut warnings)
-        .expect("the published composite is the newest one");
-    assert!(matches!(outcome, AdapterOutcome::Unchanged), "an unchanged upstream must not re-bake");
-    assert!(warnings.is_empty(), "{warnings:?}");
-
-    // Upstream regression: what is published is newer than anything the bucket now offers.
-    let outcome = OperaCirrus
-        .bake(&mut upstream, Some(&published(opera_cirrus::ID, VALID_AT + 3_600)), now, &mut warnings)
-        .expect("a regression is not a failure");
-    assert!(matches!(outcome, AdapterOutcome::Unchanged));
-    assert!(warnings.iter().any(|warning| warning.contains("is older than the published")), "{warnings:?}");
-
-    // Nothing published within the discovery window is an honest error, not an empty product.
     let mut empty = FixtureUpstream::default();
-    let error = OperaCirrus.bake(&mut empty, None, now, &mut warnings).expect_err("nothing to bake");
+    let error = OperaCirrus.bake(&mut empty, now, &mut warnings).expect_err("nothing to bake");
     assert!(error.contains("no composite published within the discovery window"), "{error}");
     // Eight five-minute probes for CIRRUS, five fifteen-minute ones for NIMBUS.
     assert_eq!(empty.requests.len(), 8);

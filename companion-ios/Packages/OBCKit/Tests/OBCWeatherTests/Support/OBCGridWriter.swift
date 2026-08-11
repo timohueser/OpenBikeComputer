@@ -26,10 +26,6 @@ enum OBCGridWriter {
         var tileEdge: UInt16 = 16
         var entriesPerPage: UInt16 = 4
         var cellSizeMetres: UInt16 = 1_113
-        /// Provenance bytes, copied rather than assumed by the byte anchor: they are two bytes of
-        /// the header this writer must reproduce, and the v2 bakery's values are not the vectors'.
-        var productID: UInt8 = 1
-        var tier: UInt8 = OBCGridCodec.tierMosaic
         var validAt: Date
         var referenceTime: Date
         var observed: Bool
@@ -108,8 +104,7 @@ enum OBCGridWriter {
         write(&header, at: 4, littleEndian(UInt16(1)))
         write(&header, at: 6, littleEndian(UInt16(OBCGridCodec.headerLength)))
         write(&header, at: 8, littleEndian(UInt32(dataOffset + payloads.count)))
-        header[12] = spec.productID                           // product id: provenance only
-        header[13] = spec.tier
+        // Bytes 12–13 are reserved and zero since #1246: an object carries no provenance.
         write(&header, at: 14, littleEndian(
             spec.observed ? OBCGridCodec.flagObserved : OBCGridCodec.flagForecast))
         write(&header, at: 16, littleEndian(

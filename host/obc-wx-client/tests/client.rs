@@ -76,8 +76,6 @@ fn shard_object(grid: &Grid, shard: ShardId, valid_at: i64, observed: bool, cell
         }
     }
     let input = obcg::FrameInput {
-        product_id: obcg::PRODUCT_MOSAIC,
-        tier: obcg::TIER_MOSAIC,
         flags: if observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
         valid_at,
         reference_time: valid_at,

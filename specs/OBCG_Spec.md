@@ -6,35 +6,17 @@ is an independent consumer of this document. A consumer in another language must
 implementation.
 
 OBCG is the static object the OpenBikeComputer weather service publishes to object storage. One
-OBCG object is exactly **one grid frame**: one product, one real UTC validity timestamp, one
-regular latitude/longitude window at one native cell size. There is deliberately no in-object
-multi-frame table — the frame set, its keys and its policy metadata live in the service manifest
-(§10), so a product whose frames have heterogeneous geometry (a 1 km radar observation followed
-by 3 km model forward frames) composes with **no resampling, by construction**.
+OBCG object is exactly **one frame of one shard**: one real UTC validity timestamp, one regular
+latitude/longitude window of the one published lattice. There is deliberately no in-object
+multi-frame table — the frame set, its keys, its presence and its integrity data live in the
+service manifest (§10).
 
-> **Superseded 2026-08-10 by #1242; to be deleted by #1246.** The publisher no longer works this
-> way. It normalises every source onto **one** canonical global 0.01 degree lattice at bake time
-> — coarse sources cell-replicated, overlaps resolved per cell by a fixed priority table that is
-> baker configuration and never client policy — and publishes one provider-agnostic dataset
-> sharded across objects. So "no resampling, by construction" describes the shape this format was
-> designed around, not the shape it now carries: the resampling happens once, in the baker,
-> nearest-neighbour as §6 has always required, instead of being pushed onto every consumer as a
-> selection policy. The nesting obligation in the next paragraph and the product/selection model
-> in §10 are superseded with it — a single-lattice dataset trivially satisfies both — and #1246
-> removes all three together with the multi-product path. Nothing about the *bytes* changes; this
-> is framing prose only.
-
-That composition carries one normative obligation on the *publisher*. A consumer assembling a
-multi-frame bundle (OBCW) states one geographic window for the whole timeline and takes it from
-the coarsest frame; every other frame is laid onto that window at its own cell size, and a frame
-the window cannot tile exactly is **refused, never resampled**. A publisher MUST therefore ensure
-that within one product, every frame's lattice nests under every coarser frame's: each coarser
-frame's `cell_lat_udeg` and `cell_lon_udeg` MUST be integer multiples of the finer frame's, and
-the two grid origins MUST be congruent modulo the finer frame's cell size in each axis. A product
-violating this is not malformed OBCG — each object is individually valid — but consumers will
-silently drop frames from it, and the frame most likely to be dropped is the finest one, which is
-normally the radar observation. Publishers SHOULD verify this before publishing and fail the
-cycle rather than emit such a product.
+An object carries **no provenance**. The publisher normalises every source it ingests onto one
+global lattice at bake time — coarse sources cell-replicated, overlaps resolved per cell by a fixed
+priority table that is publisher configuration and never consumer policy — so there is nothing for
+an object to name and nothing for a consumer to select between. A cell of a frame is the best
+available value there, and which source produced it is information the format removes rather than
+transports. Intensity code 15 (§4.1) remains the honest answer for genuinely missing data.
 
 The consumer is an HTTP Range client that must never download a whole frame to answer a corridor
 question. The layout is therefore three sections — a fixed self-CRC'd header, a paged tile
@@ -57,8 +39,9 @@ floats do not occur anywhere in v1.
 - Grid geometry is exact integer data: a south/west edge in microdegrees plus per-axis cell
   strides in microdegrees plus cell counts. North and east edges are derived, never stored, so
   the four bounds can never disagree with the cell lattice.
-- The tile edge is a **per-product power of two** between 16 and 256 cells, chosen by the
-  producer so directories stay small and tiles stay corridor-sized. Tiles reuse the canonical
+- The tile edge is a **power of two** between 16 and 256 cells, chosen by the producer so
+  directories stay small and tiles stay corridor-sized; the manifest states the one value every
+  object of a generation carries (§10.2). Tiles reuse the canonical
   WX2 4-bit intensity table and raw4/RLE4 codecs (`OBCW_Spec.md` §6-§7), generalized from 256
   cells to `tile_edge^2` cells; `obc-formats::precip4` is the one shared authority for those two.
   OBCG adds a third codec of its own (§5, deflate over the raw4 nibbles) which **OBCW does not
@@ -69,12 +52,12 @@ floats do not occur anywhere in v1.
   cells (the WX1 decode ceiling). Tile count and every section offset then fit `uint32` with
   margin.
 - V1 grids do not cross the antimeridian: `west >= -180 deg` and the derived east edge MUST be
-  `<= +180 deg`. A worldwide source whose native window crosses it MUST be published as more
-  than one product window (for example an eastern and a western object per timestamp); the
-  manifest composes them.
-- An OBCG object carries provenance (product id, tier, source class, reference time), never
-  policy. Selection, staleness and attribution are manifest data; a consumer MUST NOT branch
-  behavior on the in-object product id and MUST NOT reject an unknown nonzero product id.
+  `<= +180 deg`. That is free under one global lattice, because the shard grid is a plain
+  rectangular partition of it and no shard straddles the seam; a *query* that crosses the
+  antimeridian is served by the split §10.2a defines, never by an object that wraps.
+- An OBCG object carries a **source class** and a reference time (§3.2), and nothing else about
+  where its cells came from. Staleness and attribution are manifest data; there is no product id,
+  no tier and no per-cell resolution, because there is one dataset and nothing to choose between.
 
 ## 2. Canonical file order
 
@@ -96,8 +79,7 @@ are invalid.
 | 4 | Version | 2 | `uint16` | `1` |
 | 6 | Header Len | 2 | `uint16` | `128` |
 | 8 | Total Len | 4 | `uint32` | Exact object length |
-| 12 | Product ID | 1 | `uint8` | Nonzero registry code (§3.1) |
-| 13 | Tier | 1 | `uint8` | Nonzero registry code (§3.1a) |
+| 12 | Reserved | 2 | - | Zero |
 | 14 | Flags | 2 | `uint16` | §3.2; exactly one source-class bit |
 | 16 | Valid At | 8 | `int64` | Real upstream UTC frame validity time; positive |
 | 24 | Reference Time | 8 | `int64` | Upstream run/reference UTC time; positive, `<= valid_at` |
@@ -107,7 +89,7 @@ are invalid.
 | 44 | Cell Lon Stride | 4 | `uint32` | Microdegrees per cell eastward; nonzero |
 | 48 | Width | 4 | `uint32` | Cells west-to-east; §1 bounds |
 | 52 | Height | 4 | `uint32` | Cells south-to-north; §1 bounds |
-| 56 | Cell Size | 2 | `uint16` | Ground resolution in metres; nonzero. See the note below: per-source for the multi-product path, the lattice's own cell size for the canonical dataset |
+| 56 | Cell Size | 2 | `uint16` | The lattice's own cell size in metres; nonzero. See the note below |
 | 58 | Tile Edge | 2 | `uint16` | Power of two, `16...256` |
 | 60 | Entries Per Page | 2 | `uint16` | `1...1365` |
 | 62 | Reserved | 2 | - | Zero |
@@ -135,10 +117,9 @@ east: cell `(col=0, row=0)` has its south-west corner at `(south, west)` — the
 as OBCW. The exact lattice is the microdegree strides; `cell_size_m` is a **metric restatement of
 that lattice**, not a claim about any source.
 
-> **Amended 2026-08-10 by #1242.** `cell_size_m` used to be "the source's nominal ground
-> resolution for truthful UI and selection". Under the mosaic a frame has no single source
-> resolution — its German cells come from 1 km radar and its Italian cells from 6.5 km model — so
-> the field states the lattice instead, and the information is *removed* rather than transported:
+> **`cell_size_m` states the lattice, not a source.** A frame has no single source resolution — its
+> German cells come from 1 km radar and its Italian cells from 6.5 km model — so the field states
+> the lattice, and the information is *removed* rather than transported:
 > there is no per-cell resolution plane, no per-tile source label and no coverage channel. That is
 > honest because the mosaic always has a global floor source, so every cell **in the covered
 > domain** carries a best-available value; "no radar coverage" renders as model fill, not as dry.
@@ -152,67 +133,59 @@ that lattice**, not a claim about any source.
 > at all and are published as intensity 15 in every frame. On the canonical lattice that is rows
 > 0..11 and 17,987..17,999, 25 of 18,000. A consumer needs no new field for this: those cells are
 > already, correctly, "we do not know".
->
-> **While the two paths coexist**, the multi-product publisher still emits per-source values in
-> this field (1,000 / 3,000 / 6,500 / 27,750). #1246 removes that path and with it the ambiguity.
 
 `entries_per_page <= 1365` keeps every directory page (and the header) inside one 16 KiB Range
 request: `1365 x 12 + 4 = 16,384` bytes.
 
-### 3.1 Product registry
+### 3.1 The reserved provenance bytes
 
-The product id is provenance, mirroring the manifest's product id string. Appending a code to
-this table is a spec-table addition, **not** a format version bump, because adding a weather
-source must never require a firmware, protocol or app release. A consumer MUST NOT reject an
-unknown nonzero code and MUST NOT use it for selection policy.
+Bytes 12-13 held a **Product ID** and a **Tier** through the multi-product service: a registry of
+source codes, and a radar / model / floor ladder a consumer ranked published products by. Both are
+deleted. There is one dataset, one lattice and one cell size, so there is no product to name and no
+rank to hold, and a mosaic frame that is 1 km radar over Germany and 27.75 km model over the
+Pacific was never a member of a tier in the first place.
 
-| Code | Manifest id | Source |
-| ---: | --- | --- |
-| 0 | - | Invalid; reject |
-| 1 | `dwd-rv` | DWD RV composite (Germany radar nowcast) |
-| 2 | `icon-eu` | DWD ICON-EU `TOT_PREC` (Europe model) |
-| 3 | `mrms` | NOAA MRMS `PrecipRate` (CONUS radar observation) |
-| 4 | `hrrr` | NOAA HRRR subhourly `PRATE` (CONUS model) |
-| 5 | `gfs` | NOAA GFS `APCP` (worldwide floor) |
-| 6 | `mosaic` | Canonical mosaic: every source normalised onto the global lattice, best available per cell, no provenance carried (#1242) |
-| 7 | `opera-cirrus` | EUMETNET OPERA CIRRUS `DBZH` (Europe 1 km radar reflectivity) |
-| 8 | `opera-nimbus` | EUMETNET OPERA NIMBUS `RATE` (Europe 2 km radar rain rate) |
-| 9...254 | - | Reserved for future registry additions |
-| 255 | - | Experimental / private products |
-
-### 3.1a Tier registry
-
-| Code | Name | Meaning |
-| ---: | --- | --- |
-| 0 | - | Invalid; reject |
-| 1 | `radar` | Radar observation or radar-derived nowcast |
-| 2 | `model` | NWP model output |
-| 3 | `floor` | The global model of last resort |
-| 4 | `mosaic` | **No tier**: the canonical mosaic, whose cells come from several of the above (#1243) |
-| 5...255 | - | Reserved |
-
-Code 4 is not a rank among 1-3, and that is the point. A canonical-dataset object is 1 km radar
-over Germany and 27.75 km model over the Pacific in the same frame, so calling it "radar" would be
-the untruth `cell_size_m` was corrected for in §3's amendment. The header slot is fixed and must be
-nonzero, so the field says *mosaic*, which is a statement about how the object was made and not a
-position in a ladder.
-
-Tier was only ever selection input, and the canonical dataset has no selection: manifest v2 (§10)
-carries no tier at all, and a consumer MUST NOT branch on this byte. It survives in the header
-because the header is fixed-offset; #1246 removes the multi-product path that gave codes 1-3 their
-meaning.
+The two bytes stay **reserved and MUST be zero**, and a reader MUST reject a nonzero value there
+like any other reserved byte (§9 step 1). That is stronger than the rule they used to carry — an
+unknown nonzero product id was something a consumer had to tolerate, because the registry was
+appendable — and it is deliberate: the field has no meaning left to be forward-compatible about, so
+an object claiming provenance there is malformed rather than merely newer. Reclaiming the two bytes
+for something else is a format version bump.
 
 ### 3.2 Flags
 
 | Bit | Name | Meaning |
 | ---: | --- | --- |
-| 0 | Observed | The frame is primarily an observation valid at `valid_at` |
-| 1 | Forecast | The frame is primarily a model/nowcast forecast valid at `valid_at` |
+| 0 | Observed | Every cell of this object came from an observation, and `valid_at` is the anchor |
+| 1 | Forecast | Anything else: model output, a nowcast, or an observation frozen forward |
 | 2...15 | Reserved | Must be zero in v1 |
 
-Exactly one of Observed and Forecast MUST be set. `valid_at` is always the genuine upstream
-timestamp — a latent observation keeps its old timestamp, and a forecast lead is
-`valid_at - reference_time`. Re-stamping fetch or bake time here is forbidden.
+Exactly one of Observed and Forecast MUST be set.
+
+**`valid_at` is the frame's place on the cadence, and the flag is what says how the content got
+there.** A generation publishes frames at fixed offsets from its reference time (§10.5's `cadence`),
+so `valid_at = reference_time + offset_min x 60` and the timestamp is not negotiable: it states
+*which instant this frame is about*, not when the data under it was measured. How far the sources
+that painted a cell were from that instant is stated once, for the whole generation, as
+`freshness`/`cadence.max_source_skew_s` — a consumer that wants to caveat "radar, up to N minutes
+old" reads that number instead of assuming one. Re-stamping fetch or bake time as `reference_time`
+is forbidden; so is publishing a frame at an offset the cadence does not define.
+
+The flag then carries the honesty. A publisher MUST set **Observed** only when both hold:
+
+- every cell of the object came from a source frame that was an observation upstream; **and**
+- `offset_min` is `0`.
+
+The second condition is the one that is easy to get wrong, and it is normative. A frame ahead of the
+anchor is about an instant no observation of exists at bake time, so what fills it is either a
+genuine forecast or an observation carried forward inside the skew window — and an observation
+carried forward is a **persistence nowcast**, which is a forecast. A single-frame radar source
+therefore paints the first frames after the anchor with real measured cells and those frames MUST
+still say Forecast. Setting Observed there would tell a consumer it is looking at measured weather
+at a future instant, which is the one thing a source class exists to prevent.
+
+A consumer MUST NOT infer anything further from the flag than those two facts, and in particular
+MUST NOT read Forecast as "unmeasured" or Observed as "exact at `valid_at`".
 
 ## 4. Paged tile directory
 
@@ -243,9 +216,8 @@ covered by that page's CRC like any other entry bytes.
 | 8 | Tile CRC-32 | 4 | `uint32` | CRC-32 of the stored (encoded) payload bytes; `0` for a dry tile |
 
 A codec other than `0`, `1` or `2` is invalid and MUST be rejected; the codec set is closed and
-extending it is a format version bump, not a table addition (unlike §3.1's product registry,
-which is provenance a consumer never branches on). The tile CRC covers the payload **as stored**,
-so a consumer verifies integrity *before* decompressing anything (§9 step 6).
+extending it is a format version bump. The tile CRC covers the payload **as stored**, so a consumer
+verifies integrity *before* decompressing anything (§9 step 6).
 
 **Dry sentinel.** `encoded_len == 0` declares every cell of the tile to be intensity `0`
 (dry). A dry entry has no payload bytes and its other fields MUST be zero — a dry entry is
@@ -392,8 +364,8 @@ no interpolation and no fabricated sub-cell precision; **display MAY interpolate
 and **no claim, alert, alert-clear or dry decision may derive from an interpolated value**. Every
 corridor extraction in §7 is a data query and is bound by the first rule.
 
-Rationale (2026-08-10): the epic's original rule was no smoothing anywhere, which made 1 km
-products render as hard squares. The rule that was actually load-bearing — that a device never
+Rationale (2026-08-10): the epic's original rule was no smoothing anywhere, which made 1 km cells
+render as hard squares. The rule that was actually load-bearing — that a device never
 reports rain, or reports none, on the strength of an invented number — is preserved verbatim for
 queries; only the pixels were released.
 
@@ -446,9 +418,9 @@ Equivalent early-exit ordering is allowed. A corridor consumer applies each step
 fetched; a full-object consumer applies all of them:
 
 1. Validate magic, version, header length, reserved bytes, and the header CRC.
-2. Validate product id, tier, flags, timestamps, geometry bounds and §1 limits, tile edge and
-   paging parameters, and the derived section layout (`directory_offset`, `data_offset`,
-   `total_len`) with checked arithmetic only.
+2. Validate flags, timestamps, geometry bounds and §1 limits, tile edge and paging parameters, and
+   the derived section layout (`directory_offset`, `data_offset`, `total_len`) with checked
+   arithmetic only.
 3. For a full object: require `total_len` to equal the available length and verify the object
    CRC.
 4. For each directory page used: verify the page CRC; require padding entries beyond
@@ -653,46 +625,6 @@ assuming one.
 priority order. There is no per-cell provenance (§3's amendment), so every line must be displayable
 together; a client MUST NOT treat a `source_id` as selectable.
 
-### 10.6 Appendix: manifest v1 (superseded)
-
-> **Superseded 2026-08-10 by #1242 and #1243. Retained only because `wx/v1/manifest.json` is still
-> published to live clients; #1246 deletes the path and this appendix with it.** Nothing in it
-> applies to the canonical dataset above: the product/selection model — `products[]`, tiers,
-> per-product bboxes and the client-side choice between them — describes the multi-product service.
-> Its JSON Schema is `host/obc-wx-bake/schema/manifest.schema.json`.
-
-- Frame objects are published under immutable keys
-  `wx/v1/<product>/<generated-utc>/f<offset-min>.obcg`, where `<generated-utc>` is the upstream
-  reference time (`YYYYMMDD'T'HHMM'Z'`) and `<offset-min>` is `(valid_at - reference_time) / 60`.
-  Frames upload first; the manifest swaps last, atomically. A failed cycle leaves the previous
-  manifest and its frames fully consistent.
-- Frame objects carry long immutable `Cache-Control`; the manifest caches for at most 60 s.
-- `products[]` entries carry: `id`, `tier`, product bbox and nominal cell size, `generated_at`,
-  `staleness_deadline`, attribution (text + URL, from the WX1 license record), and `frames[]`.
-- Each `frames[]` entry restates the frame's full geometry (bbox edges, strides, dimensions,
-  tile edge, paging) plus `valid_at`, source class, key, byte length and the object CRC — so a
-  client can plan corridor reads and verify integrity without trusting anything but the
-  manifest and its own range reads, and heterogeneous per-frame geometry is first-class.
-- A product bbox is the intersection of its frames' bboxes: the region where the whole timeline
-  is answerable. Selection policy ("highest fresh tier covering the corridor") consumes the
-  manifest only.
-- `staleness_deadline` is the moment the product must stop being used if no fresh manifest has
-  replaced it. Expired products keep their true timestamps; expiry makes them unusable, never
-  silently dry.
-- The manifest always lists everything the service currently offers, whichever cycle wrote it. A
-  publishing cycle may cover a **subset** of the products — the deployed service runs one timer per
-  adapter, so a broken upstream costs only its own product's freshness — and the products it did
-  not bake are carried forward from the previous manifest verbatim. A client must never infer from
-  a product's presence that this document's cycle refreshed it: the product's own `generated_at`
-  is that fact, not the manifest's.
-- **Expiry never removes an entry.** A product past its `staleness_deadline` stays listed with its
-  true timestamps, so expiry is visible rather than silent. In exchange, a publisher must not
-  require an expired product's frame objects to still exist — no client may read them, and a
-  lifecycle rule is entitled to have collected them. Removing a product from the manifest is an
-  operator act (retiring an adapter), never a consequence of an outage: a client may therefore
-  read an absent product as "this service does not offer it", and a monitor may read it as a
-  configuration fault rather than as weather.
-
 ## 11. Golden and negative material
 
 Checked-in files live in `specs/vectors/` (`grid-*.obcg`) and are described in its
@@ -719,6 +651,10 @@ every client implementation parses, so the parsers cannot drift on the one file 
 Both must derive the same shard key set from the same bbox against it — that equivalence is the
 cross-client test, and it is what "selection is arithmetic" means in practice.
 
+Every vector is a window of the one published lattice — 10,000 x 10,000 udeg cells,
+`cell_size_m = 1113` — and bytes 12-13 are zero in all of them; one negative pins that a nonzero
+value there is a malformed object rather than an unrecognised code.
+
 Rust builds and validates them through the `obc-formats` authority; Swift independently decodes
 the same positives to the same cells and rejects every negative. Vector provenance is recorded
 beside the fixtures. Byte or layout changes to this specification MUST land with updated
@@ -726,17 +662,20 @@ vectors and both implementations in the same change, per the epic's working agre
 
 ## 12. Worked size budget
 
-The launch DWD RV product window is 1,234 x 1,132 cells (§3 strides 9,000 x 14,000 udeg at
-nominal 1,000 m). At tile edge 32 that is `39 x 36 = 1,404` tiles; with 512 entries per page the
-directory is `3 x 6,148 = 18,444` bytes and the header-plus-one-page first fetch is under
-6.3 KiB. A dry Germany frame is `24,440` bytes total: the `38 x 35 = 1,330` full interior tiles
-are sentinels, while the 74 partial north/east edge tiles carry short dry-plus-no-data RLE4
-payloads (`35 x 96 + 38 x 64 + 76 = 5,868` bytes) — the §4.1 edge rule keeps padding honest
-even on a dry day. Worst-case raw4 payloads
-would add `1,404 x 512 = 718,848` bytes, but real frames are dominated by dry sentinels and, for
-the tiles that do carry weather, by §5's deflate4 payloads — WXR1 measured a whole wet global
-cycle at 14.69 MB with codec 2 against 43.60 MB without it. ICON-EU (1,377 x 657 at 0.0625 deg, tile edge 16, `87 x 42 = 3,654` tiles)
-pages to `8 x 6,148 = 49,184` directory bytes. A CONUS-scale MRMS frame (7,000 x 3,500, tile
-edge 64) is `110 x 55 = 6,050` tiles — twelve pages, 73,776 directory bytes — which is exactly
-why the directory is paged
-rather than "one small read": at tile edge 16 it would be 95,922 entries.
+The published lattice is 36,000 x 18,000 cells of 0.01 degrees, cut into a 6 x 4 grid of
+6,144 x 4,608-cell shards — 24 objects per frame, nine frames per cycle. One shard is 28.3 M cells,
+94 % of §1's 30 M ceiling, and its 24 x 18 = 432 tiles of edge 256 page at 128 entries to
+`4 x 1,540 = 6,160` directory bytes, so the header-plus-first-page fetch a corridor starts with is
+under 1.6 KiB against a shard of tens of megabytes of raw cells.
+
+The payload is what the tile codec decides. Worst-case raw4 would be `432 x 32,768 = 14.2 MB` per
+shard, but real frames are dominated by all-dry sentinels and, for the tiles that carry weather, by
+§5's deflate4 payloads: WXR1 measured a whole **wet global cycle** — 216 objects — at **14.69 MB**
+with codec 2 against 43.60 MB without it. Upsampled coarse data is where the codec earns most: a
+27.75 km floor cell paints a 3 x 3-ish block of identical lattice cells, which RLE4 cannot express
+across rows and deflate4 collapses in both axes, up to 42x on the measured tiles.
+
+The tile edge is the one number that trades against the corridor. At edge 64 the same cycle is
+43.60 MB published, and a 90 km corridor over-fetches less; at edge 256 the phone's inflate-and-scan
+is *faster* despite a 6.4x over-fetch, because it is fewer, larger, better-compressed reads. 256 is
+what the publisher emits.

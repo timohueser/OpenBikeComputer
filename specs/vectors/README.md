@@ -103,7 +103,11 @@ the Rust tests pin are the cells the Swift decoder must reproduce — OBCG is de
 re-encoded, because its only producer is the Rust baker — and each positive's codec id is pinned
 too, because §5's choice rule is what keeps RLE4 alive where deflate4 loses.
 
-The twenty-four `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
+Every vector is a window of the **one published lattice** — 10,000 × 10,000 µdeg cells,
+`cell_size_m = 1113` — and none of them carries provenance: #1246 deleted the product id and tier
+from the header, so bytes 12–13 are reserved and zero in every file above.
+
+The twenty-five `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
 page, tile), a shifted payload offset, an aliased/overlapping payload, impossible dimensions, a
 non-power-of-two tile edge, zero entries per page, a codec id outside the closed set, overlong
 and noncanonical RLE, a compressible raw4 payload, five deflate4 failures (a truncated stream, a
@@ -111,9 +115,10 @@ stream that over-inflates past the tile's raw4 size, one that under-inflates, on
 distance reaches before the start of the tile's image, and a valid stream that fails to beat the
 canonical raw4/RLE4 length), an encoded all-dry full tile (the sentinel is mandatory there), a dry
 sentinel at a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry
-sentinel, reserved byte, and double source-class flag. Except for truncation and the deliberate
-stale-CRC files, every CRC covering a corrupted byte is recomputed so structural validation cannot
-hide behind an integrity check.
+sentinel, reserved byte, nonzero bytes 12–13 (the deleted provenance pair, which is a malformed
+object rather than a code a reader must tolerate), and a double source-class flag. Except for
+truncation and the deliberate stale-CRC files, every CRC covering a corrupted byte is recomputed so
+structural validation cannot hide behind an integrity check.
 
 ### The shared weather manifest (`wx-manifest-v2.json`)
 

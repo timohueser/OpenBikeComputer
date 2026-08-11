@@ -30,18 +30,11 @@
 //! the bigger lie. The posture is pinned indirectly: `product=MAX` is checked on every bake, so
 //! CIRRUS turning into a different vertical sampling stops the cycle.
 
-use obc_formats::obcg::PRODUCT_OPERA_CIRRUS;
-
 use crate::fetch::Upstream;
-use crate::manifest::Product;
 use crate::source::opera::{self, Contract, Quantity, OPERA_TERMS_URL};
-use crate::source::{Adapter, AdapterOutcome, Attribution};
+use crate::source::{Adapter, Attribution, BakedSource};
 
 pub const ID: &str = "opera-cirrus";
-
-/// A radar composite refreshes every five minutes; half an hour without a fresh one is the epic's
-/// stuck-baker detection horizon, so the product must not outlive it (the `dwd-rv` rule).
-pub const STALENESS_SECONDS: i64 = 30 * 60;
 
 pub const ATTRIBUTION: Attribution = Attribution {
     text: "Source: EUMETNET OPERA CIRRUS maximum reflectivity composite (CC BY 4.0); reflectivity converted to surface rain rate with the Marshall-Palmer Z-R relation and an empirical column-maximum calibration, and quantized, by OpenBikeComputer",
@@ -51,7 +44,6 @@ pub const ATTRIBUTION: Attribution = Attribution {
 /// The pinned source contract, every field measured off the live objects on 2026-08-10.
 pub const CONTRACT: Contract = Contract {
     id: ID,
-    product_code: PRODUCT_OPERA_CIRRUS,
     quantity: Quantity::Reflectivity,
     prodname: "OPERA CIRRUS maximum reflectivity composite",
     odim_product: "MAX",
@@ -67,7 +59,6 @@ pub const CONTRACT: Contract = Contract {
     cadence_seconds: 300,
     // Forty minutes back, against a measured 4.1-minute publication lag.
     max_discovery_probes: 8,
-    staleness_seconds: STALENESS_SECONDS,
     attribution: ATTRIBUTION,
 };
 
@@ -78,13 +69,7 @@ impl Adapter for OperaCirrus {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
-        opera::bake(&CONTRACT, upstream, previous, now, warnings)
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+        opera::bake(&CONTRACT, upstream, now, warnings)
     }
 }

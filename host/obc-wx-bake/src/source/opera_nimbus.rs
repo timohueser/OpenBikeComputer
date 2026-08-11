@@ -20,18 +20,11 @@
 //! rate smears a moving shower across sixty minutes of track, which is exactly the error a rider
 //! is using radar to avoid.
 
-use obc_formats::obcg::PRODUCT_OPERA_NIMBUS;
-
 use crate::fetch::Upstream;
-use crate::manifest::Product;
 use crate::source::opera::{self, Contract, Quantity, OPERA_TERMS_URL};
-use crate::source::{Adapter, AdapterOutcome, Attribution};
+use crate::source::{Adapter, Attribution, BakedSource};
 
 pub const ID: &str = "opera-nimbus";
-
-/// Three times the fifteen-minute cadence: long enough that one skipped publication is not an
-/// outage, short enough that a rider is never shown a rain field from an hour ago.
-pub const STALENESS_SECONDS: i64 = 45 * 60;
 
 pub const ATTRIBUTION: Attribution = Attribution {
     text: "Source: EUMETNET OPERA NIMBUS instantaneous rain rate composite (CC BY 4.0); modified/quantized by OpenBikeComputer",
@@ -41,7 +34,6 @@ pub const ATTRIBUTION: Attribution = Attribution {
 /// The pinned source contract, every field measured off the live objects on 2026-08-10.
 pub const CONTRACT: Contract = Contract {
     id: ID,
-    product_code: PRODUCT_OPERA_NIMBUS,
     quantity: Quantity::RainRate,
     prodname: "OPERA NIMBUS instantaneous rain rate composite",
     odim_product: "PPI",
@@ -58,7 +50,6 @@ pub const CONTRACT: Contract = Contract {
     cadence_seconds: 900,
     // Seventy-five minutes back, against a measured 10-minute publication lag.
     max_discovery_probes: 5,
-    staleness_seconds: STALENESS_SECONDS,
     attribution: ATTRIBUTION,
 };
 
@@ -69,13 +60,7 @@ impl Adapter for OperaNimbus {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
-        opera::bake(&CONTRACT, upstream, previous, now, warnings)
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+        opera::bake(&CONTRACT, upstream, now, warnings)
     }
 }

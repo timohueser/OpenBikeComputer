@@ -1,10 +1,11 @@
-//! The canonical lattice, the priority mosaic, and the sharded emit (WXR3 #1242).
+//! The lattice, the priority mosaic, and the sharded emit — **the cycle** (WXR3 #1242).
 //!
 //! This is the module the epic's central sentence lives in: **the baker is the only component
 //! that knows a data source exists.** Every adapter's output is normalised onto one global
 //! 0.01 degree lattice, overlapping sources are resolved per cell by one ordered priority table
 //! ([`crate::source::MOSAIC_PRIORITY`]), and what leaves the bakery is a single provider-agnostic
-//! dataset: 24 shards x 9 frames of OBCG, all on the same lattice, all at the same cell size.
+//! dataset: 24 shards x 9 frames of OBCG, all on the same lattice, all at the same cell size. It
+//! is the only thing the bakery publishes; #1246 deleted the per-product path beside it.
 //!
 //! ## Why the resample is here and not in each adapter
 //!
@@ -46,8 +47,8 @@
 //! a constant stating the lattice, rather than describing a per-cell source that no longer has one
 //! value.
 //!
-//! The one flag that *is* still provenance, `FLAG_OBSERVED`, is computed rather than assumed: see
-//! [`FillOutcome::all_observed`].
+//! The one flag that *is* still provenance, `FLAG_OBSERVED`, is computed rather than assumed, and
+//! it is two facts and not one: see [`shard_is_observed`].
 
 use std::time::Instant;
 
@@ -57,10 +58,10 @@ use rayon::prelude::*;
 
 use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
-use crate::manifest;
 use crate::manifest_v2;
 use crate::publish::{self, ObjectStore, PlannedObject};
-use crate::source::{mosaic_rank, Adapter, AdapterOutcome, Attribution, BakedProduct};
+use crate::source::{mosaic_rank, Adapter, Attribution, BakedSource};
+use crate::timefmt;
 
 // ---------------------------------------------------------------------------------------------
 // The lattice
@@ -355,17 +356,15 @@ pub struct MosaicLayer {
 }
 
 impl MosaicLayer {
-    /// Turn one adapter's baked product into a layer. A composed product's frames each keep their
-    /// own source window, which is exactly what the mosaic wants.
-    pub fn from_product(product: BakedProduct) -> Result<Self, String> {
-        let rank = mosaic_rank(product.id)
-            .ok_or_else(|| format!("{}: no row in source::MOSAIC_PRIORITY — the mosaic cannot rank it", product.id))?;
-        let anchor = product.geometry;
-        let id = product.id;
-        let attribution = product.attribution;
-        let mut frames = Vec::with_capacity(product.frames.len());
-        for frame in product.frames {
-            let window = frame.source.map_or(anchor, |source| source.geometry);
+    /// Turn one adapter's output into a layer.
+    pub fn from_source(source: BakedSource) -> Result<Self, String> {
+        let rank = mosaic_rank(source.id)
+            .ok_or_else(|| format!("{}: no row in source::MOSAIC_PRIORITY — the mosaic cannot rank it", source.id))?;
+        let window = source.geometry;
+        let id = source.id;
+        let attribution = source.attribution;
+        let mut frames = Vec::with_capacity(source.frames.len());
+        for frame in source.frames {
             if frame.cells.len() != window.cells() {
                 return Err(format!("{id}: frame f{} cell count disagrees with its source window", frame.offset_min));
             }
@@ -387,14 +386,19 @@ impl MosaicLayer {
     /// 1. nothing further than [`MAX_FRAME_SKEW_S`] away is sampled at all — a source that far out
     ///    of the timeline has fallen out of it, and the mosaic drops through to the next rank;
     /// 2. nearest validity wins;
-    /// 3. **an observation never outranks an equally close forecast.** This is the rule that
-    ///    matters, and it is not the obvious one. The `us` layer holds a 1 km MRMS observation at
-    ///    f0 and 3 km HRRR forecasts ahead of it; without this, a nearest-only tie-break lets the
-    ///    frozen observation paint a *forward* frame that a real forecast for that exact instant is
-    ///    also offering. Re-using an observation as a forecast is a persistence nowcast, which is
-    ///    WXR9 #1251's job to do deliberately and well — not something the frame picker should
-    ///    stumble into. It is still allowed when the layer has nothing better inside the skew
-    ///    window, because a 15-minute-old radar field beats falling through to a 27.75 km model.
+    /// 3. **an observation never outranks an equally close forecast** *within one layer*. The DWD
+    ///    RV layer holds an observation at f0 and its own nowcast forecasts ahead of it; without
+    ///    this, a nearest-only tie-break lets the frozen observation paint a *forward* frame that a
+    ///    real forecast for that exact instant is also offering. Re-using an observation as a
+    ///    forecast is a persistence nowcast, which is WXR9 #1251's job to do deliberately and well
+    ///    — not something the frame picker should stumble into. It is still allowed when the layer
+    ///    has nothing better inside the skew window, because a 15-minute-old radar field beats
+    ///    falling through to a 27.75 km model.
+    ///
+    ///    It is deliberately a *within-layer* rule and cannot be anything else: across layers the
+    ///    priority table decides, and a higher-ranked single-frame radar source therefore does
+    ///    paint the forward frames it is within the skew window of. See `MOSAIC_PRIORITY`'s note
+    ///    on MRMS and HRRR.
     ///
     /// Remaining ties break toward the *later* frame: at equal distance, the field valid after the
     /// target is about weather that has not happened yet, and the one before it is already past.
@@ -412,19 +416,21 @@ impl MosaicLayer {
 pub struct FillOutcome {
     /// Did any source paint any cell of the window? `false` is a window that is entirely no-data.
     pub painted: bool,
-    /// Is every cell of this window painted by an **observation** source frame?
+    /// Was every cell of this window painted by a source frame that was an **observation
+    /// upstream**?
     ///
-    /// This is the whole of `FLAG_OBSERVED` for the canonical dataset, and it is **exact**, not a
-    /// conservative approximation — which is why [`Mosaic::fill`] paints best-rank-first into
-    /// empty cells rather than worst-rank-first over the top. A layer that writes nothing that
-    /// survives writes nothing at all, so "every layer that owns a cell here was an observation"
-    /// is precisely "every cell here is an observation", and it costs one comparison per cell
-    /// instead of a 28 MB per-cell provenance plane — the mechanism #1242 refused to build.
+    /// **This is one of the two halves of `FLAG_OBSERVED`, not the whole of it** — see
+    /// [`CanonicalObject::observed`] for the other. It is exact rather than a conservative
+    /// approximation, which is why [`Mosaic::fill`] paints best-rank-first into empty cells rather
+    /// than worst-rank-first over the top: a layer that writes nothing that survives writes nothing
+    /// at all, so "every layer that owns a cell here was an observation" is precisely "every cell
+    /// here came from an observation", and it costs one comparison per cell instead of a 28 MB
+    /// per-cell provenance plane — the mechanism #1242 refused to build.
     ///
     /// The alternative, which this replaces, was to set `FLAG_OBSERVED` on f0 unconditionally. On a
     /// global mosaic that is a lie for ~85 % of the planet, where f0 is model fill: the same
     /// category of untruth `cell_size_m` was just retired for, and the one the device can still act
-    /// on. A shard entirely inside a radar footprint at f0 still gets it, honestly.
+    /// on.
     pub all_observed: bool,
     /// Is every cell of this window **dry** — intensity 0, and not one no-data cell among them?
     ///
@@ -450,8 +456,8 @@ impl Mosaic {
         Self { layers }
     }
 
-    pub fn from_products(products: Vec<BakedProduct>) -> Result<Self, String> {
-        let layers = products.into_iter().map(MosaicLayer::from_product).collect::<Result<Vec<_>, _>>()?;
+    pub fn from_sources(sources: Vec<BakedSource>) -> Result<Self, String> {
+        let layers = sources.into_iter().map(MosaicLayer::from_source).collect::<Result<Vec<_>, _>>()?;
         Ok(Self::new(layers))
     }
 
@@ -608,9 +614,41 @@ pub struct CanonicalObject {
     pub offset_min: u32,
     pub bytes: Vec<u8>,
     pub object_crc32: u32,
-    /// What the mosaic managed to paint into this shard — the source of its flags, of its manifest
-    /// presence bit, and of the cycle's "nothing baked at all" gate.
+    /// What the mosaic managed to paint into this shard — the source of its manifest presence bit
+    /// and of the cycle's "nothing baked at all" gate.
     pub fill: FillOutcome,
+    /// **`FLAG_OBSERVED` as published**, and the same bit the manifest's per-shard `observed`
+    /// carries. Both read this rather than [`FillOutcome::all_observed`], so the two can never
+    /// disagree and a caller cannot forget the offset rule below.
+    pub observed: bool,
+}
+
+/// Does this shard get `FLAG_OBSERVED`?
+///
+/// Two conditions, and the second one is the one that is easy to get wrong.
+///
+/// 1. every cell came from a source frame that was an observation upstream
+///    ([`FillOutcome::all_observed`]); and
+/// 2. **this is the anchor frame.** A frame at `offset_min > 0` is about a future instant, and no
+///    observation of a future instant exists at bake time. What paints it is either a real forecast
+///    or a *frozen* observation from inside [`MAX_FRAME_SKEW_S`] — which is a persistence nowcast,
+///    which is a forecast. Flagging it observed re-stamps an old observation with a future validity
+///    and tells the device it is looking at measured weather when it is looking at an extrapolation.
+///
+/// Concretely, before this rule existed: a single-frame radar source (MRMS, either OPERA row) valid
+/// at 18:48 painted f0 **and** f+15 **and** f+30 of an 18:45 cycle, and all three objects said
+/// Observed with three different `valid_at`s over one field. The client was never fooled —
+/// `obc-wx-client`'s `observed_frame` has always been `offset_min == 0 && within skew`, mirroring
+/// the phone — so this aligns the producer with the rule both consumers already apply, per
+/// `OBCW_Spec.md` §5.1 and `OBCG_Spec.md` §3.2.
+///
+/// Note what is *not* required: that the source frame be valid at exactly `valid_at`. An
+/// observation almost never lands on the quarter hour, so demanding equality would make every f0
+/// a forecast and throw away the one provenance bit the device still acts on. Being inside the skew
+/// window is the contract, and the manifest states `max_source_skew_s` so a consumer can caveat
+/// "radar, up to N minutes old" with a number instead of a guess.
+pub fn shard_is_observed(offset_min: u32, fill: &FillOutcome) -> bool {
+    offset_min == 0 && fill.all_observed
 }
 
 /// Immutable object key for one shard of one frame:
@@ -640,20 +678,14 @@ pub fn emit_shard(
     // be a second 28 MB pass for nothing.
     let mut cells = vec![0u8; window.cells()];
     let fill = mosaic.fill(lattice, valid_at, window, &mut cells);
+    let observed = shard_is_observed(offset_min, &fill);
 
     let input = FrameInput {
-        // The dataset has exactly one product because it *is* the product: one lattice, one cell
-        // size, best available everywhere. The per-source codes stay in the registry until WXR7
-        // deletes the multi-product path. `tier` says `TIER_MOSAIC`, which means **no tier**
-        // (#1243): a frame that is 1 km radar over Germany and 27.75 km model over the Pacific is
-        // not "radar", and the header slot must be nonzero, so it gets a code that says so.
-        // Manifest v2 carries no tier at all and nothing may select on this byte.
-        product_id: obcg::PRODUCT_MOSAIC,
-        tier: obcg::TIER_MOSAIC,
-        // Measured, not assumed. See `FillOutcome::all_observed`: an f0 shard over open ocean is
-        // GFS model fill and says Forecast; one inside a radar footprint says Observed. The header
-        // requires exactly one of the two, so an all-no-data shard says Forecast.
-        flags: if fill.all_observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
+        // Measured, not assumed. See `shard_is_observed`: an f0 shard over open ocean is GFS model
+        // fill and says Forecast; one inside a radar footprint says Observed; and every frame ahead
+        // of f0 says Forecast, because an observation frozen forward is a persistence nowcast. The
+        // header requires exactly one of the two, so an all-no-data shard says Forecast.
+        flags: if observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
         valid_at,
         reference_time: times.reference_time,
         south_lat_udeg: geometry.south_lat_udeg,
@@ -695,6 +727,7 @@ pub fn emit_shard(
         object_crc32: header.object_crc32,
         bytes,
         fill,
+        observed,
     })
 }
 
@@ -749,7 +782,7 @@ pub fn bake_cycle(
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub struct CanonicalReport {
+pub struct CycleReport {
     /// `(source id, priority rank, frames contributed)`, best rank first.
     pub layers: Vec<(String, usize, usize)>,
     pub reference_time: i64,
@@ -763,9 +796,9 @@ pub struct CanonicalReport {
     pub warnings: Vec<String>,
 }
 
-impl CanonicalReport {
+impl CycleReport {
     pub fn summary(&self) -> String {
-        let mut lines = vec![format!("canonical cycle anchored at {}", manifest::rfc3339(self.reference_time))];
+        let mut lines = vec![format!("cycle anchored at {}", timefmt::rfc3339(self.reference_time))];
         for (id, rank, frames) in &self.layers {
             lines.push(format!("  #{rank} {id}: {frames} source frames"));
         }
@@ -780,16 +813,23 @@ impl CanonicalReport {
     }
 }
 
-/// One canonical cycle: bake every adapter, mosaic them, publish the shard set, manifest last.
+/// **The cycle**: bake every adapter, mosaic them, publish the shard set, manifest last.
 ///
-/// Unlike the per-product cycle this never short-circuits on an unchanged upstream — the mosaic
-/// needs every source's *cells*, not just the knowledge that its objects are already published,
-/// so `previous` is deliberately `None` for every adapter. Caching decoded upstreams across
-/// cycles is a WXR8 ops question, not a correctness one.
-/// `lattice` is [`CANONICAL`] in production; it is a parameter so the fixture tests can drive this
-/// exact orchestration over a sub-window of the same lattice that a debug build can encode.
-/// `threads` is [`BAKE_THREADS`] in production and is what the memory budget is stated against.
-pub fn run_canonical_cycle(
+/// It never short-circuits on an unchanged upstream — the mosaic needs every source's *cells*, not
+/// the knowledge that its objects are already published, so every source is re-fetched and
+/// re-decoded every cycle. Caching decoded upstreams across cycles is a WXR8 ops question, not a
+/// correctness one.
+///
+/// A failure anywhere before the manifest swap publishes nothing and leaves the previous
+/// generation and its objects fully consistent. That is the whole of the safety story now that
+/// there is one dataset: there are no other products to carry forward, so a bad cycle costs one
+/// cycle of freshness and the next tick recovers.
+///
+/// `lattice` is [`CANONICAL`] in production; it is a parameter so the fixture tests and the event
+/// packs can drive this exact orchestration over a sub-window of the same lattice that a debug
+/// build can encode. `threads` is [`BAKE_THREADS`] in production and is what the memory budget is
+/// stated against.
+pub fn run_cycle(
     lattice: &Lattice,
     adapters: &[&dyn Adapter],
     upstream: &mut dyn Upstream,
@@ -797,21 +837,16 @@ pub fn run_canonical_cycle(
     now: i64,
     threads: usize,
     dry_run: bool,
-) -> Result<CanonicalReport, String> {
+) -> Result<CycleReport, String> {
     let started = Instant::now();
     let mut warnings = Vec::new();
     let times = CycleTimes::anchored_at(now);
 
-    let mut products = Vec::with_capacity(adapters.len());
+    let mut sources = Vec::with_capacity(adapters.len());
     for adapter in adapters {
-        match adapter.bake(upstream, None, now, &mut warnings)? {
-            AdapterOutcome::Baked(product) => products.push(*product),
-            AdapterOutcome::Unchanged => {
-                return Err(format!("{}: reported Unchanged with no previous entry", adapter.id()))
-            }
-        }
+        sources.push(adapter.bake(upstream, now, &mut warnings)?);
     }
-    let mosaic = Mosaic::from_products(products)?;
+    let mosaic = Mosaic::from_sources(sources)?;
     let mut layers: Vec<(String, usize, usize)> =
         mosaic.layers().iter().map(|layer| (layer.id.to_string(), layer.rank, layer.frames.len())).collect();
     layers.sort_by_key(|(_, rank, _)| *rank);
@@ -848,7 +883,7 @@ pub fn run_canonical_cycle(
             object.row,
             object.bytes.len() as u64,
             object.object_crc32,
-            object.fill.all_observed,
+            object.observed,
         );
         if dry_run {
             return Ok(());
@@ -880,8 +915,8 @@ pub fn run_canonical_cycle(
     }
 
     if !dry_run {
-        // The same frames-first, manifest-last proof `publish` gives the v1 tree: every object the
-        // manifest is about to name must already be fetchable at the destination, at its length.
+        // Frames first, manifest last: every object the manifest is about to name must already be
+        // fetchable at the destination, at its length.
         for (key, expected) in &fetchable {
             match store.head(key)? {
                 Some(remote) if remote == *expected => {}
@@ -904,7 +939,7 @@ pub fn run_canonical_cycle(
         store.put(&planned).map_err(|error| format!("{}: {error}", planned.key))?;
     }
 
-    Ok(CanonicalReport {
+    Ok(CycleReport {
         layers,
         reference_time: times.reference_time,
         fetched_bytes: upstream.fetched_bytes(),
@@ -921,7 +956,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_canonical_lattice_is_wxr1s_measured_recommendation() {
+    fn the_published_lattice_is_wxr1s_measured_recommendation() {
         assert_eq!(u64::from(CANONICAL.width) * u64::from(CANONICAL.height), 648_000_000);
         assert_eq!((CANONICAL.shard_cols(), CANONICAL.shard_rows(), CANONICAL.shard_count()), (6, 4, 24));
         assert_eq!(CANONICAL.tile_edge, 256);
@@ -978,12 +1013,13 @@ mod tests {
     /// a source added to `MOSAIC_PRIORITY` without a licence line cannot pass.
     #[test]
     fn every_mosaic_source_reaches_the_manifests_attribution_in_priority_order() {
-        use crate::source::{dwd_rv, gfs, icon_eu, opera_cirrus, opera_nimbus, us, MOSAIC_PRIORITY};
+        use crate::source::{dwd_rv, gfs, hrrr, icon_eu, mrms, opera_cirrus, opera_nimbus, MOSAIC_PRIORITY};
         let known: Vec<(&'static str, Attribution)> = vec![
             (dwd_rv::ID, dwd_rv::ATTRIBUTION),
-            (us::ID, us::ATTRIBUTION),
+            (mrms::ID, mrms::ATTRIBUTION),
             (opera_cirrus::ID, opera_cirrus::ATTRIBUTION),
             (opera_nimbus::ID, opera_nimbus::ATTRIBUTION),
+            (hrrr::ID, hrrr::ATTRIBUTION),
             (icon_eu::ID, icon_eu::ATTRIBUTION),
             (gfs::ID, gfs::ATTRIBUTION),
         ];
@@ -1017,10 +1053,10 @@ mod tests {
 
     #[test]
     fn a_cycle_anchors_on_the_quarter_hour_and_spans_two_hours() {
-        let times = CycleTimes::anchored_at(manifest::parse_rfc3339("2026-08-09T14:37:11Z").expect("timestamp"));
-        assert_eq!(manifest::rfc3339(times.reference_time), "2026-08-09T14:30:00Z");
+        let times = CycleTimes::anchored_at(timefmt::parse_rfc3339("2026-08-09T14:37:11Z").expect("timestamp"));
+        assert_eq!(timefmt::rfc3339(times.reference_time), "2026-08-09T14:30:00Z");
         let offsets: Vec<u32> = times.offsets_min().collect();
         assert_eq!(offsets, vec![0, 15, 30, 45, 60, 75, 90, 105, 120]);
-        assert_eq!(manifest::rfc3339(times.valid_at(120)), "2026-08-09T16:30:00Z");
+        assert_eq!(timefmt::rfc3339(times.valid_at(120)), "2026-08-09T16:30:00Z");
     }
 }

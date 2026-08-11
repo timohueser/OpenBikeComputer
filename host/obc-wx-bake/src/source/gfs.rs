@@ -27,7 +27,7 @@
 //! corridor there finds no product rather than a fabricated one. The same reasoning drops the two
 //! polar rows (a cell centred on a pole would need an edge beyond +/-90 degrees).
 
-use obc_formats::obcg::{FLAG_FORECAST, PRODUCT_GFS, TIER_FLOOR};
+use obc_formats::obcg::FLAG_FORECAST;
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
@@ -35,8 +35,7 @@ use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_field, DecodedField, ExpectedGrib, GFS_GLOBAL_GRID_DEFINITION_HEX};
 use crate::idx::{self, MAX_INDEX_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct, NOAA_TERMS_URL};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, NOAA_TERMS_URL};
 
 pub const ID: &str = "gfs";
 pub const BUCKET: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
@@ -191,13 +190,7 @@ impl Adapter for GfsFloor {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
         GEOMETRY.validate()?;
         // Newest sufficiently complete run: every retained lead's index must exist before the run
         // is selectable, which is also what keeps the baker from racing a partial publication.
@@ -213,17 +206,6 @@ impl Adapter for GfsFloor {
             break;
         }
         let run = selected.ok_or("no complete GFS run among the recent cycles")?;
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "gfs: newest complete run {run} is older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
 
         let mut previous_field: Option<(u32, DecodedField)> = None;
         let mut frames = Vec::with_capacity(LEADS_H.len());
@@ -271,17 +253,7 @@ impl Adapter for GfsFloor {
             });
             previous_field = Some((lead, field));
         }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
-            id: ID,
-            product_code: PRODUCT_GFS,
-            tier: TIER_FLOOR,
-            geometry: GEOMETRY,
-            reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
-            attribution: ATTRIBUTION,
-            upstream_etag: None,
-            frames,
-        })))
+        Ok(BakedSource { id: ID, geometry: GEOMETRY, reference_time: run, attribution: ATTRIBUTION, frames })
     }
 }
 
@@ -331,13 +303,7 @@ pub fn deaccumulate(
             cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
         }
     }
-    Ok(BakedFrame {
-        offset_min: lead * 60,
-        valid_at: run + i64::from(lead) * 3_600,
-        flags: FLAG_FORECAST,
-        source: None,
-        cells,
-    })
+    Ok(BakedFrame { offset_min: lead * 60, valid_at: run + i64::from(lead) * 3_600, flags: FLAG_FORECAST, cells })
 }
 
 /// The native point index a published cell samples — the exact integer remap the bake performs,
@@ -431,7 +397,7 @@ mod tests {
 
     #[test]
     fn selectors_and_keys_follow_the_pinned_schema() {
-        let run = crate::manifest::parse_rfc3339("2026-08-09T12:00:00Z").unwrap();
+        let run = crate::timefmt::parse_rfc3339("2026-08-09T12:00:00Z").unwrap();
         assert_eq!(
             object_url(run, 3),
             "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260809/12/atmos/gfs.t12z.pgrb2.0p25.f003"

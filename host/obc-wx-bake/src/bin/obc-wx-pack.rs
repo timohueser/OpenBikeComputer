@@ -21,9 +21,9 @@
 use std::path::{Path, PathBuf};
 
 use obc_wx_bake::fetch::HttpUpstream;
-use obc_wx_bake::manifest;
 use obc_wx_bake::pack::capture::{capture, materialize, CaptureRequest, DEFAULT_TRUTH_OFFSETS_MIN};
 use obc_wx_bake::pack::{self, archive, rebake, verify_digests, BboxUdeg, Event, Role};
+use obc_wx_bake::timefmt;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -116,11 +116,10 @@ fn run_capture(args: &[String]) -> Result<(), String> {
         return Err(format!("event id {id:?} must be ASCII alphanumerics and dashes"));
     }
     let at = flags.value("at").ok_or("capture needs --at <rfc3339>")?;
-    let now = manifest::parse_rfc3339(at).ok_or_else(|| format!("--at: {at} is not RFC 3339"))?;
-    let bbox = match flags.value("bbox") {
-        Some(text) => Some(BboxUdeg::parse(text)?),
-        None => None,
-    };
+    let now = timefmt::parse_rfc3339(at).ok_or_else(|| format!("--at: {at} is not RFC 3339"))?;
+    // Required: the bakery publishes one global lattice in 24 shards, and a shard is not a thing
+    // a repository can hold, so a pack always names the ground it covers.
+    let bbox = BboxUdeg::parse(flags.value("bbox").ok_or("capture needs --bbox <s,w,n,e>")?)?;
     let truth_offsets_min = match flags.value("truth-offsets") {
         None => DEFAULT_TRUTH_OFFSETS_MIN.to_vec(),
         Some("none") => Vec::new(),
@@ -145,11 +144,11 @@ fn run_capture(args: &[String]) -> Result<(), String> {
     };
 
     eprintln!(
-        "capturing {} as of {} into {} (adapter {}, archives: {})",
+        "capturing {} as of {} into {} (sources {}, archives: {})",
         request.id,
-        manifest::rfc3339(now),
+        timefmt::rfc3339(now),
         root.display(),
-        archive::SUPPORTED_ADAPTERS.join(", "),
+        archive::SUPPORTED_SOURCES.join(", "),
         archive::MTARCHIVE
     );
     let mut network = HttpUpstream::new();
@@ -238,9 +237,22 @@ fn pack_root(flags: &Flags) -> Result<(PathBuf, Event), String> {
 }
 
 fn run_rebake(args: &[String]) -> Result<(), String> {
-    let flags = parse(args, &[])?;
-    flags.reject_unknown(&["out"])?;
-    let (root, event) = pack_root(&flags)?;
+    let flags = parse(args, &["write"])?;
+    flags.reject_unknown(&["out", "write"])?;
+    let (root, mut event) = pack_root(&flags)?;
+    // `--write` re-derives the pack's baked halves in place instead of comparing against them. It
+    // is what absorbs a deliberate change to the lattice, the emitter or the quantization; the raw
+    // `upstream/` bytes and the provenance in `members[]` are never touched.
+    if flags.present("write") {
+        rebake::regenerate(&root, &mut event)?;
+        println!(
+            "{}: re-derived {} service objects and {} truth frames from upstream/",
+            event.id,
+            event.service.len(),
+            event.truth_frames.len()
+        );
+        return Ok(());
+    }
     let scratch = match flags.value("out") {
         Some(dir) => PathBuf::from(dir),
         None => std::env::temp_dir().join(format!("obc-wx-pack-rebake-{}", std::process::id())),
@@ -291,17 +303,14 @@ fn run_show(args: &[String]) -> Result<(), String> {
     println!("{} — {}", event.id, event.title);
     println!("  region     {}", event.region);
     println!("  window     {} .. {}", event.window_start, event.window_end);
-    println!("  bake       adapter {} at {}", event.bake.adapter, event.bake.now);
-    match event.bake.bbox_udeg {
-        Some(bbox) => println!(
-            "  crop       {:.3},{:.3} .. {:.3},{:.3}",
-            bbox.south_udeg as f64 / 1e6,
-            bbox.west_udeg as f64 / 1e6,
-            bbox.north_udeg as f64 / 1e6,
-            bbox.east_udeg as f64 / 1e6
-        ),
-        None => println!("  crop       none (full domain)"),
-    }
+    println!("  bake       sources {} at {}", event.bake.sources.join("+"), event.bake.now);
+    println!(
+        "  window     {:.3},{:.3} .. {:.3},{:.3}",
+        event.bake.bbox_udeg.south_udeg as f64 / 1e6,
+        event.bake.bbox_udeg.west_udeg as f64 / 1e6,
+        event.bake.bbox_udeg.north_udeg as f64 / 1e6,
+        event.bake.bbox_udeg.east_udeg as f64 / 1e6
+    );
     println!(
         "  coverage   {:.3},{:.3} .. {:.3},{:.3}",
         event.coverage_udeg.south_udeg as f64 / 1e6,

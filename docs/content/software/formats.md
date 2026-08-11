@@ -1154,37 +1154,42 @@ file whose random read includes a seek.
 
 The rain frames the phone crops into OBCW start life as **OBCG** grid objects — the static files
 the stateless weather bakery ([`obc-wx-bake`](src:host/obc-wx-bake)) publishes to object storage.
-One OBCG object is exactly one frame of one product (a DWD radar nowcast step, an ICON-EU model
-hour), so products whose frames have different native resolutions compose with no resampling at
-all. The US product is exactly that: frame 0 is a 1 km MRMS radar observation and the forward
-frames are 3 km HRRR model steps, one timeline whose frames keep their own grids, their own real
-valid times and their own observation/forecast provenance.
+One OBCG object is exactly one frame of one shard of **one dataset**: a global 0.01 degree lattice,
+15 minutes apart, nine frames per cycle, cut into a 6 × 4 grid of shards because a global frame is
+648 million cells and the format caps an object at 30 million.
 
-"No resampling" has a price, and it is worth naming because getting it wrong is invisible. A phone
-assembling one OBCW bundle has to state a single geographic window for the whole timeline, and it
-picks the coarsest frame's. Every other frame is then laid onto that window at *its own* cell size
-— which only works if the window is a whole number of that frame's cells, aligned to its lattice.
-When it is not, the frame is refused rather than stretched, because a stretched frame is a
-fabricated observation. So a composed product's lattices must **nest**: the coarse cell strides
-have to be integer multiples of the fine ones, and the origins congruent. Each object is
-individually valid either way — it is the *composition* that breaks — so the rule lives in the
-spec, is pinned by tests over the baker's lattice constants, and is re-checked at bake time for
-composed products, where a violation fails the cycle rather than publishing a product a client
-would take apart. The US product learned this the hard way: a 27,000 × 34,000 microdegree forecast
-lattice over a 10,000 × 10,000 observation divides in neither axis, and the 1 km radar frame was
-silently dropped from every bundle until the forecast lattice moved to 30,000 × 30,000.
+That sentence used to read differently, and the difference is the whole story of this section. The
+bakery published **four products at four native resolutions** — a 1 km German radar nowcast, a
+6.5 km European model, a composed CONUS timeline of 1 km radar and 3 km model, a 27.75 km global
+floor — and the client chose between them by tier, bounding-box containment and freshness. The
+governing principle was *no resampling, by construction*: every frame kept its own grid, and a
+phone assembling one bundle stated a single window for the whole timeline and laid the other frames
+onto it at their own cell sizes.
 
-That last paragraph is now history rather than description, and the trade it names is the one we
-took back. "No resampling, by construction" bought a precision distinction no rider ever asked for
-and paid for it with a selection policy in three implementations — and with exactly the class of
-bug the US lattice was. So the baker now **normalises every source onto one canonical global
-0.01 degree lattice** before it publishes anything: coarse sources are cell-replicated (one
+It was the wrong trade, and it had a failure mode that was invisible by construction. A frame the
+common window could not tile exactly was **refused** rather than stretched — correct, because a
+stretched frame is a fabricated observation — so the composed CONUS product's 27,000 × 34,000
+microdegree forecast lattice, which divides the 10,000 × 10,000 observation lattice in neither
+axis, silently dropped the 1 km radar frame out of every bundle. Every rider in the United States
+saw model forecast and no radar at all, and nothing anywhere reported an error. The fix at the time
+was a nesting contract checked at bake time; the fix in the end was to stop composing.
+
+So the baker **normalises every source onto one global 0.01 degree lattice** before it publishes
+anything: coarse sources are cell-replicated (one
 6.5 km model cell becomes a block of identical 1 km cells), and where two sources overlap, one
 ordered priority table — radar over model, finer radar over coarser, national over pan-European,
 a global floor last — decides each cell. The resampling still happens exactly once and still
 nearest-neighbour, which is what the format always required; what changed is that it happens in
 the baker instead of being pushed onto every consumer. Downstream there are no products, no tiers,
-no bboxes and no resolutions to choose between, so there is no composition left to get wrong.
+no bboxes and no resolutions to choose between, so there is no composition left to get wrong — and
+the nesting contract, the selection policy and the product registry are not deprecated but deleted,
+from both clients, from the producer and from the spec. An OBCG object no longer carries a product
+id or a tier at all: those two header bytes are reserved and must be zero, and a decoder that finds
+anything there rejects the object.
+
+Which source painted a cell is now baker configuration and reaches nobody: adding a European radar
+source, or reordering two of them, is a bakery deploy that no client, phone or device release has
+to follow.
 
 Both clients are that much smaller for it. What used to be a tier ladder, a containment test, an
 expired-product shadowing rule and a refusal to bundle a frame whose lattice did not tile the

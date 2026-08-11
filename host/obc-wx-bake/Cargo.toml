@@ -22,7 +22,7 @@ tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 chrono = "0.4.34"
 # Manifest model + the schemars-derived JSON Schema, pinned the same way obc-pack pins its config
-# schema: the checked-in `schema/manifest.schema.json` must equal the generated document.
+# schema: the checked-in `schema/manifest-v2.schema.json` must equal the generated document.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 schemars = { version = "1", features = ["preserve_order"] }
@@ -35,4 +35,3 @@ sha2 = "0.11"
 # VPS shape, and `getrusage` for a true peak-RSS high-water mark. Both are already in the
 # workspace lock; the spike adds no new third-party code to the bakery.
 rayon = "1"
-libc = "0.2"
