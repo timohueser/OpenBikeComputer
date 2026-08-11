@@ -63,13 +63,21 @@ StandardError=journal
 SyslogIdentifier=obc-wx-bake
 
 # ── Resource caps ────────────────────────────────────────────────────────────────────────────
-# The epic's budget is <1 GB RSS per cycle. These were set against the multi-product baker's
-# measured 52 MB (RV+ICON, #1215); the mosaic's measured peak is **398 MB** at BAKE_THREADS=4
-# (WXR1 #1254), which the old MemoryHigh=384M would have throttled on every single cycle. Re-derived
-# with the same shape of headroom: MemoryHigh at ~1.6x the measurement, MemoryMax as the hard
-# fail-closed ceiling at the epic's budget. An OOM-killed bake publishes nothing, exactly like any
-# other failure. Raise them here (and only here), and only with a measurement.
-MemoryHigh=640M
+# The epic's budget is <1 GB RSS per cycle. This was set against the multi-product baker's measured
+# 52 MB (RV+ICON, #1215); the mosaic's measured peak is **398 MB** at BAKE_THREADS=4 (WXR1 #1254),
+# so the old MemoryHigh=384M sat *below* the measurement and would have throttled every cycle.
+#
+# **There is no MemoryHigh any more, and that is the deliberate half** (#1274 r2). MemoryHigh is a
+# throttle, not a ceiling: crossing it does not fail anything, it applies reclaim pressure and makes
+# the cycle slower. Against a single 398 MB measurement and a 600 s deadline, any MemoryHigh we
+# could honestly justify would be close enough to the measurement to convert a normal spike — a
+# wetter planet, a larger upstream field — into a slow cycle, and a slow enough cycle into a
+# TimeoutStartSec kill. That trades a soft, invisible condition for a hard one, in the direction
+# nobody wants.
+#
+# MemoryMax stays as the one number: a hard, fail-closed ceiling at the epic's stated budget and
+# 2.5x the measurement. An OOM-killed bake publishes nothing, exactly like any other failure, and
+# the previous generation stands. Raise it here (and only here), and only with a measurement.
 MemoryMax=1G
 TasksMax=64
 # Bakes are background work on a box that must stay responsive to ssh.
