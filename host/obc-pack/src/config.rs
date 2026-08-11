@@ -202,6 +202,9 @@ struct LodDocument {
     #[serde(default = "default_false_document")]
     #[schemars(default = "default_false_document")]
     coverage_simplify: Option<bool>,
+    #[serde(default = "default_zero_f64_document")]
+    #[schemars(default = "default_zero_f64_document")]
+    min_line_km: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -272,6 +275,7 @@ fn default_lods_document() -> Option<Vec<LodDocument>> {
         simplify: Some(0.0),
         min_area_px: Some(0.0),
         coverage_simplify: Some(false),
+        min_line_km: Some(0.0),
     }])
 }
 
@@ -601,6 +605,16 @@ pub struct Lod {
     /// outlined polygons and every downstream stage are untouched. Default `false` ⇒ the tier
     /// packs byte-identically to before.
     pub coverage_simplify: bool,
+    /// Post-stitch minimum length for a **line** in **kilometres**; `0.0` ⇒ off (the default, and
+    /// byte-identical to a pack that predates the knob).
+    ///
+    /// Applied straight after [`crate::merge::merge_lines_with`], so it measures a *stitched*
+    /// record, not a raw OSM way — see [`crate::geom::line_below`] for why that distinction is the
+    /// whole safety argument. It exists for the far-zoom tiers, where a road class earns its place
+    /// by drawing a long-distance skeleton to orient on: there the junction stubs and roundabout
+    /// arms left over from stitching are sub-pixel, invisible, and each still costs a render span
+    /// and its vertices. Polygons are never touched.
+    pub min_line_km: f64,
 }
 
 /// The parsed `contours` config section (EL10a, #1094): what [`crate::contour`] traces out of the
@@ -736,7 +750,13 @@ impl Config {
                 .enumerate()
                 .map(|(index, lod)| lod.normalize(index))
                 .collect::<Result<Vec<_>, _>>()?,
-            _ => vec![Lod { max_mpp: None, simplify_m: 0.0, min_area_px: 0.0, coverage_simplify: false }],
+            _ => vec![Lod {
+                max_mpp: None,
+                simplify_m: 0.0,
+                min_area_px: 0.0,
+                coverage_simplify: false,
+                min_line_km: 0.0,
+            }],
         };
 
         // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
@@ -750,6 +770,18 @@ impl Config {
         let chunk_size = document.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let merge_fills = document.merge_fills.unwrap_or(false);
         let merge_lines = document.merge_lines.unwrap_or(false);
+        // `min_line_km` only means anything on stitched records — without `merge_lines` it would
+        // measure raw OSM ways and punch the very holes `geom::footprint_below` refuses to. Reject
+        // the combination rather than silently ignoring the knob or silently shredding the roads.
+        if !merge_lines {
+            if let Some(i) = lods.iter().position(|l| l.min_line_km > 0.0) {
+                return Err(format!(
+                    "config lods[{i}].min_line_km: needs merge_lines enabled — it culls by the length of a \
+                     *stitched* line, and with no stitching it would drop the short fragments every OSM road is \
+                     built from"
+                ));
+            }
+        }
         let contours = document.contours.normalize()?;
         let routing = document.routing.normalize()?;
 
@@ -834,11 +866,16 @@ impl LodDocument {
         if min_area_px < 0.0 {
             return Err(format!("config lods[{index}].min_area_px: {min_area_px} must be >= 0"));
         }
+        let min_line_km = self.min_line_km.unwrap_or(0.0);
+        if !(min_line_km.is_finite() && min_line_km >= 0.0) {
+            return Err(format!("config lods[{index}].min_line_km: {min_line_km} must be a finite value >= 0"));
+        }
         Ok(Lod {
             max_mpp: self.max_mpp,
             simplify_m,
             min_area_px,
             coverage_simplify: self.coverage_simplify.unwrap_or(false),
+            min_line_km,
         })
     }
 }
@@ -985,6 +1022,15 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
          to before."
             .into(),
     );
+    lod_props["min_line_km"]["description"] = Value::String(
+        "Drop lines shorter than this many kilometres; 0 (the default) means no culling and packs byte-identically \
+         to before. Measured after same-class fragments are stitched together (merge_lines), so it drops the short \
+         leftovers stitching could not absorb — junction stubs, roundabout arms — and keeps the long-distance \
+         skeleton. For far-zoom tiers only: at 333 m/px a 40 m stub is an eighth of a pixel, invisible, and still \
+         costs the renderer a span. Polygons are never affected."
+            .into(),
+    );
+    lod_props["min_line_km"]["minimum"] = Value::from(0.0);
 
     let profile = defs.get_mut("profile").expect("profile schema");
     profile["description"] = Value::String(
@@ -1263,11 +1309,18 @@ mod tests {
             "strictly decreasing, coarsest first"
         );
         // The two far-zoom tiers: the only ones that run the coverage pass, where `min_area_px`
-        // is an elimination threshold rather than a drop (`crate::coverage`).
+        // is an elimination threshold rather than a drop (`crate::coverage`), and the only ones
+        // that cull short stitched lines. Both budgets are spent on the same trade: fills there
+        // are deliberately crude so the road classes have the render scratch to draw a skeleton.
         assert!(cfg.lods[0].coverage_simplify && cfg.lods[1].coverage_simplify);
         assert!(cfg.lods[2..].iter().all(|l| !l.coverage_simplify), "and the tiers that predate them are untouched");
-        assert_eq!((cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (2200.0, 250.0));
-        assert_eq!((cfg.lods[1].simplify_m, cfg.lods[1].min_area_px), (700.0, 700.0));
+        assert_eq!((cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (3000.0, 350.0));
+        assert_eq!((cfg.lods[1].simplify_m, cfg.lods[1].min_area_px), (1500.0, 1000.0));
+        assert_eq!((cfg.lods[0].min_line_km, cfg.lods[1].min_line_km), (1.0, 0.5));
+        assert!(
+            cfg.lods[2..].iter().all(|l| l.min_line_km == 0.0),
+            "the tiers that predate the cull keep every stitched line, so they pack byte-identically"
+        );
         // Tier 2 is the ladder's former coarsest rung, verbatim but for its new ceiling.
         assert_eq!((cfg.lods[2].simplify_m, cfg.lods[2].min_area_px), (200.0, 50.0));
         assert_eq!(cfg.lods[8].simplify_m, 0.5);
@@ -1547,6 +1600,36 @@ mod tests {
         assert!(cfg.merge_fills);
         assert!(!cfg.merge_lines);
         assert!(Config::parse(r#"{"merge_fills": "yes"}"#).is_err());
+    }
+
+    /// `min_line_km` is optional and off by default, so every config written before the knob
+    /// existed parses to a ladder that culls nothing.
+    #[test]
+    fn min_line_km_defaults_to_off() {
+        let cfg = Config::parse(r#"{"merge_lines": true, "lods": [{"max_mpp": null}, {"max_mpp": 100}]}"#).unwrap();
+        assert!(cfg.lods.iter().all(|l| l.min_line_km == 0.0));
+        let null = Config::parse(r#"{"merge_lines": true, "lods": [{"max_mpp": null, "min_line_km": null}]}"#).unwrap();
+        assert_eq!(null.lods[0].min_line_km, 0.0, "an explicit null is the default, not an error");
+    }
+
+    /// It is a length, so it must be a finite, non-negative number — and it must have something
+    /// stitched to measure, which is `merge_lines`.
+    #[test]
+    fn min_line_km_is_validated_and_needs_merge_lines() {
+        let with = |lod: &str| format!(r#"{{"merge_lines": true, "lods": [{lod}]}}"#);
+        assert_eq!(Config::parse(&with(r#"{"min_line_km": 2.5}"#)).unwrap().lods[0].min_line_km, 2.5);
+        let neg = Config::parse(&with(r#"{"min_line_km": -1}"#)).err().expect("a negative length is refused");
+        assert!(neg.contains("min_line_km"), "the message names the field: {neg}");
+        assert!(Config::parse(&with(r#"{"min_line_km": "far"}"#)).is_err(), "typed: not a string");
+        // Without merge_lines the cull would measure raw OSM ways, so the pair is refused
+        // outright rather than quietly ignored (or quietly shredding every road).
+        let unstitched =
+            Config::parse(r#"{"lods": [{"min_line_km": 1.0}]}"#).err().expect("the knob needs merge_lines");
+        assert!(unstitched.contains("merge_lines"), "the message points at the missing pass: {unstitched}");
+        assert!(
+            Config::parse(r#"{"lods": [{"min_line_km": 0.0}]}"#).is_ok(),
+            "but the off value is fine anywhere, so an untouched ladder never trips it"
+        );
     }
 
     #[test]

@@ -279,13 +279,30 @@ fn run(
             // `merge_fills` is skipped there (it would be a strictly weaker version of the
             // dissolve the coverage pass already did, over the same candidate set) while
             // `merge_lines`, which touches only lines, still runs and runs first.
+            // The post-stitch length cull (`min_line_km`). It runs only where `merge_lines` just
+            // ran, because it is only meaningful on a stitched record — see
+            // [`crate::geom::line_below`]. `Config::normalize` refuses the knob without
+            // `merge_lines`, so "only here" costs no reachable configuration. `0.0` ⇒ untouched.
+            let cull_short_lines = |feats: Vec<(u8, Geom)>| -> Vec<(u8, Geom)> {
+                if lod.min_line_km <= 0.0 {
+                    return feats;
+                }
+                let before = feats.len();
+                let kept: Vec<(u8, Geom)> =
+                    feats.into_iter().filter(|(_, g)| !crate::geom::line_below(g, lod.min_line_km)).collect();
+                let dropped = before - kept.len();
+                if dropped > 0 {
+                    progress.log(format!("  culled {dropped} stitched line(s) shorter than {} km", lod.min_line_km));
+                }
+                kept
+            };
             let level: Vec<(u8, Geom)> = if lod.coverage_simplify {
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
                 if config.merge_lines {
                     let (merged, m) = merge_lines_with(feats, &line_classes, progress);
                     report_merge(progress, m, "line fragment", "into");
-                    feats = merged;
+                    feats = cull_short_lines(merged);
                 }
                 let (feats, c) = coverage_simplify_fills_with(
                     feats,
@@ -308,7 +325,7 @@ fn run(
                 if config.merge_lines {
                     let (merged, m) = merge_lines_with(feats, &line_classes, progress);
                     report_merge(progress, m, "line fragment", "into");
-                    feats = merged;
+                    feats = cull_short_lines(merged);
                 }
                 feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g, true, false)).collect()
             } else {
