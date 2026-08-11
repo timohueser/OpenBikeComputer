@@ -43,14 +43,13 @@
 //! ([`COVERAGE_FRACTION`]) when a frame's coverage departs far enough from it to mean something
 //! broke upstream.
 
-use obc_formats::obcg::FLAG_OBSERVED;
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::laea;
-use crate::source::{Attribution, BakedFrame, BakedSource};
+use crate::source::{Attribution, BakedFrame, BakedSource, SourceClass};
 use crate::tiff::{self, Cog};
 
 /// The live 24-hour bucket. Anonymous, no credentials, CC BY 4.0.
@@ -435,7 +434,7 @@ pub fn bake_frame_on(
     Ok(BakedFrame {
         offset_min: 0,
         valid_at,
-        flags: FLAG_OBSERVED,
+        class: SourceClass::Observation,
         cells: resample(contract, &cog, geometry, warnings)?,
     })
 }

@@ -27,7 +27,6 @@
 //! corridor there finds no product rather than a fabricated one. The same reasoning drops the two
 //! polar rows (a cell centred on a pole would need an edge beyond +/-90 degrees).
 
-use obc_formats::obcg::FLAG_FORECAST;
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
@@ -35,7 +34,7 @@ use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_field, DecodedField, ExpectedGrib, GFS_GLOBAL_GRID_DEFINITION_HEX};
 use crate::idx::{self, MAX_INDEX_BYTES};
-use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, NOAA_TERMS_URL};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass, NOAA_TERMS_URL};
 
 pub const ID: &str = "gfs";
 pub const BUCKET: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
@@ -303,7 +302,12 @@ pub fn deaccumulate(
             cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
         }
     }
-    Ok(BakedFrame { offset_min: lead * 60, valid_at: run + i64::from(lead) * 3_600, flags: FLAG_FORECAST, cells })
+    Ok(BakedFrame {
+        offset_min: lead * 60,
+        valid_at: run + i64::from(lead) * 3_600,
+        class: SourceClass::Forecast,
+        cells,
+    })
 }
 
 /// The native point index a published cell samples — the exact integer remap the bake performs,

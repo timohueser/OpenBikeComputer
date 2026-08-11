@@ -51,8 +51,25 @@
 //! a constant stating the lattice, rather than describing a per-cell source that no longer has one
 //! value.
 //!
-//! The one flag that *is* still provenance, `FLAG_OBSERVED`, is computed rather than assumed, and
-//! it is two facts and not one: see [`shard_is_observed`].
+//! The one flag that *is* still provenance, `FLAG_OBSERVED`, is computed rather than assumed: see
+//! [`shard_is_observed`].
+//!
+//! ## Forward frames are forecasts
+//!
+//! Locked 2026-08-11 (#1248). A frame at `offset_min > 0` may only be painted by **forecast** source
+//! data; an observation is eligible for the anchor and for nothing else, everywhere, however near
+//! its measurement instant happens to sit. The rule is one function — [`frame_is_eligible`] —
+//! applied before the skew window and before the priority table, and it is why a forward frame can
+//! never be a repeated "now" image wearing a future `valid_at`.
+//!
+//! It turns on the source data's **class**, not on its distance, and the two must not be run
+//! together. The skew window still applies on top, so one hourly model step legitimately paints
+//! **four** consecutive 15-minute frames: the 11:00 step wins 10:30, 10:45, 11:00 and 11:15,
+//! because the :30 instants are 1,800 s from *both* flanking steps and the tie breaks toward the
+//! later one ([`MosaicLayer::nearest`]). The guarantee is "a prediction", not "a prediction of
+//! exactly this instant", and `OBCG_Spec.md` §3.2 states it in those terms. What makes that
+//! different from the frozen observation is what the data is *about*: the nearest model step is a
+//! defensible answer for 17:15, and a radar scan of 16:58 is not an answer for 17:15 at all.
 
 use std::time::Instant;
 
@@ -64,7 +81,7 @@ use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
 use crate::manifest_v2;
 use crate::publish::{self, ObjectStore, PlannedObject};
-use crate::source::{mosaic_rank, Adapter, Attribution, BakedSource};
+use crate::source::{mosaic_rank, Adapter, Attribution, BakedSource, SourceClass};
 use crate::timefmt;
 
 // ---------------------------------------------------------------------------------------------
@@ -88,6 +105,19 @@ pub const FRAME_STEP_MIN: u32 = 15;
 /// The coarsest cadence any source publishes is hourly (GFS, ICON-EU), so a half-hour window
 /// always finds one; anything further away is a source that has fallen out of the timeline, and
 /// the mosaic drops through to the next-priority source rather than painting stale cells.
+///
+/// **The margin against an hourly source is exactly zero, and the comparison is `<=`.** A cycle
+/// anchors on a quarter hour, so every frame instant lands at :00, :15, :30 or :45; the ones at
+/// :30 are 1,800 s from *both* flanking hourly steps and are sampled only because the bound is
+/// inclusive. Lowering this constant by one second, or moving the cadence off the quarter hour,
+/// drops the floor out of two of every four frames — which since #1248 is no longer masked by a
+/// radar observation stepping in, and publishes intensity 15 instead. Do not retune it without
+/// reading `the_hourly_floor_reaches_every_offset_with_exactly_zero_margin`, which fails if either
+/// number moves.
+///
+/// It is also a *distance* bound and nothing more. Being inside it does not make a source frame
+/// eligible for a canonical frame — see [`frame_is_eligible`], which the skew window is applied
+/// on top of, never instead of.
 pub const MAX_FRAME_SKEW_S: i64 = 1_800;
 
 /// The rayon pool the mosaic fills and encodes on.
@@ -336,14 +366,95 @@ impl Lattice {
 #[derive(Debug)]
 pub struct SourceFrame {
     pub valid_at: i64,
-    /// Was this frame an **observation** upstream (`obcg::FLAG_OBSERVED`), or a forecast? The only
-    /// provenance the published dataset still carries, and it is carried per object rather than
-    /// assumed — see [`FillOutcome::all_observed`].
-    pub observed: bool,
+    /// Observation or forecast, carried verbatim from the adapter ([`crate::source::SourceClass`]).
+    /// It decides two separate things and they must not be confused: **which canonical frames this
+    /// frame may paint at all** ([`frame_is_eligible`]), and, for the ones it does paint, whether
+    /// they may claim `FLAG_OBSERVED` ([`FillOutcome::all_observed`]).
+    pub class: SourceClass,
     /// The **source window**: where this source has data and at what pitch. Not an output
     /// lattice — the mosaic resamples from it.
     pub window: GridGeometry,
     pub cells: Vec<u8>,
+}
+
+/// **Which canonical frame is being painted**: its place on the cadence and the instant it is
+/// about. The two travel together everywhere the mosaic is asked a question, because
+/// [`frame_is_eligible`] needs the offset and the distance rule needs the instant, and a caller
+/// that could pass one without the other could ask for a forward frame while the mosaic believed
+/// it was painting the anchor.
+///
+/// The fields are private and there are exactly two constructors — [`CycleTimes::slot`], which
+/// derives both from one reference time, and [`FrameSlot::anchor`], which can only make an anchor.
+/// Neither can produce a pair that disagrees, which is what makes the paragraph above a property
+/// rather than a hope: with public fields `FrameSlot { offset_min: 0, valid_at: t + 900 }` would
+/// have been an ordinary struct literal that quietly re-admits observations to a forward frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameSlot {
+    offset_min: u32,
+    valid_at: i64,
+}
+
+impl FrameSlot {
+    /// The anchor slot of a cycle referenced at `valid_at` — f0, the only slot an observation may
+    /// paint.
+    pub fn anchor(valid_at: i64) -> Self {
+        Self { offset_min: 0, valid_at }
+    }
+
+    /// Minutes ahead of the cycle's reference time; `0` is the anchor.
+    pub fn offset_min(&self) -> u32 {
+        self.offset_min
+    }
+
+    /// `reference_time + offset_min x 60` — what the emitted frame's `valid_at` states.
+    pub fn valid_at(&self) -> i64 {
+        self.valid_at
+    }
+}
+
+/// **The eligibility rule: a forward frame is a forecast, always** (Timo's decision, #1248).
+///
+/// A source frame that was an *observation* upstream has one valid time and it is a measurement
+/// instant in the past. It is therefore eligible for exactly one canonical frame — the anchor, the
+/// only frame whose instant an observation can exist for. Every frame at `offset_min > 0` is about
+/// the future, and what may paint it is a **forecast**: HRRR's leads, ICON-EU's and GFS's steps, and
+/// DWD RV's own nowcast members, which the adapter already classes `Forecast` for every lead but 0.
+///
+/// It is a test on the class and not on the distance, and the skew window still runs on top of it,
+/// so a forecast may paint a frame it is not exactly valid at. **The quantity is four consecutive
+/// 15-minute frames per hourly step** — the 11:00 step wins 10:30, 10:45, 11:00 and 11:15, since a
+/// :30 instant sits 1,800 s from both flanking steps and [`MosaicLayer::nearest`] breaks that tie
+/// toward the later one. Ordinary rather than degraded, and worth stating as a number: it is the
+/// thing a reader would otherwise assume away.
+///
+/// That is not the same latitude the frozen observation was taking: the nearest prediction is a
+/// defensible answer for 17:15, and a measurement of 16:58 is not an answer for 17:15 in any sense.
+/// `OBCG_Spec.md` §3.2 is normative and says exactly this.
+///
+/// This replaces the rule WXR7 shipped, which let any observation inside [`MAX_FRAME_SKEW_S`]
+/// paint f+15 and f+30 as long as the object said Forecast. Labelling it honestly was not enough:
+/// one "now" image published at three validities is three statements about three instants, and
+/// only one of them is about the instant anything measured. Where no forecast source reaches a
+/// forward frame the honest answer is intensity 15, not a frozen field — and in practice the
+/// hourly GFS floor reaches all nine offsets, which
+/// `the_floor_offers_an_eligible_forecast_at_every_one_of_the_nine_offsets` pins.
+///
+/// Persistence as a *deliberate* product — a radar-derived forecast, extrapolated rather than
+/// frozen — is WXR9 #1251's job. It joins the mosaic as a source whose forward frames are
+/// forecasts, and this rule admits it on exactly those terms.
+pub fn frame_is_eligible(class: SourceClass, offset_min: u32) -> bool {
+    if offset_min == 0 {
+        // The anchor takes anything: an observation of that instant, or a forecast for it.
+        return true;
+    }
+    // Exhaustive on purpose, and `#[non_exhaustive]`-free on purpose, so adding a variant to
+    // `SourceClass` fails to compile here rather than defaulting into forward eligibility. A
+    // `!is_observation()` would have admitted a future `Analysis` or `Nowcast` variant silently —
+    // the same shape as the `flags & FLAG_OBSERVED != 0` this rule just replaced one level down.
+    match class {
+        SourceClass::Observation => false,
+        SourceClass::Forecast => true,
+    }
 }
 
 /// Every frame one source contributes to the mosaic, at its priority rank.
@@ -372,45 +483,50 @@ impl MosaicLayer {
             if frame.cells.len() != window.cells() {
                 return Err(format!("{id}: frame f{} cell count disagrees with its source window", frame.offset_min));
             }
-            frames.push(SourceFrame {
-                valid_at: frame.valid_at,
-                observed: frame.flags & obcg::FLAG_OBSERVED != 0,
-                window,
-                cells: frame.cells,
-            });
+            // `class` is a two-variant enum with no default, so this cannot silently decode a
+            // forgotten or malformed classification as Forecast — which the old `flags & bit != 0`
+            // did for `0`, for both bits, and for any reserved bit. See `source::SourceClass`.
+            frames.push(SourceFrame { valid_at: frame.valid_at, class: frame.class, window, cells: frame.cells });
         }
         frames.sort_by_key(|frame| frame.valid_at);
         Ok(Self { id, rank, attribution, frames })
     }
 
-    /// The frame to sample for a canonical frame valid at `valid_at`.
+    /// The frame to sample for canonical frame `slot`.
     ///
     /// Three rules, in order:
     ///
-    /// 1. nothing further than [`MAX_FRAME_SKEW_S`] away is sampled at all — a source that far out
+    /// 1. **eligibility** — [`frame_is_eligible`]: a forward slot takes forecasts only, so an
+    ///    observation is refused outright there however near it sits. This is a filter and not a
+    ///    preference; there is no "unless the layer has nothing better", because a frozen
+    ///    observation is not a weaker answer to "what will the sky be doing at 19:15", it is an
+    ///    answer to a different question;
+    /// 2. nothing further than [`MAX_FRAME_SKEW_S`] away is sampled at all — a source that far out
     ///    of the timeline has fallen out of it, and the mosaic drops through to the next rank;
-    /// 2. nearest validity wins;
-    /// 3. **an observation never outranks an equally close forecast** *within one layer*. The DWD
-    ///    RV layer holds an observation at f0 and its own nowcast forecasts ahead of it; without
-    ///    this, a nearest-only tie-break lets the frozen observation paint a *forward* frame that a
-    ///    real forecast for that exact instant is also offering. Re-using an observation as a
-    ///    forecast is a persistence nowcast, which is WXR9 #1251's job to do deliberately and well
-    ///    — not something the frame picker should stumble into. It is still allowed when the layer
-    ///    has nothing better inside the skew window, because a 15-minute-old radar field beats
-    ///    falling through to a 27.75 km model.
+    /// 3. nearest validity wins.
     ///
-    ///    It is deliberately a *within-layer* rule and cannot be anything else: across layers the
-    ///    priority table decides, and a higher-ranked single-frame radar source therefore does
-    ///    paint the forward frames it is within the skew window of. See `MOSAIC_PRIORITY`'s note
-    ///    on MRMS and HRRR.
+    /// The two tie-breaks then only ever decide the **anchor**, where a layer may offer both an
+    /// observation and a forecast: an equally close forecast beats an observation that is not
+    /// valid at the target instant (a field about the future beats a field about the past when
+    /// neither is about *now*), and what remains breaks toward the *later* frame. An observation
+    /// exactly on the target still wins, because it is the observation *of* that instant — which
+    /// is the whole of what f0's `FLAG_OBSERVED` claims.
     ///
-    /// Remaining ties break toward the *later* frame: at equal distance, the field valid after the
-    /// target is about weather that has not happened yet, and the one before it is already past.
-    fn nearest(&self, valid_at: i64) -> Option<&SourceFrame> {
-        self.frames.iter().filter(|frame| (frame.valid_at - valid_at).abs() <= MAX_FRAME_SKEW_S).min_by_key(|frame| {
-            let distance = (frame.valid_at - valid_at).abs();
-            (distance, frame.observed && distance != 0, std::cmp::Reverse(frame.valid_at))
-        })
+    /// Rule 1 is not a within-layer rule and could not be one. Under WXR7 it was, so the priority
+    /// table let a higher-ranked single-frame radar layer paint forward frames that a lower-ranked
+    /// model layer had real forecasts for — the MRMS-over-HRRR case #1248 closed. Eligibility is
+    /// decided per source frame, before any layer is compared with any other.
+    fn nearest(&self, slot: FrameSlot) -> Option<&SourceFrame> {
+        self.frames
+            .iter()
+            .filter(|frame| {
+                frame_is_eligible(frame.class, slot.offset_min)
+                    && (frame.valid_at - slot.valid_at).abs() <= MAX_FRAME_SKEW_S
+            })
+            .min_by_key(|frame| {
+                let distance = (frame.valid_at - slot.valid_at).abs();
+                (distance, frame.class.is_observation() && distance != 0, std::cmp::Reverse(frame.valid_at))
+            })
     }
 }
 
@@ -469,7 +585,7 @@ impl Mosaic {
         &self.layers
     }
 
-    /// Paint one window of `lattice` for the canonical frame valid at `valid_at`.
+    /// Paint one window of `lattice` for canonical frame `slot`.
     ///
     /// **Per-cell winner selection, literally**: layers are walked best rank first and each writes
     /// only into cells still holding [`precip4::INTENSITY_NODATA`], so the first source that both
@@ -482,7 +598,7 @@ impl Mosaic {
     /// makes "this layer wrote something" mean "this layer owns a final cell", which is what makes
     /// [`FillOutcome::all_observed`] exact rather than a guess, and it is why `FLAG_OBSERVED` on
     /// this dataset is worth anything.
-    pub fn fill(&self, lattice: &Lattice, valid_at: i64, window: LatticeWindow, out: &mut [u8]) -> FillOutcome {
+    pub fn fill(&self, lattice: &Lattice, slot: FrameSlot, window: LatticeWindow, out: &mut [u8]) -> FillOutcome {
         assert_eq!(out.len(), window.cells(), "fill target does not match the window");
         out.fill(precip4::INTENSITY_NODATA);
         let mut outcome = FillOutcome { painted: false, all_observed: true, all_dry: false };
@@ -490,11 +606,11 @@ impl Mosaic {
         // depends only on the column, so a shard pays the division once per column, not per cell.
         let mut columns: Vec<i32> = vec![-1; window.width as usize];
         for layer in &self.layers {
-            let Some(frame) = layer.nearest(valid_at) else { continue };
+            let Some(frame) = layer.nearest(slot) else { continue };
             let source = &frame.window;
             let mut covers = false;
-            for (index, slot) in columns.iter_mut().enumerate() {
-                *slot = match source_column(source, lattice.centre_lon_udeg(window.col0 + index as u32)) {
+            for (index, mapped) in columns.iter_mut().enumerate() {
+                *mapped = match source_column(source, lattice.centre_lon_udeg(window.col0 + index as u32)) {
                     Some(column) => {
                         covers = true;
                         column as i32
@@ -525,7 +641,7 @@ impl Mosaic {
             }
             if painted_here {
                 outcome.painted = true;
-                outcome.all_observed &= frame.observed;
+                outcome.all_observed &= frame.class.is_observation();
             }
         }
         outcome.all_observed &= outcome.painted;
@@ -557,12 +673,12 @@ impl Mosaic {
 
     /// Which source wins one lattice cell, for diagnostics and for the tests that prove the table
     /// rather than the geometry decides. `None` means no source covers it with data.
-    pub fn winner_at(&self, lattice: &Lattice, valid_at: i64, col: u32, row: u32) -> Option<&'static str> {
+    pub fn winner_at(&self, lattice: &Lattice, slot: FrameSlot, col: u32, row: u32) -> Option<&'static str> {
         let lat = lattice.centre_lat_udeg(row);
         let lon = lattice.centre_lon_udeg(col);
         let mut winner: Option<&'static str> = None;
         for layer in &self.layers {
-            let Some(frame) = layer.nearest(valid_at) else { continue };
+            let Some(frame) = layer.nearest(slot) else { continue };
             let source = &frame.window;
             let (Some(column), Some(source_row)) = (source_column(source, lon), source_row(source, lat)) else {
                 continue;
@@ -605,6 +721,11 @@ impl CycleTimes {
     pub fn valid_at(&self, offset_min: u32) -> i64 {
         self.reference_time + i64::from(offset_min) * 60
     }
+
+    /// The [`FrameSlot`] at `offset_min` — the pair every mosaic question is asked in.
+    pub fn slot(&self, offset_min: u32) -> FrameSlot {
+        FrameSlot { offset_min, valid_at: self.valid_at(offset_min) }
+    }
 }
 
 /// One publishable shard object.
@@ -629,28 +750,38 @@ pub struct CanonicalObject {
 
 /// Does this shard get `FLAG_OBSERVED`?
 ///
-/// Two conditions, and the second one is the one that is easy to get wrong.
+/// Two conditions, and since #1248 they coincide:
 ///
 /// 1. every cell came from a source frame that was an observation upstream
 ///    ([`FillOutcome::all_observed`]); and
-/// 2. **this is the anchor frame.** A frame at `offset_min > 0` is about a future instant, and no
-///    observation of a future instant exists at bake time. What paints it is either a real forecast
-///    or a *frozen* observation from inside [`MAX_FRAME_SKEW_S`] — which is a persistence nowcast,
-///    which is a forecast. Flagging it observed re-stamps an old observation with a future validity
-///    and tells the device it is looking at measured weather when it is looking at an extrapolation.
+/// 2. **this is the anchor frame.**
 ///
-/// Concretely, before this rule existed: a single-frame radar source (MRMS, either OPERA row) valid
-/// at 18:48 painted f0 **and** f+15 **and** f+30 of an 18:45 cycle, and all three objects said
-/// Observed with three different `valid_at`s over one field. The client was never fooled —
-/// `obc-wx-client`'s `observed_frame` has always been `offset_min == 0 && within skew`, mirroring
-/// the phone — so this aligns the producer with the rule both consumers already apply, per
-/// `OBCW_Spec.md` §5.1 and `OBCG_Spec.md` §3.2.
+/// The second is now implied by the first. [`frame_is_eligible`] refuses an observation for every
+/// slot but f0, so a shard at `offset_min > 0` cannot have been painted by one at all and
+/// `all_observed` is false there by construction — the two facts `OBCG_Spec.md` §3.2 requires are
+/// one fact about where an observation is allowed to be. That is a much better place to be than
+/// where WXR7 left it: the offset clause used to be load-bearing, catching frozen observations that
+/// the frame picker had already handed a future validity to, and it is normative in the spec
+/// precisely because that class of object was possible. It is not possible any more.
+///
+/// The clause stays in the code regardless. It is the spec's sentence written down at the one place
+/// the bit is decided, it costs a comparison per shard, and it means the flag survives a future
+/// source or picker change that reopens the gap — `an_observation_can_only_ever_paint_the_anchor`
+/// pins the coincidence so the redundancy cannot quietly become a disagreement.
 ///
 /// Note what is *not* required: that the source frame be valid at exactly `valid_at`. An
 /// observation almost never lands on the quarter hour, so demanding equality would make every f0
 /// a forecast and throw away the one provenance bit the device still acts on. Being inside the skew
 /// window is the contract, and the manifest states `max_source_skew_s` so a consumer can caveat
 /// "radar, up to N minutes old" with a number instead of a guess.
+///
+/// `obc-wx-client` reaches the same offset clause and **not** the same second one, which is worth
+/// stating rather than glossing: its `observed_frame` is `offset_min == 0 && (now - valid_at).abs()
+/// <= max_source_skew_s`, a *freshness* test against the reader's wall clock, where this is a
+/// *provenance* test about what painted the cells. They answer different questions and can
+/// disagree — a client reading an hour-old generation calls its f0 a forecast even though the
+/// object says Observed, which is the client being right about its own situation, per
+/// `OBCW_Spec.md` §5.1. Neither is derived from the other.
 pub fn shard_is_observed(offset_min: u32, fill: &FillOutcome) -> bool {
     offset_min == 0 && fill.all_observed
 }
@@ -676,21 +807,24 @@ pub fn emit_shard(
     let window = lattice.shard(shard).ok_or_else(|| format!("shard {shard} is not on this lattice"))?;
     let geometry = lattice.geometry(window);
     geometry.validate()?;
-    let valid_at = times.valid_at(offset_min);
+    let slot = times.slot(offset_min);
     // Left uninitialised-as-zero rather than pre-filled with no-data: `fill` is the authority on
     // the initial value and sets every cell to `INTENSITY_NODATA` first, so pre-filling here would
     // be a second 28 MB pass for nothing.
     let mut cells = vec![0u8; window.cells()];
-    let fill = mosaic.fill(lattice, valid_at, window, &mut cells);
+    let fill = mosaic.fill(lattice, slot, window, &mut cells);
     let observed = shard_is_observed(offset_min, &fill);
+    // Measured, not assumed. See `shard_is_observed`: an f0 shard over open ocean is GFS model fill
+    // and is a Forecast; one inside a radar footprint is an Observation; and every frame ahead of f0
+    // is a Forecast, because nothing but a forecast is allowed to paint one. An all-no-data shard
+    // says Forecast, which is what the format's "exactly one source-class bit" leaves.
+    let class = if observed { SourceClass::Observation } else { SourceClass::Forecast };
 
     let input = FrameInput {
-        // Measured, not assumed. See `shard_is_observed`: an f0 shard over open ocean is GFS model
-        // fill and says Forecast; one inside a radar footprint says Observed; and every frame ahead
-        // of f0 says Forecast, because an observation frozen forward is a persistence nowcast. The
-        // header requires exactly one of the two, so an all-no-data shard says Forecast.
-        flags: if observed { obcg::FLAG_OBSERVED } else { obcg::FLAG_FORECAST },
-        valid_at,
+        // The one place the published bit is written, and it goes through `SourceClass::obcg_flag`
+        // so the emitter and the adapters cannot drift into two different mappings.
+        flags: class.obcg_flag(),
+        valid_at: slot.valid_at,
         reference_time: times.reference_time,
         south_lat_udeg: geometry.south_lat_udeg,
         west_lon_udeg: geometry.west_lon_udeg,
@@ -970,11 +1104,22 @@ pub fn run_cycle(
     let mut swept = crate::sweep::SweepReport::default();
     let mut fetchable: Vec<(String, u64)> = Vec::new();
     let mut painted_objects = 0usize;
+    let mut blank_forward_objects = 0usize;
     let mut dry_shards = 0usize;
     let mut total_objects = 0usize;
     bake_cycle(lattice, &mosaic, times, threads, &mut |object| {
         total_objects += 1;
         painted_objects += usize::from(object.fill.painted);
+        // A forward frame with no eligible forecast source anywhere in its window. Since #1248 this
+        // is a state the dataset can actually reach — the radar that used to mask an absent model
+        // is no longer eligible here — and it publishes a shard of intensity 15 rather than a
+        // frozen field, which is the honest answer but not a quiet one. It should be impossible
+        // while the hourly GFS floor is healthy (`the_hourly_floor_reaches_every_offset_with_
+        // exactly_zero_margin`), so seeing it means the floor is degraded, and a run of cycles
+        // reporting it is what a freshness probe should be escalating on.
+        if object.offset_min > 0 && !object.fill.painted {
+            blank_forward_objects += 1;
+        }
         // A shard whose every cell is dry is not published, and the manifest's presence bitmap says
         // so — the bit stays clear and the client reads "dry here", never a 404 it has to interpret.
         // A shard with so much as one no-data cell *is* published, so absence can never be an
@@ -1017,6 +1162,16 @@ pub fn run_cycle(
         return Err(format!(
             "every one of the {total_objects} baked objects is entirely no-data — no source reached the lattice; \
              refusing to publish a blank cycle"
+        ));
+    }
+
+    // Not fatal — a partial dataset is still worth publishing, and intensity 15 is a truthful thing
+    // to publish — but it is the one degradation #1248 introduced that has no other symptom, so it
+    // is said out loud rather than left to be inferred from a rendered frame.
+    if blank_forward_objects > 0 {
+        warnings.push(format!(
+            "{blank_forward_objects} forward-frame shards had no eligible forecast source and published intensity 15; \
+             an observation cannot stand in for one, so this is the global floor degraded"
         ));
     }
 
@@ -1176,6 +1331,68 @@ mod tests {
             .collect();
         assert_eq!(opera.len(), 2);
         assert!(opera.iter().all(|text| text.contains("CC BY 4.0")), "OPERA's licence must survive to the manifest");
+    }
+
+    /// **The floor's coverage of all nine offsets rests on `<=` at exactly 1,800 s, twice per
+    /// hour — so the margin is pinned rather than assumed.**
+    ///
+    /// Since #1248 a forward frame with no eligible forecast source publishes intensity 15 rather
+    /// than falling back on a frozen observation, which makes this arithmetic load-bearing in a way
+    /// it was not before: the floor is the only thing standing between a coverage hole and a
+    /// two-hour column of "we do not know". Three facts, and the third is the one a retune would
+    /// break silently:
+    ///
+    /// 1. every offset of every anchor phase is inside the window (coverage);
+    /// 2. the worst case is **exactly** [`MAX_FRAME_SKEW_S`] — zero margin, reached at the :30
+    ///    phase, where the frame instant is equidistant from both flanking hourly steps;
+    /// 3. so one second off the window, or a cadence that leaves the quarter hour, drops the floor
+    ///    out of two frames in four.
+    #[test]
+    fn the_hourly_floor_reaches_every_offset_with_exactly_zero_margin() {
+        // "Hourly" is read off the floor adapter's own retained lead set rather than restated as a
+        // local constant, so a GFS re-tune to three-hourly leads fails here instead of quietly
+        // invalidating the arithmetic below.
+        let leads = crate::source::gfs::LEADS_H;
+        let step_h = leads[1] - leads[0];
+        assert!(
+            leads.windows(2).all(|pair| pair[1] - pair[0] == step_h),
+            "the floor's leads are not evenly spaced; the nearest-step arithmetic below assumes they are"
+        );
+        assert_eq!(step_h, 1, "the floor is hourly — a coarser one cannot cover a 15-minute cadence at this window");
+        let hour = i64::from(step_h) * 3_600;
+
+        // A cycle anchors on a quarter hour, so its phase within one floor step is one of four.
+        let phases: Vec<i64> =
+            (0..hour / (i64::from(FRAME_STEP_MIN) * 60)).map(|step| step * i64::from(FRAME_STEP_MIN) * 60).collect();
+        assert_eq!(phases, vec![0, 900, 1_800, 2_700], "the anchoring rule admits exactly these four phases");
+
+        let mut worst = 0i64;
+        let mut worst_case = (0i64, 0u32);
+        for phase in phases {
+            let times = CycleTimes::anchored_at(phase);
+            for offset_min in times.offsets_min() {
+                // Distance from this frame's instant to the nearer of the two hourly steps
+                // bracketing it. An hourly source publishes on the hour, whatever its run.
+                let into_hour = times.valid_at(offset_min).rem_euclid(hour);
+                let distance = into_hour.min(hour - into_hour);
+                assert!(
+                    distance <= MAX_FRAME_SKEW_S,
+                    "anchor phase {phase}s, f+{offset_min}: an hourly step is {distance}s away, outside the window \
+                     — the floor does not reach this frame and it would publish intensity 15"
+                );
+                if distance > worst {
+                    worst = distance;
+                    worst_case = (phase, offset_min);
+                }
+            }
+        }
+        assert_eq!(
+            worst, MAX_FRAME_SKEW_S,
+            "the worst case must be exactly the window (anchor phase {}s, f+{}) — if this is now less, someone \
+             widened the window or moved the cadence and the zero-margin note on MAX_FRAME_SKEW_S is stale; if it \
+             is more, the floor no longer reaches every frame",
+            worst_case.0, worst_case.1
+        );
     }
 
     #[test]
