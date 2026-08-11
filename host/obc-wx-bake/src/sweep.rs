@@ -161,9 +161,7 @@ fn generation_keys(lattice: &Lattice, times: CycleTimes, generation: &str) -> Ve
 ///
 /// It is a *sample*, not a census — a census is a `head` per key, which doubles the sweep's
 /// round-trips for a number only a report line reads, and the module has refused that from the
-/// start. 24 is one whole frame of the canonical 6x4 shard grid, and the sample is **strided across
-/// the frames** rather than taken off the front, so a genuinely present generation is found on the
-/// first probe unless the sampled shards are dry in every frame at once.
+/// start. 24 covers the canonical 6x4 shard grid exactly once.
 const CANARY_PROBES: usize = 24;
 
 /// Does this generation still hold anything? Asked **before** any delete, because afterwards the
@@ -176,14 +174,56 @@ const CANARY_PROBES: usize = 24;
 /// It stops at the first hit, so the steady-state cost is **one request per retired generation**.
 /// Only a generation that really is gone pays all [`CANARY_PROBES`], once, and that is the case
 /// worth paying for.
-fn canary(store: &mut dyn ObjectStore, keys: &[String], warnings: &mut Vec<String>, generation: &str) -> Option<bool> {
+/// The keys the canary probes: **every shard the budget can reach, enumerated**, each at a
+/// different frame in rotation.
+///
+/// Round 2 of #1282's review caught the previous version, and the bug is worth stating because it
+/// is the kind that hides in an innocuous-looking `step_by`. That version strided the flat key list
+/// by `keys.len() / CANARY_PROBES` — 216 / 24 = **9** — and the list is offset-major, so the shard
+/// a probe landed on was `index % 24`. `gcd(9, 24) = 3`, so the probes only ever touched shards
+/// `{0, 3, 6, ... 21}`: eight of twenty-four, and since `col = shard % 6`, only **columns 0 and 3
+/// of six**. A generation whose objects all sat in the other four columns read as empty, which
+/// raises a "something else is sweeping this prefix" alarm about a generation that is simply there.
+///
+/// The fix deliberately is not "pick a stride coprime with the shard count". That works, but it
+/// stays correct only while someone re-checks the arithmetic every time the shard grid changes, and
+/// the grid is `lattice` configuration precisely so it *can* change. Enumerating shards has no
+/// arithmetic to get wrong: probe `n` asks about shard `n`. The one invariant left is that the
+/// budget must cover at least a full row, so every column is represented — asserted below and
+/// pinned by `the_canary_samples_every_shard_column`.
+fn canary_keys(lattice: &Lattice, times: CycleTimes, generation: &str) -> Vec<String> {
+    let offsets: Vec<u32> = times.offsets_min().collect();
+    let shards = lattice.shard_count();
+    if shards == 0 || offsets.is_empty() {
+        return Vec::new();
+    }
+    debug_assert!(
+        CANARY_PROBES >= lattice.shard_cols() as usize,
+        "the probe budget must cover a whole shard row, or some column is never asked about"
+    );
+    let mut keys = Vec::with_capacity(CANARY_PROBES.min(shards as usize));
+    for probe in 0..CANARY_PROBES.min(shards as usize) {
+        let (col, row) = lattice.shard_col_row(probe as u32);
+        // Rotate the frame as well: asking every shard about `f0` would miss a generation whose
+        // early frames happen to be dry, and the frames cost nothing extra to spread across.
+        let offset = offsets[probe % offsets.len()];
+        keys.push(manifest_v2::shard_key(manifest_v2::KEY_PREFIX, generation, offset, col, row));
+    }
+    keys
+}
+
+fn canary(
+    store: &mut dyn ObjectStore,
+    lattice: &Lattice,
+    times: CycleTimes,
+    warnings: &mut Vec<String>,
+    generation: &str,
+) -> Option<bool> {
+    let keys = canary_keys(lattice, times, generation);
     if keys.is_empty() {
         return None;
     }
-    let stride = (keys.len() / CANARY_PROBES).max(1);
-    let mut asked = 0usize;
-    for key in keys.iter().step_by(stride).take(CANARY_PROBES) {
-        asked += 1;
+    for key in &keys {
         match store.head(key) {
             Ok(Some(_)) => return Some(true),
             Ok(None) => {}
@@ -200,7 +240,6 @@ fn canary(store: &mut dyn ObjectStore, keys: &[String], warnings: &mut Vec<Strin
             }
         }
     }
-    debug_assert!(asked <= CANARY_PROBES);
     Some(false)
 }
 
@@ -239,13 +278,12 @@ pub fn sweep(
         let mut first_error: Option<String> = None;
         let mut deleted_here = 0usize;
         let prefix = format!("{}/{generation}/", manifest_v2::KEY_PREFIX);
-        let keys = generation_keys(lattice, times, &generation);
         // **The canary, before a single delete** (#1282 review M4). Everything below this loses the
         // ability to tell an already-empty generation from a full one the moment the store is R2,
         // because `DeleteObject` answers the same either way — so ask *first*, while asking still
         // means something.
-        let found_something = canary(store, &keys, &mut report.warnings, &generation);
-        for key in keys {
+        let found_something = canary(store, lattice, times, &mut report.warnings, &generation);
+        for key in generation_keys(lattice, times, &generation) {
             // The last guard, and it is a **runtime** one: a key this sweep deletes must be inside
             // the generation it is collecting, which is a generation the published manifest does
             // not name. `shard_key` composes it, so this can only fail if that composition changes
@@ -574,6 +612,51 @@ mod tests {
         // The canary is a sample and it stops at the first hit, so an empty generation costs
         // exactly its probe budget — never a `head` per key.
         assert_eq!(store.headed.len(), CANARY_PROBES);
+    }
+
+    /// **The blind spot, pinned** (#1282 review round 2, F1).
+    ///
+    /// The canary's probe set must reach every shard column. The version this replaces strided the
+    /// flat key list by 9 over a 24-shard grid — `gcd(9, 24) = 3` — and so only ever asked about
+    /// columns 0 and 3 of six, calling a generation whose objects lived in the other four "already
+    /// empty" and raising a second-sweeper alarm about a healthy one.
+    ///
+    /// The assertions are on *coverage*, not on the mechanism, so a future change to how the probe
+    /// set is built has to keep the property rather than the implementation.
+    #[test]
+    fn the_canary_samples_every_shard_column() {
+        let keys = canary_keys(&CANONICAL, CycleTimes { reference_time: 0 }, "20260810T1415Z");
+        assert_eq!(keys.len(), CANARY_PROBES.min(CANONICAL.shard_count() as usize));
+
+        let mut columns = BTreeSet::new();
+        let mut shards = BTreeSet::new();
+        for key in &keys {
+            let name = key.rsplit('/').next().expect("a key ends in the object name");
+            let coords = name.trim_start_matches('s').trim_end_matches(".obcg");
+            let (col, row) = coords.split_once('-').expect("s<col>-<row>.obcg");
+            columns.insert(col.parse::<u32>().expect("a column"));
+            shards.insert((col.parse::<u32>().expect("col"), row.parse::<u32>().expect("row")));
+        }
+        assert_eq!(
+            columns.len() as u32,
+            CANONICAL.shard_cols(),
+            "the canary never asks about columns {:?} — a generation living there reads as empty",
+            (0..CANONICAL.shard_cols()).filter(|col| !columns.contains(col)).collect::<Vec<_>>()
+        );
+        assert_eq!(shards.len(), keys.len(), "a probe was spent asking about a shard already covered");
+
+        // Frames are rotated rather than every probe landing on f0, so a generation whose earliest
+        // frames are dry is still found.
+        let frames: BTreeSet<&str> = keys.iter().filter_map(|key| key.split('/').nth(3)).collect();
+        assert!(frames.len() > 1, "every probe asked about the same frame: {frames:?}");
+
+        // And every probe is a key this sweep would have deleted — the canary must never invent a
+        // key shape of its own.
+        let all: BTreeSet<String> =
+            generation_keys(&CANONICAL, CycleTimes { reference_time: 0 }, "20260810T1415Z").into_iter().collect();
+        for key in &keys {
+            assert!(all.contains(key), "{key} is not a key of this generation");
+        }
     }
 
     /// **The R2 shape** (#1282 review M4/M5): a store that cannot tell whether a key existed.

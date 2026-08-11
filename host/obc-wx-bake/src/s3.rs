@@ -1102,14 +1102,39 @@ mod tests {
     /// returning in lockstep is deterministic — a failing cycle must still be reproducible.
     #[test]
     fn backoff_honours_retry_after_within_a_ceiling_and_jitters_deterministically() {
-        let mut headers = ureq::http::HeaderMap::new();
-        headers.insert("retry-after", ureq::http::HeaderValue::from_static("2"));
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(2)));
-        headers.insert("retry-after", ureq::http::HeaderValue::from_static("not a number"));
-        assert_eq!(retry_after(&headers), None);
+        let header = |value: &str| {
+            let mut headers = ureq::http::HeaderMap::new();
+            headers.insert("retry-after", ureq::http::HeaderValue::from_str(value).expect("a header value"));
+            headers
+        };
+
+        // The delta-seconds form.
+        assert_eq!(retry_after(&header("2")), Some(Duration::from_secs(2)));
+        assert_eq!(retry_after(&header("  7 ")), Some(Duration::from_secs(7)));
+        assert_eq!(retry_after(&header("not a number")), None);
         assert_eq!(retry_after(&ureq::http::HeaderMap::new()), None);
+
+        // **The HTTP-date form**, which RFC 9110 allows equally and which R2 is entitled to send.
+        // Pinned because it is a whole second parser that the delta-seconds cases never touch.
+        let then = chrono::Utc::now() + chrono::Duration::seconds(120);
+        let waited = retry_after(&header(&then.to_rfc2822())).expect("an HTTP-date Retry-After");
+        assert!(
+            (110..=120).contains(&waited.as_secs()),
+            "an HTTP-date must resolve to the delay it names, got {waited:?}"
+        );
+        // A date already in the past is "retry now", never a negative wait — and never a panic on
+        // the unsigned conversion, which is what clamping at zero is really protecting.
+        let past = chrono::Utc::now() - chrono::Duration::hours(1);
+        assert_eq!(retry_after(&header(&past.to_rfc2822())), Some(Duration::ZERO));
+        // A date-shaped string that is not a date is not a delay.
+        assert_eq!(retry_after(&header("Thu, 99 Xyz 2026 99:99:99 GMT")), None);
+
         // Whatever a server asks for, the ladder never waits longer than the ceiling.
-        assert!(Duration::from_secs(600).min(MAX_BACKOFF) <= MAX_BACKOFF);
+        assert_eq!(
+            retry_after(&header("600")).expect("ten minutes").min(MAX_BACKOFF),
+            MAX_BACKOFF,
+            "a ten-minute Retry-After must be clamped, not honoured"
+        );
 
         let fraction = jitter_fraction("wx/v2/manifest.json", 2);
         assert!((0.0..=1.0).contains(&fraction), "{fraction}");

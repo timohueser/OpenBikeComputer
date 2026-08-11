@@ -87,10 +87,32 @@ pub const UPLOAD_CONCURRENCY: usize = 8;
 /// * **A failure stops new work.** Once the slot is filled no worker takes another item. The cycle
 ///   is over either way, and spending another 200 objects' worth of requests to arrive at the same
 ///   `Err` is time the next tick wants.
-/// * **A panic is an error, not an abort.** A panicking worker would otherwise unwind through the
-///   scope's join, poisoning the failure mutex on its way and taking the process with it — during
-///   the one phase where "what state is the bucket in?" needs an answer. Caught here, it fails the
-///   cycle the ordinary way: before the swap, previous generation intact.
+/// * **A panic is an error, not an abort.** See below — this is the subtlest of the four.
+///
+/// ## Where `catch_unwind` sits, and why exactly there
+///
+/// It wraps **`op(item)` and nothing else**. That placement is the whole design, not an accident of
+/// where the braces landed:
+///
+/// * **It is inside the loop, not around the worker.** A panic therefore ends that worker and
+///   records a reason, rather than killing a thread that still holds a share of the queue.
+/// * **It does not span a lock acquisition.** The failure mutex is taken *after* the unwind is
+///   already caught, so no worker can ever panic while holding it. Poisoning is prevented at the
+///   source rather than recovered from.
+/// * **The recovery is still there anyway**, and deliberately: every `lock()` here uses
+///   `PoisonError::into_inner` instead of `expect`. If some future edit does reintroduce a panic
+///   under the lock, the guard it hands back still points at a perfectly good `Option<String>` —
+///   and the failure mode being defended against is losing *the reason the cycle failed* to a
+///   second-order panic in the code that was supposed to report the first one. `expect` on a
+///   poisoned lock would turn one bad object into an unexplained process death.
+///
+/// Without the catch, a panicking worker unwinds into `std::thread::scope`, which resumes the panic
+/// at the join point — so `put_all` does not return `Err`, it panics, and the process dies partway
+/// through the publish. That is the one phase where "did the manifest swap?" must have an answer,
+/// and a dead process gives none. Caught, it fails the cycle the ordinary way: before the swap,
+/// previous generation intact, one line in the journal naming the panic.
+/// `a_panicking_worker_fails_the_batch_rather_than_the_process` pins it, and was confirmed to fail
+/// (with `a scoped thread panicked`) when the catch is removed.
 fn run_bounded<T: Sync>(
     items: &[T],
     concurrency: usize,
@@ -171,11 +193,18 @@ pub trait ObjectStore {
 
     /// Bound everything from here until the next [`Self::end_phase`] to `budget` of wall-clock.
     ///
-    /// A store that cannot enforce it ignores it, which is right for [`DirStore`] — a local write
-    /// has no way to hang for four minutes. It matters for anything that talks to a network, where
-    /// the alternative backstop is systemd's `TimeoutStartSec` and a SIGKILL at an unknown point in
-    /// the publish. `run_cycle` gives the object phase and the sweep separate budgets, because they
-    /// have different consequences: the first must fail the cycle, the second may only warn.
+    /// **The default is to ignore it, and that is a decision rather than a stub.** A budget exists
+    /// to bound a *retry ladder over a network*: attempts multiplied by a request timeout, times
+    /// hundreds of keys, against a peer that may simply never answer. A local filesystem write has
+    /// none of those — no ladder, no timeout, no peer — so [`DirStore`] takes this default and the
+    /// whole `--store <dir>` path (the runbook's rehearsal, the fixture tests, the event-pack
+    /// re-bake) is **deliberately unbudgeted**. A directory publish that is slow is a slow disk,
+    /// which a deadline would turn into a failed cycle without making anything faster.
+    ///
+    /// [`R2Store`] does enforce it, because there the alternative backstop is systemd's
+    /// `TimeoutStartSec` and a SIGKILL at an unknown point in the publish. `run_cycle` gives the
+    /// object phase and the sweep separate budgets, because they have different consequences: the
+    /// first must fail the cycle, the second may only warn.
     fn begin_phase(&mut self, budget: std::time::Duration) {
         let _ = budget;
     }
@@ -196,6 +225,11 @@ pub trait ObjectStore {
 
 /// Publish into a local directory: the dry-run target, the test target, and a real one for any
 /// static host that serves a directory.
+///
+/// It takes the sequential [`ObjectStore::put_all`] and the no-op [`ObjectStore::begin_phase`], and
+/// both are deliberate: a local write is microseconds, so threads would only add contention, and
+/// there is no retry ladder or unanswering peer for a time budget to bound. **`--store <dir>` is
+/// unbudgeted on purpose** — see `begin_phase`.
 pub struct DirStore {
     root: PathBuf,
 }
