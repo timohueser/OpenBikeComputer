@@ -49,20 +49,24 @@ observation therefore comes from Iowa State's MTArchive mirror, and every member
 URLs: `url`, the canonical key the baker requests and the replay serves it under, and
 `archive_url`, where the bytes actually came from. The rewrite lives in `src/pack/archive.rs`.
 
-**And the mirror has since gone.** Re-checked 2026-08-11 while adding WXR9's motion-history probe:
-MTArchive now answers 404 for *every* `PrecipRate` key of 2020-08-10, including the ones whose bytes
-this pack already carries. The paragraph above about `--store-truth-upstream` was written as a
-precaution and has been cashed in — the derecho pack is now unreconstructible from any source but
-itself, and the checked-in `upstream/` is the only reason it still re-bakes.
+**And the mirror went away and came back.** Checked 2026-08-11 while adding WXR9's motion-history
+probe, MTArchive answered 404 for *every* `PrecipRate` key of 2020-08-10, including the ones whose
+bytes this pack already carries. Re-checked the same day while capturing the second event, it serves
+them again: `PrecipRate_00.00_20200810-183800.grib2.gz` — the exact key the derecho pack records as
+a 404 — returns 200 and 437,711 bytes of gzip GRIB2. So the outage was **transient, and the mirror
+is not a dependency worth betting a fixture on either way**: `--store-truth-upstream` is still the
+rule, and it was not a precaution wasted, because for the length of one afternoon it was the only
+thing keeping this pack alive.
 
-That has one visible consequence in `event.json`. WXR9 (#1251) made the MRMS adapter probe, once,
-for the observation ten minutes before its anchor, to estimate motion from. That probe is recorded
-here as `Retrieval::Probe { object_length: null }` — a genuine 404, because that is exactly what the
-archive returned when it was asked. The pack therefore carries **no** motion baseline, and its
-re-bake exercises WXR9's honest fallback: no baseline, no nowcast layer, a published tree
-byte-identical to the one from before the nowcast existed. A pack captured against a live upstream
-carries the frame and produces the layer; this one is the regression test for the other branch, and
-`tests/nowcast_skill.rs` scores the engine off `truth/` instead.
+That leaves one visible artifact in `event.json`, and a job for whoever next touches the pack. WXR9
+(#1251) made the MRMS adapter probe, once, for the observation ten minutes before its anchor, to
+estimate motion from. That probe is recorded here as `Retrieval::Probe { object_length: null }` —
+which was a genuine 404 at capture time and is not one now. The pack therefore carries **no** motion
+baseline, and its re-bake exercises WXR9's honest fallback: no baseline, no nowcast layer, a
+published tree byte-identical to the one from before the nowcast existed. That branch is worth a
+regression test and `us-airmass-2023-06-24` now covers the other one, so nothing is broken — but the
+derecho's own +105 and +120 rungs cannot be scored while its anchor has to be borrowed from the
+truth ladder (see `tests/nowcast_skill_events.rs`), and **re-capturing it would recover them**.
 
 **A pack must not contain the future.** An archive holds the whole day, so a naive replay lets run
 discovery select a run and an observation that had not been published yet at the capture instant —
@@ -269,3 +273,118 @@ cargo run --release --bin obc-wx-pack -- capture us-derecho-2020-08-10 \
 
 Both archives serve immutable objects, so a fresh capture reproduces these exact digests — the
 whole pack, `event.json` included, `diff -r`s clean against the checked-in one.
+
+---
+
+## `us-airmass-2023-06-24` — the hard case, and why a second pack exists
+
+The derecho is the friendliest storm optical-flow advection will ever be handed: one organised
+system, coherent, translating across the window at 29 m/s. A lead-time horizon measured on it alone
+is a horizon measured on a coincidence — which is the objection #1248 raises against the evidence
+behind `derive::NOWCAST_MAX_LEAD_MIN`. This pack is the opposite case, captured so the horizon has
+something to disagree with.
+
+**24 June 2023, 20:00 Z (3 pm CDT), scattered airmass convection over Iowa.** Cells that form, rain
+and die roughly where they stand, in weak flow, instead of translating in from upwind. Same
+instrument, same model, same window, same lattice, same basemap as the derecho — the only variable
+that moves is the weather, which is what makes the pair a measurement rather than two anecdotes.
+
+| | |
+|---|---|
+| capture instant (`--at`) | `2023-06-24T20:04:00Z` |
+| product reference time | `2023-06-24T20:00:00Z` |
+| motion history | `2023-06-24T19:50:00Z` — checked in, so this pack publishes a nowcast layer |
+| HRRR run selected | 2023-06-24 **18Z**, subhourly `wrfsubhf03..04` |
+| crop (`--bbox`) | `40.5,-96.5,43.5,-90.0` — the derecho's window, deliberately |
+| coverage | 38.000 N, 98.080 W .. 45.680 N, 87.840 W — basemap `north-america/us/iowa` |
+| service | 9 frames + manifest, 116,106 bytes |
+| truth | 8 observed frames, 144,785 bytes |
+| upstream | 20 members, 8,427,640 bytes, **all checked in** |
+
+### Why this qualifies as the hard case, in numbers rather than adjectives
+
+The event was chosen by screening, not from memory: thirty-odd summer afternoons over this same box
+were scored for wet fraction, connected-component structure and flow speed before this one was
+captured. Against the derecho, over the same window:
+
+| | derecho 2020-08-10 | airmass 2023-06-24 |
+|---|---|---|
+| mean flow-field speed † | 29.5 m/s | **10.4 m/s** |
+| connected wet components ‡ | 62 | **235** |
+| mean component area ‡ | 1331 cells | **79 cells** (~10 km across) |
+| largest component ‡ | 79,149 cells — one system | 8,690 cells |
+| wet fraction across the ladder ‡ | 36.6 % → 18.3 % (it leaves) | 8.3 % → 14.7 % (it grows in place) |
+
+† printed by `tests/nowcast_skill_events.rs`, averaged over the whole motion field on the published
+lattice. ‡ measured at screening time over the requested `--bbox` crop, which is why the wet
+fractions are higher than the harness's — the crop is the storm, the lattice is the storm plus the
+tile alignment around it.
+
+The last row is the one that matters. The derecho's field *leaves* the window, so advection has the
+easy job of moving something that stays itself. The airmass field **develops inside the window** —
+and development is precisely what an advection engine with no decay or initiation model cannot
+represent. `tests/nowcast_skill_events.rs` scores both packs side by side at every lead and three
+thresholds; the derecho pack alone would have set the horizon 45 minutes too far out at the heavy
+threshold.
+
+The day is documented outside this repository too. SPC's storm reports for 2023-06-24
+(<https://www.spc.noaa.gov/climo/reports/230624_rpts.csv>) list Iowa wind damage as isolated
+reports strung from 14:06 Z to 01:53 Z across counties as far apart as Story, Cass, Black Hawk and
+Dubuque — scattered pulse-storm damage over eleven hours, not the contiguous same-hour swath a
+derecho leaves. (The day's tornado reports are a separate system over northwestern Minnesota, well
+north of this pack's window.) That is the same conclusion the component statistics reach, from an
+independent record.
+
+### Both branches of WXR9 are now covered by a real pack
+
+MTArchive served the 19:50 Z observation, so the capture's MRMS adapter found its motion baseline
+and the cycle published **four advected forward frames** at f+15 … f+60. The derecho pack — captured
+during the mirror's outage — exercises the other branch, where no baseline is found and the mosaic
+falls back to the model exactly as it did before the nowcast existed. Between the two packs, the
+live path and the fallback path are both regression-tested against real bytes.
+
+It also removes the limit that stopped the first skill harness at +90. The engine needs an
+observation *pair*, and a pack with no motion history has to borrow the anchor from its own truth
+ladder, spending two rungs and losing the far end. This pack's anchor is its own, so the full ladder
+scores: **+14 … +120**.
+
+### Truth ladder
+
+| requested | actual | valid at | bytes |
+|---|---|---|---|
+| +15 | +14 | 2023-06-24T20:14:00Z | 14,583 |
+| +30 | +30 | 2023-06-24T20:30:00Z | 15,886 |
+| +45 | +44 | 2023-06-24T20:44:00Z | 16,221 |
+| +60 | +60 | 2023-06-24T21:00:00Z | 17,206 |
+| +75 | +74 | 2023-06-24T21:14:00Z | 17,788 |
+| +90 | +90 | 2023-06-24T21:30:00Z | 18,754 |
+| +105 | +104 | 2023-06-24T21:44:00Z | 20,855 |
+| +120 | +120 | 2023-06-24T22:00:00Z | 23,492 |
+
+The frames grow steadily, which is the convection filling the window; the derecho's shrank as its
+storm left it.
+
+### Upstream provenance
+
+Retrieved 2026-08-11 UTC. Terms for every member: NOAA Open Data Dissemination (public-use U.S.
+government data, no endorsement implied),
+<https://www.noaa.gov/information-technology/open-data-dissemination>. Every digest and every HEAD
+probe — including the six the as-of guard suppressed — is in `event.json`.
+
+**MRMS PrecipRate**, canonical key
+`https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20230624/MRMS_PrecipRate_00.00_20230624-HHMMSS.grib2.gz`,
+retrieved from MTArchive: ten objects of 781–834 KB — the 20:00 anchor, the 19:50 motion history,
+and the eight truth observations. All checked in (7.9 MB), so both `service/` and `truth/` re-derive
+offline.
+
+**HRRR subhourly PRATE**, run `hrrr.20230624/conus/hrrr.t18z.wrfsubhf0{3,4}.grib2` from NOAA's Big
+Data bucket: two `.idx` indexes (~12 KB each) plus eight `PRATE` messages as explicit byte ranges,
+62–73 KB each. The 187–203 MB objects themselves are never checked in.
+
+### Reproducing it
+
+```sh
+cargo run --release --bin obc-wx-pack -- capture us-airmass-2023-06-24 \
+  --at 2023-06-24T20:04:00Z --title "2023-06-24 Iowa airmass convection" --region conus \
+  --bbox 40.5,-96.5,43.5,-90.0 --store-truth-upstream --out wx-events
+```
