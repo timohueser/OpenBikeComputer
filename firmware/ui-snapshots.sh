@@ -414,14 +414,23 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
 # Rain overlay (WX10, epic #1185): the deterministic `--weather demo` scenarios over the map's own
-# bbox, through the production adapter -> renderer path. Three visually distinct scenes -- scattered
-# showers (dither-as-transparency), a hard frontal edge (nearest-neighbour, no smoothing; rendered
-# heading-up so the rotated fixed-point walk is pinned too), and a violet storm core (the
-# high-coverage end; roads/route stay above the rain). Byte-stable: the demo bundle and the Bayer
-# matrix are both deterministic.
-"$SIM" "$MAP" --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-scattered.png"
-"$SIM" "$MAP" --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-frontal-heading.png"
-"$SIM" "$MAP" --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-storm.png"
+# bbox, through the production adapter -> renderer path, on the one screen the raster belongs to --
+# the WX11 rain map ("$WXRAIN" walks Home -> Menu -> Weather -> RAIN MAP). Two scenes the WX11 block
+# below doesn't already cover: a frontal edge (rendered heading-up so the rotated fixed-point walk
+# is pinned too) and a violet storm core (the high-coverage end; roads/route stay above the rain).
+# The scattered-shower scene lives there as `weather-rainmap.png` -- same screen, same scenario --
+# so it isn't shot twice here. Byte-stable: the demo bundle, the Bayer matrix and the sampler are
+# all deterministic -- but the frames move whenever `RAIN_SAMPLING` does (bilinear since #1250).
+#
+# Every one of these walks a menu, so it states its destination with --expect-screen: insert a
+# station and the sweep fails loudly instead of saving a different screen under the old filename.
+WXRAIN="p d d d d w p d p"
+"$SIM" "$MAP" --boot --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --expect-screen WeatherRainMap --png "$OUT/map-rain-frontal-heading.png"
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --expect-screen WeatherRainMap --png "$OUT/map-rain-storm.png"
+# ...and the same bundle mounted while the rider is on the *ordinary* Map: rain-free, because the
+# overlay is the rain map's declared content (`Caps::rain_overlay`), not a property of the frame.
+# This is the state-leak regression surface -- it must stay a plain map however heavy the weather.
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "p d d d w p" --expect-screen Map --png "$OUT/map-rain-free.png"
 
 # Weather screens (WX11, epic #1185): the production dashboard / hourly / rain-map / alert /
 # settings surfaces over the deterministic demo bundles. The script prefix "p d d d d w p" walks
@@ -443,11 +452,11 @@ WXNAV="p d d d d w p"
 # Rain map: NOW frame, two time-steps ahead, the honest banners (stale / hourly-only), and the
 # zoom clamp — entering from a far-out camera snaps to the product's regime floor (round 2:
 # riders never see the out-of-regime state; the banner remains a defensive fallback only).
-"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p" --png "$OUT/weather-rainmap.png"
-"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p d d" --png "$OUT/weather-rainmap-step2.png"
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV d p" --png "$OUT/weather-rainmap-stale.png"
-"$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --png "$OUT/weather-rainmap-hourly-only.png"
-"$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --png "$OUT/weather-rainmap-zoom-clamped.png"
+"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap.png"
+"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p d d" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-step2.png"
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-stale.png"
+"$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-hourly-only.png"
+"$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-zoom-clamped.png"
 # The alert card (locked VIEW RAIN MAP + DISMISS) and the settings refresh picker (open field).
 "$SIM" "$MAP" --boot --weather demo:storm --weather-alert storm:28 --png "$OUT/weather-alert-storm.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --png "$OUT/weather-alert-rain.png"

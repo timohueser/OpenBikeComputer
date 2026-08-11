@@ -20,9 +20,13 @@ do not occur anywhere in v1.
 
 - Format offsets and lengths are `uint32`. A reader MUST use checked addition and multiplication
   and MUST reject a value it cannot represent or address.
-- A **phone producer policy**, separate from the format, caps v1 objects at 65,536 bytes. A
-  conforming reader MUST NOT treat 65,536 as a format limit. Future transports may carry a larger
-  valid v1 object without changing the byte layout.
+- A **phone producer policy**, separate from the format, caps v1 objects at 262,144 bytes. A
+  conforming reader MUST NOT treat 262,144 as a format limit. Future transports may carry a larger
+  valid v1 object without changing the byte layout. The number was 65,536 until WXR5 (#1244): under
+  one uniform 1 km dataset the phone's corridor is 162 x 162 cells in every frame, whose raw4 worst
+  case is ~153.6 kB, and the policy was raised to hold it with headroom. Nothing about the byte
+  layout moved, and the device's reader is a windowed streamer whose resident bytes do not depend
+  on object size — what a bigger object costs is transfer time.
 - Rain tiles are fixed at 16 x 16 cells and independently addressable. A reader needs one
   128-byte encoded-tile buffer and one caller-owned 256-byte decoded-tile buffer; it never needs a
   whole frame in RAM.
@@ -182,8 +186,26 @@ col = floor((lon - west)  * width  / (east - west))
 
 Intermediates MUST be checked signed 64-bit (or wider). The north/east edges are outside the
 half-open window; drawing code may clip a pixel at that edge to the last cell, but data queries MUST
-not claim coverage outside it. Nearest-neighbour sampling uses the selected cell exactly. No
-bilinear interpolation or fabricated sub-cell precision is permitted.
+not claim coverage outside it.
+
+That same split governs interpolation:
+
+- **Data queries MUST sample nearest-neighbour**, using the selected cell exactly, with no
+  interpolation and no fabricated sub-cell precision. A data query is anything that answers *"what
+  is the intensity at this position"* for a purpose other than colouring a pixel: the intensity
+  lookup a snapshot records, corridor and dry-claim walks, alert thresholds and their clears. The
+  value such a query returns MUST be a value some single cell of the product actually holds.
+- **Display MAY interpolate** between cells for legibility, and MAY therefore paint an intensity
+  band that no cell reports.
+- **No claim, alert, alert-clear or dry decision may derive from an interpolated value.** Rendering
+  MUST NOT be able to change what the rider is *told*, only what they are *shown*.
+
+Rationale (2026-08-10): 1 km products render as visibly hard squares, and the original blanket
+prohibition on interpolation was written to protect the honesty of the *claims* — a device must
+never report rain, or report none, on the strength of a number it invented. Confining the
+prohibition to data queries keeps that protection intact while letting the raster be legible. The
+reference implementation ships bilinear display sampling with nearest-neighbour queries, and pins
+the separation with a test that runs the whole decision path under every display sampling mode.
 
 ### 5.1 Semantic quality flags
 
@@ -197,6 +219,43 @@ bilinear interpolation or fabricated sub-cell precision is permitted.
 
 Exactly one of Observed or Forecast MUST be set. These flags say what the data means; they MUST
 NOT identify DWD, NOAA or another provider.
+
+**How the phone producer decides Observed, since WXR5 (#1244).** A producer policy, not a reader
+rule — a reader takes the flag as given — but it is written down here because two independent
+producers implement it and they disagreed once already. Under one mosaic dataset a frame is radar
+over the rider and model fill across the seam at the same instant, so no rule about a frame's
+*content* can be true of all of it. The flag therefore follows the frame's position in the timeline:
+the frame at offset 0 whose validity is within the dataset's stated source skew is the analysis and
+sets **Observed**; every forward frame sets **Forecast**. Dryness is not part of it in either
+direction — an all-dry radar scan is an observation, and an all-dry forecast frame is not one.
+
+**The manifest's per-shard bits then hold a veto, added 2026-08-11 (#1251).** The positional rule
+above was sufficient while a frame at offset 0 could only be an observation or a real model step. It
+is not any more: an upstream publisher may **derive** a frame at that offset (`OBCG_Spec.md` §3.2 —
+temporal interpolation, where the source's own steps are coarser than the cadence), which is neither.
+So a producer MUST NOT set Observed unless, in addition to the positional test, **at least one of the
+published objects it assembled the frame from is itself flagged Observed**. Deliberately "at least
+one" and not "all": the mixed radar-and-model corridor above is exactly the case the positional rule
+exists to keep calling Observed, and requiring all of them would invert it. A frame assembled from no
+published objects at all — the all-dry scene, whose objects are omitted rather than flagged — keeps
+the positional answer, which is the whole reason there is no content rule here. The veto can only
+clear the flag, never set one.
+
+**Cross-reference: this is deliberately looser than `OBCG_Spec.md` §3.2's rule, and the divergence
+is safe in one direction.** That spec's publisher may set Observed only when `offset_min` is 0 *and*
+every cell of the object came from an observation upstream — a checkable property, because an OBCG
+object is one shard. The rule here is positional only, because the unit is an assembled frame that
+cannot be uniform: content that is true of the shard over the rider is false of the shard across the
+seam. Both specs keep the offset-0 condition, which is the one that prevents the actual failure —
+an observation re-stamped at a future validity. What differs is that an OBCW frame may say Observed
+over cells whose OBCG shard said Forecast, never the reverse, and that is bounded by §5's standing
+rule above: no claim, alert, alert-clear or dry decision may derive from it. Neither spec should be
+edited to match the other.
+
+Partial coverage is likewise decided over the **assembled** frame: a cell no source object and no
+measured-dry region reached. A producer composing one frame from several objects must not raise it
+merely because one of those objects stopped at its own edge, where a neighbouring object supplies
+exactly the cells it was missing.
 
 ## 6. Tile directory and payloads
 
@@ -242,8 +301,11 @@ codec choice in either direction. This makes the representation deterministic.
 The table represents instantaneous/rate precipitation in millimetres per hour. Interval notation
 is exact: a value on a lower bound belongs to that row. Producers should quantize from their best
 non-negative rate; negative or non-finite source values are no-data. The provider-neutral Rust
-authority is `obc-formats::precip4`; both OBCW and OBCG reuse its thresholds and canonical tile
-codec. Swift reuses `OBCPrecipitationTileCodec` within `OBCWeatherWire` for the same reason.
+authority is `obc-formats::precip4`; both OBCW and OBCG reuse its thresholds and its two canonical
+tile codecs. Swift reuses `OBCPrecipitationTileCodec` within `OBCWeatherWire` for the same reason.
+§6's codec column is a **closed two-value set** here and stays one: OBCG adds a third codec of its
+own (`OBCG_Spec.md` §5, deflate over the raw4 nibbles) *above* the shared authority, so it cannot
+appear in an OBCW tile and the device never needs a decompressor to read one.
 
 | Code | Rate in mm/h | Meaning |
 | ---: | --- | --- |
@@ -303,7 +365,7 @@ malformed data.
 Checked-in files live in `specs/vectors/` and are described in its `manifest.json` and README.
 Positive vectors cover a dry hourly-only bundle, raw and compressed tiles, a no-data tile, a
 four-hour-latent observation with a current hourly base, a coarse-model shape, a 96 x 96 x
-nine-frame DWD-shaped raw bundle, and the exact 65,536-byte producer-policy boundary. Negative
+nine-frame DWD-shaped raw bundle, and the exact 262,144-byte producer-policy boundary. Negative
 vectors isolate truncation, bad offsets, overlapping sections, nonzero hourly flags/reserved
 bytes, reserved intensity nibbles, compressible raw4, overlong and noncanonical RLE, CRC mismatch,
 timestamp disorder, a nonpositive frame time and a frame beyond the overall ceiling.
@@ -316,8 +378,14 @@ exact bytes. Both must reject every negative. Vector provenance is recorded besi
 A 96 x 96 frame has `6 x 6 = 36` tiles. Forced raw4 costs `36 x (12 + 128) = 5,040` bytes per
 frame. Nine frames cost 45,360 bytes. Header + hourly + descriptors cost
 `112 + 24 x 24 + 9 x 48 = 1,120` bytes, for **46,480 bytes (45.39 KiB)** total. Real RLE4 can only
-reduce it. This is the locked approximately 44-46 KiB DWD-shaped estimate and leaves 19,056 bytes
-under the 64 KiB producer policy.
+reduce it. This is the locked approximately 44-46 KiB DWD-shaped estimate.
+
+The shape a phone actually produces since WXR5 (#1244) is bigger and no longer provider-shaped: one
+uniform dataset, a 90 km corridor, and a uniform ~1,113 m cell pitch on both axes give **162 x 162
+cells** in every frame at every latitude. That is `11 x 11 = 121` tiles, so forced raw4 costs
+`121 x (12 + 128) = 16,940` bytes per frame and nine frames plus the same 1,120-byte fixed part
+come to **153,580 bytes (150.0 KiB)** — 41 % under the 256 KiB producer policy. A real corridor
+measures well below it: the largest bundle #1254 measured over a 0-80 degree sweep was 55.5 kB.
 
 The allocation-free Rust reader validates CRC in 512-byte chunks, hourly records four at a time,
 and canonical tile directories/payloads in four-tile windows. Its largest explicit simultaneously

@@ -129,6 +129,26 @@ class DevCleanupTests(unittest.TestCase):
                 [],
             )
 
+    def test_temp_candidates_never_follow_symlinks_outside_temp(self):
+        with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as outside:
+            root = Path(scratch)
+            target = Path(outside) / "important"
+            target.mkdir()
+            sentinel = target / "keep.txt"
+            sentinel.write_text("keep")
+            (root / "obc-old").symlink_to(target, target_is_directory=True)
+
+            self.assertEqual(cleanup.temp_candidates(int(time.time()), 0, root), [])
+            self.assertEqual(sentinel.read_text(), "keep")
+
+    def test_temp_candidates_never_select_bare_git_repositories(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            bare = root / "obc-review.git"
+            cleanup.git(root, "init", "--bare", str(bare))
+
+            self.assertEqual(cleanup.temp_candidates(int(time.time()), 0, root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

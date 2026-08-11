@@ -230,8 +230,21 @@ jobs:
           python3 tools/fixtures.py sync test
           export OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
           cargo test --workspace --all-features --locked
+      # …and once with obc-formats' *default* features, which is the shape the device image
+      # links. `obcg-deflate` (OBCG codec 2, `OBCG_Spec.md` §5) is off there, so the tests that
+      # pin the firmware boundary — no inflate in the crate, a codec-2 tile refused rather than
+      # silently accepted — are `#[cfg(not(feature = ...))]` and are compiled *out* of the
+      # all-features run above. One crate, a few seconds, and the PR's structural claim stops
+      # being asserted by dead code (#1241).
+      - name: cargo test (obc-formats, default features = the device's shape)
+        run: cargo test -p obc-formats --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
+      # The weather service's freshness/cost probe. It runs unattended from a schedule against a
+      # live bucket, so its alarms are only as good as the cases below — and it reads the same
+      # `specs/vectors/wx-manifest-v2.json` the baker and both clients are pinned against.
+      - name: weather freshness probe unit tests
+        run: python3 -m unittest discover -s ops/weather/tests -v
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
       # Renderer pixel-hash tripwire (issue #327): re-render the 7 fixed bench scenes over the

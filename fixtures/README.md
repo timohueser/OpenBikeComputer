@@ -82,7 +82,13 @@ screenshots belong in PRs or project documentation, not a runtime asset folder.
 - `weather-dwd-icon`: the exact DWD captures formerly documented under
   `host/obc-wx-bake/tests/fixtures`.
 - `weather-noaa`: the exact NOAA captures formerly documented in that same
-  directory. Source files are preserved byte-for-byte inside the archive.
+  directory. Source files are preserved byte-for-byte inside the archive; the
+  current revision contains both the original APCP spans and the corrected
+  point-valid PRATE spans so the source-semantics PR can land independently.
+- `weather-event-derecho` and `weather-event-airmass`: complete, reproducible
+  MRMS/HRRR event packs. Their small `event.json` manifests remain tracked and
+  are matched byte-for-byte through `tracked_sources`; upstream, baked, and
+  truth bytes live only in the immutable packages.
 
 ## Storage contract
 

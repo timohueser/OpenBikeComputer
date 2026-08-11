@@ -1,32 +1,37 @@
 //! `obc-wx-bake` — the weather bakery CLI.
 //!
 //! ```text
-//! obc-wx-bake cycle   [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   every adapter
-//! obc-wx-bake dwd-rv  [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Germany radar, tier 1
-//! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
-//! obc-wx-bake us      [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   CONUS MRMS+HRRR, tier 1
-//! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
-//! obc-wx-bake schema                                                       print the manifest JSON Schema
+//! obc-wx-bake cycle  [--store <dir>|--r2] [--now <rfc3339>] [--threads n] [--dry-run]
+//! obc-wx-bake schema                                       print the manifest JSON Schema
 //! ```
 //!
-//! One product's failure never blocks another's: run the per-product subcommands from separate
-//! timers when that isolation matters more than a single-manifest cycle.
+//! One subcommand, because the bakery publishes **one dataset**. A cycle bakes every source in
+//! [`obc_wx_bake::source::MOSAIC_PRIORITY`], mosaics them onto the global 0.01 degree lattice and
+//! publishes 24 shards x 9 frames of provider-agnostic OBCG under `wx/v2/`, indexed by a manifest
+//! with nothing selectable in it — one generation, one grid, a shard presence bitmap. Which source
+//! painted which cell is baker configuration and reaches nobody.
 //!
-//! Every invocation is idempotent and stateless: state lives only in the published manifest.
-//! A single-adapter invocation is a first-class production mode — `ops/weather` runs one systemd
-//! timer per adapter, so a broken upstream cannot cost the other products their freshness — and
-//! it rewrites only its own product: every other still-unexpired product is carried forward from
-//! the published manifest verbatim (see [`obc_wx_bake::cycle`]). Two invocations must never
-//! overlap; the shipped units serialize every instance behind one `flock`.
-//! `--now` exists for deterministic replays; production timers omit it. `--store <dir>`
-//! publishes into a directory (any static host can serve it); `--r2` uses the `OBC_WX_R2_*`
-//! environment (bucket `obc-wx` by default).
+//! There used to be one subcommand per adapter, publishing four products at four resolutions into
+//! a `wx/v1` tree that clients chose between by tier. #1246 deleted all of it, and the isolation
+//! that arrangement bought — one broken upstream costing only its own product's freshness — goes
+//! with it by construction: the mosaic needs every source's cells, so a cycle either publishes a
+//! complete dataset or publishes nothing and leaves the previous generation standing.
+//!
+//! Every invocation is idempotent and stateless: state lives only in the published manifest. Two
+//! invocations must never overlap; the shipped units serialize every instance behind one `flock`.
+//! `--now` exists for deterministic replays; production timers omit it. `--store <dir>` publishes
+//! into a directory (any static host can serve it); `--r2` uses the `OBC_WX_R2_*` environment
+//! (bucket `obc-wx` by default).
 
-use obc_wx_bake::cycle::run_cycle;
+use obc_wx_bake::canonical::{run_cycle, BAKE_THREADS, CANONICAL};
 use obc_wx_bake::fetch::HttpUpstream;
-use obc_wx_bake::manifest;
-use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
-use obc_wx_bake::source::{dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, us::UsComposite, Adapter};
+use obc_wx_bake::manifest_v2;
+use obc_wx_bake::publish::{DirStore, ObjectStore, R2Store};
+use obc_wx_bake::source::{
+    dwd_rv::DwdRv, gfs::GfsFloor, hrrr::Hrrr, icon_eu::IconEu, mrms::Mrms, opera_cirrus::OperaCirrus,
+    opera_nimbus::OperaNimbus, Adapter,
+};
+use obc_wx_bake::timefmt;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,26 +47,36 @@ fn main() {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
-        print!("{}", manifest::schema_json());
+        // Reject rather than ignore. `schema --mosaic` used to mean "the canonical dataset's
+        // schema, not the multi-product one"; there is one schema now, so the flag would be muscle
+        // memory getting the right answer for the wrong reason — and the next flag someone invents
+        // would too.
+        if let Some(unknown) = args.get(1) {
+            return Err(format!("schema takes no arguments (got {unknown})\n{}", usage()));
+        }
+        print!("{}", manifest_v2::schema_json());
         return Ok(());
+    }
+    if command != "cycle" {
+        return Err(usage());
     }
     let dwd = DwdRv;
     let icon = IconEu;
-    let us = UsComposite;
+    let mrms = Mrms;
+    let hrrr = Hrrr;
     let gfs = GfsFloor;
-    let adapters: Vec<&dyn Adapter> = match command {
-        "cycle" => vec![&dwd, &icon, &us, &gfs],
-        "dwd-rv" => vec![&dwd],
-        "icon-eu" => vec![&icon],
-        "us" => vec![&us],
-        "gfs" => vec![&gfs],
-        _ => return Err(usage()),
-    };
+    let cirrus = OperaCirrus;
+    let nimbus = OperaNimbus;
+    // Every source, every cycle. There is no subset to select: a shard's cells come from whichever
+    // of these covers them best, so a missing source is a hole in the dataset rather than one
+    // product fewer.
+    let adapters: Vec<&dyn Adapter> = vec![&dwd, &mrms, &cirrus, &nimbus, &hrrr, &icon, &gfs];
 
     let mut store_dir: Option<String> = None;
     let mut use_r2 = false;
     let mut now: Option<i64> = None;
     let mut dry_run = false;
+    let mut threads = BAKE_THREADS;
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -71,7 +86,11 @@ fn run(args: &[String]) -> Result<(), String> {
             "--r2" => use_r2 = true,
             "--now" => {
                 let text = rest.next().ok_or("--now needs an RFC 3339 timestamp")?;
-                now = Some(manifest::parse_rfc3339(text).ok_or_else(|| format!("--now: {text} is not RFC 3339"))?);
+                now = Some(timefmt::parse_rfc3339(text).ok_or_else(|| format!("--now: {text} is not RFC 3339"))?);
+            }
+            "--threads" => {
+                let text = rest.next().ok_or("--threads needs a count")?;
+                threads = text.parse().map_err(|_| format!("--threads: {text} is not a count"))?;
             }
             "--dry-run" => dry_run = true,
             other => return Err(format!("unknown argument {other}\n{}", usage())),
@@ -79,7 +98,7 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut store: Box<dyn ObjectStore> = match (store_dir, use_r2) {
         (Some(dir), false) => Box::new(DirStore::new(dir)),
-        (None, true) => Box::new(RcloneStore::from_env()?),
+        (None, true) => Box::new(R2Store::from_env()?),
         (None, false) => return Err(format!("pick a destination: --store <dir> or --r2\n{}", usage())),
         (Some(_), true) => return Err("--store and --r2 are mutually exclusive".into()),
     };
@@ -87,12 +106,14 @@ fn run(args: &[String]) -> Result<(), String> {
 
     eprintln!("publishing to {}", store.describe());
     let mut upstream = HttpUpstream::new();
-    let report = run_cycle(&adapters, &mut upstream, store.as_mut(), now, dry_run)?;
+    let report = run_cycle(&CANONICAL, &adapters, &mut upstream, store.as_mut(), now, threads, dry_run)?;
     eprintln!("{}", report.summary());
     Ok(())
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema"
+    "usage: obc-wx-bake cycle [--store <dir>|--r2] [--now <rfc3339>] [--threads <n>] [--dry-run]\n       \
+     --threads defaults to 4, the production VPS core count\n       \
+     obc-wx-bake schema   print the manifest JSON Schema"
         .to_string()
 }

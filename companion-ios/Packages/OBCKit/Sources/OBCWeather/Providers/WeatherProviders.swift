@@ -14,14 +14,15 @@ public protocol HourlyForecastProvider: Sendable {
 /// The corridor precipitation grid. One conformer ships (the OBC weather service client), and it is
 /// deliberately the only thing in the app that knows the service exists.
 public protocol PrecipitationGridProvider: Sendable {
-    /// The best product for `corridor`, or the honest reason there is none.
+    /// The dataset's answer for `corridor`, or the honest reason there is none.
     func precipitation(
         for corridor: WeatherCorridor, now: Date
     ) async throws -> PrecipitationOutcome
 }
 
-/// A precipitation lookup either produced a product or produced a reason. Both are results — a
-/// missing rain map is a state the rider is shown, never an error that discards the hourly section.
+/// A precipitation lookup either produced frames or produced a reason. Both are results — a missing
+/// rain map is a state the rider is shown, never an error that discards the hourly section, and it
+/// is not the same thing as a dry map, which is frames full of zeroes.
 public enum PrecipitationOutcome: Equatable, Sendable {
     case selected(PrecipitationSelection, WeatherDiagnostics)
     case unavailable(NoRainMapReason, WeatherDiagnostics)

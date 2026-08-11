@@ -3,7 +3,7 @@ import tarfile
 import tempfile
 import unittest
 
-from tools.fixtures import Catalog, FixtureError, Store, build_package, sha256_file
+from tools.fixtures import Catalog, FixtureError, Store, build_package, resolve_path, sha256_file
 
 
 def catalog_text(base_url: str, digest: str, size: int) -> str:
@@ -59,6 +59,34 @@ class FixtureRegistryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(FixtureError, "unsafe path"):
                 Catalog(path)
+
+    def test_catalog_rejects_non_ascii_identifiers(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "catalog.toml"
+            path.write_text(
+                catalog_text("https://fixtures.example/", "a" * 64, 10).replace(
+                    "[packages.sample]", '[packages."ß"]'
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FixtureError, "lowercase letters"):
+                Catalog(path)
+
+    def test_resolve_requires_files_and_directories_to_match_their_fields(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            catalog_path = root / "catalog.toml"
+            catalog_path.write_text(catalog_text("https://fixtures.example/", "a" * 64, 10), encoding="utf-8")
+            catalog = Catalog(catalog_path)
+            store = Store(catalog, root / "cache")
+            package = store.package_root("sample")
+            (package / "map.obcm").mkdir(parents=True)
+            (package / "routes").write_text("not a directory", encoding="utf-8")
+
+            with self.assertRaisesRegex(FixtureError, "map is not a file"):
+                resolve_path(catalog, store, "sample:map.obcm", "map")
+            with self.assertRaisesRegex(FixtureError, "routes_dir is not a directory"):
+                resolve_path(catalog, store, "sample:routes", "routes_dir")
 
     def test_extract_rejects_symlink_even_with_a_valid_archive_digest(self):
         with tempfile.TemporaryDirectory() as scratch:

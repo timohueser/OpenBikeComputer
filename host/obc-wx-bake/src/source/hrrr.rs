@@ -1,7 +1,8 @@
 //! NOAA HRRR subhourly `PRATE` — the CONUS 3 km forecast, 15-minute steps.
 //!
-//! This module owns the forward half of the composed US product ([`crate::source::us`]). A
-//! subhourly HRRR object is ~200 MB and carries one 30-40 KB `PRATE` message per 15-minute step,
+//! A source in its own right since #1246 deleted the composed `us` product it used to be the
+//! forward half of. A subhourly HRRR object is ~200 MB and carries one 30-40 KB `PRATE` message
+//! per 15-minute step,
 //! so the baker reads the object's `.idx` text and fetches exactly the contracted message with an
 //! HTTP Range request (WX1's pinned technique; NOMADS is never contacted). The `.idx` label is
 //! never accepted as temporal identity — the selected lead must equal the decoded GRIB's valid
@@ -11,7 +12,6 @@
 //! [`crate::lcc`] at the native 3 km cell size: one index map per cycle, shared by every frame,
 //! no smoothing and no invented sub-cell detail. Cells outside the projected domain are no-data.
 
-use obc_formats::obcg::{FLAG_FORECAST, PRODUCT_HRRR, TIER_MODEL};
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
@@ -20,23 +20,35 @@ use crate::geometry::GridGeometry;
 use crate::grib::{decode_field, ExpectedGrib, HRRR_CONUS_GRID_DEFINITION_HEX};
 use crate::idx::{self, MAX_INDEX_BYTES};
 use crate::lcc;
-use crate::source::{BakedFrame, FrameSource};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass, NOAA_TERMS_URL};
+
+pub const ID: &str = "hrrr";
 
 pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
+
+pub const ATTRIBUTION: Attribution = Attribution {
+    text:
+        "Source: NOAA/NCEP HRRR subhourly PRATE; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied",
+    url: NOAA_TERMS_URL,
+};
+
+/// How far ahead of the cycle the published forward window reaches. Two hours is the timeline the
+/// dataset publishes, so a lead beyond it is a lead nothing would ever sample.
+pub const HORIZON_SECONDS: i64 = 2 * 3_600;
 
 /// The published window: a regular lat/lon cover of the Lambert domain at ~3 km cells
 /// (30,000 x 30,000 microdegrees — 3.34 km north-south, 2.61 km east-west at the domain's 38.5 N
 /// standard parallel). Cells outside the projected raster are no-data.
 ///
-/// **The strides are deliberately multiples of MRMS's 10,000, and so is the origin.** These
-/// frames share a product with a 1 km MRMS observation ([`crate::source::us`]), and a client
-/// assembles a bundle by laying every frame onto one common window — the *coarsest* frame's
-/// extent — accepting a frame only if that window is a whole number of the frame's own cells and
-/// its origin sits on the frame's lattice (`obc-wx-client`'s `bundle::rain_frame`, mirroring the
-/// phone). The old 27,000 x 34,000 lattice divided neither, so the window these frames defined
-/// could not be tiled by the observation and **the 1 km frame was silently refused**: riders in
-/// CONUS saw model forecast frames and no radar at all. Nesting is therefore a contract, not a
-/// preference — see `nests_under` and the `us_frames_nest` test.
+/// **The strides are deliberately multiples of the canonical 10,000, and so is the origin**, so
+/// the mosaic's cell replication onto the published lattice is an exact 3 x 3 block copy with no
+/// third rounding on top of the two below. That alignment was originally bought for a different
+/// reason — these frames shared a published timeline with a 1 km MRMS observation, and a client
+/// assembling a bundle silently dropped any frame the coarsest one's window could not tile, which
+/// on the shipped 27,000 x 34,000 lattice meant **every rider in CONUS lost the radar frame**.
+/// #1237 made that a checked obligation; #1246 deleted the obligation along with the composed
+/// product and the client-side assembly it protected. The alignment stays because the mosaic wants
+/// it, which is a better reason than the one it was introduced for.
 ///
 /// 30,000 in both axes is the choice that keeps the byte cost flat: 2,441 x 1,052 cells against
 /// the old 2,153 x 1,168, +2 %. The alternative that undersamples least (20,000 x 30,000) costs
@@ -62,6 +74,8 @@ pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
 /// figure: the longitude cell is 2.61 km at 38.5 N, 2.03 km at the 52.6 N bulge and 3.12 km at
 /// 21.1 N. `cell_size_m` stays 3,000 throughout: it states the *source's* ground resolution,
 /// never the lattice.
+///
+/// This is a **source window**, not an output lattice (WXR3 #1242).
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 21_100_000,
     west_lon_udeg: -134_100_000,
@@ -75,8 +89,8 @@ pub const GEOMETRY: GridGeometry = GridGeometry {
 };
 
 /// Retained forward leads in minutes: 15-minute steps through +4 h, held in the four subhourly
-/// objects `wrfsubhf01..f04`. The published set is the sub-window that lies ahead of the MRMS
-/// observation anchor, so a run up to two hours old still supplies a full +2 h of forward frames.
+/// objects `wrfsubhf01..f04`. The published set is the sub-window that lies ahead of the cycle
+/// anchor, so a run up to two hours old still supplies a full +2 h of forward frames.
 pub const LEADS_MIN: [u32; 16] = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240];
 /// Objects the run-completeness probe requires (`wrfsubhf01` ... `wrfsubhf04`).
 pub const SUBHOURLY_FILES: [u32; 4] = [1, 2, 3, 4];
@@ -150,7 +164,7 @@ pub fn select_run(upstream: &mut dyn Upstream, now: i64) -> Result<Option<i64>, 
 }
 
 /// The leads of `run` whose valid times lie strictly after `anchor` and no more than
-/// `horizon_seconds` beyond it — the forward window of the composed product.
+/// `horizon_seconds` beyond it — the forward window this source contributes.
 pub fn published_leads(run: i64, anchor: i64, horizon_seconds: i64) -> Vec<u32> {
     LEADS_MIN
         .iter()
@@ -164,9 +178,8 @@ pub fn published_leads(run: i64, anchor: i64, horizon_seconds: i64) -> Vec<u32> 
 
 /// Fetch, decode and bake the forward frames of `run` that lie ahead of `anchor`.
 ///
-/// `anchor` is the composed product's reference time (the MRMS observation instant), so each
-/// frame's `offset_min` is its real distance ahead of that observation — the frame's own upstream
-/// valid time, never a re-stamped or interpolated cadence.
+/// Each frame's `offset_min` is its real distance ahead of `anchor` and its `valid_at` is its own
+/// upstream validity — never a re-stamped or interpolated cadence.
 pub fn bake_forward_frames(
     upstream: &mut dyn Upstream,
     run: i64,
@@ -218,12 +231,40 @@ pub fn bake_forward_frames(
         frames.push(BakedFrame {
             offset_min: u32::try_from(offset_seconds / 60).map_err(|_| "HRRR frame offset overflows")?,
             valid_at,
-            flags: FLAG_FORECAST,
-            source: Some(FrameSource { product_code: PRODUCT_HRRR, tier: TIER_MODEL, geometry: GEOMETRY }),
+            class: SourceClass::Forecast,
             cells: resample(&field.values, &index_map),
         });
     }
     Ok(frames)
+}
+
+pub struct Hrrr;
+
+impl Adapter for Hrrr {
+    fn id(&self) -> &'static str {
+        ID
+    }
+
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+        let run = select_run(upstream, now)?.ok_or("no complete HRRR subhourly run among the recent cycles")?;
+        // Anchored on the run, not on the wall clock: a frame's offset is its real lead, and the
+        // mosaic places it by `valid_at` regardless. Leads already behind `now` are dropped here
+        // rather than fetched and then ignored.
+        let leads = published_leads(run, now, HORIZON_SECONDS);
+        if leads.is_empty() {
+            warnings.push(format!("hrrr: run {run} has no lead inside the +{HORIZON_SECONDS} s window ahead of {now}"));
+        }
+        let frames = bake_forward_frames(upstream, run, run, &leads)?;
+        // HRRR's sub-hourly leads are already on the 15-minute cadence, so `derive` leaves it alone.
+        Ok(BakedSource {
+            id: ID,
+            geometry: GEOMETRY,
+            reference_time: run,
+            attribution: ATTRIBUTION,
+            frames,
+            motion_history: Vec::new(),
+        })
+    }
 }
 
 /// The per-cycle nearest-neighbour map: for every output cell, the native raster index (or
@@ -292,7 +333,7 @@ mod tests {
         assert_eq!(subhourly_file(120), 2);
         assert_eq!(subhourly_file(240), 4);
         assert_eq!(
-            object_url(crate::manifest::parse_rfc3339("2026-08-09T15:00:00Z").unwrap(), 2),
+            object_url(crate::timefmt::parse_rfc3339("2026-08-09T15:00:00Z").unwrap(), 2),
             "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20260809/conus/hrrr.t15z.wrfsubhf02.grib2"
         );
         assert_eq!(selector(15), ":PRATE:surface:15 min fcst:");

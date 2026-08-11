@@ -24,8 +24,16 @@
 # convenient named selections over the same shared cells, so overlap costs no
 # duplicate cell storage.
 #
+# One region is deliberately outside DACH, and it is not a widening of the policy.
+# `north-america/us/iowa` exists to give the **weather event packs** a basemap:
+# The fixture registry freezes real CONUS storms for the nowcaster to be scored
+# against, and rendering one on the simulator needs a map under it. The convention
+# documented in `host/obc-wx-bake/tests/events/README.md` keeps this to one entry:
+# every US event pack crops to ground Iowa covers, so one state map serves them all.
+# A future pack that wants Kansas is a conversation, not a second line added quietly.
+#
 # Every path below was verified against download.geofabrik.de on 2026-07-29;
-# `freiburg-regbez` was verified on 2026-07-31.
+# `freiburg-regbez` was verified on 2026-07-31, `us/iowa` on 2026-08-10.
 
 regions = [
   # Germany — the whole country, then each Bundesland.
@@ -67,4 +75,6 @@ regions = [
   # nothing finer to select yet.
   { id = "europe/austria", name = "Austria" },
   { id = "europe/switzerland", name = "Switzerland" },
+  # The one non-DACH entry: the basemap the weather event packs are rendered over.
+  { id = "north-america/us/iowa", name = "Iowa" },
 ]

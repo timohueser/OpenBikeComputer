@@ -143,23 +143,28 @@ private struct FakeStatus: WeatherServiceStatusProviding {
 
 private let clock = Date(timeIntervalSince1970: 1_800_000_000)
 
-private func product(
-    id: String, tier: UInt8 = 1, credit: String = "Source: Deutscher Wetterdienst (DWD)",
-    staleness: TimeInterval = 900, cellMetres: UInt16 = 1_000
-) -> WeatherServiceProductStatus {
-    WeatherServiceProductStatus(
-        id: id, tier: WeatherTier(rawValue: tier), nominalCellMetres: cellMetres,
-        referenceTime: clock.addingTimeInterval(-300),
-        generatedAt: clock.addingTimeInterval(-120),
-        stalenessDeadline: clock.addingTimeInterval(staleness),
-        attribution: WeatherAttribution(text: credit, url: "https://example.invalid/licence"),
-        frameCount: 9, latestFrameValidAt: clock.addingTimeInterval(7_200))
+private func dataset(
+    generation: String = "20260810T1430Z",
+    credits: [String] = ["Source: Deutscher Wetterdienst (DWD)"],
+    staleness: TimeInterval = 900, cellMetres: UInt16 = 1_113, publishedSecondsAgo: Double = 240
+) -> WeatherServiceStatus {
+    WeatherServiceStatus(
+        generation: generation, generatedAt: clock.addingTimeInterval(-publishedSecondsAgo),
+        observedAt: clock, referenceTime: clock.addingTimeInterval(-300),
+        staleAfter: clock.addingTimeInterval(staleness),
+        nextGenerationExpectedAt: clock.addingTimeInterval(900), cellSizeMetres: cellMetres,
+        frameCount: 9, latestFrameValidAt: clock.addingTimeInterval(7_200),
+        attributions: credits.enumerated().map { index, text in
+            WeatherAttribution(
+                text: text, url: "https://example.invalid/licence", sourceID: "source-\(index)")
+        },
+        skippedFrames: 0)
 }
 
 private func historyEntry(
     outcome: WeatherJobHistoryEntry.Outcome, failure: WeatherJobFailure? = nil,
     phase: WeatherJobPhase = .uploading, minutesAgo: Double = 12, attempts: Int = 1,
-    productID: String? = "dwd-rv"
+    generation: String? = "20260810T1430Z"
 ) -> WeatherJobHistoryEntry {
     WeatherJobHistoryEntry(
         startedAt: clock.addingTimeInterval(-minutesAgo * 60 - 20),
@@ -167,7 +172,7 @@ private func historyEntry(
         requestID: 42, outcome: outcome, failureReason: failure, phaseReached: phase,
         attempts: attempts, bundleByteCount: 41_200, readConnectedMilliseconds: 1_800,
         uploadConnectedMilliseconds: outcome == .committed ? 2_600 : nil,
-        precipitationProductID: productID)
+        precipitationGeneration: generation)
 }
 
 @MainActor
@@ -178,9 +183,7 @@ private func makeModel(
     refreshRawOverride: UInt8? = nil,
     history: [WeatherJobHistoryEntry] = [],
     pending: WeatherJobPending? = nil,
-    status: WeatherServiceStatus? = WeatherServiceStatus(
-        generatedAt: clock.addingTimeInterval(-240), observedAt: clock,
-        products: [product(id: "dwd-rv")], skippedProducts: 0),
+    status: WeatherServiceStatus? = dataset(),
     preferences: WeatherPreferencesStore = InMemoryWeatherPreferencesStore()
 ) -> (WeatherSettingsModel, MockControl, FakeJobs) {
     let control = MockControl(scenario: scenario)
@@ -427,25 +430,30 @@ struct WeatherSettingsModelTests {
         #expect(model.statusLine == "Delivered 40 min ago")
     }
 
-    /// The no-rain-map reason is copy, not Swift's debug spelling. `String(describing:)` used to
-    /// put `allCoveringProductsExpired(latestDeadline: …)` on a diagnostics row, complete with a
-    /// UTC debug date (#1198 review).
+    /// The no-rain-map reason is copy, not Swift's debug spelling. `String(describing:)` used to put
+    /// a case name and a UTC debug date on a diagnostics row (#1198 review).
+    ///
+    /// It also pins the rule #1244 exists for: **not one of these sentences says "no rain"**. A dry
+    /// corridor is a rain map full of zeroes, so it never reaches this function; every case here is
+    /// a reason the map is *absent*, and collapsing any of them into dryness is the failure the whole
+    /// three-valued shard state was built to make impossible.
     @Test func theNoRainMapReasonRendersInPlainWordsWithARealTime() {
         let deadline = clock.addingTimeInterval(-1_800)
-        let expired = WeatherCopy.noRainMapReasonLabel(
-            .allCoveringProductsExpired(latestDeadline: deadline))
-        #expect(expired == "rain maps for this area expired at \(WeatherCopy.absolute(deadline))")
-        #expect(!expired.contains("latestDeadline"))
+        let expired = WeatherCopy.noRainMapReasonLabel(.expired(staleAfter: deadline))
+        #expect(expired == "the rain map expired at \(WeatherCopy.absolute(deadline))")
+        #expect(!expired.contains("staleAfter"))
         #expect(!expired.contains("("))
 
         let all: [NoRainMapReason] = [
-            .corridorNotCovered, .allCoveringProductsExpired(latestDeadline: deadline),
-            .serviceUnavailable, .framesUnavailable, .noFramesInWindow,
+            .outOfDomain, .uncovered, .expired(staleAfter: deadline),
+            .serviceUnavailable, .framesUnavailable,
         ]
         let labels = all.map { WeatherCopy.noRainMapReasonLabel($0) }
         #expect(Set(labels).count == labels.count, "every case reads as itself")
         // No case name survives into the copy — the tell that a `String(describing:)` crept back.
-        #expect(!labels.contains { $0.contains("corridorNotCovered") || $0.contains("Unavailable") })
+        #expect(!labels.contains { $0.contains("outOfDomain") || $0.contains("Unavailable") })
+        // And none of them claims dryness.
+        #expect(!labels.contains { $0.contains("dry") || $0.contains("no rain ") })
     }
 
     /// The two source-level splits this issue landed, read at the screen: a drop and a corruption
@@ -524,18 +532,15 @@ struct WeatherSettingsModelTests {
     // MARK: The service (manifest-sourced)
 
     @Test func attributionListsMETForHourlyAndTheManifestsCreditsForRain() async {
-        let (model, _, _) = makeModel(status: WeatherServiceStatus(
-            generatedAt: clock.addingTimeInterval(-240), observedAt: clock,
-            products: [
-                product(id: "dwd-rv", credit: "Source: Deutscher Wetterdienst (DWD)"),
-                product(id: "mrms", tier: 1, credit: "Source: NOAA/NWS MRMS"),
-            ],
-            skippedProducts: 0))
+        let (model, _, _) = makeModel(status: dataset(credits: [
+            "Source: Deutscher Wetterdienst (DWD)", "Source: NOAA/NWS MRMS",
+        ]))
         model.start()
         await waitFor("service") { model.service != .loading }
         let rows = model.attributions
         #expect(rows.first?.credit == .met)
         #expect(rows.first?.role == "Hourly forecast")
+        // Every source of the mosaic, not just one: there is no per-cell provenance to narrow to.
         #expect(rows.dropFirst().map(\.credit.text) == [
             "Source: Deutscher Wetterdienst (DWD)", "Source: NOAA/NWS MRMS",
         ])
@@ -546,26 +551,23 @@ struct WeatherSettingsModelTests {
     /// screen keeps rendering the rest of the list.
     @Test func aVeryLongAttributionIsCarriedWhole() async {
         let long = String(repeating: "Deutscher Wetterdienst, Offenbach am Main, ", count: 8)
-        let (model, _, _) = makeModel(status: WeatherServiceStatus(
-            generatedAt: clock, observedAt: clock,
-            products: [product(id: "dwd-rv", credit: long)], skippedProducts: 0))
+        let (model, _, _) = makeModel(status: dataset(credits: [long], publishedSecondsAgo: 0))
         model.start()
         await waitFor("service") { model.service != .loading }
         #expect(model.attributions.contains { $0.credit.text == long })
-        #expect(model.products.count == 1)
+        #expect(model.dataset != nil)
     }
 
-    @Test func aStaleProductSaysStaleSinceAndNeverReadsAsHealthy() async {
-        let (model, _, _) = makeModel(status: WeatherServiceStatus(
-            generatedAt: clock.addingTimeInterval(-3_600), observedAt: clock,
-            products: [product(id: "dwd-rv", staleness: -600)], skippedProducts: 0))
+    @Test func aStaleDatasetSaysStaleSinceAndNeverReadsAsHealthy() async {
+        let (model, _, _) = makeModel(
+            status: dataset(staleness: -600, publishedSecondsAgo: 3_600))
         model.start()
         await waitFor("service") { model.service != .loading }
-        #expect(model.staleProducts.map(\.id) == ["dwd-rv"])
+        #expect(model.datasetIsStale)
         #expect(model.serviceFooter.contains("Service data stale since"))
         #expect(model.serviceFooter.contains("never shown as dry"))
-        #expect(WeatherCopy.productFreshness(model.products[0], now: clock)
-            .hasPrefix("Stale since"))
+        let published = try? #require(model.dataset)
+        #expect(WeatherCopy.datasetFreshness(published!, now: clock).hasPrefix("Stale since"))
     }
 
     @Test func anUnavailableServiceKeepsTheHourlyPromiseHonest() async {
@@ -575,19 +577,22 @@ struct WeatherSettingsModelTests {
         #expect(model.service == .unavailable)
         #expect(model.serviceValue == "Unavailable")
         #expect(model.serviceFooter.contains("MET Norway"))
-        #expect(model.products.isEmpty)
+        #expect(model.dataset == nil)
     }
 
-    /// The tier vocabulary is a label, never a gate: a tier number this build predates renders as
-    /// itself instead of vanishing from the list.
-    @Test func anUnknownTierStillRenders() async {
-        let (model, _, _) = makeModel(status: WeatherServiceStatus(
-            generatedAt: clock, observedAt: clock,
-            products: [product(id: "future-source", tier: 7)], skippedProducts: 0))
+    /// The dataset row states resolution and depth, and names **no tier**: the ladder was a ranking,
+    /// and with one dataset there is nothing to rank (#1244).
+    @Test func theDatasetRowStatesResolutionAndDepthWithoutATier() async {
+        let (model, _, _) = makeModel(status: dataset(generation: "20260810T1500Z"))
         model.start()
         await waitFor("service") { model.service != .loading }
-        #expect(model.products.map(\.id) == ["future-source"])
-        #expect(WeatherCopy.tierLabel(WeatherTier(rawValue: 7)) == "Tier 7")
+        let published = model.dataset
+        #expect(published?.generation == "20260810T1500Z")
+        let summary = WeatherCopy.datasetSummary(published!)
+        #expect(summary == "1 km · 9 frames")
+        for word in ["Radar", "Model", "Worldwide", "Tier"] {
+            #expect(!summary.contains(word), "the tier ladder must not come back as copy")
+        }
     }
 
     // MARK: Privacy copy

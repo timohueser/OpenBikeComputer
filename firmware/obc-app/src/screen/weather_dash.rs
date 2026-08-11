@@ -70,7 +70,7 @@ impl WeatherScreen {
                 _ => {
                     // The rain map always opens at the *current* frame — a previous visit's
                     // time-step must never leak into a fresh look at the sky — and inside the
-                    // product's zoom regime (the zoom-out clamp, owner tuning round 2).
+                    // rain grid's zoom regime (the zoom-out clamp, owner tuning round 2).
                     cx.state.rain_step = 0;
                     cx.state.clamp_rain_zoom();
                     Transition::Push(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
@@ -144,7 +144,7 @@ impl WeatherScreen {
                 draw_card_note(cv, w, rx.t(Msg::WeatherUpdateNeeded), None);
             }
             RainOutlook::HourlyOnly => {
-                // The hourly half of the bundle is fresh and valid here — only the rain product
+                // The hourly half of the bundle is fresh and valid here — only the rain grid
                 // is absent — so the card stays *calm*: the current condition + temperature with
                 // the explicit hourly-only copy, no warning glyph (owner tuning round, 2b).
                 draw_card_calm(cv, w, rx.t(Msg::WeatherHourlyOnly), rx.t(Msg::WeatherHourlyOnlySub), icon_now, temp);
@@ -218,7 +218,7 @@ fn draw_card_lines(
 }
 
 /// The calm informational card (the hourly-only state): the explicit copy on the left — the
-/// hourly forecast is fresh here, only the rain product is absent, so no warning glyph — with
+/// hourly forecast is fresh here, only the rain grid is absent, so no warning glyph — with
 /// the current condition + temperature on the right, exactly the lines-card anatomy.
 fn draw_card_calm(cv: &mut impl Surface, w: i32, text: &str, sub: &str, icon: WeatherIcon, temp: Option<&str>) {
     use palette::*;
@@ -321,7 +321,7 @@ fn draw_strip(cv: &mut impl Surface, w: i32, snap: &WeatherSnapshot, now: i64, n
             None => {
                 // Uncovered / no-data: a small muted dot — still visibly "no answer", never a
                 // dry-looking stub, but calm (owner tuning round: eight question marks read as
-                // alarming for what is a rare state once WX6's floor products cover the globe).
+                // alarming for what is a rare state once the floor source covers the globe).
                 cv.disc(Point::new(x + slot_w / 2, STRIP_BASE - 8), 2, CONTOUR);
             }
         }

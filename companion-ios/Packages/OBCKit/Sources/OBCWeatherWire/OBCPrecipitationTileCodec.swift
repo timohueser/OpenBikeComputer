@@ -2,7 +2,7 @@ import Foundation
 
 /// Provider-neutral precipitation intensity and canonical raw4/RLE4 tile authority.
 ///
-/// OBCW always uses the fixed 16 x 16 tile; OBCG picks a per-product power-of-two tile edge, so
+/// OBCW always uses the fixed 16 x 16 tile; OBCG picks a power-of-two tile edge per generation, so
 /// the codec is generalized over the decoded cell count and the 256-cell entry points are exact
 /// wrappers over the generalized ones. Neither container owns a second set of thresholds or
 /// compression rules.
@@ -55,7 +55,7 @@ public enum OBCPrecipitationTileCodec {
     }
 
     /// Deterministic encoded length of one cell block after validating every intensity code.
-    /// OBCW always passes 256 cells; OBCG passes `tileEdge * tileEdge` for its per-product tile.
+    /// OBCW always passes 256 cells; OBCG passes `tileEdge * tileEdge` for its own tile.
     public static func encodedCellsLength(_ cells: [UInt8]) throws -> Int {
         guard validCellCount(cells.count), cells.allSatisfy(validIntensity) else {
             throw OBCWeatherWireError.malformed

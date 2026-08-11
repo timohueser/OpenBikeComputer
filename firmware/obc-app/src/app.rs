@@ -882,14 +882,14 @@ impl App {
             }
             // The WX12 ride-weather inputs, from the same fresh fix: the recent moving-speed
             // window (the projection's pace) and the travel direction (the wind arrows' frame of
-            // reference — route tangent at the fresh match, else moving GPS course, else neutral).
-            // A freeze holds the previous direction like it holds the matcher: the progress on
-            // glass hasn't moved, so neither has its tangent.
+            // reference — the route's general heading at the fresh match, else neutral). A freeze
+            // holds the previous direction like it holds the matcher: the progress on glass hasn't
+            // moved, so neither has the heading derived from it.
             if let Some(speed) = fix.speed_mps {
                 self.ride.speed_win.push_mps(speed);
             }
             if !frozen {
-                self.ride.update_travel(&self.activity, fix, route);
+                self.ride.update_travel(&self.activity, route);
             }
             let motion = self.activity.record_motion(fix, now_ms);
             if motion.log {
@@ -1592,8 +1592,9 @@ impl App {
         self.state.rain_steps_ahead = steps_ahead;
         self.state.rain_step = self.state.rain_step.min(steps_ahead);
         self.state.rain_zoom_min = zoom_floor;
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay());
-        if matches!(base.map(|i| &self.ui.stack[i]), Some(Screen::WeatherRainMap(_))) {
+        // Asked as the declared capability, not as a `matches!` on the variant: the screen whose
+        // zoom must stay in the product's regime is exactly the screen that draws the raster.
+        if self.ui.base_wants_rain() {
             let before = self.state.zoom;
             self.state.clamp_rain_zoom();
             if self.state.zoom != before {
@@ -1648,8 +1649,9 @@ impl App {
     }
 
     /// The rider's current travel direction (degrees CW from north) for route-relative wind — the
-    /// WX12 chain: active-route tangent at the matched progress while on-route, else the moving
-    /// GPS course, else `None` (neutral arrows, never a fabricated head/tail).
+    /// WX12 chain: the active route's general heading ahead of the matched progress while
+    /// on-route, else `None` (neutral arrows, never a fabricated head/tail — a momentary GPS
+    /// course is not a direction the rider is committed to).
     pub fn travel_deg(&self) -> Option<f32> {
         self.ride.travel_deg
     }
@@ -2852,10 +2854,12 @@ impl App {
 
     /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
     /// lease** (WX10): a host that mounted a weather store passes the frame's
-    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) and the
-    /// map-drawing base screen renders precipitation below the road band; `None` is byte-identical
-    /// to the plain call. This is the single production hook — firmware and simulator both land
-    /// here.
+    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) every
+    /// frame and the base screen renders precipitation below the road band **if its
+    /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay) says it wants it** — today only
+    /// the WX11 rain map. On any other screen the lease is dropped here, so a mounted weather store
+    /// never tints the ordinary Map; `None` is byte-identical to the plain call. This is the single
+    /// production hook — firmware and simulator both land here.
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map_rain_timed<D, F, S>(
         &mut self,
@@ -2918,6 +2922,18 @@ impl App {
         // yields a stale readout.
         let now_utc = self.wall_unix_now();
         let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        // The rain overlay is the **base screen's** declared capability
+        // ([`Caps::rain_overlay`](crate::screen::Caps::rain_overlay)), not the host's: a host mounts
+        // a weather store once and then leases a frame unconditionally, so this is the one place
+        // that decides whether the frame's rain may be drawn at all. Dropped here — before any
+        // screen can `take` it — the ordinary Map, the Detour pair, and every map base added later
+        // are rain-free by construction rather than by an exit hook a screen transition could
+        // forget. It also keeps the *per-tile* decodes off every frame no screen would have painted
+        // rain on — which will matter once the board renders rain (today only `obc-sim` leases;
+        // `obc-fw-nrf54l` still renders through `render_map_timed` and builds no adapter). Note it
+        // is only the `tile` reads that are skipped: the adapter's own header/frame reads happen in
+        // `RainOverlayAdapter::at_step`, upstream of this gate.
+        let rain = if self.ui.base_wants_rain() { rain } else { None };
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
@@ -6710,12 +6726,13 @@ mod tests {
         app.tick(RideClock(now_ms), Sensors::new(&mut loc), Some(route));
     }
 
-    /// The WX12 travel-direction chain end to end: on-route fixes yield the route tangent at the
-    /// matched progress (held while stopped — a rest stop still knows the ride's direction);
-    /// off-route moving fixes fall back to the GPS course; off-route stationary is neutral, never
-    /// a fabricated head/tail.
+    /// The WX12 travel-direction chain end to end: on-route fixes yield the route's general
+    /// heading ahead of the matched progress (held while stopped — a rest stop still knows the
+    /// ride's direction), and everything else is neutral, never a fabricated head/tail. Off-route
+    /// the GPS course does **not** stand in, however fast the rider is moving (owner tuning round):
+    /// the momentary heading is arbitrary the moment they stop or turn the bars.
     #[test]
-    fn travel_direction_follows_route_tangent_then_course_then_neutral() {
+    fn travel_direction_follows_the_route_heading_else_neutral() {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
@@ -6723,33 +6740,34 @@ mod tests {
         app.activity.active_route = Some(0);
         assert_eq!(app.travel_deg(), None, "no fix yet → neutral");
 
-        // A moving on-route fix: the travel direction is the route tangent, not the (deliberately
+        // A moving on-route fix: the travel direction is the route heading, not the (deliberately
         // contradictory) GPS course.
         let p = route.position_at(1_000).unwrap();
         let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
         tick_route_fix(&mut app, &route, on_route, 1_000);
         assert!(!app.activity.off_route);
-        let tangent = crate::weather::route_tangent_deg(&route, app.activity.progress_m).unwrap();
-        let travel = app.travel_deg().expect("on-route: tangent");
-        assert!((travel - tangent).abs() < 0.01, "travel {travel} == tangent {tangent}");
+        let heading = crate::weather::route_heading_deg(&route, app.activity.progress_m).unwrap();
+        let travel = app.travel_deg().expect("on-route: the route heading");
+        assert!((travel - heading).abs() < 0.01, "travel {travel} == heading {heading}");
 
-        // Stopped on the route (no course, no speed): the tangent is *held* — the wind question
+        // Stopped on the route (no course, no speed): the heading is *held* — the wind question
         // at a rest stop is about the ride ahead.
         tick_route_fix(&mut app, &route, Fix { lat: p.lat, lon: p.lon, course: None, speed_mps: None }, 2_000);
         assert_eq!(app.travel_deg(), Some(travel), "held while stopped");
 
-        // Far off the route, moving with a course: the trustworthy GPS course takes over.
+        // Far off the route, moving with a course: neutral. The GPS course used to stand in here,
+        // and it is exactly the claim a rider standing at a junction can't trust.
         let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
         tick_route_fix(&mut app, &route, far, 3_000);
         assert!(app.activity.off_route);
-        assert_eq!(app.travel_deg(), Some(123.0), "off-route moving → GPS course");
+        assert_eq!(app.travel_deg(), None, "off-route → neutral, course or no course");
 
-        // Off the route and stationary: neutral — never a fabricated head/tail (locked).
+        // Off the route and stationary: still neutral.
         let parked = Fix { lat: p.lat + 200_000, lon: p.lon, course: None, speed_mps: Some(0.0) };
         tick_route_fix(&mut app, &route, parked, 4_000);
         assert_eq!(app.travel_deg(), None, "off-route stopped → neutral");
 
-        // Unloading the route drops the tangent with the rest of the derived state.
+        // Unloading the route drops the heading with the rest of the derived state.
         tick_route_fix(&mut app, &route, on_route, 5_000);
         assert!(app.travel_deg().is_some());
         app.activity.active_route = None;
@@ -6782,7 +6800,7 @@ mod tests {
         let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
         tick_route_fix(&mut app, &route, far, 2_000);
         assert!(app.activity.off_route);
-        assert_eq!(app.travel_deg(), Some(123.0), "the wind arrow already switched to the GPS course…");
+        assert_eq!(app.travel_deg(), None, "the wind arrows already went neutral off the line…");
         assert_eq!(app.ride_projection(), None, "…and the ride decision must switch off the route too");
 
         // Back on the line: the projection returns.
@@ -6823,6 +6841,45 @@ mod tests {
             );
         }
         assert_eq!(app.ride_projection().unwrap().speed_cms, 500, "median of {{300, 500, 1500(capped)}}");
+    }
+
+    /// One rendered Hourly frame: `travel` is the WX12 travel direction the wind arrows classify
+    /// against, `precip_tenth_mm` the amount every row carries (the rows are otherwise the
+    /// [`alert_snap`] hourlies — wind from 200° at 4 m/s, condition RAIN).
+    fn hourly_frame(travel: Option<f32>, precip_tenth_mm: u16) -> crate::harness::support::Buf {
+        use crate::harness::support::{build_min_obcm, Buf};
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let mut snap = alert_snap(&app, &[0; 9]);
+        for record in snap.hourly.iter_mut() {
+            record.precipitation_tenth_mm = precip_tenth_mm;
+        }
+        app.ride.travel_deg = travel;
+        let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
+        let bytes = build_min_obcm(1);
+        let cache = MapCache::new();
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut buf = Buf::new(240, 320);
+        let mut scratch = std::boxed::Box::new(obc_render::RenderScratch::new());
+        app.render_frame_with_rain(
+            Some(&mut scratch),
+            &mut buf,
+            &reader,
+            None,
+            None,
+            crate::weather::WeatherFeed { snapshot: Some(&snap), refreshing: false },
+            240.0,
+            320.0,
+            |c| {
+                let (r, g, b) = rgb565_to_rgb888(c);
+                Rgb888::new(r, g, b)
+            },
+        );
+        buf
     }
 
     /// A synthetic ride snapshot for the alert engine: nine 15-min frames of `intensities`
@@ -6972,46 +7029,40 @@ mod tests {
     /// nowhere on screen — the `Render::travel_deg` wiring, pinned at the pixel level.
     #[test]
     fn hourly_wind_arrows_color_route_relatively() {
-        use crate::harness::support::{build_min_obcm, Buf};
         use embedded_graphics::pixelcolor::Rgb888;
-        use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
-
-        fn hourly_frame(travel: Option<f32>) -> Buf {
-            let mut app = App::new(AppState::new(0, 0, 1.0));
-            let snap = alert_snap(&app, &[0; 9]); // hourly rows: wind from 200°, 4 m/s
-            app.ride.travel_deg = travel;
-            let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
-            let bytes = build_min_obcm(1);
-            let cache = MapCache::new();
-            let src = obc_reader::SliceSource(&bytes);
-            let tables = MapTables::parse(&src).unwrap();
-            let reader = Reader::new(&src, &tables, &cache);
-            let mut buf = Buf::new(240, 320);
-            let mut scratch = std::boxed::Box::new(obc_render::RenderScratch::new());
-            app.render_frame_with_rain(
-                Some(&mut scratch),
-                &mut buf,
-                &reader,
-                None,
-                None,
-                crate::weather::WeatherFeed { snapshot: Some(&snap), refreshing: false },
-                240.0,
-                320.0,
-                |c| {
-                    let (r, g, b) = rgb565_to_rgb888(c);
-                    Rgb888::new(r, g, b)
-                },
-            );
-            buf
-        }
+        use obc_reader::rgb565_to_rgb888;
 
         let (r, g, b) = rgb565_to_rgb888(crate::screen::palette::ON);
         let tail_green = Rgb888::new(r, g, b);
         // Wind FROM 200° blows toward 20°; travelling at 20° that's a dead tailwind → green.
-        let colored = hourly_frame(Some(20.0));
-        let neutral = hourly_frame(None);
+        let colored = hourly_frame(Some(20.0), 0);
+        let neutral = hourly_frame(None, 0);
         assert!(colored.count(tail_green) > 0, "a tailwind row inks the arrow green");
         assert_eq!(neutral.count(tail_green), 0, "no travel direction → no head/tail claim anywhere");
+    }
+
+    /// A wet hour's millimetres are inked rain-blue, a dry hour's stay muted — counted inside the
+    /// precipitation column only, since the WX17 rain icon paints its streaks in the same blue two
+    /// columns to the left.
+    #[test]
+    fn hourly_rain_amount_is_inked_rain_blue() {
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_reader::rgb565_to_rgb888;
+
+        let (r, g, b) = rgb565_to_rgb888(crate::screen::palette::RAIN);
+        let rain_blue = Rgb888::new(r, g, b);
+        let blue_in_precip_column = |buf: &crate::harness::support::Buf| {
+            let mut n = 0;
+            for y in 0..buf.h {
+                for x in 84..156 {
+                    n += usize::from(buf.get(x, y) == rain_blue);
+                }
+            }
+            n
+        };
+
+        assert!(blue_in_precip_column(&hourly_frame(None, 42)) > 0, "4.2mm reads as water");
+        assert_eq!(blue_in_precip_column(&hourly_frame(None, 0)), 0, "a dry hour's 0.0mm stays muted");
     }
 
     /// The gust class drives the new STRONG WIND card face through the same seam.

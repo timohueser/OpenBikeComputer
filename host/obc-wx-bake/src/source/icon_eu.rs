@@ -7,20 +7,24 @@
 //! decreases). The native grid is already regular lat/lon, so "reprojection" is the identity;
 //! no smoothing, no resampling.
 
-use obc_formats::obcg::{FLAG_FORECAST, PRODUCT_ICON_EU, TIER_MODEL};
 use obc_formats::precip4;
 
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_bzip2_field, DecodedField, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX, MAX_COMPRESSED_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass};
 
 pub const ID: &str = "icon-eu";
 
-/// The native grid, restated as OBCG geometry: cell centers from (29.5 N, -23.5 E) on exact
-/// 0.0625-degree strides, so the south/west **edges** sit half a cell lower. GRIB scanning is
-/// +i west-east, +j south-north — identical to OBCG's row order, no reindexing.
+/// The **source window**: the native grid restated as geometry, with cell centres from
+/// (29.5 N, -23.5 E) on exact 0.0625-degree strides, so the south/west **edges** sit half a cell
+/// lower. GRIB scanning is +i west-east, +j south-north — identical to OBCG's row order, no
+/// reindexing.
+///
+/// The window stays at the native 6.5 km pitch (WXR3 #1242): eagerly upsampling a continental
+/// model onto the canonical 1 km lattice would cost 28 M cells a frame for no information, so the
+/// mosaic cell-replicates it lazily, one shard at a time. `cell_size_m` here states the source's
+/// true ground resolution; the *published* frames state the lattice's.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 29_468_750,
     west_lon_udeg: -23_531_250,
@@ -93,13 +97,7 @@ impl Adapter for IconEu {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
         GEOMETRY.validate()?;
         // Newest complete run: every retained lead (plus the f000 baseline) must exist before a
         // run is selectable (WX1). Candidates are probed newest-first.
@@ -114,20 +112,6 @@ impl Adapter for IconEu {
             break;
         }
         let run = selected.ok_or("no complete ICON-EU run among the recent cycles")?;
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        // Upstream regression: the newest complete run is older than the one already published
-        // (files withdrawn upstream). Never re-bake backwards — reference_time and the staleness
-        // deadline must not move into the past while published frames stand.
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "icon-eu: newest complete run {run} is older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
 
         // Fetch and decode the cumulative fields, then de-accumulate consecutive pairs.
         let mut previous_field: Option<(u32, DecodedField)> = None;
@@ -155,17 +139,15 @@ impl Adapter for IconEu {
             }
             previous_field = Some((lead, field));
         }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
+        // Hourly steps, like the floor: `derive::uniform_frames` fills the quarter hours between them.
+        Ok(BakedSource {
             id: ID,
-            product_code: PRODUCT_ICON_EU,
-            tier: TIER_MODEL,
             geometry: GEOMETRY,
             reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
             attribution: ATTRIBUTION,
-            upstream_etag: None,
             frames,
-        })))
+            motion_history: Vec::new(),
+        })
     }
 }
 
@@ -192,8 +174,7 @@ pub fn deaccumulate(earlier: &DecodedField, later: &DecodedField, run: i64, lead
     Ok(BakedFrame {
         offset_min: lead * 60,
         valid_at: run + i64::from(lead) * 3_600,
-        flags: FLAG_FORECAST,
-        source: None,
+        class: SourceClass::Forecast,
         cells,
     })
 }

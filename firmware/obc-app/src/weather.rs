@@ -6,7 +6,7 @@
 //! snapshot plus the frame's `now` ([`rain_outlook`]). Keeping the derivation pure and
 //! time-parameterized is what makes the honesty laws testable: expired rain can never produce a
 //! dry claim, incomplete two-hour coverage is **WEATHER UPDATE NEEDED**, and a corridor with no
-//! precipitation product at all is the explicit hourly-only state — never a fake map, never dry.
+//! precipitation grid at all is the explicit hourly-only state — never a fake map, never dry.
 //!
 //! The *ride decision* (WX12, #1197) keeps [`rain_outlook`] as the one derivation — what changed
 //! is **where each frame is sampled**: with an active route the host samples frame `k` at the
@@ -69,7 +69,7 @@ pub const MOVING_MIN_CMS: u32 = 100;
 /// against a plausible touring pace spread this covers the observed positional uncertainty of
 /// **1.7 / 2.4 / 3.5 cells at +15 / +30 / +45 min** on a 1 km grid: `1 + ⌊125·Δt/100 / 1000⌋`
 /// gives 2 / 3 / 4 cells there, i.e. the reviewer's `1 + k` ladder at the 15-minute radar cadence.
-/// Expressed as a speed rather than a per-frame step so a coarser product's own cadence and cell
+/// Expressed as a speed rather than a per-frame step so a coarser source's own cadence and cell
 /// size fold in by arithmetic instead of by assumption (a 27 km floor cell stays one cell wide
 /// across the whole horizon).
 ///
@@ -79,7 +79,7 @@ pub const PACE_SPREAD_CMS: u32 = 125;
 
 /// Ceiling on the pace-spread corridor's half-width in cells — an I/O guard, not a decision. At
 /// the shipped 1 km radar cell the ladder reaches 10 at the +2 h horizon, so this never binds
-/// there; it exists so a hypothetical sub-hectometre product can't turn one snapshot sample into
+/// there; it exists so a hypothetical sub-hectometre grid can't turn one snapshot sample into
 /// thousands of tile probes.
 pub const CORRIDOR_MAX_HALF_CELLS: u32 = 12;
 
@@ -140,14 +140,14 @@ pub struct WeatherSnapshot {
     /// when no position was available (every sample is then no-data).
     pub sampled_at: Option<(i32, i32)>,
     /// Some sampled (current or projected) position lies inside the rain grid's bbox. `false`
-    /// means the rain product covers no part of the sampled ride — the explicit hourly-only state.
+    /// means the rain grid covers no part of the sampled ride — the explicit hourly-only state.
     pub pos_in_grid: bool,
     /// The rider's **current** position lies inside the rain grid's bbox — deliberately *not* the
     /// same bit as [`pos_in_grid`](Self::pos_in_grid) since WX12 widened that one to "some
-    /// projected position". A rider outside the product whose ride enters it has
+    /// projected position". A rider outside the rain grid whose ride enters it has
     /// `pos_in_grid = true` (so rain met along the way is still reported) but
     /// `current_pos_in_grid = false`, which is what keeps the honest **hourly-only** state
-    /// reachable instead of degrading into WEATHER UPDATE NEEDED: the product simply doesn't
+    /// reachable instead of degrading into WEATHER UPDATE NEEDED: the grid simply doesn't
     /// cover where the rider is.
     pub current_pos_in_grid: bool,
     /// The frame samples were route-projected (a [`RideProjection`] was supplied) — diagnostics
@@ -156,7 +156,7 @@ pub struct WeatherSnapshot {
     /// The bundle carried more frames than [`SNAPSHOT_MAX_FRAMES`]; coverage past the last kept
     /// frame is unknown and the outlook refuses the dry claim there.
     pub frames_truncated: bool,
-    /// The rain product's grid at its **densest** frame (the OBCW header bbox with the maximum
+    /// The rain grid at its **densest** frame (the OBCW header bbox with the maximum
     /// cell dimensions across the whole table), or `None` for a frameless bundle — what the rain
     /// map's zoom clamp derives its floor from ([`rain_zoom_floor`](Self::rain_zoom_floor)).
     /// Densest-frame dims make the clamp the strictest any frame needs, so time-stepping between
@@ -215,7 +215,7 @@ impl WeatherSnapshot {
     /// handful of tile decodes per kept frame — plus, **only for frames that are otherwise dry and
     /// covered** (the claim corridor short-circuits on the first blocker and is skipped entirely
     /// when the frame already can't claim), `4 · half_width` further cell probes. Worst case on
-    /// the shipped 1 km/15 min radar product (a wholly clean nine-frame sky, the one case that
+    /// the shipped 1 km/15 min radar dataset (a wholly clean nine-frame sky, the one case that
     /// pays in full): 45 warning probes + 184 claim probes = 229 `intensity_at` calls per pass
     /// against a *single-entry* tile cache — of which ~36 are the claim corridor's first step
     /// repeating the warning neighbours, and most of the rest are same-tile hits, since 16
@@ -407,8 +407,8 @@ impl WeatherSnapshot {
     }
 
     /// The rain map's zoom-out floor at the camera latitude — the smallest zoom at which the
-    /// product still renders ([`obc_render::rain_min_zoom`] over [`rain_grid`](Self::rain_grid)),
-    /// or `None` with no rain product (the clamp then stays disengaged). Hosts feed it into
+    /// rain grid still renders ([`obc_render::rain_min_zoom`] over [`rain_grid`](Self::rain_grid)),
+    /// or `None` with no rain grid (the clamp then stays disengaged). Hosts feed it into
     /// [`AppState::rain_zoom_min`](crate::AppState) alongside the snapshot.
     pub fn rain_zoom_floor(&self, cam_lat_udeg: i32) -> Option<f32> {
         let grid = self.rain_grid.as_ref()?;
@@ -434,7 +434,7 @@ impl WeatherSnapshot {
 /// What the dashboard's decision card may honestly claim at `now` — see [`rain_outlook`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RainOutlook {
-    /// The bundle carries no rain product covering the rider's position: the explicit
+    /// The bundle carries no rain grid covering the rider's position: the explicit
     /// hourly-only state. Hourly rows stay available; no rain claim of any kind is made.
     HourlyOnly,
     /// Rain data exists but cannot honestly answer the two-hour question at `now`: bundle
@@ -460,8 +460,8 @@ pub enum RainOutlook {
 ///   ([`FrameSample::supports_dry_claim`] carries the last three);
 /// - anything wet inside the covered part is reported even when coverage is partial —
 ///   a gap suppresses the dry claim, never a rain warning;
-/// - nothing wet, coverage incomplete, and the rain product doesn't even reach the rider's
-///   *current* position → [`RainOutlook::HourlyOnly`] again: the honest "no rain product here",
+/// - nothing wet, coverage incomplete, and the rain grid doesn't even reach the rider's
+///   *current* position → [`RainOutlook::HourlyOnly`] again: the honest "no rain grid here",
 ///   not a fetch instruction that would never help;
 /// - otherwise → [`RainOutlook::UpdateNeeded`] (stale is never dry).
 pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
@@ -526,7 +526,7 @@ pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
             }
         }
         None if fully_covered => RainOutlook::Dry,
-        // Nothing wet, coverage incomplete — but if the product doesn't cover where the rider
+        // Nothing wet, coverage incomplete — but if the grid does not cover where the rider
         // actually *is*, the gap isn't staleness, it's absence: the explicit hourly-only state.
         None if !snap.current_pos_in_grid => RainOutlook::HourlyOnly,
         None => RainOutlook::UpdateNeeded,
@@ -563,8 +563,8 @@ pub enum WindClass {
 /// Classify the wind route-relatively, or `None` when there is no trustworthy travel direction —
 /// the arrows then render in neutral ink, never a false head/tail claim (the locked fallback).
 ///
-/// `travel_deg` is the WX12 chain's output (active-route tangent at the matched position, else
-/// the moving GPS course — [`crate::App::travel_deg`], threaded to the rows as
+/// `travel_deg` is the WX12 chain's output (the active route's general heading ahead of the
+/// matched position, and nothing else — [`crate::App::travel_deg`], threaded to the rows as
 /// `Render::travel_deg`). The classification: the wind's *to*-direction within 60° of travel is
 /// a tailwind, within 60° of dead-opposite a headwind, everything between a crosswind.
 pub fn wind_class(wind_from_deg: u16, travel_deg: Option<f32>) -> Option<WindClass> {
@@ -633,7 +633,7 @@ fn spread_half_cells(lead_s: i64, cell_size_m: u16) -> (u32, bool) {
 
 /// Is every cell within `half` cells of `(lat, lon)` along both axes readable, in-grid and dry?
 /// The DRY claim's gate — fail-closed in every direction (a wet cell, a no-data cell, a cell
-/// outside the product, or a failed read all answer `false`), and short-circuiting on the first
+/// outside the grid, or a failed read all answer `false`), and short-circuiting on the first
 /// blocker so the cost is only paid by corridors that actually turn out clean.
 fn corridor_is_dry<S: ByteSource + ?Sized>(
     reader: &WeatherReader<'_, S>,
@@ -672,20 +672,22 @@ pub fn bearing_deg(a: (i32, i32), b: (i32, i32)) -> Option<f32> {
     Some(if deg < 0.0 { deg + 360.0 } else { deg })
 }
 
-/// Along-route step over which the travel tangent is measured. Short enough to follow bends,
-/// long enough that µdeg quantization can't swing the angle.
-pub const TANGENT_STEP_M: u32 = 30;
+/// Along-route chord over which the travel direction is measured — a *general* heading, not a
+/// local tangent (owner tuning round). The wind question is about the ride ahead, so the chord is
+/// long enough that switchbacks, a river path's meanders and roundabouts can't swing the arrows'
+/// colour, and short enough that it still describes the leg the rider is actually on.
+pub const TRAVEL_CHORD_M: u32 = 1_000;
 
-/// The active route's travel direction (degrees CW from north) at `progress_m`: the forward
-/// tangent over a [`TANGENT_STEP_M`] step, stepped back at the route end so the last metres keep
-/// a direction. `None` when the route has no usable geometry — the caller then falls through the
-/// locked chain (GPS course while moving, else neutral).
-pub fn route_tangent_deg(route: &RouteReader<'_>, progress_m: u32) -> Option<f32> {
+/// The active route's general travel direction (degrees CW from north) at `progress_m`: the
+/// bearing of the [`TRAVEL_CHORD_M`] chord ahead, stepped back at the route end so the last
+/// kilometre keeps a direction. `None` when the route has no usable geometry — the arrows are then
+/// neutral, never a fabricated head/tail.
+pub fn route_heading_deg(route: &RouteReader<'_>, progress_m: u32) -> Option<f32> {
     let total = route.total_distance_m;
     if total < 2 {
         return None;
     }
-    let step = TANGENT_STEP_M.min(total);
+    let step = TRAVEL_CHORD_M.min(total);
     let (from_m, to_m) =
         if progress_m.saturating_add(step) <= total { (progress_m, progress_m + step) } else { (total - step, total) };
     let from = route.position_at(from_m)?;
@@ -952,7 +954,7 @@ mod tests {
     }
 
     /// The pace-spread ladder: one cell at the anchor, and the reviewer's measured 2 / 3 / 4 cells
-    /// at +15 / +30 / +45 min on a 1 km grid — while a coarse floor product stays one cell wide
+    /// at +15 / +30 / +45 min on a 1 km grid — while a coarse floor source stays one cell wide
     /// across the whole horizon, and the I/O cap bounds a pathological fine grid.
     #[test]
     fn spread_half_cells_ladder_covers_the_measured_uncertainty() {
@@ -973,19 +975,19 @@ mod tests {
 
     /// F6: `pos_in_grid` ("some projected sample is covered") and `current_pos_in_grid` ("the
     /// rider is covered") are different questions, and the honest **hourly-only** state hangs off
-    /// the second one — a rider outside the product whose ride enters it must not read as a stale
-    /// cache that a refresh would fix.
+    /// the second one — a rider outside the bundle's rain grid whose ride enters it must not read
+    /// as a stale cache that a refresh would fix.
     #[test]
-    fn a_ride_entering_the_product_stays_hourly_only_where_the_rider_is() {
+    fn a_ride_entering_the_rain_grid_stays_hourly_only_where_the_rider_is() {
         let t0 = 1_800_000_000;
         // The ride enters the grid partway: the early frames are no-data, the later ones dry.
         let mut entering = synthetic(&[INTENSITY_NODATA, INTENSITY_NODATA, 0, 0, 0, 0, 0, 0, 0], t0);
-        entering.current_pos_in_grid = false; // the rider themselves is outside the product
-        assert_eq!(rain_outlook(&entering, t0), RainOutlook::HourlyOnly, "no product here — not 'update needed'");
+        entering.current_pos_in_grid = false; // the rider themselves is outside the rain grid
+        assert_eq!(rain_outlook(&entering, t0), RainOutlook::HourlyOnly, "no rain grid here — not 'update needed'");
         // Rain met along the way is still reported: hourly-only never swallows a warning.
         entering.frames[4].intensity = 7;
         assert_eq!(rain_outlook(&entering, t0), RainOutlook::RainIn { minutes: 60 });
-        // The same holes with the rider *inside* the product are the old, correct verdict.
+        // The same holes with the rider *inside* the rain grid are the old, correct verdict.
         let mut inside = synthetic(&[INTENSITY_NODATA, INTENSITY_NODATA, 0, 0, 0, 0, 0, 0, 0], t0);
         inside.current_pos_in_grid = true;
         assert_eq!(rain_outlook(&inside, t0), RainOutlook::UpdateNeeded);

@@ -1,11 +1,12 @@
-//! WX10 wiring test: the rain overlay lease flows host → `App::render_frame_with_rain` → the Map
-//! screen → `render_rain_timed`, through the production [`RainOverlayAdapter`] over real OBCW
-//! bytes. Pins the acceptance guarantees at the app level: rain renders when (and only when) a
-//! frame is current, the rider marker stays above it, and an absent / expired / dry lease is
-//! byte-identical to the plain rain-free frame.
+//! WX10 wiring test: the rain overlay lease flows host → `App::render_frame_with_rain` → the
+//! **rain map** screen (WX11) → `render_rain_timed`, through the production [`RainOverlayAdapter`]
+//! over real OBCW bytes. Pins the acceptance guarantees at the app level: rain renders when (and
+//! only when) a frame is current, the rider marker stays above it, a dry lease paints nothing —
+//! and the raster belongs to the screen that asked for it, so the ordinary Map is rain-free even
+//! while the host leases weather every frame.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::{App, AppState, RainOverlayAdapter};
+use obc_app::{App, AppState, Gesture, RainOverlayAdapter, Screen};
 use obc_formats::io::SliceSource;
 use obc_formats::obcw::{
     self, encode_format, encoded_len, BundleInput, HourlyRecord, RainFrameInput, CONDITION_CLEAR, HOURLY_COUNT,
@@ -71,6 +72,32 @@ fn rgb888(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
+/// Walk the rider's own route from the Map to the **rain map**, through the production gestures:
+/// the Map's ride menu → Main menu → the Weather station → the dashboard's RAIN MAP row. The Map
+/// stays on the stack underneath, so [`walk_back_to_the_map`] returns to the very same screen the
+/// rider left — the sequence the state leak was reported on.
+fn walk_to_the_rain_map(app: &mut App) {
+    app.apply_gesture(Gesture::BackHold); // Map → ride menu
+    app.apply_gesture(Gesture::Step(-1)); // → its Main menu station
+    app.apply_gesture(Gesture::Press); // → Menu
+    for _ in 0..4 {
+        app.apply_gesture(Gesture::Step(1)); // → the Weather station
+    }
+    app.apply_gesture(Gesture::Press); // → the dashboard
+    app.apply_gesture(Gesture::Step(1)); // → its RAIN MAP row
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)), "the dashboard's second action is the rain map");
+}
+
+/// Back out of the rain map to the Map the walk started from (rain map → dashboard → Menu → ride
+/// menu → Map).
+fn walk_back_to_the_map(app: &mut App) {
+    for _ in 0..4 {
+        app.apply_gesture(Gesture::Back);
+    }
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "four Backs land on the Map again");
+}
+
 /// Render one frame with an optional rain lease against the minimal sea-backdrop map.
 fn render(app: &mut App, map: &[u8], rain: Option<&mut dyn RainOverlaySource>) -> Buf {
     let cache = MapCache::new();
@@ -104,8 +131,17 @@ fn current_rain_renders_and_the_rider_stays_above_it() {
 
     let mut app = App::new(AppState::new(0, 0, 0.05));
     app.tick(RideClock(0), Sensors::new(&mut ReplayFix(Some(Fix::at(0, 0)))), None);
+    walk_to_the_rain_map(&mut app);
 
-    let dry = render(&mut app, &map, None);
+    // The rain-free reference is the *same* screen holding a genuinely dry lease — not a leaseless
+    // frame, which would honestly declare itself with WX11's "no data" banner and so differ in
+    // chrome as well as in rain.
+    let dry_obcw = bundle(0);
+    let dry_source = SliceSource(&dry_obcw);
+    let dry_reader = WeatherReader::open(&dry_source).unwrap();
+    let mut dry_cache = WeatherCache::new();
+    let mut dry_adapter = RainOverlayAdapter::current(&dry_reader, &mut dry_cache, FRAME_AT).unwrap();
+    let dry = render(&mut app, &map, Some(&mut dry_adapter));
     let mut adapter = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).expect("frame is current");
     let rained = render(&mut app, &map, Some(&mut adapter));
 
@@ -121,10 +157,10 @@ fn current_rain_renders_and_the_rider_stays_above_it() {
 }
 
 #[test]
-fn expired_dry_and_absent_leases_are_byte_identical() {
+fn expired_leases_never_exist_and_a_dry_one_paints_nothing() {
     let map = build_min_obcm(0);
     let mut app = App::new(AppState::new(0, 0, 0.05));
-    let plain = render(&mut app, &map, None);
+    walk_to_the_rain_map(&mut app);
 
     // Expired (or not-yet-valid) bundle: no adapter exists at all, so the host passes `None`; the
     // gate is `current_frame`, exercised here through the adapter's constructor.
@@ -135,14 +171,20 @@ fn expired_dry_and_absent_leases_are_byte_identical() {
     assert!(RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT + 100_000).is_none());
     assert!(RainOverlayAdapter::current(&reader, &mut cache, 1_799_999_999).is_none());
 
-    // A genuinely dry current frame: the lease exists and changes nothing.
+    // A genuinely dry current frame: the lease exists and paints no rain at any intensity, while
+    // the same walk with the torrential bundle paints plenty.
     let dry_obcw = bundle(0);
     let dry_source = SliceSource(&dry_obcw);
     let dry_reader = WeatherReader::open(&dry_source).unwrap();
     let mut dry_cache = WeatherCache::new();
     let mut adapter = RainOverlayAdapter::current(&dry_reader, &mut dry_cache, FRAME_AT).unwrap();
-    let rained = render(&mut app, &map, Some(&mut adapter));
-    assert_eq!(plain.px, rained.px, "a dry frame is byte-identical to no lease at all");
+    let dry = render(&mut app, &map, Some(&mut adapter));
+    for intensity in 1..=15u8 {
+        assert_eq!(dry.count(rgb888(rain_style(intensity).0)), 0, "a dry frame paints no intensity-{intensity} cell");
+    }
+    let mut wet = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
+    let rained = render(&mut app, &map, Some(&mut wet));
+    assert_ne!(dry.px, rained.px, "the same screen with rain in the bundle is a different frame");
 }
 
 #[test]
@@ -153,6 +195,7 @@ fn rendering_with_a_lease_is_deterministic() {
     let reader = WeatherReader::open(&source).unwrap();
     let mut cache = WeatherCache::new();
     let mut app = App::new(AppState::new(0, 0, 0.05));
+    walk_to_the_rain_map(&mut app);
 
     let mut adapter_a = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
     let a = render(&mut app, &map, Some(&mut adapter_a));
@@ -166,4 +209,87 @@ fn rendering_with_a_lease_is_deterministic() {
     let block_hits =
         (40..44).flat_map(|y| (100..104).map(move |x| (x, y))).filter(|&(x, y)| a.get(x, y) == rain_color).count();
     assert_eq!(block_hits, 10, "intensity 5 paints 10 of every 16 Bayer cells");
+}
+
+/// The zoom floor the host feed carries in these tests — well above `AppState::new`'s 0.05, so the
+/// rain map's entry clamp (`AppState::clamp_rain_zoom`) genuinely moves the shared camera, exactly
+/// as it does in the simulator. A floor of `0.0` would disengage the clamp and quietly turn the
+/// walk below into a no-op.
+const ZOOM_FLOOR: f32 = 0.5;
+
+/// The reported state leak (on-glass, simulator): after a visit to the rain map the precipitation
+/// raster kept drawing on the ordinary Map. It cannot any more — the overlay is the base screen's
+/// declared capability (`Caps::rain_overlay`), so a host that leases weather on *every* frame (both
+/// production hosts do) still hands the Map nothing.
+///
+/// The walk runs with the **production host feed** (`set_rain_view`, called every frame by
+/// `obc-sim`'s GUI and headless paths), so the rain map's zoom clamp really fires. That is why the
+/// claim pinned here is *rain-freeness*, not frame identity: the returned-to Map legitimately sits
+/// at a different zoom, which is its own defect (#1252) and has its own case below. What must hold
+/// at any camera is that the offered lease changes **nothing** on the Map — before or after.
+#[test]
+fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
+    let map = build_min_obcm(0);
+    let obcw = bundle(12); // torrential: on the rain map this covers the whole in-grid view
+    let source = SliceSource(&obcw);
+    let reader = WeatherReader::open(&source).unwrap();
+    let mut cache = WeatherCache::new();
+    let mut app = App::new(AppState::new(0, 0, 0.05));
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "the app starts on the Map");
+    // The host's per-frame weather view feed: step range + the product's zoom floor.
+    app.set_rain_view(3, ZOOM_FLOOR);
+
+    // The Map with no weather mounted at all — the reference frame the rider expects to see.
+    let pristine = render(&mut app, &map, None);
+    // The Map with a current, heavy lease offered by the host: identical, to the byte.
+    let mut offered = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
+    let with_lease = render(&mut app, &map, Some(&mut offered));
+    assert_eq!(with_lease.px, pristine.px, "an offered lease never reaches the Map");
+    let rain_color = rgb888(rain_style(12).0);
+    assert_eq!(with_lease.count(rain_color), 0, "the Map draws no rain");
+
+    // The rain map is where that same lease does draw…
+    walk_to_the_rain_map(&mut app);
+    app.set_rain_view(3, ZOOM_FLOOR);
+    let mut on_rain_map = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
+    let rained = render(&mut app, &map, Some(&mut on_rain_map));
+    assert!(rained.count(rain_color) > 0, "the rain map is the screen that draws rain");
+
+    // …and the Map the rider comes back to carries none of it. Compared against the *same camera*
+    // drawn with no lease at all — the clamp moved the zoom (#1252), so `pristine` is no longer the
+    // right reference, but "the lease adds nothing" is still exactly the property under test, and
+    // it is the one that fails on the old behaviour.
+    walk_back_to_the_map(&mut app);
+    app.set_rain_view(3, ZOOM_FLOOR);
+    let mut still_offered = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
+    let after = render(&mut app, &map, Some(&mut still_offered));
+    let after_without_lease = render(&mut app, &map, None);
+    assert_eq!(after.px, after_without_lease.px, "the rain map's raster must not outlive the rain map");
+    for intensity in 1..=15u8 {
+        assert_eq!(after.count(rgb888(rain_style(intensity).0)), 0, "no intensity-{intensity} rain on the Map");
+    }
+}
+
+/// The **camera** half of the same walk, which this PR does *not* fix: the rain map's entry clamp
+/// (`AppState::clamp_rain_zoom`) writes the shared `AppState::zoom`, and nothing restores it, so a
+/// rider who opens the rain map from a wider-out Map is silently returned to a Map at the radar
+/// product's zoom floor. Kept as an executable statement of the defect and ignored until
+/// <https://github.com/timohueser/OpenBikeComputer/issues/1252> decides what the camera should do
+/// (restore it, or keep the shared camera and say so) — run with `cargo test -- --ignored` to
+/// watch it fail.
+#[test]
+#[ignore = "#1252: the rain map's zoom clamp moves the shared camera and nothing restores it"]
+fn the_map_returns_to_the_camera_the_rider_left() {
+    let map = build_min_obcm(0);
+    let mut app = App::new(AppState::new(0, 0, 0.05));
+    app.set_rain_view(3, ZOOM_FLOOR);
+    let pristine = render(&mut app, &map, None);
+    walk_to_the_rain_map(&mut app);
+    app.set_rain_view(3, ZOOM_FLOOR);
+    walk_back_to_the_map(&mut app);
+    app.set_rain_view(3, ZOOM_FLOOR);
+    let after = render(&mut app, &map, None);
+    // Compared as a bool, not with `assert_eq!`: a failing frame comparison would otherwise dump
+    // two 120 × 120 pixel vectors into the log.
+    assert!(after.px == pristine.px, "a rain-map visit must not re-aim the Map's camera");
 }

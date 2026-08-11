@@ -7,4 +7,3 @@ listed there. Report the exact checks run and any checks intentionally omitted.
 
 Use `obc clean` for stale worktree/build/test state. It is dry-run by default; never bypass its
 dirty, unmerged, current-worktree, or main-worktree protections with ad-hoc deletion.
-

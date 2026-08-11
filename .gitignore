@@ -44,6 +44,9 @@ __pycache__/
 !specs/vectors/*.obct
 # The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
 firmware/obc-settings.bin
+# `obc-wx-pack capture`'s default output directory. A full-domain event pack is hundreds of MB;
+# the small cropped ones that ship live under host/obc-wx-bake/tests/events/ instead.
+/wx-events/
 # ui-snapshots.sh output — before/after PNG sweeps are per-branch scratch, never committed.
 ui-snapshots/
 .pytest_cache/

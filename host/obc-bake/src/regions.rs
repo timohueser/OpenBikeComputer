@@ -133,10 +133,20 @@ mod tests {
         // the maximal-source rule, so a new line costs a `.poly` fetch and a catalog
         // entry, never an extract. The count is pinned so a dropped line is a failed
         // test rather than a region that silently stops being offered.
-        assert_eq!(ids.len(), 35, "DACH plus its sixteen Regierungsbezirke is 35 regions: {ids:?}");
+        //
+        // Plus exactly one non-DACH entry: Iowa, the basemap the fixture-registry
+        // weather event packs are rendered over. It is pinned by name and
+        // by count for the same reason the rest are — and so that a second US state
+        // arriving quietly fails here, which is the whole of the convention.
+        assert_eq!(ids.len(), 36, "DACH's 35 plus Iowa for the weather event packs: {ids:?}");
         assert!(ids.contains(&"europe/germany"));
         assert!(ids.contains(&"europe/austria"));
         assert!(ids.contains(&"europe/switzerland"));
+        assert_eq!(
+            ids.iter().filter(|id| !id.starts_with("europe/")).copied().collect::<Vec<_>>(),
+            vec!["north-america/us/iowa"],
+            "the weather packs' basemap is the only non-European region"
+        );
         assert!(ids.contains(&"europe/germany/baden-wuerttemberg/freiburg-regbez"));
         let regbez =
             ids.iter().filter(|id| id.strip_prefix("europe/germany/").is_some_and(|rest| rest.contains('/'))).count();

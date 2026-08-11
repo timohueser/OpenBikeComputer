@@ -31,11 +31,29 @@ license = "DWD GeoNutzV-DE 2.0"
 
 [packages.weather-noaa]
 summary = "Historical NOAA MRMS, HRRR, and GFS precipitation inputs"
-archive = "packages/0c9990cb1d1f73818e75b267620d685a85699d18922e6caa35c70fc8fec9e8dd.tar.gz"
-sha256 = "0c9990cb1d1f73818e75b267620d685a85699d18922e6caa35c70fc8fec9e8dd"
-bytes = 8572908
-provenance = "NOAA MRMS 2026-08-09 16:58 UTC, HRRR run 15:00 UTC, and GFS run 12:00 UTC source captures."
+archive = "packages/c1d7a893572e95de7c059dd76905a661fed7db11965331d7221bd069a2ddfa2e.tar.gz"
+sha256 = "c1d7a893572e95de7c059dd76905a661fed7db11965331d7221bd069a2ddfa2e"
+bytes = 17986912
+provenance = "NOAA MRMS 2026-08-09 16:58 UTC, HRRR run 15:00 UTC, and GFS run 12:00 UTC source captures. Includes the original APCP spans and the point-valid PRATE spans used by the corrected source contract."
 license = "US public domain"
+
+[packages.weather-event-derecho]
+summary = "Reproducible 2020 Midwest derecho nowcast event pack"
+archive = "packages/542ee2e110f883c661a5ae3a6b846dcc2f80ff4a9c395e05b4ef51f12c318ac1.tar.gz"
+sha256 = "542ee2e110f883c661a5ae3a6b846dcc2f80ff4a9c395e05b4ef51f12c318ac1"
+bytes = 5445515
+provenance = "NOAA MRMS and HRRR archive bytes for 2020-08-10, plus byte-identical service output and a two-hour truth ladder. Every member is pinned by event.json."
+license = "US public domain"
+tracked_sources = { "event.json" = "sources/weather-events/us-derecho-2020-08-10/event.json" }
+
+[packages.weather-event-airmass]
+summary = "Reproducible 2023 airmass-convection nowcast event pack"
+archive = "packages/259fd1e4fc3af662c70a4af1fb9f3d07efa1936336afc28aeeb9ca83442b25e9.tar.gz"
+sha256 = "259fd1e4fc3af662c70a4af1fb9f3d07efa1936336afc28aeeb9ca83442b25e9"
+bytes = 8577439
+provenance = "NOAA MRMS and HRRR archive bytes for 2023-06-24, plus byte-identical service output and a two-hour truth ladder. Every member is pinned by event.json."
+license = "US public domain"
+tracked_sources = { "event.json" = "sources/weather-events/us-airmass-2023-06-24/event.json" }
 
 [scenarios.grimsel]
 summary = "Ride the full Grimsel climb with terrain-backed elevation"
@@ -56,9 +74,9 @@ scenarios = ["grimsel", "monaco-upahead"]
 
 [profiles.weather]
 summary = "All historical source captures used by the weather baker tests"
-packages = ["weather-dwd-icon", "weather-noaa"]
+packages = ["weather-dwd-icon", "weather-noaa", "weather-event-derecho", "weather-event-airmass"]
 
 [profiles.test]
 summary = "All external fixture packages exercised by the full repository test suite"
 scenarios = ["grimsel", "monaco-upahead"]
-packages = ["weather-dwd-icon", "weather-noaa"]
+packages = ["weather-dwd-icon", "weather-noaa", "weather-event-derecho", "weather-event-airmass"]

@@ -30,6 +30,10 @@ FIXTURE_SUFFIXES = (
     ".osm.pbf",
     ".gpx",
 )
+FIXTURE_AREAS = (
+    "apps/obc-sim/assets/",
+    "host/obc-wx-bake/tests/events/",
+)
 
 
 def tracked_files() -> list[str]:
@@ -40,7 +44,8 @@ def tracked_files() -> list[str]:
 def main() -> int:
     violations = []
     for relative in tracked_files():
-        if relative in ALLOWED or not relative.endswith(FIXTURE_SUFFIXES):
+        fixture_area = relative.startswith(FIXTURE_AREAS) or "/tests/fixtures/" in relative
+        if relative in ALLOWED or (not fixture_area and not relative.endswith(FIXTURE_SUFFIXES)):
             continue
         path = ROOT / relative
         if path.is_file() and path.stat().st_size > LIMIT:

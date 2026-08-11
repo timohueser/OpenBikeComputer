@@ -204,6 +204,11 @@ def remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def is_git_repository(path: Path) -> bool:
+    """Recognize worktrees, ordinary clones, and bare repositories."""
+    return git(path, "rev-parse", "--git-dir", check=False).returncode == 0
+
+
 def temp_candidates(
     now: float,
     days: int,
@@ -218,14 +223,19 @@ def temp_candidates(
         # These namespaces are created by this repository's Rust/Python test helpers.
         if not (path.name.startswith("obc-") or path.name.startswith("obcm-")):
             continue
+        # Never follow a temp-name symlink. Keeping the direct child path is
+        # essential: resolving it here would turn cleanup into deletion of its
+        # target outside the temp directory.
+        if path.is_symlink():
+            continue
         resolved = path.resolve()
         # A review clone/worktree may also have an obc-* name. Git-owned paths only
         # leave through the worktree classifier above, never through this prefix rule.
-        if resolved in excluded or (path / ".git").exists():
+        if resolved in excluded or is_git_repository(path):
             continue
         try:
             if shallow_activity(path) <= cutoff:
-                result.append(resolved)
+                result.append(path)
         except OSError:
             pass
     return sorted(result)

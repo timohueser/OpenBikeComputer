@@ -1,17 +1,22 @@
-//! Atomic weather publishing: frames first, manifest last.
+//! Atomic weather publishing: the object stores the cycle puts through.
 //!
-//! The obc-bake pattern (`host/obc-bake/src/publish.rs`), specialized for the weather bucket:
-//! every frame object the new manifest references is uploaded **and re-verified at the
-//! destination** before the one mutable `wx/v1/manifest.json` is replaced. A failure anywhere
-//! earlier leaves the previous manifest — and therefore the previous, complete weather set —
-//! exactly as it was. Frame keys are immutable per upstream run, so re-publishing the same run
-//! is a checksum-skip, which is what makes every cycle idempotent.
+//! The obc-bake pattern (`host/obc-bake/src/publish.rs`), specialized for the weather bucket.
+//! Ordering is [`crate::canonical::run_cycle`]'s: every shard object the new manifest references
+//! is uploaded **and re-verified at the destination** before the one mutable
+//! `wx/v2/manifest.json` is replaced, so a failure anywhere earlier leaves the previous manifest —
+//! and therefore the previous, complete generation — exactly as it was. Object keys are immutable
+//! per generation, so re-publishing one is a checksum-skip, which is what makes every cycle
+//! idempotent.
 //!
-//! [`RcloneStore`] talks to Cloudflare R2 over the S3 API through `rclone`, with the remote
-//! defined entirely by environment variables on the child process — nothing secret in argv, no
-//! connection-string parser (the exact lesson the map publisher already paid for).
+//! [`R2Store`] talks to Cloudflare R2 over the S3 API directly ([`crate::s3`]), signing each
+//! request from credentials this process holds and never writes anywhere — no connection-string
+//! parser, nothing secret in an `argv`, and since #1279 no child process at all.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+use crate::s3::S3;
 
 /// Frames are immutable timestamped objects: cache them hard.
 pub const FRAME_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -26,58 +31,205 @@ pub struct PlannedObject {
     pub content_type: &'static str,
 }
 
-/// Somewhere weather objects can be put, re-checked and read back.
+/// What one [`ObjectStore::delete`] did.
+///
+/// Deleting is the one store operation whose *failure to find anything* is a success, so the
+/// outcome is a value rather than a `()`: the sweep ([`crate::sweep`]) walks every key a retired
+/// generation could hold and most cycles find every one of them, but a generation that was baked
+/// before a shard grid changed, or one whose cycle died mid-publish, is genuinely short a few.
+/// Deliberately **not** `Default`: the derived one would be `existed: None`, which now means "this
+/// backend cannot tell" — the one answer no store should ever give by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deleted {
+    /// Was there an object at that key?
+    ///
+    /// `Some(false)` is **not** an error: the operation's contract is that the key does not exist
+    /// afterwards, and a key that already did not is that.
+    ///
+    /// `None` is "this backend cannot tell", and it is a value rather than a guess because S3
+    /// `DeleteObject` is *defined* to be idempotent: R2 answers `204` whether or not anything was
+    /// there. [`DirStore`] can tell (it stats the file it is about to unlink) and does; [`R2Store`]
+    /// cannot without paying a `head` per key for a figure only a report line reads. Before #1279
+    /// this field claimed to know against R2 by reading rclone's stderr for "not found" — a string
+    /// match that was already wrong on rclone 1.60.1, which is precisely the class of bug the typed
+    /// client exists to end. Not knowing, and saying so, is the honest replacement.
+    pub existed: Option<bool>,
+    /// Its length, when the backend knew it *without paying for a second round-trip*.
+    ///
+    /// [`DirStore`] does — one `metadata` call on a local file, which is what makes the
+    /// bake-to-a-directory rehearsal in `ops/weather/RUNBOOK.md` report a real number. S3 does not:
+    /// `DeleteObject` answers with no length. So this is `None` against R2 by design, and the
+    /// object *count* is the number that matters there.
+    pub bytes: Option<u64>,
+}
+
+/// How many objects [`R2Store`] has in flight at once.
+///
+/// The upload phase is the only place in the cycle where concurrency is allowed, and it is
+/// **network** concurrency, not compute: the box has 4 cores and was measured at 0.7 of one while
+/// publishing, because every request spent its time waiting. Eight is chosen against R2's per-
+/// connection round-trip rather than the core count — enough to keep the pipe full for ~75 KB
+/// objects, small enough that a burst of eight is not a self-inflicted rate-limit.
+pub const UPLOAD_CONCURRENCY: usize = 8;
+
+/// Apply `op` to every item, at most `concurrency` at a time, returning **the first error recorded**
+/// and only after every worker has stopped.
+///
+/// This is the one concurrent construct in the crate, so it is a named function with its own tests
+/// rather than a closure inside the one caller that needs it. Its contract is four things:
+///
+/// * **It joins.** `std::thread::scope` cannot return until every worker has. When this returns —
+///   `Ok` or `Err` — nothing is still running. That is what lets `run_cycle` treat the boundary
+///   between the upload phase and the `head` proofs as a hard edge rather than a hope.
+/// * **First error wins.** Workers record into one slot with `get_or_insert`, so the error the
+///   caller sees is the first one recorded and later failures cannot overwrite it with something
+///   less informative.
+/// * **A failure stops new work.** Once the slot is filled no worker takes another item. The cycle
+///   is over either way, and spending another 200 objects' worth of requests to arrive at the same
+///   `Err` is time the next tick wants.
+/// * **A panic is an error, not an abort.** See below — this is the subtlest of the four.
+///
+/// ## Where `catch_unwind` sits, and why exactly there
+///
+/// It wraps **`op(item)` and nothing else**. That placement is the whole design, not an accident of
+/// where the braces landed:
+///
+/// * **It is inside the loop, not around the worker.** A panic therefore ends that worker and
+///   records a reason, rather than killing a thread that still holds a share of the queue.
+/// * **It does not span a lock acquisition.** The failure mutex is taken *after* the unwind is
+///   already caught, so no worker can ever panic while holding it. Poisoning is prevented at the
+///   source rather than recovered from.
+/// * **The recovery is still there anyway**, and deliberately: every `lock()` here uses
+///   `PoisonError::into_inner` instead of `expect`. If some future edit does reintroduce a panic
+///   under the lock, the guard it hands back still points at a perfectly good `Option<String>` —
+///   and the failure mode being defended against is losing *the reason the cycle failed* to a
+///   second-order panic in the code that was supposed to report the first one. `expect` on a
+///   poisoned lock would turn one bad object into an unexplained process death.
+///
+/// Without the catch, a panicking worker unwinds into `std::thread::scope`, which resumes the panic
+/// at the join point — so `put_all` does not return `Err`, it panics, and the process dies partway
+/// through the publish. That is the one phase where "did the manifest swap?" must have an answer,
+/// and a dead process gives none. Caught, it fails the cycle the ordinary way: before the swap,
+/// previous generation intact, one line in the journal naming the panic.
+/// `a_panicking_worker_fails_the_batch_rather_than_the_process` pins it, and was confirmed to fail
+/// (with `a scoped thread panicked`) when the catch is removed.
+fn run_bounded<T: Sync>(
+    items: &[T],
+    concurrency: usize,
+    op: impl Fn(&T) -> Result<(), String> + Sync,
+) -> Result<(), String> {
+    if items.len() < 2 || concurrency < 2 {
+        return items.iter().try_for_each(&op);
+    }
+    let next = AtomicUsize::new(0);
+    let failure: Mutex<Option<String>> = Mutex::new(None);
+    let record = |error: String| {
+        // Deliberately not `.expect()`: if a previous panic poisoned this lock, the recovered
+        // guard still holds a usable slot, and losing the *reason the cycle failed* to a
+        // second-order panic is the worst possible outcome here.
+        let mut slot = failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.get_or_insert(error);
+    };
+    let failed = || failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
+    std::thread::scope(|scope| {
+        for _ in 0..concurrency.min(items.len()) {
+            scope.spawn(|| loop {
+                if failed() {
+                    return;
+                }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(index) else { return };
+                // `AssertUnwindSafe` is the honest annotation: `op` borrows shared state, and a
+                // panic mid-way could leave it arbitrary. That is exactly why the answer is to
+                // fail the whole phase rather than to carry on with the remaining items.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| op(item))) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        record(error);
+                        return;
+                    }
+                    Err(payload) => {
+                        let what = payload
+                            .downcast_ref::<&str>()
+                            .map(|text| (*text).to_string())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "a non-string panic payload".to_string());
+                        record(format!("a publish worker panicked ({what}) — failing the cycle before the swap"));
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    match failure.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Somewhere weather objects can be put, re-checked, read back and retired.
 pub trait ObjectStore {
     /// Human-readable destination with any credential redacted.
     fn describe(&self) -> String;
     fn put(&mut self, object: &PlannedObject) -> Result<(), String>;
+    /// Store every object, returning only once **all** of them are durably written — or `Err`
+    /// having written some unknown subset of them.
+    ///
+    /// This is a batch and not a loop over [`Self::put`] because it is the one phase of the cycle
+    /// that may run several requests at once (#1279). The safety property it must not touch is the
+    /// *phase boundary*: `run_cycle` joins here completely before it heads a single key, and heads
+    /// every key before the manifest is written. Failing halfway is exactly as safe as failing on
+    /// one `put` was — the manifest has not moved, so every object written is unreferenced and the
+    /// previous generation still stands whole.
+    ///
+    /// The default is the sequential loop, which is what [`DirStore`] wants: local writes are
+    /// microseconds and threads would only add contention.
+    fn put_all(&mut self, objects: &[PlannedObject]) -> Result<(), String> {
+        for object in objects {
+            self.put(object)?;
+        }
+        Ok(())
+    }
+
+    /// Bound everything from here until the next [`Self::end_phase`] to `budget` of wall-clock.
+    ///
+    /// **The default is to ignore it, and that is a decision rather than a stub.** A budget exists
+    /// to bound a *retry ladder over a network*: attempts multiplied by a request timeout, times
+    /// hundreds of keys, against a peer that may simply never answer. A local filesystem write has
+    /// none of those — no ladder, no timeout, no peer — so [`DirStore`] takes this default and the
+    /// whole `--store <dir>` path (the runbook's rehearsal, the fixture tests, the event-pack
+    /// re-bake) is **deliberately unbudgeted**. A directory publish that is slow is a slow disk,
+    /// which a deadline would turn into a failed cycle without making anything faster.
+    ///
+    /// [`R2Store`] does enforce it, because there the alternative backstop is systemd's
+    /// `TimeoutStartSec` and a SIGKILL at an unknown point in the publish. `run_cycle` gives the
+    /// object phase and the sweep separate budgets, because they have different consequences: the
+    /// first must fail the cycle, the second may only warn.
+    fn begin_phase(&mut self, budget: std::time::Duration) {
+        let _ = budget;
+    }
+
+    fn end_phase(&mut self) {}
     /// Size of the object at `key`, or `None` if it is not there — the pre-manifest fetchability
     /// proof.
     fn head(&mut self, key: &str) -> Result<Option<u64>, String>;
     /// Read an object back (the previous manifest at cycle start). `None` if absent.
     fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String>;
-}
-
-/// Publish `frames` then `manifest`, in that order, with a remote existence/size check between.
-/// `carried` names the already-published objects the new manifest still references (unchanged
-/// products' frames): they upload nothing, but they are head-verified all the same, so a
-/// lifecycle misconfiguration that expired them is caught **before** the manifest swears they
-/// exist. Returns the number of objects uploaded and their byte total (manifest included).
-pub fn publish(
-    store: &mut dyn ObjectStore,
-    frames: &[PlannedObject],
-    carried: &[(String, u64)],
-    manifest: &PlannedObject,
-) -> Result<(usize, u64), String> {
-    let mut bytes = 0u64;
-    for object in frames {
-        store.put(object).map_err(|error| format!("{}: {error}", object.key))?;
-        bytes += object.bytes.len() as u64;
-    }
-    let expectations = frames
-        .iter()
-        .map(|object| (object.key.as_str(), object.bytes.len() as u64))
-        .chain(carried.iter().map(|(key, bytes)| (key.as_str(), *bytes)));
-    for (key, expected) in expectations {
-        match store.head(key)? {
-            Some(remote) if remote == expected => {}
-            Some(remote) => {
-                return Err(format!(
-                    "{key}: published as {remote} bytes but the manifest expects {expected} — refusing to swap the manifest in"
-                ));
-            }
-            None => {
-                return Err(format!("{key}: not fetchable — refusing to swap the manifest in"));
-            }
-        }
-    }
-    store.put(manifest).map_err(|error| format!("{}: {error}", manifest.key))?;
-    bytes += manifest.bytes.len() as u64;
-    Ok((frames.len() + 1, bytes))
+    /// Remove one object. **The only destructive operation in this crate** (WXR8 #1247), and the
+    /// reason it is a single named key and not a prefix: the caller derives every key it passes
+    /// from generations a manifest named, so the worst a bug here can reach is one object of one
+    /// generation, never a subtree. `crate::sweep` is the only caller, and it runs only after a
+    /// new manifest is durably in place.
+    fn delete(&mut self, key: &str) -> Result<Deleted, String>;
 }
 
 /// Publish into a local directory: the dry-run target, the test target, and a real one for any
 /// static host that serves a directory.
+///
+/// It takes the sequential [`ObjectStore::put_all`] and the no-op [`ObjectStore::begin_phase`], and
+/// both are deliberate: a local write is microseconds, so threads would only add contention, and
+/// there is no retry ladder or unanswering peer for a time budget to bound. **`--store <dir>` is
+/// unbudgeted on purpose** — see `begin_phase`.
 pub struct DirStore {
     root: PathBuf,
 }
@@ -89,6 +241,24 @@ impl DirStore {
 
     fn dest(&self, key: &str) -> PathBuf {
         key.split('/').fold(self.root.clone(), |path, segment| path.join(segment))
+    }
+
+    /// A key store has no directories; a filesystem does. After removing the last object under
+    /// `wx/v2/<generation>/f45/`, leave no `f45/` behind, or a swept generation goes on looking
+    /// present to anyone who lists this tree — including the runbook's own rehearsal step, which
+    /// is a directory listing and nothing else.
+    ///
+    /// It walks **up from the deleted file** and stops at the first non-empty directory or at the
+    /// store root, so it can only ever remove directories the store itself created and only while
+    /// they hold nothing at all.
+    fn prune_empty_parents(&self, from: &std::path::Path) {
+        let mut parent = from.parent();
+        while let Some(path) = parent {
+            if path == self.root || !path.starts_with(&self.root) || std::fs::remove_dir(path).is_err() {
+                return;
+            }
+            parent = path.parent();
+        }
     }
 }
 
@@ -126,10 +296,27 @@ impl ObjectStore for DirStore {
             Err(error) => Err(format!("{key}: {error}")),
         }
     }
+
+    fn delete(&mut self, key: &str) -> Result<Deleted, String> {
+        let dest = self.dest(key);
+        let bytes = std::fs::metadata(&dest).ok().map(|metadata| metadata.len());
+        match std::fs::remove_file(&dest) {
+            Ok(()) => {
+                self.prune_empty_parents(&dest);
+                Ok(Deleted { existed: Some(true), bytes })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Deleted { existed: Some(false), bytes: None })
+            }
+            Err(error) => Err(format!("{key}: {error}")),
+        }
+    }
 }
 
-/// Cloudflare R2 (bucket `obc-wx`) through `rclone`'s S3 backend. The ephemeral remote is
-/// defined by `RCLONE_CONFIG_OBCWX_*` variables in the child environment:
+/// Cloudflare R2 (bucket `obc-wx`) over the S3 API, signed in-process ([`crate::s3`]).
+///
+/// The destination is read from the environment, unchanged from the rclone era so the box's
+/// credential file needs no edit:
 ///
 /// ```text
 /// OBC_WX_R2_ACCOUNT_ID        Cloudflare account id (builds the endpoint)
@@ -139,16 +326,11 @@ impl ObjectStore for DirStore {
 /// OBC_WX_R2_ENDPOINT          optional, overrides the derived endpoint — a jurisdiction bucket
 ///                             (https://<account>.eu.r2.cloudflarestorage.com), or a test double
 /// ```
-pub struct RcloneStore {
-    bucket: String,
-    endpoint: String,
-    envs: Vec<(&'static str, String)>,
-    scratch: PathBuf,
+pub struct R2Store {
+    s3: S3,
 }
 
-const RCLONE_REMOTE: &str = "obcwx";
-
-impl RcloneStore {
+impl R2Store {
     pub fn from_env() -> Result<Self, String> {
         let var = |name: &str| std::env::var(name).map_err(|_| format!("{name} is not set"));
         let bucket = std::env::var("OBC_WX_R2_BUCKET").unwrap_or_else(|_| "obc-wx".to_string());
@@ -158,95 +340,74 @@ impl RcloneStore {
             Ok(endpoint) => endpoint,
             Err(_) => format!("https://{}.r2.cloudflarestorage.com", var("OBC_WX_R2_ACCOUNT_ID")?),
         };
-        let envs = vec![
-            ("RCLONE_CONFIG_OBCWX_TYPE", "s3".to_string()),
-            ("RCLONE_CONFIG_OBCWX_PROVIDER", "Cloudflare".to_string()),
-            ("RCLONE_CONFIG_OBCWX_REGION", "auto".to_string()),
-            ("RCLONE_CONFIG_OBCWX_ENDPOINT", endpoint.clone()),
-            ("RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID", access),
-            ("RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY", secret),
-            ("RCLONE_CONFIG_OBCWX_NO_CHECK_BUCKET", "true".to_string()),
-        ];
-        let scratch = std::env::temp_dir().join(format!("obc-wx-bake-{}", std::process::id()));
-        Ok(Self { bucket, endpoint, envs, scratch })
-    }
-
-    fn target(&self, key: &str) -> String {
-        format!("{RCLONE_REMOTE}:{}/{key}", self.bucket)
-    }
-
-    fn run(&self, args: &[String]) -> Result<std::process::Output, String> {
-        std::process::Command::new("rclone")
-            .envs(self.envs.iter().map(|(name, value)| (*name, value.as_str())))
-            .args(args)
-            .output()
-            .map_err(|error| format!("rclone: {error} — publishing needs rclone on PATH (https://rclone.org/install/)"))
-    }
-
-    /// Defensive backstop: a secret echoed back by a future rclone must never reach a log.
-    fn redact(&self, text: &str) -> String {
-        match self.envs.iter().find(|(name, _)| name.ends_with("_SECRET_ACCESS_KEY")).map(|(_, value)| value.as_str()) {
-            Some(secret) if !secret.is_empty() => text.replace(secret, "***"),
-            _ => text.to_string(),
-        }
+        // R2 has one region and its name is "auto"; it is signed into every request all the same.
+        Ok(Self { s3: S3::new(endpoint, bucket, "auto", access, secret, UPLOAD_CONCURRENCY)? })
     }
 }
 
-impl ObjectStore for RcloneStore {
+impl ObjectStore for R2Store {
     fn describe(&self) -> String {
-        format!("r2 bucket {} via {}", self.bucket, self.endpoint)
+        format!("r2 bucket {} via {}", self.s3.bucket(), self.s3.endpoint())
+    }
+
+    fn begin_phase(&mut self, budget: std::time::Duration) {
+        self.s3.set_deadline(std::time::Instant::now() + budget);
+    }
+
+    fn end_phase(&mut self) {
+        self.s3.clear_deadline();
     }
 
     fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-        // rclone copies files, so stage the bytes; `--checksum` skips an identical remote
-        // object, which makes re-publishing an unchanged run's immutable frames free.
-        std::fs::create_dir_all(&self.scratch).map_err(|error| format!("{}: {error}", self.scratch.display()))?;
-        let staged = self.scratch.join("object.tmp");
-        std::fs::write(&staged, &object.bytes).map_err(|error| format!("{}: {error}", staged.display()))?;
-        let args = vec![
-            "copyto".to_string(),
-            "--checksum".to_string(),
-            "--s3-no-check-bucket".to_string(),
-            "--header-upload".to_string(),
-            format!("Cache-Control: {}", object.cache_control),
-            "--header-upload".to_string(),
-            format!("Content-Type: {}", object.content_type),
-            staged.to_string_lossy().into_owned(),
-            self.target(&object.key),
-        ];
-        let out = self.run(&args)?;
-        let _ = std::fs::remove_file(&staged);
-        if !out.status.success() {
-            return Err(self.redact(&String::from_utf8_lossy(&out.stderr)));
-        }
-        Ok(())
+        self.s3.put(&object.key, &object.bytes, object.cache_control, object.content_type)
+    }
+
+    /// The upload phase, and the **only** concurrent thing this crate does outside the mosaic.
+    ///
+    /// A fixed set of workers pulls from one cursor over the slice; the first error stops the
+    /// others from starting new work and is what the caller sees. Two properties matter, and both
+    /// are structural rather than hoped for:
+    ///
+    /// * **It joins.** `std::thread::scope` cannot return until every worker has, so when this
+    ///   returns `Ok` every object is written — there is no request still in flight to race the
+    ///   `head` proofs or the manifest that [`crate::canonical::run_cycle`] does next.
+    /// * **It reorders nothing.** One batch is independent immutable keys with no relationship to
+    ///   each other. The ordering the epic paid for is between *phases* — objects, then their
+    ///   `head` proofs, then the manifest, then the sweep — and every one of those boundaries is a
+    ///   full join in `run_cycle`, unchanged.
+    ///
+    /// Failing halfway is exactly as safe as failing on one `put` was: the manifest has not moved,
+    /// so whatever was written is unreferenced and the previous generation still stands whole.
+    fn put_all(&mut self, objects: &[PlannedObject]) -> Result<(), String> {
+        let s3 = &self.s3;
+        run_bounded(objects, UPLOAD_CONCURRENCY, |object| {
+            s3.put(&object.key, &object.bytes, object.cache_control, object.content_type)
+        })
     }
 
     fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
-        let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("not found") || stderr.contains("directory not found") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|error| format!("{key}: {error}"))?;
-        Ok(json.get("bytes").and_then(serde_json::Value::as_i64).and_then(|bytes| u64::try_from(bytes).ok()))
+        self.s3.head(key)
     }
 
+    /// One `GetObject`. Absence is the `404` and nothing else — the difference between a bootstrap
+    /// and a torn read, which #1280 needed two round-trips and a JSON field to establish over
+    /// rclone and the protocol states outright (see [`crate::s3::S3::get`], and
+    /// `manifest_v2::carried_generations` for what each answer licenses).
     fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        let args = vec!["cat".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("not found") || stderr.contains("directory not found") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        Ok(Some(out.stdout))
+        self.s3.get(key)
+    }
+
+    /// One `DeleteObject` — exactly one object, never a prefix. The S3 call has no way to spell
+    /// "and everything under it", which is the same structural guarantee `rclone deletefile` gave
+    /// and now costs one request on a live connection instead of a process spawn.
+    ///
+    /// `DeleteObject` is a **free** operation on R2 (Cloudflare lists it beside `DeleteBucket` and
+    /// `AbortMultipartUpload`, in neither Class A nor Class B), so a sweep may issue as many as
+    /// correctness wants. It is also idempotent — 204 whether or not anything was there — which is
+    /// why `existed` is `None`; see [`Deleted::existed`].
+    fn delete(&mut self, key: &str) -> Result<Deleted, String> {
+        self.s3.delete(key)?;
+        Ok(Deleted { existed: None, bytes: None })
     }
 }
 
@@ -255,88 +416,194 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_credential_reaches_argv_or_a_log() {
-        let store = RcloneStore {
-            bucket: "obc-wx".into(),
-            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
-            envs: vec![
-                ("RCLONE_CONFIG_OBCWX_ENDPOINT", "https://acct.r2.cloudflarestorage.com".into()),
-                ("RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID", "abc".into()),
-                ("RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY", "hunter2".into()),
-            ],
-            scratch: std::env::temp_dir(),
+    fn the_destination_line_names_the_bucket_and_never_the_credential() {
+        let store = R2Store {
+            s3: S3::new(
+                "https://acct.r2.cloudflarestorage.com",
+                "obc-wx",
+                "auto",
+                "abc",
+                "hunter2",
+                UPLOAD_CONCURRENCY,
+            )
+            .expect("a well-formed endpoint"),
         };
-        assert_eq!(store.target("wx/v1/manifest.json"), "obcwx:obc-wx/wx/v1/manifest.json");
+        assert_eq!(store.describe(), "r2 bucket obc-wx via https://acct.r2.cloudflarestorage.com");
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
-        assert_eq!(store.redact("secret_access_key=hunter2: 403"), "secret_access_key=***: 403");
     }
 
-    #[test]
-    fn a_failed_frame_verification_never_replaces_the_manifest() {
-        struct BrokenStore;
-        impl ObjectStore for BrokenStore {
-            fn describe(&self) -> String {
-                "broken".into()
-            }
-            fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-                if object.key.ends_with("manifest.json") {
-                    panic!("the manifest must never be uploaded after a failed verification");
-                }
-                Ok(())
-            }
-            fn head(&mut self, _key: &str) -> Result<Option<u64>, String> {
-                Ok(None) // uploaded object is not fetchable
-            }
-            fn get(&mut self, _key: &str) -> Result<Option<Vec<u8>>, String> {
-                Ok(None)
-            }
-        }
-        let frame = PlannedObject {
-            key: "wx/v1/x/20270101T0000Z/f0.obcg".into(),
-            bytes: vec![1, 2, 3],
-            cache_control: FRAME_CACHE_CONTROL,
-            content_type: "application/octet-stream",
-        };
-        let manifest = PlannedObject {
-            key: "wx/v1/manifest.json".into(),
-            bytes: b"{}".to_vec(),
-            cache_control: MANIFEST_CACHE_CONTROL,
-            content_type: "application/json",
-        };
-        let error = publish(&mut BrokenStore, &[frame], &[], &manifest).unwrap_err();
-        assert!(error.contains("refusing to swap the manifest in"), "{error}");
+    fn planned(count: usize) -> Vec<PlannedObject> {
+        (0..count)
+            .map(|index| PlannedObject {
+                key: format!("wx/v2/20260810T1430Z/f0/s{index}-0.obcg"),
+                bytes: vec![index as u8; index + 1],
+                cache_control: FRAME_CACHE_CONTROL,
+                content_type: "application/octet-stream",
+            })
+            .collect()
     }
 
-    /// A carried-forward frame an unchanged product still references must be fetchable, or the
-    /// manifest swap is refused — a lifecycle misconfiguration must not outrun the manifest.
+    fn r2_against(double: &crate::s3::double::Double) -> R2Store {
+        R2Store { s3: S3::new(&double.endpoint, "obc-wx", "auto", "id", "secret", UPLOAD_CONCURRENCY).expect("client") }
+    }
+
+    /// **The concurrent path, driven directly** (#1282 review M2). `R2Store::put_all` is the only
+    /// new concurrent code in this change; a test that hand-rolls its own thread scope proves
+    /// nothing about it.
     #[test]
-    fn a_missing_carried_frame_never_replaces_the_manifest() {
-        struct EmptyStore;
-        impl ObjectStore for EmptyStore {
-            fn describe(&self) -> String {
-                "empty".into()
-            }
-            fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-                if object.key.ends_with("manifest.json") {
-                    panic!("the manifest must never be uploaded past a missing carried frame");
-                }
-                Ok(())
-            }
-            fn head(&mut self, _key: &str) -> Result<Option<u64>, String> {
-                Ok(None)
-            }
-            fn get(&mut self, _key: &str) -> Result<Option<Vec<u8>>, String> {
-                Ok(None)
-            }
+    fn a_concurrent_batch_lands_every_object_exactly_once() {
+        let double = crate::s3::double::Double::start();
+        let mut store = r2_against(&double);
+        let objects = planned(64);
+
+        store.put_all(&objects).expect("put_all");
+
+        assert_eq!(double.len(), objects.len(), "an object was dropped or two keys collided");
+        for object in &objects {
+            assert_eq!(double.get(&object.key).as_ref(), Some(&object.bytes), "{}", object.key);
+            assert_eq!(double.requests("PUT", &object.key), 1, "{} was put more than once", object.key);
         }
-        let manifest = PlannedObject {
-            key: "wx/v1/manifest.json".into(),
-            bytes: b"{}".to_vec(),
-            cache_control: MANIFEST_CACHE_CONTROL,
-            content_type: "application/json",
-        };
-        let carried = vec![("wx/v1/x/20270101T0000Z/f0.obcg".to_string(), 3u64)];
-        let error = publish(&mut EmptyStore, &[], &carried, &manifest).unwrap_err();
-        assert!(error.contains("refusing to swap the manifest in"), "{error}");
+    }
+
+    /// A batch that fails mid-way surfaces the **first error recorded**, stops taking new work, and
+    /// leaves nothing running past the join. That last part is the one the manifest swap depends
+    /// on: `run_cycle` writes the manifest immediately after this returns.
+    #[test]
+    fn a_failed_batch_aborts_with_the_first_error_and_leaves_nothing_in_flight() {
+        let double = crate::s3::double::Double::start();
+        // Fails early on purpose: the point of the last assertion is that the *rest* is abandoned,
+        // and a failure near the end would leave nothing to abandon.
+        double.fail_key("s2-0");
+        let mut store = r2_against(&double);
+        let objects = planned(64);
+
+        let error = store.put_all(&objects).expect_err("a 403 fails the batch");
+        assert!(error.contains("s2-0"), "the error must name the object that failed: {error}");
+        assert!(error.contains("AccessDenied"), "{error}");
+
+        // Nothing is still running: whatever landed, landed before this returned. If a worker were
+        // still in flight the count would move.
+        let settled = double.len();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert_eq!(double.len(), settled, "a worker was still writing after put_all returned");
+
+        // And it stopped early rather than grinding through the rest.
+        assert!(settled < objects.len(), "the batch ran to completion despite a failure ({settled} landed)");
+    }
+
+    /// `get_or_insert` and not `insert`: when several workers fail, the caller must see the first
+    /// error recorded rather than whichever one happened to finish last.
+    #[test]
+    fn the_first_error_recorded_is_the_one_the_caller_sees() {
+        let outcomes: Vec<Result<(), String>> =
+            vec![Ok(()), Err("the first failure".into()), Err("a later, less useful failure".into())];
+        // Serialized through a single worker, so "first" is a fact rather than a race.
+        let error = run_bounded(&outcomes, 1, |outcome| outcome.clone()).expect_err("it fails");
+        assert_eq!(error, "the first failure");
+    }
+
+    /// **A panicking worker is an error, not an abort** (#1282 review M2).
+    ///
+    /// Left to unwind, it would tear through the scope's join, poison the failure mutex and take
+    /// the process down in the middle of the publish — the one phase where "did the manifest swap?"
+    /// needs an answer. Caught, it fails the cycle the ordinary way, before the swap.
+    #[test]
+    fn a_panicking_worker_fails_the_batch_rather_than_the_process() {
+        let items: Vec<usize> = (0..32).collect();
+        let error = run_bounded(&items, 8, |item| {
+            if *item == 7 {
+                panic!("the encoder handed us a shard of the wrong width");
+            }
+            Ok(())
+        })
+        .expect_err("a panic must surface as a failed batch");
+        assert!(error.contains("panicked"), "{error}");
+        assert!(error.contains("wrong width"), "the panic's own message is the useful part: {error}");
+        assert!(error.contains("before the swap"), "{error}");
+
+        // And the runner is still usable afterwards — the poisoned-lock path does not wedge it.
+        run_bounded(&items, 8, |_| Ok(())).expect("a later batch still runs");
+    }
+
+    /// **A store outlives the cycle that failed on it.**
+    ///
+    /// A cycle that fails inside its publish phase returns through `?` without reaching
+    /// `end_phase`, leaving the deadline set and, a moment later, expired. The next cycle's first
+    /// act is a store read — so unless something clears it, one bad publish wedges every cycle
+    /// after it against the same store. `run_cycle` clears on entry; this pins the mechanism it
+    /// relies on.
+    #[test]
+    fn an_expired_budget_from_a_failed_phase_does_not_outlive_it() {
+        let double = crate::s3::double::Double::start();
+        double.insert("wx/v2/manifest.json", b"{}".to_vec());
+        let mut store = r2_against(&double);
+
+        // A phase that has already run out, exactly as a failed publish leaves things.
+        store.begin_phase(std::time::Duration::ZERO);
+        assert!(store.get("wx/v2/manifest.json").is_err(), "the budget is expired, so this must fail");
+
+        // What `run_cycle` does on entry.
+        store.end_phase();
+        assert_eq!(
+            store.get("wx/v2/manifest.json").expect("a new cycle reads the predecessor"),
+            Some(b"{}".to_vec()),
+            "an expired budget from a previous cycle wedged the next one"
+        );
+    }
+
+    /// One item, or one worker, takes the sequential path — and must behave identically.
+    #[test]
+    fn a_degenerate_batch_still_honours_the_contract() {
+        assert_eq!(run_bounded::<usize>(&[], 8, |_| Ok(())), Ok(()));
+        assert_eq!(run_bounded(&[1usize], 8, |_| Err("no".into())), Err("no".to_string()));
+        assert_eq!(run_bounded(&[1usize, 2, 3], 1, |_| Ok(())), Ok(()));
+    }
+
+    /// The upload phase is a batch, and the batch must put **every** object exactly once whether it
+    /// runs on one thread or eight. `DirStore` takes the default sequential path; the concurrent
+    /// one is `R2Store`'s and shares this contract.
+    #[test]
+    fn a_batch_publishes_every_object_it_was_given() {
+        let root = std::env::temp_dir().join(format!("obc-wx-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = DirStore::new(&root);
+        let objects: Vec<PlannedObject> = (0..17)
+            .map(|index| PlannedObject {
+                key: format!("wx/v2/20260810T1430Z/f0/s{index}-0.obcg"),
+                bytes: vec![index as u8; index + 1],
+                cache_control: FRAME_CACHE_CONTROL,
+                content_type: "application/octet-stream",
+            })
+            .collect();
+        store.put_all(&objects).expect("put_all");
+        for object in &objects {
+            assert_eq!(store.head(&object.key).expect("head"), Some(object.bytes.len() as u64), "{}", object.key);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Deleting is idempotent, it reports the bytes it reclaimed, and it leaves no empty
+    /// generation directory standing behind the objects it removed.
+    #[test]
+    fn a_directory_delete_is_idempotent_and_leaves_no_husk() {
+        let root = std::env::temp_dir().join(format!("obc-wx-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = DirStore::new(&root);
+        let key = "wx/v2/20260810T1430Z/f45/s3-2.obcg";
+        store
+            .put(&PlannedObject {
+                key: key.to_string(),
+                bytes: vec![7u8; 11],
+                cache_control: FRAME_CACHE_CONTROL,
+                content_type: "application/octet-stream",
+            })
+            .expect("put");
+
+        assert_eq!(store.delete(key).expect("delete"), Deleted { existed: Some(true), bytes: Some(11) });
+        // Idempotent: the second call is the same request and it succeeds having found nothing.
+        assert_eq!(store.delete(key).expect("delete again"), Deleted { existed: Some(false), bytes: None });
+        assert!(!root.join("wx/v2/20260810T1430Z").exists(), "the swept generation left a husk of empty directories");
+        assert!(root.exists(), "pruning stops at the store root");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

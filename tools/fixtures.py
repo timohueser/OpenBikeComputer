@@ -198,7 +198,7 @@ class Catalog:
 
 
 def _identifier(kind: str, value: str) -> None:
-    if not value or any(not (c.islower() or c.isdigit() or c in "-_") for c in value):
+    if not value or not value.isascii() or any(not ("a" <= c <= "z" or "0" <= c <= "9" or c in "-_") for c in value):
         raise FixtureError(f"{kind} id {value!r} must use lowercase letters, digits, '-' or '_'")
 
 
@@ -491,11 +491,14 @@ def _human_bytes(value: int) -> str:
     raise AssertionError
 
 
-def resolve_path(catalog: Catalog, store: Store, reference: str) -> Path:
+def resolve_path(catalog: Catalog, store: Store, reference: str, field: str) -> Path:
     package_id, relative = reference.split(":", 1)
     path = store.package_root(package_id) / relative
-    if not path.exists():
-        raise FixtureError(f"resolved fixture path does not exist: {reference} ({path})")
+    wants_directory = field in {"routes_dir", "tracks_dir"}
+    if wants_directory and not path.is_dir():
+        raise FixtureError(f"resolved fixture {field} is not a directory: {reference} ({path})")
+    if not wants_directory and not path.is_file():
+        raise FixtureError(f"resolved fixture {field} is not a file: {reference} ({path})")
     return path
 
 
@@ -576,7 +579,7 @@ def command_resolve(catalog: Catalog, store: Store, args: argparse.Namespace) ->
             store.sync(package_id)
     for field in ("map", "map_set", "gpx", "weather", "routes_dir", "tracks_dir"):
         if field in scenario:
-            print(f"{field}\t{resolve_path(catalog, store, scenario[field])}")
+            print(f"{field}\t{resolve_path(catalog, store, scenario[field], field)}")
     for value in scenario.get("args", []):
         print(f"arg\t{value}")
 

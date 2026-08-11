@@ -24,9 +24,13 @@ and the simulator + tests first-class.
     baker, GLO-30 → `.obcd`), `obcm-assemble` (the OBCA cell assembler),
     `obc-mkimage`, `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`,
     `obc-replay`, `obc-usb-host`, the weather bakery `obc-wx-bake` (upstream
-    radar/model products → OBCG frames + manifest) and its counterpart
-    `obc-wx-client` (manifest + OBCG corridor Range reads + MET → one OBCW
-    bundle — the Rust twin of the phone's client, driving `--weather live`).
+    radar/model products → OBCG frames + manifest; it also ships a second binary
+    `obc-wx-pack`, which freezes a real past storm — raw archive bytes, the tree
+    the real baker makes of them, and the observed frames that followed — into a
+    replayable event pack in the fixture registry, with reviewable manifests under
+    `fixtures/sources/weather-events/`) and its
+    counterpart `obc-wx-client` (manifest + OBCG corridor Range reads + MET → one
+    OBCW bundle — the Rust twin of the phone's client, driving `--weather live`).
   - `apps/` — the shells: `obc-sim`, `obc-web-demo`, `obc-web-convert`,
     `obc-web-assemble`, `obc-skin-preview`, `obc-desktop`.
 
