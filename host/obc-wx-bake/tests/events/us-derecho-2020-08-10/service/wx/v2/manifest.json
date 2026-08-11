@@ -68,8 +68,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 35904,
-          "object_crc32": "0x1904D9CD",
+          "bytes": 6205,
+          "object_crc32": "0x510B57F3",
           "observed": false
         }
       ]
@@ -82,8 +82,8 @@
         {
           "col": 0,
           "row": 0,
-          "bytes": 35904,
-          "object_crc32": "0xA2064574",
+          "bytes": 6184,
+          "object_crc32": "0x8618079D",
           "observed": false
         }
       ]

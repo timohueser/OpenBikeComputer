@@ -27,14 +27,17 @@ use std::path::PathBuf;
 use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
 use obc_wx_bake::canonical::{
-    bake_cycle, emit_shard, run_cycle, source_column, source_reaches, CycleTimes, Lattice, Mosaic, MosaicLayer,
-    BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
+    bake_cycle, emit_shard, frame_is_eligible, run_cycle, source_column, source_reaches, CycleTimes, FrameSlot,
+    Lattice, Mosaic, MosaicLayer, BAKE_THREADS, CANONICAL, CELL_UDEG, CYCLE_FRAMES, LATTICE_CELL_SIZE_M,
+    MAX_FRAME_SKEW_S,
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
 use obc_wx_bake::grib::{decode_bzip2_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
 use obc_wx_bake::publish::DirStore;
-use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms, Adapter, Attribution, BakedFrame, BakedSource};
+use obc_wx_bake::source::{
+    dwd_rv, gfs, hrrr, icon_eu, mrms, opera_cirrus, Adapter, Attribution, BakedFrame, BakedSource,
+};
 use obc_wx_bake::stereo;
 use obc_wx_bake::{manifest_v2, timefmt};
 
@@ -254,7 +257,7 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
             };
 
             assert_eq!(published_cell(&object.bytes, local_col, local_row), expected, "cell ({col},{row})");
-            assert_eq!(mosaic.winner_at(&lattice, times.valid_at(0), col, row), winner, "winner at ({col},{row})");
+            assert_eq!(mosaic.winner_at(&lattice, times.slot(0), col, row), winner, "winner at ({col},{row})");
             match winner {
                 Some(id) if id == dwd_rv::ID => radar_cells += 1,
                 Some(_) => model_cells += 1,
@@ -354,7 +357,7 @@ fn the_priority_table_decides_the_overlap_not_the_cell_size() {
 
     for (col, row) in [(0u32, 0u32), (10, 10), (63, 63)] {
         assert_eq!(published_cell(&object.bytes, col, row), 3, "higher priority wins ({col},{row})");
-        assert_eq!(mosaic.winner_at(&lattice, valid_at, col, row), Some(icon_eu::ID));
+        assert_eq!(mosaic.winner_at(&lattice, FrameSlot::anchor(valid_at), col, row), Some(icon_eu::ID));
     }
 
     // The other half of "first source *with data* wins": hole the higher-priority source and the
@@ -371,10 +374,10 @@ fn the_priority_table_decides_the_overlap_not_the_cell_size() {
     let object = emit_shard(&lattice, &mosaic, times, 0, 0).expect("the shard emits");
     // Coarse column 0..8 is lattice columns 0..32: holed, so the floor shows through.
     assert_eq!(published_cell(&object.bytes, 5, 5), 7);
-    assert_eq!(mosaic.winner_at(&lattice, valid_at, 5, 5), Some(gfs::ID));
+    assert_eq!(mosaic.winner_at(&lattice, FrameSlot::anchor(valid_at), 5, 5), Some(gfs::ID));
     // Coarse column 8 starts at lattice column 32: the higher-priority source answers again.
     assert_eq!(published_cell(&object.bytes, 40, 5), 3);
-    assert_eq!(mosaic.winner_at(&lattice, valid_at, 40, 5), Some(icon_eu::ID));
+    assert_eq!(mosaic.winner_at(&lattice, FrameSlot::anchor(valid_at), 40, 5), Some(icon_eu::ID));
 }
 
 /// Cell replication is the nearest-neighbour rule `OBCG_Spec.md` §6 mandates, applied once: one
@@ -419,7 +422,7 @@ fn a_floor_outage_publishes_code_fifteen_and_never_dry() {
     let object = emit_shard(&lattice, &healthy, times, 0, 0).expect("emits");
     assert_eq!(published_cell(&object.bytes, 4, 4), 4, "the radar still wins its own footprint");
     assert_eq!(published_cell(&object.bytes, 30, 30), INTENSITY_DRY, "the floor answers, and it says dry");
-    assert_eq!(healthy.winner_at(&lattice, valid_at, 30, 30), Some(gfs::ID));
+    assert_eq!(healthy.winner_at(&lattice, FrameSlot::anchor(valid_at), 30, 30), Some(gfs::ID));
 
     // Outage: the floor source produced nothing this cycle. The cells it used to answer must read
     // as no-data, and must not silently read as dry.
@@ -427,7 +430,7 @@ fn a_floor_outage_publishes_code_fifteen_and_never_dry() {
     let object = emit_shard(&lattice, &degraded, times, 0, 0).expect("emits");
     assert_eq!(published_cell(&object.bytes, 4, 4), 4, "the radar is unaffected by the floor's outage");
     assert_eq!(published_cell(&object.bytes, 30, 30), INTENSITY_NODATA, "missing must never read as dry");
-    assert_eq!(degraded.winner_at(&lattice, valid_at, 30, 30), None);
+    assert_eq!(degraded.winner_at(&lattice, FrameSlot::anchor(valid_at), 30, 30), None);
 
     // A source frame too far from the canonical frame's validity is the same kind of absence: it
     // is not sampled, and the cells fall through rather than carrying a stale value.
@@ -513,18 +516,80 @@ fn a_lattice_centre_on_a_source_outer_edge_is_outside_the_window() {
 // Frame selection and provenance
 // ---------------------------------------------------------------------------------------------
 
-/// **An observation must not paint a forward frame that a real forecast is offering.** The `us`
-/// layer is exactly this shape — a 1 km MRMS observation at f0, 3 km HRRR forecasts ahead of it —
-/// and a nearest-only tie-break lets the frozen radar field win a forward frame it has nothing to
-/// say about. Re-using an observation as a forecast is a persistence nowcast; that is WXR9 #1251's
-/// job to do deliberately, not the frame picker's to stumble into.
+/// **The rule itself** (#1248): eligibility is decided per source frame, from two facts — was it an
+/// observation upstream, and which canonical slot is being painted. An observation answers for the
+/// anchor and for nothing else; everything else answers everywhere. Nothing about distance,
+/// priority or which layer it came from enters into it, which is exactly why the rule cannot be
+/// argued around by a source that happens to be fresh or highly ranked.
 #[test]
-fn a_forecast_beats_an_equally_close_observation_on_a_forward_frame() {
+fn an_observation_is_eligible_for_the_anchor_and_no_other_frame() {
+    for offset_min in (0..CYCLE_FRAMES).map(|frame| frame * 15) {
+        assert_eq!(
+            frame_is_eligible(true, offset_min),
+            offset_min == 0,
+            "an observation at f+{offset_min}: only the anchor is about an instant one exists for"
+        );
+        assert!(frame_is_eligible(false, offset_min), "a forecast is eligible for f+{offset_min}");
+    }
+}
+
+/// The rule, driven through the mosaic rather than asserted about: a layer holding a *fresh*
+/// observation and a real forecast for the same forward instant must hand that frame to the
+/// forecast — and a layer holding only the observation must hand it to nobody, even one second
+/// inside [`MAX_FRAME_SKEW_S`].
+#[test]
+fn an_observation_never_paints_a_forward_frame_however_near_it_sits() {
     let t0 = ts("2026-08-09T14:00:00Z");
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
     let source = window(45_680_000, 1_460_000, 10_000, 64, 64);
-    // One layer, two frames the same distance from the target: an observation 15 min behind and a
-    // forecast 15 min ahead. The forecast is about the future; the observation is frozen weather.
+    let times = CycleTimes { reference_time: t0 };
+    let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
+
+    // A nowcast layer shaped like DWD RV: an observation at the anchor, its own forecast members
+    // ahead of it. f0 is the observation; f+15 is the member valid at f+15, never the frozen f0.
+    let nowcast =
+        synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)], |_, _| 5);
+    let mosaic = Mosaic::from_sources(vec![nowcast]).expect("ranked");
+    let anchor = emit_shard(&lattice, &mosaic, times, 0, 0).expect("emits");
+    assert_eq!(obcg::validate(&anchor.bytes, &mut scratch).expect("valid").flags, obcg::FLAG_OBSERVED);
+    assert!(anchor.fill.all_observed, "an observation valid at the target instant is f0's answer");
+    let ahead = emit_shard(&lattice, &mosaic, times, 15, 0).expect("emits");
+    assert!(ahead.fill.painted, "the layer's own forecast member paints f+15");
+    assert!(!ahead.fill.all_observed, "and it is a forecast, so nothing observed painted f+15");
+
+    // Take the forecast member away and the observation must not step into the gap. It is 900 s
+    // from f+15 — half the skew window — and it is still refused, because the honest answer to
+    // "what will the sky be doing at 14:15" is 15 and not a picture of 14:00.
+    let only_observed = synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED)], |_, _| 5);
+    let mosaic = Mosaic::from_sources(vec![only_observed]).expect("ranked");
+    assert_eq!(mosaic.winner_at(&lattice, times.slot(0), 4, 4), Some(dwd_rv::ID));
+    for offset_min in (1..CYCLE_FRAMES).map(|frame| frame * 15) {
+        let ahead = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert!(!ahead.fill.painted, "f+{offset_min}: a lone observation must leave the frame unpainted");
+        assert!(!ahead.observed);
+        assert_eq!(published_cell(&ahead.bytes, 4, 4), INTENSITY_NODATA, "f+{offset_min}: code 15, not a frozen field");
+        assert_eq!(mosaic.winner_at(&lattice, times.slot(offset_min), 4, 4), None, "f+{offset_min}");
+    }
+    // The premise, so the refusals above cannot pass merely because everything was out of skew.
+    // Two of those eight forward frames are inside the distance bound — exactly the two WXR7 let
+    // the frozen field paint — and the rule refuses them anyway.
+    let inside_skew: Vec<u32> = (1..CYCLE_FRAMES)
+        .map(|frame| frame * 15)
+        .filter(|offset| i64::from(*offset) * 60 <= MAX_FRAME_SKEW_S)
+        .collect();
+    assert_eq!(inside_skew, vec![15, 30], "f+15 and f+30 are refused by the rule, not by the distance bound");
+}
+
+/// The anchor's own tie-break, which the eligibility rule leaves standing and is the only slot it
+/// can now fire on: at equal distance a forecast beats an observation that is *not* valid at the
+/// target instant — a field about the future beats a field about the past when neither is about
+/// now — while an observation exactly on target still wins, because it is the observation *of* that
+/// instant, which is the whole of what f0's `FLAG_OBSERVED` claims.
+#[test]
+fn on_the_anchor_a_forecast_beats_an_equally_close_but_older_observation() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 64);
+    let source = window(45_680_000, 1_460_000, 10_000, 64, 64);
     let composed = synthetic_frames(
         dwd_rv::ID,
         source,
@@ -537,8 +602,6 @@ fn a_forecast_beats_an_equally_close_observation_on_a_forward_frame() {
     let header = obcg::validate(&object.bytes, &mut scratch).expect("valid");
     assert_eq!(header.flags, obcg::FLAG_FORECAST, "the forecast frame won, so the object is not Observed");
 
-    // The observation still wins when it is genuinely the nearest — including exactly on target,
-    // where it is the observation *of* that instant.
     let exact =
         synthetic_frames(dwd_rv::ID, source, &[(t0, obcg::FLAG_OBSERVED), (t0 + 900, obcg::FLAG_FORECAST)], |_, _| 5);
     let mosaic = Mosaic::from_sources(vec![exact]).expect("ranked");
@@ -579,29 +642,137 @@ fn the_observed_flag_follows_what_actually_painted_the_shard() {
     assert!(west.observed && !east.observed);
     assert!(west.fill.all_observed && east.fill.painted && !east.fill.all_observed);
 
-    // **And the second half of the rule.** The radar layer holds one frame, valid at the anchor, so
-    // `nearest()` hands it to f+15 and f+30 as well — inside `MAX_FRAME_SKEW_S`, painting the same
-    // cells from the same field. Those frames are about instants no observation of exists at bake
-    // time, so they are forecasts by persistence and must say so, however observed their cells'
-    // provenance is. Without this the western shard published three objects with three different
-    // `valid_at`s, one field between them, and Observed on all three.
+    // **`shard_is_observed`'s two conditions now coincide** (#1248). The radar layer holds one
+    // frame and it is an observation, so it is refused for every frame ahead of the anchor: what
+    // paints the western shard at f+15 and f+30 is the model floor beneath it, and `all_observed`
+    // is false there *by construction* rather than by the offset clause catching it afterwards.
+    // Before #1248 the frozen radar field painted those two frames and the offset clause was the
+    // only thing standing between it and three Observed objects over one field.
     for offset_min in [15, 30] {
         let ahead = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
-        assert!(
-            ahead.fill.all_observed,
-            "f+{offset_min}: the frozen radar frame is still what painted it — that is the premise"
-        );
+        assert!(ahead.fill.painted, "f+{offset_min}: the floor still answers");
+        assert!(!ahead.fill.all_observed, "f+{offset_min}: no observation is eligible, so none painted it");
         assert!(!ahead.observed, "f+{offset_min}: a frame ahead of the anchor is never observed");
         assert_eq!(
             obcg::validate(&ahead.bytes, &mut scratch).expect("valid").flags,
             obcg::FLAG_FORECAST,
             "f+{offset_min}"
         );
+        assert_eq!(
+            published_cell(&ahead.bytes, 4, 4),
+            INTENSITY_DRY,
+            "f+{offset_min}: the floor's value, not the radar's"
+        );
     }
-    // Past the skew window the frozen frame is refused outright and the shard is no-data, which is
-    // the other honest answer and also a forecast.
+    // Past the skew window the floor falls out too, and with the radar ineligible the shard is
+    // no-data — the other honest answer, and also a forecast.
     let far = emit_shard(&lattice, &mosaic, times, 45, 0).expect("emits");
     assert!(!far.fill.painted && !far.observed);
+}
+
+/// **`shard_is_observed`'s redundancy, pinned.** Its offset clause restates `OBCG_Spec.md` §3.2 at
+/// the one place the bit is decided, and since #1248 the eligibility rule makes it unreachable: a
+/// fill at `offset_min > 0` can never report `all_observed`, so the two conditions can never
+/// disagree. Checked across the whole cycle rather than argued, so a future source or picker change
+/// that reopens the gap fails here instead of shipping an Observed forward frame.
+#[test]
+fn an_observation_can_only_ever_paint_the_anchor() {
+    let t0 = ts("2026-08-09T14:00:00Z");
+    let lattice = sub_lattice(45_680_000, 1_460_000, 32, 32);
+    let source = window(45_680_000, 1_460_000, 10_000, 32, 32);
+    // An observation at every frame instant of the cycle — the most generous possible input, and
+    // every one of them is refused everywhere but f0.
+    let frames: Vec<(i64, u16)> =
+        (0..CYCLE_FRAMES).map(|frame| (t0 + i64::from(frame) * 900, obcg::FLAG_OBSERVED)).collect();
+    let radar = synthetic_frames(dwd_rv::ID, source, &frames, |_, _| 6);
+    let mosaic = Mosaic::from_sources(vec![radar]).expect("ranked");
+    let times = CycleTimes { reference_time: t0 };
+    bake_cycle(&lattice, &mosaic, times, 2, &mut |object| {
+        assert_eq!(
+            object.observed,
+            object.offset_min == 0,
+            "f+{}: `all_observed` and `offset_min == 0` must be the same statement",
+            object.offset_min
+        );
+        assert_eq!(
+            object.fill.all_observed, object.observed,
+            "f+{}: no clause is doing hidden work",
+            object.offset_min
+        );
+        Ok(())
+    })
+    .expect("bakes");
+}
+
+/// **The European timeline outside Germany** — the other regional consequence of #1248, against
+/// the real ICON-EU fixture run.
+///
+/// OPERA is a single-frame observation like MRMS, so over France f0 is CIRRUS and f+15 onward is
+/// ICON-EU's hourly steps, replicated onto the lattice. Under WXR7 the frozen CIRRUS field painted
+/// f+15 and f+30 here too. Germany is the deliberate contrast, pinned by
+/// `the_german_forward_frames_stay_on_the_dwd_nowcast`: DWD RV's forward members really are
+/// forecasts, so they stay eligible and Germany keeps 1 km radar-derived detail across the window.
+#[test]
+fn over_opera_europe_outside_germany_the_anchor_is_radar_and_the_forward_frames_are_the_model() {
+    let now = ts(DWD_RUN);
+    let mut upstream = european_upstream();
+    let icon = bake(&icon_eu::IconEu, &mut upstream, now);
+    let times = CycleTimes::anchored_at(now);
+    // Central France: inside ICON-EU and inside the pan-European radar, outside the DWD composite.
+    let lattice = sub_lattice(46_000_000, 1_000_000, 128, 128);
+    let cirrus = synthetic_frames(
+        opera_cirrus::ID,
+        window(46_000_000, 1_000_000, CELL_UDEG, 200, 200),
+        // OPERA publishes every five minutes, so the newest scan lands three minutes before the
+        // quarter-hour anchor rather than on it — the ordinary case, not a contrived one.
+        &[(times.valid_at(0) - 180, obcg::FLAG_OBSERVED)],
+        |_, _| 6,
+    );
+    let mosaic = Mosaic::from_sources(vec![cirrus, icon]).expect("both are ranked");
+    let winners: Vec<Option<&str>> =
+        times.offsets_min().map(|offset_min| mosaic.winner_at(&lattice, times.slot(offset_min), 8, 8)).collect();
+    let mut expected = vec![Some(icon_eu::ID); usize::try_from(CYCLE_FRAMES).unwrap()];
+    expected[0] = Some(opera_cirrus::ID);
+    assert_eq!(winners, expected, "f0 is OPERA CIRRUS; every forward frame is ICON-EU");
+    for offset_min in times.offsets_min() {
+        let object = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert_eq!(object.observed, offset_min == 0, "f+{offset_min}");
+    }
+}
+
+/// **Germany is the exception, and it is an exception about data rather than about radar.** DWD RV
+/// is a nowcast composite: its lead-0 member is an observation and its +5…+120 members are genuine
+/// forecasts valid at their own instants, which the adapter stamps `FLAG_FORECAST`. They are
+/// therefore eligible for forward frames, and Germany keeps 1 km radar-derived detail all the way
+/// out to +120 while France falls to a 6.5 km model at +15. Nothing in #1248 touches this, and this
+/// test exists to make sure nothing later does either by mistaking "radar" for "observation".
+#[test]
+fn the_german_forward_frames_stay_on_the_dwd_nowcast() {
+    let now = ts(DWD_RUN);
+    let mut upstream = european_upstream();
+    let dwd = bake(&dwd_rv::DwdRv, &mut upstream, now);
+    // The premise, read off the adapter: one observation, eight forecasts, on a 15-minute ladder.
+    let observed_leads: Vec<u32> = dwd
+        .frames
+        .iter()
+        .filter(|frame| frame.flags & obcg::FLAG_OBSERVED != 0)
+        .map(|frame| frame.offset_min)
+        .collect();
+    assert_eq!(observed_leads, vec![0], "only RV's lead 0 is an observation; the rest are its nowcast");
+    let icon = bake(&icon_eu::IconEu, &mut upstream, now);
+    let mosaic = Mosaic::from_sources(vec![dwd, icon]).expect("both are ranked");
+    let times = CycleTimes::anchored_at(now);
+    // Stuttgart, well inside the RV trapezoid.
+    let lattice = sub_lattice(48_700_000, 9_100_000, 64, 64);
+    for offset_min in times.offsets_min() {
+        assert_eq!(
+            mosaic.winner_at(&lattice, times.slot(offset_min), 8, 8),
+            Some(dwd_rv::ID),
+            "f+{offset_min}: RV's own nowcast member is a forecast valid at this instant"
+        );
+        let object = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert_eq!(object.observed, offset_min == 0, "f+{offset_min}: only the anchor is measured weather");
+    }
 }
 
 /// **The failure the epic actually forbids**: a source that has fallen out of the timeline must
@@ -626,7 +797,7 @@ fn a_stale_source_falls_through_to_the_next_priority_layer() {
         assert_ne!(value, INTENSITY_DRY, "and it must never become dry");
         assert_eq!(value, 3, "the model answers Germany");
     }
-    assert_eq!(mosaic.winner_at(&lattice, t0, 31, 31), Some(icon_eu::ID));
+    assert_eq!(mosaic.winner_at(&lattice, FrameSlot::anchor(t0), 31, 31), Some(icon_eu::ID));
 }
 
 /// A cycle in which no source reached the lattice at all is 216 objects of "we do not know" about
@@ -1083,7 +1254,7 @@ fn the_conus_sources_and_the_real_floor_mosaic_over_conus() {
             // Nothing is unsourced over Kansas: the floor is beneath everything.
             let value = published_cell(&object.bytes, col - window.col0, row - window.row0);
             assert_ne!(value, INTENSITY_NODATA, "({col},{row}) is inside the floor and must not be no-data");
-            match mosaic.winner_at(&lattice, times.valid_at(0), col, row) {
+            match mosaic.winner_at(&lattice, times.slot(0), col, row) {
                 Some(id) if id == mrms::ID || id == hrrr::ID => radar_or_model += 1,
                 Some(id) if id == gfs::ID => floor_cells += 1,
                 other => panic!("unexpected winner {other:?} at ({col},{row})"),
@@ -1098,8 +1269,76 @@ fn the_conus_sources_and_the_real_floor_mosaic_over_conus() {
     let pacific = sub_lattice(-10_000_000, 179_900_000, 8, 8);
     let object = emit_shard(&pacific, &mosaic, times, 0, 0).expect("emits");
     for col in 0..pacific.shard(0).expect("shard").width {
-        assert_eq!(mosaic.winner_at(&pacific, times.valid_at(0), col, 0), Some(gfs::ID), "column {col}");
+        assert_eq!(mosaic.winner_at(&pacific, times.slot(0), col, 0), Some(gfs::ID), "column {col}");
         assert_ne!(published_cell(&object.bytes, col, 0), INTENSITY_NODATA, "the antimeridian is painted");
+    }
+}
+
+/// **The US timeline, over real fixtures** — the regional consequence of #1248 that changed hands.
+///
+/// f0 is the 16:58 MRMS observation, and every frame ahead of it is HRRR's own lead valid at that
+/// instant. Under WXR7, f+15 and f+30 were the frozen MRMS field (inside the 1,800 s skew window,
+/// and MRMS outranks HRRR) and HRRR only took over at f+45. Rank was never the problem — MRMS is
+/// still rank 1 — it is that a single observation has nothing valid at 17:15 to offer.
+#[test]
+fn over_conus_the_anchor_is_radar_and_every_forward_frame_is_the_model() {
+    let now = ts("2026-08-09T17:00:00Z");
+    let mut upstream = american_upstream();
+    let mosaic = Mosaic::from_sources(vec![
+        bake(&mrms::Mrms, &mut upstream, now),
+        bake(&hrrr::Hrrr, &mut upstream, now),
+        bake(&gfs::GfsFloor, &mut upstream, now),
+    ])
+    .expect("all three are ranked");
+    let times = CycleTimes::anchored_at(now);
+    // Kansas, deep inside all three footprints, at a cell MRMS answers.
+    let lattice = sub_lattice(37_000_000, -100_000_000, 64, 64);
+    let winners: Vec<Option<&str>> =
+        times.offsets_min().map(|offset_min| mosaic.winner_at(&lattice, times.slot(offset_min), 8, 8)).collect();
+    assert_eq!(
+        winners,
+        vec![
+            Some(mrms::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+            Some(hrrr::ID),
+        ],
+        "f0 is the observation and f+15..f+120 are HRRR's real leads"
+    );
+    // And the flag follows: only the anchor may claim measured weather.
+    for offset_min in times.offsets_min() {
+        let object = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert_eq!(object.observed, offset_min == 0, "f+{offset_min}");
+    }
+}
+
+/// **The floor really does reach every offset**, so "a forward frame with no eligible forecast
+/// source publishes code 15" stays a statement about outages rather than a routine occurrence.
+/// GFS is hourly and the skew window is half an hour, so its steps bracket all nine offsets of a
+/// two-hour cycle — checked against the real fixture run over open ocean, where nothing else
+/// reaches at all.
+#[test]
+fn the_floor_offers_an_eligible_forecast_at_every_one_of_the_nine_offsets() {
+    let now = ts("2026-08-09T17:00:00Z");
+    let mut upstream = american_upstream();
+    let mosaic = Mosaic::from_sources(vec![bake(&gfs::GfsFloor, &mut upstream, now)]).expect("gfs is ranked");
+    let times = CycleTimes::anchored_at(now);
+    // Mid-Pacific: outside every radar and every regional model.
+    let lattice = sub_lattice(-10_000_000, 179_900_000, 8, 8);
+    for offset_min in times.offsets_min() {
+        assert_eq!(
+            mosaic.winner_at(&lattice, times.slot(offset_min), 0, 0),
+            Some(gfs::ID),
+            "f+{offset_min}: the floor is the whole reason no forward frame has to fall back on a frozen image"
+        );
+        let object = emit_shard(&lattice, &mosaic, times, offset_min, 0).expect("emits");
+        assert!(object.fill.painted, "f+{offset_min}");
+        assert!(!object.observed, "f+{offset_min}: the floor is a model, so nothing here is ever Observed");
     }
 }
 

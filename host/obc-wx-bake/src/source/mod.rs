@@ -49,16 +49,23 @@ pub struct MosaicSource {
 /// the mosaic a source is a source, placed by the rule above with no exception attached: 1 km
 /// CONUS radar among the radars, 3 km CONUS model above the pan-European one.
 ///
-/// The visible consequence, stated with its arithmetic: MRMS contributes **one** frame, so
-/// [`crate::canonical::MosaicLayer::nearest`] hands that one field to every canonical frame within
-/// [`crate::canonical::MAX_FRAME_SKEW_S`] (1,800 s) of it. At a 15-minute cadence that is the
-/// anchor **and the next two frames** — f+0, f+15 and f+30 — and HRRR's real forecast takes over
-/// from f+45, where the observation is 2,520 s out and refused. So two of nine frames over CONUS
-/// change hands. Meteorologically that is arguably an improvement (radar persistence beats a 3 km
-/// model at +15 and +30); what it must not do is *claim* to be measured weather at those instants,
-/// which is why [`crate::canonical::shard_is_observed`] flags them Forecast. Doing persistence
-/// deliberately and well is WXR9 #1251's job. Every other single-frame radar source in this table
-/// (both OPERA rows, #1245) has always behaved the same way.
+/// **Rank decides which source paints a cell; it never decides which *frames* a source is offered
+/// for.** That is [`crate::canonical::frame_is_eligible`]'s job, and the two are independent by
+/// design. MRMS contributes one frame and it is an observation, so it is eligible for the anchor
+/// alone: over CONUS f0 is 1 km radar and f+15 through f+120 are HRRR's real leads, with the floor
+/// beneath. Being rank 1 buys MRMS nothing at f+15, because it has nothing valid at f+15 to offer.
+///
+/// This is the #1248 correction to what WXR7 shipped, where MRMS's single field was handed to every
+/// canonical frame within [`crate::canonical::MAX_FRAME_SKEW_S`] (1,800 s) of it — the anchor and
+/// the next two — and HRRR only took over at f+45. Those frames were labelled Forecast, honestly,
+/// but a repeated "now" image is not a prediction of +15 whatever it is labelled. Doing radar
+/// persistence deliberately, as an extrapolated forecast source with real forward frames, is WXR9
+/// #1251's job; it will join this table as a source and be eligible for forward frames on the same
+/// terms as any other forecast. Both OPERA rows (#1245) are single-frame observations too and the
+/// rule reads them identically: f0 over Europe outside Germany is OPERA, f+15 onward is ICON-EU.
+/// DWD RV is the exception that proves it is a rule about *data* and not about radar — RV is a
+/// nowcast composite whose +5…+120 members are forecasts and are stamped as such, so Germany's
+/// forward frames stay RV.
 ///
 /// Adding a source is one row. Its position in this list *is* its priority; there is no separate
 /// number to keep in sync, and [`mosaic_rank`] is the only reader.
