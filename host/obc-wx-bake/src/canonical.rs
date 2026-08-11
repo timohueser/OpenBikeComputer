@@ -134,6 +134,20 @@ pub const FRAME_STEP_MIN: u32 = 15;
 /// on top of, never instead of.
 pub const MAX_FRAME_SKEW_S: i64 = 1_800;
 
+/// **How recent an observation has to be to own the anchor outright** (#1278 r2, R2-2).
+///
+/// At f0 — and only at f0 — an observation this close to the frame's instant beats every forecast
+/// the same layer offers, however much nearer the forecast is. The rule and the case that forced it
+/// are at [`MosaicLayer::nearest`]; this is the number.
+///
+/// One cadence step, and that is a derivation rather than a taste. A cycle anchors at the quarter
+/// hour at or before `now`, and every observation source discovers the newest object at or before
+/// `now`, so the observation a layer offers f0 is inside one step of the anchor by construction —
+/// the preference covers the whole of the case it exists for and not one second more. Past it the
+/// observation competes on distance like anything else, which is what keeps a genuinely stale scan
+/// from displacing a model step that is actually about the instant.
+pub const ANCHOR_OBSERVATION_PREFERENCE_S: i64 = (FRAME_STEP_MIN as i64) * 60;
+
 /// The rayon pool the mosaic fills and encodes on.
 ///
 /// **Pinned, and the memory model depends on it.** WXR1 (#1254) measured 398 MB peak on a 4-vCPU
@@ -519,12 +533,30 @@ impl MosaicLayer {
     ///    of the timeline has fallen out of it, and the mosaic drops through to the next rank;
     /// 3. nearest validity wins.
     ///
-    /// The two tie-breaks then only ever decide the **anchor**, where a layer may offer both an
-    /// observation and a forecast: an equally close forecast beats an observation that is not
-    /// valid at the target instant (a field about the future beats a field about the past when
-    /// neither is about *now*), and what remains breaks toward the *later* frame. An observation
-    /// exactly on the target still wins, because it is the observation *of* that instant — which
-    /// is the whole of what f0's `FLAG_OBSERVED` claims.
+    /// **Rule 3 has an exception at the anchor, and it is the design rule rather than a tie-break:
+    /// f0 is what an observation is for.** A recent observation — within
+    /// [`ANCHOR_OBSERVATION_PREFERENCE_S`] of the instant — beats *any* forecast at f0, however
+    /// much nearer the forecast is. Everything below that promotion is ordinary nearest-validity,
+    /// breaking toward the *later* frame, and at every forward slot rule 1 has already left only
+    /// forecasts so none of this applies.
+    ///
+    /// This is a deliberate change made in round 2 of #1278's review, and the case that forced it is
+    /// worth recording. DWD RV's members are five minutes apart and its run is on a five-minute
+    /// boundary, so when the run sits 300 s *after* the anchor, the tar offers a lead-5 **forecast**
+    /// valid at exactly f0's instant and a lead-0 **observation** 300 s away. Plain nearest-validity
+    /// took the forecast, distance 0 — and with it went `FLAG_OBSERVED` over the whole of Germany,
+    /// in one run phase out of three, flapping with RV's publication schedule. What f0 asks is "is it
+    /// raining on me *now*", and a five-minute-old radar composite answers that better than a
+    /// zero-minute-old extrapolation **of that same composite**, which is exactly what an RV lead-5
+    /// member is. The old ordering said the opposite in its own comment ("an equally close forecast
+    /// beats an observation that is not valid at the target instant") and that reasoning is sound for
+    /// two *unrelated* fields; it is not sound when the forecast is derived from the observation it
+    /// is beating, and it was never the rule #1248 set.
+    ///
+    /// The preference is **bounded** rather than absolute, because a genuinely stale scan is a
+    /// different thing: past [`ANCHOR_OBSERVATION_PREFERENCE_S`] the observation goes back to
+    /// competing on distance like anything else, and past [`MAX_FRAME_SKEW_S`] it is not sampled at
+    /// all. `the_anchor_prefers_a_recent_observation_over_an_exact_forecast` pins both edges.
     ///
     /// Rule 1 is not a within-layer rule and could not be one. Under WXR7 it was, so the priority
     /// table let a higher-ranked single-frame radar layer paint forward frames that a lower-ranked
@@ -539,7 +571,12 @@ impl MosaicLayer {
             })
             .min_by_key(|frame| {
                 let distance = (frame.valid_at - slot.valid_at).abs();
-                (distance, frame.class.is_observation() && distance != 0, std::cmp::Reverse(frame.valid_at))
+                // `false` sorts first, so this promotes a recent observation at the anchor above
+                // every forecast, whatever their distances.
+                let demoted = !(slot.offset_min == 0
+                    && frame.class.is_observation()
+                    && distance <= ANCHOR_OBSERVATION_PREFERENCE_S);
+                (demoted, distance, std::cmp::Reverse(frame.valid_at))
             })
     }
 }

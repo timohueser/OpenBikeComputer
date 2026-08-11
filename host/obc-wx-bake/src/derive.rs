@@ -315,12 +315,17 @@ pub fn uniform_frames(source: &mut BakedSource, times: CycleTimes) -> usize {
         );
         added.push(BakedFrame {
             // A forecast valid before its own run does not exist, and `bracket` cannot produce one:
-            // both parents are this source's own frames. So the subtraction is non-negative and is
-            // stated rather than flattened by a `.max(0)` that would silently collapse a would-be
-            // negative offset onto f0's value — cosmetic today, and exactly the field a later reader
-            // would key on (#1278 r1, n12).
-            offset_min: u32::try_from((target - source.reference_time) / 60)
-                .expect("a derived frame is never valid before its source's reference time"),
+            // both parents are this source's own frames. Round 1 (n12) replaced a silent `.max(0)`
+            // here with an `expect`, and round 2 (R2-5) pointed out the obvious: **nothing reads
+            // this field on a derived frame** except `MosaicLayer::from_source`'s error text, and
+            // aborting a global cycle over a cosmetic label is a far worse failure than logging a
+            // wrong one. So it is a `debug_assert` — loud in the tests that would catch it, and a
+            // harmless 0 in production if a future source ever manages it.
+            offset_min: {
+                let minutes = (target - source.reference_time) / 60;
+                debug_assert!(minutes >= 0, "a derived frame is never valid before its source's reference time");
+                u32::try_from(minutes).unwrap_or(0)
+            },
             valid_at: target,
             class: SourceClass::Forecast,
             cells,

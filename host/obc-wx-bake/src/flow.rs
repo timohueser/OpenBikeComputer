@@ -133,6 +133,13 @@ const MIN_WET_CELLS: usize = 64;
 /// a motion nobody measured. Beyond this many nodes the flow stays zero, which advects dry ground to
 /// dry ground and leaves distant rain where it is — visibly persistence, which is what "we could not
 /// tell" should look like. Six nodes is ~96 km at the 16 km node spacing.
+///
+/// **To within one smoothing pass** (#1278 r2, n18). [`fill_invalid`] finishes with an unconditional
+/// 3x3 box pass over the whole node grid, so the ring of nodes immediately past the cap picks up a
+/// fraction — at most a ninth per neighbour — of its grown neighbours' vectors. That is the seam
+/// treatment doing its job rather than the cap leaking: the alternative is a hard edge in the
+/// trajectories at exactly the distance where confidence runs out. The bound is therefore on where
+/// the *grown* field stops, not on where the last non-zero float is.
 const MAX_FILL_NODES: u32 = 6;
 
 /// A dense motion field on a coarse node grid.
@@ -710,8 +717,20 @@ const MAX_SUBSTEPS: u32 = 100;
 /// or two columns of permanent intensity 15 at the antimeridian, the exact 25-column stripe through
 /// Fiji that `source_column`'s wrap exists to prevent, reintroduced by the derivation stage. The
 /// wrap is over the *window*, which for GFS is one column short of the full turn, so a trajectory
-/// crossing the seam samples a cell 0.25 degrees off — one cell, at one meridian, against a
-/// permanent hole. Latitude never wraps: a pole is not a neighbour of anything.
+/// crossing the seam samples a cell 0.25 degrees off. That offset is one cell in **magnitude**, but
+/// it applies to every output column whose back-trace crosses the seam — a band as wide as the
+/// displacement, up to about a dozen GFS columns over a 90-minute lead (#1278 r2, n15). Against a
+/// permanent 25-column stripe of no-data through Fiji it is still the right trade, and it is the
+/// whole of what the trade costs.
+///
+/// **The wrap is on the final lookup only, not on the trajectory integration** (n16):
+/// [`MotionField::sample`] clamps at the node grid's edge rather than wrapping, so a trajectory that
+/// crosses the antimeridian picks up the edge node's velocity for the rest of its walk. Harmless
+/// while the flow is smooth across the seam, which on a global grid it is — the field there is one
+/// continuous synoptic pattern, not a boundary — but it is stated rather than left as the half a
+/// reader would assume.
+///
+/// Latitude never wraps: a pole is not a neighbour of anything.
 pub fn advect(cells: &[u8], width: u32, height: u32, flow: &MotionField, dt_seconds: f64, wrap_x: bool) -> Vec<u8> {
     let count = width as usize * height as usize;
     assert_eq!(cells.len(), count, "advect: the field does not match its dimensions");
@@ -750,26 +769,20 @@ pub fn advect(cells: &[u8], width: u32, height: u32, flow: &MotionField, dt_seco
 
 /// **Temporal interpolation between two known fields** — job B's whole mechanism.
 ///
-/// `earlier` and `later` are `dt_seconds` apart and `flow` is the motion between them; the result
-/// is the field at `offset_seconds` after `earlier`. Both inputs are carried to that instant along
-/// the same trajectories — the earlier one forwards, the later one backwards — and then combined by
-/// how close the target is to each.
+/// `earlier` and `later` are `dt_seconds` apart and `flow` is the motion between them; the result is
+/// the field at `offset_seconds` after `earlier`. **One of the two is carried to that instant along
+/// the flow — whichever is nearer it — and that carried field *is* the result.** The other is not
+/// advected, not sampled and not consulted.
 ///
-/// Advect-both-and-blend rather than blend-then-advect, and rather than blending the two *static*
-/// fields, because the two static fields have the same storm in two different places: averaging
-/// them produces two ghosts of it, one fading and one appearing, which is exactly the artefact this
-/// method exists to avoid. Once both are carried to the target instant the storm is in the same
-/// place in both and the combination is a genuine estimate of its intensity there.
-///
-/// **The two are then selected between, never averaged** — the cell's code comes from whichever
-/// parent is nearer the target instant, whole. Round 1 of #1278's review measured what averaging
-/// them cost: over a real 30-minute morph, **22.6 % of wet cells carried an intensity code neither
+/// It used to advect both and blend them by time weight, and round 1 of #1278's review measured what
+/// that cost: over a real 30-minute morph, **22.6 % of wet cells carried an intensity code neither
 /// parent held**, the wet area grew to 0.186 against a truth of 0.166, and the mean wet code fell to
 /// 5.53 against 6.26 — a bigger, fainter storm than anything it was made from, about one intensity
 /// band low. Every value was bounded by its two parents, so it was not fabrication in the strict
 /// sense; it was still a published intensity that no source stated for that cell. The rule this
 /// engine holds to is that **advection may move cells and must never invent values**, and a weighted
-/// mean of two quantized codes invents one.
+/// mean of two quantized codes invents one. Blending the two *static* fields would have been worse
+/// again — same storm, two places, two ghosts — but that was never the choice on the table.
 ///
 /// **Missing propagates.** If the nearer parent's advected cell is no-data, so is the output —
 /// `OBCG_Spec.md` §3.2 requires it of every derivation without exception, and the alternative
@@ -820,9 +833,26 @@ impl Span {
 /// takes the earlier and the rest takes the later — the same "nearest validity, ties to the later
 /// frame" rule [`crate::canonical::MosaicLayer::nearest`] uses one level up, for the same reason:
 /// the field valid after the target is about weather that has not happened yet, the one before it is
-/// already past. There is no discontinuity in *content* at the switch, because both parents are
-/// carried to the same instant and hold the same storm in the same place; what changes is only which
-/// measurement's texture is shown.
+/// already past.
+///
+/// **There is a visible discontinuity where the parent changes, and it is measured rather than
+/// waved away** (#1278 r2, R2-4). An earlier draft of this comment claimed there was none, on the
+/// argument that both parents are carried to the same instant and hold the same storm in the same
+/// place. The argument is half right — they do — but two radar composites an hour apart are not two
+/// views of one unchanged storm, and the residual shows up as a step in the published timeline
+/// exactly at the middle of every bracket. On a real hourly bracket over the derecho, wet/dry
+/// disagreement between consecutive frames is **0.0774 across the parent switch against 0.0577
+/// within one parent**, a 34 % excess (`tests/nowcast_skill.rs` measures and prints both). Before
+/// WXR9 the same two instants took the same nearest step and the figure was 0.0000 by construction,
+/// so the step is new.
+///
+/// It is accepted rather than removed, and the trade is stated plainly: a timeline that *moves* is
+/// the whole point of job B, and the alternative is the frozen four-frame staircase this replaced.
+/// The measurement above is on radar, which changes shape far faster than the hourly model fields
+/// this actually runs on, so it is an upper bound on what a rider sees over a GFS-only region.
+/// Removing it entirely means a scheme that never switches source — which is either blending (it
+/// invents values, `OBCG_Spec.md` §3.2 forbids it) or one parent for the whole bracket (which puts a
+/// bigger step at the bracket boundary instead of a smaller one in the middle).
 pub fn nearer_is_later(weight: f32) -> bool {
     weight >= 0.5
 }
@@ -998,7 +1028,7 @@ mod tests {
             let (cx, _) = centroid(&between, width);
             assert!((cx - expected_x).abs() < 3.0, "at +{offset}s the blob is at {cx}, expected ~{expected_x}");
             // …and it is one blob, not two ghosts: nothing wet may remain at either parent's
-            // position, which is the artefact advect-both-then-blend exists to avoid.
+            // position, which is the artefact any scheme that blends two static fields produces.
             let (px, _) = centroid(&earlier, width);
             assert!((cx - px).abs() > 2.0 || offset < 200.0);
         }

@@ -83,9 +83,9 @@ SyslogIdentifier=obc-wx-bake
 # from #1274, set at 2.5x a 398 MB cycle, and it was never a property of the machine: this box has
 # 7.8 GB and 4 cores. WXR9's derivation stage roughly doubles the resident cell budget — a nowcast
 # frame is a full copy of its parent's window, 24.5 MB for MRMS and 25 MB for OPERA CIRRUS, held for
-# the whole cycle. `tests/nowcast_cost.rs` measures a full wet global cycle at **690-740 MB** at the
-# shipped +90 horizon (the spread is run-to-run allocator noise, not load), against 905 MB measured
-# at +120. Keeping 1G would have let a self-imposed ceiling, rather than evidence, decide how far
+# the whole cycle. `tests/nowcast_cost.rs` measures a full wet global cycle at **690-755 MB** at the
+# shipped +90 horizon (the spread is run-to-run allocator behaviour rather than load; #1278's
+# reviewer measured 725.4 MB independently), against 905 MB measured at +120. Keeping 1G would have let a self-imposed ceiling, rather than evidence, decide how far
 # ahead riders can see.
 #
 # 3G is ~4x the measured cycle and leaves the service under 40 % of the box with the old v1 baker
