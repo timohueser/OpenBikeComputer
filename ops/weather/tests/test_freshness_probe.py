@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Self-tests for `ops/weather/freshness_probe.py` (WXR8 #1247).
+
+The probe is the only thing that notices the weather service has stopped being usable or has
+started costing money, it runs unattended from a GitHub schedule, and until this file it had no
+test of any kind — its correctness was "it printed something sensible the day it was written".
+Every case here is one alarm either firing or staying quiet, driven through `probe()` exactly as
+the workflow drives it.
+
+The input is `specs/vectors/wx-manifest-v2.json`, the same cross-language fixture the baker and both
+clients are pinned against, mutated per case. That matters: a probe tested against a document only
+its own tests believe in would drift away from what the service actually publishes.
+
+    python3 -m unittest discover -s ops/weather/tests -v
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+OPS = Path(__file__).resolve().parents[1]
+REPO = OPS.parents[1]
+sys.path.insert(0, str(OPS))
+
+import freshness_probe as probe  # noqa: E402
+
+FIXTURE = REPO / "specs/vectors/wx-manifest-v2.json"
+# The fixture's generation is 20260810T1430Z, generated 14:31:07.
+HEALTHY_NOW = "2026-08-10T14:35:00Z"
+
+
+def run(document: dict, *extra: str) -> tuple[int, str]:
+    """Run the probe over a document, as a local manifest. Returns (exit code, printed report)."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "manifest.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        args = probe.build_parser().parse_args(["--manifest", str(path), "--now", HEALTHY_NOW, *extra])
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = probe.probe(args)
+        return code, buffer.getvalue()
+
+
+def healthy() -> dict:
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+class ProbeTests(unittest.TestCase):
+    def test_the_shared_fixture_is_a_healthy_service(self):
+        """The baseline every other case is a mutation of. If this ever fails, the fixture moved
+        and the probe is measuring something that no longer exists."""
+        code, output = run(healthy())
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("ALERTS", output)
+        self.assertIn("generation 20260810T1430Z, keeping 2 previous", output)
+
+    def test_a_v1_document_is_unsupported_rather_than_interpreted(self):
+        """WXR8 deleted the v1 half of this probe with the tree it read. A v1 manifest must now be
+        refused outright — interpreting a document whose fields mean something else is how a probe
+        reports confident nonsense."""
+        self.assertEqual(probe.SUPPORTED_MANIFEST_VERSIONS, {2})
+        document = healthy()
+        document["version"] = 1
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("UNSUPPORTED", output)
+
+    def test_the_manifest_path_is_the_v2_tree(self):
+        """The one line the cutover flips, and the reason it is a constant and not a flag."""
+        self.assertEqual(probe.MANIFEST_PATH, "wx/v2/manifest.json")
+        self.assertEqual(
+            probe.manifest_url("https://wx.openbikecomputer.com"),
+            "https://wx.openbikecomputer.com/wx/v2/manifest.json",
+        )
+
+    def test_a_dead_timer_shows_up_as_a_stale_manifest(self):
+        """With one dataset on one timer, "the manifest is fresh" and "the timer is alive" are the
+        same statement — the timer that would be dead is the one that writes the manifest. This is
+        what replaced v1's per-product --expect check."""
+        document = healthy()
+        document["generated_at"] = "2026-08-10T13:00:00Z"
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("nothing has run on the box", output)
+
+    def test_an_expired_generation_alerts_that_riders_have_no_weather(self):
+        document = healthy()
+        document["freshness"]["stale_after"] = "2026-08-10T12:00:00Z"
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("went unusable", output)
+        self.assertIn("not the same as no rain", output)
+
+    def test_a_late_generation_is_an_alert_but_not_an_expiry(self):
+        document = healthy()
+        document["freshness"]["next_generation_expected_at"] = "2026-08-10T14:00:00Z"
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("nothing is baking", output)
+        self.assertNotIn("went unusable", output)
+
+    def test_a_bitmap_that_disagrees_with_its_shard_list_reaches_nobody(self):
+        """Clients refuse such a frame (OBCG §10.3), so the rider silently loses it; the probe is
+        the only place that can see it happening to everyone at once."""
+        document = healthy()
+        document["frames"][0]["present"] = "000000"
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("presence bitmap flags", output)
+
+    def test_a_planet_with_no_published_shard_is_a_broken_bake(self):
+        document = healthy()
+        for frame in document["frames"]:
+            frame["shards"] = []
+            frame["present"] = "000000"
+        code, output = run(document)
+        self.assertEqual(code, 1)
+        self.assertIn("broken bake", output)
+
+    # ── Cost ──────────────────────────────────────────────────────────────────────────────────
+
+    def test_the_set_gate_fires_on_a_dataset_that_grew(self):
+        document = healthy()
+        code, output = run(document, "--max-set-bytes", str(10 * probe.BYTES_PER_MB))
+        self.assertEqual(code, 1)
+        self.assertIn("over the 10 MB guard", output)
+        self.assertIn("wet global", output, "the alert must carry the measurement it is derived from")
+
+    def test_the_retained_gate_is_the_set_times_the_retention_chain(self):
+        document = healthy()
+        set_bytes = sum(shard["bytes"] for frame in document["frames"] for shard in frame["shards"])
+        code, output = run(document, "--json")
+        self.assertEqual(code, 0, output)
+        payload = json.loads(output.split("\n\n")[-1])
+        self.assertEqual(payload["published_set_bytes"], set_bytes)
+        self.assertEqual(payload["retained_bytes"], set_bytes * 3, "current plus two, per OBCG §10.4")
+
+    def test_the_defaults_are_derived_from_wxr1s_measurement(self):
+        """14.69 MB per wet global cycle, retained three deep. The gates are ~2x each, and they are
+        constants rather than arguments so that changing one is a diff someone reviews."""
+        self.assertEqual(probe.DEFAULT_MAX_SET_BYTES, 30 * probe.BYTES_PER_MB)
+        self.assertEqual(probe.DEFAULT_MAX_RETAINED_BYTES, 3 * probe.DEFAULT_MAX_SET_BYTES)
+
+    def test_the_old_rolling_bytes_spelling_still_parses(self):
+        """A stale OBC_WX_PROBE_ARGS must not crash the alarm during the cutover."""
+        args = probe.build_parser().parse_args(["--manifest", "x", "--max-rolling-bytes", "123"])
+        self.assertEqual(args.max_retained_bytes, 123)
+
+    # ── The cadence guard ─────────────────────────────────────────────────────────────────────
+
+    def test_a_timer_firing_faster_than_the_cadence_is_visible_in_one_sample(self):
+        """A fast timer re-bakes the same anchor, so the cycle's start walks across the step while
+        the generation stands still. Storage never moves; Class A writes do — which is why nothing
+        else in this probe can see the mistake."""
+        document = healthy()
+        document["generated_at"] = "2026-08-10T14:38:00Z"  # 8 min into a 14:30 step
+        code, output = run(document, "--now", "2026-08-10T14:39:00Z")
+        self.assertEqual(code, 1)
+        self.assertIn("CADENCE", output)
+        self.assertIn("Class A operations", output)
+
+    def test_the_shipped_timers_jitter_is_not_a_cadence_alert(self):
+        """`RandomizedDelaySec=60`: a correct tick is always within a minute of its own boundary,
+        and the guard must never fire on one."""
+        document = healthy()
+        document["generated_at"] = "2026-08-10T14:30:47Z"
+        code, output = run(document)
+        self.assertEqual(code, 0, output)
+        self.assertIn("cycle started 0 min into its 15 min step", output)
+
+    # ── Sources ───────────────────────────────────────────────────────────────────────────────
+
+    def test_expect_sources_catches_a_deploy_that_went_backwards(self):
+        document = healthy()
+        code, output = run(document, "--expect-sources", "dwd-rv,gfs,mrms")
+        self.assertEqual(code, 1)
+        self.assertIn("MISSING  mrms", output)
+        self.assertIn("this is the binary, not the provider", output)
+
+    def test_every_expected_source_present_is_quiet(self):
+        document = healthy()
+        listed = ",".join(entry["source_id"] for entry in document["attribution"])
+        code, output = run(document, "--expect-sources", listed)
+        self.assertEqual(code, 0, output)
+
+    # ── The sweep witness ─────────────────────────────────────────────────────────────────────
+
+    def test_the_swept_generation_is_one_cadence_step_below_the_oldest_kept(self):
+        """The arithmetic the sweep witness aims its HEAD with — derived from the document's own
+        chain and its own cadence, never from the clock."""
+        oldest = probe.parse_generation("20260810T1400Z")
+        self.assertEqual(probe.format_generation(oldest), "20260810T1400Z")
+        step = probe.timedelta(minutes=15)
+        self.assertEqual(probe.format_generation(oldest - step), "20260810T1345Z")
+
+    def test_the_sweep_witness_is_skipped_for_a_local_manifest(self):
+        """`--manifest` has no origin to HEAD against, and a probe that invented one would alarm on
+        a document a maintainer is reading by hand."""
+        code, output = run(healthy())
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("SWEEP", output)
+
+    def test_the_sweep_witness_needs_a_full_retention_chain(self):
+        document = healthy()
+        document["previous_generations"] = ["20260810T1415Z"]
+        report, alerts, result = [], [], {}
+        probe.check_sweep(document, "https://example.invalid", 0.01, report, alerts, result)
+        self.assertEqual(alerts, [])
+        self.assertIn("nothing has fallen off the chain yet", report[0])
+
+    def test_the_sweep_witness_probes_the_shard_that_is_always_published(self):
+        """Shard row 0 reaches below `covered_rows.start`, so it always holds no-data cells, and a
+        shard with one no-data cell is never omitted as dry (OBCG §10.3). That is what makes a 404
+        there mean "swept" rather than "was dry"."""
+        document = healthy()
+        self.assertGreater(document["lattice"]["covered_rows"]["start"], 0)
+        report, alerts, result = [], [], {}
+        # An unresolvable host makes the HEAD fail; the point is the key it aimed at.
+        probe.check_sweep(document, "https://wx.invalid", 0.01, report, alerts, result)
+        self.assertEqual(result["sweep_probe_key"], "wx/v2/20260810T1345Z/f0/s0-0.obcg")
+        self.assertEqual(alerts, [], "an unreachable HEAD is inconclusive, never an alert")
+
+    # ── Cutover ergonomics ────────────────────────────────────────────────────────────────────
+
+    def test_the_retired_flags_are_accepted_and_ignored(self):
+        """`--mosaic` and `--expect` existed for the two-tree window. They must not crash the alarm
+        after the cutover, and they must say they did nothing."""
+        code, output = run(healthy(), "--mosaic", "--expect", "dwd-rv,icon-eu")
+        self.assertEqual(code, 0, output)
+        self.assertIn("accepted and ignored", output)
+
+
+if __name__ == "__main__":
+    unittest.main()
