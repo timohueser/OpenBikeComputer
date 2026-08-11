@@ -51,6 +51,11 @@ ExecStart=/usr/bin/flock --wait 240 /var/lib/obc-wx/bake.lock /usr/local/bin/obc
 # a large multiple rather than a snug fit — deliberately, because it is also the ceiling protecting
 # the 15-minute cadence when an *upstream* is slow, which is the term this change did not shrink.
 #
+# This is no longer the only backstop, and that is the point. The baker bounds its own publish at
+# 240 s and its sweep at 120 s (`PUBLISH_BUDGET` / `SWEEP_BUDGET` in `canonical.rs`), so a black-holed
+# endpoint fails the cycle cleanly — before the manifest swap, previous generation intact — rather
+# than being SIGKILLed here at a point where nobody can say whether the swap happened.
+#
 # A SIGKILL mid-sweep is safe by construction: the sweep runs only after the manifest swap, so
 # everything it is deleting is already unreferenced, and whatever it did not reach is collected by
 # the bucket's 1-day lifecycle rule. A SIGKILL before the swap publishes nothing.
