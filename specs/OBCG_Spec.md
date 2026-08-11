@@ -157,7 +157,7 @@ for something else is a format version bump.
 | Bit | Name | Meaning |
 | ---: | --- | --- |
 | 0 | Observed | Every cell of this object came from an observation, and `valid_at` is the anchor |
-| 1 | Forecast | Anything else: model output, a nowcast, or an observation frozen forward |
+| 1 | Forecast | Anything else: model output or a nowcast |
 | 2...15 | Reserved | Must be zero in v1 |
 
 Exactly one of Observed and Forecast MUST be set.
@@ -171,21 +171,45 @@ that painted a cell were from that instant is stated once, for the whole generat
 old" reads that number instead of assuming one. Re-stamping fetch or bake time as `reference_time`
 is forbidden; so is publishing a frame at an offset the cadence does not define.
 
+**A frame ahead of the anchor MUST be painted by forecast source data, and MUST NOT be painted by an
+observation carried forward.** A frame at `offset_min > 0` is about an instant no observation of
+exists at bake time. What may fill it is anything the publisher classes **Forecast** for its own
+source-class bit — model output or a nowcast, which is the same partition the table above draws, no
+narrower. A single-frame observation, however recent and however far inside the skew window it sits,
+is data about one past instant and is eligible for the anchor alone.
+
+The rule turns on **what the source data is**, not on how near it lands. Being a forecast is the
+guarantee; being a forecast of *exactly* this instant is not, and no consumer may read it as one.
+`valid_at` states the frame's position on the cadence, while the forecast step underneath it may sit
+up to `cadence.max_source_skew_s` away. At a 30-minute window and a 15-minute cadence the quantity
+is concrete and worth stating: **one hourly model step paints four consecutive frames.** A step
+valid at 11:00 answers 10:30, 10:45, 11:00 and 11:15, because a frame instant at :30 is 1,800 s from
+both flanking steps and an implementation that samples the nearest step MUST break that tie toward
+the later one — the field valid after the target is about weather that has not happened yet, the one
+before it is already past.
+
+What distinguishes this from the frozen-observation case is not the distance: a model step valid at
+17:00 is a prediction, and the nearest prediction is a defensible answer for 17:15, whereas a radar
+scan of 16:58 is a measurement of 16:58 and is not an answer for 17:15 in any sense. A consumer that
+needs the underlying distance reads `max_source_skew_s`; there is no per-frame field for it and none
+is coming.
+
+Where no forecast source reaches a forward frame, the honest answer is intensity 15 (§6) — never a
+frozen field.
+
 The flag then carries the honesty. A publisher MUST set **Observed** only when both hold:
 
 - every cell of the object came from a source frame that was an observation upstream; **and**
 - `offset_min` is `0`.
 
-The second condition is the one that is easy to get wrong, and it is normative. A frame ahead of the
-anchor is about an instant no observation of exists at bake time, so what fills it is either a
-genuine forecast or an observation carried forward inside the skew window — and an observation
-carried forward is a **persistence nowcast**, which is a forecast. A single-frame radar source
-therefore paints the first frames after the anchor with real measured cells and those frames MUST
-still say Forecast. Setting Observed there would tell a consumer it is looking at measured weather
-at a future instant, which is the one thing a source class exists to prevent.
+Under the rule above the second condition is implied by the first: no observation may paint a
+forward frame, so no forward frame can satisfy the first condition either. It stays normative and
+stays stated, because it is what a consumer validates against and what a publisher's flag decision
+must be checkable against without reasoning about that publisher's frame selection.
 
 A consumer MUST NOT infer anything further from the flag than those two facts, and in particular
-MUST NOT read Forecast as "unmeasured" or Observed as "exact at `valid_at`".
+MUST NOT read Forecast as "unmeasured" or Observed as "exact at `valid_at`". Forecast covers both a
+model field and a nowcast of measured origin, and the distinction is not carried.
 
 **Cross-reference: this rule is deliberately stricter than `OBCW_Spec.md` §5.1's, and the
 divergence is safe in one direction.** Both require `offset_min == 0`, which is the condition that

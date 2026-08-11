@@ -9,7 +9,6 @@
 
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File as Hdf5File};
-use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED};
 use obc_formats::precip4;
 use std::collections::HashMap;
 use std::io::Read;
@@ -17,7 +16,7 @@ use std::io::Read;
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{MAX_COMPRESSED_BYTES, MAX_DECOMPRESSED_BYTES};
-use crate::source::{Adapter, Attribution, BakedFrame, BakedSource};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass};
 use crate::stereo;
 
 pub const ID: &str = "dwd-rv";
@@ -165,7 +164,7 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
             frames.push(BakedFrame {
                 offset_min: lead_minutes,
                 valid_at: member_run + i64::from(lead_minutes) * 60,
-                flags: if lead_minutes == 0 { FLAG_OBSERVED } else { FLAG_FORECAST },
+                class: if lead_minutes == 0 { SourceClass::Observation } else { SourceClass::Forecast },
                 cells: resample(&member, &index_map),
             });
         }

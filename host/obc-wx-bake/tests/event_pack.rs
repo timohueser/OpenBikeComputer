@@ -356,12 +356,14 @@ fn the_frozen_manifest_is_one_generation_of_the_one_dataset() {
         document.attribution.iter().map(|entry| entry.source_id.as_str()).collect::<Vec<_>>(),
         vec!["mrms", "hrrr"]
     );
-    // **Only the anchor is observed.** f0, f15 and f30 are all painted by the same 18:48 MRMS
-    // field — the skew window reaches 1,800 s and f30 is 1,620 s out — but a frame ahead of the
-    // anchor is about an instant no observation of exists, so the two frozen ones are forecasts by
-    // persistence and say so (`OBCG_Spec.md` §3.2, `canonical::shard_is_observed`). Before that
-    // rule this pack shipped three objects with three different `valid_at`s over one field, all
-    // three flagged Observed.
+    // **Only the anchor is observed, and now only the anchor is radar.** The 18:48 MRMS field is an
+    // observation, so it is eligible for f0 and for nothing else (#1248, `canonical::
+    // frame_is_eligible`); f15 onward are HRRR's own leads. Two earlier rounds of this pack are
+    // worth remembering here, because each fixed half of the problem: the first shipped f0, f15 and
+    // f30 as one frozen radar field under three validities, all three flagged Observed; the second
+    // kept the frozen field and flagged the forward two Forecast (`OBCG_Spec.md` §3.2). Honest
+    // labelling was not the whole of it — a repeated picture of 18:48 is not a prediction of 19:15
+    // whatever the header says — so the frames themselves changed hands.
     assert!(document.frames[0].shards.iter().all(|shard| shard.observed), "f0 is inside the radar footprint");
     for frame in &document.frames[1..] {
         assert!(
@@ -420,16 +422,40 @@ fn the_frames_actually_contain_the_storm() {
     // below are of the whole window and every floor sits roughly a quarter under what the bytes
     // measure, which notices a real regression while leaving room for a re-capture's drift.
     //
-    // f0, f15 **and f30** are the same 14.89 %, and that is not a copy-paste: the 18:48 MRMS
-    // observation is the highest-ranked source over CONUS and it is inside `MAX_FRAME_SKEW_S` of
-    // all three (19:15 - 18:48 = 1,620 s), so it paints all three. Persistence out to +30 — not
-    // +15 — is the visible consequence of MRMS and HRRR being two priority rows instead of one
-    // composed product (#1246); see `source::MOSAIC_PRIORITY`, and note that only f0 carries
-    // `FLAG_OBSERVED`, which `the_frozen_manifest_is_one_generation_of_the_one_dataset` pins.
-    assert!(wet_fraction(&key(0)) > 0.11, "the first frame lost its storm");
-    assert!(wet_fraction(&key(1)) > 0.11, "the second frame lost its storm");
-    assert!(wet_fraction(&key(2)) > 0.11, "the third frame lost its storm");
-    // The far end of the window is HRRR's own forecast, and the storm has left eastward.
+    // **The step down between f0 and f15 is the point** (#1248). f0 is the 18:48 MRMS observation
+    // at 14.89 % wet; every frame after it is HRRR's own lead valid at that instant, and HRRR's
+    // 3 km PRATE is a good deal drier and smoother than the radar it is standing in for — 6.98 %
+    // at f15. Until #1248 f0, f15 and f30 were byte-for-byte the same 14.89 % field, because MRMS
+    // outranks HRRR over CONUS and its one observation was inside `MAX_FRAME_SKEW_S` of all three
+    // (19:15 - 18:48 = 1,620 s). It was labelled Forecast, honestly, and it was still a picture of
+    // 18:48 published three times under three validities. A forward frame is a forecast by rule
+    // now, so what stands at f15 and f30 is a model that actually predicted those instants — less
+    // rain in the bytes, and a claim the frame can support.
+    let (f0, f15, f30) = (wet_fraction(&key(0)), wet_fraction(&key(1)), wet_fraction(&key(2)));
+    assert!(f0 > 0.11, "the first frame lost its storm");
+    // Measured 6.98 % and 6.91 %: HRRR's own leads, not the radar frozen forward.
+    assert!(f15 > 0.05, "the second frame lost its storm");
+    assert!(f30 > 0.05, "the third frame lost its storm");
+    // **The step down asserted, not merely described.** Floors alone do not pin #1248: 14.89 % also
+    // clears `> 0.05`, so a revert to the frozen observation would sail through the three lines
+    // above. Measured 0.47 and 0.46 of f0.
+    for (name, fraction) in [("f15", f15), ("f30", f30)] {
+        assert!(
+            fraction < f0 * 0.75,
+            "{name} is {:.2} % against f0's {:.2} % — that is the radar field repeated, not HRRR's forecast",
+            100.0 * fraction,
+            100.0 * f0
+        );
+    }
+    // And the exact form of the regression, since a fraction can coincide: the *cells* must differ.
+    // Under the old rule f0, f15 and f30 were one field under three validities — identical grids,
+    // different headers — so comparing bytes would have passed and comparing cells would not.
+    let cells_of = |relative: &str| all_cells(&read(relative)).1;
+    let anchor_cells = cells_of(&key(0));
+    for (name, index) in [("f15", 1usize), ("f30", 2)] {
+        assert_ne!(cells_of(&key(index)), anchor_cells, "{name} is cell-for-cell the anchor's field");
+    }
+    // The far end of the window is HRRR's own forecast too, and the storm has left eastward.
     // Measured 7.22 %.
     assert!(wet_fraction(&key(document.frames.len() - 1)) > 0.05, "the last frame lost its storm");
     // …and the ground truth at both ends of the ladder. Measured 15.74 % and 19.36 %.
