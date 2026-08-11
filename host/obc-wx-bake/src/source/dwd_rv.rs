@@ -75,10 +75,12 @@ pub const GEOMETRY: GridGeometry = GridGeometry {
 
 /// The tar's own member cadence and reach: 25 members, `+0` to `+120` minutes every five minutes.
 ///
-/// **Every canonical instant is one of them.** A cycle anchors on a quarter hour and RV runs on a
-/// five-minute boundary, so `canonical instant - run` is always a whole number of five-minute steps
-/// — DWD publishes a member valid at *exactly* the instant the dataset wants, for every frame of
-/// the cycle its reach covers. [`selected_leads`] is what turns that from a fact into the frames.
+/// **Every canonical instant inside the tar's reach is one of them.** A cycle anchors on a quarter
+/// hour and RV runs on a five-minute boundary, so `canonical instant - run` is always a whole number
+/// of five-minute steps: DWD publishes a member valid at *exactly* the instant the dataset wants,
+/// for every frame between the run and `run + 120 min`. At most one frame of the nine falls outside
+/// that span — before the run, or past its end, depending on which side of the anchor the run landed
+/// — and [`selected_leads`] gives it the nearest member rather than nothing.
 pub const MEMBER_STEP_MIN: u32 = 5;
 pub const MAX_LEAD_MIN: u32 = 120;
 pub const MEMBER_COUNT: usize = (MAX_LEAD_MIN / MEMBER_STEP_MIN) as usize + 1;
@@ -101,20 +103,28 @@ pub const MEMBER_COUNT: usize = (MAX_LEAD_MIN / MEMBER_STEP_MIN) as usize + 1;
 /// Lead 0 is always included whatever the cycle asks for: it is the tar's only **observation**, it
 /// is what f0's `FLAG_OBSERVED` rests on, and it costs one member.
 ///
-/// A canonical instant that is not a whole number of member steps from the run gets nothing here
-/// and falls to `uniform_frames`, which is the honest order: use the measurement where one exists,
-/// derive only where none does. On the shipped cadence that branch is unreachable, and
-/// `every_canonical_instant_of_a_cycle_is_a_native_member` pins it.
+/// **The nearest member, not only the exact one** (#1278 r2, R2-1). The first version of this took
+/// the member valid at the instant or nothing, which is 9/9 when the run lands on a quarter hour and
+/// 8/9 otherwise — and the missing one was **f+120**, in the common operational case where the run
+/// *precedes* the anchor (RV publishes about four minutes behind its run, and the baker fires after
+/// the quarter hour). `run + 120 min` is then a few minutes short of the last canonical instant, so
+/// the slot fell through to the lead-110 member 900 s stale while the lead-120 member sat decoded in
+/// the same tar 300 s away. Rounding to the nearest member instead is zero-skew wherever an exact
+/// member exists — which is every reachable instant at every phase — and degrades to the nearest one
+/// at the two ends instead of degrading to a member two steps further off. All nine instants now
+/// resolve to a native frame at every run phase; `every_canonical_instant_of_a_cycle_is_a_native_dwd_member`
+/// asserts both halves separately, exact against reachable and native against all nine.
 pub fn selected_leads(run: i64, now: i64) -> Vec<u32> {
     let step = i64::from(MEMBER_STEP_MIN) * 60;
     let mut leads = vec![0u32];
     let times = crate::canonical::CycleTimes::anchored_at(now);
     for offset_min in times.offsets_min() {
         let ahead = times.valid_at(offset_min) - run;
-        if ahead <= 0 || ahead > i64::from(MAX_LEAD_MIN) * 60 || ahead % step != 0 {
-            continue;
-        }
-        let lead = (ahead / 60) as u32;
+        // Round to the nearest member and clamp into the tar's reach. `div_euclid` on the shifted
+        // value is nearest-with-ties-up, which matches `MosaicLayer::nearest`'s own tie rule: the
+        // member valid *after* the instant is about weather that has not happened yet.
+        let member = (ahead + step / 2).div_euclid(step).clamp(0, i64::from(MAX_LEAD_MIN / MEMBER_STEP_MIN));
+        let lead = (member * i64::from(MEMBER_STEP_MIN)) as u32;
         if !leads.contains(&lead) {
             leads.push(lead);
         }

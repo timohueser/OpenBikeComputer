@@ -338,9 +338,12 @@ fn a_morphed_frame_publishes_only_values_its_parent_actually_held() {
         Scores::of(parent, &target.cells, width, height).row()
     );
 
-    // 1. **No invented values.** Every published code is one the chosen parent holds somewhere, or
-    //    no-data. This is "advection may move cells and must never invent values" as a property
-    //    rather than a slogan.
+    // 1. **No invented values — in the strong form** (#1278 r2, n19). Set membership over a
+    //    12-code ladder is nearly free and would pass for a great many wrong implementations, so the
+    //    assertion is the identity instead: a morph *is* one advection of one parent, cell for cell.
+    //    Anything that combined, averaged, filled or reordered fails this outright.
+    assert_eq!(morphed, advected_parent, "a morph must be exactly its nearer parent, advected — nothing else");
+    // The weaker property is still worth naming, because it is the one the spec states.
     let held: std::collections::BTreeSet<u8> = parent.iter().copied().collect();
     let invented = morphed.iter().filter(|code| **code != precip4::INTENSITY_NODATA && !held.contains(code)).count();
     assert_eq!(invented, 0, "{invented} morphed cells carry an intensity the parent never held");
@@ -370,6 +373,52 @@ fn a_morphed_frame_publishes_only_values_its_parent_actually_held() {
         "mean wet code drifted from {parent_mean} to {morph_mean} — a selection must not damp intensity"
     );
     assert!(morph_wet <= parent_wet * 1.05, "the wet area grew from {parent_wet} to {morph_wet}");
+
+    // ── Job B's own seam (#1278 r2, R2-4) ────────────────────────────────────────────────────────
+    //
+    // `morph` takes the earlier parent below the halfway point and the later one above it, so the
+    // published timeline changes source at the middle of every bracket. `nearer_is_later` used to
+    // claim that was invisible. It is not, and this is the number that replaces the claim: the
+    // wet/dry step across the switch against the step within one parent, over a real hourly bracket
+    // — the `dt` GFS and ICON-EU actually present. Radar overstates it against model fields, so it
+    // is an upper bound on what a rider over a floor-only region sees.
+    // 20:02 Z — exactly an hour after the 19:02 Z bracket start, so the `dt` is the one GFS and
+    // ICON-EU actually present rather than a convenient rung.
+    let hourly = ladder.iter().find(|frame| frame.valid_at - earlier.valid_at == 3_600).expect("an hourly rung");
+    let hourly_dt = (hourly.valid_at - earlier.valid_at) as f64;
+    let hourly_motion = flow::estimate_motion(&earlier.cells, &hourly.cells, width, height, hourly_dt, params)
+        .expect("an hourly bracket over a derecho has motion");
+    let frame_at = |offset: f64| {
+        flow::morph(
+            &earlier.cells,
+            &hourly.cells,
+            width,
+            height,
+            &hourly_motion,
+            flow::Span { dt_seconds: hourly_dt, offset_seconds: offset, wrap_x: false },
+        )
+    };
+    let step = (i64::from(FRAME_STEP_MIN) * 60) as f64;
+    let disagreement = |left: &[u8], right: &[u8]| -> f64 {
+        let wet = |code: &u8| *code != precip4::INTENSITY_NODATA && *code >= LIGHT_RAIN;
+        left.iter().zip(right).filter(|(a, b)| wet(a) != wet(b)).count() as f64 / left.len() as f64
+    };
+    // The two frames either side of the halfway point, and two consecutive frames inside one parent.
+    let (before, after) = (frame_at(hourly_dt / 2.0 - step / 2.0), frame_at(hourly_dt / 2.0 + step / 2.0));
+    let (later_a, later_b) = (frame_at(hourly_dt / 2.0 + step / 2.0), frame_at(hourly_dt / 2.0 + 3.0 * step / 2.0));
+    let across = disagreement(&before, &after);
+    let within = disagreement(&later_a, &later_b);
+    eprintln!(
+        "job B seam over a {:.0} s bracket: {across:.4} across the parent switch, {within:.4} within one parent \
+         ({:+.0} % excess)\n",
+        hourly_dt,
+        (across / within - 1.0) * 100.0
+    );
+    // Not a threshold on the excess — this is one radar event and the number belongs in the doc, not
+    // in a gate. What is asserted is that the seam is the same order as the ordinary frame-to-frame
+    // change rather than a different one: a switch that doubled the step would be a mechanism
+    // problem, not a documentation problem.
+    assert!(across < within * 2.0, "the parent switch costs {across} against {within} within a parent");
 }
 
 /// `(wet fraction, no-data fraction, mean wet code)` — the three numbers the review's M5 turns on.
