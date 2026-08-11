@@ -61,6 +61,10 @@ pub struct LiveReport {
     pub total_requests: u32,
     /// The corridor this fetch asked about: `(width_km, height_km)`.
     pub corridor_km: Option<(f64, f64)>,
+    /// The disc ran off the edge of the coordinate system and was cut — at the date line, at a
+    /// pole, or both. The rider's window is then smaller than 90 km on one side, and the panel is
+    /// the only place that can say so: the device is told nothing about how the question was framed.
+    pub corridor_clamped: bool,
     /// The generation this bundle was built from. The device never learns it; the panel does.
     pub generation: Option<String>,
     pub dry_shards: u32,
@@ -110,6 +114,7 @@ impl LiveWeather {
         let corridor = self.corridor(position);
         self.last_fetch = Some(now);
         self.last_position = Some(position);
+        let corridor_clamped = corridor.clamped;
         let corridor_km = Some((
             (corridor.bounds.east_udeg - corridor.bounds.west_udeg) as f64 / 1e6
                 * 111.32
@@ -129,6 +134,7 @@ impl LiveWeather {
                     cached_frames: diagnostics.cached_frames,
                     total_requests: self.http.requests(),
                     corridor_km,
+                    corridor_clamped,
                     generation: diagnostics.generation.clone(),
                     dry_shards: diagnostics.dry_shards,
                     no_rain_map: diagnostics.no_rain_map.as_ref().map(ToString::to_string),
@@ -142,6 +148,7 @@ impl LiveWeather {
                 self.report.error = Some(error.to_string());
                 self.report.total_requests = self.http.requests();
                 self.report.corridor_km = corridor_km;
+                self.report.corridor_clamped = corridor_clamped;
                 None
             }
         }

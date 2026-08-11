@@ -281,6 +281,190 @@ fn a_dry_shard_is_painted_dry_and_the_frame_still_ships() {
     assert!(cells.contains(&INTENSITY_DRY), "the dry shards must read as dry");
     assert!(cells.contains(&7), "…and the published one as its own value");
     assert!(!cells.contains(&INTENSITY_NODATA), "nothing in this corridor is unknown");
+    // The quality flag is about *when* the frame is, never about what is in it.
+    assert_eq!(
+        frame_quality(&bundle.bytes, 0),
+        obc_formats::obcw::QUALITY_OBSERVED,
+        "a rain-free radar scan is still an observation"
+    );
+}
+
+/// The rule the two clients disagreed about, stated as a test in both: the OBCW quality flag
+/// follows the frame's **place in the timeline**, not its content and not the per-shard `observed`
+/// bits. A frame that is dry everywhere is not thereby a forecast, and a forward frame is not
+/// thereby an observation because a radar happened to paint one of its shards.
+#[test]
+fn the_quality_flag_follows_the_frames_place_in_the_timeline_not_its_content() {
+    let now = 1_800_000_000;
+    let grid = test_grid();
+    let shard = ShardId { col: 1, row: 1 };
+    // f0 entirely dry (no objects at all), f15 entirely radar-observed.
+    let forward = shard_object(&grid, shard, now + 900, true, |_, _| 5);
+    let frames = vec![
+        FrameSpec { offset_min: 0, valid_at: now, objects: Vec::new() },
+        FrameSpec { offset_min: 15, valid_at: now + 900, objects: vec![(shard, forward, true)] },
+    ];
+    let (mut http, mut client, corridor) = wired(&grid, &frames, now, now + 3_600);
+    let bundle = client.fetch(&mut http, &corridor, now, 1).expect("fetch");
+    assert_eq!(
+        frame_quality(&bundle.bytes, 0),
+        obc_formats::obcw::QUALITY_OBSERVED,
+        "offset 0 inside the source skew is the analysis, dry or not"
+    );
+    assert_eq!(
+        frame_quality(&bundle.bytes, 1),
+        obc_formats::obcw::QUALITY_FORECAST,
+        "a forward frame is a forecast however it was painted"
+    );
+    assert_eq!(bundle.diagnostics.observed_shards, 1, "the per-shard bits stay a counter");
+}
+
+/// **A failed shard is a hole in its frame, not the loss of the frame.** Dropping the frame would
+/// throw away the shards that did arrive to punish the one that did not — and the hole cannot make
+/// an outage look rain-free, because no-data is a different code from dry all the way down.
+#[test]
+fn one_failing_shard_leaves_a_hole_rather_than_dropping_the_frame() {
+    let now = 1_800_000_000;
+    let grid = test_grid();
+    let frames = dataset(now, &grid);
+    let (http, mut client, corridor) = wired(&grid, &frames, now, now + 3_600);
+    let _ = http;
+    // Serve everything except one shard of frame 0 — exactly the shape of a single lost object.
+    let missing = corridor::join(ORIGIN, &grid.shard_key(0, ShardId { col: 0, row: 0 }));
+    let mut holed = FixtureHttp::new()
+        .with_object(MANIFEST_URL, manifest_json(&grid, &frames, now + 3_600, 60).into_bytes())
+        .with_object(format!("{MET_ENDPOINT}?lat=47.3200&lon=7.3200"), fixture("met-freiburg-24h.json"));
+    for frame in &frames {
+        for (shard, bytes, _) in &frame.objects {
+            let url = corridor::join(ORIGIN, &grid.shard_key(frame.offset_min, *shard));
+            if url != missing {
+                holed = holed.with_object(url, bytes.clone());
+            }
+        }
+    }
+    let bundle = client.fetch(&mut holed, &corridor, now, 1).expect("fetch");
+
+    assert_eq!(bundle.diagnostics.failed_frames, 1, "one shard failed, and it is counted");
+    assert_eq!(bundle.diagnostics.no_rain_map, None, "one hole is not a lost rain map");
+    let source = obc_formats::io::SliceSource(&bundle.bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("valid");
+    assert_eq!(reader.header().frame_count, 2, "both frames still ship");
+    let cells = frame_cells(&bundle.bytes, 0);
+    assert!(cells.contains(&INTENSITY_NODATA), "the lost shard's cells are unknown");
+    assert!(cells.iter().any(|&cell| cell != INTENSITY_NODATA), "…and the shards that arrived are still there");
+    assert_ne!(
+        reader.frame(0).expect("frame").quality_flags & obc_formats::obcw::QUALITY_PARTIAL_COVERAGE,
+        0,
+        "a frame with a hole says so"
+    );
+}
+
+/// Nothing failed and nothing is usable: every frame the generation publishes is outside the window
+/// the rain map answers. Deleting `NoFramesInWindow` left that path wearing `FramesUnavailable`,
+/// which would have said "failed" about a service that answered perfectly.
+#[test]
+fn a_timeline_entirely_outside_the_window_is_not_a_failure() {
+    let now = 1_800_000_000;
+    let grid = test_grid();
+    let frames = dataset(now, &grid);
+    let (mut http, mut client, corridor) = wired(&grid, &frames, now, now + 24 * 3_600);
+    // Twelve hours later: the frames are far past the six-hour observation age, and the generation
+    // is still inside its own (deliberately generous) staleness deadline.
+    let bundle = client.fetch(&mut http, &corridor, now + 12 * 3_600, 1).expect("still a bundle");
+    assert_eq!(bundle.diagnostics.no_rain_map, Some(NoRainMap::OutsideWindow));
+    assert_eq!(bundle.diagnostics.failed_frames, 0, "nothing failed — that is the whole point");
+    assert!(!http.ledger.iter().any(|(url, _)| url.ends_with(".obcg")), "and nothing was read");
+}
+
+/// A whole fetch at the date line, not just the clamp in isolation. The corridor is cut at ±180°,
+/// so the window it states is narrower than a 90 km disc on one side — and the interesting part is
+/// that everything downstream of that is unremarkable: the shard arithmetic, the Range reads and
+/// the bundle window are the same code paths as at 47°N, which is exactly the claim worth pinning.
+#[test]
+fn a_fetch_at_the_date_line_reads_the_clamped_window_and_nothing_beyond_it() {
+    let now = 1_800_000_000;
+    // One degree of lattice ending exactly on the antimeridian.
+    let grid = Grid {
+        south_lat_udeg: 0,
+        west_lon_udeg: 179_000_000,
+        width: 100,
+        height: 100,
+        shard_width: 50,
+        shard_height: 50,
+        shard_cols: 2,
+        shard_rows: 2,
+        covered_rows: 0..100,
+        ..test_grid()
+    };
+    let corridor = Corridor::around(500_000, 179_980_000, 8_000.0);
+    assert!(corridor.clamped, "the disc really does run off the edge here");
+    assert_eq!(corridor.bounds.east_udeg, 180_000_000);
+
+    let mut objects = Vec::new();
+    for row in 0..grid.shard_rows {
+        for col in 0..grid.shard_cols {
+            let shard = ShardId { col, row };
+            let bytes = shard_object(&grid, shard, now, true, |c, r| ((c + r) % 13) as u8);
+            objects.push((shard, bytes, true));
+        }
+    }
+    let frames = vec![FrameSpec { offset_min: 0, valid_at: now, objects }];
+    let document = manifest_json(&grid, &frames, now + 3_600, 60);
+    let mut http = FixtureHttp::new()
+        .with_object(MANIFEST_URL, document.into_bytes())
+        .with_object(format!("{MET_ENDPOINT}?lat=0.5000&lon=179.9800"), fixture("met-freiburg-24h.json"));
+    for (shard, bytes, _) in &frames[0].objects {
+        http = http.with_object(corridor::join(ORIGIN, &grid.shard_key(0, *shard)), bytes.clone());
+    }
+    let mut client = WeatherClient::new(ORIGIN).with_met_endpoint(MET_ENDPOINT);
+    let bundle = client.fetch(&mut http, &corridor, now, 1).expect("fetch");
+
+    assert_eq!(bundle.diagnostics.no_rain_map, None, "a clamped corridor is still answerable");
+    assert_eq!(bundle.diagnostics.failed_frames, 0);
+    let source = obc_formats::io::SliceSource(&bundle.bytes);
+    let header = obc_weather::WeatherReader::open(&source).expect("valid").header();
+    assert!(header.east_lon_udeg <= 180_000_000, "the stated window must not cross the antimeridian");
+    assert!(header.west_lon_udeg < header.east_lon_udeg, "…nor read as wrapped");
+}
+
+/// The last column and row of the lattice are **short** shards, and `shard_geometry`'s clamp is what
+/// decides whether every edge shard on the planet is accepted or refused: it gates `agrees_with`,
+/// so a rounded-up width would make the fetched header contradict the derived geometry. Both fetch
+/// suites otherwise use grids that divide exactly, which never exercises it.
+#[test]
+fn a_short_edge_shard_is_fetched_and_its_narrow_header_agrees() {
+    let now = 1_800_000_000;
+    // 70 x 70 cells in 32 x 32 shards: three columns and three rows, the last of each only 6 wide.
+    let grid = Grid {
+        width: 70,
+        height: 70,
+        shard_width: 32,
+        shard_height: 32,
+        shard_cols: 3,
+        shard_rows: 3,
+        covered_rows: 0..70,
+        ..test_grid()
+    };
+    let edge = ShardId { col: 2, row: 2 };
+    let geometry = grid.shard_geometry(edge).expect("the corner shard");
+    assert_eq!((geometry.width, geometry.height), (6, 6), "the corner shard is short on both axes");
+
+    let bytes = shard_object(&grid, edge, now, true, |_, _| 4);
+    let frames = vec![FrameSpec { offset_min: 0, valid_at: now, objects: vec![(edge, bytes, true)] }];
+    let document = manifest_json(&grid, &frames, now + 3_600, 60);
+    let mut http = FixtureHttp::new()
+        .with_object(MANIFEST_URL, document.into_bytes())
+        .with_object(format!("{MET_ENDPOINT}?lat=47.6800&lon=7.6800"), fixture("met-freiburg-24h.json"));
+    for (shard, object, _) in &frames[0].objects {
+        http = http.with_object(corridor::join(ORIGIN, &grid.shard_key(0, *shard)), object.clone());
+    }
+    // A corridor over the far corner, where only the short shard has anything to say.
+    let corridor = Corridor::around(47_680_000, 7_680_000, 8_000.0);
+    let mut client = WeatherClient::new(ORIGIN).with_met_endpoint(MET_ENDPOINT);
+    let bundle = client.fetch(&mut http, &corridor, now, 1).expect("fetch");
+
+    assert_eq!(bundle.diagnostics.failed_frames, 0, "the narrow header must agree with the derived geometry");
+    assert!(frame_cells(&bundle.bytes, 0).contains(&4), "the short shard's cells reached the bundle");
 }
 
 /// An object the manifest **promised** is an error when it does not arrive — a 404 is never an
@@ -838,23 +1022,52 @@ fn worst_case_crop(corridor: &Bbox, valid_at: i64, seed: u32) -> Crop {
     }
 }
 
-/// **The two-sided normalisation guard (#1254 phase 4a-norm).**
+/// FNV-1a 64 over a byte sequence — the cell-image hash `resample_equivalence` pins.
 ///
-/// Bytes alone are not enough: the rejected `round(1/cos φ)` max-merge alternative also fit a byte
+/// Chosen because it is four lines in any language: the whole point of the row is that Swift
+/// computes the same number over the same cells, and a hash needing a library would have been a
+/// hash one of the two suites quietly skipped.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The shared vector directory, which carries `resample_equivalence` and `rejection_equivalence`.
+fn shared_manifest() -> serde_json::Value {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../specs/vectors/manifest.json");
+    serde_json::from_slice(&std::fs::read(path).expect("specs/vectors/manifest.json")).expect("json")
+}
+
+/// **The two-sided normalisation guard (#1254 phase 4a-norm), driven by the shared vector.**
+///
+/// Bytes alone are not enough, twice over. The rejected `round(1/cos φ)` max-merge also fit a byte
 /// budget, and what killed it was the *mechanism* — 1,428 m cells at Frankfurt and a 2x step across
-/// 48.19°N. So this asserts both halves at once, at every latitude a rider rides: the bundle fits a
-/// 200 KiB budget **and** the cells are square, east-west pitch within 2 % of the 1,113 m
-/// north-south pitch.
+/// 48.19°N — so the guard is two-sided: the bundle fits a 200 KiB budget **and** the cells are
+/// square. And at the raw4 worst case every tile is 128 bytes whatever is in it, so a half-cell
+/// drift in the nearest-neighbour column map would move which cells the rider sees while every
+/// length still matched: hence `frame0_cells_fnv1a64`, over the image the **device's** reader
+/// decodes. Every number here comes out of `specs/vectors/manifest.json`, which is the same file the
+/// Swift sweep reads — so the two clients agreeing is a checked fact rather than a coincidence
+/// two suites happen to share.
 #[test]
-fn the_resampled_corridor_is_square_celled_and_inside_its_byte_budget_at_every_latitude() {
+fn the_resampled_corridor_matches_the_shared_vector_at_every_latitude() {
     const BUDGET: usize = 200 * 1024;
     let hourly = hourly();
-    for lat_deg in [0.0f64, 4.7, 41.9, 48.19, 50.1, 59.9, 64.1, 69.65, 79.0] {
+    let shared = shared_manifest();
+    let rows = shared["wx_manifest_v2"]["resample_equivalence"]["rows"].as_array().expect("rows").clone();
+    assert!(rows.len() >= 9, "the sweep must keep its latitudes");
+    for row in rows {
+        let lat_deg = row["lat_deg"].as_f64().expect("lat_deg");
         let lat_udeg = (lat_deg * 1e6) as i32;
         let corridor = Corridor::for_rider(lat_udeg, 7_900_000);
         let frames: Vec<FrameInput> = (0..9)
             .map(|index| FrameInput {
                 valid_at: hourly.valid_from + index * 900,
+                observed: index == 0,
                 crops: vec![worst_case_crop(&corridor.bounds, hourly.valid_from + index * 900, index as u32)],
                 dry: Vec::new(),
             })
@@ -878,8 +1091,13 @@ fn the_resampled_corridor_is_square_celled_and_inside_its_byte_budget_at_every_l
             bytes.len(),
             bundle::PRODUCER_CAP
         );
-        assert!((162..=163).contains(&report.window_width), "{lat_deg}: {} columns", report.window_width);
-        assert!((162..=163).contains(&report.window_height), "{lat_deg}: {} rows", report.window_height);
+        assert_eq!(u64::from(report.source_columns), row["source_columns"].as_u64().unwrap(), "{lat_deg}: columns");
+        let window = row["window"].as_array().expect("window");
+        assert_eq!(u64::from(report.window_width), window[0].as_u64().unwrap(), "{lat_deg}: output width");
+        assert_eq!(u64::from(report.window_height), window[1].as_u64().unwrap(), "{lat_deg}: output height");
+        assert_eq!(bytes.len() as u64, row["bundle_bytes"].as_u64().unwrap(), "{lat_deg}: bundle length");
+        let hash = format!("{:016x}", fnv1a64(&frame_cells(&bytes, 0)));
+        assert_eq!(hash, row["frame0_cells_fnv1a64"].as_str().unwrap(), "{lat_deg}: the decoded cell image moved");
 
         // The pitch, read back out of the *bundle* rather than out of the builder's intention.
         let source = obc_formats::io::SliceSource(&bytes);
@@ -899,7 +1117,7 @@ fn the_resampled_corridor_is_square_celled_and_inside_its_byte_budget_at_every_l
         // Printed, not just asserted: `cargo test -- --nocapture` is where the epic's re-derived
         // budget table comes from, and a number nobody can read is a number nobody re-checks.
         println!(
-            "{lat_deg:>6.2} N  {:>3} x {:<3} cells (from {:>3} lattice columns)  {:>6} B  E-W {east_west:.0} m / N-S {north_south:.0} m",
+            "{lat_deg:>6.2} N  {:>3} x {:<3} cells (from {:>3} lattice columns)  {:>6} B  E-W {east_west:.0} m / N-S {north_south:.0} m  {hash}",
             frame.width, frame.height, report.source_columns, bytes.len()
         );
     }
@@ -916,6 +1134,7 @@ fn the_resample_is_the_identity_at_the_equator_and_only_ever_decimates() {
         let corridor = Corridor::for_rider(lat_udeg, 0);
         let frames = [FrameInput {
             valid_at: hourly.valid_from,
+            observed: true,
             crops: vec![worst_case_crop(&corridor.bounds, hourly.valid_from, 0)],
             dry: Vec::new(),
         }];
@@ -949,6 +1168,7 @@ fn an_oversized_corridor_shrinks_its_window_before_dropping_a_frame() {
     let frames: Vec<FrameInput> = (0..9)
         .map(|index| FrameInput {
             valid_at: hourly.valid_from + index * 900,
+            observed: index == 0,
             crops: vec![worst_case_crop(&corridor.bounds, hourly.valid_from + index * 900, index as u32)],
             dry: Vec::new(),
         })
@@ -989,40 +1209,14 @@ fn an_hourly_only_bundle_declares_the_corridor_it_answered() {
     assert_eq!(header.frame_count, 0);
 }
 
-/// A frame is an observation only if every patch of it is. A mosaic frame that is radar over the
-/// rider and model fill across the seam is a forecast, because one per-frame flag cannot say both.
-#[test]
-fn a_frame_is_observed_only_when_every_shard_of_it_is() {
-    let hourly = hourly();
-    let corridor = Corridor::for_rider(47_000_000, 7_000_000);
-    let mixed = FrameInput {
-        valid_at: hourly.valid_from,
-        crops: vec![
-            Crop { observed: true, ..worst_case_crop(&corridor.bounds, hourly.valid_from, 0) },
-            Crop { observed: false, ..worst_case_crop(&corridor.bounds, hourly.valid_from, 1) },
-        ],
-        dry: Vec::new(),
-    };
-    let frames = [mixed];
-    let (bytes, _) = bundle::build(
-        1,
-        1,
-        hourly.valid_from,
-        (47_000_000, 7_000_000),
-        &corridor.bounds,
-        Some(Scene { lattice: canonical(), frames: &frames }),
-        &hourly,
-    )
-    .expect("build");
-    let source = obc_formats::io::SliceSource(&bytes);
-    let reader = obc_weather::WeatherReader::open(&source).expect("valid");
-    assert_eq!(
-        reader.frame(0).expect("frame").quality_flags & obc_formats::obcw::QUALITY_KNOWN_MASK,
-        obc_formats::obcw::QUALITY_FORECAST
-    );
-}
-
 // ── helpers ────────────────────────────────────────────────────────────────────────────────
+
+/// One frame's known quality bits, as the **device** reads them.
+fn frame_quality(bytes: &[u8], index: usize) -> u32 {
+    let source = obc_formats::io::SliceSource(bytes);
+    let reader = obc_weather::WeatherReader::open(&source).expect("valid");
+    reader.frame(index).expect("frame").quality_flags & obc_formats::obcw::QUALITY_KNOWN_MASK
+}
 
 /// One frame of a bundle, decoded through the **device's** reader into a flat cell grid.
 fn frame_cells(bytes: &[u8], index: usize) -> Vec<u8> {

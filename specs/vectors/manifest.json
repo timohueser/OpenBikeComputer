@@ -1094,6 +1094,466 @@
         "shards": [],
         "f0_keys": []
       }
-    ]
+    ],
+    "rejection_equivalence": {
+      "why": "bbox_equivalence pins the happy path; this pins the other half, which is where two JSON stacks actually rot apart. Round 1 of #1271's review ran 28 hostile documents through both readers: they disagreed on five and hard-crashed on three. Every case below is a mutation of wx-manifest-v2.json that BOTH clients must answer identically, and none of them may crash, trap or panic \u2014 a manifest is the one document every rider fetches first, from a network.",
+      "apply": "Each case patches a fresh copy of wx-manifest-v2.json. A patch is an ordered list of {op, path, value}: op 'set' assigns value at the JSON Pointer path (creating a top-level key if absent), op 'remove' deletes the member or array element. Paths are RFC 6901 with no escapes needed.",
+      "verdicts": "'rejected' = the parser refuses the whole document (which error it names is each language's business). 'accepted' = the document parses; 'skipped_frames' is how many frame entries the lenient half then refused, and defaults to 0. The document/entry strictness split is stated in both module docs; these cases pin the type coercions underneath it, which is what the docs could not say.",
+      "cases": [
+        {
+          "name": "version-is-a-float",
+          "why": "2.0 is not 2. Swift's JSONDecoder folds an integral Double into Int and used to accept it; serde does not",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/version",
+              "value": 2.0
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "version-is-a-string",
+          "why": "the document's identity is a number",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/version",
+              "value": "2"
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "version-is-a-later-one",
+          "why": "an unknown version is a hard stop; guessing at a format is not an option",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/version",
+              "value": 3
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "previous-generations-is-null",
+          "why": "an explicit null is a statement, and it is not a list. Swift's decodeIfPresent used to read it as absent",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/previous_generations",
+              "value": null
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "previous-generations-is-absent",
+          "why": "\u2026while a genuinely missing key is the first generation ever published",
+          "patch": [
+            {
+              "op": "remove",
+              "path": "/previous_generations"
+            }
+          ],
+          "verdict": "accepted"
+        },
+        {
+          "name": "previous-generations-past-the-retention-cap",
+          "why": "OBCG 10.4 caps the chain at two; a longer one means the client and the sweep disagree about which generations exist",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/previous_generations",
+              "value": [
+                "20260810T1415Z",
+                "20260810T1400Z",
+                "20260810T1345Z"
+              ]
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "previous-generation-is-a-path-segment",
+          "why": "a generation is joined into a URL",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/previous_generations",
+              "value": [
+                "../../etc"
+              ]
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "reference-time-is-missing",
+          "why": "a required member",
+          "patch": [
+            {
+              "op": "remove",
+              "path": "/reference_time"
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "validity-uses-a-space-separator",
+          "why": "RFC 3339 5.6 permits an application to accept a space and chrono does; Swift's ISO-8601 parser does not. The strict reading wins: the baker writes T",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/generated_at",
+              "value": "2026-08-10 14:31:07Z"
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "validity-carries-a-zone-offset",
+          "why": "a legal RFC 3339 instant, and the same instant",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/generated_at",
+              "value": "2026-08-10T16:31:07+02:00"
+            }
+          ],
+          "verdict": "accepted"
+        },
+        {
+          "name": "validity-carries-fractional-seconds",
+          "why": "legal, and truncated to the second by both",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/valid_at",
+              "value": "2026-08-10T14:30:00.500Z"
+            }
+          ],
+          "verdict": "accepted"
+        },
+        {
+          "name": "lattice-is-larger-than-the-planet",
+          "why": "CRASHER. width straight off the wire, unbounded: (width + shard_width - 1) traps in Swift and shard_cols * shard_rows overflows in Rust",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/lattice/width",
+              "value": 4294967295
+            },
+            {
+              "op": "set",
+              "path": "/lattice/shard_width",
+              "value": 2
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "shard-grid-overflows-its-own-count",
+          "why": "CRASHER. shard_cols * shard_rows and the bitmap's (count + 7) / 8 both overflow",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/lattice/shard_cols",
+              "value": 4294967290
+            },
+            {
+              "op": "set",
+              "path": "/lattice/shard_rows",
+              "value": 4294967290
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "shard-grid-does-not-tile-the-lattice",
+          "why": "the client's arithmetic and the baker's would disagree about which object holds a cell",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/lattice/shard_cols",
+              "value": 5
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "covered-rows-past-the-lattice",
+          "why": "not a range of this grid",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/lattice/covered_rows/end",
+              "value": 999999
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "key-prefix-has-an-empty-segment",
+          "why": "the prefix is joined onto the service origin",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/key_prefix",
+              "value": "wx//v2"
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "cadence-disagrees-with-the-frame-list",
+          "why": "a mis-derived cycle, caught cheaply",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/cadence/frames",
+              "value": 8
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "stale-after-is-before-the-next-generation",
+          "why": "the generation would expire before its own replacement is due",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/freshness/stale_after",
+              "value": "2026-08-10T14:40:00Z"
+            }
+          ],
+          "verdict": "rejected"
+        },
+        {
+          "name": "manifest-max-age-is-negative",
+          "why": "clamped to zero rather than refused: it only makes the client refetch sooner",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/freshness/manifest_max_age_s",
+              "value": -5
+            }
+          ],
+          "verdict": "accepted"
+        },
+        {
+          "name": "presence-is-not-hex-at-all",
+          "why": "CRASHER. 'a\u00e4b' is four bytes, so a byte-sliced hex parse cuts a character in half and Rust panicked",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/present",
+              "value": "a\u00e4b"
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "presence-has-an-odd-digit-count",
+          "why": "half a byte is not a byte",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/present",
+              "value": "f3fff"
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "presence-and-the-shard-list-disagree",
+          "why": "two spellings of one fact. Refused rather than reconciled: either direction invents whether an object exists",
+          "patch": [
+            {
+              "op": "remove",
+              "path": "/frames/0/shards/0"
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "crc-carries-a-sign",
+          "why": "from_str_radix and Swift's hex parse both used to accept '+'. A CRC is hex digits",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/shards/0/object_crc32",
+              "value": "0x+1A00000"
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "crc-prefix-is-uppercase",
+          "why": "the document's own spelling is 0x; 0X is a different string and this reader does not normalise it",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/shards/0/object_crc32",
+              "value": "0X51A00000"
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "shard-claims-zero-bytes",
+          "why": "an object that exists has a length",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/shards/0/bytes",
+              "value": 0
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "shard-is-off-the-grid",
+          "why": "a shard the bitmap has no bit for",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/frames/0/shards/0/col",
+              "value": 99
+            }
+          ],
+          "verdict": "accepted",
+          "skipped_frames": 1
+        },
+        {
+          "name": "an-unknown-top-level-field",
+          "why": "additive fields are how the baker ships; refusing them would make every deploy an outage",
+          "patch": [
+            {
+              "op": "set",
+              "path": "/future_field",
+              "value": "whatever the baker adds next"
+            }
+          ],
+          "verdict": "accepted"
+        },
+        {
+          "name": "attribution-is-absent",
+          "why": "tolerated, because a missing credit is not a reason to lose the weather",
+          "patch": [
+            {
+              "op": "remove",
+              "path": "/attribution"
+            }
+          ],
+          "verdict": "accepted"
+        }
+      ]
+    },
+    "resample_equivalence": {
+      "why": "WXR5 #1244's uniform east-west resample, pinned across the two clients by its OUTPUT rather than by its arithmetic. Byte counts alone are not enough: at the raw4 worst case every tile is 128 bytes whatever is in it, so a half-cell drift in the nearest-neighbour column map moves which cells a rider sees while every length and every budget still passes. So each row pins the decoded cell image too.",
+      "scenario": "For each latitude: corridor = a 90,000 m disc around (lat, 7.9 E) built by the shared Bbox::around/aroundCoordinate rule; lattice = the canonical one in this fixture's `lattice` block; nine frames at valid_from + i*900 for i in 0..8; each frame is one crop covering the whole lattice-aligned corridor window whose cell (row-major, row 0 = south) at flat index n is ((n * 7 + i) % 13), i.e. deliberately incompressible so every tile encodes raw4; frame i is observed iff i == 0; the hourly half is tests/fixtures/met-freiburg-24h.json decoded at offset 0.",
+      "cells_hash": "FNV-1a 64 over frame 0's decoded cells as read back through the device's own OBCW reader, row-major, row 0 = south, one byte per cell: h = 0xcbf29ce484222325; for each byte b: h ^= b; h = (h * 0x100000001b3) mod 2^64. Written as 16 lowercase hex digits.",
+      "rows": [
+        {
+          "lat_deg": 0.0,
+          "source_columns": 162,
+          "window": [
+            162,
+            162
+          ],
+          "bundle_bytes": 138028,
+          "frame0_cells_fnv1a64": "0b67e343b813e9f4"
+        },
+        {
+          "lat_deg": 4.7,
+          "source_columns": 164,
+          "window": [
+            163,
+            162
+          ],
+          "bundle_bytes": 139486,
+          "frame0_cells_fnv1a64": "9196126518fcf9fa"
+        },
+        {
+          "lat_deg": 41.9,
+          "source_columns": 218,
+          "window": [
+            162,
+            162
+          ],
+          "bundle_bytes": 138028,
+          "frame0_cells_fnv1a64": "f980ef735135b9fc"
+        },
+        {
+          "lat_deg": 48.19,
+          "source_columns": 244,
+          "window": [
+            163,
+            162
+          ],
+          "bundle_bytes": 139441,
+          "frame0_cells_fnv1a64": "151b294053d06bf9"
+        },
+        {
+          "lat_deg": 50.1,
+          "source_columns": 254,
+          "window": [
+            163,
+            162
+          ],
+          "bundle_bytes": 139486,
+          "frame0_cells_fnv1a64": "8bd994286267423e"
+        },
+        {
+          "lat_deg": 59.9,
+          "source_columns": 324,
+          "window": [
+            162,
+            162
+          ],
+          "bundle_bytes": 138028,
+          "frame0_cells_fnv1a64": "2dc891460fc5456e"
+        },
+        {
+          "lat_deg": 64.1,
+          "source_columns": 372,
+          "window": [
+            162,
+            162
+          ],
+          "bundle_bytes": 137983,
+          "frame0_cells_fnv1a64": "3e32448e20a2773a"
+        },
+        {
+          "lat_deg": 69.65,
+          "source_columns": 466,
+          "window": [
+            162,
+            162
+          ],
+          "bundle_bytes": 138028,
+          "frame0_cells_fnv1a64": "337260025ffcdfdb"
+        },
+        {
+          "lat_deg": 79.0,
+          "source_columns": 848,
+          "window": [
+            162,
+            162
+          ],
+          "bundle_bytes": 138028,
+          "frame0_cells_fnv1a64": "ec4e0dd6068fb26b"
+        }
+      ],
+      "guard": "Both suites also assert the two-sided guard the mechanism was chosen for: bundle_bytes <= 204800, and the output cells square to within 2 % (east-west pitch against the lattice's own 1,113 m north-south pitch)."
+    }
   }
 }
