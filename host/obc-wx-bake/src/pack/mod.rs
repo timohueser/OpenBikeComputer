@@ -232,7 +232,7 @@ impl Member {
 /// One published object of the baked `service/` tree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceObject {
-    /// The object's key inside the service tree, e.g. `wx/v1/us/20200810T1852Z/f0.obcg`.
+    /// The object's key inside the service tree, e.g. `wx/v2/20200810T1845Z/f0/s0-0.obcg`.
     pub key: String,
     pub bytes: u64,
     pub sha256: String,
@@ -540,7 +540,7 @@ mod tests {
                 licence: "NOAA".into(),
                 attribution_url: "https://noaa.invalid".into(),
             }],
-            manifest_key: "wx/v1/manifest.json".into(),
+            manifest_key: "wx/v2/manifest.json".into(),
             service: vec![],
             truth_frames: vec![],
         }

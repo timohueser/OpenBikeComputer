@@ -3,7 +3,7 @@ import OBCDomain
 
 /// A geographic window in integer microdegrees — the one coordinate currency of the weather path.
 ///
-/// Everything downstream of this type (product bbox tests, grid cell lookup, the OBCW header) is
+/// Everything downstream of this type (shard-set derivation, grid cell lookup, the OBCW header) is
 /// exact integer arithmetic in microdegrees, because both frozen contracts are: the manifest states
 /// bboxes in microdegrees and OBCG/OBCW store `int32` microdegree edges plus microdegree strides.
 /// Doing the corridor maths in `Double` degrees and rounding at the end would put the crop window a
