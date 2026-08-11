@@ -1127,30 +1127,39 @@ fn a_cycle_older_than_the_published_manifest_refuses_to_publish() {
 /// object is `head`ed at its exact length before the swap; until round 1 the one object that both
 /// wedges the next cycle when unreadable *and* authorises the whole sweep was the only one nobody
 /// checked, on a bucket with a recorded history of tearing bodies.
+///
+/// The tear lands on the **fourth** cycle deliberately (#1274 r2). Tearing the first one tests only
+/// the error string: a bootstrap's delete set is empty, so the sweep would have deleted nothing
+/// anyway and the `panic!` below could never fire. The fourth cycle is the first with a generation
+/// to retire, so it is the first where "the readback stopped the sweep" is a claim with teeth — and
+/// the first where all four generations surviving on disk means something.
 #[test]
 fn a_manifest_that_does_not_read_back_stops_the_sweep() {
     use obc_wx_bake::publish::{Deleted, ObjectStore, PlannedObject};
 
-    /// A directory store that corrupts the manifest the instant it is written — the shape of a
-    /// torn body, applied to the one key that matters.
-    struct TearsTheManifest(DirStore);
+    /// A directory store that can be told to corrupt the manifest the instant it is written — the
+    /// shape of a torn body, applied to the one key that matters.
+    struct TearsTheManifest {
+        inner: DirStore,
+        tear: bool,
+    }
     impl ObjectStore for TearsTheManifest {
         fn describe(&self) -> String {
-            self.0.describe()
+            self.inner.describe()
         }
         fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
-            self.0.put(object)?;
-            if object.key == manifest_v2::MANIFEST_KEY {
+            self.inner.put(object)?;
+            if self.tear && object.key == manifest_v2::MANIFEST_KEY {
                 let half = object.bytes.len() / 2;
-                self.0.put(&PlannedObject { bytes: object.bytes[..half].to_vec(), ..object.clone() })?;
+                self.inner.put(&PlannedObject { bytes: object.bytes[..half].to_vec(), ..object.clone() })?;
             }
             Ok(())
         }
         fn head(&mut self, key: &str) -> Result<Option<u64>, String> {
-            self.0.head(key)
+            self.inner.head(key)
         }
         fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
-            self.0.get(key)
+            self.inner.get(key)
         }
         fn delete(&mut self, _key: &str) -> Result<Deleted, String> {
             panic!("the sweep must not run against a manifest that did not read back");
@@ -1164,12 +1173,40 @@ fn a_manifest_that_does_not_read_back_stops_the_sweep() {
     let dir = std::env::temp_dir().join(format!("obc-wx-torn-put-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut store = TearsTheManifest(DirStore::new(&dir));
+    let mut store = TearsTheManifest { inner: DirStore::new(&dir), tear: false };
 
+    // Three clean cycles fill the chain up. Nothing has fallen off it yet, so `delete` is never
+    // reached and the tripwire above stays quiet on its own merits rather than on the tear's.
+    for step in 0..3 {
+        let now = ts("2026-08-09T14:30:00Z") + step * 900;
+        let report = run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, now, 2, false)
+            .expect("a clean cycle publishes");
+        assert!(report.swept.generations.is_empty(), "nothing is off the chain until the fourth cycle");
+    }
+
+    // The fourth would retire 14:30 — if it ever got that far.
+    store.tear = true;
     let error =
-        run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, ts("2026-08-09T14:30:00Z"), 2, false)
+        run_cycle(&lattice, &adapters, &mut european_upstream(), &mut store, ts("2026-08-09T15:15:00Z"), 2, false)
             .expect_err("a manifest that does not read back fails the cycle");
     assert!(error.contains("refusing to sweep"), "{error}");
+
+    // …and the generation it was about to retire is still there, along with the other three.
+    let generations: BTreeSet<String> = published_tree(&dir)
+        .keys()
+        .filter(|key| key.ends_with(".obcg"))
+        .filter_map(|key| key.split('/').nth(2).map(str::to_string))
+        .collect();
+    assert_eq!(
+        generations,
+        BTreeSet::from([
+            "20260809T1430Z".to_string(),
+            "20260809T1445Z".to_string(),
+            "20260809T1500Z".to_string(),
+            "20260809T1515Z".to_string(),
+        ]),
+        "a failed readback must leave every generation standing, including the one due for retirement"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
