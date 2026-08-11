@@ -411,8 +411,17 @@ pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
         "  coverage-simplified {} fill polygon(s) into {} across {} component(s), {} face(s)",
         c.inputs, c.outputs, c.components, c.faces
     );
+    if c.dissolved < c.inputs || c.vertices_arranged < c.vertices_in {
+        line.push_str(&format!(
+            " (pre-dissolved to {} polygon(s), {} vertices to {})",
+            c.dissolved, c.vertices_in, c.vertices_arranged
+        ));
+    }
     if c.eliminated > 0 {
         line.push_str(&format!(" ({} small face(s) absorbed into a neighbour)", c.eliminated));
+    }
+    if c.healed > 0 {
+        line.push_str(&format!(" ({} micro-gap(s) healed)", c.healed));
     }
     if c.dropped_faces > 0 {
         line.push_str(&format!(" ({} uncovered face(s) dropped)", c.dropped_faces));
