@@ -17,15 +17,21 @@
 //!
 //! | | derecho 2020-08-10 | airmass 2023-06-24 |
 //! | --- | --- | --- |
-//! | mean flow-field speed (printed below) | **29.5 m/s** | **10.4 m/s** |
+//! | mean flow speed under rain (printed below) | 25.8 m/s | 20.4 m/s — *not* the discriminator |
 //! | wet components in the crop | 62 | **235** |
 //! | mean component area | 1331 cells | **79 cells** (~10 km across) |
-//! | largest component | 79,149 cells — one system | 8,690 cells |
-//! | wet fraction over the ladder | 36.6 % falling to 18.3 % (it leaves) | 8.3 % rising to 14.7 % (it grows in place) |
+//! | largest component | 79,149 cells — **one system** | 8,690 cells |
+//! | wet fraction over the ladder | 36.6 % falling to 18.3 % (**it leaves**) | 8.3 % rising to 14.7 % (**it grows in place**) |
+//! | persistence CSI >=0.25 at +60 | 0.343 | **0.192** |
 //!
-//! The last row is the point. The derecho's field leaves the window; the airmass field *develops*
-//! inside it, and development is exactly what an advection engine with no decay or initiation model
-//! cannot represent. If a lead cap is going to be honest anywhere it has to be honest here.
+//! The last two rows are the point, and the first row is a warning. **Speed is not what makes a case
+//! hard** — an earlier draft of this comment claimed 29.5 against 10.4 m/s, from a mean computed by
+//! feeding node indices to a sampler that takes cell positions, and told a tidy story about weak
+//! flow that the corrected number does not support. What actually separates the two events is that
+//! the derecho's field stays itself and leaves the window, while the airmass field is continuously
+//! rebuilt out of cells that did not exist ten minutes earlier: persistence decays twice as fast on
+//! it, and development is exactly what an advection engine with no decay or initiation model cannot
+//! represent. If a lead cap is going to be honest anywhere it has to be honest here.
 //!
 //! ## The anchor rule, and the +105/+120 question #1248 asks
 //!
@@ -69,6 +75,10 @@ use obc_wx_bake::timefmt;
 /// Every one is an exact band edge in [`precip4::quantize_rate_mm_per_hour`], so none of them
 /// splits a band.
 const THRESHOLDS: [(u8, &str); 3] = [(3, ">=0.25"), (5, ">=1.0"), (8, ">=6.0")];
+
+/// Both packs are a regional crop of CONUS, so the advection never wraps in longitude. (`advect`
+/// grew the flag for the global model domains, where the east and west edges are neighbours.)
+const WRAP_X: bool = false;
 
 const EVENTS: [&str; 2] = ["us-derecho-2020-08-10", "us-airmass-2023-06-24"];
 
@@ -272,17 +282,41 @@ impl Case {
             .unwrap_or_else(|| panic!("{}: the model tree is empty", self.id))
     }
 
+    /// Mean flow speed over the nodes that sit under **rain**, in m/s.
+    ///
+    /// Two traps here, both worth naming because the first one produced a wrong number that reached
+    /// three documents before it was caught.
+    ///
+    /// * [`MotionField::sample`] takes a **continuous cell position**, not a node index. Feeding it
+    ///   `0..cols` samples the leftmost `cols / stride` node columns — a sliver of the west edge —
+    ///   and reports whatever the weather is doing there as the storm's speed. Node `(i, j)` sits at
+    ///   cell `(i * stride + stride / 2, j * stride + stride / 2)`.
+    /// * averaging over *every* node averages the storm together with the dry ground around it,
+    ///   where the flow is zero by construction ([`flow::MAX_FILL_NODES`] leaves distant nodes
+    ///   still). That is a measure of how much of the window is raining, not of how fast the rain is
+    ///   moving. Only nodes with rain under them count.
     fn mean_speed_m_s(&self, motion: &MotionField) -> f64 {
-        let mut sum = 0.0;
-        let mut nodes = 0u64;
+        let stride = motion.stride;
+        let (mut sum, mut counted) = (0.0f64, 0u64);
         for row in 0..motion.rows {
             for col in 0..motion.cols {
-                let (dx, dy) = motion.sample(col as f32, row as f32);
+                let (x, y) = (col * stride + stride / 2, row * stride + stride / 2);
+                if x >= self.width || y >= self.height {
+                    continue;
+                }
+                let code = self.anchor.cells[(y * self.width + x) as usize];
+                if code == precip4::INTENSITY_NODATA || code < 3 {
+                    continue;
+                }
+                let (dx, dy) = motion.sample(x as f32, y as f32);
                 sum += f64::from(dx).hypot(f64::from(dy)) * f64::from(self.cell_size_m);
-                nodes += 1;
+                counted += 1;
             }
         }
-        sum / nodes.max(1) as f64
+        if counted == 0 {
+            return 0.0;
+        }
+        sum / counted as f64
     }
 }
 
@@ -367,7 +401,7 @@ fn correlation(a: &[f32], b: &[f32]) -> f64 {
 /// not the translation the advection step already handles.
 fn band_persistence(case: &Case, motion: &MotionField) -> [f64; 3] {
     let dt = (case.anchor.valid_at - case.earlier.valid_at) as f64;
-    let moved = flow::advect(&case.earlier.cells, case.width, case.height, motion, dt);
+    let moved = flow::advect(&case.earlier.cells, case.width, case.height, motion, dt, WRAP_X);
     let before = cascade(&moved, case.width, case.height);
     let after = cascade(&case.anchor.cells, case.width, case.height);
     let mut rho = [0.0f64; 3];
@@ -382,7 +416,7 @@ fn band_persistence(case: &Case, motion: &MotionField) -> [f64; 3] {
 /// The damping is a **filter on one input**: it removes amplitude at scales that have measurably
 /// stopped persisting. Nothing is mixed in from a second field.
 fn decayed_nowcast(case: &Case, motion: &MotionField, lead_s: f64, rho: [f64; 3]) -> Vec<u8> {
-    let advected = flow::advect(&case.anchor.cells, case.width, case.height, motion, lead_s);
+    let advected = flow::advect(&case.anchor.cells, case.width, case.height, motion, lead_s, WRAP_X);
     let dt = (case.anchor.valid_at - case.earlier.valid_at) as f64;
     let steps = lead_s / dt;
     let bands = cascade(&advected, case.width, case.height);
@@ -479,7 +513,7 @@ fn the_skill_table_for_both_events_at_every_lead_and_three_thresholds() {
             let lead_s = target.valid_at - case.anchor.valid_at;
             let lead_min = lead_s / 60;
             let advect_started = std::time::Instant::now();
-            let nowcast = flow::advect(&case.anchor.cells, case.width, case.height, &motion, lead_s as f64);
+            let nowcast = flow::advect(&case.anchor.cells, case.width, case.height, &motion, lead_s as f64, WRAP_X);
             let advect_cost = advect_started.elapsed();
             let cascade_started = std::time::Instant::now();
             let decayed = decayed_nowcast(&case, &motion, lead_s as f64, rho);
@@ -594,7 +628,7 @@ fn what_a_blend_would_invent_and_what_a_hard_switch_shows() {
         eprintln!(" lead   invented-wet%   seam wet/dry disagreement");
         for target in &case.ladder {
             let lead_s = target.valid_at - case.anchor.valid_at;
-            let nowcast = flow::advect(&case.anchor.cells, case.width, case.height, &motion, lead_s as f64);
+            let nowcast = flow::advect(&case.anchor.cells, case.width, case.height, &motion, lead_s as f64, WRAP_X);
             let model = &case.model_at(target.valid_at).cells;
             // A textbook lead-weighted ramp: all radar at the anchor, all model at +2 h.
             let weight = (lead_s as f64 / 7200.0).clamp(0.0, 1.0) as f32;

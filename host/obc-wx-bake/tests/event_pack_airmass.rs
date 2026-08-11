@@ -70,6 +70,29 @@ fn the_pack_carries_its_motion_history_and_publishes_a_nowcast_layer() {
     assert!(summary.contains("advected forward frames"), "the cycle published no nowcast layer:\n{summary}");
 }
 
+/// Re-derive `service/`, `truth/` and `event.json` from the checked-in `upstream/`, offline.
+///
+/// Ignored, like the derecho pack's twin: it **rewrites the fixture**, so it runs when the baker
+/// deliberately changes and never in CI, where `the_pack_rebakes_byte_identically` is the check.
+///
+/// This pack needs it more often than the derecho does, and the reason is the interesting half:
+/// the derecho publishes no nowcast layer (it has no motion baseline), so a change inside
+/// `crate::flow` cannot move its bytes. This pack's f+15 … f+60 **are** the advected layer, so it
+/// is the only fixture in the repository that notices. Raising `flow::MAX_FILL_NODES` from 6 to 9
+/// is exactly such a change, and this is where it showed up.
+#[test]
+#[ignore = "rewrites the checked-in pack; run deliberately after a baker change"]
+fn regenerate() {
+    let root = pack_root();
+    let mut event = event();
+    rebake::regenerate(&root, &mut event).expect("the pack re-derives from its own upstream");
+    eprintln!(
+        "{EVENT_ID}: {} service objects and {} truth frames rewritten",
+        event.service.len(),
+        event.truth_frames.len()
+    );
+}
+
 #[test]
 fn every_stored_byte_matches_its_recorded_digest() {
     let event = event();
