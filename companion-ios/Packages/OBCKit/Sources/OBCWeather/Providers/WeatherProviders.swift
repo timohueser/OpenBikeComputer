@@ -18,6 +18,26 @@ public protocol PrecipitationGridProvider: Sendable {
     func precipitation(
         for corridor: WeatherCorridor, now: Date
     ) async throws -> PrecipitationOutcome
+
+    /// The tiny mutable-manifest identity, when this provider has one. `nil` means the provider
+    /// cannot prove that a held bundle is unchanged, so callers conservatively perform a full build.
+    func currentRevision(now: Date) async throws -> PrecipitationRevision?
+}
+
+public extension PrecipitationGridProvider {
+    func currentRevision(now _: Date) async throws -> PrecipitationRevision? { nil }
+}
+
+public struct PrecipitationRevision: Equatable, Sendable {
+    public var generation: String
+    public var generatedAt: Date
+    public var nextGenerationExpectedAt: Date
+
+    public init(generation: String, generatedAt: Date, nextGenerationExpectedAt: Date) {
+        self.generation = generation
+        self.generatedAt = generatedAt
+        self.nextGenerationExpectedAt = nextGenerationExpectedAt
+    }
 }
 
 /// A precipitation lookup either produced frames or produced a reason. Both are results — a missing

@@ -23,10 +23,17 @@ struct WeatherAssemblerTests {
         manifest: ManifestV2Builder, capture: WeatherFixtures.METCapture,
         metStatus: Int? = nil, metOffline: Bool = false
     ) throws -> (WeatherAssembler, StubWeatherHTTPClient, StubWeatherHTTPClient) {
+        let lastModified = try #require(RFC3339.parse(capture.provenance.last_modified))
+        let expires = try #require(RFC3339.parse(capture.provenance.expires))
         let serviceHTTP = StubWeatherHTTPClient(objects: try manifest.stubObjects())
         let metHTTP = StubWeatherHTTPClient(objects: [
             "/weatherapi/locationforecast/2.0/complete": StubWeatherHTTPClient.Object(
-                bytes: capture.locationforecastJSON(), status: metStatus, offline: metOffline),
+                bytes: capture.locationforecastJSON(),
+                headers: [
+                    "Last-Modified": HTTPDate.string(from: lastModified),
+                    "Expires": HTTPDate.string(from: expires),
+                ],
+                status: metStatus, offline: metOffline),
         ])
         let assembler = WeatherAssembler(
             hourlyProvider: METLocationforecastAdapter(client: metHTTP),
@@ -145,5 +152,63 @@ struct WeatherAssemblerTests {
         }
         #expect(service.requests.isEmpty)
         #expect(met.requests.isEmpty)
+    }
+
+    @Test
+    func unchangedProviderRevisionsAvoidAllShardReads() async throws {
+        let capture = try WeatherFixtures.metCapture("met-locationforecast-oslo-24h.json")
+        let (assembler, service, met) = try Self.assembler(
+            manifest: ManifestV2Builder(), capture: capture)
+
+        let outcome = try await assembler.assembleIfChanged(
+            request: Self.request(capture: capture), generation: 4,
+            heldBundleGeneratedAt: Self.now, allowHeldBundleReuse: true, now: Self.now)
+
+        guard case .unchanged = outcome else {
+            Issue.record("expected the conditional probes to prove the held bundle current")
+            return
+        }
+        #expect(service.requests.count == 1, "only the small manifest is read")
+        #expect(service.requests.first?.byteRange == nil)
+        #expect(met.requests.count == 1, "the hourly endpoint is conditionally cached by its adapter")
+    }
+
+    @Test
+    func anOlderHeldBundleFallsThroughToTheFullCorridorBuild() async throws {
+        let capture = try WeatherFixtures.metCapture("met-locationforecast-oslo-24h.json")
+        let (assembler, service, _) = try Self.assembler(
+            manifest: ManifestV2Builder(), capture: capture)
+
+        let outcome = try await assembler.assembleIfChanged(
+            request: Self.request(capture: capture), generation: 4,
+            heldBundleGeneratedAt: Date(timeIntervalSince1970: 1),
+            allowHeldBundleReuse: true, now: Self.now)
+
+        guard case let .bundle(built) = outcome else {
+            Issue.record("expected a newer provider revision to rebuild")
+            return
+        }
+        #expect(!built.bundle.rainFrames.isEmpty)
+        #expect(service.requests.contains { $0.byteRange != nil }, "new rain data reads shards")
+    }
+
+    @Test
+    func aFailedRevisionProbeStillShipsHourlyOnly() async throws {
+        let capture = try WeatherFixtures.metCapture("met-locationforecast-oslo-24h.json")
+        let (assembler, service, _) = try Self.assembler(
+            manifest: ManifestV2Builder(), capture: capture)
+        service.mutate(OBCWeatherServiceClient.manifestKey) { $0.offline = true }
+
+        let outcome = try await assembler.assembleIfChanged(
+            request: Self.request(capture: capture), generation: 4,
+            heldBundleGeneratedAt: Self.now, allowHeldBundleReuse: true, now: Self.now)
+
+        guard case let .bundle(built) = outcome else {
+            Issue.record("a rain-service outage must not suppress valid hourly weather")
+            return
+        }
+        #expect(built.bundle.hourly.count == 24)
+        #expect(built.bundle.rainFrames.isEmpty)
+        #expect(built.state.noRainMapReason == .serviceUnavailable)
     }
 }

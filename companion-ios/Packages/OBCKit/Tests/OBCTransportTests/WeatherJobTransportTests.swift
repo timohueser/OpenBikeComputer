@@ -207,6 +207,7 @@ struct WeatherWatchPolicyTests {
         #expect(!disconnects)
         #expect(policy.phase == .scanning, "the watch keeps the radio after a foreground suspend")
         #expect(policy.scanServices == [.weatherRequest])
+        #expect(policy.hasIntent, "the disconnect delegate uses this level to restart the actual scan")
     }
 
     @Test func aFinishedReadFallsBackToTheWatchScanNotIdle() {
