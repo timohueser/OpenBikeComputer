@@ -21,7 +21,7 @@ spike is a production baker, an object format, or an iOS provider adapter.
 | CONUS, tier 1 | observed two-minute precipitation rate | NOAA MRMS `PrecipRate_00.00` | **GO** | HRRR, then GFS |
 | CONUS, tier 2 | forecast precipitation rate at 15-minute steps through +2 h | NOAA HRRR subhourly `PRATE` | **GO** | GFS |
 | Europe, tier 2 | hourly forecast accumulation | DWD ICON-EU regular-lat-lon `TOT_PREC` | **GO** | GFS |
-| Worldwide, tier 3 | hourly forecast accumulation/floor | NOAA GFS 0.25-degree `APCP` | **GO** | keep the last complete GFS run; otherwise publish unavailable |
+| Worldwide, tier 3 | hourly point-valid forecast rate/floor | NOAA GFS 0.25-degree `PRATE` | **GO** | keep the last complete GFS run; otherwise publish unavailable |
 | Worldwide observation candidate | half-hourly precipitation estimate | NASA GPM IMERG Early V07B | **NO-GO for v1** | GFS-only; do not fabricate observation frames |
 | Phone-only hourly point forecast | temperature, precipitation, condition, wind | MET Norway Locationforecast 2.0 `complete` | **GO with optional gust/probability** | retain timestamped cache or show unavailable |
 
@@ -279,8 +279,9 @@ https://opendata.dwd.de/weather/nwp/icon-eu/grib/CC/tot_prec/
 
 Nominal cycles are 00, 06, 12, and 18 UTC. Select the newest run only after all
 lead files required by the publication window exist and validate. Retaining
-f000..f011 safely covers the first hours while the next six-hourly cycle is
-still being published; the captured set totaled 4,134,603 compressed bytes.
+the f000 baseline and f001..f012 safely covers the first hours while the next
+six-hourly cycle is still being published; the captured set totaled 4,582,350
+compressed bytes.
 
 Pinned contract:
 
@@ -293,6 +294,11 @@ Pinned contract:
 - CCSDS/AEC representation template 5.42;
 - bzip2 outer compression;
 - de-accumulate only consecutive leads from the same run and identical grid.
+
+Each de-accumulated field is the mean over `(N-1)h..Nh`, not an instantaneous
+sample at `Nh`. Stamp it at that interval's midpoint (`run + N hours - 30
+minutes`) so interpolation and source selection do not move an hourly mean 30
+minutes late.
 
 For PDT 4.8 the generic forecast-time field is only the accumulation start.
 The validator therefore parses the template's explicit interval-end timestamp,
@@ -346,10 +352,11 @@ the 149,527 cells where both products saw an echo in the 2026-08-10T00:00 pair,
 the median CIRRUS/NIMBUS rate ratio is **2.2**, a full intensity band. The
 reflectivity path therefore divides by that measured ratio — equivalently
 `a_eff = 200 x 2.2^1.6 = 706.2`, or -5.48 dBZ — as an **empirical calibration,
-not physics**. Settling it properly means splitting the ratio by regime
-(stratiform vs convective at 30 dBZ) over a full day and scoring both products
-against gauge-adjusted `dwd-rv`; that measurement is not done, and until it is,
-the scalar is one number from one frame pair.
+not physics**. A follow-up 24-frame full-day pass found a pooled median of 1.985
+with a broad, reflectivity-dependent spread; the independent DWD-RV comparison
+weakly preferred `/2.2` to `/2.0`. The method and source-priority/quality verdict
+are recorded in [the OPERA evidence note](WX-opera-evidence-20260810.md). This
+supports keeping the simple scalar, not treating it as a solved physical relation.
 
 Pinned contract, verified against the live objects:
 
@@ -393,50 +400,36 @@ Cycles are nominally 00, 06, 12, and 18 UTC. A cycle is selectable only after
 all forecast hours needed for one publication are present and validate. Never
 choose a run from wall-clock arithmetic alone.
 
-Select the exact consecutive index span for the currently duplicated
-`APCP:surface:0-N hour acc fcst` entries. The captured index advertised two
-indistinguishable records. Fetch both complete messages and require their
-decoded fields to be identical; do not pick an undocumented first or second
-occurrence.
+Select the unique exact index entry `PRATE:surface:N hour fcst:`. The trailing
+colon is part of the selector: it distinguishes the instantaneous point-valid
+rate from the adjacent `0-N hour ave fcst` record. Fetch only that complete
+GRIB message.
 
 Pinned contract:
 
-- discipline/category/parameter `0/1/8` (`APCP` at surface);
+- discipline/category/parameter `0/1/7` (`PRATE` at surface);
 - global 0.25-degree regular latitude/longitude grid, 1,038,240 points;
 - exact 1,440 x 721 Section-3 geometry from `90,0` to `-90,359.75`,
   `Di=Dj=0.25` degrees and scanning mode `0x00`, including the captured Earth
   shape/flags;
-- product template 4.8;
+- product template 4.0;
 - complex packing representation template 5.3;
-- cumulative kg/m2, numerically mm of liquid precipitation;
+- instantaneous kg/m2/s, numerically mm/s of liquid precipitation;
 - finite, nonnegative fields.
 
-Hourly de-accumulation is run-scoped:
+The validator requires the GRIB reference time to equal the selected run and
+both byte-derived valid-time endpoints to equal `run + N hours`; the `.idx`
+label is not trusted as temporal identity. Convert the decoded rate to mm/h by
+multiplying by 3,600 before quantization. There is deliberately no
+de-accumulation: subtracting independently packed cumulative fields created
+avoidable noise and assigned interval means to the wrong instant.
 
-```text
-hour 1 of run R = cumulative(R, f001) - zero
-hour N of run R = cumulative(R, fNNN) - cumulative(R, f(N-1))
-```
-
-Both operands must have the same reference time and grid, and forecast hours
-must be consecutive. The validator parses the PDT 4.8 interval end/range and
-requires the caller's selected forecast hour to equal the byte-derived lead;
-the `.idx` label is not trusted as temporal identity. At a run transition,
-validate and publish the new run as
-a complete unit; never subtract the prior run's last field. A decrease is a
-contract failure, not dry weather. The Rust tests pin the zero baseline and
-reject cross-run subtraction.
-
-The captured f003 object was 539,185,590 bytes; its exact two-message APCP span
-was 640,466 bytes and appeared at 09:32:31 for the 06Z run. That value is one
-fixture, not an upper bound: the same run's f004/f005/f006 spans were 688,950,
-723,372, and 753,828 bytes. All 24 selected spans totaled 12,299,954 bytes,
-with f006 as the high-water span. The live reproduction recomputes and records
-the total/high-water hour for every selected run, fails above 15,500,000 bytes,
-and reports 3,200,046 bytes of headroom for this capture. Four daily cycles are
-therefore budgeted at no more than 62.0 MB before small index requests.
-Decoding the captured f003 duplicates and proving equality took 0.04 s and
-25.8 MB peak RSS.
+The immutable 2026-08-09 12Z f001..f016 capture totals 9,950,167 bytes. Its
+largest selected message is f001 at 685,198 bytes. The live adapter recomputes
+the total for every selected run and fails above 15,500,000 bytes. Four daily
+cycles are therefore budgeted at no more than 62.0 MB before small index
+requests. The exact upstream ranges and hashes are pinned in the fixture
+record.
 
 ## IMERG Early: explicit v1 NO-GO
 
@@ -528,9 +521,9 @@ The measured source-ingress budget is approximately:
 | --- | ---: | ---: | ---: |
 | DWD RV full tar | 2,017,280 | 288 | 581 MB |
 | MRMS full object | 456,264 | 720 | 329 MB |
-| ICON-EU f000..f011 | 4,134,603 | 4 | 16.5 MB |
+| ICON-EU f000..f012 | 4,582,350 | 4 | 18.3 MB |
 | HRRR eight byte ranges | 330,351 | 24 | 7.9 MB |
-| GFS first 24 APCP spans | 12,299,954 captured; <=15,500,000 enforced | 4 | <=62.0 MB |
+| GFS first 16 PRATE messages | 9,950,167 captured; <=15,500,000 enforced | 4 | <=62.0 MB |
 
 The total is about 1.0 GB/day of upstream ingress before HTTP metadata. This is
 small enough for a modest always-on host, but MRMS's 161 MB spike RSS requires
@@ -617,9 +610,8 @@ Checked-in tests cover:
   5.3 spatial differencing;
 - ICON-EU CCSDS decoding, exact geometry/interval cadence, and the tightly
   bounded packing-roundoff rule;
-- GFS exact geometry/interval lead, representation 5.3, duplicate-record
-  equality, and run-boundary-safe cumulative
-  de-accumulation;
+- GFS exact geometry/point-valid lead, representation 5.3, and PRATE's
+  kg m-2 s-1 to mm/h conversion;
 - deterministic fixture cycles per product: byte-stable published trees,
   corrupt upstream publishing nothing, unchanged upstream moving no bytes, and
   every published cell equal to the quantized nearest-neighbour source cell.

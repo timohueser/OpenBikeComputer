@@ -57,8 +57,42 @@ const COMPRESSION_DEFLATE: u32 = 8;
 const COMPRESSION_DEFLATE_ADOBE: u32 = 32_946;
 const SAMPLE_FORMAT_IEEE_FLOAT: u32 = 3;
 
-/// One decoded full-resolution image: band 0's samples plus the georeferencing and provenance
-/// the adapter validates its pinned contract against.
+/// A constant-memory summary of band 1 while band 0 is decoded.
+///
+/// OPERA stores `pl.imgw.quality.qi_total` beside every value. Keeping the full second plane would
+/// add 67 MB to a CIRRUS decode, even though source validation only needs to know whether the
+/// advertised quality-index contract is still true. The decoder therefore observes the samples
+/// while their tile is already inflated and retains these counts instead.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Band1Stats {
+    /// Finite samples other than the image's `GDAL_NODATA` sentinel.
+    pub finite: u64,
+    pub nodata: u64,
+    pub non_finite: u64,
+    /// Finite samples outside OPERA quality-index units (`0..=1`). Interpretation belongs to the
+    /// adapter, but retaining the count lets its source contract detect a re-scaled quality band.
+    pub outside_unit_interval: u64,
+    pub zero: u64,
+    pub one: u64,
+}
+
+impl Band1Stats {
+    fn observe(&mut self, value: f32, nodata: f32) {
+        if value == nodata {
+            self.nodata += 1;
+        } else if !value.is_finite() {
+            self.non_finite += 1;
+        } else {
+            self.finite += 1;
+            self.outside_unit_interval += u64::from(!(0.0..=1.0).contains(&value));
+            self.zero += u64::from(value == 0.0);
+            self.one += u64::from(value == 1.0);
+        }
+    }
+}
+
+/// One decoded full-resolution image: band 0's samples plus the georeferencing, provenance and
+/// band-1 summary the adapter validates its pinned contract against.
 #[derive(Debug)]
 pub struct Cog {
     pub width: u32,
@@ -85,6 +119,8 @@ pub struct Cog {
     pub metadata: String,
     /// Band 0, row-major with row 0 at the **north** edge (TIFF's own order).
     pub values: Vec<f32>,
+    /// Band 1's sample summary, when the image has one. No second image-sized allocation is kept.
+    pub band1: Option<Band1Stats>,
 }
 
 struct Reader<'a> {
@@ -352,8 +388,10 @@ pub fn decode_band0(bytes: &[u8]) -> Result<Cog, String> {
         }
     }
 
-    // One tile at a time into a reused scratch buffer; only band 0 is kept.
+    // One tile at a time into a reused scratch buffer. Only band 0 is kept; band 1 is summarized
+    // in place so validating OPERA's quality plane costs no second image-sized allocation.
     let mut values = vec![f32::NAN; width as usize * height as usize];
+    let mut band1 = (samples_per_pixel >= 2).then(Band1Stats::default);
     let mut scratch = Vec::with_capacity(tile_bytes as usize);
     for tile_row in 0..tile_rows {
         for tile_col in 0..tile_cols {
@@ -380,6 +418,9 @@ pub fn decode_band0(bytes: &[u8]) -> Result<Cog, String> {
                 for col in 0..cols as usize {
                     let sample = (src_row + col * samples_per_pixel as usize) * 4;
                     values[dst_row + col] = tile.f32_at(sample)?;
+                    if let Some(stats) = &mut band1 {
+                        stats.observe(tile.f32_at(sample + 4)?, nodata as f32);
+                    }
                 }
             }
         }
@@ -400,6 +441,7 @@ pub fn decode_band0(bytes: &[u8]) -> Result<Cog, String> {
         geo_key_directory: ifd.integers(TAG_GEO_KEY_DIRECTORY)?,
         metadata: ifd.ascii(TAG_GDAL_METADATA)?,
         values,
+        band1,
     })
 }
 
@@ -436,6 +478,32 @@ pub fn metadata_item<'a>(metadata: &'a str, name: &str) -> Option<&'a str> {
             let body = &after[open + 1..];
             if let Some(close) = body.find("</Item>") {
                 return Some(body[..close].trim());
+            }
+        }
+        rest = after;
+    }
+}
+
+/// Read one per-sample metadata item for an exact sample index.
+///
+/// `metadata_item` intentionally returns the first matching item, which is band 0 in GDAL's
+/// ordering. OPERA's quality contract lives on band 1, so it needs an equally explicit lookup
+/// rather than relying on duplicate-item order or accidentally validating band 0 twice.
+pub fn metadata_item_for_sample<'a>(metadata: &'a str, name: &str, sample: u32) -> Option<&'a str> {
+    let needle = format!("<Item name=\"{name}\"");
+    let sample_attr = format!("sample=\"{sample}\"");
+    let mut rest = metadata;
+    loop {
+        let at = rest.find(&needle)?;
+        let after = &rest[at + needle.len()..];
+        let boundary = after.starts_with(' ') || after.starts_with('>') || after.starts_with('/');
+        if let (true, Some(open)) = (boundary, after.find('>')) {
+            let attributes = &after[..open];
+            let body = &after[open + 1..];
+            if attributes.split_ascii_whitespace().any(|attribute| attribute == sample_attr) {
+                if let Some(close) = body.find("</Item>") {
+                    return Some(body[..close].trim());
+                }
             }
         }
         rest = after;
@@ -505,7 +573,9 @@ mod tests {
             }
 
             let metadata = b"<GDALMetadata>\n<Item name=\"date\">20260810</Item>\n\
-                <Item name=\"prodname\">test composite</Item>\n</GDALMetadata>\n\0"
+                <Item name=\"prodname\">test composite</Item>\n\
+                <Item name=\"DESCRIPTION\" sample=\"0\">RATE</Item>\n\
+                <Item name=\"DESCRIPTION\" sample=\"1\">quality1</Item>\n</GDALMetadata>\n\0"
                 .to_vec();
             let nodata = format!("{}\0", self.nodata).into_bytes();
             let bits: Vec<u32> = vec![32; self.samples as usize];
@@ -624,6 +694,16 @@ mod tests {
         assert_eq!(metadata_item(&cog.metadata, "prodname"), Some("test composite"));
         assert_eq!(metadata_item(&cog.metadata, "dat"), None);
         assert_eq!(metadata_item(&cog.metadata, "absent"), None);
+        let band1 = cog.band1.expect("the second sample is summarized");
+        assert_eq!(band1.finite, 40 * 24);
+        assert_eq!(band1.zero, 0);
+        assert_eq!(band1.one, 0);
+        assert_eq!(band1.nodata, 0);
+        assert_eq!(band1.non_finite, 0);
+        assert_eq!(band1.outside_unit_interval, 0);
+        assert_eq!(metadata_item_for_sample(&cog.metadata, "DESCRIPTION", 0), Some("RATE"));
+        assert_eq!(metadata_item_for_sample(&cog.metadata, "DESCRIPTION", 1), Some("quality1"));
+        assert_eq!(metadata_item_for_sample(&cog.metadata, "DESCRIPTION", 10), None);
     }
 
     #[test]

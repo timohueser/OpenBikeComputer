@@ -48,9 +48,9 @@ tracked_sources = { "event.json" = "sources/weather-events/us-derecho-2020-08-10
 
 [packages.weather-event-airmass]
 summary = "Reproducible 2023 airmass-convection nowcast event pack"
-archive = "packages/259fd1e4fc3af662c70a4af1fb9f3d07efa1936336afc28aeeb9ca83442b25e9.tar.gz"
-sha256 = "259fd1e4fc3af662c70a4af1fb9f3d07efa1936336afc28aeeb9ca83442b25e9"
-bytes = 8577439
+archive = "packages/41cf01762fdf1d10624bde190ae70056a5b89cb675a2eb975edf10bd48d1165b.tar.gz"
+sha256 = "41cf01762fdf1d10624bde190ae70056a5b89cb675a2eb975edf10bd48d1165b"
+bytes = 8577939
 provenance = "NOAA MRMS and HRRR archive bytes for 2023-06-24, plus byte-identical service output and a two-hour truth ladder. Every member is pinned by event.json."
 license = "US public domain"
 tracked_sources = { "event.json" = "sources/weather-events/us-airmass-2023-06-24/event.json" }

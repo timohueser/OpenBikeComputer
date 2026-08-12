@@ -46,9 +46,9 @@ pub struct ExpectedGrib {
     /// coverage). They survive decode as-is; every *other* negative value fails the cycle. A
     /// source without documented sentinels declares an empty slice.
     pub missing_sentinels: &'static [f32],
-    /// Submessage counts this source's contracted object may contain. GFS deliberately
-    /// advertises the same APCP record twice, so its byte-range span decodes to one *or* two
-    /// messages; every other source contracts exactly one.
+    /// Submessage counts this source's contracted object may contain. A selector may deliberately
+    /// accept a duplicated upstream record as one consecutive span; point-field sources contract
+    /// exactly one message.
     pub allowed_messages: &'static [usize],
     /// When more than one message is present they must decode bit-identically — the WX1 rule
     /// that refuses to pick an undocumented first or second occurrence.
@@ -211,9 +211,9 @@ fn decode_field_inner(bytes: &[u8], expected: &ExpectedGrib) -> Result<DecodedFi
                 });
             }
             Some(first) => {
-                // A repeated record is only acceptable when the contract says so *and* the
-                // repetition is genuinely indistinguishable after decode (WX1's GFS rule: never
-                // pick an undocumented first or second occurrence).
+                // A repeated record is only acceptable when the source contract says so *and*
+                // the repetition is genuinely indistinguishable after decode; never pick an
+                // undocumented first or second occurrence.
                 if !expected.require_identical_messages {
                     return Err("GRIB repeats a field the source contract does not duplicate".into());
                 }

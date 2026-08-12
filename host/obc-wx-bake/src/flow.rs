@@ -162,9 +162,10 @@ const MAX_FILL_NODES: u32 = 9;
 pub struct MotionField {
     pub cols: u32,
     pub rows: u32,
-    /// Cell spacing between nodes. Node `(i, j)` sits at cell centre
-    /// `(j * stride + stride / 2, i * stride + stride / 2)`.
-    pub stride: u32,
+    /// Horizontal and vertical cell spacing between nodes. Node `(i, j)` sits at cell centre
+    /// `(j * stride_x + stride_x / 2, i * stride_y + stride_y / 2)`.
+    pub stride_x: u32,
+    pub stride_y: u32,
     pub u: Vec<f32>,
     pub v: Vec<f32>,
 }
@@ -173,10 +174,14 @@ impl MotionField {
     /// An all-zero field of the shape `width x height` cells would produce. Used by the tests and
     /// by nothing else — production either has a solved field or has `None`.
     pub fn still(width: u32, height: u32, stride: u32) -> Self {
-        let cols = width.div_ceil(stride).max(1);
-        let rows = height.div_ceil(stride).max(1);
+        Self::still_axis_aware(width, height, stride, stride)
+    }
+
+    pub fn still_axis_aware(width: u32, height: u32, stride_x: u32, stride_y: u32) -> Self {
+        let cols = width.div_ceil(stride_x).max(1);
+        let rows = height.div_ceil(stride_y).max(1);
         let nodes = cols as usize * rows as usize;
-        Self { cols, rows, stride, u: vec![0.0; nodes], v: vec![0.0; nodes] }
+        Self { cols, rows, stride_x, stride_y, u: vec![0.0; nodes], v: vec![0.0; nodes] }
     }
 
     fn index(&self, col: u32, row: u32) -> usize {
@@ -191,11 +196,12 @@ impl MotionField {
     /// invention, where interpolating a quantized rain rate would manufacture bands that no source
     /// reported.
     pub fn sample(&self, col: f32, row: f32) -> (f32, f32) {
-        let stride = self.stride as f32;
+        let stride_x = self.stride_x as f32;
+        let stride_y = self.stride_y as f32;
         // Node `(i, j)` sits at continuous position `j * stride + stride / 2`, so the node
         // coordinate of a continuous cell position is `p / stride - 0.5`.
-        let x = (col / stride - 0.5).clamp(0.0, (self.cols - 1) as f32);
-        let y = (row / stride - 0.5).clamp(0.0, (self.rows - 1) as f32);
+        let x = (col / stride_x - 0.5).clamp(0.0, (self.cols - 1) as f32);
+        let y = (row / stride_y - 0.5).clamp(0.0, (self.rows - 1) as f32);
         let x0 = x.floor() as u32;
         let y0 = y.floor() as u32;
         let x1 = (x0 + 1).min(self.cols - 1);
@@ -220,15 +226,81 @@ impl MotionField {
 /// spacing in metres turn into cells.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlowParams {
-    pub cell_size_m: f64,
-    pub stride: u32,
+    pub cell_x_m: f64,
+    pub cell_y_m: f64,
+    pub stride_x: u32,
+    pub stride_y: u32,
     pub max_speed_m_s: f64,
+    geographic: Option<GeographicMetrics>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GeographicMetrics {
+    south_lat_deg: f64,
+    cell_lat_deg: f64,
+    cell_lon_equator_m: f64,
 }
 
 impl FlowParams {
     /// The production parameters for a source whose cells are `cell_size_m` across.
     pub fn for_cells(cell_size_m: f64) -> Self {
-        Self { cell_size_m, stride: stride_for(cell_size_m), max_speed_m_s: MAX_SPEED_M_S }
+        Self::for_axes(cell_size_m, cell_size_m)
+    }
+
+    /// Parameters for a regular latitude/longitude grid at its representative latitude.
+    /// Longitude cells shrink by `cos(latitude)` on the ground; treating angularly-square cells
+    /// as physically square biases east-west speed and node spacing everywhere away from the
+    /// equator.
+    pub fn for_geographic_cells(cell_lat_udeg: u32, cell_lon_udeg: u32, latitude_deg: f64) -> Self {
+        const METRES_PER_DEGREE: f64 = 111_320.0;
+        let cell_y_m = f64::from(cell_lat_udeg) / 1e6 * METRES_PER_DEGREE;
+        let cell_x_m = f64::from(cell_lon_udeg) / 1e6 * METRES_PER_DEGREE * latitude_deg.to_radians().cos().abs();
+        Self::for_axes(cell_x_m, cell_y_m)
+    }
+
+    pub fn for_geometry(geometry: &crate::geometry::GridGeometry) -> Self {
+        let midpoint_lat = (f64::from(geometry.south_lat_udeg)
+            + f64::from(geometry.height) * f64::from(geometry.cell_lat_udeg) / 2.0)
+            / 1e6;
+        let mut params = Self::for_geographic_cells(geometry.cell_lat_udeg, geometry.cell_lon_udeg, midpoint_lat);
+        let south = f64::from(geometry.south_lat_udeg) / 1e6;
+        let north = geometry.north_lat_udeg() as f64 / 1e6;
+        // Use the widest longitude cell in the domain for the regular node grid, so its physical
+        // spacing never exceeds the requested 16 km. Farther poleward this deliberately yields a
+        // denser grid rather than an under-resolved one.
+        let closest_to_equator = if south <= 0.0 && north >= 0.0 {
+            0.0
+        } else if south.abs() < north.abs() {
+            south
+        } else {
+            north
+        };
+        let cell_lon_equator_m = f64::from(geometry.cell_lon_udeg) / 1e6 * 111_320.0;
+        params.stride_x = stride_for(cell_lon_equator_m * closest_to_equator.to_radians().cos().abs());
+        params.geographic = Some(GeographicMetrics {
+            south_lat_deg: south,
+            cell_lat_deg: f64::from(geometry.cell_lat_udeg) / 1e6,
+            cell_lon_equator_m,
+        });
+        params
+    }
+
+    fn for_axes(cell_x_m: f64, cell_y_m: f64) -> Self {
+        Self {
+            cell_x_m,
+            cell_y_m,
+            stride_x: stride_for(cell_x_m),
+            stride_y: stride_for(cell_y_m),
+            max_speed_m_s: MAX_SPEED_M_S,
+            geographic: None,
+        }
+    }
+
+    fn cell_x_m_at_row(self, row: u32) -> f64 {
+        self.geographic.map_or(self.cell_x_m, |geo| {
+            let latitude = geo.south_lat_deg + (f64::from(row) + 0.5) * geo.cell_lat_deg;
+            geo.cell_lon_equator_m * latitude.to_radians().cos().abs()
+        })
     }
 }
 
@@ -323,7 +395,8 @@ impl Level {
 /// How many source cells one base-level sample averages, for a given node spacing.
 ///
 /// **The estimator never looks at the intensity field at full resolution, and this is why.** Its
-/// finest solve uses a `2 * WINDOW_RADIUS + 1` window around nodes [`FlowParams::stride`] cells
+/// finest solve uses a `2 * WINDOW_RADIUS + 1` window around nodes spaced according to
+/// [`FlowParams::stride_x`] and [`FlowParams::stride_y`]
 /// apart, so a base sample a quarter of the node spacing across already gives that window a reach
 /// of about two node spacings — more resolution than a 16 km-node motion field can carry, and the
 /// solved displacement is still refined to a fraction of a base sample by the sub-pixel LK step.
@@ -356,29 +429,40 @@ pub fn base_decimation(stride: u32) -> u32 {
 /// The decimation is a box mean rather than a subsample, so a one-cell feature still moves the base
 /// sample it sits in instead of vanishing between two of them. It is done here and not by
 /// [`Level::halve`] so the full-resolution `f32` field is never materialised at all.
-fn base_level(cells: &[u8], width: u32, height: u32, factor: u32) -> Level {
+fn base_level_pair(first: &[u8], second: &[u8], width: u32, height: u32, factor: u32) -> (Level, Level) {
     let out_width = (width / factor).max(1);
     let out_height = (height / factor).max(1);
-    let mut data = vec![0.0f32; out_width as usize * out_height as usize];
+    let mut first_data = vec![0.0f32; out_width as usize * out_height as usize];
+    let mut second_data = vec![0.0f32; out_width as usize * out_height as usize];
     let inverse = 1.0 / (factor * factor) as f32;
     for row in 0..out_height {
         for col in 0..out_width {
-            let mut sum = 0.0f32;
+            let (mut first_sum, mut second_sum) = (0.0f32, 0.0f32);
             for dy in 0..factor {
                 let source_row = (row * factor + dy).min(height - 1) as usize;
                 let base = source_row * width as usize;
                 for dx in 0..factor {
                     let source_col = (col * factor + dx).min(width - 1) as usize;
-                    let code = cells[base + source_col];
-                    if code != precip4::INTENSITY_NODATA {
-                        sum += f32::from(code);
+                    let index = base + source_col;
+                    // Estimate only over coverage common to both observations. If a radar mask
+                    // edge moves between frames and each NODATA is independently read as dry, LK
+                    // sees that administrative edge as a huge translating gradient. Zeroing it
+                    // in both frames leaves a static shared boundary that contributes no motion.
+                    if first[index] != precip4::INTENSITY_NODATA && second[index] != precip4::INTENSITY_NODATA {
+                        first_sum += f32::from(first[index]);
+                        second_sum += f32::from(second[index]);
                     }
                 }
             }
-            data[row as usize * out_width as usize + col as usize] = sum * inverse;
+            let index = row as usize * out_width as usize + col as usize;
+            first_data[index] = first_sum * inverse;
+            second_data[index] = second_sum * inverse;
         }
     }
-    Level { width: out_width, height: out_height, data }
+    (
+        Level { width: out_width, height: out_height, data: first_data },
+        Level { width: out_width, height: out_height, data: second_data },
+    )
 }
 
 fn wet_cells(cells: &[u8]) -> usize {
@@ -412,16 +496,19 @@ pub fn estimate_motion(
         return None;
     }
 
-    let stride = params.stride.max(1);
+    let stride_x = params.stride_x.max(1);
+    let stride_y = params.stride_y.max(1);
     // Everything below works in **base samples**, each one `factor` source cells across; the
     // displacement is scaled back into source cells at the very end.
-    let factor = base_decimation(stride);
-    let mut first = vec![base_level(earlier, width, height, factor)];
-    let mut second = vec![base_level(later, width, height, factor)];
+    let factor = base_decimation(stride_x.min(stride_y));
+    let (first_base, second_base) = base_level_pair(earlier, later, width, height, factor);
+    let mut first = vec![first_base];
+    let mut second = vec![second_base];
     if first[0].width < 2 || first[0].height < 2 {
         return None;
     }
-    let max_cells = params.max_speed_m_s * dt_seconds / params.cell_size_m.max(1.0) / f64::from(factor);
+    let min_cell_m = params.cell_x_m.min(params.cell_y_m).max(1.0);
+    let max_cells = params.max_speed_m_s * dt_seconds / min_cell_m / f64::from(factor);
     let levels = levels_for(max_cells, first[0].width, first[0].height);
     // Pyramids, coarsest last.
     for _ in 1..levels {
@@ -429,8 +516,8 @@ pub fn estimate_motion(
         second.push(second.last().expect("non-empty").halve());
     }
 
-    let cols = width.div_ceil(stride).max(1);
-    let rows = height.div_ceil(stride).max(1);
+    let cols = width.div_ceil(stride_x).max(1);
+    let rows = height.div_ceil(stride_y).max(1);
     let nodes = cols as usize * rows as usize;
     // Displacement in **full-resolution cells**, carried down the pyramid.
     let mut du = vec![0.0f32; nodes];
@@ -449,12 +536,13 @@ pub fn estimate_motion(
                 let col = (node as u32 % cols) as f32;
                 let row = (node as u32 / cols) as f32;
                 // Node centre in **base-sample index** coordinates, then in this level's. The node
-                // sits at `col * stride + stride / 2` source cells (where `MotionField::sample`
+                // sits at `col * stride_x + stride_x / 2` source cells (where `MotionField::sample`
                 // places it), which is that divided by `factor` base samples, less the half sample
                 // that separates a sample index from a continuous position.
-                let centre = |index: f32| (index * stride as f32 + stride as f32 / 2.0) / factor as f32 - 0.5;
-                let cx = centre(col) / scale;
-                let cy = centre(row) / scale;
+                let centre =
+                    |index: f32, stride: u32| (index * stride as f32 + stride as f32 / 2.0) / factor as f32 - 0.5;
+                let cx = centre(col, stride_x) / scale;
+                let cy = centre(row, stride_y) / scale;
                 let mut dx = du[node] / scale;
                 let mut dy = dv[node] / scale;
                 let mut node_valid = valid[node];
@@ -555,15 +643,17 @@ pub fn estimate_motion(
 
     // Base samples over `dt` become source cells per second, clamped to a speed no weather system
     // has. `factor` is where the decimation is paid back: everything above solved in base samples.
-    let limit = (params.max_speed_m_s / params.cell_size_m.max(1.0)) as f32;
     let inverse_dt = (f64::from(factor) / dt_seconds) as f32;
-    let mut field = MotionField { cols, rows, stride, u: du, v: dv };
-    for (u, v) in field.u.iter_mut().zip(field.v.iter_mut()) {
+    let mut field = MotionField { cols, rows, stride_x, stride_y, u: du, v: dv };
+    for (node, (u, v)) in field.u.iter_mut().zip(field.v.iter_mut()).enumerate() {
         *u *= inverse_dt;
         *v *= inverse_dt;
-        let speed = u.hypot(*v);
-        if speed > limit && speed > 0.0 {
-            let scale = limit / speed;
+        let node_row = node as u32 / cols;
+        let source_row = (node_row * stride_y + stride_y / 2).min(height - 1);
+        let cell_x_m = params.cell_x_m_at_row(source_row);
+        let speed_m_s = (f64::from(*u) * cell_x_m).hypot(f64::from(*v) * params.cell_y_m);
+        if speed_m_s > params.max_speed_m_s && speed_m_s > 0.0 {
+            let scale = (params.max_speed_m_s / speed_m_s) as f32;
             *u *= scale;
             *v *= scale;
         }
@@ -995,6 +1085,27 @@ mod tests {
         assert_eq!(advect(&still, width, height, &flow, 900.0, false), still);
     }
 
+    #[test]
+    fn a_changing_coverage_edge_is_not_a_motion_signal() {
+        let (width, height) = (256u32, 192u32);
+        let mut earlier = blob(width, height, 112, 96, 32, 10);
+        let mut later = earlier.clone();
+        // The same stationary storm is revealed by a radar mask retreating westward. The newly
+        // visible part is not meteorological motion and must not drag the field toward the mask.
+        for row in 0..height as usize {
+            for col in 0..95usize {
+                earlier[row * width as usize + col] = precip4::INTENSITY_NODATA;
+            }
+            for col in 0..80usize {
+                later[row * width as usize + col] = precip4::INTENSITY_NODATA;
+            }
+        }
+        let flow = estimate_motion(&earlier, &later, width, height, 600.0, FlowParams::for_cells(1_000.0))
+            .expect("the commonly observed part of the storm is trackable");
+        let (u, v) = flow.sample(120.0, 96.0);
+        assert!(u.hypot(v) * 600.0 < 2.0, "a stationary storm moved {} cells", u.hypot(v) * 600.0);
+    }
+
     /// Advection never fabricates dry ground behind a departing field: what leaves the raster
     /// leaves no-data, which is what makes the mosaic fall through to a model instead of rendering
     /// "no rain here".
@@ -1073,6 +1184,16 @@ mod tests {
         assert_eq!(stride_for(6_500.0), 4, "6.5 km ICON-EU is on the floor");
         assert_eq!(stride_for(27_750.0), MIN_STRIDE_CELLS, "the 27.75 km floor source is on the floor");
         assert_eq!(stride_for(0.0), MIN_STRIDE_CELLS, "a nonsense cell size must not divide by zero");
+    }
+
+    #[test]
+    fn geographic_flow_spacing_accounts_for_longitude_shrinkage() {
+        let params = FlowParams::for_geographic_cells(10_000, 10_000, 60.0);
+        assert!((params.cell_x_m - 556.6).abs() < 0.1);
+        assert!((params.cell_y_m - 1_113.2).abs() < 0.1);
+        assert_eq!((params.stride_x, params.stride_y), (29, 14));
+        assert!((params.cell_x_m * f64::from(params.stride_x) - FLOW_NODE_METRES).abs() < 300.0);
+        assert!((params.cell_y_m * f64::from(params.stride_y) - FLOW_NODE_METRES).abs() < 500.0);
     }
 
     /// Pyramid depth follows the displacement to be found, not a constant: a 1 km radar over ten
