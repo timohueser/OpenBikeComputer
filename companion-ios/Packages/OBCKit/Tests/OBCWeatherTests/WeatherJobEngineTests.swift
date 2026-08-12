@@ -205,7 +205,7 @@ private func builtBundle(
         validUntilUnixSeconds: Int64(now.timeIntervalSince1970) + 24 * 3_600,
         bounds: bounds, hourly: [], rainFrames: [])
     let state = WeatherState(
-        hourly: hourly, precipitation: nil, noRainMapReason: .corridorNotCovered,
+        hourly: hourly, precipitation: nil, noRainMapReason: .outOfDomain,
         attributions: [.met], diagnostics: WeatherDiagnostics())
     return BuiltWeatherBundle(bytes: bytes, bundle: bundle, state: state)
 }
@@ -890,7 +890,7 @@ struct WeatherJobEngineTests {
             startedAt: Date(), finishedAt: Date(), requestID: 9, outcome: .committed,
             failureReason: nil, phaseReached: .uploading, attempts: 1, bundleByteCount: 46_000,
             readConnectedMilliseconds: 1_800, uploadConnectedMilliseconds: 3_200,
-            precipitationProductID: "dwd-rv", noRainMapReason: nil)
+            precipitationGeneration: "dwd-rv", noRainMapReason: nil)
         let json = String(decoding: try JSONEncoder().encode(entry), as: UTF8.self).lowercased()
         for needle in ["lat", "lon", "coordinate", "position", "fix", "degree"] {
             #expect(!json.contains(needle), "history JSON must not carry '\(needle)'")

@@ -17,9 +17,22 @@ default:
 
 # ── Simulator ────────────────────────────────────────────────────────────────
 
-# Run the simulator (always --physical). Args: [MAP.obcm|MS<id>.OBS] [TRACK.gpx] [-- sim flags].
-# MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK to $OBC_GPX
-# or the bundled grimsel-climb.gpx. Pass `none` as the track to run without a GPS.
+# List, inspect, download, verify and prune the content-addressed fixture registry.
+# Common forms: `obc fixtures list`, `obc fixtures show grimsel`,
+# `obc fixtures sync sim`, `obc fixtures verify test`.
+fixtures *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/fixtures.py" "$@"
+
+# Run a named fixture scenario or an explicit map (always --physical). With no
+# arguments this runs the canonical `grimsel` scenario.
+# Args: [SCENARIO|MAP.obcm|MS<id>.OBS] [TRACK.gpx] [-- sim flags].
+# Explicit MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK
+# to $OBC_GPX. Named scenarios are the reproducible path. Pass `none` as the
+# explicit track to run without GPS.
 # A MAP ending in .OBS is an OBCA volume set and rides the sim's --set flag; passing
 # --set through `--` also works and suppresses the default positional map.
 # Live weather needs no task of its own — it is a sim flag:
@@ -31,18 +44,45 @@ sim *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     split_args "$@"
-    gpxf="$(resolve_gpx "${_POS[1]:-}")"
-    if [[ " ${_EXTRA[*]:-} " == *" --set "* ]]; then
+    scenario="${_POS[0]:-grimsel}"
+    scenario_args=()
+    mapf="" setf="" gpxf=""
+    if [[ -n "$scenario" ]] && python3 "$OBC_TOOLS/fixtures.py" exists "$scenario"; then
+        (( ${#_POS[@]} <= 1 )) || {
+            _err "a named scenario already supplies its track; pass simulator flags after --"
+            exit 1
+        }
+        _run python3 "$OBC_TOOLS/fixtures.py" sync "$scenario"
+        resolved="$(python3 "$OBC_TOOLS/fixtures.py" resolve --no-sync "$scenario")"
+        while IFS=$'\t' read -r kind value; do
+            case "$kind" in
+              map)     mapf="$value" ;;
+              map_set) setf="$value" ;;
+              gpx)     gpxf="$value" ;;
+              weather) scenario_args+=(--weather "$value") ;;
+              routes_dir) scenario_args+=(--routes-dir "$value") ;;
+              tracks_dir) scenario_args+=(--tracks-dir "$value") ;;
+              arg)     scenario_args+=("$value") ;;
+              *) _err "fixture resolver returned unknown field '$kind'"; exit 1 ;;
+            esac
+        done <<< "$resolved"
+        if [[ -n "$setf" ]]; then cmd=(cargo run --release -p obc-sim -- --set "$setf" --physical)
+        else cmd=(cargo run --release -p obc-sim -- "$mapf" --physical); fi
+    else
+      gpxf="$(resolve_gpx "${_POS[1]:-}")"
+      if [[ " ${_EXTRA[*]:-} " == *" --set "* ]]; then
         # An explicit --set names the whole map; injecting the default positional
         # map alongside it would trip the sim's mutual-exclusion check.
         cmd=(cargo run --release -p obc-sim -- --physical)
-    elif [[ "${_POS[0]:-}" == *.OBS || "${_POS[0]:-}" == *.obs ]]; then
+      elif [[ "${_POS[0]:-}" == *.OBS || "${_POS[0]:-}" == *.obs ]]; then
         cmd=(cargo run --release -p obc-sim -- --set "${_POS[0]}" --physical)
-    else
+      else
         mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
         cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
+      fi
     fi
     [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
+    (( ${#scenario_args[@]} )) && cmd+=("${scenario_args[@]}")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     cd "$OBC_ROOT"; _run "${cmd[@]}"
 
@@ -105,9 +145,10 @@ flash-boot *args:
       _say "power-cycle the DK: one short LED0 blink (bootloader), then the app"
     fi
 
-# Feed a recorded ride to a debug-uart board over VCOM (obc-usb-host).
+# Drive a debug-uart board over VCOM (obc-usb-host). A GPX is optional: without one, the feeder's
+# fixed-location panel can stream an entered or searched coordinate instead.
 # Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
-# Feed a GPX to a debug-uart board over VCOM. Args: [TRACK.gpx] [-- --port TTY | --list]
+# Open the debug-uart GPS feeder. Args: [TRACK.gpx] [-- --port TTY | --list]
 uart *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -117,16 +158,17 @@ uart *args:
     # `--list` just enumerates serial ports; no GPX needed.
     for e in "${_EXTRA[@]:-}"; do [[ "$e" == --list ]] && { _run cargo run --release -p obc-usb-host -- --list; exit 0; }; done
     gpxf="$(resolve_gpx "${_POS[0]:-}")"
-    [[ -z "$gpxf" || "$gpxf" == none ]] && { _err "no GPX to feed. Pass one:  obc uart <track.gpx>"; exit 1; }
-    cmd=(cargo run --release -p obc-usb-host -- --gpx "$gpxf")
+    cmd=(cargo run --release -p obc-usb-host --)
+    [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
 
-# Indoor ride in one step: flash the debug-uart firmware, then feed it a GPX over
-# VCOM. Args: [ble] [TRACK.gpx]. Flashes with `probe-rs download` (returns cleanly,
+# Bench control in one step: flash the debug-uart firmware, then open the feeder over
+# VCOM. Args: [ble] [TRACK.gpx]. Without a GPX, use its fixed-location panel. Flashes with
+# `probe-rs download` (returns cleanly,
 # no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
 # `obc flash debug-uart` in a second terminal instead.
-# One step: flash debug-uart firmware, then feed it a GPX. Args: [ble] [TRACK.gpx]
+# One step: flash debug-uart firmware, then open the GPS feeder. Args: [ble] [TRACK.gpx]
 debug *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -417,6 +459,28 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/web"
 
+# Build and serve the standalone canonical rain-radar inspector. The local proxy caches immutable
+# OBCG shards, coalesces concurrent reads, counts actual upstream requests, and enforces a 2,000
+# request session ceiling by default. Args: [PORT], default 4174.
+# Inspect the global 1 km rain mosaic and its 0–2 h forecast on :4174. Args: [PORT]
+rain-radar *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    demo="$OBC_ROOT/tools/rain-radar-demo"
+    port="${1:-4174}"
+    (( $# <= 1 )) || { _err "usage: obc rain-radar [PORT]"; exit 1; }
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || {
+      _err "rain-radar port must be an integer from 1024 to 65535"; exit 1;
+    }
+    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || {
+      _err "rain-radar needs Node.js and npm"; exit 1;
+    }
+    [[ -d "$demo/node_modules" ]] || { _say "installing rain-radar dependencies…"; ( cd "$demo" && _run npm ci ); }
+    _say "building the rain-radar viewer…"; ( cd "$demo" && _run npm run build )
+    _say "serving http://127.0.0.1:$port  (Ctrl-C to stop)"
+    ( cd "$demo" && _run node server.mjs "$port" )
+
 # ── Host workspace chores ────────────────────────────────────────────────────
 
 # Build the host workspace (simulator + shared crates + packer).
@@ -426,12 +490,55 @@ build:
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"; _run cargo build --release
 
-# Run the host test suite. Extra args pass through (e.g. -p obc-pack).
+# Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
+# `fixtures` syncs captured inputs but remains scoped; `full` is the explicit
+# complete all-feature workspace suite.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT"; _run cargo test "$@"
+    cd "$OBC_ROOT"
+    mode="${1:-}"
+    [[ -n "$mode" ]] || {
+      _err "a test scope is required"
+      _hint "focused: obc test -p <crate> [test-filter]"
+      _hint "captured fixtures: obc test fixtures -p <crate>"
+      _hint "cross-cutting only: obc test full"
+      exit 2
+    }
+    require_scope() {
+      local arg
+      for arg in "$@"; do
+        case "$arg" in
+          -p|--package|--package=*|--manifest-path|--manifest-path=*) return 0 ;;
+        esac
+      done
+      _err "a Cargo package scope is required (-p/--package or --manifest-path)"
+      return 2
+    }
+    case "$mode" in
+      full)
+        shift
+        _run python3 "$OBC_TOOLS/fixtures.py" sync test
+        export OBC_FIXTURE_ROOT
+        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+        export OBC_REQUIRE_FIXTURES=1
+        _run cargo test --workspace --all-features --locked "$@"
+        ;;
+      fixtures)
+        shift
+        require_scope "$@" || { _hint "example: obc test fixtures -p obc-wx-bake"; exit 2; }
+        _run python3 "$OBC_TOOLS/fixtures.py" sync test
+        export OBC_FIXTURE_ROOT
+        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+        export OBC_REQUIRE_FIXTURES=1
+        _run cargo test --locked --features external-fixtures "$@"
+        ;;
+      *)
+        require_scope "$@" || { _hint "example: obc test -p obc-weather"; exit 2; }
+        _run cargo test --locked "$@"
+        ;;
+    esac
 
 # The workspace excludes three crates, and rustfmt walks up from each file to find its
 # own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
@@ -472,15 +579,25 @@ check-device:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
-# Run the CI rust gates locally — "will CI pass?" before you push. Mirrors the required
-# `ci` job (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
-# deny/wasm if cargo-deny/trunk are installed). Filter to a subset, e.g.:
+# Run explicitly selected CI gates locally. `full` mirrors the broad required
+# gate (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
+# deny/wasm if cargo-deny/trunk are installed). Examples:
 #   obc check fmt         obc check test         obc check board docs
+#   obc check full        # cross-cutting changes only
 check *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board frontend deny wasm)
+    sel=("$@")
+    (( ${#sel[@]} )) || {
+      _err "select one or more gates (fmt, clippy, test, device, docs, board, frontend, deny, wasm)"
+      _hint "use package-scoped checks during development; use 'obc check full' only for cross-cutting changes"
+      exit 2
+    }
+    if [[ "${sel[0]}" == full ]]; then
+      (( ${#sel[@]} == 1 )) || { _err "'full' cannot be combined with individual gates"; exit 2; }
+      sel=(fmt clippy test device docs board frontend deny wasm)
+    fi
     want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
     FAILED=(); PASSED=(); SKIPPED=()
     step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
@@ -495,6 +612,11 @@ check *args:
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     if want test; then
+      step "fixture registry unit tests" python3 -m unittest discover -s tools/tests -v
+      step "external fixtures (sync test profile)" python3 "$OBC_TOOLS/fixtures.py" sync test
+      export OBC_FIXTURE_ROOT
+      OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+      export OBC_REQUIRE_FIXTURES=1
       step "test (workspace, all features)" cargo test --workspace --all-features --locked
       step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
     fi
@@ -551,6 +673,15 @@ check *args:
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
 
+# Inventory and safely remove stale worktrees, build outputs, and OBC test scratch.
+# Dry-run by default. Common forms: `obc clean`, `obc clean --apply`,
+# `obc clean --include-builds --days 14 --apply`.
+clean *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
+
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
@@ -576,10 +707,8 @@ doctor *args:
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
     ck replication "OSM replication client" 'command -v pyosmium-up-to-date || [[ -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]' 'obc doctor --install'
-    m="$(_all_maps | head -n1 || true)"
-    if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
-    elif [[ -f "$OBC_ROOT/apps/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
-    else _warn "no .obcm found — build one with 'obc pack' or 'obc web', or drop one in the repo root"; fi
+    if python3 "$OBC_TOOLS/fixtures.py" exists grimsel; then _ok "default sim scenario → grimsel"
+    else _err "fixture catalog has no grimsel scenario"; MISSING+=(fixtures); fi
 
     if (( ! install )); then
       (( ${#MISSING[@]} )) && { printf '\n'; _hint "re-run with --install to fix: ${MISSING[*]}"; }

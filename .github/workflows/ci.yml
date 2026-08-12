@@ -85,6 +85,10 @@ jobs:
               - 'about.toml'
               - 'THIRD-PARTY.md'
               - 'tools/licenses/**'
+              - 'tools/fixtures.py'
+              - 'tools/check_fixture_policy.py'
+              - 'tools/tests/**'
+              - 'fixtures/**'
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
             docs:
@@ -138,6 +142,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Deleted catalog and bake APIs stay deleted
         run: python3 tools/check_retired_map_stack.py
+
+  fixture-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Registry unit tests
+        run: python3 -m unittest discover -s tools/tests -v
+      - name: Large fixture policy
+        run: python3 tools/check_fixture_policy.py
 
   # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
   # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
@@ -205,10 +218,33 @@ jobs:
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
+      - name: Cache content-addressed developer fixtures
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/openbikecomputer/fixtures
+          key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
       - name: cargo test (workspace, all features)
-        run: cargo test --workspace --all-features --locked
+        env:
+          OBC_REQUIRE_FIXTURES: "1"
+        run: |
+          python3 tools/fixtures.py sync test
+          export OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
+          cargo test --workspace --all-features --locked
+      # …and once with obc-formats' *default* features, which is the shape the device image
+      # links. `obcg-deflate` (OBCG codec 2, `OBCG_Spec.md` §5) is off there, so the tests that
+      # pin the firmware boundary — no inflate in the crate, a codec-2 tile refused rather than
+      # silently accepted — are `#[cfg(not(feature = ...))]` and are compiled *out* of the
+      # all-features run above. One crate, a few seconds, and the PR's structural claim stops
+      # being asserted by dead code (#1241).
+      - name: cargo test (obc-formats, default features = the device's shape)
+        run: cargo test -p obc-formats --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
+      # The weather service's freshness/cost probe. It runs unattended from a schedule against a
+      # live bucket, so its alarms are only as good as the cases below — and it reads the same
+      # `specs/vectors/wx-manifest-v2.json` the baker and both clients are pinned against.
+      - name: weather freshness probe unit tests
+        run: python3 -m unittest discover -s ops/weather/tests -v
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
       # Renderer pixel-hash tripwire (issue #327): re-render the 7 fixed bench scenes over the
@@ -543,7 +579,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: swift test (OBCKit package, host)
-        run: swift test --package-path companion-ios/Packages/OBCKit
+        run: |
+          # Swift Testing schedules suites concurrently even though SwiftPM's
+          # test runner defaults to --no-parallel. Keep the exhaustive codec
+          # mutation test out of the process with timeout-sensitive async model
+          # tests, then run it alone against the same already-built package.
+          exhaustive='OBCWeatherCodecTests/validCRCStructuredMutationsAndEveryTruncationReachRealParserBoundaries'
+          swift test --package-path companion-ios/Packages/OBCKit --skip "$exhaustive"
+          swift test --package-path companion-ios/Packages/OBCKit --skip-build --filter "$exhaustive"
 
   # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
   # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
@@ -796,7 +839,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, retired-map-stack, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [changes, retired-map-stack, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)

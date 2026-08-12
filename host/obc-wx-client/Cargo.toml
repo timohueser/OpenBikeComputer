@@ -9,7 +9,7 @@ description = "The host weather client (WX14): manifest + OBCG corridor Range re
 # The OBCG/OBCW byte authorities and the shared WX2 intensity codec. The client never re-derives
 # a byte layout: every fetched page/tile is validated by the same code the device and the vectors
 # run, and the bundle it emits is encoded by `obc_formats::obcw`.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { path = "../../firmware/obc-formats", features = ["obcg-deflate"] } # OBCG codec 2 (host side only)
 # The device's own OBCW reader. `--dump` prints what the *firmware* would sample, not what this
 # crate's encoder thinks it wrote — the difference is the whole value of the check.
 obc-weather = { path = "../../firmware/obc-weather" }

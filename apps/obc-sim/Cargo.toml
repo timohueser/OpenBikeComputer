@@ -6,6 +6,9 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF54L firmware). Native-only — the landing page's wasm host is the sibling obc-web-demo crate; the host logic they share lives in obc-host-core."
 
+[features]
+external-fixtures = []
+
 [dependencies]
 obc-reader = { path = "../../firmware/obc-reader" }
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
@@ -51,6 +54,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.14"
 
 [dev-dependencies]
+obc-fixtures = { path = "../../host/obc-fixtures" }
 # The presenter suite in `present.rs` runs obc-display's reusable contract checks; the
 # `conformance` feature exists so that scaffolding stays out of the device image, and this
 # dev-dep turns it on for the sim's test builds only.

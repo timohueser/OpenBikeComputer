@@ -49,8 +49,8 @@ impl WeatherRainMapScreen {
         // Inspect/pan is a sub-mode exactly as on the Map: while the shared camera holds a pan,
         // Select/Back drive panning (move/zoom) and Back-tap returns to the rain map's bindings.
         // One rain-map difference: every pan gesture ends with the zoom-out clamp, so an Inspect
-        // zoom step can never leave the active product's regime (owner tuning round 2 — the
-        // rider zooms out to the product's edge and simply stops there, clamp per product's
+        // zoom step can never leave the rain grid's regime (owner tuning round 2 — the
+        // rider zooms out to the grid's edge and simply stops there, clamp per grid's
         // cell density via `rain_min_zoom`).
         if cx.state.pan.is_some() {
             let t = handle_pan(g, cx);
@@ -102,8 +102,8 @@ impl WeatherRainMapScreen {
         let step = rx.state.rain_step;
         let panning = rx.state.pan.is_some();
 
-        // The viewed frame's REAL timestamp, top-centre (tier differences surface only through
-        // real timestamps — locked): the current frame shows `HH:MM NOW`, a stepped one
+        // The viewed frame's REAL timestamp, top-centre (a frame says when it is valid and nothing
+        // else about itself — locked): the current frame shows `HH:MM NOW`, a stepped one
         // `HH:MM +NN`. Yielded while panning — the pan chevrons own the top slot.
         if !panning {
             if let Some(snap) = rx.weather {
@@ -123,7 +123,7 @@ impl WeatherRainMapScreen {
             }
         }
 
-        // The honest states, in precedence order: no renderable rain (stale / no product /
+        // The honest states, in precedence order: no renderable rain (stale / no rain grid /
         // no snapshot) beats out-of-regime (nothing would draw at any zoom).
         if !had_lease {
             match rx.weather.map(|snap| rain_outlook(snap, now)) {
@@ -142,9 +142,9 @@ impl WeatherRainMapScreen {
             // DEFENSIVE FALLBACK ONLY (owner tuning round 2): the zoom-out clamp
             // (`AppState::clamp_rain_zoom`, applied on entry, after every Inspect gesture, and
             // live in the host feed via `App::set_rain_view`) keeps this screen inside the
-            // product's regime, so this banner should be unreachable. It stays because the
+            // rain grid's regime, so this banner should be unreachable. It stays because the
             // honesty law is absolute — if a regime miss ever slips through (a host that skipped
-            // the floor feed, a product/frame edge case), the frame must still declare itself
+            // the floor source, a frame edge case), the frame must still declare itself
             // rather than pass as dry. Drawn while panning too (under the pan HUD): review F2
             // found the earlier early-return let a mid-pan regime miss render raster-free with
             // no banner at all.

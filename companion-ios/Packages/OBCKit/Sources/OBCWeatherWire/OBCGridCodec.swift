@@ -1,15 +1,14 @@
+import Compression
 import Foundation
 
 /// Decoded OBCG v1 fixed header.
 ///
 /// Every derived count below is checked arithmetic over these fields, so a corridor consumer
-/// computes directory-page and tile byte ranges from the 128 header bytes alone. Product id and
-/// tier are provenance only: selection, staleness and attribution are manifest data, and an
-/// unknown nonzero product id is never a rejection reason.
+/// computes directory-page and tile byte ranges from the 128 header bytes alone. An object carries
+/// **no provenance**: #1246 deleted the product id and tier fields, bytes 12–13 are reserved and
+/// must be zero, and everything else a rider sees (staleness, attribution) is manifest data.
 public struct OBCGridHeader: Equatable, Sendable {
     public var totalLength: UInt32
-    public var productID: UInt8
-    public var tier: UInt8
     public var flags: UInt16
     /// Real upstream UTC frame validity timestamp; never a re-stamped fetch or bake time.
     public var validAtUnixSeconds: Int64
@@ -30,7 +29,7 @@ public struct OBCGridHeader: Equatable, Sendable {
     public var headerCRC32: UInt32
 
     public init(
-        totalLength: UInt32, productID: UInt8, tier: UInt8, flags: UInt16,
+        totalLength: UInt32, flags: UInt16,
         validAtUnixSeconds: Int64, referenceTimeUnixSeconds: Int64,
         southLatitudeMicrodegrees: Int32, westLongitudeMicrodegrees: Int32,
         cellLatitudeStrideMicrodegrees: UInt32, cellLongitudeStrideMicrodegrees: UInt32,
@@ -39,8 +38,6 @@ public struct OBCGridHeader: Equatable, Sendable {
         objectCRC32: UInt32, headerCRC32: UInt32
     ) {
         self.totalLength = totalLength
-        self.productID = productID
-        self.tier = tier
         self.flags = flags
         self.validAtUnixSeconds = validAtUnixSeconds
         self.referenceTimeUnixSeconds = referenceTimeUnixSeconds
@@ -233,6 +230,11 @@ public extension OBCGridHeader {
 /// Independent Swift implementation of `specs/OBCG_Spec.md` — a consumer only. Objects are
 /// produced by `host/obc-wx-bake`; the phone never writes OBCG bytes, so there is no encoder
 /// here and no second canonicality authority to drift.
+///
+/// Codecs 0 and 1 are delegated to `OBCPrecipitationTileCodec`, the pair OBCG shares with OBCW.
+/// Codec 2 (deflate4) lives **here** and nowhere else: the device decodes OBCW, so an inflate
+/// must never reach the shared tile codec, and this phone-side decoder is exactly what lets the
+/// corridor be re-encoded as OBCW RLE4 for a firmware that has not changed.
 public enum OBCGridCodec {
     public static let headerLength = 128
     public static let directoryEntryLength = 12
@@ -248,9 +250,11 @@ public enum OBCGridCodec {
     public static let flagObserved: UInt16 = 1 << 0
     public static let flagForecast: UInt16 = 1 << 1
 
-    public static let tierRadar: UInt8 = 1
-    public static let tierModel: UInt8 = 2
-    public static let tierFloor: UInt8 = 3
+    /// Tile codec ids (OBCG_Spec.md §4.1/§5). 0 and 1 are the shared raw4/RLE4 pair; 2 is raw
+    /// DEFLATE (RFC 1951) over the tile's raw4 nibble image and exists only in OBCG.
+    public static let codecRaw4 = OBCPrecipitationTileCodec.raw4
+    public static let codecRLE4 = OBCPrecipitationTileCodec.rle4
+    public static let codecDeflate4: UInt8 = 2
 
     private static let magic = Data("OBCG".utf8)
     private static let version: UInt16 = 1
@@ -272,13 +276,16 @@ public enum OBCGridCodec {
         guard headerCRC(head) == (try require(head.readUInt32LE(at: headerCRCOffset))) else {
             throw OBCWeatherWireError.crcMismatch
         }
-        guard try require(head.readUInt16LE(at: 62)) == 0, head.allZero(in: 84..<headerLength) else {
+        // Bytes 12–13 are the Product ID / Tier pair #1246 deleted. They are reserved now, so a
+        // nonzero value there is a malformed object rather than an unknown code to tolerate.
+        guard try require(head.readUInt16LE(at: 12)) == 0,
+              try require(head.readUInt16LE(at: 62)) == 0,
+              head.allZero(in: 84..<headerLength)
+        else {
             throw OBCWeatherWireError.malformed
         }
         let header = OBCGridHeader(
             totalLength: try require(head.readUInt32LE(at: 8)),
-            productID: try require(head.readUInt8(at: 12)),
-            tier: try require(head.readUInt8(at: 13)),
             flags: try require(head.readUInt16LE(at: 14)),
             validAtUnixSeconds: try require(head.readInt64LE(at: 16)),
             referenceTimeUnixSeconds: try require(head.readInt64LE(at: 24)),
@@ -367,8 +374,9 @@ public enum OBCGridCodec {
 
     // MARK: - Tiles
 
-    /// Verify one tile payload against its directory entry: CRC first, then the canonical codec
-    /// for this product's `tileEdge^2` cells.
+    /// Verify one tile payload against its directory entry: CRC over the **stored** bytes first —
+    /// so a corrupt payload never reaches a decompressor — then the §5 codec rules for this
+    /// product's `tileEdge^2` cells.
     public static func validateTilePayload(
         header: OBCGridHeader, entry: OBCGridTileEntry, payload: Data
     ) throws {
@@ -376,6 +384,10 @@ public enum OBCGridCodec {
             throw OBCWeatherWireError.malformed
         }
         guard CRC32.checksum(payload) == entry.crc32 else { throw OBCWeatherWireError.crcMismatch }
+        if entry.codec == codecDeflate4 {
+            _ = try decodeDeflate4(payload: payload, cellCount: header.tileCells)
+            return
+        }
         try OBCPrecipitationTileCodec.validateCells(
             codec: entry.codec, encoded: payload, cellCount: header.tileCells)
     }
@@ -392,9 +404,84 @@ public enum OBCGridCodec {
             guard payload.isEmpty else { throw OBCWeatherWireError.malformed }
             return [UInt8](repeating: OBCPrecipitationTileCodec.dry, count: header.tileCells)
         }
+        if entry.codec == codecDeflate4 {
+            guard payload.count == Int(entry.encodedLength) else { throw OBCWeatherWireError.malformed }
+            guard CRC32.checksum(payload) == entry.crc32 else { throw OBCWeatherWireError.crcMismatch }
+            return try decodeDeflate4(payload: payload, cellCount: header.tileCells)
+        }
         try validateTilePayload(header: header, entry: entry, payload: payload)
         return try OBCPrecipitationTileCodec.decodeCells(
             codec: entry.codec, encoded: payload, cellCount: header.tileCells)
+    }
+
+    /// OBCG_Spec.md §5 codec 2. Every rejection the Rust authority makes, in the same order:
+    /// the payload must be shorter than the tile's raw4 image *before* anything is inflated; the
+    /// stream must terminate, consume all of its input, and produce exactly `cellCount / 2`
+    /// bytes; every nibble must be a defined intensity; and the payload must be strictly shorter
+    /// than the canonical raw4/RLE4 length of the cells it decodes to.
+    ///
+    /// The output buffer is sized from the header, never from the payload, so an over-inflating
+    /// stream is refused by construction rather than after allocating what it asked for.
+    private static func decodeDeflate4(payload: Data, cellCount: Int) throws -> [UInt8] {
+        guard OBCPrecipitationTileCodec.validCellCount(cellCount) else {
+            throw OBCWeatherWireError.malformed
+        }
+        let raw4Length = cellCount / 2
+        guard !payload.isEmpty, payload.count < raw4Length else { throw OBCWeatherWireError.malformed }
+        guard let packed = inflateRaw(payload, exactly: raw4Length) else {
+            throw OBCWeatherWireError.malformed
+        }
+        var cells = [UInt8](); cells.reserveCapacity(cellCount)
+        for byte in packed {
+            cells.append(byte & 0x0F)
+            cells.append(byte >> 4)
+        }
+        // `encodedCellsLength` validates every intensity and returns min(raw4, maximal-run RLE4).
+        let canonical = try OBCPrecipitationTileCodec.encodedCellsLength(cells)
+        guard payload.count < canonical else { throw OBCWeatherWireError.malformed }
+        return cells
+    }
+
+    /// Inflate one raw DEFLATE (RFC 1951) stream that must produce exactly `exactly` bytes from
+    /// exactly this payload. `COMPRESSION_ZLIB` is Apple's name for the unwrapped format.
+    ///
+    /// The input is fed in two chunks — everything but the last byte, then the last byte with
+    /// `FINALIZE` — because Apple's decoder buffers whatever it is handed and always reports
+    /// `src_size == 0`, so trailing bytes are invisible in a single call. If the stream has
+    /// already ended before the final byte, that byte is superfluous and the payload carries
+    /// something other than one exact stream; the Rust authority reaches the same verdict from
+    /// its byte-exact input count. Two calls, still one decompression pass.
+    private static func inflateRaw(_ payload: Data, exactly: Int) -> [UInt8]? {
+        guard payload.count >= 2 else { return nil }
+        var output = [UInt8](repeating: 0, count: exactly)
+        let streamPointer = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        defer { streamPointer.deallocate() }
+        guard compression_stream_init(streamPointer, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
+            == COMPRESSION_STATUS_OK else { return nil }
+        defer { compression_stream_destroy(streamPointer) }
+
+        var accepted = false
+        payload.withUnsafeBytes { source in
+            guard let base = source.bindMemory(to: UInt8.self).baseAddress else { return }
+            output.withUnsafeMutableBufferPointer { destination in
+                guard let destinationBase = destination.baseAddress else { return }
+                streamPointer.pointee.src_ptr = base
+                streamPointer.pointee.src_size = payload.count - 1
+                streamPointer.pointee.dst_ptr = destinationBase
+                streamPointer.pointee.dst_size = destination.count
+                // A stream that has already ended here has a trailing byte after it.
+                guard compression_stream_process(streamPointer, 0) == COMPRESSION_STATUS_OK else { return }
+                streamPointer.pointee.src_ptr = base + (payload.count - 1)
+                streamPointer.pointee.src_size = 1
+                let status = compression_stream_process(
+                    streamPointer, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                // END with the output exactly filled is the only acceptance: a truncated stream
+                // never ends, an over-inflating one fills the buffer without ending, and a short
+                // one leaves `dst_size` positive.
+                accepted = status == COMPRESSION_STATUS_END && streamPointer.pointee.dst_size == 0
+            }
+        }
+        return accepted ? output : nil
     }
 
     // MARK: - Corridor extraction
@@ -499,7 +586,6 @@ public enum OBCGridCodec {
     // MARK: - Private
 
     private static func validateSemantics(_ header: OBCGridHeader) throws {
-        guard header.productID != 0, header.tier != 0 else { throw OBCWeatherWireError.malformed }
         let known = flagObserved | flagForecast
         guard header.flags & ~known == 0,
               (header.flags & flagObserved != 0) != (header.flags & flagForecast != 0)

@@ -11,6 +11,7 @@ description = "OBCM map format reader (no_std + alloc) — pure-parse logic for 
 # the heap; the device never does (it `ptr::write`s its cache into a reserved region), so
 # `alloc` stays off by default. Mirrors `obc-route`'s `alloc` / `NavScratch::new_boxed`.
 alloc = []
+external-fixtures = []
 
 [dependencies]
 heapless = "0.8"
@@ -23,3 +24,4 @@ libm = { version = "0.2", default-features = false } # no arch asm: identical co
 # Shared OBCM byte builder for the format-contract tests (one source of the layout,
 # also used by obc-render's priority test).
 obcm-testkit = { path = "../../host/obcm-testkit" }
+obc-fixtures = { path = "../../host/obc-fixtures" }

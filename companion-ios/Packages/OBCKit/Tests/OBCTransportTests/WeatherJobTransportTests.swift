@@ -61,7 +61,7 @@ struct WeatherUploadPolicyTests {
 
         // And the connection the foreground raises is one the upload rides rather than replaces.
         let discovered = policy.discovered(peripheralID: known, knownPeripheralID: known)
-        #expect(discovered == .connect(owner: .foreground))
+        #expect(discovered == .connectForWeatherRead(owner: .foreground))
         policy.didConnect(peripheralID: known)
         #expect(policy.connectionOwnership == .foreground)
         let uploadDisconnects = policy.finishWeatherUpload()
@@ -94,7 +94,7 @@ struct WeatherUploadPolicyTests {
         #expect(rerequest == .scan)
         #expect(policy.scanServices == [.control, .weatherRequest])
         let rediscovered = policy.discovered(peripheralID: known, knownPeripheralID: known)
-        #expect(rediscovered == .connect(owner: .foreground))
+        #expect(rediscovered == .connect(owner: .foreground), "the already-pending probe is reused")
         policy.didConnect(peripheralID: known)
         #expect(policy.connectionOwnership == .foreground)
     }
@@ -158,9 +158,37 @@ struct WeatherWatchPolicyTests {
         var policy = BLEDiscoveryIntentPolicy()
         policy.setWeatherWatch(true)
         let action = policy.discovered(peripheralID: known, knownPeripheralID: known)
-        #expect(action == .connectForWeatherRead)
+        #expect(action == .connectForWeatherRead(owner: .weatherRequest))
         #expect(policy.weatherRequestPending, "the watch raises the read intent itself")
         #expect(policy.phase == .connecting(peripheralID: known, owner: .weatherRequest))
+    }
+
+    @Test func aWeatherAdvertisementDuringForegroundReconnectStillStartsTheRead() {
+        var policy = BLEDiscoveryIntentPolicy()
+        _ = policy.requestForeground()
+
+        let action = policy.discovered(peripheralID: known, knownPeripheralID: known)
+
+        #expect(action == .connectForWeatherRead(owner: .foreground))
+        #expect(
+            policy.weatherRequestPending,
+            "foreground discovery must consume an explicit request even if background weather is off"
+        )
+        #expect(policy.phase == .connecting(peripheralID: known, owner: .foreground))
+        policy.didConnect(peripheralID: known)
+        let disconnects = policy.finishWeatherRequest()
+        #expect(!disconnects, "the autonomous read must not initiate teardown of a foreground-owned link")
+    }
+
+    @Test func aKnownPeripheralDuringForegroundReconnectIsProbedWithoutTrustingAdvertisementMetadata() {
+        var policy = BLEDiscoveryIntentPolicy()
+        policy.setWeatherWatch(true)
+        _ = policy.requestForeground()
+
+        let action = policy.discovered(peripheralID: known, knownPeripheralID: known)
+
+        #expect(action == .connectForWeatherRead(owner: .foreground))
+        #expect(policy.weatherRequestPending)
     }
 
     @Test func aWatchMatchOnAStrangerIsIgnored() {
@@ -256,10 +284,12 @@ struct WeatherSnapshotMappingTests {
         #expect(snapshot.heldBundleGeneratedAtUnixSeconds == 1_769_000_000)
         #expect(snapshot.reasonRawValue == 0b101)
         #expect(snapshot.readAt == readAt)
-        // And the assembler-facing view carries the coordinate as degrees.
+        // And the assembler-facing view carries the coordinate as degrees. Bearing and speed stay on
+        // the snapshot and stop there: the corridor is a 90 km disc (#1244), so nothing downstream
+        // of here has a use for them, and `WeatherRequest` no longer carries what it cannot use.
         let request = snapshot.weatherRequest
         #expect(request.position?.latitude == -49.330889)
-        #expect(request.bearingDegrees == 271)
+        #expect(request.fixTime == Date(timeIntervalSince1970: 1_769_999_990))
     }
 
     @Test func clearedGroupsMapToNilNeverToZeroWithMeaning() {

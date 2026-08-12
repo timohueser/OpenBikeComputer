@@ -7,30 +7,45 @@
 //! else** — never on the phone, never in firmware.
 //!
 //! Layer map (WX1's prescribed boundaries):
-//! - [`source`] — one adapter per upstream; the only provider-aware code.
-//! - [`grib`], [`idx`], [`stereo`], [`lcc`] — pinned decode/selection/projection primitives the
-//!   adapters share.
-//! - [`emit`] — cell grids → OBCG bytes through the `obc-formats` byte authority.
-//! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
-//! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
-//! - [`cycle`] — the idempotent orchestrator a systemd timer invokes.
+//! - [`source`] — one adapter per upstream; the only provider-aware code, and the ordered
+//!   `MOSAIC_PRIORITY` table that says which source wins a cell where two overlap.
+//! - [`grib`], [`idx`], [`tiff`], [`stereo`], [`lcc`], [`laea`] — pinned decode/selection/
+//!   projection primitives the adapters share.
+//! - [`flow`] + [`derive`] — the motion engine (WXR9 #1251): pyramidal Lucas-Kanade and
+//!   semi-Lagrangian advection, and the two jobs it does for the cycle — a radar-derived forecast
+//!   source, and a genuine estimate at every canonical instant an hourly source would otherwise
+//!   skip. [`skill`] is how "is this actually better" is answered with numbers.
+//! - [`canonical`] — the lattice, the priority mosaic, the sharded emit and **the cycle** (WXR3
+//!   #1242): one global 0.01 degree / 15-minute dataset, no providers, no tiers, no resolutions,
+//!   and since #1246 the only thing the bakery publishes.
+//! - [`manifest_v2`] — `wx/v2/manifest.json`: the dataset's manifest (WXR4 #1243), with nothing
+//!   selectable in it — generation, grid constants, shard presence and deadlines.
+//! - [`timefmt`] — the one UTC formatting convention every timestamp and key segment uses.
+//! - [`publish`] — objects-first, manifest-last object stores (directory and R2).
+//! - [`sweep`] — retention (WXR8 #1247): the one destructive path, deleting the generations the
+//!   manifest just published no longer names, and only after it is durably in place.
 //!
-//! Two things here are *not* the service. [`pack`] freezes a real past event — raw archive bytes,
+//! One thing here is *not* the service: [`pack`] freezes a real past event — raw archive bytes,
 //! the tree the real baker makes of them, and what actually happened next — so the simulator and
 //! the tests can run against real radar. It is driven by the `obc-wx-pack` binary and nothing in
-//! the bakery depends on it. [`spike`] is the WXR1 (#1240) measurement harness: throwaway, off the
-//! checked-in fixtures, reachable only through the `spike` subcommand, and deleted by WXR7.
+//! the bakery depends on it.
 
-pub mod cycle;
-pub mod emit;
+pub mod canonical;
+pub mod derive;
 pub mod fetch;
+pub mod flow;
 pub mod geometry;
 pub mod grib;
 pub mod idx;
+pub mod laea;
 pub mod lcc;
-pub mod manifest;
+pub mod manifest_v2;
 pub mod pack;
 pub mod publish;
+pub mod s3;
+pub mod skill;
 pub mod source;
-pub mod spike;
 pub mod stereo;
+pub mod sweep;
+pub mod tiff;
+pub mod timefmt;

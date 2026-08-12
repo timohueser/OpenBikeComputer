@@ -64,7 +64,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `terrain-shard.obcd` | OBCT terrain shard ([`OBCT_Spec.md`](../OBCT_Spec.md) §4) | a 2 × 2 cell rectangle at ≈ 46.97°N / 7.98°E over a **plane** (`100 + 3·di + 5·dj` m), with the far cell **absent** (the `0` directory sentinel) and one `NODATA` sample. Posting is the v1 `2^9`; the cell is `2^14` — deliberately not the v1 `2^19`, because a v1 cell is 2 MiB of raster and the point of both being header data is that a small one is equally legal. A plane is an *oracle*: bilinear interpolation over one has a closed form, so a second implementation checks itself against arithmetic rather than a reference table, and the differing coefficients (3 vs 5) catch a transposed lat/lon |
 | `weather-request-context-full.bin` | `weatherRequestContext` v1 (§11, WX3 #1188) | the 52-byte read a rider mid-ride produces: every validity bit set (position at Freiburg 47.999008°N / 7.842104°E, bearing 342°, 7.1 m/s, active route id 7 — the one `route-list.bin` catalogs), `reason` = `scheduled`, refresh 30 min. The `bundle_*` group identifies a bundle that **exists**: generation, `generated_at` and the whole-object CRC-32 of `weather-dwd-96x96-9f.obcw`, and `fix_utc` is exactly one 30-minute interval past it, so the scheduled reason is arithmetic the same file supports |
 | `weather-request-context-empty.bin` | `weatherRequestContext` v1 (§11) | the resting value the attribute holds between requests, so an out-of-turn read gets a valid "nothing is due" instead of the last ride's coordinates. **Not** all-zeroes: version `1` and the default 30-minute refresh are still stated — an all-zero attribute would decode as layout version 0 with weather switched off, and neither is true |
-| `weather-request-context-no-fix.bin` | `weatherRequestContext` v1 (§11) | the opposite corner: `reason` = `urgent \| no_bundle`, no validity bits, a nonzero `request_id`, and a *scheduled* refresh of `Off`. Two rules in one file — absence is a **cleared flag**, so the zero coordinates must never put a rider at 0°N 0°E holding generation 0; and `Off` configures the schedule, not the right to ask, so a phone that gated on it would answer everyone except the riders who turned automatic refresh off and then asked by hand |
+| `weather-request-context-no-fix.bin` | `weatherRequestContext` v1 (§11) | the opposite corner: `reason` = `urgent \| no_bundle`, no validity bits, a nonzero `request_id`, and a *scheduled* refresh of `Off`. Two rules in one file — absence is a **cleared flag**, so the zero coordinates must never put a rider at 0°N 0°E holding generation 0; and `Off` configures the schedule, not the right to ask. The request remains useful for diagnostics/retry, but the current companion returns `noPosition` until the device supplies a fix. |
 | `weather-request-context-unknown-refresh.bin` | `weatherRequestContext` v1 (§11.8, #1214) | the day a firmware appends a fifth refresh interval, this is the byte every phone already in the field receives: `refresh` = `9`, which v1 never defined. A read may **never** treat it as fatal — an unrecognised value here is newer firmware, not a malformed device, exactly as an unrecognised `reason` bit is. It decodes as *unknown* (not `Off`, not the default) and the raw byte round-trips verbatim. The file is `weather-request-context-full.bin` at every offset but two — the refresh byte and the request-id nonce — so the rule is checkable by byte comparison: an interval a build cannot name costs it the schedule and nothing else, not the fix, the route or the bundle identity |
 | `weather-request-context-southern.bin` | `weatherRequestContext` v1 (§11) | sign coverage, shaped for **coverage not plausibility** like `track-log.obct`: no other fixture carried a negative coordinate or a pre-1970 time, so until this one a mirror could read `lat_udeg`/`lon_udeg` as `u32` and both timestamps as `u64` and pass the whole suite. El Chaltén, Patagonia — southern *and* western — with a fix at 1938-04-24T22:13:20Z and an older bundle an hour before it. Read unsigned those become ≈ 4245°N and a clock 585 billion years ahead: visibly impossible rather than subtly wrong. The two `i64`s sit at different offsets, so one correct sign extension cannot cover for the other, and the bundle group runs the trap the other way — `generation` and `crc32` both have their top bit set, so a *signed* read gets `-2` and `-2147483647` |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
@@ -73,8 +73,9 @@ A drift on any side fails that side's tests — the files are the contract.
 
 The eight positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-only dry,
 96 × 96 × nine-frame DWD shape, coarse native model times, a genuine four-hour-latent observation
-before the current hourly base, all-no-data, raw4, RLE4, and the exact 65,536-byte producer-policy
-boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
+before the current hourly base, all-no-data, raw4, RLE4, and the exact 262,144-byte
+producer-policy boundary (raised from 65,536 by WXR5 #1244; it is a phone policy, not a format
+limit). The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
 
 The thirteen `weather-invalid-*` files isolate truncation, a bad section offset, section overlap,
 nonzero hourly flags/reserved bytes, a reserved intensity nibble, RLE expansion beyond 256 cells,
@@ -90,21 +91,100 @@ decodes and re-encodes every positive byte-for-byte and rejects every negative.
 
 ### OBCG grid vectors
 
-The six positive `grid-*.obcg` files pin [`OBCG_Spec.md`](../OBCG_Spec.md): an all-dry
-sentinel-only object, raw4, RLE4, an explicit all-no-data tile (unavailable is never the dry
-sentinel), a 3 × 3-tile object across five directory pages with last-page padding (the corridor
-request-accounting target), and edge-tile no-data padding. Cells the Rust tests pin are the
-cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not re-encoded, because its
-only producer is the Rust baker.
+The ten positive `grid-*.obcg` files pin [`OBCG_Spec.md`](../OBCG_Spec.md): an all-dry
+sentinel-only object; one tile per §5 codec — raw4 on pseudo-random cells, RLE4 winning a tie
+against deflate4, RLE4 winning outright, and deflate4 on 64 × 64 upsampled coarse data; the same
+deflate4 tile again with the padding bits of its final byte flipped (a second legal byte image,
+there to prove a decoder must *not* reject it); a 256 × 256 frame at tile edge 256, WXR1's
+production geometry and the only payload longer than 255 bytes; an explicit all-no-data tile
+(unavailable is never the dry sentinel); a 3 × 3-tile object across five directory pages with
+last-page padding (the corridor request-accounting target); and edge-tile no-data padding. Cells
+the Rust tests pin are the cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not
+re-encoded, because its only producer is the Rust baker — and each positive's codec id is pinned
+too, because §5's choice rule is what keeps RLE4 alive where deflate4 loses.
 
-The eighteen `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
+Every vector is a window of the **one published lattice** — 10,000 × 10,000 µdeg cells,
+`cell_size_m = 1113` — and none of them carries provenance: #1246 deleted the product id and tier
+from the header, so bytes 12–13 are reserved and zero in every file above.
+
+The twenty-five `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
 page, tile), a shifted payload offset, an aliased/overlapping payload, impossible dimensions, a
-non-power-of-two tile edge, zero entries per page, overlong and noncanonical RLE, a compressible
-raw4 payload, an encoded all-dry full tile (the sentinel is mandatory there), a dry sentinel at
-a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry sentinel,
-reserved byte, and double source-class flag. Except for truncation and the deliberate stale-CRC
-files, every CRC covering a corrupted byte is recomputed so structural validation cannot hide
-behind an integrity check.
+non-power-of-two tile edge, zero entries per page, a codec id outside the closed set, overlong
+and noncanonical RLE, a compressible raw4 payload, five deflate4 failures (a truncated stream, a
+stream that over-inflates past the tile's raw4 size, one that under-inflates, one whose match
+distance reaches before the start of the tile's image, and a valid stream that fails to beat the
+canonical raw4/RLE4 length), an encoded all-dry full tile (the sentinel is mandatory there), a dry
+sentinel at a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry
+sentinel, reserved byte, nonzero bytes 12–13 (the deleted provenance pair, which is a malformed
+object rather than a code a reader must tolerate), and a double source-class flag. Except for
+truncation and the deliberate stale-CRC files, every CRC covering a corrupted byte is recomputed so
+structural validation cannot hide behind an integrity check.
+
+### The shared weather manifest (`wx-manifest-v2.json`)
+
+`wx-manifest-v2.json` is the first **manifest** ever cross-pinned between the two client
+implementations. Until WXR4 (#1243) only the `.obcg`/`.obcw` byte vectors were shared: the Swift
+suite synthesised its own manifests, so the two parsers of the one document every rider reads first
+could drift without a test noticing.
+
+It is a complete [`OBCG_Spec.md` §10](../OBCG_Spec.md) v2 document over the production canonical
+lattice — 36,000 × 18,000 cells at 0.01°, a 6 × 4 grid of 6,144 × 4,608-cell shards, nine frames at
+15 minutes. Its object lengths and CRCs are deterministic placeholders rather than a recording of a
+live bake, because what this fixture pins is the *document* contract; the bytes are pinned by the
+`grid-*.obcg` vectors above. It carries deliberate presence holes — f0 omits shards (2,0) and (3,0),
+f120 omits (5,3) — so the present / dry / out-of-domain trichotomy is exercised rather than assumed,
+and exactly one shard (f0's (3,2)) is observed. Coordinates throughout are microdegrees in the
+−180..180 / −90..90 convention; `west > east` means an antimeridian crossing and every other
+spelling of an out-of-range coordinate is an error rather than a clamp
+([`OBCG_Spec.md` §10.2a](../OBCG_Spec.md)).
+
+Three obligations, recorded in `manifest.json`'s `wx_manifest_v2` block:
+
+- the baker parses it back through its own `deny_unknown_fields` **writer** model, so a field the
+  fixture invents or misspells fails loudly instead of being silently ignored by the two lenient
+  readers;
+- both clients derive the **same shard key set from the same bbox** — the `bbox_equivalence` cases
+  are the pinned answers, and that equivalence is what replaced product selection. The ten cases are
+  chosen to be the geometry a second implementation can get wrong while passing everything else: an
+  exact shard boundary (the half-open rule), a southern-hemisphere corridor, an antimeridian wrap
+  (`west > east`), the polar band outside `covered_rows`, and three bboxes that must be **refused**
+  rather than clamped — wholly off the lattice, a 0..360 longitude, and one reaching past a pole.
+  Each case pins the shard set, the composed f0 keys, and the plan's outcome, because "no objects" is
+  several different answers and only one of them is about rain;
+- a listed-but-missing shard is an error, a bitmap-absent shard is dry, and a shard off the grid is
+  out of domain. A 404 is never dry, in either language.
+
+WXR5 (#1244) added two more blocks beside those, both driven from `manifest.json` by both suites so
+neither language can quietly test a different list.
+
+**`rejection_equivalence`** — 28 hostile mutations of the fixture, each with a verdict both clients
+must reach. `bbox_equivalence` pins what the two readers *compute*; this pins what they **refuse**,
+which is where two JSON stacks actually rot apart. It exists because a review ran a corpus like it
+through both readers and found five documents they answered differently and three that crashed one
+of them outright — an unbounded `width` overflowing a shard-grid division, a shard count overflowing
+its own multiplication, and a `present` string with a non-ASCII character being sliced by byte. A
+manifest is the first thing a phone fetches from a network nobody controls, so *does not crash* is
+the floor and *answers identically* is the contract. The cases also pin the type coercions the
+document/entry strictness split could not state: an integral float is not an integer version, an
+explicit `null` is not an absent key, a space is not the `T` in RFC 3339, and a `+` is not a hex
+digit. Each case is `{name, why, patch, verdict}` where the patch is a list of `{op, path, value}`
+over RFC 6901 pointers, and each suite applies it with its own small walker — deliberately
+hand-rolled on both sides, because a JSON-Patch library against a hand walker is the asymmetry that
+makes a "cross-language" fixture test one language.
+
+**`resample_equivalence`** — nine latitudes of WXR5's uniform east-west resample, pinned by output
+rather than by arithmetic: source columns, output window, exact bundle length, and an FNV-1a 64 of
+frame 0's decoded cells. The hash is the load-bearing column. At the raw4 worst case every tile is
+128 bytes whatever is in it, so byte lengths alone would let a half-cell drift in the
+nearest-neighbour column map move which cells a rider sees while every length still matched. FNV-1a
+is chosen because it is four lines in any language: a hash needing a library is a hash one of the
+two suites quietly skips.
+
+Because §5 leaves compressed bytes to the encoder, the deflate4 fixtures' root of trust is the
+exact `miniz_oxide` version the workspace lock pins (`=0.8.9` in `firmware/obc-formats` and
+`host/obc-vectors`). Moving it is a fixture regeneration in the same commit, never a lockfile
+refresh: a different compressor produces a different — equally valid — object, which every
+sha256 here would report as a failure.
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, the service/characteristic UUIDs — including the Weather
@@ -119,7 +199,7 @@ GPX→OBCR converter; everything else is built from spec constants). After a
 **deliberate** spec change:
 
 ```bash
-cd firmware && cargo test -p obc-vectors regenerate -- --ignored
+cargo test -p obc-vectors regenerate -- --ignored
 ```
 
 …then update `manifest.json` to match and flag the app side **and** the web

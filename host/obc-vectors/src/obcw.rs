@@ -15,7 +15,14 @@ const WEST: i32 = 7_000_000;
 const NORTH: i32 = 48_000_000;
 const EAST: i32 = 8_500_000;
 /// Phone producer policy from OBCW_Spec.md §1, intentionally outside the format authority.
-pub const PRODUCER_POLICY_MAX_LEN: usize = 64 * 1024;
+///
+/// Raised from 64 KiB to 256 KiB by WXR5 #1244: under one uniform 1 km lattice a 90 km corridor is
+/// 162 x 162 cells in every frame, whose raw4 worst case is ~153.6 kB. The number is a *policy*,
+/// not a format limit — §2 says so — and the device pays no RAM for it.
+pub const PRODUCER_POLICY_MAX_LEN: usize = 256 * 1024;
+/// How many raw (incompressible) tiles [`maximum_policy`] carries. Named because two of the
+/// invalid-RLE vectors reach for the *last* directory entry by this index.
+const MAX_POLICY_RAW_TILES: usize = 1_866;
 
 fn hours(dry: bool) -> [HourlyRecord; HOURLY_COUNT] {
     core::array::from_fn(|i| HourlyRecord {
@@ -180,12 +187,22 @@ pub fn dwd_shaped() -> Vec<u8> {
     bytes
 }
 
+/// The tile counts are chosen so the encoded bundle lands *exactly* on the policy maximum: 1,866
+/// incompressible raw tiles at 128 payload bytes plus a 12-byte directory entry each, then two
+/// 72-run RLE tiles for the remaining 168 bytes. Landing on the cap exactly is the point — this
+/// vector is what proves a reader accepts the largest bundle a producer may emit.
+///
+/// The remainder is spent on **two** short-run tiles rather than one longer one because the runs
+/// have to stay under RLE4's 16-cell ceiling: `invalid_rle_noncanonical` corrupts the tile at index
+/// [`MAX_POLICY_RAW_TILES`] by making two adjacent runs equal, and that is only *non*-canonical
+/// when the runs are short enough to have been coalesced.
 pub fn maximum_policy() -> Vec<u8> {
-    let mut tiles: Vec<[u8; TILE_CELLS]> = (0..462).map(raw_tile).collect();
-    tiles.push(runs_tile(108, 0));
+    let mut tiles: Vec<[u8; TILE_CELLS]> = (0..MAX_POLICY_RAW_TILES).map(raw_tile).collect();
+    tiles.push(runs_tile(72, 0));
+    tiles.push(runs_tile(72, 5));
     let frames = [RainFrameInput {
         valid_at: GENERATED_AT + 900,
-        width: 463 * 16,
+        width: (MAX_POLICY_RAW_TILES as u16 + 2) * 16,
         height: 16,
         cell_size_m: 1_000,
         quality_flags: QUALITY_FORECAST,
@@ -277,7 +294,7 @@ pub fn invalid_rle_overlong() -> Vec<u8> {
     let mut bytes = maximum_policy();
     let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
     let directory = rd_u32(&bytes, descriptor + obcw::FRAME_TILE_DIRECTORY_OFFSET) as usize;
-    let last_entry = directory + 462 * obcw::TILE_DIRECTORY_ENTRY_LEN;
+    let last_entry = directory + MAX_POLICY_RAW_TILES * obcw::TILE_DIRECTORY_ENTRY_LEN;
     let data = rd_u32(&bytes, last_entry + obcw::TILE_DATA_OFFSET) as usize;
     let len = u16::from_le_bytes(bytes[last_entry + 4..last_entry + 6].try_into().unwrap()) as usize;
     for byte in &mut bytes[data..data + len] {
@@ -294,7 +311,7 @@ pub fn invalid_rle_noncanonical() -> Vec<u8> {
     let mut bytes = maximum_policy();
     let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
     let directory = rd_u32(&bytes, descriptor + obcw::FRAME_TILE_DIRECTORY_OFFSET) as usize;
-    let last_entry = directory + 462 * obcw::TILE_DIRECTORY_ENTRY_LEN;
+    let last_entry = directory + MAX_POLICY_RAW_TILES * obcw::TILE_DIRECTORY_ENTRY_LEN;
     let data = rd_u32(&bytes, last_entry + obcw::TILE_DATA_OFFSET) as usize;
     bytes[data + 1] = (bytes[data + 1] & 0xF0) | (bytes[data] & 0x0F);
     refresh_crc(&mut bytes);

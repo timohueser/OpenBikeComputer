@@ -2,17 +2,32 @@
 //!
 //! Deterministic (fixed xorshift seed) so a failure reproduces exactly. This is the WX5/WX6
 //! "every decode is bounds-checked and fuzzed" gate over every adapter's full decode path — tar
-//! + ODIM HDF5 for DWD RV, bzip2 + GRIB2/CCSDS for ICON-EU, gzip + GRIB2/PNG for MRMS, and the
-//!   byte-range GRIB2 complex-packing paths of HRRR and GFS.
+//! + ODIM HDF5 for DWD RV, bzip2 + GRIB2/CCSDS for ICON-EU, gzip + GRIB2/PNG for MRMS, the
+//!   byte-range GRIB2 complex-packing paths of HRRR and GFS, and the tiled-deflate GeoTIFF path
+//!   of the two OPERA composites.
 
-use std::path::PathBuf;
+#![cfg(feature = "external-fixtures")]
 
 use obc_wx_bake::grib::{decode_bzip2_field, decode_field, decode_gzip_field};
-use obc_wx_bake::idx;
 use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms};
 
+/// The wall clock the RV tar is baked against. Since #1251 the adapter selects its members
+/// by canonical instant, so a bake needs one; the fuzz corpus only cares that a mutated tar
+/// is rejected, and any fixed instant does that.
+const RV_NOW: i64 = 1_775_745_600;
+use obc_wx_bake::{idx, tiff};
+
 fn fixture(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    if name.starts_with("opera-") {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+        return std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+    let package = if name.starts_with("composite_rv_") || name.starts_with("icon-eu-") {
+        "weather-dwd-icon"
+    } else {
+        "weather-noaa"
+    };
+    let path = obc_fixtures::root().join(package).join(name);
     std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
@@ -48,7 +63,7 @@ fn mutated_rv_tars_error_and_never_panic() {
     let mut rejected = 0usize;
     for _ in 0..24 {
         let mutated = mutate(&good, &mut rng);
-        if dwd_rv::bake_tar(&mutated).is_err() {
+        if dwd_rv::bake_tar(&mutated, RV_NOW).is_err() {
             rejected += 1;
         }
     }
@@ -56,7 +71,7 @@ fn mutated_rv_tars_error_and_never_panic() {
     assert!(rejected >= 18, "only {rejected}/24 mutated tars were rejected");
     // Degenerate shapes.
     for garbage in [vec![], vec![0u8; 5], vec![0xFF; 10_000]] {
-        assert!(dwd_rv::bake_tar(&garbage).is_err());
+        assert!(dwd_rv::bake_tar(&garbage, RV_NOW).is_err());
     }
 }
 
@@ -126,6 +141,36 @@ fn mutated_range_messages_error_and_never_panic() {
     // Cross-contract: neither source's bytes satisfy the other's pinned geometry.
     assert!(decode_field(&hrrr_good, &gfs_expected).is_err());
     assert!(decode_field(&gfs_good, &hrrr_expected).is_err());
+}
+
+/// The OPERA COG path (WXR6): a hand-written TIFF tag parser plus deflate over 3 MB of somebody
+/// else's bytes every five minutes, so the mutation budget here is the largest in the file. A
+/// mutation that lands in the unread quality band or in tile padding can legitimately survive, so
+/// the bar is "most are rejected and none panics" — and every survivor still had to satisfy the
+/// pinned raster, projection, metadata and sample-range contract.
+#[test]
+fn mutated_opera_composites_error_and_never_panic() {
+    let cirrus = fixture("opera-cirrus-20260810T0000-dbzh-crop.tiff");
+    let nimbus = fixture("opera-nimbus-20260810T0000-rate-crop.tiff");
+    let mut rng = XorShift(0x1191_0006);
+    let mut rejected = 0usize;
+    for _ in 0..64 {
+        for good in [&cirrus, &nimbus] {
+            let mutated = mutate(good, &mut rng);
+            if tiff::decode_band0(&mutated).is_err() {
+                rejected += 1;
+            }
+        }
+    }
+    assert!(rejected >= 100, "only {rejected}/128 mutated composites were rejected");
+    for garbage in [vec![], vec![0u8; 5], vec![0x49; 10_000], b"II\x2a\x00\x08\x00\x00\x00".to_vec()] {
+        assert!(tiff::decode_band0(&garbage).is_err());
+    }
+    // The metadata scanner runs over whatever survived the parse; it must never index past a
+    // truncated or unterminated item.
+    for text in ["", "<Item name=\"date\"", "<Item name=\"date\">", "<Item name=\"date\"></Item>", "<Item"] {
+        let _ = tiff::metadata_item(text, "date");
+    }
 }
 
 /// The `.idx` selection layer is pure text parsing over untrusted upstream bytes: mutate a real

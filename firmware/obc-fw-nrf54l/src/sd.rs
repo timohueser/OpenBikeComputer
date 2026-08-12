@@ -242,7 +242,9 @@ const SD_MAX_DIRS: usize = 4;
 /// epic's device-cost review requires a mounted set to hold **every** shard's handle open for the
 /// mount lifetime — re-opening per query would put a FAT directory walk in the render loop. A DACH
 /// set is core + coarse + ~6 geometry = 8 handles, so the budget is that 8 plus the unchanged
-/// 5-handle peak (of which the map's own slot is now the set's), plus margin.
+/// 5-handle peak (of which the map's own slot is now the set's), plus one session-long weather
+/// bundle reader and no unused margin. The 11-shard ceiling therefore still fits exactly at the
+/// worst ride/upload/weather peak rather than failing only when rain data is mounted.
 ///
 /// The cost is measured, not guessed: the fork's `FileInfo` (`filesystem/files.rs`) is `RawFile`
 /// 4 · `RawVolume` 4 · `current_cluster` 8 · `current_offset` 4 · `Mode` 1 · `DirEntry` 40 ·
@@ -620,8 +622,16 @@ pub struct Storage {
     /// through (issue #1039).
     open_upload: Option<(RawFile, UploadOwner)>,
     /// Fully validated boot choice over `/WEATHER.A` and `/WEATHER.B`. Only metadata is resident;
-    /// OBCW bytes remain on SD and later readers reopen the selected fixed name.
+    /// OBCW bytes remain on SD.
     weather_active: Option<WeatherCandidate>,
+    /// Session-long read handle for [`weather_active`](Storage::weather_active), opened after the
+    /// A/B validation pass and replaced on commit. Holding it mirrors the map/route streams and is
+    /// important on embedded-sdmmc: reopening the file for every sample would put a directory walk
+    /// and open/close pair on the weather screen's hot path.
+    open_weather: Option<(RawFile, u32)>,
+    /// Full-validation proof for `open_weather`. Readers reconstructed from this token skip the
+    /// whole-object CRC/tile walk; the held read-only handle is the stable-source invariant.
+    weather_mount: Option<obc_weather::ValidatedBundle>,
     /// The loaded map's display name — its filename stem, captured in [`open_map`](Storage::open_map)
     /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
     /// via [`App::set_map_info`](obc_app::App::set_map_info).
@@ -1296,6 +1306,8 @@ impl Storage {
             open_object: None,
             open_upload: None,
             weather_active: None,
+            open_weather: None,
+            weather_mount: None,
             map_name: String::new(),
         })
     }
@@ -4612,13 +4624,73 @@ impl Storage {
     /// Revalidate both fixed roots and retain the deterministic active generation. This runs once
     /// at mount; later weather upload composition refreshes it after a successful commit.
     pub fn refresh_weather_selection(&mut self) -> SlotSelection {
-        let selection = weather_store::inspect_slots(self);
+        // embedded-sdmmc refuses a second open of the same file. Drop the old selected slot before
+        // the validation pass opens both roots, then reopen exactly the winning one for streaming.
+        if let Some((file, _)) = self.open_weather.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+        self.weather_mount = None;
+        self.weather_active = None;
+        let mut selection = weather_store::inspect_slots(self);
         self.weather_active = selection.active;
+        if let Some(active) = selection.active {
+            let name = weather_store::slot_file_name(active.slot);
+            match self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly) {
+                Ok(file) => {
+                    let len = self.vmgr.file_length(file).unwrap_or(0);
+                    let source = SdByteSource::new(&self.vmgr, file, len);
+                    match obc_weather::WeatherReader::open(&source) {
+                        Ok(reader) => {
+                            let header = reader.header();
+                            let reopened = WeatherCandidate {
+                                slot: active.slot,
+                                generation: header.generation,
+                                generated_at: header.generated_at,
+                                total_len: header.total_len,
+                                bundle_crc32: header.crc32,
+                            };
+                            // The root may have changed between the two-slot inspection and this
+                            // session-open. Never retain selection metadata from one object beside
+                            // a validation token/source for another.
+                            if reopened == active {
+                                self.weather_mount = Some(reader.validated());
+                                self.open_weather = Some((file, len));
+                            } else {
+                                let _ = self.vmgr.close_file(file);
+                                self.weather_active = None;
+                                selection.active = None;
+                            }
+                        }
+                        Err(_) => {
+                            let _ = self.vmgr.close_file(file);
+                            self.weather_active = None;
+                            selection.active = None;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // The file was readable during validation and disappeared before the reopen.
+                    // Fail closed: metadata without a readable source is not an active bundle.
+                    self.weather_active = None;
+                    selection.active = None;
+                }
+            }
+        }
         selection
     }
 
     pub const fn weather_active(&self) -> Option<WeatherCandidate> {
         self.weather_active
+    }
+
+    /// A cheap [`ByteSource`] view over the session-open active weather bundle.
+    pub fn weather_source(&self) -> Option<Source<'_>> {
+        self.open_weather.map(|(file, len)| SdByteSource::new(&self.vmgr, file, len))
+    }
+
+    /// The validation proof paired with [`weather_source`](Storage::weather_source).
+    pub const fn weather_mount(&self) -> Option<obc_weather::ValidatedBundle> {
+        self.weather_mount
     }
 
     /// Run after `Storage` has moved into its final `.bss` home. Keeping this out of
@@ -4646,6 +4718,19 @@ impl WeatherSlotIo for Storage {
     type Error = WeatherIoError;
 
     fn inspect_slot(&mut self, slot: WeatherSlot, magic: Option<[u8; 4]>) -> SlotValidation {
+        // The active root is held open for the render/sampling lifetime, and embedded-sdmmc
+        // refuses a second open. Ordinary A/B selection may reuse its cached fully-validated
+        // identity; a caller asking for alternate held-magic validation reads through that same
+        // handle instead of reopening it.
+        if self.weather_active.is_some_and(|active| active.slot == slot) {
+            if magic.is_none() {
+                return SlotValidation::Valid(self.weather_active.expect("checked Some above"));
+            }
+            if let Some(source) = self.weather_source() {
+                return obc_weather::validate_slot_with_magic(slot, &source, magic.expect("checked Some above"));
+            }
+            return SlotValidation::Unreadable;
+        }
         let Ok(name) = ShortFileName::create_from_str(weather_store::slot_file_name(slot)) else {
             return SlotValidation::Unreadable;
         };

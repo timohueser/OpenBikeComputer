@@ -64,6 +64,43 @@ pub struct WeatherReader<'a, S: ByteSource + ?Sized> {
     header: Header,
 }
 
+/// Proof that one **stable** byte source was fully validated as canonical OBCW.
+///
+/// `WeatherReader::open` performs the expensive whole-object CRC and tile/layout validation once,
+/// then [`ValidatedBundle::reader`] re-borrows the same session-stable object using only its stored
+/// header and one matching-header read. This is the mount token filesystem hosts retain beside an open file;
+/// its fields are private, so callers cannot turn an unvalidated header into a fast reader.
+///
+/// The source must remain byte-stable while the token is used. The device guarantees that by
+/// holding the active A/B slot read-only and writing only the inactive slot; the simulator replaces
+/// the token whenever it replaces/re-anchors its byte vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedBundle {
+    header: Header,
+}
+
+impl ValidatedBundle {
+    pub const fn header(self) -> Header {
+        self.header
+    }
+
+    /// Open a cheap reader over the stable source this token belongs to. Length plus the complete
+    /// decoded header (including the bundle CRC) must match the validated proof, preventing a token
+    /// from being paired with another equal-length OBCW object. This is one header read, never the
+    /// whole-object CRC/tile walk.
+    pub fn reader<'a, S: ByteSource + ?Sized>(self, source: &'a S) -> Result<WeatherReader<'a, S>, Error> {
+        if source.len() != self.header.total_len {
+            return Err(FormatError::TotalLength.into());
+        }
+        let mut bytes = [0u8; HEADER_LEN];
+        source.read_at(0, &mut bytes)?;
+        if obcw::decode_header(&bytes)? != self.header {
+            return Err(FormatError::Crc.into());
+        }
+        Ok(WeatherReader { source, header: self.header })
+    }
+}
+
 impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
     #[inline(never)]
     pub fn open(source: &'a S) -> Result<Self, Error> {
@@ -81,6 +118,11 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         Ok(reader)
     }
 
+    /// Capture the private fast-reopen proof after this reader completed full validation.
+    pub const fn validated(&self) -> ValidatedBundle {
+        ValidatedBundle { header: self.header }
+    }
+
     pub const fn header(&self) -> Header {
         self.header
     }
@@ -93,6 +135,39 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         let mut bytes = [0u8; HOURLY_RECORD_LEN];
         self.source.read_at(offset, &mut bytes)?;
         Ok(obcw::decode_hourly_record(&bytes)?)
+    }
+
+    /// Read the fixed hourly section in the same four-record windows used by validation.
+    ///
+    /// A snapshot always needs all 24 records. Calling [`Self::hourly`] for each one turns that
+    /// contiguous 576-byte section into 24 small SD transactions; six bounded 96-byte reads carry
+    /// the exact same decoded records without growing the reader or allocating.
+    pub fn hourly_records(&self) -> Result<[HourlyRecord; HOURLY_COUNT], Error> {
+        let mut records = [HourlyRecord {
+            valid_time_offset_s: 0,
+            temperature_deci_c: 0,
+            precipitation_tenth_mm: 0,
+            precipitation_probability_pct: 0,
+            condition: 0,
+            wind_from_deg: 0,
+            wind_speed_deci_ms: 0,
+            wind_gust_deci_ms: 0,
+            flags: 0,
+        }; HOURLY_COUNT];
+        let mut bytes = [0u8; OPEN_HOURLY_WINDOW_RECORDS * HOURLY_RECORD_LEN];
+        for first in (0..HOURLY_COUNT).step_by(OPEN_HOURLY_WINDOW_RECORDS) {
+            let count = (HOURLY_COUNT - first).min(OPEN_HOURLY_WINDOW_RECORDS);
+            let byte_len = count * HOURLY_RECORD_LEN;
+            let offset = checked_add(HEADER_LEN as u32, checked_mul(first as u32, HOURLY_RECORD_LEN as u32)?)?;
+            self.source.read_at(offset, &mut bytes[..byte_len])?;
+            for local in 0..count {
+                let start = local * HOURLY_RECORD_LEN;
+                records[first + local] = obcw::decode_hourly_record(
+                    bytes[start..start + HOURLY_RECORD_LEN].try_into().map_err(|_| FormatError::Bounds)?,
+                )?;
+            }
+        }
+        Ok(records)
     }
 
     pub fn frame(&self, index: usize) -> Result<FrameDescriptor, Error> {
@@ -472,6 +547,43 @@ mod tests {
         WeatherReader::open(&source).unwrap();
         assert_eq!(source.calls.get(), 269, "DWD open read_at budget");
         assert_eq!(source.bytes_read.get(), 92_848, "DWD open byte budget");
+    }
+
+    #[test]
+    fn validated_mount_reopens_without_rereading_the_bundle() {
+        let bytes = dwd_shaped_bundle();
+        let source = CountingSource { bytes: &bytes, calls: Cell::new(0), bytes_read: Cell::new(0) };
+        let reader = WeatherReader::open(&source).unwrap();
+        let mount = reader.validated();
+        let calls_after_validation = source.calls.get();
+        let bytes_after_validation = source.bytes_read.get();
+
+        let reopened = mount.reader(&source).unwrap();
+        assert_eq!(reopened.header(), reader.header());
+        assert_eq!(source.calls.get(), calls_after_validation + 1, "fast reopen reads only the header");
+        assert_eq!(source.bytes_read.get(), bytes_after_validation + HEADER_LEN, "fast reopen reads only the header");
+
+        let shorter = SliceSource(&bytes[..bytes.len() - 1]);
+        assert_eq!(mount.reader(&shorter).err(), Some(Error::Format(FormatError::TotalLength)));
+
+        let mut different = bytes.clone();
+        different[obcw::HDR_GENERATION] ^= 1;
+        let equal_length_other = SliceSource(&different);
+        assert_eq!(mount.reader(&equal_length_other).err(), Some(Error::Format(FormatError::Crc)));
+    }
+
+    #[test]
+    fn complete_hourly_section_uses_six_bounded_reads() {
+        let bytes = dwd_shaped_bundle();
+        let source = CountingSource { bytes: &bytes, calls: Cell::new(0), bytes_read: Cell::new(0) };
+        let reader = WeatherReader::open(&source).unwrap();
+        source.calls.set(0);
+        source.bytes_read.set(0);
+
+        let records = reader.hourly_records().unwrap();
+        assert_eq!(source.calls.get(), 6);
+        assert_eq!(source.bytes_read.get(), HOURLY_COUNT * HOURLY_RECORD_LEN);
+        assert_eq!(records, core::array::from_fn(|index| reader.hourly(index).unwrap()));
     }
 
     #[test]

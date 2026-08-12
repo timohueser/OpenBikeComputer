@@ -7,7 +7,7 @@ description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md):
 
 [dependencies]
 obc-crc = { path = "../../firmware/obc-crc" }
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { path = "../../firmware/obc-formats", features = ["obcg-deflate"] } # OBCG codec 2 (host side only)
 obc-weather = { path = "../../firmware/obc-weather" }
 # The OBCT terrain fixture is *built* here from the spec's field tables like every other one; this
 # is only so `tests/vectors.rs` can read it back through the production sampler, the same way the
@@ -18,6 +18,11 @@ obc-route = { path = "../../firmware/obc-route" }
 # hand-built from the spec's field table like every other fixture here — a signature is the one
 # thing a builder cannot transcribe from prose.
 obc-dfu = { path = "../../firmware/obc-dfu" }
+# Only for the OBCG codec-2 negatives: a *malformed* deflate stream (truncated, over-inflating,
+# under-inflating) cannot be produced by the byte authority, which only ever emits valid ones.
+# Positives still go through `obc_formats::obcg::encode_format` like every other fixture.
+# Pinned exactly for the same reason obc-formats pins it: these fixtures' bytes are the contract.
+miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
 
 [dev-dependencies]
 heapless = "0.8"

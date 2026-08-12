@@ -1,0 +1,546 @@
+{
+  "format": "obc-wx-event/1",
+  "id": "us-derecho-2020-08-10",
+  "title": "2020-08-10 Midwest derecho",
+  "region": "conus",
+  "window_start": "2020-08-10T18:48:00Z",
+  "window_end": "2020-08-10T20:48:00Z",
+  "bake": {
+    "sources": [
+      "mrms",
+      "hrrr"
+    ],
+    "now": "2020-08-10T18:52:00Z",
+    "bbox_udeg": {
+      "south_udeg": 40500000,
+      "west_udeg": -96500000,
+      "north_udeg": 43500000,
+      "east_udeg": -90000000
+    }
+  },
+  "coverage_udeg": {
+    "south_udeg": 38000000,
+    "west_udeg": -98080000,
+    "north_udeg": 45680000,
+    "east_udeg": -87840000
+  },
+  "basemap_region": "north-america/us/iowa",
+  "truth": {
+    "requested_offsets_min": [
+      15,
+      30,
+      45,
+      60,
+      75,
+      90,
+      105,
+      120
+    ],
+    "cadence_seconds": 120
+  },
+  "members": [
+    {
+      "role": "service",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-185200.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-185200.grib2.gz",
+      "kind": "probe",
+      "object_length": null,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-185000.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-185000.grib2.gz",
+      "kind": "probe",
+      "object_length": null,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-184800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-184800.grib2.gz",
+      "kind": "probe",
+      "object_length": 448150,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t18z.wrfsubhf04.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t18z.wrfsubhf04.grib2.idx",
+      "kind": "probe",
+      "object_length": null,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2.idx",
+      "kind": "probe",
+      "object_length": 10220,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2.idx",
+      "kind": "probe",
+      "object_length": 10215,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2.idx",
+      "kind": "probe",
+      "object_length": 10114,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf01.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf01.grib2.idx",
+      "kind": "probe",
+      "object_length": 10013,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-184800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-184800.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-184800.grib2.gz",
+      "length": 448150,
+      "sha256": "fb78ef1e5bafaf3db57b8ce5046a60853b8471860cbe98bb2e3e352200abf1bf",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-183800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-183800.grib2.gz",
+      "kind": "probe",
+      "object_length": null,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2",
+      "kind": "probe",
+      "object_length": 186909295,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2.idx",
+      "kind": "body",
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf02.grib2.idx",
+      "length": 10114,
+      "sha256": "0979d3ed4e38d039b121c6eb8e3b8511810288cb6558dd1e07e8788523c571ef",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf02.grib2",
+      "kind": "range",
+      "object_length": 186909295,
+      "start": 162616821,
+      "end_inclusive": 162662264,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf02.grib2@162616821-162662264",
+      "length": 45444,
+      "sha256": "1bb44439b117483526650283ce0691acc4d76f51c2069f18c804ce9dfcad2758",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "kind": "probe",
+      "object_length": 192621021,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2.idx",
+      "kind": "body",
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf03.grib2.idx",
+      "length": 10215,
+      "sha256": "25f149159caf4371d2b7be4eb5a7cad860c282831f5c3b94c130a183865d7bdc",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "kind": "range",
+      "object_length": 192621021,
+      "start": 23066514,
+      "end_inclusive": 23113886,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf03.grib2@23066514-23113886",
+      "length": 47373,
+      "sha256": "c5fc04d101d17b39797036224ab965863462d0a7cf256b7190e17c1ca6799767",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "kind": "range",
+      "object_length": 192621021,
+      "start": 71546481,
+      "end_inclusive": 71593450,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf03.grib2@71546481-71593450",
+      "length": 46970,
+      "sha256": "26cf10c3077b1852a2e11d640a92bbd19ded59b188d31d8d80322f77465e1ad5",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "kind": "range",
+      "object_length": 192621021,
+      "start": 119513228,
+      "end_inclusive": 119562347,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf03.grib2@119513228-119562347",
+      "length": 49120,
+      "sha256": "ec2b98695745b98d9953f62a2e16cf9feed95df8c5eedaf843c281d2ec74f362",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf03.grib2",
+      "kind": "range",
+      "object_length": 192621021,
+      "start": 167720684,
+      "end_inclusive": 167770594,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf03.grib2@167720684-167770594",
+      "length": 49911,
+      "sha256": "73b991423335303b6238fdc7cca2ba591b855f00d72cd576b5d481aaed7c38e1",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "kind": "probe",
+      "object_length": 197621511,
+      "stored": false,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2.idx",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2.idx",
+      "kind": "body",
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf04.grib2.idx",
+      "length": 10220,
+      "sha256": "5f79515f89ea260104cc1f2bd7ee000c67d687889a78e4bb92c199edfd19e648",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "kind": "range",
+      "object_length": 197621511,
+      "start": 23587278,
+      "end_inclusive": 23636767,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf04.grib2@23587278-23636767",
+      "length": 49490,
+      "sha256": "6ad4baa933a5323f383dabadf3651c9a4249b05980067a04fe8912814dd8a0f4",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "kind": "range",
+      "object_length": 197621511,
+      "start": 72266095,
+      "end_inclusive": 72315311,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf04.grib2@72266095-72315311",
+      "length": 49217,
+      "sha256": "04780e873c64735246ee35300b5aa73c7a108ea0f26828eedcf349dee1cc1b91",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "service",
+      "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "archive_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhf04.grib2",
+      "kind": "range",
+      "object_length": 197621511,
+      "start": 121873450,
+      "end_inclusive": 121923086,
+      "path": "upstream/hrrr/hrrr.t17z.wrfsubhf04.grib2@121873450-121923086",
+      "length": 49637,
+      "sha256": "e1e886abdd8b138ca181add700ae3d84a35c2a11c1f687abf89259fb593a47c1",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-190200.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-190200.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-190200.grib2.gz",
+      "length": 464823,
+      "sha256": "ee4b731ebf07710c743b4595c2da04cb63a096efb63fddc67c3717991bd0881b",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-191800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-191800.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-191800.grib2.gz",
+      "length": 488065,
+      "sha256": "261611724e3a0e5415df7123334007b0aee125ae498c33940bd837c33d1bb058",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-193200.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-193200.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-193200.grib2.gz",
+      "length": 512256,
+      "sha256": "10807fdabbee6f57818872a24c2a16cbda3a932be80c0d1f40a780b04d933239",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-194800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-194800.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-194800.grib2.gz",
+      "length": 539054,
+      "sha256": "c9858662a92e8e7cf8fac44c1f4b62b6753077d301d8619a50ab7ae826729d16",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-200200.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-200200.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-200200.grib2.gz",
+      "length": 547051,
+      "sha256": "9ffc0e6fb95f586f1806899c430fa346ad9115ea7903f839ed917ba249c4b1f9",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-201800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-201800.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-201800.grib2.gz",
+      "length": 559673,
+      "sha256": "1c23b7c6c5f79f9f122b0565544332bde170388a724655757cf29dbc4be87000",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-203200.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-203200.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-203200.grib2.gz",
+      "length": 570840,
+      "sha256": "934f8d888bd775d06ff9c64225950486799555abcdd85604390bdf400f1a8489",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    },
+    {
+      "role": "truth",
+      "url": "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-204800.grib2.gz",
+      "archive_url": "https://mtarchive.geol.iastate.edu/2020/08/10/mrms/ncep/PrecipRate/PrecipRate_00.00_20200810-204800.grib2.gz",
+      "kind": "body",
+      "path": "upstream/mrms/MRMS_PrecipRate_00.00_20200810-204800.grib2.gz",
+      "length": 578683,
+      "sha256": "cfc66e870a027d964c0f7f808d95113e8f800fc59f7cd623c15049256bccbe6d",
+      "stored": true,
+      "licence": "NOAA Open Data Dissemination \u2014 public-use U.S. government data, no endorsement implied",
+      "attribution_url": "https://www.noaa.gov/information-technology/open-data-dissemination"
+    }
+  ],
+  "manifest_key": "wx/v2/manifest.json",
+  "service": [
+    {
+      "key": "wx/v2/20200810T1845Z/f0/s0-0.obcg",
+      "bytes": 35904,
+      "sha256": "114c9d0984658b78f7d8ab6b4166f5d8e965cc07a4842ce613881914bf7feb7c"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f105/s0-0.obcg",
+      "bytes": 6961,
+      "sha256": "cb5a069c8e7b5c16ace4904c45518d9f43b54c889209ca0496767c1dfd71b2b3"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f120/s0-0.obcg",
+      "bytes": 6824,
+      "sha256": "6c02fdeed7909da95299d1a3cf832206baa752ba21c38583ae8026cf1fa0ccb4"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f15/s0-0.obcg",
+      "bytes": 6205,
+      "sha256": "4bf4d2c0402bf07bf50c48420a0e1532b29d123c94bb77baa35066f38c9388f5"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f30/s0-0.obcg",
+      "bytes": 6184,
+      "sha256": "4cf8420cd270b47e31c48c8a195d4544749a2d73c6b699f52a8573d00092fb54"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f45/s0-0.obcg",
+      "bytes": 6279,
+      "sha256": "22ef633694a9e4b65b4811c8a625ab31a6e3ca124b5cc5ea01fb9c65505d9176"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f60/s0-0.obcg",
+      "bytes": 6381,
+      "sha256": "be3881379a8088b9f3000e422c9193131e40d2a8802c0b00aba68af8798b8569"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f75/s0-0.obcg",
+      "bytes": 6811,
+      "sha256": "72c9586f953eba741a2728ba539bb3d58b5a8589ce67468def8a7c775f795dba"
+    },
+    {
+      "key": "wx/v2/20200810T1845Z/f90/s0-0.obcg",
+      "bytes": 6858,
+      "sha256": "f3757fa5b91eb50303bdb1527bff1696640ecc444c1d0e644b24fca28d822d76"
+    },
+    {
+      "key": "wx/v2/manifest.json",
+      "bytes": 3885,
+      "sha256": "22540678054f14cadbf0ba17556d58f2af3329f071d2b542ec63404fe4db8f55"
+    }
+  ],
+  "truth_frames": [
+    {
+      "requested_offset_min": 15,
+      "offset_min": 14,
+      "valid_at": "2020-08-10T19:02:00Z",
+      "path": "truth/f14.obcg",
+      "bytes": 38369,
+      "sha256": "7f5e80b75f489c84b8f59602678bdd333b1b9e9441ac9411509661f5d08e17bb"
+    },
+    {
+      "requested_offset_min": 30,
+      "offset_min": 30,
+      "valid_at": "2020-08-10T19:18:00Z",
+      "path": "truth/f30.obcg",
+      "bytes": 40113,
+      "sha256": "ac2befb77e20c4ec81cd9dadbdaacf767f910d5ec693c6453073e3ef72b82765"
+    },
+    {
+      "requested_offset_min": 45,
+      "offset_min": 44,
+      "valid_at": "2020-08-10T19:32:00Z",
+      "path": "truth/f44.obcg",
+      "bytes": 41215,
+      "sha256": "6a20a3663481d7a77a12c4f9214867d9e94201e7074d7ee34279069e790c9872"
+    },
+    {
+      "requested_offset_min": 60,
+      "offset_min": 60,
+      "valid_at": "2020-08-10T19:48:00Z",
+      "path": "truth/f60.obcg",
+      "bytes": 42291,
+      "sha256": "907f3c4463eb4e294c954620cbf6e1240142064305cbe143aa018bfd4fb8d374"
+    },
+    {
+      "requested_offset_min": 75,
+      "offset_min": 74,
+      "valid_at": "2020-08-10T20:02:00Z",
+      "path": "truth/f74.obcg",
+      "bytes": 42052,
+      "sha256": "6e8f63d64a847f9c74eda38fa85bf44c5cb31739718ac1d1f8755274a98e8c13"
+    },
+    {
+      "requested_offset_min": 90,
+      "offset_min": 90,
+      "valid_at": "2020-08-10T20:18:00Z",
+      "path": "truth/f90.obcg",
+      "bytes": 43451,
+      "sha256": "259a66ad3424b6be8e81f07f59ce4ba3f941abd4fe89b5bc28b5ed617e9f59b6"
+    },
+    {
+      "requested_offset_min": 105,
+      "offset_min": 104,
+      "valid_at": "2020-08-10T20:32:00Z",
+      "path": "truth/f104.obcg",
+      "bytes": 43499,
+      "sha256": "75f6c3169fa927d212b99bf8dabd666e956a34940b0a5209dfe55a09f663764d"
+    },
+    {
+      "requested_offset_min": 120,
+      "offset_min": 120,
+      "valid_at": "2020-08-10T20:48:00Z",
+      "path": "truth/f120.obcg",
+      "bytes": 43067,
+      "sha256": "bfaf811574a014a7831c1f1cfd879b9e648e212d9e05a41c0830cb62892f8323"
+    }
+  ]
+}

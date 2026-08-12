@@ -27,7 +27,6 @@
 //! corridor there finds no product rather than a fabricated one. The same reasoning drops the two
 //! polar rows (a cell centred on a pole would need an edge beyond +/-90 degrees).
 
-use obc_formats::obcg::{FLAG_FORECAST, PRODUCT_GFS, TIER_FLOOR};
 use obc_formats::precip4;
 use std::fmt::Write as _;
 
@@ -35,15 +34,29 @@ use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{decode_field, DecodedField, ExpectedGrib, GFS_GLOBAL_GRID_DEFINITION_HEX};
 use crate::idx::{self, MAX_INDEX_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct, NOAA_TERMS_URL};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass, NOAA_TERMS_URL};
 
 pub const ID: &str = "gfs";
 pub const BUCKET: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
 
-/// The published window: the GFS lattice minus the antimeridian column and the two polar rows
+/// The **source window**: the GFS lattice minus the antimeridian column and the two polar rows
 /// (see the module docs). Cell centres coincide **exactly** with GFS grid points, so the mapping
-/// from source point to published cell is an integer remap — no resampling of any kind.
+/// from source point to source-window cell is an integer remap — no resampling of any kind.
+///
+/// It stays at the native 0.25 degree pitch (WXR3 #1242). This is the mosaic's **floor**: the last
+/// row of `MOSAIC_PRIORITY`, and the reason every canonical cell in the covered domain always
+/// carries a best-available value instead of needing a coverage flag. Upsampling it eagerly would
+/// be 648 M cells a frame, so the mosaic cell-replicates it lazily, one shard at a time — 750
+/// canonical cells to one GFS cell at the equator, which is exactly as coarse as it looks and
+/// honestly so.
+///
+/// Two edges of this window are load-bearing for the mosaic, and neither is obvious from the
+/// numbers. **Longitude**: dropping the antimeridian column does *not* leave a hole, because the
+/// underlying grid is periodic and `canonical::source_column` wraps onto it — without that wrap
+/// there is a 25-column stripe of permanent no-data through Fiji. **Latitude**: dropping the two
+/// polar rows genuinely does leave a hole, because latitude does not wrap. That band is the
+/// dataset's whole uncovered domain and it is named in `canonical::Lattice::covered_rows` rather
+/// than left to be discovered.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: -89_875_000,
     west_lon_udeg: -179_875_000,
@@ -176,13 +189,7 @@ impl Adapter for GfsFloor {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
         GEOMETRY.validate()?;
         // Newest sufficiently complete run: every retained lead's index must exist before the run
         // is selectable, which is also what keeps the baker from racing a partial publication.
@@ -198,17 +205,6 @@ impl Adapter for GfsFloor {
             break;
         }
         let run = selected.ok_or("no complete GFS run among the recent cycles")?;
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "gfs: newest complete run {run} is older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
 
         let mut previous_field: Option<(u32, DecodedField)> = None;
         let mut frames = Vec::with_capacity(LEADS_H.len());
@@ -256,17 +252,16 @@ impl Adapter for GfsFloor {
             });
             previous_field = Some((lead, field));
         }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
+        // The floor's hourly steps are what `derive::uniform_frames` interpolates between; it has no
+        // observation to nowcast from, so no motion history.
+        Ok(BakedSource {
             id: ID,
-            product_code: PRODUCT_GFS,
-            tier: TIER_FLOOR,
             geometry: GEOMETRY,
             reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
             attribution: ATTRIBUTION,
-            upstream_etag: None,
             frames,
-        })))
+            motion_history: Vec::new(),
+        })
     }
 }
 
@@ -319,8 +314,7 @@ pub fn deaccumulate(
     Ok(BakedFrame {
         offset_min: lead * 60,
         valid_at: run + i64::from(lead) * 3_600,
-        flags: FLAG_FORECAST,
-        source: None,
+        class: SourceClass::Forecast,
         cells,
     })
 }
@@ -416,7 +410,7 @@ mod tests {
 
     #[test]
     fn selectors_and_keys_follow_the_pinned_schema() {
-        let run = crate::manifest::parse_rfc3339("2026-08-09T12:00:00Z").unwrap();
+        let run = crate::timefmt::parse_rfc3339("2026-08-09T12:00:00Z").unwrap();
         assert_eq!(
             object_url(run, 3),
             "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260809/12/atmos/gfs.t12z.pgrb2.0p25.f003"

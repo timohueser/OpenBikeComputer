@@ -1005,12 +1005,18 @@ msg = 4  downloadAnnounce (13 bytes total):
   msg         u8   = 4
   descriptor  12   the 12-byte TransferControl (§4.2), op = 2 (download), with
                    total_len + crc32 filled in for the object about to stream
+
+msg = 5  weatherRequest (1 byte total):
+  msg         u8   = 5; authenticated request context is ready to read
 ```
 
 The **`downloadAnnounce`** (v2) is the device's answer to a download request
 (§4.2): the announce moves off `transferControl` and onto this envelope so all
 device → app control traffic shares one notify characteristic and one ordering
 domain. Unknown `msg` values must be ignored by the app (forward compatibility).
+`weatherRequest` is only a live-link hint; the authenticated context read remains the receipt
+that consumes the request. A disconnected phone discovers the same request through the dedicated
+advertised service UUID.
 
 Each `storeChanged` store keeps **its own** monotonic-per-boot revision: a trip
 upload or delete bumps the **trip** store, never the route store. A UI-composed
@@ -1882,9 +1888,15 @@ that knows none of it behaves exactly as it did before.
    field so the two connections can be correlated.
 
 The shape is what makes it affordable on a phone's background budget: two short
-connections with the network work outside both of them, and a payload small enough
-(~46 KiB, a couple of seconds on the CoC) that the upload is not an event either
-side has to plan around. Nothing in the exchange is a new transfer mechanism —
+connections with the network work outside both of them, and a payload small
+enough that the upload is not an event either side has to plan around. That
+payload grew with WXR5
+(#1244): a corridor of the one uniform dataset is 162 x 162 cells in every frame,
+so a bundle is tens of kB in practice and up to 256 KiB by the phone's producer
+policy — **roughly 10-13 s on the CoC at the ~20-25 kB/s §11.1 estimates, against
+§11.3's 60 s advertising window**, where a 46 KiB bundle was a couple of seconds.
+It fits with room, and the headroom is one of the things the on-glass pass
+measures rather than trusts. Nothing in the exchange is a new transfer mechanism —
 step 4 is an ordinary §4.2 upload with an ordinary whole-object CRC-32 and an
 ordinary `transferResult`.
 
@@ -1979,8 +1991,9 @@ conversion at exactly the boundary where a mistake is invisible.
 the equator; no bundle is *absent*, not generation `0`. This is the same rule §1
 applies to the identity read's trailing fields, and it exists for the same reason:
 a sentinel that is also a legal value eventually gets acted on. A device with no
-fix still raises a well-formed request — the phone can fetch by its own location,
-so a cold start indoors is a request to answer, not a request to suppress.
+fix still raises a well-formed request for diagnostics and retry, but the current
+companion cannot fetch until the device supplies a fix; there is no phone-location
+fallback in this protocol version.
 
 **Decoding.** The read is **length-declared**:
 

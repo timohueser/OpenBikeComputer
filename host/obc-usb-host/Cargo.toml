@@ -24,3 +24,8 @@ eframe = "0.29"
 serialport = "4"
 # Native "open file" dialog for picking a .gpx (same crate the sim uses).
 rfd = "0.14"
+# A user-triggered place lookup for the fixed-GPS bench control. The public Nominatim endpoint is
+# never queried for autocomplete; each Search press is one identified request on a worker thread.
+ureq = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

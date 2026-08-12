@@ -12,19 +12,25 @@ name: Weather freshness
 #                          Unset ⇒ this workflow says "skipped" and passes, because a project
 #                          that has not deployed the service yet must not carry a red check
 #                          about it (the same contract as bake.yml's catalog guard).
-#   vars.OBC_WX_EXPECT     comma-separated product ids that must be *listed* (`dwd-rv,icon-eu`).
-#                          Freshness alone cannot see a dead timer: a product whose upstream broke
-#                          stays listed and goes expired, but a product whose timer was disabled,
-#                          renamed or never installed simply stops being republished by anyone —
-#                          and everything that remains looks perfectly healthy. Keep this in step
-#                          with ops/weather/adapters.conf.
+#   vars.OBC_WX_EXPECT_SOURCES
+#                          comma-separated mosaic source ids that must appear in the manifest's
+#                          `attribution[]` (`dwd-rv,mrms,opera-cirrus,opera-nimbus,hrrr,icon-eu,gfs`).
+#                          It does NOT see an upstream outage — the mosaic falls through to the next
+#                          priority row and the source stays listed, which is the designed behaviour.
+#                          What it catches is a deploy that went backwards: an older binary, or a
+#                          build missing a source, silently coarsening the dataset over whole regions
+#                          while every freshness check stays green. Keep it in step with
+#                          `source::MOSAIC_PRIORITY`. (The old OBC_WX_EXPECT named v1 products and
+#                          has nothing left to mean; the probe ignores `--expect` rather than
+#                          crashing on a variable someone forgot to delete.)
 #   vars.OBC_WX_PROBE_ARGS optional extra freshness_probe.py arguments (e.g. a wider grace while
 #                          an upstream is known-broken). Normally empty.
 #
 # Cadence caveat: GitHub's scheduled runs are best-effort and are regularly minutes late on a busy
-# fleet — which is why the alarm thresholds are 30 min (manifest) and deadline+15 min (product),
-# not tight. Also note that GitHub disables schedules on a repository with 60 days of no activity;
-# the runbook's monthly check covers that.
+# fleet — which is why the alarm thresholds are 30 min (manifest) and deadline+15 min, not tight.
+# The probe's own thresholds are all read from the published document; the only local numbers left
+# are the grace windows and the two cost gates. Also note that GitHub disables schedules on a
+# repository with 60 days of no activity; the runbook's monthly check covers that.
 
 on:
   schedule:
@@ -60,7 +66,7 @@ jobs:
         id: probe
         env:
           BASE_URL: ${{ inputs.url || vars.OBC_WX_BASE_URL }}
-          EXPECT: ${{ vars.OBC_WX_EXPECT }}
+          EXPECT: ${{ vars.OBC_WX_EXPECT_SOURCES }}
           PROBE_ARGS: ${{ inputs.probe_args || vars.OBC_WX_PROBE_ARGS }}
         run: |
           # +e deliberately: the runner's default shell is `bash -eo pipefail`, and a stale probe
@@ -73,7 +79,7 @@ jobs:
             exit 0
           fi
           expect=()
-          [ -n "$EXPECT" ] && expect=(--expect "$EXPECT")
+          [ -n "$EXPECT" ] && expect=(--expect-sources "$EXPECT")
           # Word-splitting PROBE_ARGS is deliberate: it is a maintainer-typed argument list.
           # shellcheck disable=SC2086
           python3 ops/weather/freshness_probe.py --url "$BASE_URL" "${expect[@]}" $PROBE_ARGS | tee probe.txt
@@ -138,15 +144,15 @@ jobs:
             cat probe.txt
             echo '```'
             echo
-            echo "Riders are not seeing wrong weather — expired products stop being used and the device"
-            echo "says WEATHER UPDATE NEEDED. What is missing is fresh rain."
+            echo "Riders are not seeing wrong weather — an expired generation stops being used and the"
+            echo "device says WEATHER UPDATE NEEDED. What is missing is fresh rain."
             echo
             echo "First moves (full procedure: [ops/weather/RUNBOOK.md]($RUNBOOK_URL)):"
             echo
             echo '```sh'
             echo "systemctl list-timers 'obc-wx-bake@*'"
             echo "journalctl -u 'obc-wx-bake@*' -n 100 --no-pager"
-            echo "systemctl start obc-wx-bake@dwd-rv.service   # one manual bake, watch it"
+            echo "systemctl start obc-wx-bake@cycle.service   # one manual bake, watch it"
             echo '```'
             echo
             echo "This issue closes itself on the first fresh probe. [probe run]($RUN_URL)"

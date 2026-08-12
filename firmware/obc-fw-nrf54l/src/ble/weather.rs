@@ -20,7 +20,7 @@
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::info;
+use defmt::{info, warn};
 use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -58,6 +58,8 @@ static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// The rider opened Weather (WX11 wires the screen; the seam exists now so the screen PR is
 /// UI-only) — an urgent request, honoured even outside a ride and with refresh `Off`.
 static URGENT: AtomicBool = AtomicBool::new(false);
+/// UI-facing level from dashboard entry/scheduler raise through commit or request lapse.
+static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// A weather bundle committed (the store's finish path) — the one thing that finishes a request.
 static COMMITTED: AtomicBool = AtomicBool::new(false);
@@ -76,17 +78,23 @@ pub fn set_weather_inputs(s: WeatherSnapshot) {
     }
 }
 
-/// The rider opened Weather: raise an urgent request now (spec §11.4 reason bit 1). The WX11
-/// Weather screen's open is the caller; nothing invokes it yet.
-#[allow(dead_code)] // WX11 wires the Weather screen's open to this.
+/// The rider opened Weather: raise an urgent request now (spec §11.4 reason bit 1). The board ride
+/// loop calls this on the non-weather → Weather-dashboard transition; returning from one of the
+/// dashboard's child surfaces does not re-arm it.
 pub fn request_weather_now() {
+    IN_FLIGHT.store(true, Ordering::Relaxed);
     URGENT.store(true, Ordering::Relaxed);
     WAKE.signal(());
+}
+
+pub fn refresh_in_flight() -> bool {
+    IN_FLIGHT.load(Ordering::Relaxed)
 }
 
 /// A weather bundle committed (WX7 store, via `ObjectStore::weather_finish`): finish the pending
 /// request and re-anchor the schedule.
 pub(crate) fn note_commit() {
+    IN_FLIGHT.store(false, Ordering::Relaxed);
     COMMITTED.store(true, Ordering::Relaxed);
     WAKE.signal(());
 }
@@ -136,15 +144,19 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         };
 
         if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
+            IN_FLIGHT.store(true, Ordering::Relaxed);
             let ctx = build_context(&snapshot, refresh_raw, raise, bundle);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
             served_refresh = Some(refresh_raw);
-            state::arm_weather_request(Duration::from_secs(super::WEATHER_REQUEST_ADV_BUDGET_SECS));
+            state::arm_weather_request(Duration::from_secs(obc_ble::WEATHER_REQUEST_WINDOW_S));
             info!(
                 "ble: [weather] request {=u32} raised (reason {=u16:#06x}, validity {=u16:#06x})",
                 raise.request_id, raise.reason, ctx.validity
             );
+            if ctx.validity & VALID_POSITION == 0 {
+                warn!("ble: [weather] request has no fresh GPS fix — companion cannot build a bundle");
+            }
             continue; // re-derive the next wake against the fresh pending state
         }
 
@@ -153,10 +165,21 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         // a request just ended (commit / lapse) **or** when the stored refresh byte moved (#1221
         // F2): §11.8's refresh byte reports the rider's own setting, and a resting value frozen at
         // an older one would misreport it — `note_settings_changed`'s wake lands here.
-        if sched.pending_request_id().is_none() && (context_live || served_refresh != Some(refresh_raw)) {
-            let _ = server.set(&server.weather_request.context, &WeatherRequestContext::resting(refresh_raw).encode());
-            context_live = false;
-            served_refresh = Some(refresh_raw);
+        if sched.pending_request_id().is_none() {
+            IN_FLIGHT.store(false, Ordering::Relaxed);
+            // A request can lapse because its retry ladder ended or because its prerequisites
+            // disappeared (ride stopped, refresh Off, card removed). The scheduler owns that
+            // decision; mirror it to the radio immediately so a stale Weather Request UUID cannot
+            // keep advertising a context that has already become resting.
+            if context_live {
+                state::clear_weather_request();
+            }
+            if context_live || served_refresh != Some(refresh_raw) {
+                let _ =
+                    server.set(&server.weather_request.context, &WeatherRequestContext::resting(refresh_raw).encode());
+                context_live = false;
+                served_refresh = Some(refresh_raw);
+            }
         }
 
         match sched.next_wake_s(refresh, snapshot.ride_active, store_ready) {
@@ -173,8 +196,9 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
 
 /// Fill the §11.4 context from the raise + the current app/bundle facts. Optional groups follow
 /// the flags-not-sentinels rule: absent inputs leave their fields zero **and** their validity bit
-/// clear — a device with no fix still raises a well-formed request (the phone fetches by its own
-/// location).
+/// clear — a device with no fix still raises a well-formed request for diagnostics/retry, but the
+/// companion cannot fetch until the device supplies a position (there is intentionally no phone-
+/// location fallback today).
 fn build_context(
     s: &WeatherSnapshot,
     refresh_raw: u8,

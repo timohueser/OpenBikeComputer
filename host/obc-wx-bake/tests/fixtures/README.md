@@ -1,16 +1,22 @@
 # obc-wx-bake fixtures
 
 Real, unmodified upstream objects (and exact upstream byte ranges) captured on 2026-08-09 UTC.
-They drive the deterministic fixture cycles in `tests/cycle.rs` and `tests/us_gfs_cycle.rs`: same
-fixtures ⇒ byte-identical published tree, and every corruption of them must publish nothing.
+The large DWD, ICON, and NOAA captures live in the `weather-dwd-icon` and `weather-noaa`
+fixture-registry packages. Two small **tile crops** of real OPERA objects remain beside the tests
+as reviewable parser corpora. Together they drive `tests/canonical_mosaic.rs`,
+`tests/fuzz_decode.rs`, and `tests/opera.rs`: same fixtures ⇒ byte-identical published output, and
+every corruption of them must publish nothing.
 
 Provenance discipline: every entry below records the exact retrieval URL, the byte range where
-one was used, the length and the SHA-256 of the checked-in bytes. Terms are DWD Open Data
-(CC BY 4.0) for the German sources and NOAA Open Data Dissemination (public-use U.S. government
-data, no endorsement implied) for the NOAA ones; the license record lives in
+one was used, the length and the SHA-256 of the captured bytes. Package manifests independently
+pin every external file. Terms are DWD Open Data
+(CC BY 4.0) for the German sources, NOAA Open Data Dissemination (public-use U.S. government
+data, no endorsement implied) for the NOAA ones and CC BY 4.0 for EUMETNET OPERA; the license
+record lives in
 [`docs/decisions/WX1-weather-source-contracts.md`](../../../../docs/decisions/WX1-weather-source-contracts.md).
 
-Total checked-in fixture bytes: 16,939,558.
+Run `obc fixtures sync weather` before the external-fixture suite. The two tracked OPERA crops
+total 248,841 bytes.
 
 ## DWD RV composite
 
@@ -126,3 +132,54 @@ bytes, inside WX1's 15,500,000-byte per-run ceiling.
 
 Corrupt-upstream negatives are derived in-test by truncating/flipping/splicing these bytes; no
 corrupt fixture is checked in.
+
+## EUMETNET OPERA CIRRUS / NIMBUS (Europe radar)
+
+Two composites valid at 2026-08-10T00:00:00Z, from the live 24-hour bucket
+`https://s3.waw3-1.cloudferro.com/openradar-24h/2026/08/10/OPERA/COMP/`, retrieved 2026-08-10
+21:33 UTC. Licence CC BY 4.0, as each object's own `GDAL_METADATA` states.
+
+Upstream objects (**not** checked in — 6.5 MB between them, and the baker reads the whole file):
+
+- `OPERA@20260810T0000@0@DBZH.tiff` — 3,563,217 bytes,
+  sha256 `5a02635e8af7731bd9921c16830b82eef3823e9f8f703a5c5379b6a1f3771c6c`,
+  upstream `Last-Modified` Mon, 10 Aug 2026 00:04:10 GMT (the measured 4.1-minute lag),
+  ETag `"8ed7d9895c5e285c1fe97578d892ed0d"`.
+- `OPERA@20260810T0000@0@RATE.tiff` — 2,983,924 bytes,
+  sha256 `479a70812e3222bdac5c91b5cfced38d063151c81c74d1530934d60e762ea58c`,
+  upstream `Last-Modified` Mon, 10 Aug 2026 00:10:03 GMT, ETag `"84e043de254b7914fb6e14ce07e771c5"`.
+
+What is checked in is a **tile crop** of each: a rectangular block of the upstream file's own
+512 x 512 deflate streams, copied verbatim, re-wrapped in a classic TIFF whose tags are the
+upstream's IFD 0 except for `ImageWidth`/`ImageLength`, the tile tables and a `ModelTiepoint`
+shifted to the block's own upper-left corner. Not a resample and not a re-encode: every sample a
+test reads is a byte EUMETNET published. This is the block-addressable analogue of the HRRR/GFS
+entries above, which check in exact byte ranges of objects too large to store — the payload here
+is addressed by tile rather than by offset because that is how a COG is laid out.
+
+- `opera-cirrus-20260810T0000-dbzh-crop.tiff` — 78,283 bytes,
+  sha256 `37029d14c5bea6072797f19941e856853753e9f074ed48f76ee2960c6795cdbb`.
+  Tiles (rows 5-6, cols 3-4) of the 3,800 x 4,400 composite: 1,024 x 1,024 native 1 km cells over
+  the Alps, northern Italy and the Balkans. Grid corner (1536000, -2560000); tiepoint
+  (1535499.9997285667, -2559500.000087613), i.e. that corner less half a pixel, exactly as the
+  upstream object states its own.
+  Content mix: 2.64 % no-coverage, 93.87 % undetect, 3.49 % finite, -21.0 to 55.5 dBZ.
+- `opera-nimbus-20260810T0000-rate-crop.tiff` — 170,558 bytes,
+  sha256 `951cb8bd3737e4ab48d949125cb69ee5d9b68abb0e89fe5666de00cb05acf923`.
+  Tiles (rows 3-4, cols 1-2) of the 1,900 x 2,200 composite: 1,024 x 664 native 2 km cells over
+  the central Mediterranean, deliberately including the composite's **partial southern tile
+  row**, so the decoder's edge-padding handling is exercised on real bytes. Grid corner
+  (1024000, -3072000); tiepoint (1022999.9997285667, -3071000.000087613). Content mix: 51.98 %
+  no-coverage, 45.91 % undetect, 2.11 % finite, 0.02 to 577.9 mm/h.
+
+Both crops keep the upstream `GDAL_METADATA`, `GDAL_NODATA` and GeoTIFF keys verbatim, so
+`tests/opera.rs` verifies the whole pinned source contract — `prodname`, band `DESCRIPTION`,
+`undetect`, `zr_a`/`zr_b`, the composite's own `date`/`time`, the projection parameters and the
+nodata sentinel — against real bytes. Negatives are patched in-test with equal-length
+replacements, so no tag offset moves and no corrupt fixture is checked in.
+
+The regeneration recipe is: fetch the upstream object, take tiles `[r0..=r1] x [c0..=c1]` from
+IFD 0, and emit a TIFF whose IFD is IFD 0's tags with the four listed substitutions. Note that
+the `openradar-archive` bucket (which reaches back to 2012) publishes **only** the ODIM HDF5
+twins, so an archived crop would be a different format; the bakery only ever reads the live
+24-hour bucket, which carries both.
