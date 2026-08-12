@@ -133,6 +133,12 @@ pub fn app_ble_status() -> obc_app::BleStatus {
 /// it from the persisted settings at boot, before the first advertise.
 static RADIO_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Cable-level radio interlock. Active BLE radio work and the nRF54L sEMMC card engine have been
+/// observed to corrupt card commands when they overlap; USB map transfers therefore own the radio
+/// for the whole time J3 has VBUS. Start inhibited so a cable present at boot cannot race the first
+/// advertisement; the USB task releases this as soon as it has sampled VBUS low.
+static USB_RADIO_INHIBITED: AtomicBool = AtomicBool::new(true);
+
 /// Edge for the lifecycle loop: signalled whenever [`RADIO_ENABLED`] *changes*, so the advertise /
 /// serve phases can wake, re-check the level, and wind the radio up or down. Level + edge (not just
 /// a `Signal` payload) so a toggle bounced off-and-on between polls degrades to a harmless
@@ -193,7 +199,7 @@ pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new
 /// **sensor** manager's work edge (SE6, #707) so the central-role task winds sensor links up/down
 /// with the phone link — its own dedicated wake so it never contends on `RADIO_EDGE`'s single waiter.
 pub fn set_radio_enabled(enabled: bool) {
-    if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
+    if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled && !USB_RADIO_INHIBITED.load(Ordering::Relaxed) {
         RADIO_EDGE.signal(());
         super::sensors::wake_work();
     }
@@ -205,9 +211,18 @@ pub(crate) fn seed_radio_enabled(enabled: bool) {
     RADIO_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// The current radio switch level.
+/// Inhibit active phone advertising/connections and sensor scanning while USB has VBUS. This does
+/// not overwrite the rider's persisted switch: removing the cable restores its effective level.
+pub(crate) fn set_usb_radio_inhibited(inhibited: bool) {
+    if USB_RADIO_INHIBITED.swap(inhibited, Ordering::Relaxed) != inhibited && RADIO_ENABLED.load(Ordering::Relaxed) {
+        RADIO_EDGE.signal(());
+        super::sensors::wake_work();
+    }
+}
+
+/// The effective radio level after applying the rider switch and USB interlock.
 pub(crate) fn radio_enabled() -> bool {
-    RADIO_ENABLED.load(Ordering::Relaxed)
+    RADIO_ENABLED.load(Ordering::Relaxed) && !USB_RADIO_INHIBITED.load(Ordering::Relaxed)
 }
 
 /// Resolve once the radio switch reads **off** — the advertise / serve phases' wind-down arm.
