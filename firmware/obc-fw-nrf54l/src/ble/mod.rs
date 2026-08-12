@@ -54,6 +54,7 @@ pub use state::wait_status_change;
 
 // The settings→radio controls (#455): the ride loop pushes the persisted Bluetooth switch each pass
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
+pub(crate) use state::set_usb_radio_inhibited;
 pub use state::{request_forget_bond, set_radio_enabled};
 
 // The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
