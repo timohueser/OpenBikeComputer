@@ -616,11 +616,14 @@ means the MS OS 2.0 descriptor set was rejected; re-read it with `usbview`.
 
 ## Driving it from a host (`debug-uart`)
 
-With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over
-the VCOM from the desktop feeder (from the `firmware/` workspace dir):
+With the `debug-uart` firmware flashed and VCOM HWFC off, open the desktop feeder from the
+repository root. A GPX path is optional:
 
 ```sh
-cargo run -p obc-usb-host -- --gpx ../kandel.gpx        # add --port <VCOM tty> if not auto-detected
+obc flash debug-uart
+obc uart                              # or: obc uart path/to/ride.gpx
+# One command to flash and then open the feeder:
+obc debug
 ```
 
 `obc-usb-host` can stream the `.gpx` as fake GPS fixes, or keep a stationary fix fresh at decimal
