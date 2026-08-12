@@ -3005,7 +3005,10 @@ dependencies = [
  "obc-ports",
  "obc-replay",
  "rfd",
+ "serde",
+ "serde_json",
  "serialport",
+ "ureq",
 ]
 
 [[package]]
