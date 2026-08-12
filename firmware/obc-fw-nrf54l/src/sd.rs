@@ -624,6 +624,9 @@ pub struct Storage {
     /// Fully validated boot choice over `/WEATHER.A` and `/WEATHER.B`. Only metadata is resident;
     /// OBCW bytes remain on SD.
     weather_active: Option<WeatherCandidate>,
+    /// Location/frame facts used only by the board's refresh policy, populated from the same
+    /// session-open validated header as `weather_active`.
+    weather_policy: Option<WeatherPolicyFacts>,
     /// Session-long read handle for [`weather_active`](Storage::weather_active), opened after the
     /// A/B validation pass and replaced on commit. Holding it mirrors the map/route streams and is
     /// important on embedded-sdmmc: reopening the file for every sample would put a directory walk
@@ -1306,6 +1309,7 @@ impl Storage {
             open_object: None,
             open_upload: None,
             weather_active: None,
+            weather_policy: None,
             open_weather: None,
             weather_mount: None,
             map_name: String::new(),
@@ -4620,6 +4624,18 @@ pub enum WeatherIoError {
     Close,
 }
 
+/// Policy-only facts from the validated active OBCW header. Kept beside the board's session-open
+/// reader rather than in `obc_weather::Candidate`: slot selection crosses storage error paths where
+/// enlarging every candidate would materially increase the error enum and callers' stack frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeatherPolicyFacts {
+    pub south_lat_udeg: i32,
+    pub west_lon_udeg: i32,
+    pub north_lat_udeg: i32,
+    pub east_lon_udeg: i32,
+    pub frame_count: u16,
+}
+
 impl Storage {
     /// Revalidate both fixed roots and retain the deterministic active generation. This runs once
     /// at mount; later weather upload composition refreshes it after a successful commit.
@@ -4631,6 +4647,7 @@ impl Storage {
         }
         self.weather_mount = None;
         self.weather_active = None;
+        self.weather_policy = None;
         let mut selection = weather_store::inspect_slots(self);
         self.weather_active = selection.active;
         if let Some(active) = selection.active {
@@ -4653,17 +4670,26 @@ impl Storage {
                             // session-open. Never retain selection metadata from one object beside
                             // a validation token/source for another.
                             if reopened == active {
+                                self.weather_policy = Some(WeatherPolicyFacts {
+                                    south_lat_udeg: header.south_lat_udeg,
+                                    west_lon_udeg: header.west_lon_udeg,
+                                    north_lat_udeg: header.north_lat_udeg,
+                                    east_lon_udeg: header.east_lon_udeg,
+                                    frame_count: header.frame_count,
+                                });
                                 self.weather_mount = Some(reader.validated());
                                 self.open_weather = Some((file, len));
                             } else {
                                 let _ = self.vmgr.close_file(file);
                                 self.weather_active = None;
+                                self.weather_policy = None;
                                 selection.active = None;
                             }
                         }
                         Err(_) => {
                             let _ = self.vmgr.close_file(file);
                             self.weather_active = None;
+                            self.weather_policy = None;
                             selection.active = None;
                         }
                     }
@@ -4672,6 +4698,7 @@ impl Storage {
                     // The file was readable during validation and disappeared before the reopen.
                     // Fail closed: metadata without a readable source is not an active bundle.
                     self.weather_active = None;
+                    self.weather_policy = None;
                     selection.active = None;
                 }
             }
@@ -4681,6 +4708,10 @@ impl Storage {
 
     pub const fn weather_active(&self) -> Option<WeatherCandidate> {
         self.weather_active
+    }
+
+    pub const fn weather_policy(&self) -> Option<WeatherPolicyFacts> {
+        self.weather_policy
     }
 
     /// A cheap [`ByteSource`] view over the session-open active weather bundle.

@@ -30,7 +30,8 @@ public struct WeatherDeviceRequestSnapshot: Codable, Equatable, Sendable {
     /// staleness check key on.
     public var heldBundleGeneration: UInt32?
     public var heldBundleGeneratedAtUnixSeconds: Int64?
-    /// The raw §11.4 reason word — advisory scheduling help, carried for diagnostics; never a gate.
+    /// The raw §11.4 reason word. Known location/coverage bits may conservatively disable the
+    /// no-change optimisation; they never prevent the ordinary full fetch.
     public var reasonRawValue: UInt16
     /// When the context read completed (phone clock).
     public var readAt: Date
@@ -185,4 +186,18 @@ public protocol WeatherDeviceLink: Sendable {
     /// Returns on `committed` — which per §11.6 includes the duplicate/stale ignored-but-successful
     /// rows, each of which finishes the request.
     func uploadBundle(_ bytes: Data) async throws -> WeatherBundleUploadReceipt
+    /// Finish the named request after conditional provider checks proved the selected bundle is
+    /// current. Uses the same bounded second connection as an upload, but sends only a small command.
+    func acknowledgeUnchanged(requestID: UInt32, retryAfterSeconds: UInt16) async throws
+        -> WeatherBundleUploadReceipt
+}
+
+public extension WeatherDeviceLink {
+    func acknowledgeUnchanged(
+        requestID _: UInt32, retryAfterSeconds _: UInt16
+    ) async throws -> WeatherBundleUploadReceipt {
+        // Test links and transports predating command 7 safely select the engine's full-upload
+        // compatibility fallback.
+        throw WeatherDeviceLinkError.bundleRejected
+    }
 }

@@ -63,7 +63,10 @@ pub use state::{request_forget_bond, set_radio_enabled};
 pub use weather::refresh_in_flight as weather_refresh_in_flight;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
-pub(crate) use weather::{note_commit as weather_committed, note_settings_changed as weather_settings_changed};
+pub(crate) use weather::{
+    note_commit as weather_committed, note_settings_changed as weather_settings_changed,
+    note_unchanged as weather_unchanged,
+};
 
 // The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
 pub(crate) use state::link_counters;

@@ -83,6 +83,9 @@ pub const REASON_RETRY: u16 = 1 << 2;
 pub const REASON_NO_BUNDLE: u16 = 1 << 3;
 /// The rider has travelled outside the active bundle's covered corridor.
 pub const REASON_OUT_OF_AREA: u16 = 1 << 4;
+/// The held bundle has no rain frames. The phone must perform a full build rather than concluding
+/// that an unchanged rain-manifest generation means this hourly-only bundle is complete.
+pub const REASON_HOURLY_ONLY: u16 = 1 << 5;
 
 /// How often the device raises a scheduled request. Appended to Config (§7.3) and echoed in the
 /// request context so the phone can schedule its own work without a second read.
@@ -445,11 +448,19 @@ pub struct BundleFacts {
     pub held: bool,
     /// Its age in seconds — only when both a bundle and a trusted clock exist.
     pub age_s: Option<u64>,
+    /// The held bundle is both before the next possible service publication and within the manual
+    /// location reuse radius. Opening Weather can use it without waking the phone.
+    pub manual_reusable: bool,
+    /// A fresh fix is outside the location reuse radius around the held bundle.
+    pub location_changed: bool,
+    /// The selected bundle contains no rain frames.
+    pub hourly_only: bool,
 }
 
 impl BundleFacts {
     /// No bundle at all.
-    pub const NONE: Self = Self { held: false, age_s: None };
+    pub const NONE: Self =
+        Self { held: false, age_s: None, manual_reusable: false, location_changed: false, hourly_only: false };
 
     /// Whether the bundle counts as *usable* for the reason word (held and not expired). Unknown
     /// age is treated as usable: stale/no-data must never be *invented*, and a device without a
@@ -532,6 +543,9 @@ pub struct DueScheduler {
     started_s: Option<u64>,
     /// A queued urgent request (the rider opened Weather), consumed by the next poll.
     urgent_queued: bool,
+    /// A successful phone-side conditional check can prove the held bytes are still current without
+    /// uploading them. Until this monotonic instant, an urgent reopen reuses the held bundle.
+    source_defer_until_s: Option<u64>,
 }
 
 impl DueScheduler {
@@ -543,6 +557,7 @@ impl DueScheduler {
             boot_anchor_s: None,
             started_s: None,
             urgent_queued: false,
+            source_defer_until_s: None,
         }
     }
 
@@ -561,6 +576,22 @@ impl DueScheduler {
         self.pending = None;
         self.last_commit_s = Some(now_s);
         self.boot_anchor_s = None;
+        self.source_defer_until_s = None;
+    }
+
+    /// The phone conditionally checked both weather sources and found no newer data. This is the
+    /// small-payload twin of an accepted upload: it finishes exactly the request it names and
+    /// anchors normal scheduled pacing, while `retry_after_s` prevents repeated manual opens from
+    /// probing through the publisher's processing lag.
+    pub fn unchanged_succeeded(&mut self, request_id: u32, now_s: u64, retry_after_s: u16) -> bool {
+        if self.pending_request_id() != Some(request_id) {
+            return false;
+        }
+        self.pending = None;
+        self.last_commit_s = Some(now_s);
+        self.boot_anchor_s = None;
+        self.source_defer_until_s = Some(now_s.saturating_add(retry_after_s as u64));
+        true
     }
 
     /// Whether a request is currently pending (raised and not yet satisfied).
@@ -616,15 +647,21 @@ impl DueScheduler {
         }
 
         let no_bundle_bit = if bundle.usable() { 0 } else { REASON_NO_BUNDLE };
+        let location_bit = if bundle.location_changed { REASON_OUT_OF_AREA } else { 0 };
+        let hourly_only_bit = if bundle.hourly_only { REASON_HOURLY_ONLY } else { 0 };
 
         // Urgent: raise immediately — re-using a pending request's id (one request, fresh fast
         // ladder), or minting a new one.
         if core::mem::take(&mut self.urgent_queued) {
+            let check_still_current = self.source_defer_until_s.is_some_and(|until| now_s < until);
+            if bundle.held && !bundle.location_changed && (bundle.manual_reusable || check_still_current) {
+                return None;
+            }
             let (request_id, prior_reason) = match self.pending {
                 Some(p) => (p.request_id, p.reason),
                 None => (self.mint_id(), 0),
             };
-            let reason = prior_reason | REASON_URGENT | no_bundle_bit;
+            let reason = prior_reason | REASON_URGENT | no_bundle_bit | location_bit | hourly_only_bit;
             self.pending = Some(Pending {
                 request_id,
                 reason,
@@ -647,7 +684,7 @@ impl DueScheduler {
                 return None;
             }
             p.raises = p.raises.saturating_add(1);
-            p.reason |= REASON_RETRY | no_bundle_bit;
+            p.reason |= REASON_RETRY | no_bundle_bit | location_bit | hourly_only_bit;
             let raise = Raise { request_id: p.request_id, reason: p.reason };
             // Waits between raises: the initial raise armed rung 0 (5 min); retry `k` arms rung
             // `k` (10, 20), and past the last rung the cadence — or nothing.
@@ -682,7 +719,7 @@ impl DueScheduler {
                 };
                 if due {
                     let request_id = self.mint_id();
-                    let reason = REASON_SCHEDULED | no_bundle_bit;
+                    let reason = REASON_SCHEDULED | no_bundle_bit | location_bit | hourly_only_bit;
                     self.pending = Some(Pending {
                         request_id,
                         reason,

@@ -135,7 +135,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var weatherUploadWaiter: CheckedContinuation<WeatherBundleUpload, Error>?
     private var cancelledWeatherUploadTokens: Set<UUID> = []
     private var weatherUploadToken: UUID?
-    private var weatherUploadPayload: Data?
+    private enum WeatherDelivery: Sendable {
+        case bundle(Data)
+        case unchanged(requestID: UInt32, retryAfterSeconds: UInt16)
+    }
+    private var weatherUploadPayload: WeatherDelivery?
     private var weatherUploadDeadline: DispatchWorkItem?
     private var weatherUploadConnectedDeadline: DispatchWorkItem?
     /// Absolute, like the read's — a budget is a deadline, not a restartable timer (§11.3).
@@ -682,7 +686,34 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                         continuation.resume(throwing: WeatherUploadError.cancelled)
                         return
                     }
-                    registerWeatherUpload(token, payload, continuation)
+                    registerWeatherUpload(token, .bundle(payload), continuation)
+                }
+            }
+        } onCancel: { [weak self] in
+            self?.queue.async { [weak self] in self?.cancelWeatherUpload(token) }
+        }
+    }
+
+    /// Answer a live weather request without opening a CoC or retransmitting the held bundle.
+    /// Firmware that predates command 7 answers `unknownCommand`; surface that as `rejected` so
+    /// the weather job can safely fall back to the ordinary full-bundle upload.
+    public func acknowledgeWeatherUnchanged(
+        requestID: UInt32, retryAfterSeconds: UInt16
+    ) async throws -> WeatherBundleUpload {
+        let token = UUID()
+        let delivery = WeatherDelivery.unchanged(
+            requestID: requestID, retryAfterSeconds: retryAfterSeconds
+        )
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<WeatherBundleUpload, Error>) in
+                queue.async { [self] in
+                    if cancelledWeatherUploadTokens.remove(token) != nil {
+                        continuation.resume(throwing: WeatherUploadError.cancelled)
+                        return
+                    }
+                    registerWeatherUpload(token, delivery, continuation)
                 }
             }
         } onCancel: { [weak self] in
@@ -691,7 +722,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     private func registerWeatherUpload(
-        _ token: UUID, _ payload: Data,
+        _ token: UUID, _ payload: WeatherDelivery,
         _ continuation: CheckedContinuation<WeatherBundleUpload, Error>
     ) {
         dispatchPrecondition(condition: .onQueue(queue))
@@ -854,9 +885,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         armWeatherUploadConnectedDeadline()
     }
 
-    /// Start the CoC exchange once everything is in place: the upload intent has bytes, the known
-    /// peripheral is connected, and the control-plane characteristics are discovered. Called from
-    /// every path that can complete one of those conditions.
+    /// Start the delivery once everything is in place: the intent has a bundle or no-change ACK,
+    /// the known peripheral is connected, and the required control characteristic is discovered.
+    /// Called from every path that can complete one of those conditions.
     private func beginWeatherUploadIfReady() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard discoveryPolicy.weatherUploadPending, !weatherUploadInFlight else { return }
@@ -865,8 +896,13 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         guard let knownID = discoveryStore.knownPeripheralID(), peripheral?.identifier == knownID,
               peripheral?.state == .connected
         else { return }
-        guard characteristics[GATT.transferControl] != nil, characteristics[GATT.psm] != nil else {
-            return  // service discovery still in flight; its completion re-enters here
+        switch payload {
+        case .bundle:
+            guard characteristics[GATT.transferControl] != nil, characteristics[GATT.psm] != nil
+            else { return }
+        case .unchanged:
+            guard characteristics[GATT.command] != nil, characteristics[GATT.status] != nil
+            else { return }
         }
         weatherUploadInFlight = true
         if weatherUploadConnectedAt == nil { weatherUploadConnectedAt = weatherRequestClock.now }
@@ -884,7 +920,62 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         weatherUploadExchange?.cancel()
         weatherUploadAwaitingSlot = true
         weatherUploadExchange = Task { [weak self] in
-            await self?.runWeatherUploadExchange(payload, token: token)
+            await self?.runWeatherDeliveryExchange(payload, token: token)
+        }
+    }
+
+    private func runWeatherDeliveryExchange(_ delivery: WeatherDelivery, token: UUID) async {
+        switch delivery {
+        case .bundle(let payload):
+            await runWeatherUploadExchange(payload, token: token)
+        case .unchanged(let requestID, let retryAfterSeconds):
+            await runWeatherUnchangedExchange(
+                requestID: requestID, retryAfterSeconds: retryAfterSeconds, token: token
+            )
+        }
+    }
+
+    /// Command-only fast path for a request whose held bundle is still the newest available
+    /// revision. It still takes the shared transfer slot because command and transfer results use
+    /// the same status queue, but it never opens the CoC and sends only seven authenticated bytes.
+    private func runWeatherUnchangedExchange(
+        requestID: UInt32, retryAfterSeconds: UInt16, token: UUID
+    ) async {
+        let slotWaitStart = DispatchTime.now()
+        let slot = await acquireTransferSlot("weather unchanged request=\(requestID)")
+        let waited = DispatchTime.now().uptimeNanoseconds &- slotWaitStart.uptimeNanoseconds
+        guard !Task.isCancelled else {
+            releaseTransferSlot(slot)
+            return
+        }
+        queue.async { [weak self] in self?.creditWeatherUploadSlotWait(waited, token: token) }
+        do {
+            clearPendingStatuses()
+            try await write(
+                WeatherUnchangedCommand.encode(
+                    requestID: requestID, retryAfterSeconds: retryAfterSeconds
+                ),
+                to: GATT.command
+            )
+            let result = try await bounded { try await nextCommandResult() }
+            releaseTransferSlot(slot)
+            guard result.command == WeatherUnchangedCommand.commandByte else {
+                queue.async { [weak self] in
+                    self?.failWeatherUpload(.connectionDropped, token: token)
+                }
+                return
+            }
+            switch result.status {
+            case .ok:
+                queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
+            case .busy:
+                queue.async { [weak self] in self?.failWeatherUpload(.deviceBusy, token: token) }
+            case .unknownCommand, .notFound, .error:
+                queue.async { [weak self] in self?.failWeatherUpload(.rejected, token: token) }
+            }
+        } catch {
+            releaseTransferSlot(slot)
+            queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
         }
     }
 
@@ -971,7 +1062,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         weatherUploadWaiter?.resume(returning: result)
         weatherUploadWaiter = nil
         print(
-            "[OBC BLE weather] bundle committed connect=\(result.connectLatency) "
+            "[OBC BLE weather] delivery complete connect=\(result.connectLatency) "
                 + "connected=\(result.connectedDuration) reused=\(result.reusedForegroundConnection)"
         )
         if disconnectOwnedConnection { releaseWeatherOwnedConnection() }
@@ -984,7 +1075,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let disconnectOwnedConnection = endWeatherUploadState()
         weatherUploadWaiter?.resume(throwing: error)
         weatherUploadWaiter = nil
-        print("[OBC BLE weather] bundle upload failed: \(error)")
+        print("[OBC BLE weather] delivery failed: \(error)")
         if disconnectOwnedConnection {
             releaseWeatherOwnedConnection()
         } else if central.isScanning, discoveryPolicy.scanServices.isEmpty {

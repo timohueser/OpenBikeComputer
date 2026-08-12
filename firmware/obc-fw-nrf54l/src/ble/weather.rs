@@ -18,7 +18,7 @@
 //! edge, so an idle, not-riding device costs no wakeups at all.
 
 use core::cell::{Cell, RefCell};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use defmt::{info, warn};
 use embassy_futures::select::select;
@@ -31,6 +31,15 @@ use obc_ble::{
     BundleFacts, DueScheduler, Raise, WeatherRefresh, WeatherRequestContext, VALID_BEARING, VALID_BUNDLE,
     VALID_POSITION, VALID_ROUTE, VALID_SPEED,
 };
+
+/// The deployed dataset advances on quarter-hour boundaries. A bundle built in one interval cannot
+/// be superseded before the next boundary; two minutes cover the timer's randomized delay plus the
+/// normal manifest publication lag. A conditional phone check handles anything later than that.
+const SERVICE_CADENCE_S: i64 = 15 * 60;
+const PUBLICATION_GRACE_S: i64 = 2 * 60;
+/// Point-forecast locality chosen for the first on-device reuse policy. Rain coverage is much wider,
+/// but moving farther than this can materially change MET's point answer.
+const LOCATION_REUSE_RADIUS_M: f32 = 2_000.0;
 
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
@@ -63,6 +72,11 @@ static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// A weather bundle committed (the store's finish path) — the one thing that finishes a request.
 static COMMITTED: AtomicBool = AtomicBool::new(false);
+/// The live request id, mirrored out of the task so the synchronous command handler can reject a
+/// crossed `weatherUnchanged` acknowledgement before answering `ok`.
+static PENDING_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
+static UNCHANGED: BlockingMutex<CriticalSectionRawMutex, Cell<Option<(u32, u16)>>> =
+    BlockingMutex::new(Cell::new(None));
 
 /// Push the app-side weather context snapshot across the plane boundary (ride loop, once per pass
 /// — one small `Cell` store). Wakes the scheduler only on the edges it keys on (ride state, the
@@ -99,6 +113,17 @@ pub(crate) fn note_commit() {
     WAKE.signal(());
 }
 
+/// Accept a compact phone-side "both sources unchanged" acknowledgement. The command handler calls
+/// this synchronously; the task owns the scheduler mutation and is woken through the ordinary edge.
+pub(crate) fn note_unchanged(request_id: u32, retry_after_s: u16) -> bool {
+    if request_id == 0 || PENDING_REQUEST_ID.load(Ordering::Relaxed) != request_id {
+        return false;
+    }
+    UNCHANGED.lock(|slot| slot.set(Some((request_id, retry_after_s))));
+    WAKE.signal(());
+    true
+}
+
 /// The persisted `weather_refresh` setting moved (a Config write) — re-derive due state now.
 pub(crate) fn note_settings_changed() {
     WAKE.signal(());
@@ -118,7 +143,15 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         let now_s = Instant::now().as_secs();
         if COMMITTED.swap(false, Ordering::Relaxed) {
             sched.commit_succeeded(now_s);
+            PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
             info!("ble: [weather] upload accepted — request satisfied, next interval anchored");
+        }
+        if let Some((request_id, retry_after_s)) = UNCHANGED.lock(|slot| slot.take()) {
+            if sched.unchanged_succeeded(request_id, now_s, retry_after_s) {
+                IN_FLIGHT.store(false, Ordering::Relaxed);
+                PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
+                info!("ble: [weather] sources unchanged — request satisfied without bundle upload");
+            }
         }
         if URGENT.swap(false, Ordering::Relaxed) {
             sched.open_weather();
@@ -130,9 +163,38 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         let refresh = WeatherRefresh::from_u8(refresh_raw).unwrap_or(WeatherRefresh::DEFAULT);
         // The active bundle's identity — the boot/commit-refreshed selection, no card I/O — and
         // whether storage exists at all (#1221 F5: no card ⇒ no requests, or the phone burns).
-        let (store_ready, bundle) = {
+        let (store_ready, bundle, policy) = {
             let guard = shared.lock().await;
-            (guard.storage.is_some(), store.borrow().weather_active(&guard))
+            (
+                guard.storage.is_some(),
+                store.borrow().weather_active(&guard),
+                guard.storage.as_ref().and_then(|storage| storage.weather_policy()),
+            )
+        };
+        let (location_changed, source_current) = match (bundle, policy, snapshot.now_utc) {
+            (Some(b), Some(policy), Some(now_utc)) => {
+                let centre_lat = (policy.south_lat_udeg as i64 + policy.north_lat_udeg as i64) / 2;
+                let centre_lon = (policy.west_lon_udeg as i64 + policy.east_lon_udeg as i64) / 2;
+                let moved = snapshot.position.is_some_and(|fix| {
+                    obc_map_scene::ground_dist_m((centre_lon as i32, centre_lat as i32), (fix.lon_udeg, fix.lat_udeg))
+                        > LOCATION_REUSE_RADIUS_M
+                });
+                let boundary = b.generated_at.div_euclid(SERVICE_CADENCE_S) * SERVICE_CADENCE_S;
+                let boundary_safe_at = boundary.saturating_add(PUBLICATION_GRACE_S);
+                // A build inside the publication grace might still contain the preceding manifest,
+                // so it is reusable only until the grace ends and then gets one phone-side probe.
+                // A build after the grace has seen the current interval and is safe until the next.
+                let next_probe = if b.generated_at < boundary_safe_at {
+                    boundary_safe_at
+                } else {
+                    boundary_safe_at.saturating_add(SERVICE_CADENCE_S)
+                };
+                (moved, i64::from(now_utc) < next_probe)
+            }
+            // No fresh fix is not evidence that the rider moved. No trusted clock, however, cannot
+            // prove the source is still inside its publication interval.
+            (Some(_), _, None) => (false, false),
+            _ => (false, false),
         };
         let facts = BundleFacts {
             held: bundle.is_some(),
@@ -141,10 +203,14 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
                 (Some(b), Some(now_utc)) => Some((now_utc as i64 - b.generated_at).max(0) as u64),
                 _ => None,
             },
+            manual_reusable: bundle.is_some() && source_current && !location_changed,
+            location_changed,
+            hourly_only: policy.is_some_and(|facts| facts.frame_count == 0),
         };
 
         if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
             IN_FLIGHT.store(true, Ordering::Relaxed);
+            PENDING_REQUEST_ID.store(raise.request_id, Ordering::Relaxed);
             let ctx = build_context(&snapshot, refresh_raw, raise, bundle);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
@@ -167,6 +233,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         // an older one would misreport it — `note_settings_changed`'s wake lands here.
         if sched.pending_request_id().is_none() {
             IN_FLIGHT.store(false, Ordering::Relaxed);
+            PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
             // A request can lapse because its retry ladder ended or because its prerequisites
             // disappeared (ride stopped, refresh Off, card removed). The scheduler owns that
             // decision; mirror it to the radio immediately so a stale Weather Request UUID cannot
