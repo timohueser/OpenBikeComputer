@@ -14,6 +14,9 @@ pipeline, the data formats, the UI, the display protocol — lives at
 <https://openbikecomputer.com/>, which also runs the firmware's
 own render path **live in your browser** (compiled to wasm).
 
+The developer workflow, proportional verification tiers, and safe worktree/build cleanup are documented
+in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ```
   .osm.pbf  ──►  obc-pack  ──►  *.obcm (v12) ─┐
  (OSM data)    (Rust packer)   (binary map)   │
@@ -37,6 +40,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 
 | Path | What it is |
 | :-- | :-- |
+| `fixtures/` | The tracked catalog, scenario/profile definitions, provenance, and reproducible builders for large developer fixtures. Package bytes live in the dedicated fixture object store and are acquired with `obc fixtures`; see [`fixtures/README.md`](fixtures/README.md). |
 | `firmware/` | The crates the **device image actually reaches** — nothing else. See [`firmware/README.md`](firmware/README.md). |
 | `firmware/docs/` | Hardware notes that live nowhere else — the LS021 bring-up log, the FLPR blob's timing policy — plus the frozen resource baseline. Concepts belong on the [docs site](https://openbikecomputer.com/), not here. |
 | `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, and route tracking over the semantic `obc-ports` boundary. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
@@ -73,6 +77,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `specs/vectors/` | The **executable half of the specs** — shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
 | `tools/` | Dev scripts: the `justfile` behind `obc <task>`, the GEOS and RISC-V toolchain installers, and shell completion. |
+| `tools/rain-radar-demo/` | Standalone development viewer for the canonical 1 km precipitation mosaic: OpenStreetMap overlay, 0–2 h timeline, metadata, and a caching/request-capped local proxy. Run it with `obc rain-radar`. |
 | `ops/` | How the one **deployed service** runs: `weather/` holds the installer, the per-adapter systemd units and their cadence table, the external freshness probe, and [`RUNBOOK.md`](ops/weather/RUNBOOK.md) — the whole life of the `host/obc-wx-bake` weather bakery, from a bare VPS to the outage drill. Not dev tooling: nothing here is needed to build the firmware, the maps, or the apps. |
 | `docs/` | The public docs site — `content/` is the source, `index.html` the landing page with the live wasm demo. |
 | `specs/` | The **normative contracts**, in one place because all three languages read them. `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` are the binary map / route / firmware-update-image layouts; `obc-ble-interface-spec.md` is the BLE wire contract; `OBCC_Spec.md` is the map catalog manifest — the JSON contract between a map bakery and the sites/apps that hand artifacts to a device, plus the OBCM version law that keeps them honest. The docs site's pages are the readable tours; these are the byte tables they link to. |

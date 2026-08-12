@@ -1,0 +1,82 @@
+schema = 1
+base_url = "https://fixtures.openbikecomputer.com/v1/"
+
+# Package ids are stable logical names. The archive path, byte count, and digest
+# pin one immutable revision; changing bytes means changing all three values.
+[packages.sim-grimsel]
+summary = "Full Grimsel simulator map, terrain, routes, and tracks"
+archive = "packages/c23237c5527b58801e17a2a7ecc5d9145b1db7a8cf8ae0b47d2ee3414410c3a6.tar.gz"
+sha256 = "c23237c5527b58801e17a2a7ecc5d9145b1db7a8cf8ae0b47d2ee3414410c3a6"
+bytes = 3320272
+provenance = "Switzerland OSM snapshot 2026-08-08; Copernicus GLO-30 terrain; authored Grimsel test routes. See fixtures/README.md."
+license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks)"
+tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
+
+[packages.sim-monaco]
+summary = "Monaco POI-dense simulator map and up-ahead track"
+archive = "packages/f668c49b2ddd5aa2fe588561a589274396566fedf9ca030fac440a6bd6f564f4.tar.gz"
+sha256 = "f668c49b2ddd5aa2fe588561a589274396566fedf9ca030fac440a6bd6f564f4"
+bytes = 449883
+provenance = "Monaco OSM snapshot 2026-08-08 and an authored 2.7 km up-ahead track. See fixtures/README.md."
+license = "ODbL-1.0 (map); GPL-3.0-only (authored track)"
+tracked_sources = { "tracks/monaco-upahead.gpx" = "sources/sim-monaco/tracks/monaco-upahead.gpx" }
+
+[packages.weather-dwd-icon]
+summary = "Historical DWD radar composite and ICON-EU hourly inputs"
+archive = "packages/6e05d6de1b96f4a3f9556df5dec690b3451eb46b8195f681af2d49a83e747571.tar.gz"
+sha256 = "6e05d6de1b96f4a3f9556df5dec690b3451eb46b8195f681af2d49a83e747571"
+bytes = 6678750
+provenance = "DWD RV composite at 2026-08-09 14:20 UTC and ICON-EU run 2026-08-09 06:00 UTC, forecast hours 0-12."
+license = "DWD GeoNutzV-DE 2.0"
+
+[packages.weather-noaa]
+summary = "Historical NOAA MRMS, HRRR, and GFS precipitation inputs"
+archive = "packages/c1d7a893572e95de7c059dd76905a661fed7db11965331d7221bd069a2ddfa2e.tar.gz"
+sha256 = "c1d7a893572e95de7c059dd76905a661fed7db11965331d7221bd069a2ddfa2e"
+bytes = 17986912
+provenance = "NOAA MRMS 2026-08-09 16:58 UTC, HRRR run 15:00 UTC, and GFS run 12:00 UTC source captures. Includes the original APCP spans and the point-valid PRATE spans used by the corrected source contract."
+license = "US public domain"
+
+[packages.weather-event-derecho]
+summary = "Reproducible 2020 Midwest derecho nowcast event pack"
+archive = "packages/542ee2e110f883c661a5ae3a6b846dcc2f80ff4a9c395e05b4ef51f12c318ac1.tar.gz"
+sha256 = "542ee2e110f883c661a5ae3a6b846dcc2f80ff4a9c395e05b4ef51f12c318ac1"
+bytes = 5445515
+provenance = "NOAA MRMS and HRRR archive bytes for 2020-08-10, plus byte-identical service output and a two-hour truth ladder. Every member is pinned by event.json."
+license = "US public domain"
+tracked_sources = { "event.json" = "sources/weather-events/us-derecho-2020-08-10/event.json" }
+
+[packages.weather-event-airmass]
+summary = "Reproducible 2023 airmass-convection nowcast event pack"
+archive = "packages/259fd1e4fc3af662c70a4af1fb9f3d07efa1936336afc28aeeb9ca83442b25e9.tar.gz"
+sha256 = "259fd1e4fc3af662c70a4af1fb9f3d07efa1936336afc28aeeb9ca83442b25e9"
+bytes = 8577439
+provenance = "NOAA MRMS and HRRR archive bytes for 2023-06-24, plus byte-identical service output and a two-hour truth ladder. Every member is pinned by event.json."
+license = "US public domain"
+tracked_sources = { "event.json" = "sources/weather-events/us-airmass-2023-06-24/event.json" }
+
+[scenarios.grimsel]
+summary = "Ride the full Grimsel climb with terrain-backed elevation"
+packages = ["sim-grimsel"]
+map = "sim-grimsel:grimsel.obcm"
+gpx = "sim-grimsel:tracks/grimsel-climb.gpx"
+routes_dir = "sim-grimsel:routes"
+
+[scenarios.monaco-upahead]
+summary = "Exercise dense urban POIs and route up-ahead in Monaco"
+packages = ["sim-monaco"]
+map = "sim-monaco:monaco.obcm"
+gpx = "sim-monaco:tracks/monaco-upahead.gpx"
+
+[profiles.sim]
+summary = "Every currently registered simulator scenario"
+scenarios = ["grimsel", "monaco-upahead"]
+
+[profiles.weather]
+summary = "All historical source captures used by the weather baker tests"
+packages = ["weather-dwd-icon", "weather-noaa", "weather-event-derecho", "weather-event-airmass"]
+
+[profiles.test]
+summary = "All external fixture packages exercised by the full repository test suite"
+scenarios = ["grimsel", "monaco-upahead"]
+packages = ["weather-dwd-icon", "weather-noaa", "weather-event-derecho", "weather-event-airmass"]

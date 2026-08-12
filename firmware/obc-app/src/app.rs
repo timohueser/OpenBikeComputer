@@ -514,8 +514,8 @@ pub enum ClockTrust {
 
 /// How stale the last GPS fix may be (map-plane ms) and still serve in the weather request context
 /// as "where the rider is" (WX8, #1193): a 30-second-old fix is still the rider to within metres,
-/// while a tunnel or indoor stop past that reads as *no position* — the phone then fetches by its
-/// own location, which is the spec's cold-start answer.
+/// while a tunnel or indoor stop past that reads as *no position*. The request still raises for
+/// diagnostics/retry, but today's companion cannot fetch until a fresh device fix arrives.
 pub const WEATHER_FIX_FRESH_MS: u32 = 30_000;
 
 pub struct App {
@@ -1147,6 +1147,13 @@ impl App {
         self.ui.base_draws_map()
     }
 
+    /// Whether the current base screen consumes a rain-raster lease. Hosts use this before
+    /// constructing [`RainOverlayAdapter`](crate::RainOverlayAdapter), so its header/frame reads
+    /// never happen on Home, menus, or the ordinary Map where the lease would be discarded.
+    pub fn base_wants_rain(&self) -> bool {
+        self.ui.base_wants_rain()
+    }
+
     /// Whether the **Recalculating freeze** is engaged (issue #1146, P2): a host planner run is
     /// live *and* the base screen would draw the map. While it is, a render-on-demand host must
     /// **skip the map redraw** — the last frame stays on the reflective glass — and paint only
@@ -1600,6 +1607,23 @@ impl App {
             if self.state.zoom != before {
                 self.ui.map_dirty = true;
             }
+        }
+    }
+
+    /// Tell the retained UI that the host-owned weather snapshot changed. The snapshot itself is
+    /// deliberately not stored in `App` (the board and simulator own different backing stores),
+    /// but a newly committed/sample-shifted bundle must repaint an already-open dashboard even
+    /// when its number of rain steps and zoom floor happen to match the previous generation.
+    pub fn weather_feed_changed(&mut self) {
+        // Snapshot resampling follows GPS cadence. Only the three screens that consume the feed
+        // need that edge; dirtying Home/settings here would turn a background weather sample into
+        // a pointless 1 Hz full-chrome redraw. Returning to a buried weather screen is already a
+        // navigation repaint, and alert pushes dirty themselves.
+        if matches!(
+            self.ui.stack.last(),
+            Some(Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_))
+        ) {
+            self.ui.map_dirty = true;
         }
     }
 
@@ -2814,6 +2838,30 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         self.render_scene_map_timed(scratch, target, reader, reader, route, w, h, color_fn, clock)
+    }
+
+    /// Timed single-map render with the weather feed/rain lease used by the board. This is the
+    /// weather-aware twin of [`render_map_timed`](App::render_map_timed); keeping the wrapper here
+    /// avoids making a host name `Reader` as the generic scene type just to pass an optional map.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_map_rain_timed<D, F>(
+        &mut self,
+        scratch: Option<&mut RenderScratch>,
+        target: &mut D,
+        reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        self.render_scene_map_rain_timed(scratch, target, reader, reader, route, rain, weather, w, h, color_fn, clock)
     }
 
     /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
@@ -4905,7 +4953,7 @@ mod tests {
 
     /// The committed Grimsel fixture bytes (3 back-to-back climbs), embedded so the `no_std` lib
     /// tests need no `std::fs`. Boundaries: 501–11067, 11067–14472, 14472–18547; total ~18.7 km.
-    const GRIMSEL: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel-climb.obcr");
+    const GRIMSEL: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
     /// Parse the fixture into a `RouteIndex` the callers pair with a `SliceSource` over [`GRIMSEL`].
     fn grimsel_index() -> RouteIndex {

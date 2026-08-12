@@ -827,6 +827,13 @@ fn unknown_status_discriminator_is_ignored() {
     assert_eq!(StatusMessage::decode(&[0xEE, 0, 0, 0]), Ok(None));
 }
 
+#[test]
+fn weather_request_status_is_a_one_byte_hint() {
+    let (buf, len) = StatusMessage::WeatherRequest.encode();
+    assert_eq!(&buf[..len], &[5]);
+    assert_eq!(StatusMessage::decode(&buf[..len]), Ok(Some(StatusMessage::WeatherRequest)));
+}
+
 /// The `tripList` fixture (spec §7.4) decodes through the production list codec: a 6-byte v2 header
 /// (entry_len 76) + one 76-byte entry whose totals sum the trip's two **resolvable** stages
 /// (2×2207 m / 2×76 m) while `stage_count` counts all three stored stages (the third is dangling),

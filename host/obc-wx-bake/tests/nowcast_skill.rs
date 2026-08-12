@@ -44,6 +44,8 @@
 //! next pack — but they do pin the two claims that decide whether WXR9 ships at all: the nowcast
 //! beats persistence, and it beats the model out to `derive::NOWCAST_MAX_LEAD_MIN`.
 
+#![cfg(feature = "external-fixtures")]
+
 use obc_formats::{obcg, precip4};
 use obc_wx_bake::canonical::{CycleTimes, FRAME_STEP_MIN};
 use obc_wx_bake::derive::{self, NOWCAST_MAX_LEAD_MIN};
@@ -57,7 +59,7 @@ use obc_wx_bake::timefmt;
 const EVENT_ID: &str = "us-derecho-2020-08-10";
 
 fn pack_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/events").join(EVENT_ID)
+    obc_fixtures::root().join("weather-event-derecho")
 }
 
 fn read(relative: &str) -> Vec<u8> {

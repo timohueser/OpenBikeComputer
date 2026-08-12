@@ -20,9 +20,12 @@
 //! end to end by the WXR1 spike (#1240, whose numbers are recorded in #1254 and whose harness
 //! #1246 deleted).
 
+// Keep the synthetic/pure cases in ordinary `cargo test`; the real-capture
+// helpers are intentionally dormant until the external-fixtures tier is selected.
+#![cfg_attr(not(feature = "external-fixtures"), allow(dead_code, unused_imports))]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::path::PathBuf;
 
 use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
@@ -43,8 +46,12 @@ use obc_wx_bake::stereo;
 use obc_wx_bake::{manifest_v2, timefmt};
 
 fn fixture(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
-    std::fs::read(&path).unwrap_or_else(|error| panic!("fixture {name}: {error}"))
+    let package = if name.starts_with("composite_rv_") || name.starts_with("icon-eu-") {
+        "weather-dwd-icon"
+    } else {
+        "weather-noaa"
+    };
+    obc_fixtures::read(package, name).unwrap_or_else(|| panic!("fixture {package}/{name} is not synced"))
 }
 
 fn ts(text: &str) -> i64 {
@@ -203,6 +210,7 @@ fn source_index(window: &GridGeometry, lattice: &Lattice, col: u32, row: u32) ->
 /// bytes this test decodes itself, and against an oracle that applies the priority rule (radar
 /// first, model where the radar has no data, no-data where neither reaches) rather than asking
 /// the mosaic what it did.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_source() {
     let mut upstream = european_upstream();
@@ -380,6 +388,7 @@ fn the_dwd_window_is_a_window_of_the_canonical_lattice() {
 ///    "within tolerance". The at most one that cannot is at an end of the tar's reach: an instant
 ///    before the run, or one past `run + 120 min`, which no member is valid at;
 /// 3. `derive::uniform_frames` adds **nothing**. Not "little" — nothing.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
     let run = ts(DWD_RUN);
@@ -478,6 +487,7 @@ fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
 /// The selection is a pure function of the run and the wall clock, so it is worth stating on its own
 /// terms too: lead 0 always survives (it is the tar's only observation and what f0's
 /// `FLAG_OBSERVED` rests on), and nothing past the tar's reach is ever asked for.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn the_dwd_selection_always_keeps_the_observation_and_never_overruns_the_tar() {
     let run = ts(DWD_RUN);
@@ -1061,6 +1071,7 @@ fn an_observation_can_only_ever_paint_the_anchor() {
 /// f+15 and f+30 here too. Germany is the deliberate contrast, pinned by
 /// `the_german_forward_frames_stay_on_the_dwd_nowcast`: DWD RV's forward members really are
 /// forecasts, so they stay eligible and Germany keeps 1 km radar-derived detail across the window.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn over_opera_europe_outside_germany_the_anchor_is_radar_and_the_forward_frames_are_the_model() {
     let now = ts(DWD_RUN);
@@ -1095,6 +1106,7 @@ fn over_opera_europe_outside_germany_the_anchor_is_radar_and_the_forward_frames_
 /// therefore eligible for forward frames, and Germany keeps 1 km radar-derived detail all the way
 /// out to +120 while France falls to a 6.5 km model at +15. Nothing in #1248 touches this, and this
 /// test exists to make sure nothing later does either by mistaking "radar" for "observation".
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn the_german_forward_frames_stay_on_the_dwd_nowcast() {
     let now = ts(DWD_RUN);
@@ -1228,6 +1240,7 @@ fn published_tree(dir: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
 /// The lattice is a sub-window (the full 648 M-cell one takes 12 s in a release build and minutes
 /// in a debug one), but the orchestration, the streaming shape, the fetchability proof and the
 /// manifest are the production ones.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn a_canonical_cycle_publishes_exactly_what_its_manifest_says_and_repeats_itself() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 256, 192);
@@ -1393,6 +1406,7 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
 /// byte inside an HDF5 member, a short model lead — each fails the cycle, moves no object, and
 /// leaves the previously published generation and its manifest exactly as they were. One cycle of
 /// freshness is the whole cost, and the next tick recovers.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn a_corrupt_upstream_publishes_nothing_and_leaves_the_previous_generation_standing() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
@@ -1453,6 +1467,7 @@ fn a_corrupt_upstream_publishes_nothing_and_leaves_the_previous_generation_stand
 /// The retention contract WXR8's sweep derives its delete set from: a generation names the two
 /// before it, newest first, and nothing older. The baker keeps no state, so this is read back out
 /// of the manifest it published last time and nowhere else.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn each_generation_names_the_two_before_it() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
@@ -1494,6 +1509,7 @@ fn each_generation_names_the_two_before_it() {
 /// N-3", because it also fails if the sweep ever deleted something still on the chain — the
 /// failure mode this feature introduced and the reason it is gated this way rather than by counting
 /// deletions.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
@@ -1551,6 +1567,7 @@ fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
 /// A sweep that cannot delete must not turn a good publish into a failed cycle: the manifest is
 /// already in place, the objects it no longer names are unreferenced, and the bucket's 1-day
 /// lifecycle rule is what collects the leak. The cycle reports a warning and succeeds.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn a_store_that_refuses_to_delete_still_publishes_a_good_cycle() {
     use obc_wx_bake::publish::{Deleted, ObjectStore, PlannedObject};
@@ -1615,6 +1632,7 @@ fn a_store_that_refuses_to_delete_still_publishes_a_good_cycle() {
 ///
 /// Reachable without any concurrency at all: a backwards clock step, or a bake started by hand
 /// outside the unit's `flock`. Both look like this.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn a_cycle_older_than_the_published_manifest_refuses_to_publish() {
     let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
@@ -1653,6 +1671,7 @@ fn a_cycle_older_than_the_published_manifest_refuses_to_publish() {
 /// anyway and the `panic!` below could never fire. The fourth cycle is the first with a generation
 /// to retire, so it is the first where "the readback stopped the sweep" is a claim with teeth — and
 /// the first where all four generations surviving on disk means something.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn a_manifest_that_does_not_read_back_stops_the_sweep() {
     use obc_wx_bake::publish::{Deleted, ObjectStore, PlannedObject};
@@ -1814,6 +1833,7 @@ fn american_upstream() -> FixtureUpstream {
 /// windows — which is what the mosaic wanted all along — and they sit over the real GFS floor so
 /// the CONUS radar edge (MRMS `NO_COVERAGE` → 15 → fall through) is a real fall-through rather
 /// than a synthetic one.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn the_conus_sources_and_the_real_floor_mosaic_over_conus() {
     let now = ts("2026-08-09T17:00:00Z");
@@ -1884,6 +1904,7 @@ fn the_conus_sources_and_the_real_floor_mosaic_over_conus() {
 /// instant. Under WXR7, f+15 and f+30 were the frozen MRMS field (inside the 1,800 s skew window,
 /// and MRMS outranks HRRR) and HRRR only took over at f+45. Rank was never the problem — MRMS is
 /// still rank 1 — it is that a single observation has nothing valid at 17:15 to offer.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn over_conus_the_anchor_is_radar_and_every_forward_frame_is_the_model() {
     let now = ts("2026-08-09T17:00:00Z");
@@ -1926,6 +1947,7 @@ fn over_conus_the_anchor_is_radar_and_every_forward_frame_is_the_model() {
 /// GFS is hourly and the skew window is half an hour, so its steps bracket all nine offsets of a
 /// two-hour cycle — checked against the real fixture run over open ocean, where nothing else
 /// reaches at all.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn the_floor_offers_an_eligible_forecast_at_every_one_of_the_nine_offsets() {
     let now = ts("2026-08-09T17:00:00Z");
@@ -1953,6 +1975,7 @@ fn the_floor_offers_an_eligible_forecast_at_every_one_of_the_nine_offsets() {
 /// Under the old rule the radar observation masked that at f+15 and f+30. Four strips are affected
 /// permanently, and this derives them from the adapters' own window constants rather than from the
 /// review comment that found them — so a domain change moves the documented strips or fails here.
+#[cfg(feature = "external-fixtures")]
 #[test]
 fn the_forward_frame_fall_through_strips_are_where_radar_outruns_its_model() {
     let edges = |geometry: &GridGeometry| {

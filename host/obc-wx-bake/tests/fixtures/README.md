@@ -1,19 +1,22 @@
 # obc-wx-bake fixtures
 
-Real, unmodified upstream objects (and exact upstream byte ranges) captured on 2026-08-09 UTC —
-plus, since WXR6, two **tile crops** of real objects, which are the same idea applied to a format
-whose payload is addressable in blocks rather than in byte ranges (see below). They drive the
-deterministic fixture cycles in `tests/cycle.rs`, `tests/us_gfs_cycle.rs` and `tests/opera.rs`:
-same fixtures ⇒ byte-identical published tree, and every corruption of them must publish nothing.
+Real, unmodified upstream objects (and exact upstream byte ranges) captured on 2026-08-09 UTC.
+The large DWD, ICON, and NOAA captures live in the `weather-dwd-icon` and `weather-noaa`
+fixture-registry packages. Two small **tile crops** of real OPERA objects remain beside the tests
+as reviewable parser corpora. Together they drive `tests/canonical_mosaic.rs`,
+`tests/fuzz_decode.rs`, and `tests/opera.rs`: same fixtures ⇒ byte-identical published output, and
+every corruption of them must publish nothing.
 
 Provenance discipline: every entry below records the exact retrieval URL, the byte range where
-one was used, the length and the SHA-256 of the checked-in bytes. Terms are DWD Open Data
+one was used, the length and the SHA-256 of the captured bytes. Package manifests independently
+pin every external file. Terms are DWD Open Data
 (CC BY 4.0) for the German sources, NOAA Open Data Dissemination (public-use U.S. government
 data, no endorsement implied) for the NOAA ones and CC BY 4.0 for EUMETNET OPERA; the license
 record lives in
 [`docs/decisions/WX1-weather-source-contracts.md`](../../../../docs/decisions/WX1-weather-source-contracts.md).
 
-Total checked-in fixture bytes: 18,850,678.
+Run `obc fixtures sync weather` before the external-fixture suite. The two tracked OPERA crops
+total 248,841 bytes.
 
 ## DWD RV composite
 
