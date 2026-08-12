@@ -459,6 +459,28 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/web"
 
+# Build and serve the standalone canonical rain-radar inspector. The local proxy caches immutable
+# OBCG shards, coalesces concurrent reads, counts actual upstream requests, and enforces a 2,000
+# request session ceiling by default. Args: [PORT], default 4174.
+# Inspect the global 1 km rain mosaic and its 0–2 h forecast on :4174. Args: [PORT]
+rain-radar *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    demo="$OBC_ROOT/tools/rain-radar-demo"
+    port="${1:-4174}"
+    (( $# <= 1 )) || { _err "usage: obc rain-radar [PORT]"; exit 1; }
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || {
+      _err "rain-radar port must be an integer from 1024 to 65535"; exit 1;
+    }
+    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || {
+      _err "rain-radar needs Node.js and npm"; exit 1;
+    }
+    [[ -d "$demo/node_modules" ]] || { _say "installing rain-radar dependencies…"; ( cd "$demo" && _run npm ci ); }
+    _say "building the rain-radar viewer…"; ( cd "$demo" && _run npm run build )
+    _say "serving http://127.0.0.1:$port  (Ctrl-C to stop)"
+    ( cd "$demo" && _run node server.mjs "$port" )
+
 # ── Host workspace chores ────────────────────────────────────────────────────
 
 # Build the host workspace (simulator + shared crates + packer).
