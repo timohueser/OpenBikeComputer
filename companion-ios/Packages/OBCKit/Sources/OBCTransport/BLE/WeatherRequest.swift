@@ -52,6 +52,9 @@ public struct WeatherRequestReason: OptionSet, Equatable, Sendable {
     public static let noBundle = WeatherRequestReason(rawValue: 1 << 3)
     /// The rider has travelled outside the active bundle's covered corridor.
     public static let outOfArea = WeatherRequestReason(rawValue: 1 << 4)
+    /// The held bundle contains hourly data but no rain frames; a manifest probe alone cannot prove
+    /// that recreating it would be unchanged.
+    public static let hourlyOnly = WeatherRequestReason(rawValue: 1 << 5)
 }
 
 /// The one value the companion reads before it disconnects — **52 little-endian bytes** describing

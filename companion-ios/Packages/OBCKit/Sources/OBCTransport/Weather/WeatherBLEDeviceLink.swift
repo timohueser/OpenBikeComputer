@@ -104,6 +104,21 @@ public struct WeatherBLEDeviceLink: WeatherDeviceLink {
             throw WeatherDeviceLinkError(uploadError: error)
         }
     }
+
+    public func acknowledgeUnchanged(
+        requestID: UInt32, retryAfterSeconds: UInt16
+    ) async throws -> WeatherBundleUploadReceipt {
+        do {
+            let upload = try await transport.acknowledgeWeatherUnchanged(
+                requestID: requestID, retryAfterSeconds: retryAfterSeconds)
+            return WeatherBundleUploadReceipt(
+                connectLatency: upload.connectLatency,
+                connectedDuration: upload.connectedDuration,
+                reusedForegroundConnection: upload.reusedForegroundConnection)
+        } catch let error as WeatherUploadError {
+            throw WeatherDeviceLinkError(uploadError: error)
+        }
+    }
 }
 
 /// Feeds the transport's autonomously completed context reads (background wakes, state
