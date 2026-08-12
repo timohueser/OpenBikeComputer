@@ -132,7 +132,16 @@ impl SimCompanion {
         let refresh = WeatherRefresh::from_u8(refresh_raw).unwrap_or(WeatherRefresh::DEFAULT);
         let facts = match held {
             Some(bundle) => {
-                BundleFacts { held: true, age_s: u64::try_from((now - bundle.identity.generated_at).max(0)).ok() }
+                BundleFacts {
+                    held: true,
+                    age_s: u64::try_from((now - bundle.identity.generated_at).max(0)).ok(),
+                    // The simulator's compact `Held` seam carries only the §11.4 identity, not
+                    // validated window/frame metadata. Fail conservative and exercise the normal
+                    // request path rather than inventing a local-reuse proof.
+                    manual_reusable: false,
+                    location_changed: false,
+                    hourly_only: false,
+                }
             }
             None => BundleFacts::NONE,
         };

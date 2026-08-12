@@ -6,6 +6,19 @@ import OBCWeatherWire
 public protocol WeatherAssembling: Sendable {
     func assemble(request: WeatherRequest, generation: UInt32, now: Date) async throws
         -> BuiltWeatherBundle
+    func assembleIfChanged(
+        request: WeatherRequest, generation: UInt32, heldBundleGeneratedAt: Date?,
+        allowHeldBundleReuse: Bool, now: Date
+    ) async throws -> WeatherAssemblyOutcome
+}
+
+public extension WeatherAssembling {
+    func assembleIfChanged(
+        request: WeatherRequest, generation: UInt32, heldBundleGeneratedAt _: Date?,
+        allowHeldBundleReuse _: Bool, now: Date
+    ) async throws -> WeatherAssemblyOutcome {
+        .bundle(try await assemble(request: request, generation: generation, now: now))
+    }
 }
 
 extension WeatherAssembler: WeatherAssembling {}
@@ -343,23 +356,52 @@ public actor WeatherJobEngine {
                     return
                 }
                 do {
-                    let built = try await assembler.assemble(
+                    let heldAt = snapshot.heldBundleGeneratedAtUnixSeconds.map {
+                        Date(timeIntervalSince1970: TimeInterval($0))
+                    }
+                    let locationOrCoverageChanged = snapshot.reasonRawValue & ((1 << 4) | (1 << 5)) != 0
+                    let outcome = try await assembler.assembleIfChanged(
                         request: snapshot.weatherRequest,
                         generation: snapshot.nextGeneration,
+                        heldBundleGeneratedAt: heldAt,
+                        allowHeldBundleReuse: snapshot.heldBundleGeneration != nil
+                            && !locationOrCoverageChanged,
                         now: now())
-                    job.bundleBytes = built.bytes
-                    job.bundleGeneration = built.bundle.generation
-                    job.bundleWindow = [
-                        Int64(built.bundle.bounds.southLatitudeMicrodegrees),
-                        Int64(built.bundle.bounds.westLongitudeMicrodegrees),
-                        Int64(built.bundle.bounds.northLatitudeMicrodegrees),
-                        Int64(built.bundle.bounds.eastLongitudeMicrodegrees),
-                    ]
-                    job.bundleBuiltAt = now()
-                    job.precipitationGeneration = built.state.precipitation?.generation
-                    job.noRainMapReason = built.state.noRainMapReason
-                    job.phase = .bundleReady
-                    persist(&job)
+                    if case let .unchanged(retryAfterSeconds, precipitationGeneration) = outcome {
+                        do {
+                            let receipt = try await link.acknowledgeUnchanged(
+                                requestID: snapshot.requestID,
+                                retryAfterSeconds: retryAfterSeconds)
+                            job.precipitationGeneration = precipitationGeneration
+                            var entry = historyEntry(
+                                for: job, outcome: .committed, failure: nil, at: now())
+                            entry.uploadConnectedMilliseconds = Int(
+                                receipt.connectedDuration / .milliseconds(1))
+                            history.append(entry)
+                            lastCommitted = (snapshot.requestID, now())
+                            store.clear()
+                            readConnectedMilliseconds = nil
+                            return
+                        } catch WeatherDeviceLinkError.bundleRejected {
+                            // A still-supported older firmware answers unknownCommand. Fall through
+                            // to the established full bundle path rather than turning compatibility
+                            // into a failed weather request.
+                            let built = try await assembler.assemble(
+                                request: snapshot.weatherRequest,
+                                generation: snapshot.nextGeneration,
+                                now: now())
+                            install(built, into: &job)
+                            continue
+                        } catch let error as WeatherDeviceLinkError {
+                            // The probes succeeded; this was the short second BLE leg failing, not
+                            // a provider fetch failure. Keep the checkpoint at `.fetching` so the
+                            // next ladder wake can revalidate before retrying the idempotent ACK.
+                            recordFailure(&job, .uploadFailed, error: error)
+                            return
+                        }
+                    }
+                    guard case let .bundle(built) = outcome else { continue }
+                    install(built, into: &job)
                 } catch let error as WeatherBundleBuildError {
                     recordFailure(&job, .buildFailed, error: error)
                     return
@@ -445,6 +487,22 @@ public actor WeatherJobEngine {
                 }
             }
         }
+    }
+
+    private func install(_ built: BuiltWeatherBundle, into job: inout WeatherJobRecord) {
+        job.bundleBytes = built.bytes
+        job.bundleGeneration = built.bundle.generation
+        job.bundleWindow = [
+            Int64(built.bundle.bounds.southLatitudeMicrodegrees),
+            Int64(built.bundle.bounds.westLongitudeMicrodegrees),
+            Int64(built.bundle.bounds.northLatitudeMicrodegrees),
+            Int64(built.bundle.bounds.eastLongitudeMicrodegrees),
+        ]
+        job.bundleBuiltAt = now()
+        job.precipitationGeneration = built.state.precipitation?.generation
+        job.noRainMapReason = built.state.noRainMapReason
+        job.phase = .bundleReady
+        persist(&job)
     }
 
     // MARK: - Failure bookkeeping
