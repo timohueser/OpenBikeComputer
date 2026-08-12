@@ -649,6 +649,14 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     UsbPlane { device: builder.build(), ctrl_in, ctrl_out, bulk_in, bulk_out }
 }
 
+#[inline]
+fn set_usb_radio_inhibited(inhibited: bool) {
+    #[cfg(feature = "ble")]
+    crate::ble::set_usb_radio_inhibited(inhibited);
+    #[cfg(not(feature = "ble"))]
+    let _ = inhibited;
+}
+
 /// Bring the USB device up and run it forever: the enumeration pump, the control-frame loop, and
 /// the bulk object stream, all three joined on the thread-mode executor beside the ride loop and
 /// the BLE stack.
@@ -683,11 +691,14 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     info!("usb: arming VBUS detect (VREGUSB); no USBHS access until a cable is present");
     let _vbus_armed = HardwareVbusDetect::new(Irqs);
 
-    if !vbus_present() {
+    let cable_present = vbus_present();
+    set_usb_radio_inhibited(cable_present);
+    if !cable_present {
         info!("usb: no VBUS on J3 — device plane parked; it comes up when a cable is plugged in");
         wait_for_vbus().await;
+        set_usb_radio_inhibited(true);
     }
-    info!("usb: VBUS present — bringing the device plane up");
+    info!("usb: VBUS present — BLE radio parked; bringing the device plane up");
 
     let UsbPlane { mut device, ctrl_in, ctrl_out, bulk_in, bulk_out } = build_plane(usb_p);
     info!(
@@ -739,6 +750,7 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
             // guard above re-reads the level. If a wake were somehow missed, the failure mode is a
             // plane that stays parked — never one that reads a powered-down core.
             warn!("usb: VBUS removed — device plane parked, endpoints idle until a cable returns");
+            set_usb_radio_inhibited(false);
             // Give the scratch arena's staging arm back (#1146 P2) — **this is the unplug edge the
             // arena's revocation depends on**. The transfer future is only *parked* here, not
             // dropped: it is still suspended inside `run_upload` and will resume when a cable
@@ -757,7 +769,8 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
             // at — and it goes on being woken regardless, because embassy's handler is still bound
             // next to ours.
             wait_for_vbus().await;
-            info!("usb: VBUS back — device plane serving again");
+            set_usb_radio_inhibited(true);
+            info!("usb: VBUS back — BLE radio parked; device plane serving again");
         }
     })
     .await;
