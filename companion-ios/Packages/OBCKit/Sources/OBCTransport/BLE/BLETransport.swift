@@ -2748,10 +2748,12 @@ extension BLETransport: CBCentralManagerDelegate {
             return
         }
         stateMulticast.send(discoveryPolicy.foregroundRequested ? .outOfRange : .disconnected)
-        // Reconnect through discovery rather than a blind direct connect. For a known foreground
-        // peer the peripheral identifier is authoritative and the reconnect probes the request
-        // context, so recovery does not depend on CoreBluetooth preserving an advertised UUID.
-        if discoveryPolicy.foregroundRequested || discoveryPolicy.weatherRequestPending {
+        // Reconnect through discovery rather than a blind direct connect. This must include the
+        // standing weather watch: backgrounding deliberately disconnects the foreground session,
+        // and `didDisconnect()` moves that retained watch to `.scanning`; failing to execute the
+        // phase left CoreBluetooth with no actual scan and made every later device request silent.
+        // `hasIntent` covers foreground recovery, a one-shot weather read, and that standing watch.
+        if discoveryPolicy.hasIntent {
             startConnectIfReady()
         }
     }
