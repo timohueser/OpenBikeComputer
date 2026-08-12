@@ -29,6 +29,20 @@ The fallback column is a loss of quality, not permission to relabel one product
 as another. Observation, nowcast, and forecast provenance must survive through
 normalization and baking. Missing data is never dry weather.
 
+> **Superseded in part, 2026-08-11 (WXR5 [#1244](https://github.com/timohueser/OpenBikeComputer/issues/1244)
+> and WXR7 [#1246](https://github.com/timohueser/OpenBikeComputer/issues/1246), under epic
+> [#1248](https://github.com/timohueser/OpenBikeComputer/issues/1248)).**
+> The *sources* above and their GO/NO-GO verdicts stand unchanged; what no longer
+> exists is the **ladder**. The tier column described a choice a client made — by
+> region, bbox containment and freshness — and both clients deleted that code in
+> #1244, after which #1246 deleted the producer that published the products and
+> the spec sections that described them. The baker mosaics every source above onto one canonical 0.01 degree
+> lattice with a fixed priority order, and downstream there is one dataset with no
+> tier, no product id and no fallback to select. Read the tier column as the
+> baker's **priority order** for overlapping sources, not as anything a phone or a
+> device can see. The last sentence is the part that survives untouched and got
+> stronger: missing data is never dry weather, and neither is an expired one.
+
 ## Architecture boundary
 
 WX1 proved, with a disposable Rust contract validator, that a host can
@@ -201,10 +215,58 @@ with 26,061 positive cells. The eight first-two-hour message ranges totaled
 330,351 bytes for the captured run. Decoding the selected field took 0.02 s
 and 30.4 MB peak RSS.
 
-Do not present HRRR as an observation. In the US tier-1 timeline, the latest
-MRMS field is the observation anchor and HRRR supplies future valid times. The
-transition retains source and valid-time provenance; it is not blended into a
+Do not present HRRR as an observation, and do not present a frozen MRMS field as
+one either. MRMS and HRRR are two sources at two priority ranks (#1246 deleted
+the composed product that used to hold both), and neither is blended into a
 fictional single model run.
+
+What changed with the mosaic is where the honesty lives. A published frame's
+`valid_at` is its place on the 15-minute cadence, not the measurement time of
+whatever painted it. MRMS contributes one frame and it is an observation, so it
+is eligible for the anchor and for nothing else: over CONUS **f0 is 1 km radar
+and +15 through +120 are HRRR's own leads**, with GFS beneath. Priority does not
+change that — MRMS still outranks HRRR at every cell — because rank decides who
+paints a frame, not which frames a source is offered for, and a single
+observation has nothing valid at +15 to offer.
+
+An interim round (#1246, WXR7) did let the frozen MRMS field paint +15 and +30,
+inside the 30-minute skew window, flagged **Forecast**. #1248 closed that: a
+forward frame must always be a genuine prediction valid at its own instant, and
+"correctly labelled" is not the same as "true". Where nothing forecasts a
+forward frame the answer is intensity 15, not the last picture we have. The
+generation still states `max_source_skew_s` once, so how old the radar under an
+f0 cell may be is a number a consumer reads rather than assumes.
+
+Radar persistence done deliberately — extrapolated, verified, with real forward
+frames — is a separate source and a separate decision (#1251). It will be
+eligible for forward frames as a forecast source, on the same terms as HRRR.
+
+### What the forward frames fall through to
+
+Forward frames skip the radar rows entirely, so the fall-through is one step
+longer than it was. Where a regional model is absent — outside its domain, or a
+failed lead — the radar used to mask it and the global floor was never reached;
+now an HRRR or ICON-EU outage costs f+15 and f+30 their resolution, visibly.
+
+Permanently, that is four strips where a radar footprint reaches past its
+regional model's domain. At f+15 and f+30 these drop to the 27.75 km floor; f0
+and f+45 onward are unchanged.
+
+| strip | radar | regional model |
+| --- | --- | --- |
+| CONUS 52.66–55.00 N | MRMS to 55.00 N | HRRR stops at 52.66 N |
+| CONUS 60.87–60.00 W | MRMS to 60.00 W | HRRR stops at 60.87 W |
+| Europe 70.53–73.00 N | OPERA to 73.00 N | ICON-EU stops at 70.53 N |
+| Europe 28.00–23.53 W | OPERA to 28.00 W | ICON-EU stops at 23.53 W |
+
+Finnmark (70.9 N, 29 E) is the one of the four with riders in it. This is
+accepted rather than worked around: 27.75 km model fill that is a forecast of
+the frame's instant is truthful, and a 1 km radar image of half an hour ago
+published under that instant is not. Narrowing a strip means acquiring a source
+whose *forecasts* cover it — a new priority row, not an exception to the rule.
+The bakery says so at run time as well: a cycle that publishes intensity 15 into
+a forward frame for want of an eligible forecast source warns, because the floor
+being degraded has no other symptom.
 
 ## DWD ICON-EU: European forecast
 
@@ -247,6 +309,76 @@ larger decrease, run mismatch, skipped lead, or geometry change fails the run;
 it is not clamped. The captured delta had 262,086 positive cells and a
 12.145752 mm maximum. Decode plus de-accumulation took 0.08 s and 25.7 MB peak
 RSS.
+
+## EUMETNET OPERA: European radar (addendum, 2026-08-10, WXR6 #1245)
+
+Amendment, not a rewrite: WX1 recorded no European tier-1 radar because none was
+surveyed. [#1245](https://github.com/timohueser/OpenBikeComputer/issues/1245)
+surveyed one and it is a **GO**, so the frozen table above should be read as
+having gained a `Europe, tier 1` row — which, per the supersession note, is a
+position in the baker's priority order and not a ladder a client walks.
+
+Objects are anonymous on CloudFerro, CC BY 4.0 (each object states its own
+licence in `GDAL_METADATA`):
+
+```text
+https://s3.waw3-1.cloudferro.com/openradar-24h/
+  YYYY/MM/DD/OPERA/COMP/OPERA@YYYYMMDDTHHMM@0@{DBZH,RATE,ACRR}.{h5,tiff}
+```
+
+Two products are used, both as observation frames, both read from the **COG**
+rather than the ODIM HDF5 twin (`openradar-archive`, which reaches back to 2012,
+carries only the HDF5s; the live 24-hour bucket carries both):
+
+- **CIRRUS `DBZH`** — 3,800 x 4,400 cells of 1 km, every 5 minutes, measured
+  publication lag 4.1 min. Column-maximum reflectivity (`product = MAX`).
+- **NIMBUS `RATE`** — 1,900 x 2,200 cells of 2 km, every 15 minutes, measured lag
+  10 min. Already mm/h, near-surface (`product = PPI`); its metadata declares
+  `zr_a = 200.0`, `zr_b = 1.6`.
+
+`ACRR` is rejected: same 2 km grid, and it is a **one-hour** accumulation, which
+smears a moving shower across an hour of track.
+
+**Reflectivity to rain rate.** Marshall-Palmer `Z = 200 R^1.6` is a *surface*
+relation, and it is what OPERA itself applies to the near-surface PPI. CIRRUS is
+a column maximum, so applying it unchanged overstates surface rain: measured over
+the 149,527 cells where both products saw an echo in the 2026-08-10T00:00 pair,
+the median CIRRUS/NIMBUS rate ratio is **2.2**, a full intensity band. The
+reflectivity path therefore divides by that measured ratio — equivalently
+`a_eff = 200 x 2.2^1.6 = 706.2`, or -5.48 dBZ — as an **empirical calibration,
+not physics**. Settling it properly means splitting the ratio by regime
+(stratiform vs convective at 30 dBZ) over a full day and scoring both products
+against gauge-adjusted `dwd-rv`; that measurement is not done, and until it is,
+the scalar is one number from one frame pair.
+
+Pinned contract, verified against the live objects:
+
+- classic TIFF, `Compression = 8`, `Predictor = 1`, 512 x 512 tiles,
+  `SamplesPerPixel = 2` (value + `pl.imgw.quality.qi_total`), both `float32`;
+- LAEA/WGS-84, `+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0
+  +y_0=-2100000.0 +units=m +ellps=WGS84`;
+- **the grid's north-west corner is model (0, 0)**, which is what the false origin
+  is for and what the ODIM corner attributes say: `LL` to `UR` spans exactly
+  3,800,000 x 4,400,000 m, i.e. exactly 3,800 x 4,400 cells of 1 km, so those are
+  outer corners. The COG's `ModelTiepoint` instead reports that corner *minus half
+  of each product's own pixel* (-500.0002714 / -1000.0002714, with a bit-identical
+  residual tail across the two files) — a converter that read the ODIM corners as
+  pixel centres. The baker pins the grid and requires the tiepoint to equal
+  `corner - half a pixel`, so an upstream fix fails the bake rather than moving
+  the field 500 m. Following the tiepoint instead would also put the two products'
+  rasters 500 m apart, at which point a NIMBUS cell is not an aggregate of CIRRUS
+  cells at all;
+- `GDAL_NODATA = -9999000` means **no radar coverage**; a `NaN` sample is ODIM
+  `undetect`, meaning covered with nothing detected. The two are different facts
+  and only the second is dry.
+
+Coverage is static in shape and not to the cell: 50.34 / 50.34 / 50.21 / 50.22 %
+of the domain over four frames spanning 18 hours on 2026-08-10, with the union
+and intersection of those masks differing by 21,936 cells (0.13 % of the domain).
+It is therefore read per frame from the nodata sentinel, never from a committed
+mask. Structurally uncovered: central and southern Italy, all of Greece, Albania,
+North Macedonia, southern Bulgaria, Ukraine east of Lviv, Belarus — which is why
+"OPERA lands" must never be read as "Europe is covered".
 
 ## NOAA GFS: worldwide v1 floor
 
@@ -448,12 +580,14 @@ leaving attribution to UI guesswork:
 | --- | --- | --- |
 | DWD RV / ICON-EU | DWD Open Data, CC BY 4.0 | `Source: Deutscher Wetterdienst (DWD); modified/quantized by OpenBikeComputer` plus DWD legal and CC BY links |
 | NOAA MRMS / HRRR / GFS | NOAA NODD public-use U.S. government data | `Source: NOAA/NCEP <product>; modified/quantized by OpenBikeComputer; no NOAA endorsement is implied` |
+| EUMETNET OPERA CIRRUS / NIMBUS | CC BY 4.0 (stated in each object's own `GDAL_METADATA`) | `Source: EUMETNET OPERA <composite> (CC BY 4.0); modified/quantized by OpenBikeComputer`, and for CIRRUS the Marshall-Palmer conversion and its column-max calibration are named in the same string |
 | NASA IMERG, if later approved | NASA Earth science data policy and GPM citation rules | exact product/citation and transformation notice; not present in v1 manifests |
 | MET Locationforecast | NLOD 2.0 or CC BY 4.0 | `Data from MET Norway` (phone-side attribution, not an R2 baker source) |
 
 The exact fixture retrieval URLs/ranges, content hashes, full-vs-subset status,
 and terms are in
-[`host/obc-wx-bake/tests/fixtures/README.md`](../../host/obc-wx-bake/tests/fixtures/README.md).
+the registry provenance in [`fixtures/catalog.toml`](../../fixtures/catalog.toml) and
+[`fixtures/README.md`](../../fixtures/README.md).
 
 ## Reproduction and checked evidence
 

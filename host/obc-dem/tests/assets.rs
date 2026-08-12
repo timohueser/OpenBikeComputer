@@ -1,7 +1,7 @@
 //! The two committed terrain sidecars, checked as artifacts.
 //!
-//! `apps/obc-sim/assets/grimsel.obcd` and `host/obc-bake/assets/teningen-preview.obcd` are built
-//! files whose source is not in the repo — `apps/obc-sim/assets/repack.sh terrain` is the only
+//! The registry's `sim-grimsel:grimsel.obcd` and `host/obc-bake/assets/teningen-preview.obcd` are
+//! built files whose source is not in the repo — `fixtures/build-map-package.sh terrain` is the
 //! supported way to regenerate them, exactly like the `.obcm` maps they sit beside. EL7 will run
 //! its snapshot tests on them, so this file is what says they are still readable, still cover the
 //! map they belong to, and still contain terrain rather than a plausible-looking accident.
@@ -21,7 +21,7 @@ const CELL_LOG2: u8 = 16;
 fn asset(relative: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(relative);
     std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("{}: {e} — run `apps/obc-sim/assets/repack.sh terrain`", path.display()))
+        .unwrap_or_else(|e| panic!("{}: {e} — run `fixtures/build-map-package.sh terrain`", path.display()))
 }
 
 /// Parse a committed sidecar, check its header, and run `body` with a degree-taking sampler over it.
@@ -39,12 +39,13 @@ fn with_sampler(bytes: &[u8], body: impl FnOnce(&mut dyn FnMut(f64, f64) -> Opti
 /// The alpine sidecar: it must cover the whole of `grimsel.obcm`'s canonical crop, and the terrain
 /// in it must be the Grimsel — real relief, at surveyed heights, not a flat or shifted raster.
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn the_grimsel_sidecar_covers_its_map_and_reads_as_the_grimsel() {
-    let bytes = asset("apps/obc-sim/assets/grimsel.obcd");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
     assert_eq!(bytes.len(), 786_560, "24 cells of 32 KiB behind a 4 × 6 directory");
 
     with_sampler(&bytes, |at| {
-        // The four corners of the map's canonical extract bbox (`repack.sh`'s `GRIMSEL_BBOX`).
+        // The four corners of the map's canonical extract bbox (`build-map-package.sh`'s `GRIMSEL_BBOX`).
         // Coverage is the point: a route anywhere on this map must find terrain under it.
         for (lat, lon) in [(46.48261, 8.15034), (46.48261, 8.46007), (46.72070, 8.15034), (46.72070, 8.46007)] {
             let height = at(lat, lon).unwrap_or_else(|| panic!("({lat}, {lon}) is on the map and must have terrain"));

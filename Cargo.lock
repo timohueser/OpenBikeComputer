@@ -1396,7 +1396,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2759,6 +2759,7 @@ name = "obc-dem"
 version = "0.1.0"
 dependencies = [
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "sha2",
  "tiff",
@@ -2791,9 +2792,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-fixtures"
+version = "0.1.0"
+
+[[package]]
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
  "obc-crc",
  "obc-ports",
 ]
@@ -2805,6 +2811,7 @@ dependencies = [
  "embedded-graphics",
  "obc-app",
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",
@@ -2881,6 +2888,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obcm-testkit",
@@ -2913,6 +2921,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obc-pack",
@@ -2941,6 +2950,7 @@ dependencies = [
  "obc-ble",
  "obc-dfu",
  "obc-display",
+ "obc-fixtures",
  "obc-formats",
  "obc-host-core",
  "obc-ports",
@@ -2995,7 +3005,10 @@ dependencies = [
  "obc-ports",
  "obc-replay",
  "rfd",
+ "serde",
+ "serde_json",
  "serialport",
+ "ureq",
 ]
 
 [[package]]
@@ -3003,6 +3016,7 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "miniz_oxide",
  "obc-crc",
  "obc-dfu",
  "obc-elevation",
@@ -3074,10 +3088,11 @@ dependencies = [
  "flate2",
  "grib",
  "hdf5-pure",
- "libc",
  "obc-crc",
+ "obc-fixtures",
  "obc-formats",
  "rayon",
+ "ring",
  "schemars",
  "serde",
  "serde_json",
@@ -3988,7 +4003,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4448,7 +4463,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4680,7 +4695,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5074,15 +5089,15 @@ dependencies = [
 
 [[package]]
 name = "webbrowser"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fc95580916af1e68ff6a7be07446fc5db73ebf71cf092de939bbf5f7e189f72"
+checksum = "ef62a3d5f7b2411119a11b6f62570dbff91d7105e011a20fb83fbf8f5761c40f"
 dependencies = [
- "core-foundation 0.10.1",
  "jni",
  "log",
  "ndk-context",
  "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "url",
  "web-sys",
@@ -5238,7 +5253,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

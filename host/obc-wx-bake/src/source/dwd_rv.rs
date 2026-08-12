@@ -4,11 +4,11 @@
 //! five-minute steps). Every member is validated against the WX1-pinned contract before the
 //! nine published leads (+0, +15, ..., +120) are selected; the discarded intermediate frames are
 //! never interpolated. Reprojection is nearest-neighbour from the pinned polar-stereographic
-//! raster onto a fixed regular lat/lon window at native ~1 km cell size — no smoothing.
+//! raster straight onto a fixed window of the canonical 0.01 degree lattice — no smoothing, and
+//! since [`GEOMETRY`] moved onto that lattice, no second rounding downstream either.
 
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File as Hdf5File};
-use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED, PRODUCT_DWD_RV, TIER_RADAR};
 use obc_formats::precip4;
 use std::collections::HashMap;
 use std::io::Read;
@@ -16,29 +16,122 @@ use std::io::Read;
 use crate::fetch::{FetchOutcome, Upstream};
 use crate::geometry::GridGeometry;
 use crate::grib::{MAX_COMPRESSED_BYTES, MAX_DECOMPRESSED_BYTES};
-use crate::manifest::Product;
-use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::source::{Adapter, Attribution, BakedFrame, BakedSource, SourceClass};
 use crate::stereo;
 
 pub const ID: &str = "dwd-rv";
 pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
 
-/// The fixed publication window: a regular lat/lon cover of the composite's trapezoid at native
-/// ~1 km cells (9,000 x 14,000 microdegrees). Cells outside the projected raster are no-data.
+/// The **source window**: a regular lat/lon rectangle over the composite's trapezoid, and — since
+/// #1246 deleted the live per-product tree that used to publish on it — **a window of the canonical
+/// lattice**. The pitch is [`crate::canonical::CELL_UDEG`] in both axes and the origin is a whole
+/// number of canonical cells from [`crate::canonical::CANONICAL`]'s -90/-180 origin, so every cell
+/// here *is* a canonical cell: the nearest-neighbour pick `Mosaic::fill` makes for a lattice cell
+/// lands on that cell itself, which is what [`crate::source::mrms`] already had. It is an identity
+/// resample and not a fast path — `fill` has no alignment branch and wants none; what the alignment
+/// buys is positional accuracy, not speed. Cells outside the projected raster are no-data, and the
+/// mosaic reads that as "not covered" and falls through to the next-priority source.
+///
+/// **What the alignment replaced.** The window used to be 9,000 x 14,000 udeg — square ~1 km cells
+/// chosen to suit the native raster rather than the lattice — which cost every published German
+/// cell a *second* nearest-neighbour hop: the lattice cell picked the nearest window cell, which
+/// had itself picked the nearest stereographic cell. Two independent roundings of a ~1 km field put
+/// the worst case at ~1 km — 501 m lattice-to-window plus 500 m window-to-native — on a source
+/// whose whole value is that it resolves a kilometre. On the lattice there is one rounding and only
+/// one, so the worst case halves to 500 m: [`source_index_map`] projects the lattice cell's own
+/// centre through [`stereo::native_index`], and nothing downstream rounds again. A lattice centre
+/// can no longer land on a window cell boundary either — it is offset half a cell from one by
+/// construction — so the half-open edge rule `canonical::source_column` documents cannot bite here.
+///
+/// The extent covers everything the old window did and a shade more, because it is the old extent
+/// rounded **outwards** onto the lattice and never inwards: north 55.868 -> 55.87 N, east
+/// 18.736 -> 18.74 E, with the south-west corner already on it.
+///
+/// What this rectangle does **not** take in — and the old one did not either — is the raster's
+/// north bulge. A polar-stereographic north edge curves poleward away from its corners, so the
+/// frame reaches 56.219 N at 10 E against the 55.862 N its UL corner reports. The strip above the
+/// top row's centre is a crescent from 1.565 E to 18.444 E, ~0.35 degrees thick in the middle and
+/// tapering to nothing at both ends: **29,083 native cells, 2.20 %** of the raster, all of it
+/// Denmark, the North Sea and the western Baltic — no German ground, which tops out at 55.058 N.
+/// Those cells are answered by the next-priority source. This window clips 166 fewer of them than
+/// the old one did, incidentally rather than by design; taking the bulge in outright costs 35 more
+/// rows (`height: 1_054`, +3.4 %) and is a **coverage** decision rather than an alignment one, so
+/// it is not made here.
+///
+/// `cell_size_m` stays the source's nominal native resolution — 1 km, the figure MRMS states on the
+/// identical pitch — and is descriptive here; a published frame states
+/// [`crate::canonical::LATTICE_CELL_SIZE_M`] instead.
 pub const GEOMETRY: GridGeometry = GridGeometry {
     south_lat_udeg: 45_680_000,
     west_lon_udeg: 1_460_000,
-    cell_lat_udeg: 9_000,
-    cell_lon_udeg: 14_000,
-    width: 1_234,
-    height: 1_132,
+    cell_lat_udeg: 10_000,
+    cell_lon_udeg: 10_000,
+    width: 1_728,
+    height: 1_019,
     cell_size_m: 1_000,
     tile_edge: 32,
     entries_per_page: 512,
 };
 
-/// Published leads in minutes: the epic's nine 15-minute frames through +2 h.
-pub const LEADS_MIN: [u32; 9] = [0, 15, 30, 45, 60, 75, 90, 105, 120];
+/// The tar's own member cadence and reach: 25 members, `+0` to `+120` minutes every five minutes.
+///
+/// **Every canonical instant inside the tar's reach is one of them.** A cycle anchors on a quarter
+/// hour and RV runs on a five-minute boundary, so `canonical instant - run` is always a whole number
+/// of five-minute steps: DWD publishes a member valid at *exactly* the instant the dataset wants,
+/// for every frame between the run and `run + 120 min`. At most one frame of the nine falls outside
+/// that span — before the run, or past its end, depending on which side of the anchor the run landed
+/// — and [`selected_leads`] gives it the nearest member rather than nothing.
+pub const MEMBER_STEP_MIN: u32 = 5;
+pub const MAX_LEAD_MIN: u32 = 120;
+pub const MEMBER_COUNT: usize = (MAX_LEAD_MIN / MEMBER_STEP_MIN) as usize + 1;
+
+/// **The members this cycle bakes: DWD's own frames, at the dataset's own instants** (WXR9 #1251).
+///
+/// Until #1251 this was a fixed ladder — `[0, 15, 30, … 120]` minutes from the *run* — and it was
+/// wrong in a way that only became visible once the baker could interpolate. RV's run is not on the
+/// quarter hour (it is on the five-minute boundary before it), so a fixed ladder off the run lands
+/// its frames five or ten minutes away from every canonical instant. Sixteen validated members were
+/// decoded and thrown away, and then `derive::uniform_frames` reconstructed those very instants by
+/// morphing across a 900 s bracket — reconstructing, by optical flow, frames that were sitting
+/// decoded in the same tar.
+///
+/// Selecting by *instant* instead fixes both halves at once: **Germany's radar is DWD's data,
+/// unmodified**, and `uniform_frames` finds every slot already answered and does nothing here.
+/// Which also disposes of the double-processing question — RV is itself a nowcast, and advecting
+/// the DWD's own advection scheme was never a good idea.
+///
+/// Lead 0 is always included whatever the cycle asks for: it is the tar's only **observation**, it
+/// is what f0's `FLAG_OBSERVED` rests on, and it costs one member.
+///
+/// **The nearest member, not only the exact one** (#1278 r2, R2-1). The first version of this took
+/// the member valid at the instant or nothing, which is 9/9 when the run lands on a quarter hour and
+/// 8/9 otherwise — and the missing one was **f+120**, in the common operational case where the run
+/// *precedes* the anchor (RV publishes about four minutes behind its run, and the baker fires after
+/// the quarter hour). `run + 120 min` is then a few minutes short of the last canonical instant, so
+/// the slot fell through to the lead-110 member 900 s stale while the lead-120 member sat decoded in
+/// the same tar 300 s away. Rounding to the nearest member instead is zero-skew wherever an exact
+/// member exists — which is every reachable instant at every phase — and degrades to the nearest one
+/// at the two ends instead of degrading to a member two steps further off. All nine instants now
+/// resolve to a native frame at every run phase; `every_canonical_instant_of_a_cycle_is_a_native_dwd_member`
+/// asserts both halves separately, exact against reachable and native against all nine.
+pub fn selected_leads(run: i64, now: i64) -> Vec<u32> {
+    let step = i64::from(MEMBER_STEP_MIN) * 60;
+    let mut leads = vec![0u32];
+    let times = crate::canonical::CycleTimes::anchored_at(now);
+    for offset_min in times.offsets_min() {
+        let ahead = times.valid_at(offset_min) - run;
+        // Round to the nearest member and clamp into the tar's reach. `div_euclid` on the shifted
+        // value is nearest-with-ties-up, which matches `MosaicLayer::nearest`'s own tie rule: the
+        // member valid *after* the instant is about weather that has not happened yet.
+        let member = (ahead + step / 2).div_euclid(step).clamp(0, i64::from(MAX_LEAD_MIN / MEMBER_STEP_MIN));
+        let lead = (member * i64::from(MEMBER_STEP_MIN)) as u32;
+        if !leads.contains(&lead) {
+            leads.push(lead);
+        }
+    }
+    leads.sort_unstable();
+    leads
+}
 /// A radar run refreshes every five minutes; half an hour without a fresh one is the epic's
 /// stuck-baker detection horizon, so the product must not outlive it.
 pub const STALENESS_SECONDS: i64 = 30 * 60;
@@ -72,51 +165,35 @@ impl Adapter for DwdRv {
         ID
     }
 
-    fn bake(
-        &self,
-        upstream: &mut dyn Upstream,
-        previous: Option<&Product>,
-        _now: i64,
-        warnings: &mut Vec<String>,
-    ) -> Result<AdapterOutcome, String> {
-        let previous_etag = previous.and_then(|product| product.upstream_etag.as_deref());
-        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, previous_etag)? {
-            FetchOutcome::Unchanged => return Ok(AdapterOutcome::Unchanged),
+    fn bake(&self, upstream: &mut dyn Upstream, now: i64, _warnings: &mut Vec<String>) -> Result<BakedSource, String> {
+        // No conditional request and no ETag short-circuit: the mosaic needs this source's cells
+        // every cycle, so "unchanged" would only save a download it has to do anyway (#1246).
+        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, None)? {
+            FetchOutcome::Unchanged => return Err("DWD RV LATEST returned 304 without a validator".into()),
             FetchOutcome::Body(fetched) => fetched,
         };
-        let (run, frames) = bake_tar(&fetched.bytes)?;
-        // A validator can miss (or the fixture upstream can serve the same bytes without one):
-        // the run identity itself is the second short-circuit, keys being immutable per run.
-        let previous_run = previous.and_then(|product| product.reference_unix());
-        if previous_run == Some(run) {
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        // Upstream regression: LATEST served an older run than the one already published (a
-        // withdrawn or re-published archive). Never regress reference_time/staleness — keep the
-        // published product and wait for a genuinely newer run.
-        if previous_run.is_some_and(|published| published > run) {
-            warnings.push(format!(
-                "dwd-rv: upstream serves run {run} older than the published {}; keeping the published product",
-                previous_run.expect("checked")
-            ));
-            return Ok(AdapterOutcome::Unchanged);
-        }
-        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
+        let (run, frames) = bake_tar(&fetched.bytes, now)?;
+        // DWD RV is itself a nowcast: its +5 … +120 members are the DWD's own advection scheme, so
+        // WXR9 adds nothing here — no motion history, and since #1251 selects members *by canonical
+        // instant* (see `selected_leads`), nothing for `derive::uniform_frames` to morph either.
+        Ok(BakedSource {
             id: ID,
-            product_code: PRODUCT_DWD_RV,
-            tier: TIER_RADAR,
             geometry: GEOMETRY,
             reference_time: run,
-            staleness_deadline: run + STALENESS_SECONDS,
             attribution: ATTRIBUTION,
-            upstream_etag: fetched.etag,
             frames,
-        })))
+            motion_history: Vec::new(),
+        })
     }
 }
 
-/// Validate a complete RV tar and bake the nine published leads. Public for the fixture tests.
-pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
+/// Validate a complete RV tar and bake the members [`selected_leads`] names for a cycle at `now`.
+/// Public for the fixture tests.
+///
+/// Every one of the 25 members is still decoded and validated — the contract check is over the
+/// whole tar, not over the subset that gets published — and the selection decides only which of
+/// them become frames.
+pub fn bake_tar(tar_bytes: &[u8], now: i64) -> Result<(i64, Vec<BakedFrame>), String> {
     GEOMETRY.validate()?;
     if tar_bytes.is_empty() || tar_bytes.len() as u64 > MAX_COMPRESSED_BYTES {
         return Err("DWD RV tar size is outside the WX1 limits".into());
@@ -126,6 +203,7 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
     let mut run_time: Option<i64> = None;
     let mut member_count = 0usize;
     let mut frames: Vec<BakedFrame> = Vec::new();
+    let mut wanted: Vec<u32> = Vec::new();
     for entry in archive.entries().map_err(|error| format!("DWD RV tar: {error}"))? {
         let entry = entry.map_err(|error| format!("DWD RV tar: {error}"))?;
         if entry.size() > MAX_DECOMPRESSED_BYTES {
@@ -154,29 +232,44 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
             return Err("DWD RV HDF5 member exceeds the WX1 limit".into());
         }
         let member = validate_member(bytes, member_run, lead_minutes)?;
-        // Every member is validated; only the nine published leads are baked.
-        if LEADS_MIN.contains(&lead_minutes) {
+        // The selection needs the run, which the first member establishes; every member after it is
+        // checked against the same run above, so this is stable for the whole walk.
+        if wanted.is_empty() {
+            wanted = selected_leads(member_run, now);
+        }
+        // Every member is validated; only the ones valid at a canonical instant are baked.
+        if wanted.contains(&lead_minutes) {
             frames.push(BakedFrame {
                 offset_min: lead_minutes,
                 valid_at: member_run + i64::from(lead_minutes) * 60,
-                flags: if lead_minutes == 0 { FLAG_OBSERVED } else { FLAG_FORECAST },
-                source: None,
+                class: if lead_minutes == 0 { SourceClass::Observation } else { SourceClass::Forecast },
                 cells: resample(&member, &index_map),
             });
         }
         member_count += 1;
     }
-    if member_count != 25 {
-        return Err(format!("DWD RV tar contains {member_count} members; expected leads 000..120 every 5 minutes"));
+    if member_count != MEMBER_COUNT {
+        return Err(format!(
+            "DWD RV tar contains {member_count} members; expected leads 000..{MAX_LEAD_MIN} every {MEMBER_STEP_MIN} minutes"
+        ));
     }
-    if frames.len() != LEADS_MIN.len() {
-        return Err("DWD RV tar is missing a published lead".into());
+    if frames.len() != wanted.len() {
+        return Err("DWD RV tar is missing a member the cycle selected".into());
     }
-    Ok((run_time.expect("25 members imply a run"), frames))
+    Ok((run_time.expect("a full tar implies a run"), frames))
 }
 
-/// The per-cycle nearest-neighbour map: for every output cell, the native raster index (or
+/// The per-cycle nearest-neighbour map: for every cell of the window, the native raster index (or
 /// `u32::MAX` outside the projected frame). One trigonometric pass, shared by all nine frames.
+///
+/// Since [`GEOMETRY`] is a window of the canonical lattice, the centre this projects is the
+/// **lattice** cell's own centre, and this is therefore the only rounding standing between the
+/// stereographic raster and a published German cell. Two tests in `canonical_mosaic.rs` keep it
+/// that way — `every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_source`
+/// re-derives the equality of centres at every cell it samples, and
+/// `the_dwd_window_is_a_window_of_the_canonical_lattice` states it against [`GEOMETRY`] itself — so
+/// a window that drifted off the lattice, reintroducing the second hop this pass exists without,
+/// fails a test rather than quietly blurring Germany.
 fn source_index_map() -> Vec<u32> {
     let mut map = vec![u32::MAX; GEOMETRY.cells()];
     for row in 0..GEOMETRY.height {

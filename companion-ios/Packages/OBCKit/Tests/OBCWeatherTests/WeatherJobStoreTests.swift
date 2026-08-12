@@ -31,7 +31,7 @@ struct FileWeatherJobStoreTests {
                 readAt: readAt),
             bundleBytes: Data([0xAA, 0xBB]), bundleGeneration: 18,
             bundleWindow: [-50_000_000, -73_000_000, -49_000_000, -72_000_000],
-            bundleBuiltAt: readAt, precipitationProductID: "mrms", noRainMapReason: nil,
+            bundleBuiltAt: readAt, precipitationGeneration: "mrms", noRainMapReason: nil,
             attempts: 2, startedAt: readAt, updatedAt: readAt,
             notBefore: readAt.addingTimeInterval(30))
         store.save(record)

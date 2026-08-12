@@ -5,7 +5,8 @@
 //! ([`super::archive`]), delegates, and records exactly what came back — bodies, byte ranges and
 //! HEAD probes alike. So `upstream/` is by construction *precisely what the baker asked for*,
 //! and there is no second list of members that could drift out of sync with the adapter's real
-//! ingress. `service/` is then whatever [`run_cycle`] wrote, which is why a re-bake can be a
+//! ingress. `service/` is then whatever [`run_cycle`] wrote — the production cycle over the pack's
+//! own lattice ([`crate::pack::window::sub_lattice`]) — which is why a re-bake can be a
 //! byte-comparison rather than a tolerance.
 //!
 //! Inside the recorder sits [`AsOf`], and it is not optional. An archive holds the *whole* day,
@@ -22,18 +23,18 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::cycle::{run_cycle, CycleReport};
-use crate::emit;
+use crate::canonical::{emit_shard, run_cycle, CycleReport, CycleTimes, Lattice, Mosaic};
 use crate::fetch::{FetchOutcome, Fetched, Upstream};
-use crate::manifest;
+use crate::manifest_v2;
 use crate::pack::archive;
-use crate::pack::crop::{crop_product, CroppedAdapter};
+use crate::pack::window::sub_lattice;
 use crate::pack::{
     sha256, write_file, BakeParams, BboxUdeg, Event, Member, Retrieval, Role, ServiceObject, TruthFrame, TruthParams,
     FORMAT, SERVICE_DIR, TRUTH_DIR, UPSTREAM_DIR,
 };
 use crate::publish::DirStore;
-use crate::source::{hrrr, mrms, us, Adapter, BakedProduct};
+use crate::source::{hrrr, mrms, Adapter, BakedSource};
+use crate::timefmt;
 
 /// The observed ladder the pack captures by default: +15 min through +2 h, the window a nowcast
 /// is scored over.
@@ -225,7 +226,8 @@ pub struct CaptureRequest {
     pub region: String,
     /// The wall clock injected into the cycle.
     pub now: i64,
-    pub bbox: Option<BboxUdeg>,
+    /// The ground the pack's lattice must cover. Required — see [`BakeParams::bbox_udeg`].
+    pub bbox: BboxUdeg,
     /// The `regions.toml` id of the basemap this pack expects under it. Defaults to
     /// [`crate::pack::US_BASEMAP_REGION`], the one non-DACH region the bakery carries.
     pub basemap_region: String,
@@ -260,38 +262,26 @@ pub fn capture(root: &Path, request: &CaptureRequest, network: &mut dyn Upstream
     let service_root = root.join(SERVICE_DIR);
     let mut recorder = RecordingUpstream::new(network, AsOf::new(request.now));
 
-    // --- the service tree: the real cycle, the real adapter, the real publisher.
-    let base = us::UsComposite;
-    let cropped;
-    let adapter: &dyn Adapter = match request.bbox {
-        Some(bbox) => {
-            cropped = CroppedAdapter::new(&base, bbox);
-            &cropped
-        }
-        None => &base,
-    };
+    // --- the service tree: the real cycle, the real sources, the real publisher, on the pack's
+    // own lattice.
+    let lattice = sub_lattice(&request.bbox)?;
+    let mrms_adapter = mrms::Mrms;
+    let hrrr_adapter = hrrr::Hrrr;
+    let adapters: Vec<&dyn Adapter> = vec![&mrms_adapter, &hrrr_adapter];
     let mut store = DirStore::new(&service_root);
-    let cycle = run_cycle(&[adapter], &mut recorder, &mut store, request.now, false)?;
+    // One thread: a pack is one small shard, and a deterministic single-threaded bake keeps a
+    // capture's cost off the machine it happens to run on.
+    let cycle = run_cycle(&lattice, &adapters, &mut recorder, &mut store, request.now, 1, false)?;
+    let coverage_udeg = pack_coverage(&lattice);
 
-    let manifest_bytes = std::fs::read(super::resolve(&service_root, manifest::MANIFEST_KEY)?)
-        .map_err(|error| format!("published manifest: {error}"))?;
-    let document = manifest::from_json(&manifest_bytes)?;
-    let product = document
-        .products
-        .iter()
-        .find(|product| product.id == us::ID)
-        .ok_or("the cycle published no us product to anchor the event on")?;
-    let anchor = product
-        .reference_unix()
-        .ok_or_else(|| format!("published reference_time {:?} is not RFC 3339", product.reference_time))?;
-    // What the pack actually answers for. The manifest's product bbox is already the honest
-    // intersection of the frames' windows, so this is a restatement, not a second computation.
-    let coverage_udeg = BboxUdeg {
-        south_udeg: product.bbox_udeg.south_udeg,
-        west_udeg: product.bbox_udeg.west_udeg,
-        north_udeg: product.bbox_udeg.north_udeg,
-        east_udeg: product.bbox_udeg.east_udeg,
-    };
+    // The observed ladder is anchored on the **last real observation**, not on the cycle's
+    // quarter-hour reference time. A nowcast is scored against what the radar went on to see, so
+    // the rung a rider would compare against is the observation the device actually held — and the
+    // as-of guard makes that a few minutes behind the wall clock, which the quarter-hour anchor
+    // would silently round away. Discovery is HEAD probes the cycle has already made, so this
+    // costs no body bytes; `store_members` collapses the repeated probes into one member each.
+    let anchor = mrms::discover_latest(&mut recorder, request.now)?
+        .ok_or("no MRMS observation to anchor the observed ladder on")?;
 
     // --- the observed ladder, from the same anchor. Planned first, so a ladder that cannot exist
     // fails before a single byte moves.
@@ -299,13 +289,13 @@ pub fn capture(root: &Path, request: &CaptureRequest, network: &mut dyn Upstream
     recorder.set_role(Role::Truth);
     let mut truth_frames = Vec::with_capacity(ladder.len());
     for rung in &ladder {
-        let bytes = bake_truth_frame(&mut recorder, anchor, rung.offset_min, rung.valid_at, request.bbox)?;
+        let bytes = bake_truth_frame(&mut recorder, &lattice, rung.valid_at)?;
         let path = format!("{TRUTH_DIR}/f{}.obcg", rung.offset_min);
         write_file(&root.join(TRUTH_DIR).join(format!("f{}.obcg", rung.offset_min)), &bytes)?;
         truth_frames.push(TruthFrame {
             requested_offset_min: rung.requested_offset_min,
             offset_min: rung.offset_min,
-            valid_at: manifest::rfc3339(rung.valid_at),
+            valid_at: timefmt::rfc3339(rung.valid_at),
             path,
             bytes: bytes.len() as u64,
             sha256: sha256(&bytes),
@@ -335,9 +325,13 @@ pub fn capture(root: &Path, request: &CaptureRequest, network: &mut dyn Upstream
         id: request.id.clone(),
         title: request.title.clone(),
         region: request.region.clone(),
-        window_start: manifest::rfc3339(anchor),
-        window_end: manifest::rfc3339(window_end),
-        bake: BakeParams { adapter: us::ID.to_string(), now: manifest::rfc3339(request.now), bbox_udeg: request.bbox },
+        window_start: timefmt::rfc3339(anchor),
+        window_end: timefmt::rfc3339(window_end),
+        bake: BakeParams {
+            sources: adapters.iter().map(|adapter| adapter.id().to_string()).collect(),
+            now: timefmt::rfc3339(request.now),
+            bbox_udeg: request.bbox,
+        },
         coverage_udeg,
         basemap_region: request.basemap_region.clone(),
         truth: TruthParams {
@@ -345,7 +339,7 @@ pub fn capture(root: &Path, request: &CaptureRequest, network: &mut dyn Upstream
             cadence_seconds: mrms::CADENCE_SECONDS,
         },
         members,
-        manifest_key: manifest::MANIFEST_KEY.to_string(),
+        manifest_key: manifest_v2::MANIFEST_KEY.to_string(),
         service,
         truth_frames,
     };
@@ -397,50 +391,69 @@ pub fn snap_truth_offset(anchor: i64, requested_offset_min: u32) -> (u32, i64) {
     (offset_min, valid_at)
 }
 
-/// One observed frame, baked through the same MRMS path the service product's frame 0 uses.
+/// The ground a pack's lattice answers for: its one shard's own window.
+pub fn pack_coverage(lattice: &Lattice) -> BboxUdeg {
+    let geometry = lattice.geometry(lattice.shard(0).expect("a pack lattice is one shard"));
+    BboxUdeg {
+        south_udeg: i64::from(geometry.south_lat_udeg),
+        west_udeg: i64::from(geometry.west_lon_udeg),
+        north_udeg: geometry.north_lat_udeg(),
+        east_udeg: geometry.east_lon_udeg(),
+    }
+}
+
+/// One observed frame, baked through the same MRMS path and the same emitter the service tree's
+/// own frames go through — a one-source mosaic on the pack's lattice.
+///
+/// **A truth frame is anchored on itself**: `reference_time == valid_at`, offset 0. It is a real
+/// observation of a real instant, so that is the only stamping that satisfies `OBCG_Spec.md` §3.2,
+/// which reserves `FLAG_OBSERVED` for offset 0 precisely because a frame ahead of its anchor is
+/// about an instant nothing observed. Stamping the ladder's own offset into the header instead —
+/// which is what this did until the flag rule landed — produced an object whose bytes said
+/// "forecast valid at 19:02" over a genuine 19:02 radar field.
+///
+/// The ladder is not lost by that: `event.json`'s `truth_frames[]` carries `requested_offset_min`,
+/// the snapped `offset_min` and `valid_at` for every rung, which is where a scorer reads it. The
+/// rung is pack metadata about *when to compare*, not a claim the OBCG object makes about itself.
 ///
 /// Public because [`crate::pack::rebake`] re-derives the truth ladder from the pack's own stored
 /// bytes and byte-compares — the same promise `service/` carries, which only became keepable once
 /// the truth ladder's raw observations were checked in.
-pub fn bake_truth_frame(
-    upstream: &mut dyn Upstream,
-    anchor: i64,
-    offset_min: u32,
-    valid_at: i64,
-    bbox: Option<BboxUdeg>,
-) -> Result<Vec<u8>, String> {
-    let mut frame = mrms::bake_observation(upstream, valid_at)?;
-    // `bake_observation` anchors its frame at its own instant; here the anchor is the cycle's, so
-    // the truth frame's offset is its real distance ahead of the forecast it will be scored
-    // against. The cells and their geometry are untouched.
-    frame.offset_min = offset_min;
-    let mut product = BakedProduct {
-        id: "truth",
-        product_code: obc_formats::obcg::PRODUCT_MRMS,
-        tier: obc_formats::obcg::TIER_RADAR,
+pub fn bake_truth_frame(upstream: &mut dyn Upstream, lattice: &Lattice, valid_at: i64) -> Result<Vec<u8>, String> {
+    let frame = mrms::bake_observation(upstream, valid_at)?;
+    let source = BakedSource {
+        id: mrms::ID,
         geometry: mrms::GEOMETRY,
-        reference_time: anchor,
-        staleness_deadline: anchor + us::STALENESS_SECONDS,
-        attribution: us::ATTRIBUTION,
-        upstream_etag: None,
+        reference_time: valid_at,
+        attribution: mrms::ATTRIBUTION,
         frames: vec![frame],
+        // A truth frame is one observation emitted on its own instant: no derivation runs over it,
+        // and giving it a motion history would invite one.
+        motion_history: Vec::new(),
     };
-    if let Some(bbox) = bbox {
-        product = crop_product(product, bbox)?;
-    }
-    let emitted = emit::emit_product(&product)?;
-    let [frame] =
-        <[emit::EmittedFrame; 1]>::try_from(emitted).map_err(|_| "truth bake emitted the wrong frame count")?;
-    Ok(frame.bytes)
+    let mosaic = Mosaic::from_sources(vec![source])?;
+    let object = emit_shard(lattice, &mosaic, CycleTimes { reference_time: valid_at }, 0, 0)?;
+    Ok(object.bytes)
 }
 
 /// Give every captured body a path in `upstream/`, write the ones the pack stores, and turn the
 /// lot into provenance records.
+///
+/// **Repeated HEAD probes collapse to one member.** A probe is a question with a yes/no answer, so
+/// asking it twice — which happens whenever two things in a capture need the same discovery — is
+/// one fact about the archive, not two. Bodies and byte ranges are never collapsed: two ranges of
+/// one object are two different retrievals and both have to be replayable.
 fn store_members(root: &Path, captured: &[Captured], store_truth_upstream: bool) -> Result<(Vec<Member>, u64), String> {
     let mut members = Vec::with_capacity(captured.len());
+    let mut probed: BTreeMap<(Role, String), ()> = BTreeMap::new();
     let mut used: BTreeMap<String, ()> = BTreeMap::new();
     let mut stored_bytes = 0u64;
     for capture in captured {
+        if matches!(capture.retrieval, Retrieval::Probe { .. })
+            && probed.insert((capture.role, capture.url.clone()), ()).is_some()
+        {
+            continue;
+        }
         let (licence, attribution_url) = archive::terms(&capture.url)?;
         let (path, length, digest, stored) = match &capture.bytes {
             None => (None, None, None, false),
@@ -537,7 +550,7 @@ mod tests {
     /// before it, and the pack records both numbers.
     #[test]
     fn truth_offsets_are_floored_onto_the_observation_cadence() {
-        let anchor = manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        let anchor = timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
         assert_eq!(snap_truth_offset(anchor, 30), (30, anchor + 30 * 60));
         assert_eq!(snap_truth_offset(anchor, 15), (14, anchor + 14 * 60));
         assert_eq!(snap_truth_offset(anchor, 45), (44, anchor + 44 * 60));
@@ -552,7 +565,7 @@ mod tests {
     /// beats writing one file twice and shipping a ladder with a rung missing.
     #[test]
     fn a_truth_ladder_finer_than_the_observation_cadence_is_refused() {
-        let anchor = manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        let anchor = timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
         // +14 and +15 fall in the same two-minute bucket, so both resolve to the +14 observation.
         let error = plan_truth_ladder(anchor, &[14, 15]).unwrap_err();
         assert!(error.contains("+14") && error.contains("+15"), "the error must name both offsets: {error}");
@@ -575,14 +588,14 @@ mod tests {
     /// The as-of guard, on the two decisions the shipped pack turns on.
     #[test]
     fn the_as_of_clock_hides_what_had_not_been_published() {
-        let at = manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        let at = timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
         let as_of = AsOf::new(at);
         // MRMS: 18:52 and 18:50 are still in the pipeline; 18:48 is out.
         assert!(as_of.not_yet_published(&mrms::object_url(at)).unwrap());
         assert!(as_of.not_yet_published(&mrms::object_url(at - 120)).unwrap());
         assert!(!as_of.not_yet_published(&mrms::object_url(at - 240)).unwrap());
         // HRRR: the 18Z subhourly set is not complete yet; the 17Z one is.
-        let run_18 = manifest::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
+        let run_18 = timefmt::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
         assert!(as_of.not_yet_published(&hrrr::index_url(run_18, 4)).unwrap());
         assert!(!as_of.not_yet_published(&hrrr::index_url(run_18 - 3_600, 4)).unwrap());
     }
@@ -606,7 +619,7 @@ mod tests {
                 0
             }
         }
-        let at = manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        let at = timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
         let future = mrms::object_url(at + 60 * 60);
         let mut network = Present;
         let mut recorder = RecordingUpstream::new(&mut network, AsOf::new(at));
@@ -636,12 +649,12 @@ mod tests {
 
     #[test]
     fn member_paths_name_the_object_and_the_byte_window() {
-        let observation = mrms::object_url(manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap());
+        let observation = mrms::object_url(timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap());
         assert_eq!(
             member_path(&observation, &Retrieval::Body).unwrap(),
             "upstream/mrms/MRMS_PrecipRate_00.00_20200810-185200.grib2.gz"
         );
-        let run = manifest::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
+        let run = timefmt::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
         assert_eq!(
             member_path(&hrrr::index_url(run, 1), &Retrieval::Body).unwrap(),
             "upstream/hrrr/hrrr.t18z.wrfsubhf01.grib2.idx"

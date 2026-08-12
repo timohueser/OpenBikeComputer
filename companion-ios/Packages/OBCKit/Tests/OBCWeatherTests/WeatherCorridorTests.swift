@@ -5,111 +5,113 @@ import Testing
 
 /// The corridor is the only locality signal that reaches OBC infrastructure, so what it contains —
 /// and what it refuses to invent — matters.
+///
+/// Since #1244 it is a plain 90 km disc: no bearing cone, no speed, no route sampling. The six
+/// projection cases this suite used to carry went with the projection, and nothing replaced them,
+/// because there is nothing left to get wrong about *shape*. What is left is the arithmetic — the
+/// integer span, the cosine clamp, and the two edge clamps the disc owes `OBCG_Spec` §1.
 struct WeatherCorridorTests {
     static let position = Coordinate(latitude: 47.2, longitude: 7.3)
 
     @Test
     func noPositionMeansNoCorridorRatherThanTheEquator() {
-        #expect(WeatherCorridor.projected(for: WeatherRequest(requestID: 1)) == nil)
-        #expect(WeatherCorridor.projected(for: WeatherRequest(
-            position: Coordinate(latitude: .nan, longitude: 0))) == nil)
+        #expect(WeatherCorridor.around(WeatherRequest(requestID: 1)) == nil)
+        #expect(WeatherCorridor.around(
+            WeatherRequest(position: Coordinate(latitude: .nan, longitude: 0))) == nil)
     }
 
-    /// Neither bearing nor speed vouched for: a disc, not a fabricated heading.
+    /// A disc, centred on the rider, 90 km in every direction.
     @Test
-    func anUntrustedBearingProducesAnUndirectedDisc() throws {
-        let corridor = try #require(WeatherCorridor.projected(
-            for: WeatherRequest(position: Self.position)))
-        #expect(corridor.isUndirected)
+    func theCorridorIsA90KilometreDiscAroundTheRider() throws {
+        let corridor = try #require(
+            WeatherCorridor.around(WeatherRequest(position: Self.position)))
         let bounds = corridor.bounds
         #expect(bounds.contains(
             latitudeMicrodegrees: 47_200_000, longitudeMicrodegrees: 7_300_000))
-        // Symmetric about the rider, roughly the minimum radius in each direction.
-        let northSpan = bounds.northMicrodegrees - 47_200_000
-        let southSpan = 47_200_000 - bounds.southMicrodegrees
-        #expect(northSpan == southSpan)
-        #expect(northSpan > 85_000 && northSpan < 95_000, "10 km is about 0.09 degrees of latitude")
+        // Symmetric about the rider on both axes.
+        #expect(bounds.northMicrodegrees - 47_200_000 == 47_200_000 - bounds.southMicrodegrees)
+        #expect(bounds.eastMicrodegrees - 7_300_000 == 7_300_000 - bounds.westMicrodegrees)
+        // 90 km is 0.8085 degrees of latitude, rounded outward to whole microdegrees.
+        #expect(bounds.northMicrodegrees - 47_200_000 == 808_481)
+        // A degree of longitude is shorter at 47.2 N, so the east-west span is wider in degrees.
+        let cosine = Foundation.cos(47.2 * .pi / 180)
+        let expectedLongitudeSpan = Int64((90_000 / (111_320 * cosine) * 1_000_000).rounded(.up))
+        #expect(bounds.eastMicrodegrees - 7_300_000 == expectedLongitudeSpan)
     }
 
+    /// Nothing the device measured changes the disc. Bearing and speed still ride the wire (§11.2)
+    /// and still show up in diagnostics; they simply do not reach the corridor any more.
     @Test
-    func aTrustedBearingAndSpeedProjectTwoHoursAhead() throws {
-        let corridor = try #require(WeatherCorridor.projected(for: WeatherRequest(
-            position: Self.position, bearingDegrees: 0, speedMetresPerSecond: 8)))
-        #expect(!corridor.isUndirected)
-        // Two hours at 8 m/s is 57.6 km north; the corridor reaches it and stays narrow behind.
-        #expect(corridor.bounds.northMicrodegrees > 47_200_000 + 500_000)
-        #expect(47_200_000 - corridor.bounds.southMicrodegrees < 60_000)
+    func theDiscDoesNotDependOnAnythingTheDeviceMeasured() throws {
+        let bare = try #require(WeatherCorridor.around(WeatherRequest(position: Self.position)))
+        let withFix = try #require(WeatherCorridor.around(WeatherRequest(
+            requestID: 7, position: Self.position, fixTime: Date(timeIntervalSince1970: 1),
+            altitudeMetres: 340)))
+        #expect(bare == withFix)
     }
 
-    /// Regression, adversarial review finding 4: a non-finite bearing is not a bearing.
-    ///
-    /// Testing only `bearingDegrees != nil` let a NaN course take the directed branch, whose cone
-    /// arithmetic then contributed nothing — collapsing the corridor to the 5 km lateral margin,
-    /// *below* the undirected floor, for a rider doing 8 m/s. An unusable heading has to fall
-    /// through to the reach-sized disc, exactly like an absent one.
+    /// **The antimeridian clamp.** `OBCW_Spec` §1 forbids a bundle window crossing ±180, so the disc
+    /// is cut at the date line and the sliver beyond reads as not-covered — honest, and legal. The
+    /// manifest reader still wraps (`west > east`); it is the corridor that refuses to.
     @Test
-    func aNonFiniteBearingFallsBackToTheUndirectedDisc() throws {
-        for bearing in [Double.nan, .infinity, -.infinity] {
-            let corridor = try #require(WeatherCorridor.projected(for: WeatherRequest(
-                position: Self.position, bearingDegrees: bearing, speedMetresPerSecond: 8)))
-            #expect(corridor.isUndirected)
-            #expect(corridor.bounds.isWellFormed)
-            // Two hours at 8 m/s is 57.6 km — the disc must be that big, not the 5 km margin.
-            let northSpan = corridor.bounds.northMicrodegrees - 47_200_000
-            #expect(northSpan > 500_000, "reach-sized, not collapsed to the lateral margin")
-        }
-        // A non-finite speed is likewise not a speed: the corridor falls back to the 10 km floor.
-        let noSpeed = try #require(WeatherCorridor.projected(for: WeatherRequest(
-            position: Self.position, bearingDegrees: 0, speedMetresPerSecond: .nan)))
-        #expect(noSpeed.isUndirected)
-        let span = noSpeed.bounds.northMicrodegrees - 47_200_000
-        #expect(span > 85_000 && span < 95_000)
-    }
-
-    @Test
-    func anImplausibleSpeedCannotProduceAContinentalCorridor() throws {
-        let corridor = try #require(WeatherCorridor.projected(for: WeatherRequest(
-            position: Self.position, bearingDegrees: 90, speedMetresPerSecond: 400)))
-        let eastSpan = Double(corridor.bounds.eastMicrodegrees - 7_300_000) / 1_000_000
-        // Capped at 120 km, which near 47 N is well under two degrees of longitude.
-        #expect(eastSpan < 2.0)
-    }
-
-    @Test
-    func theRouteAheadWidensTheCorridorOnlyAsFarAsTheRiderCanGet() throws {
-        // A route that turns hard east after the projected straight-line cone.
-        let route = (1...40).map { step in
-            Coordinate(latitude: 47.2, longitude: 7.3 + Double(step) * 0.02)
-        }
-        let withRoute = try #require(WeatherCorridor.projected(for: WeatherRequest(
-            position: Self.position, bearingDegrees: 0, speedMetresPerSecond: 5,
-            routeAhead: route)))
-        let withoutRoute = try #require(WeatherCorridor.projected(for: WeatherRequest(
-            position: Self.position, bearingDegrees: 0, speedMetresPerSecond: 5)))
-        #expect(withRoute.bounds.eastMicrodegrees > withoutRoute.bounds.eastMicrodegrees)
-        // But not to the end of a 60 km route: two hours at 5 m/s is 36 km.
-        #expect(withRoute.bounds.eastMicrodegrees < 7_300_000 + 800_000)
-    }
-
-    @Test
-    func theCorridorNeverCrossesTheAntimeridian() throws {
-        let corridor = try #require(WeatherCorridor.projected(for: WeatherRequest(
-            position: Coordinate(latitude: -16.9, longitude: 179.98),
-            bearingDegrees: 90, speedMetresPerSecond: 10)))
-        #expect(corridor.bounds.eastMicrodegrees <= 180_000_000)
+    func theCorridorIsCutAtTheAntimeridianRatherThanWrapped() throws {
+        let corridor = try #require(WeatherCorridor.around(
+            WeatherRequest(position: Coordinate(latitude: -16.9, longitude: 179.98))))
+        #expect(corridor.bounds.eastMicrodegrees == 180_000_000)
+        #expect(corridor.bounds.westMicrodegrees < corridor.bounds.eastMicrodegrees,
+                "cut, not wrapped: a window with west > east would be an illegal OBCW bundle")
         #expect(corridor.bounds.isWellFormed)
+        try corridor.bounds.validateAsWindow()
+
+        let western = try #require(WeatherCorridor.around(
+            WeatherRequest(position: Coordinate(latitude: -16.9, longitude: -179.98))))
+        #expect(western.bounds.westMicrodegrees == -180_000_000)
+        #expect(western.bounds.isWellFormed)
     }
 
+    /// **The pole clamp.** Latitude stops at ±90 rather than producing a window nothing can express;
+    /// the disc is then a band across the top of the lattice, and `covered_rows` is what turns it
+    /// into ``WeatherPlanOutcome/uncovered`` rather than nine Range reads for the word "unknown".
     @Test
-    func containmentIsStrictInBothDirections() {
-        let outer = WeatherBoundingBox(
-            southMicrodegrees: 0, westMicrodegrees: 0,
-            northMicrodegrees: 1_000_000, eastMicrodegrees: 1_000_000)
-        let inner = WeatherBoundingBox(
-            southMicrodegrees: 100_000, westMicrodegrees: 100_000,
-            northMicrodegrees: 900_000, eastMicrodegrees: 900_000)
-        #expect(outer.contains(inner))
-        #expect(!inner.contains(outer))
-        #expect(outer.contains(outer), "the closed test is deliberate: an exact fit is covered")
+    func theCorridorIsClampedAtThePoleRatherThanReachingPastIt() throws {
+        let corridor = try #require(WeatherCorridor.around(
+            WeatherRequest(position: Coordinate(latitude: 89.7, longitude: 20))))
+        #expect(corridor.bounds.northMicrodegrees == 90_000_000)
+        #expect(corridor.bounds.isWellFormed)
+        try corridor.bounds.validateAsWindow()
+        // The 0.05 cosine clamp keeps the longitudinal span finite rather than exploding past 360.
+        #expect(corridor.bounds.eastMicrodegrees <= 180_000_000)
+        #expect(corridor.bounds.westMicrodegrees >= -180_000_000)
+
+        let southern = try #require(WeatherCorridor.around(
+            WeatherRequest(position: Coordinate(latitude: -89.8, longitude: 20))))
+        #expect(southern.bounds.southMicrodegrees == -90_000_000)
+        #expect(southern.bounds.isWellFormed)
+    }
+
+    /// A window is only refused for the things a client must never silently repair: an out-of-range
+    /// coordinate, and a window with no area. `west > east` is *not* one of them — it means the
+    /// antimeridian, which the shard arithmetic serves by splitting.
+    @Test
+    func windowValidationRefusesTheThingsAClampWouldHide() {
+        let zeroTo360 = WeatherBoundingBox(
+            southMicrodegrees: 47_900_000, westMicrodegrees: 352_100_000,
+            northMicrodegrees: 48_100_000, eastMicrodegrees: 352_200_000)
+        #expect(throws: WeatherBboxError.outOfRange) { try zeroTo360.validateAsWindow() }
+
+        let pastThePole = WeatherBoundingBox(
+            southMicrodegrees: 89_990_000, westMicrodegrees: 7_750_000,
+            northMicrodegrees: 90_500_000, eastMicrodegrees: 7_950_000)
+        #expect(throws: WeatherBboxError.outOfRange) { try pastThePole.validateAsWindow() }
+
+        let flat = WeatherBoundingBox(
+            southMicrodegrees: 48_000_000, westMicrodegrees: 7_750_000,
+            northMicrodegrees: 48_000_000, eastMicrodegrees: 7_950_000)
+        #expect(throws: WeatherBboxError.empty) { try flat.validateAsWindow() }
+
+        let wrapping = WeatherBoundingBox(
+            southMicrodegrees: -17_100_000, westMicrodegrees: 179_900_000,
+            northMicrodegrees: -16_900_000, eastMicrodegrees: -179_900_000)
+        #expect(throws: Never.self) { try wrapping.validateAsWindow() }
     }
 }

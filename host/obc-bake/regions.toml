@@ -26,9 +26,9 @@
 #
 # One region is deliberately outside DACH, and it is not a widening of the policy.
 # `north-america/us/iowa` exists to give the **weather event packs** a basemap:
-# `host/obc-wx-bake/tests/events/` freezes real CONUS storms for the nowcaster to be
-# scored against, and rendering one on the simulator needs a map under it. The
-# convention that keeps this to a single entry lives in that directory's README —
+# The fixture registry freezes real CONUS storms for the nowcaster to be scored
+# against, and rendering one on the simulator needs a map under it. The convention
+# documented in `host/obc-wx-bake/tests/events/README.md` keeps this to one entry:
 # every US event pack crops to ground Iowa covers, so one state map serves them all.
 # A future pack that wants Kansas is a conversation, not a second line added quietly.
 #

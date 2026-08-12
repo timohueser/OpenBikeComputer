@@ -85,7 +85,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
     /// is rebuilt rather than uploaded as yesterday's weather.
     public var bundleBuiltAt: Date?
     /// Diagnostics snapshots for the eventual history entry (no coordinates).
-    public var precipitationProductID: String?
+    public var precipitationGeneration: String?
     public var noRainMapReason: NoRainMapReason?
     /// Completed attempts that ended in a retryable failure.
     public var attempts: Int
@@ -107,7 +107,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
         bundleGeneration: UInt32? = nil,
         bundleWindow: [Int64]? = nil,
         bundleBuiltAt: Date? = nil,
-        precipitationProductID: String? = nil,
+        precipitationGeneration: String? = nil,
         noRainMapReason: NoRainMapReason? = nil,
         attempts: Int = 0,
         deferrals: Int = 0,
@@ -122,7 +122,7 @@ public struct WeatherJobRecord: Codable, Equatable, Sendable {
         self.bundleGeneration = bundleGeneration
         self.bundleWindow = bundleWindow
         self.bundleBuiltAt = bundleBuiltAt
-        self.precipitationProductID = precipitationProductID
+        self.precipitationGeneration = precipitationGeneration
         self.noRainMapReason = noRainMapReason
         self.attempts = attempts
         self.deferrals = deferrals

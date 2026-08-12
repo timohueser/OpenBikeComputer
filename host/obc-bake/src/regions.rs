@@ -134,8 +134,8 @@ mod tests {
         // entry, never an extract. The count is pinned so a dropped line is a failed
         // test rather than a region that silently stops being offered.
         //
-        // Plus exactly one non-DACH entry: Iowa, the basemap the weather event packs in
-        // `host/obc-wx-bake/tests/events/` are rendered over. It is pinned by name and
+        // Plus exactly one non-DACH entry: Iowa, the basemap the fixture-registry
+        // weather event packs are rendered over. It is pinned by name and
         // by count for the same reason the rest are — and so that a second US state
         // arriving quietly fails here, which is the whole of the convention.
         assert_eq!(ids.len(), 36, "DACH's 35 plus Iowa for the weather event packs: {ids:?}");

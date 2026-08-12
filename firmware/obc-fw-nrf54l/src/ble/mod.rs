@@ -54,12 +54,13 @@ pub use state::wait_status_change;
 
 // The settings→radio controls (#455): the ride loop pushes the persisted Bluetooth switch each pass
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
+pub(crate) use state::set_usb_radio_inhibited;
 pub use state::{request_forget_bond, set_radio_enabled};
 
 // The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
-// each pass; the Weather screen (WX11) raises the urgent request; the store's commit/config paths
-// poke the two crate-internal edges.
-#[allow(unused_imports)] // WX11's Weather screen is the caller; the seam ships with the scheduler.
+// each pass and raises the urgent request when WX11's dashboard opens; the store's commit/config
+// paths poke the two crate-internal edges.
+pub use weather::refresh_in_flight as weather_refresh_in_flight;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
 pub(crate) use weather::{note_commit as weather_committed, note_settings_changed as weather_settings_changed};
@@ -84,7 +85,7 @@ use embassy_futures::join::{join, join3, join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
-use embassy_time::Timer;
+use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
 use trouble_host::prelude::*;
@@ -121,12 +122,6 @@ const SENSOR_LINKS: usize = 3;
 const CONNECTIONS_MAX: usize = 1 + SENSOR_LINKS;
 /// Advertising sets — one legacy connectable set is all the advertise policy needs.
 const ADV_SETS_MAX: usize = 1;
-/// Maximum radio-advertising time for one Weather Request hint. It is a one-shot budget, not a
-/// permanent secondary beacon: only a secured served probe read clears it early; the original
-/// monotonic deadline survives failed/unauthenticated connection cycles. Armed by the production
-/// due scheduler ([`weather`]) on every raise, and once at boot by the `ble-weather-request`
-/// harness.
-pub(crate) const WEATHER_REQUEST_ADV_BUDGET_SECS: u64 = 60;
 /// Bonded peers stored in the host: exactly one — the **phone**. Sensors are **not** bonded (open
 /// GATT servers connected by stored address, no SMP), so they never consume a bond slot. While the
 /// phone slot is occupied new pairings are rejected (#455) and only Forget phone clears it, so the
@@ -432,7 +427,7 @@ pub async fn run(
     state::seed_radio_enabled(store.borrow().settings().ble_enabled);
     #[cfg(feature = "ble-weather-request")]
     {
-        state::arm_weather_request(embassy_time::Duration::from_secs(WEATHER_REQUEST_ADV_BUDGET_SECS));
+        state::arm_weather_request(embassy_time::Duration::from_secs(obc_ble::WEATHER_REQUEST_WINDOW_S));
         info!("ble: Weather Request harness armed (60 s maximum advertising window)");
     }
 
@@ -605,7 +600,9 @@ pub async fn run(
                     // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
                     // are answered) and owns the exit — it returns the disconnect reason. The background set
                     // (parameter negotiation, the CoC accept-and-drain, the BAS battery notify, and the
-                    // #455 link control — radio-off / Forget both end in a local disconnect) runs
+                    // link control — radio-off / Forget end in a local disconnect; a Weather
+                    // Request first takes the live notify/read fast path and disconnects only for
+                    // the advertisement fallback) runs
                     // concurrently and never returns before the teardown, so `select` tears it all down the
                     // moment the link drops (any disconnect drops straight back to the loop top).
                     let reason = match select(
@@ -614,7 +611,7 @@ pub async fn run(
                             negotiate_link(stack, &conn),
                             serve_coc(stack, server, &conn, store, shared),
                             battery_task(stack, server, &conn),
-                            link_control(stack, &conn, store, shared),
+                            link_control(stack, server, &conn, store, shared, advertising_intent),
                         ),
                     )
                     .await
@@ -707,28 +704,118 @@ async fn forget_bond(
 }
 
 /// The per-connection control watcher (#455): rides the background `join4` beside the serve loop
-/// and waits for either the radio switch flipping **off** or a **Forget phone** request. Both end
-/// in a local disconnect; the `Disconnected` event then unwinds `serve_connection` and the outer
-/// loop lands back at its top (parked Off, or re-advertising with pairing open). Returns after the
-/// disconnect request — the enclosing `join4` keeps waiting on its never-returning siblings, so the
-/// teardown still comes from the one `select` exit path.
+/// and waits for the radio switch flipping **off**, a **Forget phone** request, or a newly raised
+/// **Weather Request**. Radio/Forget end in a local disconnect. A request on an authenticated
+/// Control link is notified and acknowledged by its read without churn; disconnect + secondary
+/// advertising remains the fallback when the live delivery cannot be proven.
+///
+/// The advertisement path remains load-bearing for a disconnected/background phone. The live-link
+/// fast path is intentionally only an optimisation of that same read receipt, not another protocol.
 async fn link_control(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     store: &core::cell::RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
+    advertised_as: AdvertisingIntent,
 ) {
-    match select(state::radio_disabled(), FORGET_BOND.wait()).await {
-        Either::First(()) => info!("ble: radio switched off — dropping the live connection"),
-        Either::Second(()) => {
-            // Forget with a live link: clear the bond first, then drop the connection (locked
-            // decision). The single-peer model means the peer is the bonded phone in every real
-            // flow; an unbonded peer that happens to hold the link just reconnects.
-            forget_bond(stack, store, shared).await;
-            info!("ble: forget phone — dropping the live connection");
+    loop {
+        match select3(state::radio_disabled(), FORGET_BOND.wait(), weather_request_raised(advertised_as)).await {
+            Either3::First(()) => {
+                info!("ble: radio switched off — dropping the live connection");
+                break;
+            }
+            Either3::Second(()) => {
+                // Forget with a live link: clear the bond first, then drop the connection (locked
+                // decision). The single-peer model means the peer is the bonded phone in every real
+                // flow; an unbonded peer that happens to hold the link just reconnects.
+                forget_bond(stack, store, shared).await;
+                info!("ble: forget phone — dropping the live connection");
+                break;
+            }
+            Either3::Third(()) => {
+                // A link accepted from the secondary advertisement lives only for the request it
+                // advertised. Either the authenticated read consumed it or its original radio
+                // budget expired; in both cases return to Control rather than letting an
+                // unauthenticated/buggy central monopolise the sole phone link indefinitely.
+                if advertised_as == AdvertisingIntent::WeatherRequest && !state::weather_request_pending() {
+                    info!("ble: Weather Request connection finished — returning to Control");
+                    break;
+                }
+                // A foreground companion already has the authenticated Control link and subscribes
+                // to the status characteristic. Hand it the request directly: tearing down a healthy link
+                // merely to rediscover the same GATT database made Fetch now depend on iOS seeing a
+                // short-lived secondary advertisement. If the subscription is absent (old app,
+                // background/suspended peer, or an ATT failure), retain the original advertisement
+                // path as the lossless fallback.
+                let notified = if state::status().secured {
+                    let (bytes, len) = obc_ble::StatusMessage::WeatherRequest.encode();
+                    data_plane::notify_bounded(
+                        stack,
+                        server,
+                        server.obc.status.handle,
+                        &bytes[..len],
+                        "weather request",
+                    )
+                    .await
+                } else {
+                    false
+                };
+                if notified {
+                    // The notify is only a wake-up/hint. The authenticated read remains the receipt:
+                    // it is the one place `serve_connection` clears the request, so merely queueing a
+                    // notification cannot lose work if iOS suspends before consuming it.
+                    let consumed = with_timeout(Duration::from_secs(3), async {
+                        // The arm edge may still be latched because the level-aware waiter returned
+                        // immediately above. Ignore such stale edges until the read lowers the level.
+                        while state::weather_request_pending() {
+                            state::weather_request_changed().await;
+                        }
+                    })
+                    .await
+                    .is_ok();
+                    if consumed {
+                        info!("ble: Weather Request consumed on live Control link — keeping connection");
+                        continue;
+                    }
+                }
+                info!("ble: Weather Request live notify unavailable — reconnecting through weather advertisement");
+                break;
+            }
         }
     }
     conn.raw().disconnect();
+}
+
+/// Wait for the *raised* level. A link accepted from a Weather Request advertisement already owns
+/// the current request and must be allowed to read it; first wait for that level to clear. A link
+/// accepted from OBC Control must drop immediately even if the raise raced the connect boundary.
+/// `WEATHER_REQUEST_EDGE` signals both directions, so the level is always the authority.
+async fn weather_request_raised(advertised_as: AdvertisingIntent) {
+    if advertised_as == AdvertisingIntent::WeatherRequest {
+        while state::weather_request_pending() {
+            let Some(remaining) = state::weather_request_remaining() else {
+                state::clear_weather_request();
+                return;
+            };
+            match select(state::weather_request_changed(), Timer::after(remaining)).await {
+                Either::First(()) => {}
+                Either::Second(()) => {
+                    state::clear_weather_request();
+                    info!("ble: Weather Request budget expired while connected — returning to Control");
+                    return;
+                }
+            }
+        }
+    } else if state::weather_request_pending() {
+        return;
+    }
+    loop {
+        state::weather_request_changed().await;
+        if state::weather_request_pending() {
+            return;
+        }
+    }
 }
 
 /// The host's transport pump — must run forever alongside the advertise loop. Runs **with the

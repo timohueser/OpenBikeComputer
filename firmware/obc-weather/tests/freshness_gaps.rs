@@ -90,11 +90,19 @@ fn last_frame_cadence_measured_from_a_gap_must_not_extend_staleness() {
     assert!(current_at(&bytes, T0 + 50_000 + 49_100).is_none(), "the gap-derived spacing grants nothing");
 }
 
-/// A coarse product (spacing above the ceiling) is bounded by [`FRAME_CURRENT_CAP_S`]: every frame
-/// goes dark `FRAME_CURRENT_CAP_S` after its own timestamp, mid-table and last alike — honest
-/// dark windows rather than a synthetic hour of "current" radar.
+/// **Widely spaced frames are bounded by [`FRAME_CURRENT_CAP_S`]**, mid-table and last alike:
+/// every frame goes dark that long after its own timestamp — honest dark windows rather than a
+/// synthetic hour of "current" radar.
+///
+/// This used to be named for coarse *products*, back when the phone could hand the device an
+/// hourly model bundle instead of a radar one and the spacing came from whichever product a tier
+/// ladder selected. There is one dataset now and its cadence is 15 minutes (#1246), so the wide
+/// spacing here is no longer something a rider can be served on a normal day. The rule still has
+/// to hold: the device reads whatever the phone bundles, the cap is the device's own, and a
+/// bundle built from a degraded or a future cadence must not be able to talk it into extending
+/// one frame's currency across the gap to the next.
 #[test]
-fn coarse_products_are_bounded_by_the_hard_cap() {
+fn widely_spaced_frames_are_bounded_by_the_hard_cap() {
     let bytes = bundle(&[T0, T0 + 3_600, T0 + 7_200], T0, T0 + 86_400);
     assert_eq!(current_at(&bytes, T0 + FRAME_CURRENT_CAP_S), Some((0, T0)));
     assert!(current_at(&bytes, T0 + FRAME_CURRENT_CAP_S + 1).is_none(), "mid-table dark window");

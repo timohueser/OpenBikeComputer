@@ -1129,8 +1129,15 @@ reject a compressible tile mislabeled `raw4`, preserving byte-stable re-encoding
 compression boundary is the RAM story: [`obc-weather`](src:firmware/obc-weather) retains only a
 parsed header, reads at most 128 encoded bytes, and expands into a caller-owned 256-byte tile. A
 96 × 96 × nine-frame raw DWD-shaped
-bundle is 46,480 bytes (45.39 KiB), inside the phone producer's separate 64 KiB policy without
-making 64 KiB a reader or format limit.
+bundle is 46,480 bytes (45.39 KiB).
+
+That shape was a provider's, and the phone no longer produces one. Under a single uniform dataset
+the bundle is the rider's 90 km corridor at a uniform ~1,113 m pitch — **162 × 162 cells in every
+frame, at every latitude** — so nine forced-raw4 frames come to 153,580 bytes worst case, and a
+real corridor measures far below that (55.5 kB was the largest over a 0–80° sweep). The phone
+producer's separate policy cap rose with it, from 64 KiB to **256 KiB**, without making either
+number a reader or format limit: the device's reader never holds more than a header and one tile,
+so what a bigger bundle costs is transfer time, not RAM.
 
 Every accepted object passes the internal whole-bundle CRC and structural checks: checked offset
 arithmetic, canonical non-overlap, ordered timestamps, possible tile counts, defined nibbles, and
@@ -1147,38 +1154,170 @@ file whose random read includes a seek.
 
 The rain frames the phone crops into OBCW start life as **OBCG** grid objects — the static files
 the stateless weather bakery ([`obc-wx-bake`](src:host/obc-wx-bake)) publishes to object storage.
-One OBCG object is exactly one frame of one product (a DWD radar nowcast step, an ICON-EU model
-hour), so products whose frames have different native resolutions compose with no resampling at
-all. The US product is exactly that: frame 0 is a 1 km MRMS radar observation and the forward
-frames are 3 km HRRR model steps, one timeline whose frames keep their own grids, their own real
-valid times and their own observation/forecast provenance.
+One OBCG object is exactly one frame of one shard of **one dataset**: a global 0.01 degree lattice,
+15 minutes apart, nine frames per cycle, cut into a 6 × 4 grid of shards because a global frame is
+648 million cells and the format caps an object at 30 million.
 
-"No resampling" has a price, and it is worth naming because getting it wrong is invisible. A phone
-assembling one OBCW bundle has to state a single geographic window for the whole timeline, and it
-picks the coarsest frame's. Every other frame is then laid onto that window at *its own* cell size
-— which only works if the window is a whole number of that frame's cells, aligned to its lattice.
-When it is not, the frame is refused rather than stretched, because a stretched frame is a
-fabricated observation. So a composed product's lattices must **nest**: the coarse cell strides
-have to be integer multiples of the fine ones, and the origins congruent. Each object is
-individually valid either way — it is the *composition* that breaks — so the rule lives in the
-spec, is pinned by tests over the baker's lattice constants, and is re-checked at bake time for
-composed products, where a violation fails the cycle rather than publishing a product a client
-would take apart. The US product learned this the hard way: a 27,000 × 34,000 microdegree forecast
-lattice over a 10,000 × 10,000 observation divides in neither axis, and the 1 km radar frame was
-silently dropped from every bundle until the forecast lattice moved to 30,000 × 30,000.
+That sentence used to read differently, and the difference is the whole story of this section. The
+bakery published **four products at four native resolutions** — a 1 km German radar nowcast, a
+6.5 km European model, a composed CONUS timeline of 1 km radar and 3 km model, a 27.75 km global
+floor — and the client chose between them by tier, bounding-box containment and freshness. The
+governing principle was *no resampling, by construction*: every frame kept its own grid, and a
+phone assembling one bundle stated a single window for the whole timeline and laid the other frames
+onto it at their own cell sizes.
 
-Beneath the regional tiers a
+It was the wrong trade, and it had a failure mode that was invisible by construction. A frame the
+common window could not tile exactly was **refused** rather than stretched — correct, because a
+stretched frame is a fabricated observation — so the composed CONUS product's 27,000 × 34,000
+microdegree forecast lattice, which divides the 10,000 × 10,000 observation lattice in neither
+axis, silently dropped the 1 km radar frame out of every bundle. Every rider in the United States
+saw model forecast and no radar at all, and nothing anywhere reported an error. The fix at the time
+was a nesting contract checked at bake time; the fix in the end was to stop composing.
+
+So the baker **normalises every source onto one global 0.01 degree lattice** before it publishes
+anything: coarse sources are cell-replicated (one
+6.5 km model cell becomes a block of identical 1 km cells), and where two sources overlap, one
+ordered priority table — radar over model, finer radar over coarser, national over pan-European,
+a global floor last — decides each cell. The resampling still happens exactly once and still
+nearest-neighbour, which is what the format always required; what changed is that it happens in
+the baker instead of being pushed onto every consumer. Downstream there are no products, no tiers,
+no bboxes and no resolutions to choose between, so there is no composition left to get wrong — and
+the nesting contract, the selection policy and the product registry are not deprecated but deleted,
+from both clients, from the producer and from the spec. An OBCG object no longer carries a product
+id or a tier at all: those two header bytes are reserved and must be zero, and a decoder that finds
+anything there rejects the object.
+
+Which source painted a cell is now baker configuration and reaches nobody: adding a European radar
+source, or reordering two of them, is a bakery deploy that no client, phone or device release has
+to follow.
+
+Both clients are that much smaller for it. What used to be a tier ladder, a containment test, an
+expired-product shadowing rule and a refusal to bundle a frame whose lattice did not tile the
+window is now four divisions: which shards cover this bounding box. The corridor stopped being a
+cone projected along the rider's heading and became a plain 90 km disc, because the shape used to
+decide *which product answered* and now decides only how many objects are read.
+
+One transformation survives on the phone, and it is a bound rather than a choice. A 0.01° column
+is `1,113 × cos φ` metres wide while a 0.01° row is 1,113 m everywhere, so a corridor of fixed
+ground radius costs more and more columns the further north the rider is — 253 at Frankfurt, 465
+at Tromsø — for detail no source produced. The phone therefore resamples the corridor window onto
+a column pitch equal to the lattice's row height, nearest-neighbour, rows untouched. A 90 km disc
+is then 162 × 162 cells at every latitude, its cells are square to within half a percent, and
+`cell_size_m = 1113` is simply true. It costs a bounded loss — a rain feature narrower than the
+output pitch can be dropped, which is below the scale of the phenomenon, below every source's own
+resolution, and sub-pixel on a device that draws about three pixels per cell — and it buys the end
+of an otherwise open-ended ladder, where every degree of latitude supported would have wanted
+another producer-cap raise.
+
+Two consequences are worth stating because they look like losses and are not. A frame mixing 1 km
+radar with 6.5 km model fill has no single true source resolution, so `cell_size_m` stops
+describing a source and states the lattice instead — and rather than transport the missing
+information in a per-cell plane or a per-tile label, we **remove** it. That is honest because the
+mosaic always has a global floor: every cell carries a best-available value, so "no radar coverage"
+renders as visibly coarse model fill, never as no rain. And intensity code 15 keeps its one
+meaning — *we do not know* — for the case that actually needs it: a source outage, or a shard that
+failed to bake.
+
+**Uniform in space was the easy half.** Nine frames fifteen minutes apart is a promise about the
+timeline, and for most of the planet it was only a promise about the *labels*: the global floor
+publishes hourly steps, so one model field answered four consecutive frames and the picture changed
+once an hour and stood still in between. Each of those four frames was honestly flagged a forecast,
+and the one in the middle was still a prediction of a neighbouring instant wearing this one's
+timestamp.
+
+So the baker fills the gaps rather than repeating the step — but only where nobody published one
+already. Germany's radar is the case worth stating: the DWD's RV composite arrives as 25 members
+five minutes apart, and a cycle sits on the quarter hour, so *every* frame the dataset wants is a
+member the DWD published for exactly that instant. The baker selects by instant rather than by a
+fixed ladder off the run, and Germany's rain map is therefore DWD's own data, unmodified, at all nine
+frames. Deriving a frame the source already published would have been a strictly worse copy of it.
+
+Where nobody published one — the hourly model steps, most of the planet — the baker estimates the
+**motion field** carrying the rain between the two steps that bracket the instant: pyramidal
+Lucas–Kanade, on a grid of nodes about 16 km apart, because a motion field is smooth at the scale of
+the systems it describes. It then carries the nearer of the two steps along that field to the target
+instant. Not a blend of both: two steps hold the same storm in two different places, and averaging
+them produces two ghosts of it, one fading in and one fading out. Carrying one of them there instead
+produces one storm, in the right place, made of values that source actually measured.
+
+The same machinery, pointed forward instead of between, is what makes the forward half of the
+timeline worth having where radar exists. Two consecutive radar composites give the motion; the
+observed field carried along it gives +15 through +90 minutes of **advected radar** in place of a
+3 km or 27.75 km model — which is a different quality of answer to "should I shelter", and measurably
+so. Scored against what actually happened on the 2020 Midwest derecho, at 30 minutes ahead the
+advected radar hits a CSI of 0.72 where the model manages 0.31 and simply freezing the last image
+manages 0.54; at an hour ahead it is 0.60 against 0.26 and 0.34, and at ninety minutes 0.51 against
+0.22 and 0.21. Where it *stops* is set by that kind of measurement rather than by taste, and by a
+test that fails two ways: if the published horizon promises skill the scoring does not show, and if
+the horizon runs past the last lead the scoring can verify at all.
+
+Three limits keep a computed frame from being a fabrication, and they are in the spec rather than in
+the implementation's conscience. Advection **moves whole cells** — nearest-neighbour, the same rule
+the rest of the pipeline follows — so no sub-cell detail is invented and a derived frame's real
+resolution is its source's. Every published intensity is one its source actually measured for some
+cell, because the frames are moved rather than combined. And where a trajectory comes from outside
+the source's own domain there is nothing behind the field that moved, so the cell is *unknown*, never
+dry: the ground a storm vacates at the upwind edge of a radar footprint falls through to the model
+beneath it instead of being published as clear sky. Downstream nothing is told which frames were
+computed, because nothing downstream could act on it — a derived frame is a forecast, like every
+other frame ahead of now.
+
+"Global floor" is worth one sentence of pedantry, because it is the load-bearing claim and it is
+not free. The floor's grid is periodic in longitude, so the baker closes the antimeridian seam by
+wrapping — without that, the last column of the source window and the first would leave a
+25-column stripe of permanent no-data running through Fiji, forever, in every frame. Latitude does
+not wrap and the floor has no polar points, so the 25 lattice rows beyond ±89.875° genuinely have
+no source: they publish as 15, which is the truth, and the covered domain is named in the code and
+the spec rather than left to be found in a rendered frame.
+
+Beneath every regional source a
 worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree — coarse
 on purpose, never smoothed into looking better than it is. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
-intensities and the same raw4/RLE4 tile codec, generalized to a per-product power-of-two tile
-size. Around that sits what an HTTP Range client needs and a device never does: a self-CRC'd
+intensities and the same raw4/RLE4 tile codecs, generalized to a per-product power-of-two tile
+size.
+
+OBCG has **one codec OBCW does not**, and where it lives matters more than what it is. RLE4 caps
+runs at sixteen cells and has no back-reference, so a uniform field costs one byte per sixteen
+cells however uniform it is, and twenty-five identical rows cost twenty-five times one row —
+exactly the shape of a coarse source upsampled onto a fine lattice, which is what the bakery is
+moving towards. So an OBCG tile may also be a plain DEFLATE stream over the same nibble packing,
+chosen per tile and only where it is strictly smaller than the run-length encoding of the same
+cells; on real radar frames that is roughly a quarter off the object, and on upsampled coarse data
+an order of magnitude. Two consequences are deliberate. The codec lives in the OBCG layer, above
+the [`precip4`](src:firmware/obc-formats/src/precip4.rs) authority the two formats share, so the
+device — which reads OBCW and links that authority with no decompressor at all — is untouched: the
+phone inflates the grid and re-encodes the corridor as OBCW RLE4. And a frame no longer has one
+legal byte image, because two conforming compressors need not agree; what stays canonical is the
+*decoded* frame, plus every codec choice a reader can disprove.
+
+Around that sits what an HTTP Range client needs and a device never does: a self-CRC'd
 fixed header carrying exact integer geometry, a **paged** tile directory whose pages carry their
 own CRCs, per-tile CRCs, and a len-0 sentinel for all-dry tiles — so fetching a corridor is a
 header read, a few directory-page reads and only the wet tiles, each independently verifiable.
-The mutable `manifest.json` beside the frames carries tiers, coverage, staleness deadlines and
-attribution; selection policy is manifest data, never code. The byte-level contract is
-[`OBCG_Spec.md`](src:specs/OBCG_Spec.md); OBCG never reaches the device, which continues to see
-only OBCW.
+The mutable `manifest.json` beside the objects is what selection became once there was nothing to
+select. It names the current generation and the two before it that are still fetchable, states the
+grid — origin, pitch, extent, shard size, tile edge, paging, and the polar rows no source reaches —
+so no client hardcodes any of it, gives its own deadlines as absolute timestamps rather than leaving
+a client to hold durations, and lists every source that may have painted a cell, because without
+per-cell provenance every attribution line has to be displayable together. Which objects a rider
+needs is then arithmetic: divide the corridor's bounding box by the shard size, and compose the key.
+
+That generation list is also the only thing licensed to delete. Object storage cannot express a
+45-minute retention window — lifecycle rules are day-granular and lazily applied — so the publisher
+retires generations itself, and it derives what to retire by subtracting the generations its new
+manifest names from the ones its previous manifest named. Never a timestamp, never a prefix listing;
+the delete set is a difference between two documents it wrote. What that buys is an ordering rule
+with teeth: a publisher that cannot *read* its own previous manifest must fail the cycle rather than
+publish an empty chain, because an empty chain is a positive claim that nothing older exists, and a
+torn read must never become a deletion set.
+
+The one thing the document must still *say* is what exists. Each frame carries a presence bitmap,
+one bit per shard, and that bit is the difference between two things a bare 404 cannot tell apart:
+a shard the bitmap names must exist, so a missing object is an error to retry, while a shard it does
+not name is dry everywhere and there is nothing to fetch. A shard the mosaic could not paint at all
+is *published*, full of code 15 — only genuinely dry shards are omitted, so an absence can never be
+an outage in disguise. The byte-level contract is [`OBCG_Spec.md`](src:specs/OBCG_Spec.md); OBCG
+never reaches the device, which continues to see only OBCW.
 
 ## Streaming: resident vs on-demand
 
@@ -1553,7 +1692,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The OBCW byte contract and reader: spec [`OBCW_Spec.md`](src:specs/OBCW_Spec.md), authority [`obc-formats/src/obcw.rs`](src:firmware/obc-formats/src/obcw.rs), allocation-free traversal [`obc-weather`](src:firmware/obc-weather), and independent Swift mirror [`OBCWeatherWire`](src:companion-ios/Packages/OBCKit/Sources/OBCWeatherWire)
-- The published weather grid objects the phone crops from: spec [`OBCG_Spec.md`](src:specs/OBCG_Spec.md), authority [`obc-formats/src/obcg.rs`](src:firmware/obc-formats/src/obcg.rs), producer [`obc-wx-bake`](src:host/obc-wx-bake) with its pinned manifest schema [`manifest.schema.json`](src:host/obc-wx-bake/schema/manifest.schema.json), and the host client that crops the same objects for the simulator [`obc-wx-client`](src:host/obc-wx-client)
+- The published weather grid objects the phone crops from: spec [`OBCG_Spec.md`](src:specs/OBCG_Spec.md), authority [`obc-formats/src/obcg.rs`](src:firmware/obc-formats/src/obcg.rs), producer [`obc-wx-bake`](src:host/obc-wx-bake) with its pinned manifest schema [`manifest-v2.schema.json`](src:host/obc-wx-bake/schema/manifest-v2.schema.json), the shared parse fixture both clients read [`wx-manifest-v2.json`](src:specs/vectors/wx-manifest-v2.json), and the host client that crops the same objects for the simulator [`obc-wx-client`](src:host/obc-wx-client)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)

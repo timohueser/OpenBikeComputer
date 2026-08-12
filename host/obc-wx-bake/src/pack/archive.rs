@@ -20,16 +20,16 @@
 //! is an *observation* product in a different container from the operational RV composite the
 //! `dwd_rv` adapter reads, so it needs its own adapter, not a URL rewrite.
 
-use crate::source::{hrrr, mrms, us, NOAA_TERMS_URL};
+use crate::source::{hrrr, mrms, NOAA_TERMS_URL};
 
 /// Iowa State University's MTArchive: the long-history MRMS mirror.
 pub const MTARCHIVE: &str = "https://mtarchive.geol.iastate.edu";
 
 pub const NOAA_LICENCE: &str = "NOAA Open Data Dissemination — public-use U.S. government data, no endorsement implied";
 
-/// The adapters an event pack can capture today. Anything else fails loudly rather than
-/// producing a pack whose `upstream/` cannot be replayed.
-pub const SUPPORTED_ADAPTERS: [&str; 1] = [us::ID];
+/// The sources an event pack can capture today. Anything else fails loudly rather than producing
+/// a pack whose `upstream/` cannot be replayed.
+pub const SUPPORTED_SOURCES: [&str; 2] = [mrms::ID, hrrr::ID];
 
 // ── The as-of lags ────────────────────────────────────────────────────────────────────────────
 //
@@ -180,7 +180,7 @@ pub fn archive_url(url: &str) -> Result<String, String> {
         // The NOAA HRRR bucket keeps every run; the live key is the archive key.
         return Ok(url.to_string());
     }
-    Err(format!("no historical archive is wired up for {url} (capture supports {})", SUPPORTED_ADAPTERS.join(", ")))
+    Err(format!("no historical archive is wired up for {url} (capture supports {})", SUPPORTED_SOURCES.join(", ")))
 }
 
 /// `/CONUS/PrecipRate_00.00/YYYYMMDD/MRMS_PrecipRate_00.00_YYYYMMDD-HHMMSS.grib2.gz`
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn an_mrms_key_rewrites_into_the_mtarchive_tree() {
-        let live = mrms::object_url(crate::manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap());
+        let live = mrms::object_url(crate::timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap());
         assert_eq!(
             live,
             "https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20200810/MRMS_PrecipRate_00.00_20200810-185200.grib2.gz"
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn the_hrrr_bucket_is_its_own_archive() {
-        let run = crate::manifest::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
+        let run = crate::timefmt::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
         for url in [hrrr::object_url(run, 2), hrrr::index_url(run, 2)] {
             assert_eq!(archive_url(&url).unwrap(), url);
         }
@@ -243,15 +243,15 @@ mod tests {
     /// capture is allowed to see.
     #[test]
     fn publication_instants_come_out_of_the_key() {
-        let observation = crate::manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        let observation = crate::timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
         assert_eq!(published_at(&mrms::object_url(observation)).unwrap(), observation + MRMS_PUBLICATION_LAG_SECONDS);
-        let run = crate::manifest::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
+        let run = crate::timefmt::parse_rfc3339("2020-08-10T18:00:00Z").unwrap();
         for url in [hrrr::object_url(run, 1), hrrr::index_url(run, 4)] {
             assert_eq!(published_at(&url).unwrap(), run + HRRR_RUN_COMPLETE_LAG_SECONDS, "{url}");
         }
         // The measured cases the shipped pack turns on: at 18:52:00Z the newest legal MRMS
         // observation is 18:48, and the 18Z HRRR run is still incomplete.
-        let at = crate::manifest::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
+        let at = crate::timefmt::parse_rfc3339("2020-08-10T18:52:00Z").unwrap();
         assert!(published_at(&mrms::object_url(observation)).unwrap() > at);
         assert!(published_at(&mrms::object_url(observation - 120)).unwrap() > at, "18:50 is not published either");
         assert!(published_at(&mrms::object_url(observation - 240)).unwrap() <= at, "18:48 is");

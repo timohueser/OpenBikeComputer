@@ -25,12 +25,12 @@ use obc_route::RouteReader;
 pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
 pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 
-// The embedded demo payload (epic #624 S4, #637). The binaries live with the other committed
-// fixtures in `obc-sim/assets/` — one provenance-controlled home (`repack.sh` + its README rules)
-// for every packed asset — but only this crate ships them.
+// The embedded demo payload (epic #624 S4, #637). The wasm-only map stays app-owned; shared
+// authored route/replay sources live in the fixture registry so other components never reach
+// through this app's asset directory.
 const DEMO_MAP: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
-const DEMO_ROUTE: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-climb.obcr");
-const DEMO_RIDE_GPX: &str = include_str!("../../obc-sim/assets/grimsel-climb-demo.gpx");
+const DEMO_ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+const DEMO_RIDE_GPX: &str = include_str!("../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb-demo.gpx");
 
 /// Replay-speed multiplier: 3× a normal climbing pace keeps the map moving without a blur.
 const DEMO_SPEED: f32 = 3.0;

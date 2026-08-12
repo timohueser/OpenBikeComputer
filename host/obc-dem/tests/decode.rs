@@ -64,7 +64,7 @@ fn the_tiff_crate_decodes_a_real_glo30_tile() {
 
     // --- values --------------------------------------------------------------------------------
     // One tile, not `open_dir`: the cache directory also holds the Teningen tile once
-    // `repack.sh terrain` has run, and this test is about *this* square.
+    // `build-map-package.sh terrain` has run, and this test is about *this* square.
     let mut mosaic = DemMosaic::default();
     mosaic.push(DemTile::open(&paths[0]).expect("decode"));
     for (name, lat, lon, surveyed, tolerance) in [

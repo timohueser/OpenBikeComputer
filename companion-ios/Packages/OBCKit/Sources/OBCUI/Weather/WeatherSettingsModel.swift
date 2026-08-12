@@ -19,7 +19,7 @@ import OBCWeather
 /// contract is frozen and stays as it is. Nothing in this app uses that direction, by choice.)
 ///
 /// **Provenance comes from the manifest.** Not one provider name is written down in the app. The
-/// credit lines, tiers, source-run times and staleness deadlines are read from
+/// credit lines, source-run times and staleness deadlines are read from
 /// ``WeatherServiceStatusProviding``, so a source added by a baker deploy appears here without an
 /// app release — the epic's law, kept by having nothing else to render.
 ///
@@ -293,13 +293,15 @@ public final class WeatherSettingsModel {
         }
     }
 
-    /// The products the manifest currently publishes, newest-published first — the rows the service
-    /// group renders. Empty unless a manifest was read.
-    public var products: [WeatherServiceProductStatus] {
-        guard case .available(let status) = service else { return [] }
-        return status.products.sorted {
-            ($0.tier.rawValue, $0.id) < ($1.tier.rawValue, $1.id)
-        }
+    /// The dataset the manifest currently publishes — the one row the service group renders. `nil`
+    /// unless a manifest was read.
+    ///
+    /// One row, because there is one dataset. The tier-then-id sort this used to apply to a product
+    /// list went with the ladder it ordered (#1244), and nothing replaced it: there is no second
+    /// thing to put in an order.
+    public var dataset: WeatherServiceStatus? {
+        guard case .available(let status) = service else { return nil }
+        return status
     }
 
     /// Every credit that must be shown, manifest-sourced, plus MET's for the hourly forecast.
@@ -316,10 +318,11 @@ public final class WeatherSettingsModel {
         return rows
     }
 
-    /// Products past their staleness deadline right now — the honest "stale since …" state.
-    public var staleProducts: [WeatherServiceProductStatus] {
-        guard case .available(let status) = service else { return [] }
-        return status.staleProducts(at: now())
+    /// True when the published generation is past its deadline right now — the honest "stale
+    /// since …" state.
+    public var datasetIsStale: Bool {
+        guard case .available(let status) = service else { return false }
+        return !status.isFresh(at: now())
     }
 
     /// The service group's footer: the outage/staleness truth, stated once.
@@ -331,18 +334,12 @@ public final class WeatherSettingsModel {
             return "Couldn't reach the \(WeatherCopy.serviceName). Hourly forecasts come straight "
                 + "from MET Norway and still work; the rain map needs this service."
         case .available(let status):
-            let stale = status.staleProducts(at: now())
-            if stale.isEmpty {
-                return "The \(WeatherCopy.serviceName) builds rain maps once, server-side, and "
-                    + "publishes them as plain files. Your OBC gets whichever product covers where "
-                    + "you are."
+            guard !status.isFresh(at: now()) else {
+                return "The \(WeatherCopy.serviceName) builds one worldwide rain map, server-side, "
+                    + "and publishes it as plain files. Your OBC gets the part of it around you."
             }
-            let names = stale.map(\.id).sorted().joined(separator: ", ")
-            let since = stale.map(\.stalenessDeadline).min().map {
-                WeatherCopy.absolute($0)
-            } ?? "—"
-            return "Service data stale since \(since) for \(names). Stale rain is never shown as "
-                + "dry — your OBC says a weather update is needed instead."
+            return "Service data stale since \(WeatherCopy.absolute(status.staleAfter)). Stale "
+                + "rain is never shown as dry — your OBC says a weather update is needed instead."
         }
     }
 }
