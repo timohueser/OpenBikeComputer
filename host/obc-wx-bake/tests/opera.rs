@@ -248,11 +248,16 @@ fn the_source_contract_refuses_what_it_is_there_to_refuse() {
     // OPERA has taken its own position on converting a column max and ours must be revisited.
     let patched = replace_once(
         &cirrus,
-        b"<Item name=\"task\" sample=\"1\">pl.imgw.quality.qi_total</Item>",
-        b"<Item name=\"zr_a\" sample=\"0\">300.0</Item>                   ",
+        b"<Item name=\"publisher_type\">institution</Item>",
+        b"<Item name=\"zr_a\">300.0</Item>                ",
     );
     let error = bake(&cirrus_crop_contract(), &patched, VALID_AT).expect_err("an upstream CIRRUS Z-R");
     assert!(error.contains("declares its own Z-R"), "{error}");
+
+    // The second plane is validated by identity, not merely by `SamplesPerPixel = 2`.
+    let patched = replace_once(&cirrus, b"pl.imgw.quality.qi_total", b"pl.imgw.quality.xx_total");
+    let error = bake(&cirrus_crop_contract(), &patched, VALID_AT).expect_err("a replaced quality index");
+    assert!(error.contains("band 1 task"), "{error}");
 }
 
 /// `metadata_item` returns **band 0's** value, and that is load-bearing rather than incidental:
@@ -268,6 +273,30 @@ fn metadata_lookups_answer_for_band_zero_only() {
     // A prefix of a real item name must not match it.
     assert_eq!(tiff::metadata_item(&cog.metadata, "DESCRIPT"), None);
     assert_eq!(tiff::metadata_item(&cog.metadata, "prod"), None);
+}
+
+/// Both real products carry `pl.imgw.quality.qi_total`, but its population is product-specific:
+/// CIRRUS supplies QI only where it has a finite echo, while NIMBUS supplies it for every pixel.
+/// That is why the production path validates and summarizes band 1 but does not apply a generic
+/// threshold. In this Alpine CIRRUS crop, filtering `QI == 0` alone would erase 28,821 of 36,631
+/// echo cells; filtering missing QI would also turn all 984,300 covered-dry pixels into no-data.
+#[test]
+fn the_real_quality_planes_are_validated_without_a_destructive_generic_threshold() {
+    let cirrus = tiff::decode_band0(&fixture(CIRRUS_CROP)).expect("the CIRRUS crop decodes");
+    let quality = cirrus.band1.expect("CIRRUS quality plane");
+    assert_eq!(quality.finite, 36_631);
+    assert_eq!(quality.nodata, 1_011_945);
+    assert_eq!((quality.zero, quality.one), (28_821, 5_011));
+    assert_eq!((quality.non_finite, quality.outside_unit_interval), (0, 0));
+    assert_eq!(tiff::metadata_item_for_sample(&cirrus.metadata, "task", 1), Some("pl.imgw.quality.qi_total"));
+    assert_eq!(tiff::metadata_item_for_sample(&cirrus.metadata, "DESCRIPTION", 1), Some("quality1"));
+
+    let nimbus = tiff::decode_band0(&fixture(NIMBUS_CROP)).expect("the NIMBUS crop decodes");
+    let quality = nimbus.band1.expect("NIMBUS quality plane");
+    assert_eq!(quality.finite, 679_936);
+    assert_eq!(quality.nodata, 0);
+    assert_eq!((quality.zero, quality.one), (375_722, 200_710));
+    assert_eq!((quality.non_finite, quality.outside_unit_interval), (0, 0));
 }
 
 /// Replace one occurrence of `needle` with an equal-length `replacement`, in place — the

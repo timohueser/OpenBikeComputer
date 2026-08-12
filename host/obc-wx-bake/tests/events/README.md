@@ -296,7 +296,7 @@ weather, which is what makes the pair a measurement rather than two anecdotes.
 
 **What makes it hard is evolution, not slowness.** An earlier draft of this section said "weak
 flow", on a mean-speed statistic that turned out to be measured wrong (see the correction below).
-The rain on this day moves at 16.1 m/s, not far off the derecho's 19.8. What separates the two
+The rain on this day moves at 15.6 m/s, not far off the derecho's 19.4. What separates the two
 events is that the derecho's field *stays itself and leaves*, while this one's field is
 continuously rebuilt out of cells that did not exist ten minutes earlier — and advection can follow
 the first and not the second.
@@ -326,7 +326,7 @@ captured. Against the derecho, over the same window:
 
 | | derecho 2020-08-10 | airmass 2023-06-24 |
 |---|---|---|
-| mean flow speed under rain † | 19.8 m/s | 16.1 m/s — *not* the discriminator |
+| mean flow speed under rain † | 19.4 m/s | 15.6 m/s — *not* the discriminator |
 | connected wet components ‡ | 62 | **235** |
 | mean component area ‡ | 1331 cells | **79 cells** (~10 km across) |
 | largest component ‡ | 79,149 cells — **one system** | 8,690 cells |
@@ -352,7 +352,7 @@ and why the code that computes it now carries both traps by name.
    the error landed almost entirely on the component that mattered and inflated both figures ~35 %.
 
 Measured properly — rain-weighted, and with the east-west and north-south cell sizes kept apart —
-it is **19.8 against 16.1 m/s**, and the airmass case is not slow. The hard-case claim never rested
+it is **19.4 against 15.6 m/s**, and the airmass case is not slow. The hard-case claim never rested
 on that number: the component statistics, the growing wet fraction and the measured skill decay all say the same thing
 without it — but it was stated as though it did, and it had already been quoted elsewhere before it
 was caught.

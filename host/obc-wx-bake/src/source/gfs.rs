@@ -1,4 +1,5 @@
-//! NOAA GFS `APCP` — the worldwide tier-3 floor, 0.25 degrees, hourly forward frames.
+//! NOAA GFS instantaneous `PRATE` — the worldwide tier-3 floor, 0.25 degrees, hourly
+//! forward frames.
 //!
 //! Every rideable coordinate on Earth is covered by this product; the radar and model tiers sit
 //! above it where they exist. IMERG Early is an explicit v1 NO-GO (WX1), so the floor is
@@ -6,15 +7,11 @@
 //! emits an empty frame that would look like dry weather.
 //!
 //! Fetching is the `.idx` byte-range path (`crate::idx`): a GFS 0.25-degree object is ~500 MB and
-//! the contracted `APCP:surface:0-N hour acc fcst` record is 300-700 KB. NOAA currently
-//! advertises that record twice for leads inside the first six-hour bucket, so the selection is
-//! resolved as one consecutive span and the decoded fields must be identical — never an
-//! undocumented "first occurrence".
-//!
-//! Accumulations are de-accumulated run-scoped: hour 1 is the `0-1` field itself (differenced
-//! from zero), hour N is `0-N` minus `0-(N-1)` of the **same** run. A decrease beyond the two
-//! fields' packing roundoff is a contract failure, not dry weather, and a run transition
-//! republishes a whole new run rather than subtracting across the seam.
+//! the contracted `PRATE:surface:N hour fcst` record is about 600-700 KB. This is the point-valid
+//! precipitation rate at the model step, not an accumulation over the preceding hour. Using it
+//! avoids both subtracting independently packed cumulative fields and pretending an hourly mean
+//! is valid at its interval end; `derive::uniform_frames` therefore morphs between honest point
+//! estimates.
 //!
 //! ## Antimeridian
 //!
@@ -117,7 +114,7 @@ pub const FORWARD_COVERAGE_SECONDS: i64 = 2 * 3_600;
 pub const RUN_INTERVAL_SECONDS: i64 = 6 * 3_600;
 /// WX1's enforced ingress ceiling for one run's selected spans.
 pub const MAX_RUN_SPAN_BYTES: u64 = 15_500_000;
-/// One APCP span is 300-700 KB; the cap bounds a single range far below a whole object.
+/// One PRATE message is 600-700 KB; the cap bounds a single range far below a whole object.
 const MAX_SPAN_BYTES: u64 = 8 * 1024 * 1024;
 
 const CYCLE_HOURS: [u32; 4] = [0, 6, 12, 18];
@@ -131,16 +128,15 @@ pub const ATTRIBUTION: Attribution = Attribution {
 pub const EXPECTED: ExpectedGrib = ExpectedGrib {
     discipline: 0,
     category: 1,
-    parameter: 8,
+    parameter: 7,
     grid_template: 0,
     expected_points: NATIVE_COLS * NATIVE_ROWS,
     expected_grid_definition_hex: GFS_GLOBAL_GRID_DEFINITION_HEX,
-    product_template: 8,
+    product_template: 0,
     representation_templates: &[3],
     missing_sentinels: &[],
-    // NOAA advertises the contracted record once or (inside the first six-hour bucket) twice.
-    allowed_messages: &[1, 2],
-    require_identical_messages: true,
+    allowed_messages: &[1],
+    require_identical_messages: false,
 };
 
 pub fn object_url(run: i64, lead_hours: u32) -> String {
@@ -160,11 +156,10 @@ pub fn index_url(run: i64, lead_hours: u32) -> String {
     format!("{}.idx", object_url(run, lead_hours))
 }
 
-/// The `.idx` selector for one lead. The record is always the run-scoped `0-N` accumulation, so
-/// its interval starts at the reference time even past the six-hour bucket boundary where NOAA
-/// also publishes a `6-N` record. The trailing colon keeps `0-1` from matching `0-10`.
+/// The `.idx` selector for the instantaneous rate at one lead. The trailing colon keeps an exact
+/// point forecast distinct from the adjacent `0-N hour ave fcst` record.
 pub fn selector(lead_hours: u32) -> String {
-    format!(":APCP:surface:0-{lead_hours} hour acc fcst:")
+    format!(":PRATE:surface:{lead_hours} hour fcst:")
 }
 
 /// Candidate runs, newest first: the six-hourly cycles within the last ~30 hours.
@@ -206,7 +201,6 @@ impl Adapter for GfsFloor {
         }
         let run = selected.ok_or("no complete GFS run among the recent cycles")?;
 
-        let mut previous_field: Option<(u32, DecodedField)> = None;
         let mut frames = Vec::with_capacity(LEADS_H.len());
         let mut span_bytes = 0u64;
         for lead in LEADS_H {
@@ -219,7 +213,7 @@ impl Adapter for GfsFloor {
                 FetchOutcome::Unchanged => return Err("GFS index fetch returned 304 without a validator".into()),
             };
             let text = String::from_utf8(index.bytes).map_err(|_| "GFS .idx is not UTF-8".to_string())?;
-            let (range, _) = idx::resolve(&text, &selector(lead), object_len, &[1, 2])?;
+            let (range, _) = idx::resolve(&text, &selector(lead), object_len, &[1])?;
             span_bytes += range.len();
             if span_bytes > MAX_RUN_SPAN_BYTES {
                 return Err(format!(
@@ -232,25 +226,10 @@ impl Adapter for GfsFloor {
             if field.reference_unix_seconds != run {
                 return Err(format!("GFS f{lead:03} reference time is not the selected run"));
             }
-            if field.valid_start_unix_seconds != run {
-                return Err("cumulative GFS APCP does not start at the model reference time".into());
+            if field.valid_start_unix_seconds != valid_at || field.valid_end_unix_seconds != valid_at {
+                return Err(format!("GFS f{lead:03} point rate does not match its lead"));
             }
-            if field.valid_end_unix_seconds != valid_at {
-                return Err(format!("GFS f{lead:03} interval end does not match its lead"));
-            }
-            frames.push(match previous_field.take() {
-                // Hour 1 of a run is differenced from zero: the run's own baseline, never the
-                // previous run's last field.
-                None if lead == 1 => deaccumulate(None, &field, run, lead)?,
-                None => return Err("GFS de-accumulation must start at the run's first lead".into()),
-                Some((previous_lead, earlier)) => {
-                    if previous_lead + 1 != lead {
-                        return Err("GFS leads are not consecutive".into());
-                    }
-                    deaccumulate(Some(&earlier), &field, run, lead)?
-                }
-            });
-            previous_field = Some((lead, field));
+            frames.push(bake_rate(&field, run, lead)?);
         }
         // The floor's hourly steps are what `derive::uniform_frames` interpolates between; it has no
         // observation to nowcast from, so no motion history.
@@ -265,29 +244,12 @@ impl Adapter for GfsFloor {
     }
 }
 
-/// One hourly rate frame from consecutive run-scoped cumulative fields. `earlier` is `None` only
-/// for the run's first hour, whose baseline is exactly zero.
-pub fn deaccumulate(
-    earlier: Option<&DecodedField>,
-    later: &DecodedField,
-    run: i64,
-    lead: u32,
-) -> Result<BakedFrame, String> {
-    if later.values.len() != NATIVE_COLS * NATIVE_ROWS {
-        return Err("GFS cumulative field does not have the contracted point count".into());
+/// Quantize one point-valid precipitation-rate field. GRIB PRATE is kg m-2 s-1, numerically
+/// millimetres per second for liquid water, while the intensity ladder is millimetres per hour.
+pub fn bake_rate(field: &DecodedField, run: i64, lead: u32) -> Result<BakedFrame, String> {
+    if field.values.len() != NATIVE_COLS * NATIVE_ROWS {
+        return Err("GFS rate field does not have the contracted point count".into());
     }
-    if let Some(earlier) = earlier {
-        if earlier.values.len() != later.values.len() {
-            return Err("GFS cumulative fields disagree on geometry".into());
-        }
-        if earlier.reference_unix_seconds != later.reference_unix_seconds {
-            return Err("GFS de-accumulation across two runs is forbidden".into());
-        }
-    }
-    // WX1's exact roundoff rule: independently packed cumulative fields may disagree by at most
-    // half the sum of their packing increments; a larger decrease fails rather than being clamped.
-    let roundoff_limit =
-        earlier.map(|earlier| f64::from(earlier.packing_increment + later.packing_increment) / 2.0).unwrap_or(0.0);
     let mut cells = Vec::with_capacity(GEOMETRY.cells());
     for row in 0..GEOMETRY.height as usize {
         // Output row 0 is the southernmost published centre (-89.75); the GRIB scans from +90 N,
@@ -298,17 +260,8 @@ pub fn deaccumulate(
             // wrapping at the prime meridian. The antimeridian column 720 is never addressed.
             let native_col = (col + 721) % NATIVE_COLS;
             let index = native_row * NATIVE_COLS + native_col;
-            let later_mm = f64::from(later.values[index]);
-            let earlier_mm = earlier.map_or(0.0, |earlier| f64::from(earlier.values[index]));
-            let delta = later_mm - earlier_mm;
-            if delta < -roundoff_limit {
-                return Err(format!(
-                    "GFS cumulative precipitation decreased by {} mm at point {index} (f{lead:03})",
-                    -delta
-                ));
-            }
-            // One hour between interval ends, so the mm delta is numerically an mm/h rate.
-            cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
+            let rate_mm_h = f64::from(field.values[index]) * 3_600.0;
+            cells.push(precip4::quantize_rate_mm_per_hour(rate_mm_h.max(0.0)));
         }
     }
     Ok(BakedFrame {
@@ -404,7 +357,7 @@ mod tests {
         let evaluated_at = late_replacement + POLL_PICKUP_LAG_SECONDS - 1;
         assert!(last_frame >= evaluated_at + FORWARD_COVERAGE_SECONDS);
         assert!(run + STALENESS_SECONDS > evaluated_at);
-        // Leads are the consecutive hours the de-accumulation walk requires.
+        // Retained steps stay consecutive so the floor has no accidental hourly hole.
         assert!(LEADS_H.windows(2).all(|pair| pair[1] == pair[0] + 1) && LEADS_H[0] == 1);
     }
 
@@ -415,7 +368,7 @@ mod tests {
             object_url(run, 3),
             "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260809/12/atmos/gfs.t12z.pgrb2.0p25.f003"
         );
-        assert_eq!(selector(1), ":APCP:surface:0-1 hour acc fcst:");
-        assert_eq!(selector(12), ":APCP:surface:0-12 hour acc fcst:");
+        assert_eq!(selector(1), ":PRATE:surface:1 hour fcst:");
+        assert_eq!(selector(12), ":PRATE:surface:12 hour fcst:");
     }
 }

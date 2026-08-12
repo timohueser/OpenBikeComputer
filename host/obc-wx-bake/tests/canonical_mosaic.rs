@@ -36,7 +36,7 @@ use obc_wx_bake::canonical::{
 };
 use obc_wx_bake::fetch::FixtureUpstream;
 use obc_wx_bake::geometry::GridGeometry;
-use obc_wx_bake::grib::{decode_bzip2_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
+use obc_wx_bake::grib::{decode_bzip2_field, decode_field, ExpectedGrib, ICON_EU_GRID_DEFINITION_HEX};
 use obc_wx_bake::publish::DirStore;
 use obc_wx_bake::source::opera;
 use obc_wx_bake::source::{
@@ -215,11 +215,15 @@ fn source_index(window: &GridGeometry, lattice: &Lattice, col: u32, row: u32) ->
 fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_source() {
     let mut upstream = european_upstream();
     // Anchor the cycle on the radar run so frame selection is exact rather than nearest: the
-    // canonical f0 is valid at 14:20Z, which is the DWD observation itself and 20 minutes after
-    // ICON's 14:00Z hourly frame.
+    // canonical f0 is valid at 14:20Z, which is the DWD observation itself and 10 minutes before
+    // ICON's 14:30Z interval-midpoint frame.
     let now = ts(DWD_RUN);
     let dwd = bake(&dwd_rv::DwdRv, &mut upstream, now);
     let icon = bake(&icon_eu::IconEu, &mut upstream, now);
+    let icon_run = ts("2026-08-09T06:00:00Z");
+    assert_eq!(icon.frames.first().expect("ICON frames").valid_at, icon_run + 30 * 60);
+    assert_eq!(icon.frames.first().expect("ICON frames").offset_min, 30);
+    assert!(icon.frames.windows(2).all(|pair| pair[1].valid_at - pair[0].valid_at == 3_600));
     let dwd_window = dwd.geometry;
     let icon_window = icon.geometry;
     let mosaic = Mosaic::from_sources(vec![dwd, icon]).expect("both sources are in MOSAIC_PRIORITY");
@@ -228,13 +232,13 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
     // unit-tested in `canonical`; what this test needs is an exactly known frame pick.
     let times = CycleTimes { reference_time: now };
 
-    // The independent oracles: the raw stereographic radar raster, and ICON's 13:00Z..14:00Z
-    // hourly accumulation difference — the frame valid at 14:00Z, which is the one nearest the
+    // The independent oracles: the raw stereographic radar raster, and ICON's 14:00Z..15:00Z
+    // hourly accumulation difference — the mean-rate frame valid at 14:30Z, which is nearest the
     // canonical f0.
     let raw = dwd_native_raster();
     let expected_field = icon_expected_field();
-    let f007 = decode_bzip2_field(&fixture("icon-eu-2026080906_007.grib2.bz2"), &expected_field).unwrap();
     let f008 = decode_bzip2_field(&fixture("icon-eu-2026080906_008.grib2.bz2"), &expected_field).unwrap();
+    let f009 = decode_bzip2_field(&fixture("icon-eu-2026080906_009.grib2.bz2"), &expected_field).unwrap();
 
     // A window over south-west Germany and its French/Swiss surroundings: partly inside the radar
     // trapezoid, partly outside it, so both branches of the priority rule are exercised.
@@ -267,7 +271,7 @@ fn every_published_cell_equals_the_quantized_nearest_neighbour_of_the_winning_so
                 dwd_expected(lat_deg, lon_deg, &raw)
             });
             let model = source_index(&icon_window, &lattice, col, row).map(|(index, _, _)| {
-                precip4::quantize_rate_mm_per_hour(f64::from(f008.values[index]) - f64::from(f007.values[index]))
+                precip4::quantize_rate_mm_per_hour(f64::from(f009.values[index]) - f64::from(f008.values[index]))
             });
             let (expected, winner) = match (radar, model) {
                 (Some(value), _) if value != INTENSITY_NODATA => (value, Some(dwd_rv::ID)),
@@ -1762,22 +1766,22 @@ const HRRR_RANGES: [(u32, u32, u64); 9] = [
     (4, 240, 191_463_451),
 ];
 const GFS_SPANS: [(u32, u64, u64); 16] = [
-    (1, 537_540_348, 427_603_385),
-    (2, 538_822_727, 428_091_880),
-    (3, 539_798_514, 428_475_805),
-    (4, 540_724_755, 428_752_482),
-    (5, 542_923_155, 430_080_077),
-    (6, 544_451_780, 431_023_684),
-    (7, 542_096_820, 432_070_312),
-    (8, 543_890_390, 433_033_986),
-    (9, 543_734_730, 432_288_308),
-    (10, 544_255_893, 432_328_102),
-    (11, 544_322_108, 431_989_179),
-    (12, 545_133_960, 432_276_114),
-    (13, 541_397_261, 431_060_039),
-    (14, 541_818_663, 430_713_865),
-    (15, 542_144_204, 430_643_461),
-    (16, 546_445_777, 433_214_890),
+    (1, 537_540_348, 425_522_639),
+    (2, 538_822_727, 426_107_249),
+    (3, 539_798_514, 426_416_776),
+    (4, 540_724_755, 426_700_119),
+    (5, 542_923_155, 428_037_470),
+    (6, 544_451_780, 428_864_376),
+    (7, 542_096_820, 429_766_627),
+    (8, 543_890_390, 430_793_964),
+    (9, 543_734_730, 430_037_496),
+    (10, 544_255_893, 430_052_839),
+    (11, 544_322_108, 429_709_935),
+    (12, 545_133_960, 429_803_547),
+    (13, 541_397_261, 428_939_943),
+    (14, 541_818_663, 428_485_546),
+    (15, 542_144_204, 428_388_965),
+    (16, 546_445_777, 430_855_401),
 ];
 
 /// The captured American snapshot, wired exactly as `us_gfs_cycle.rs` wires it.
@@ -1816,7 +1820,7 @@ fn american_upstream() -> FixtureUpstream {
             gfs::object_url(gfs_run, lead),
             object_len,
             start,
-            fixture(&format!("gfs-global-20260809T12-apcp-f{lead:03}.grib2")),
+            fixture(&format!("gfs-global-20260809T12-prate-f{lead:03}.grib2")),
         );
     }
     upstream
@@ -1837,6 +1841,17 @@ fn the_conus_sources_and_the_real_floor_mosaic_over_conus() {
     let mrms_source = bake(&mrms::Mrms, &mut upstream, now);
     let hrrr_source = bake(&hrrr::Hrrr, &mut upstream, now);
     let gfs_product = bake(&gfs::GfsFloor, &mut upstream, now);
+    let gfs_run = ts("2026-08-09T12:00:00Z");
+    assert_eq!(gfs_product.frames[0].valid_at, gfs_run + 3_600);
+    let raw_f001 = decode_field(&fixture("gfs-global-20260809T12-prate-f001.grib2"), &gfs::EXPECTED).unwrap();
+    let output_index =
+        (gfs::GEOMETRY.height as usize / 2) * gfs::GEOMETRY.width as usize + gfs::GEOMETRY.width as usize / 2;
+    let native_index = gfs::native_index(gfs::GEOMETRY.width / 2, gfs::GEOMETRY.height / 2).unwrap();
+    assert_eq!(
+        gfs_product.frames[0].cells[output_index],
+        precip4::quantize_rate_mm_per_hour(f64::from(raw_f001.values[native_index]) * 3_600.0),
+        "GFS PRATE is converted from kg m-2 s-1 to mm/h"
+    );
     assert_eq!(
         (mrms_source.geometry.width, mrms_source.geometry.height),
         (mrms::GEOMETRY.width, mrms::GEOMETRY.height)
