@@ -628,7 +628,7 @@
       "refresh": 0,
       "refresh_minutes": null,
       "request_id": "0x11880002",
-      "_note": "Cold start indoors: the rider opened Weather before the receiver has a fix and with nothing usable on the card. The phone can still fetch by its own location, so this is a well-formed request, not a suppressed one. Two things are pinned here: absence is a CLEARED FLAG, so the zero coordinates must not put a rider at 0N 0E holding generation 0; and refresh Off configures the SCHEDULE, not the right to ask \u2014 a phone that gated on the refresh byte would answer everyone except the riders who turned automatic refresh off and then asked by hand"
+      "_note": "Cold start indoors: the rider opened Weather before the receiver has a fix and with nothing usable on the card. This remains a well-formed diagnostics/retry request, but the current companion returns noPosition until the device supplies a fix. Two things are pinned here: absence is a CLEARED FLAG, so the zero coordinates must not put a rider at 0N 0E holding generation 0; and refresh Off configures the SCHEDULE, not the right to ask."
     },
     "weather-request-context-unknown-refresh.bin": {
       "format": "weatherRequestContext v1 (spec 11) \u2014 a refresh byte this layout version does not define",

@@ -78,7 +78,8 @@ pub(crate) struct ObcControlService {
     #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
     pub command: heapless09::Vec<u8, 64>,
     /// Typed device → app messages. Notify-only — protocol v2's **sole** device → app control channel,
-    /// so it also carries a download's announce (`downloadAnnounce`, `msg = 4`). Sized to
+    /// so it also carries a download's announce (`downloadAnnounce`, `msg = 4`) and a live-link
+    /// weather wake-up (`weatherRequest`, `msg = 5`). Sized to
     /// [`StatusMessage::MAX_ENCODED_LEN`](obc_ble::StatusMessage::MAX_ENCODED_LEN) (13 bytes, the
     /// announce) so any message fits one notify.
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]

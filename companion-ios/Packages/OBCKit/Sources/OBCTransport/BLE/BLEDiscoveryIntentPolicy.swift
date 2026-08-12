@@ -44,7 +44,7 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
         /// The standing watch matched the known peripheral with no read waiter in flight: the
         /// transport arms an autonomous one-shot read (result published on the events stream)
         /// and connects. The policy has already raised `weatherRequestPending` for it.
-        case connectForWeatherRead
+        case connectForWeatherRead(owner: Ownership)
     }
 
     private(set) var foregroundRequested = false
@@ -148,9 +148,25 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
         }
     }
 
-    mutating func discovered(peripheralID: UUID, knownPeripheralID: UUID?) -> DiscoveryAction {
+    mutating func discovered(
+        peripheralID: UUID,
+        knownPeripheralID: UUID?
+    ) -> DiscoveryAction {
         guard phase == .scanning else { return .ignore }
         if foregroundRequested {
+            // Once paired, reconnect only the authenticated peripheral and opportunistically probe
+            // its request context. This makes recovery independent of CoreBluetooth preserving a
+            // particular advertised UUID in the discovery dictionary; the resting context is
+            // explicitly harmless and the job bridge filters it. First-time discovery (no known
+            // ID) retains the service-filtered connect-any-OBC flow.
+            if let knownPeripheralID {
+                guard knownPeripheralID == peripheralID else { return .ignore }
+                if !weatherRequestPending {
+                    weatherRequestPending = true
+                    phase = .connecting(peripheralID: peripheralID, owner: .foreground)
+                    return .connectForWeatherRead(owner: .foreground)
+                }
+            }
             phase = .connecting(peripheralID: peripheralID, owner: .foreground)
             return .connect(owner: .foreground)
         }
@@ -165,7 +181,7 @@ struct BLEDiscoveryIntentPolicy: Equatable, Sendable {
             // transport to arm its autonomous read bookkeeping.
             weatherRequestPending = true
             phase = .connecting(peripheralID: peripheralID, owner: .weatherRequest)
-            return .connectForWeatherRead
+            return .connectForWeatherRead(owner: .weatherRequest)
         }
         return .ignore
     }

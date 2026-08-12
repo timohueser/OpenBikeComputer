@@ -205,6 +205,7 @@ public enum StatusMessage: Equatable, Sendable {
     case storeChanged(StoreChanged)      // msg = 2, 6 bytes total
     case commandResult(CommandResult)    // msg = 3, 4 bytes total
     case downloadAnnounce(TransferControl)  // msg = 4, 13 bytes total (msg + 12-byte descriptor)
+    case weatherRequest                     // msg = 5, 1-byte hint; read context to acknowledge
     case unknown(UInt8)                  // forward-compatible: ignore
 
     public func encode() -> Data {
@@ -227,6 +228,8 @@ public enum StatusMessage: Equatable, Sendable {
         case .downloadAnnounce(let descriptor):
             data.append(4)
             data.append(descriptor.encode())
+        case .weatherRequest:
+            data.append(5)
         case .unknown(let msg):
             data.append(msg)
         }
@@ -268,6 +271,8 @@ public enum StatusMessage: Equatable, Sendable {
             // slice is under 12 bytes, and `.unknownOp` / `.unknownType` for a
             // malformed descriptor.
             self = .downloadAnnounce(try TransferControl(decoding: data[(b + 1)...]))
+        case 5:
+            self = .weatherRequest
         default:
             self = .unknown(msg)
         }
