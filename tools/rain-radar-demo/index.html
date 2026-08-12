@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a171b" />
+    <title>OBC Rain Radar</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">OBC</span>
+          <div>
+            <h1>Rain Radar</h1>
+            <p>Canonical 1 km mosaic inspector</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span id="service-health" class="health pending"><i></i> Connecting</span>
+          <button id="world-view" class="ghost-button" type="button">World view</button>
+          <button id="refresh" class="ghost-button" type="button">Refresh data</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="map-shell" aria-label="Rain radar map">
+          <div id="map"></div>
+          <canvas id="weather-overlay" aria-hidden="true"></canvas>
+          <div id="map-status" class="map-status">Loading manifest…</div>
+          <div class="map-key">
+            <span>Dry</span>
+            <div class="gradient"></div>
+            <span>50+ mm/h</span>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="timeline-card">
+            <div class="eyebrow">Forecast timeline</div>
+            <div class="time-row">
+              <button id="play" class="play-button" type="button" aria-label="Play forecast">▶</button>
+              <div>
+                <strong id="frame-time">—</strong>
+                <span id="frame-offset">—</span>
+              </div>
+            </div>
+            <input id="timeline" type="range" min="0" max="8" value="0" step="1" aria-label="Forecast frame" />
+            <div id="timeline-labels" class="timeline-labels"><span>Now</span><span>+2h</span></div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-heading">
+              <h2>Current view</h2>
+              <button id="copy-view" class="text-button" type="button">Copy link</button>
+            </div>
+            <dl class="metrics">
+              <div><dt>Center</dt><dd id="center">—</dd></div>
+              <div><dt>Zoom</dt><dd id="zoom">—</dd></div>
+              <div><dt>Visible shards</dt><dd id="visible-shards">—</dd></div>
+              <div><dt>Rendered tiles</dt><dd id="rendered-tiles">—</dd></div>
+              <div><dt>Source class</dt><dd id="source-class">—</dd></div>
+            </dl>
+          </section>
+
+          <section class="panel-section">
+            <h2>Display</h2>
+            <label class="control-row" for="opacity">
+              <span>Radar opacity</span><output id="opacity-value">72%</output>
+            </label>
+            <input id="opacity" type="range" min="20" max="100" value="72" step="1" />
+            <label class="check-row"><input id="show-nodata" type="checkbox" checked /> Show unavailable coverage</label>
+            <label class="check-row"><input id="show-shards" type="checkbox" /> Show shard boundaries</label>
+          </section>
+
+          <section class="panel-section request-panel">
+            <div class="section-heading">
+              <h2>R2 request guard</h2>
+              <span id="request-percent">0%</span>
+            </div>
+            <div class="budget-track"><i id="budget-bar"></i></div>
+            <dl class="metrics compact">
+              <div><dt>Upstream requests</dt><dd id="upstream-requests">0 / 2,000</dd></div>
+              <div><dt>Cache hits</dt><dd id="cache-hits">0</dd></div>
+              <div><dt>Downloaded</dt><dd id="downloaded">0 B</dd></div>
+              <div><dt>Browser objects</dt><dd id="browser-objects">0</dd></div>
+            </dl>
+            <p class="hint">Only manifest-declared, visible shards are fetched. Scrubbing back over loaded frames does not touch R2.</p>
+          </section>
+
+          <section class="panel-section dataset-panel">
+            <h2>Dataset</h2>
+            <dl class="metrics compact">
+              <div><dt>Generation</dt><dd id="generation">—</dd></div>
+              <div><dt>Reference</dt><dd id="reference">—</dd></div>
+              <div><dt>Grid</dt><dd id="grid">—</dd></div>
+              <div><dt>Fresh until</dt><dd id="fresh-until">—</dd></div>
+            </dl>
+            <div id="attribution" class="attribution"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
