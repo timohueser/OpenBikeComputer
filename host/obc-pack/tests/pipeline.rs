@@ -174,6 +174,79 @@ fn cancelling_stops_the_run_and_removes_the_partial_output() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The shipped preset with every tier's `min_line_km` forced to `value`, so a test can move one
+/// knob and change nothing else about a real 9-tier ladder.
+fn preset_with_min_line_km(value: f64) -> Config {
+    let text = std::fs::read_to_string(preset_path()).expect("preset readable");
+    let mut doc: serde_json::Value = serde_json::from_str(&text).expect("preset is JSON");
+    for lod in doc["lods"].as_array_mut().expect("lods array") {
+        lod["min_line_km"] = serde_json::json!(value);
+    }
+    Config::parse(&doc.to_string()).expect("edited preset parses")
+}
+
+/// `min_line_km: 0` is the off value, and off must mean *untouched*: a ladder that sets it to zero
+/// everywhere packs to the same bytes as one that never mentions the knob. This is what lets the
+/// cull ship on two far-zoom tiers without disturbing the seven the preset already had.
+#[test]
+fn the_line_cull_switched_off_is_byte_identical() {
+    let dir = out_dir("cull-off");
+    let shipped = Config::load(&preset_path().to_string_lossy()).expect("preset parses");
+    let zeroed = preset_with_min_line_km(0.0);
+
+    let a = dir.join("shipped.obcm");
+    let b = dir.join("zeroed.obcm");
+    pack(&[fixture_pbf()], &shipped, &a, &opts(), &Progress::silent()).expect("pack");
+    pack(&[fixture_pbf()], &zeroed, &b, &opts(), &Progress::silent()).expect("pack");
+    // The shipped preset does cull on tiers 0-1, so zeroing it can only *add* lines back; the
+    // point is that the zeroed run is exactly a run of the pre-knob packer.
+    assert_ne!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap(), "the shipped ladder does cull something");
+
+    let mut no_knob: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(preset_path()).unwrap()).expect("preset is JSON");
+    for lod in no_knob["lods"].as_array_mut().unwrap() {
+        lod.as_object_mut().unwrap().remove("min_line_km");
+    }
+    let c = dir.join("absent.obcm");
+    let absent = Config::parse(&no_knob.to_string()).expect("knob-free preset parses");
+    pack(&[fixture_pbf()], &absent, &c, &opts(), &Progress::silent()).expect("pack");
+    assert_eq!(
+        std::fs::read(&b).unwrap(),
+        std::fs::read(&c).unwrap(),
+        "an explicit 0 and an absent key must pack identically"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The cull is wired in after `merge_lines` and says so. A threshold larger than the whole fixture
+/// takes every line on the tiers that run it, which is the loudest possible proof that the knob
+/// reaches real geometry rather than sitting unread in the config.
+#[test]
+fn the_line_cull_runs_after_stitching_and_reports() {
+    let dir = out_dir("cull-on");
+    let seen: Reported<Option<Phase>> = Arc::default();
+    let sink = Arc::clone(&seen);
+    let progress = Progress::new(CancelToken::new(), move |phase, line| {
+        sink.lock().unwrap().push((phase, line.to_string()));
+    });
+
+    pack(&[fixture_pbf()], &preset_with_min_line_km(10_000.0), &dir.join("out.obcm"), &opts(), &progress)
+        .expect("pack");
+
+    let seen = seen.lock().unwrap();
+    let lines: Vec<&str> = seen.iter().map(|(_, l)| l.as_str()).collect();
+    let culls: Vec<&&str> = lines.iter().filter(|l| l.contains("stitched line(s) shorter than")).collect();
+    assert!(!culls.is_empty(), "a 10 000 km threshold culled nothing: {lines:?}");
+    // Ordering is the safety property: measuring before the stitch would measure raw OSM ways.
+    // `report_merge` stays quiet when a tier had nothing to stitch, which is the usual case on a
+    // fixture this small — so this pins the order only on the tiers that did say something.
+    if let Some(stitched) = lines.iter().position(|l| l.contains("line fragment(s) into")) {
+        let culled = lines.iter().position(|l| l.contains("stitched line(s) shorter than")).expect("cull reported");
+        assert!(stitched < culled, "the cull must run after the stitch, not before it");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_run_that_was_never_cancelled_reports_a_real_failure() {
     let dir = out_dir("failure");

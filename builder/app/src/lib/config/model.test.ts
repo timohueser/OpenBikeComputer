@@ -155,6 +155,50 @@ describe("buildConfigForSubmit", () => {
         expect("min_area_px" in out.lods[2]).toBe(false);
     });
 
+    it("round-trips coverage_simplify, and omits it where it is off", () => {
+        // The shipped preset turns the pass on for its two coarsest tiers; a config the builder
+        // loads and re-submits has to hand the packer back the same flag, or a rebuild silently
+        // loses the shared-boundary simplify (and with it the elimination those tiers need).
+        const cfg = normalizeConfig({
+            lods: [
+                { max_mpp: null, simplify: 2200, min_area_px: 250, coverage_simplify: true },
+                { max_mpp: 400, simplify: 700, min_area_px: 700, coverage_simplify: true },
+                { max_mpp: 120, simplify: 200, min_area_px: 50 },
+                { max_mpp: 30, simplify: 0 },
+            ],
+            features: {},
+            marker: { color: "0xF800" },
+        }).config;
+        expect(cfg.lods.map((l) => l.coverage_simplify)).toEqual([true, true, undefined, undefined]);
+        const out = buildConfigForSubmit(cfg, [], mockSchema).config;
+        expect(out.lods[0].coverage_simplify).toBe(true);
+        expect(out.lods[1].coverage_simplify).toBe(true);
+        expect("coverage_simplify" in out.lods[2]).toBe(false);
+        expect("coverage_simplify" in out.lods[3]).toBe(false);
+    });
+
+    it("round-trips min_line_km, and omits it where it is off", () => {
+        // Same hazard as coverage_simplify, and worse to lose quietly: the shipped preset's two
+        // coarse tiers only fit highway=primary because the stub cull frees the spans for it, so
+        // a rebuild that dropped the knob would come back over budget with the roads torn out.
+        const cfg = normalizeConfig({
+            lods: [
+                { max_mpp: null, simplify: 3000, min_area_px: 350, coverage_simplify: true, min_line_km: 1.0 },
+                { max_mpp: 400, simplify: 1500, min_area_px: 1000, coverage_simplify: true, min_line_km: 0.5 },
+                { max_mpp: 120, simplify: 200, min_area_px: 50 },
+                { max_mpp: 30, simplify: 0 },
+            ],
+            features: {},
+            marker: { color: "0xF800" },
+        }).config;
+        expect(cfg.lods.map((l) => l.min_line_km)).toEqual([1.0, 0.5, undefined, undefined]);
+        const out = buildConfigForSubmit(cfg, [], mockSchema).config;
+        expect(out.lods[0].min_line_km).toBe(1.0);
+        expect(out.lods[1].min_line_km).toBe(0.5);
+        expect("min_line_km" in out.lods[2]).toBe(false);
+        expect("min_line_km" in out.lods[3]).toBe(false);
+    });
+
     it("omits min_area_px entirely when it is 0/absent (byte-identical off)", () => {
         const cfg = normalizeConfig({
             lods: [{ max_mpp: null, simplify: 0, min_area_px: 0 }, { max_mpp: 30, simplify: 0 }],

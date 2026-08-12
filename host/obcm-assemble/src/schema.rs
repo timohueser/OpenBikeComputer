@@ -461,7 +461,7 @@ fn de_color_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error
 mod tests {
     use super::*;
 
-    /// The v1 band table of OBCA §1.5, over the shipped 7-LOD ladder.
+    /// The v1 band table of OBCA §1.5, over the shipped 9-LOD ladder.
     pub(crate) fn v1_schema() -> Schema {
         let band = |id: &str, cell_log2: u32, lods: &[usize], sections: &[&str], role: BandRole| Band {
             id: id.into(),
@@ -470,7 +470,8 @@ mod tests {
             sections: sections.iter().map(|s| (*s).to_string()).collect(),
             role,
         };
-        let mpp = [None, Some(400.0), Some(120.0), Some(40.0), Some(12.0), Some(4.0), Some(1.0)];
+        let mpp =
+            [None, Some(900.0), Some(400.0), Some(120.0), Some(90.0), Some(40.0), Some(12.0), Some(4.0), Some(1.0)];
         Schema {
             id: "bikepacking".into(),
             revision: 1,
@@ -481,9 +482,9 @@ mod tests {
                 .map(|(index, &max_mpp)| LodEntry { index, max_mpp, band: String::new() })
                 .collect(),
             bands: vec![
-                band("coarse", 20, &[0, 1, 2], &[], BandRole::Coarse),
-                band("mid", 19, &[3, 4], &[], BandRole::Geometry),
-                band("fine", 18, &[5, 6], &[], BandRole::Geometry),
+                band("coarse", 20, &[0, 1, 2, 3, 4], &[], BandRole::Coarse),
+                band("mid", 19, &[5, 6], &[], BandRole::Geometry),
+                band("fine", 18, &[7, 8], &[], BandRole::Geometry),
                 band("network", 18, &[], &["nav", "poi"], BandRole::Core),
             ],
             styles: vec![StyleId { id: 1, feature_type: "natural.water".into() }],
@@ -495,26 +496,27 @@ mod tests {
     #[test]
     fn v1_table_validates_and_reports_s_max() {
         let s = v1_schema();
-        s.validate().expect("the v1 table partitions the 7-LOD ladder");
+        s.validate().expect("the v1 table partitions the 9-LOD ladder");
         assert_eq!(s.s_max_log2(), 20);
         assert_eq!(s.core_band().unwrap().id, "network");
-        assert_eq!(s.band_of_lod(4).unwrap().id, "mid");
+        assert_eq!(s.band_of_lod(4).unwrap().id, "coarse");
+        assert_eq!(s.band_of_lod(6).unwrap().id, "mid");
     }
 
     #[test]
     fn validation_catches_the_partition_and_role_traps() {
         let err = |s: &Schema| s.validate().expect_err("must be rejected");
         let mut s = v1_schema();
-        s.bands[1].lods.push(2);
+        s.bands[1].lods.push(4);
         assert!(err(&s).contains("in two bands"));
 
         let mut s = v1_schema();
-        s.bands[2].lods = vec![5];
-        assert!(err(&s).contains("LOD 6 is in no band"));
+        s.bands[2].lods = vec![7];
+        assert!(err(&s).contains("LOD 8 is in no band"));
 
         let mut s = v1_schema();
-        s.bands[3].lods = vec![6];
-        s.bands[2].lods = vec![5];
+        s.bands[3].lods = vec![8];
+        s.bands[2].lods = vec![7];
         assert!(err(&s).contains("core band"));
 
         let mut s = v1_schema();

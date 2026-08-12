@@ -30,7 +30,9 @@
         {
           "max_mpp": null,
           "simplify": 0.0,
-          "min_area_px": 0.0
+          "min_area_px": 0.0,
+          "coverage_simplify": false,
+          "min_line_km": 0.0
         }
       ],
       "description": "LOD pyramid, coarsest tier first. Absent, null, or empty means a single coarsest layer.",
@@ -427,7 +429,25 @@
           ],
           "format": "double",
           "default": 0.0,
-          "description": "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.",
+          "description": "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a coverage_simplify tier it is an *elimination* threshold instead: a face this small is absorbed into the neighbour it shares the longest boundary with, so the ground stays covered.",
+          "minimum": 0.0
+        },
+        "coverage_simplify": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically to before."
+        },
+        "min_line_km": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": 0.0,
+          "description": "Drop lines shorter than this many kilometres; 0 (the default) means no culling and packs byte-identically to before. Measured after same-class fragments are stitched together (merge_lines), so it drops the short leftovers stitching could not absorb — junction stubs, roundabout arms — and keeps the long-distance skeleton. For far-zoom tiers only: at 333 m/px a 40 m stub is an eighth of a pixel, invisible, and still costs the renderer a span. Polygons are never affected.",
           "minimum": 0.0
         }
       }

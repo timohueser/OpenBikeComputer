@@ -1,11 +1,17 @@
 <script lang="ts">
-    import { addLodTier, autoSimplify, editLodTier, removeLodTier } from "../../lib/config/edit";
+    import {
+        addLodTier,
+        autoSimplify,
+        editLodTier,
+        removeLodTier,
+        setLodCoverageSimplify,
+    } from "../../lib/config/edit";
     import { working } from "../../lib/config/storage.svelte";
 
     const env = $derived(working.envelope!);
     const lods = $derived(env.config.lods);
 
-    function edit(i: number, field: "max_mpp" | "simplify" | "min_area_px", raw: string) {
+    function edit(i: number, field: "max_mpp" | "simplify" | "min_area_px" | "min_line_km", raw: string) {
         const v = parseFloat(raw);
         editLodTier(env.config, i, field, Number.isFinite(v) ? v : 0);
         working.markModified();
@@ -28,7 +34,23 @@
         <em>min area</em> drops <strong>area features</strong> (forests, landuse, water) whose
         on-screen area would be smaller than that many pixels² at this tier — a coarse-view
         declutter that keeps sub-pixel slivers out of the point budget. Lines (roads, paths) are
-        never culled. 0 is off; the finest tier has no coarser fallback, so it is never culled.
+        not culled by area. 0 is off; the finest tier has no coarser fallback, so it is never culled.
+    </p>
+    <p class="muted small intro">
+        <em>min line (km)</em> is the same declutter for <strong>lines</strong>, and the reason it
+        is safe: it measures a road <em>after</em> its OSM fragments have been stitched back into
+        one polyline, so it drops the short leftovers stitching could not absorb — junction stubs,
+        roundabout arms — rather than a through-road's shortest links. At a coarse tier those are
+        far below a pixel yet still cost the renderer a span each; culling them is what buys a
+        zoomed-out view enough budget to draw a road network you can orient on. 0 is off, and it
+        needs <em>merge lines</em> switched on.
+    </p>
+    <p class="muted small intro">
+        <em>glue fills</em> simplifies a tier's plain area fills as one shared coverage instead of
+        one feature at a time, so a boundary two of them share is cut once and neighbours stay
+        glued rather than drifting apart into backdrop slivers. It only matters where the tolerance
+        is metres wide, and it costs real bake time — the shipped preset turns it on for its two
+        coarsest tiers only.
     </p>
 
     <div class="tiers">
@@ -37,6 +59,8 @@
             <span>max m/px</span>
             <span>simplify (m)</span>
             <span>min area (px²)</span>
+            <span>min line (km)</span>
+            <span>glue fills</span>
         </div>
         {#each lods as lod, i (i)}
             <div class="tier">
@@ -95,6 +119,28 @@
                         />
                     {/if}
                 </span>
+                <span class="cell">
+                    <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        aria-label="min line (km) for LOD {i}"
+                        value={lod.min_line_km ?? 0}
+                        oninput={(e) => edit(i, "min_line_km", e.currentTarget.value)}
+                    />
+                </span>
+                <span class="cell">
+                    <input
+                        type="checkbox"
+                        class="glue"
+                        aria-label="glue fills for LOD {i}"
+                        checked={lod.coverage_simplify === true}
+                        onchange={(e) => {
+                            setLodCoverageSimplify(env.config, i, e.currentTarget.checked);
+                            working.markModified();
+                        }}
+                    />
+                </span>
                 {#if lods.length > 1}
                     <button
                         type="button"
@@ -142,7 +188,7 @@
     .hrow,
     .tier {
         display: grid;
-        grid-template-columns: 110px 120px 200px 130px 1fr;
+        grid-template-columns: 110px 120px 200px 130px 120px 90px 1fr;
         gap: 16px;
         align-items: center;
     }
@@ -177,6 +223,10 @@
         width: 82px;
         padding: 4px 7px;
         font-size: 13px;
+    }
+
+    input.glue {
+        width: auto;
     }
 
     .inf {
