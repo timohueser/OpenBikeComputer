@@ -509,9 +509,12 @@ fn the_derived_nowcast_leads_from_the_observation_on_real_composites() {
     let instants: Vec<i64> = nowcast.frames.iter().map(|frame| frame.valid_at).collect();
     let expected: Vec<i64> = times
         .offsets_min()
-        .filter(|offset| *offset > 0 && *offset <= NOWCAST_MAX_LEAD_MIN)
+        .filter(|offset| *offset > 0)
         .map(|offset| times.valid_at(offset))
-        .filter(|instant| *instant > observed_at)
+        .filter(|instant| {
+            let observation_age = *instant - observed_at;
+            observation_age > 0 && observation_age <= i64::from(NOWCAST_MAX_LEAD_MIN) * 60
+        })
         .collect();
     assert_eq!(instants, expected, "the nowcast must fill exactly the canonical slots inside the horizon");
 
