@@ -123,6 +123,18 @@ public actor OBCWeatherServiceClient: PrecipitationGridProvider, WeatherServiceS
             diagnostics)
     }
 
+    /// Revalidate only the small mutable manifest. No shard Range request is made unless the caller
+    /// subsequently decides that the revision requires a full bundle build.
+    public func currentRevision(now: Date) async throws -> PrecipitationRevision? {
+        var diagnostics = WeatherDiagnostics()
+        let manifest = try await self.manifest(now: now, diagnostics: &diagnostics)
+        guard manifest.freshness.isUsable(at: now) else { return nil }
+        return PrecipitationRevision(
+            generation: manifest.generation,
+            generatedAt: manifest.generatedAt,
+            nextGenerationExpectedAt: manifest.freshness.nextGenerationExpectedAt)
+    }
+
     // MARK: - WeatherServiceStatusProviding
 
     /// The manifest as health + credits (WX13). Rides the same manifest cache the corridor path uses,

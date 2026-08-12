@@ -199,6 +199,17 @@ struct WeatherRequestContextTests {
     }
 }
 
+@Suite("Weather unchanged command")
+struct WeatherUnchangedCommandTests {
+    @Test func encodingIsTheFixedLittleEndianSevenByteShape() {
+        #expect(
+            WeatherUnchangedCommand.encode(
+                requestID: 0x7856_3412, retryAfterSeconds: 120
+            ) == Data([7, 0x12, 0x34, 0x56, 0x78, 120, 0]))
+        #expect(WeatherRequestReason.hourlyOnly.rawValue == 1 << 5)
+    }
+}
+
 @Suite("Weather refresh interval")
 struct WeatherRefreshTests {
     @Test(arguments: [

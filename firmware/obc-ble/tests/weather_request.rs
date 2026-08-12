@@ -9,10 +9,10 @@
 use obc_ble::descriptor::FEATURE_WEATHER;
 use obc_ble::weather_request::{
     authenticated_context_was_served, classify_upload, BundleIdentity, UploadDisposition, WeatherRefresh,
-    WeatherRequestBudget, WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT,
-    VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID,
-    WEATHER_REQUEST_CONTEXT_UUID, WEATHER_REQUEST_CONTEXT_VERSION, WEATHER_REQUEST_SERVICE_UUID,
-    WEATHER_REQUEST_SERVICE_UUID_LE,
+    WeatherRequestBudget, WeatherRequestContext, REASON_HOURLY_ONLY, REASON_NO_BUNDLE, REASON_OUT_OF_AREA,
+    REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE,
+    VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID, WEATHER_REQUEST_CONTEXT_UUID, WEATHER_REQUEST_CONTEXT_VERSION,
+    WEATHER_REQUEST_SERVICE_UUID, WEATHER_REQUEST_SERVICE_UUID_LE,
 };
 use obc_ble::{Config, DescriptorError, ObjectType, VersionRead};
 
@@ -564,7 +564,7 @@ use obc_ble::weather_request::{BundleFacts, DueScheduler, RETRY_LADDER_S, WEATHE
 const MIN30: u64 = 30 * 60;
 
 fn held(age_s: u64) -> BundleFacts {
-    BundleFacts { held: true, age_s: Some(age_s) }
+    BundleFacts { held: true, age_s: Some(age_s), manual_reusable: false, location_changed: false, hourly_only: false }
 }
 
 #[test]
@@ -602,7 +602,8 @@ fn a_bundle_of_unknown_age_anchors_at_scheduler_start() {
     // No trusted clock: the device cannot claim the interval already elapsed, so the countdown
     // starts at the first poll rather than firing immediately.
     let mut s = DueScheduler::new();
-    let bundle = BundleFacts { held: true, age_s: None };
+    let bundle =
+        BundleFacts { held: true, age_s: None, manual_reusable: false, location_changed: false, hourly_only: false };
     assert_eq!(s.poll(100, WeatherRefresh::Every15, true, true, bundle), None);
     assert_eq!(s.next_wake_s(WeatherRefresh::Every15, true, true), Some(100 + 15 * 60));
     assert!(s.poll(100 + 15 * 60, WeatherRefresh::Every15, true, true, bundle).is_some());
@@ -658,6 +659,61 @@ fn success_clears_the_request_and_schedules_from_the_commit() {
     assert_eq!(s.next_wake_s(WeatherRefresh::Every30, true, true), Some(60 + MIN30));
     let next = s.poll(60 + MIN30, WeatherRefresh::Every30, true, true, fresh).expect("next interval");
     assert_ne!(next.request_id, raise.request_id, "a finished request is not re-raised");
+}
+
+#[test]
+fn opening_weather_reuses_a_current_local_bundle_without_raising() {
+    let mut s = DueScheduler::new();
+    let local_current =
+        BundleFacts { held: true, age_s: Some(60), manual_reusable: true, location_changed: false, hourly_only: false };
+    s.open_weather();
+    assert_eq!(s.poll(10, WeatherRefresh::Every30, false, true, local_current), None);
+    assert_eq!(s.pending_request_id(), None);
+}
+
+#[test]
+fn location_and_hourly_only_reasons_force_a_full_phone_build() {
+    let mut s = DueScheduler::new();
+    let moved =
+        BundleFacts { held: true, age_s: Some(60), manual_reusable: false, location_changed: true, hourly_only: true };
+    s.open_weather();
+    let raise = s.poll(10, WeatherRefresh::Every30, false, true, moved).expect("location changed");
+    assert_ne!(raise.reason & REASON_OUT_OF_AREA, 0);
+    assert_ne!(raise.reason & REASON_HOURLY_ONLY, 0);
+}
+
+#[test]
+fn unchanged_ack_matches_the_live_request_and_defers_manual_rechecks() {
+    let mut s = DueScheduler::new();
+    s.open_weather();
+    let raise = s.poll(0, WeatherRefresh::Every30, false, true, held(20 * 60)).expect("probe due");
+    assert!(!s.unchanged_succeeded(raise.request_id.wrapping_add(1), 5, 120));
+    assert_eq!(s.pending_request_id(), Some(raise.request_id));
+    assert!(s.unchanged_succeeded(raise.request_id, 5, 120));
+    assert_eq!(s.pending_request_id(), None);
+
+    let held = BundleFacts {
+        held: true,
+        age_s: Some(20 * 60),
+        manual_reusable: false,
+        location_changed: false,
+        hourly_only: false,
+    };
+    s.open_weather();
+    assert_eq!(s.poll(124, WeatherRefresh::Every30, false, true, held), None);
+    s.open_weather();
+    assert!(s.poll(125, WeatherRefresh::Every30, false, true, held).is_some());
+}
+
+#[test]
+fn weather_unchanged_command_has_a_fixed_bounded_wire_shape() {
+    use obc_ble::{DescriptorError, WeatherUnchanged, CMD_WEATHER_UNCHANGED};
+
+    let command = WeatherUnchanged { request_id: 0x7856_3412, retry_after_s: 120 };
+    assert_eq!(command.encode(), [CMD_WEATHER_UNCHANGED, 0x12, 0x34, 0x56, 0x78, 120, 0]);
+    assert_eq!(WeatherUnchanged::decode(&command.encode()), Ok(command));
+    assert_eq!(WeatherUnchanged::decode(&[CMD_WEATHER_UNCHANGED; 6]), Err(DescriptorError::Truncated));
+    assert_eq!(WeatherUnchanged::decode(&[CMD_WEATHER_UNCHANGED, 0, 0, 0, 0, 1, 0]), Err(DescriptorError::Bounds));
 }
 
 #[test]

@@ -1038,9 +1038,10 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 | `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
 | `5` | `setClock` | `utc u32 · offset_min i16` | the phone stamps the device's UTC clock + local offset on **every connect** (auto-expiry #638). Stamps the wall-clock set-point, **persists** the offset, and marks the clock *trusted* for the boot — the retention sweep's safety gate. Sent immediately after encryption, **before** `ackRides`. Validated → `error` on a malformed length, `utc < 1577836800`, or `\|offset_min\| > 840`; no store-revision bump (the clock is not an object). See below |
 | `6` | `setRouteRetention` | `object_id u16 · retention u8` | the phone sets a stored route's **retention level** (`0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months, auto-expiry #638) **without re-uploading** the route. Writes the level in the device's retention store **without touching `last_used`** (changing retention never resets the usage clock) and bumps the **route** store revision **only on a real change** (the app sees the fresh `expires_at` in the next `routeList`). Additive on protocol v2 — no `protocolVersion` bump. See below |
-| `7`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+| `7` | `weatherUnchanged` | `request_id u32 · retry_after_s u16` | finish that live weather request after the phone conditionally checked both providers and found no revision newer than the held bundle. `retry_after_s` is `0...3600` and suppresses repeated manual probes only; a mismatched/non-live id answers `notFound`, malformed values answer `error` (§11.1) |
+| `8`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
-**Next free command: `7`.** (`setClock` landed at `5` and `setRouteRetention`
+**Next free command: `8`.** (`setClock` landed at `5` and `setRouteRetention`
 at `6`, not the `3`/`4` epic #638's draft table drew: that draft predates
 `installFw`/`forgetBond` taking `3`/`4`, so #638's two commands slid to `5`/`6`.)
 
@@ -1882,10 +1883,13 @@ that knows none of it behaves exactly as it did before.
 3. It reads **one** `weatherRequestContext` (§11.4): where the rider is, where
    they are heading, and which bundle they already hold. Then it disconnects. The
    link is not held across the fetch.
-4. It builds an OBCW bundle ([`OBCW_Spec.md`](OBCW_Spec.md)) and uploads it as
-   `weatherBundle` (object type `20`, §11.5) over the ordinary reliable CoC,
-   stamping the context's `request_id` into the bundle header's `Request ID`
-   field so the two connections can be correlated.
+4. The phone conditionally revalidates the small precipitation manifest and MET hourly response.
+   If neither provider timestamp is newer than the held bundle's `generated_at`, it reconnects and
+   sends `weatherUnchanged` (command `7`, §4.4): seven authenticated GATT bytes and no CoC. If
+   either changed — or freshness/location cannot be proved — it builds an OBCW bundle
+   ([`OBCW_Spec.md`](OBCW_Spec.md)) and uploads it as `weatherBundle` (object type `20`, §11.5)
+   over the ordinary reliable CoC, stamping the context's `request_id` into the bundle header's
+   `Request ID` field so the two connections can be correlated.
 
 The shape is what makes it affordable on a phone's background budget: two short
 connections with the network work outside both of them, and a payload small
@@ -1934,10 +1938,11 @@ rules govern when that stops, and both exist to prevent a specific failure:
 When the budget expires the device returns to advertising OBC Control. **The
 request itself does not expire with it**: it stays pending on the retry ladder
 (the reference firmware's is **5 / 10 / 20 minutes**), and each step re-raises the
-advertising hint with the *same* `request_id` (§11.2). The request is finished by a
-valid bundle being **accepted** — any upload §11.6 answers `committed`, the
-duplicate/stale ignored-but-successful rows included, since each is the phone's
-complete answer — not by an advertising window closing.
+advertising hint with the *same* `request_id` (§11.2). The request is finished by either a valid
+bundle being **accepted** — any upload §11.6 answers `committed`, the duplicate/stale
+ignored-but-successful rows included — or a matching `weatherUnchanged` command being accepted
+after the phone's conditional checks. Each is the phone's complete answer; an advertising window
+closing is not.
 
 ### 11.4 `weatherRequestContext` — the request context (v1)
 
@@ -1980,6 +1985,16 @@ weatherRequestContext v1 (52 bytes, little-endian):
 | `2` | retry — a previous attempt failed; this is a step on the ladder (§11.3) |
 | `3` | no bundle — there is none at all, or the active one has expired |
 | `4` | out of area — the rider has left the active bundle's covered corridor |
+| `5` | hourly only — the active bundle contains no rain frames, so a rain-manifest identity alone cannot prove it complete |
+
+The reference firmware uses a **2 km point-forecast reuse radius** around the centre of the active
+bundle's 90 km rider-centred window. Opening Weather does not raise an urgent request while that
+bundle is inside the radius and before the next possible quarter-hour publication. A bundle built
+inside the publisher's two-minute processing grace is rechecked when that same grace ends; a build
+after it is rechecked after the following quarter-hour grace. At or beyond 2 km, with an hourly-only
+bundle, or whenever the proof is unavailable, the firmware raises normally and the phone performs
+the full build. Near a dataset edge the clipped bundle centre can cause an early refresh; it cannot
+cause reuse beyond the stated radius.
 
 **Field widths mirror the OBCW header deliberately** — `i32` microdegrees, `i64`
 UTC seconds, `u32` generation and CRC ([`OBCW_Spec.md` §3](OBCW_Spec.md)) — so a
@@ -2016,8 +2031,9 @@ fallback in this protocol version.
   one: it is carried verbatim and reported as *unknown* — neither `Off` nor the
   default — exactly like the unrecognised bits above. The strict reading belongs
   to the one direction that has to *adopt* the value, a Config write (§11.8).
-- The `reason` word is **advisory scheduling help**, never a gate: a phone that
-  recognises none of the bits still performs the full fetch.
+- The `reason` word is **advisory scheduling help**, never a gate on the ordinary full fetch: a
+  phone that recognises none of the bits still performs it. A phone may use known bits to disable
+  the no-change optimisation conservatively (`out of area` and `hourly only` do exactly that).
 
 Before any request is raised, the attribute holds a structurally valid v1 value
 with `validity = 0` and `reason = 0` — so a peer that reads it out of turn learns
