@@ -616,18 +616,29 @@ means the MS OS 2.0 descriptor set was rejected; re-read it with `usbview`.
 
 ## Driving it from a host (`debug-uart`)
 
-With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over
-the VCOM from the desktop feeder (from the `firmware/` workspace dir):
+With the `debug-uart` firmware flashed and VCOM HWFC off, open the desktop feeder from the
+repository root. A GPX path is optional:
 
 ```sh
-cargo run -p obc-usb-host -- --gpx ../kandel.gpx        # add --port <VCOM tty> if not auto-detected
+obc flash debug-uart
+obc uart                              # or: obc uart path/to/ride.gpx
+# One command to flash and then open the feeder:
+obc debug
 ```
 
-`obc-usb-host` streams the `.gpx` as fake GPS fixes (plus a baro/compass slider and an
-on-screen button row that injects the four buttons' presses), and shows the device's
-render-stats telemetry coming back. It's the same `obc-platform::debug_link` wire
-protocol the simulator uses — only the transport differs (a VCOM UART here). `--list`
-enumerates serial ports; the VCOM is the J-Link CDC port.
+`obc-usb-host` can stream the `.gpx` as fake GPS fixes, or keep a stationary fix fresh at decimal
+latitude/longitude entered in its **Fixed GPS location** panel. That panel also has a user-triggered
+place search (for example `Munich` or `Sydney`) whose result fills the coordinates; it uses the
+public OpenStreetMap Nominatim service only when **Search** is pressed, caches repeated queries for
+the session, and can be pointed at another compatible endpoint with `OBC_GEOCODER_URL`. Enable
+**Send stationary fix every second** to keep the device's normal GPS freshness gate satisfied —
+useful for weather tests anywhere in the world without manufacturing a GPX.
+
+The feeder also provides a baro/compass slider and an on-screen button row that injects the four
+buttons' presses, and shows the device's render-stats telemetry coming back. It's the same
+`obc-platform::debug_link` wire protocol the simulator uses — only the transport differs (a VCOM
+UART here). `--list` enumerates serial ports; the VCOM is the J-Link CDC port. The J3 USB device
+cable is not involved and should be unplugged when the test also needs BLE.
 
 ### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
 

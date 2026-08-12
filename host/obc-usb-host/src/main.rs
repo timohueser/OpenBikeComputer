@@ -2,8 +2,9 @@
 //!
 //! Replays a recorded `.gpx` over the device's USB-CDC debug link as fake fixes, driving the same
 //! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled to
-//! ~1 Hz). A compass slider sets the stopped heading, a button row injects the four buttons' input (taps
-//! + holds) so the UI is drivable without the hardware, and a readout shows render-stats telemetry.
+//! ~1 Hz), or emits a stationary fix at entered/searched coordinates. A compass slider sets the
+//! stopped heading, a button row injects the four buttons' input (taps + holds) so the UI is
+//! drivable without the hardware, and a readout shows render-stats telemetry.
 //!
 //! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
 //! `A <m>`, `C <deg>`, `H <bpm>` / `P <watts>` / `R <rpm>` (fake BLE sensor injection, epic #707
@@ -22,6 +23,7 @@
 //! native `usb::sendfile` moves bytes only) and on the device's receive side. This feeder carries no
 //! second copy of those rules.
 
+use std::collections::HashMap;
 use std::io::{self, Read as _, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -30,12 +32,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use obc_ports::{AltimeterSource, LocationSource};
+use obc_ports::{AltimeterSource, Fix, LocationSource};
 // The canonical USB-CDC codec, authored once on the device side, so the two halves of the protocol
 // can't drift: device→host `Telemetry`/`parse_telemetry` + host→device `format_fix` `F`-line
 // encoder. DEFAULT features only, so the pure codec is pulled without embassy-sync.
 use obc_platform::debug_link::{format_cadence, format_fix, format_hr, format_power, parse_telemetry, Telemetry};
 use obc_replay::{effort_from_speed, BaroSensor, GpxPlayer, Track};
+use serde::Deserialize;
 
 /// How long a "hold" button keeps the edge down before releasing — comfortably past the device's
 /// long-press threshold, so the recogniser fires Hold / BackHold. Derived from the app's own
@@ -45,6 +48,13 @@ const HOLD_MS: u64 = obc_app::DEFAULT_HOLD_MS as u64 + 200;
 /// How often to emit a synthetic `H`/`P`/`R` sensor sample while enabled — the ~1 Hz cadence a real
 /// BLE sensor notifies at, comfortably inside the device's 5 s staleness window.
 const SENSOR_PERIOD: Duration = Duration::from_millis(1000);
+
+/// Stationary fixes stay fresh on-device only when they keep arriving, just like a real receiver.
+const FIXED_FIX_PERIOD: Duration = Duration::from_secs(1);
+
+const DEFAULT_GEOCODER_URL: &str = "https://nominatim.openstreetmap.org/search";
+const GEOCODER_USER_AGENT: &str =
+    concat!("OpenBikeComputer-USB-Feeder/", env!("CARGO_PKG_VERSION"), " github.com/timohueser/OpenBikeComputer");
 
 /// The synthetic-sensor control state (mirrors `obc-sim`'s `SensorConfig`): per-quantity enable +
 /// fixed-value slider, plus the *effort follows speed* switch (when set, all three are synthesized
@@ -71,6 +81,150 @@ impl Default for SensorPanel {
             effort_follows_speed: false,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlaceResult {
+    name: String,
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Deserialize)]
+struct PlaceWire {
+    display_name: String,
+    lat: String,
+    lon: String,
+}
+
+type PlaceSearch = Result<Vec<PlaceResult>, String>;
+
+/// Manual position control for weather and other location-dependent bench tests. Search is
+/// deliberately click-driven (never autocomplete), cached for the process lifetime, and runs off
+/// the UI thread. The endpoint can be replaced without rebuilding through `OBC_GEOCODER_URL`.
+#[derive(Default)]
+struct FixedLocationPanel {
+    query: String,
+    lat: String,
+    lon: String,
+    enabled: bool,
+    last_sent: Option<Instant>,
+    results: Vec<PlaceResult>,
+    search: Option<(String, Receiver<PlaceSearch>)>,
+    cache: HashMap<String, Vec<PlaceResult>>,
+    search_status: Option<String>,
+}
+
+impl FixedLocationPanel {
+    fn start_search(&mut self, ctx: &egui::Context) {
+        let query = self.query.trim();
+        if query.is_empty() || self.search.is_some() {
+            return;
+        }
+        let key = query.to_lowercase();
+        if let Some(results) = self.cache.get(&key) {
+            self.results = results.clone();
+            self.search_status = Some(search_summary(&self.results));
+            return;
+        }
+
+        let query = query.to_string();
+        let (tx, rx) = mpsc::channel();
+        let repaint = ctx.clone();
+        self.search = Some((key, rx));
+        self.search_status = Some("searching…".to_string());
+        thread::spawn(move || {
+            let result = search_places(&query);
+            let _ = tx.send(result);
+            repaint.request_repaint();
+        });
+    }
+
+    fn poll_search(&mut self) {
+        let Some((key, rx)) = &self.search else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        let key = key.clone();
+        self.search = None;
+        match result {
+            Ok(results) => {
+                self.search_status = Some(search_summary(&results));
+                self.cache.insert(key, results.clone());
+                self.results = results;
+            }
+            Err(error) => {
+                self.search_status = Some(error);
+                self.results.clear();
+            }
+        }
+    }
+
+    fn fix(&self) -> Result<Fix, String> {
+        parse_fixed_fix(&self.lat, &self.lon)
+    }
+
+    fn select(&mut self, result: &PlaceResult) {
+        self.lat = format!("{:.6}", result.lat);
+        self.lon = format!("{:.6}", result.lon);
+        self.query = result.name.clone();
+        self.last_sent = None;
+    }
+}
+
+fn search_summary(results: &[PlaceResult]) -> String {
+    match results.len() {
+        0 => "no places found".to_string(),
+        1 => "1 place found".to_string(),
+        n => format!("{n} places found"),
+    }
+}
+
+fn search_places(query: &str) -> PlaceSearch {
+    let endpoint = std::env::var("OBC_GEOCODER_URL").unwrap_or_else(|_| DEFAULT_GEOCODER_URL.to_string());
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .user_agent(GEOCODER_USER_AGENT)
+        .build();
+    let agent: ureq::Agent = config.into();
+    let mut response = agent
+        .get(&endpoint)
+        .query("q", query)
+        .query("format", "jsonv2")
+        .query("limit", "3")
+        .call()
+        .map_err(|error| format!("place search failed: {error}"))?;
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024)
+        .read_to_string()
+        .map_err(|error| format!("place search response: {error}"))?;
+    decode_place_results(&body)
+}
+
+fn decode_place_results(body: &str) -> PlaceSearch {
+    serde_json::from_str::<Vec<PlaceWire>>(body)
+        .map_err(|error| format!("place search response: {error}"))?
+        .into_iter()
+        .map(|wire| {
+            let lat = wire.lat.parse::<f64>().map_err(|_| "place search returned a bad latitude".to_string())?;
+            let lon = wire.lon.parse::<f64>().map_err(|_| "place search returned a bad longitude".to_string())?;
+            Ok(PlaceResult { name: wire.display_name, lat, lon })
+        })
+        .collect()
+}
+
+fn parse_fixed_fix(lat: &str, lon: &str) -> Result<Fix, String> {
+    let lat = parse_degrees("latitude", lat, -90.0, 90.0)?;
+    let lon = parse_degrees("longitude", lon, -180.0, 180.0)?;
+    Ok(Fix::at((lat * 1_000_000.0).round() as i32, (lon * 1_000_000.0).round() as i32))
+}
+
+fn parse_degrees(label: &str, value: &str, min: f64, max: f64) -> Result<f64, String> {
+    let value = value.trim().parse::<f64>().map_err(|_| format!("enter a valid {label}"))?;
+    if !value.is_finite() || !(min..=max).contains(&value) {
+        return Err(format!("{label} must be between {min} and {max}"));
+    }
+    Ok(value)
 }
 
 /// What the serial reader thread sends up to the UI.
@@ -191,7 +345,7 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("OBC USB Feeder").with_inner_size([460.0, 720.0]),
+        viewport: egui::ViewportBuilder::default().with_title("OBC USB Feeder").with_inner_size([500.0, 900.0]),
         ..Default::default()
     };
     eframe::run_native("OBC USB Feeder", options, Box::new(|_cc| Ok(Box::new(FeederApp::new(args)))))
@@ -209,6 +363,7 @@ struct FeederApp {
     gpx_label: Option<String>,
     gpx_error: Option<String>,
     baro: BaroSensor,
+    fixed_location: FixedLocationPanel,
     // compass slider (heading the device shows when stopped); `last_sent` throttles `C` lines
     compass_deg: f32,
     last_compass_sent: Option<f32>,
@@ -242,6 +397,7 @@ impl FeederApp {
             gpx_label: None,
             gpx_error: None,
             baro: BaroSensor::new(),
+            fixed_location: FixedLocationPanel::default(),
             compass_deg: 0.0,
             last_compass_sent: None,
             sensors: SensorPanel::default(),
@@ -321,7 +477,7 @@ impl FeederApp {
     /// Advance the replay one frame and queue the resulting fix/altitude lines (mirrors the sim's
     /// `replay_step`, emitting over serial instead of ticking the app).
     fn step_playback(&mut self, dt: f64) {
-        if self.conn.is_none() {
+        if self.conn.is_none() || self.fixed_location.enabled {
             return;
         }
         let Some(player) = self.player.as_mut() else { return };
@@ -346,6 +502,20 @@ impl FeederApp {
         if let Some(alt) = self.baro.poll() {
             self.pending.push(format!("A {alt:.2}\n"));
         }
+    }
+
+    /// Keep a stationary manual coordinate fresh on-device at the same ~1 Hz cadence as GPS.
+    fn step_fixed_location(&mut self) {
+        if self.conn.is_none() || !self.fixed_location.enabled {
+            return;
+        }
+        let now = Instant::now();
+        if self.fixed_location.last_sent.is_some_and(|last| now.duration_since(last) < FIXED_FIX_PERIOD) {
+            return;
+        }
+        let Ok(fix) = self.fixed_location.fix() else { return };
+        self.fixed_location.last_sent = Some(now);
+        self.pending.push(format_fix(&fix).to_string());
     }
 
     /// Emit synthetic `H`/`P`/`R` sensor lines at ~1 Hz while connected and something is enabled.
@@ -454,9 +624,11 @@ impl FeederApp {
 impl eframe::App for FeederApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.fixed_location.poll_search();
         let connected = self.conn.is_some();
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
             // Let sliders span the panel width (leave room for the value box), so the replay /
             // compass rows use the full width instead of egui's narrow default.
             ui.spacing_mut().slider_width = (ui.available_width() - 96.0).max(180.0);
@@ -483,6 +655,78 @@ impl eframe::App for FeederApp {
                     if ui.button(if connected { "Disconnect" } else { "Connect" }).clicked() {
                         self.toggle_connection();
                     }
+                });
+            });
+            ui.add_space(6.0);
+
+            // --- Fixed GPS location ---
+            full_group(ui, |ui| {
+                ui.label(egui::RichText::new("Fixed GPS location").strong());
+                ui.horizontal(|ui| {
+                    let query = ui.add(
+                        egui::TextEdit::singleline(&mut self.fixed_location.query)
+                            .hint_text("Search a town or address")
+                            .desired_width(300.0),
+                    );
+                    let submit = query.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    let can_search = !self.fixed_location.query.trim().is_empty()
+                        && self.fixed_location.search.is_none();
+                    if ui.add_enabled(can_search, egui::Button::new("Search")).clicked() || submit {
+                        self.fixed_location.start_search(ctx);
+                    }
+                });
+                if let Some(status) = &self.fixed_location.search_status {
+                    ui.weak(status);
+                }
+                egui::ScrollArea::vertical().max_height(110.0).show(ui, |ui| {
+                    for result in self.fixed_location.results.clone() {
+                        if ui
+                            .button(format!("{}\n{:.5}, {:.5}", result.name, result.lat, result.lon))
+                            .clicked()
+                        {
+                            self.fixed_location.select(&result);
+                            self.fixed_location.results.clear();
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Lat");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.fixed_location.lat)
+                            .hint_text("48.137154")
+                            .desired_width(120.0),
+                    );
+                    ui.label("Lon");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.fixed_location.lon)
+                            .hint_text("11.576124")
+                            .desired_width(120.0),
+                    );
+                });
+                let valid = self.fixed_location.fix();
+                if valid.is_err() && self.fixed_location.enabled {
+                    self.fixed_location.enabled = false;
+                    self.fixed_location.last_sent = None;
+                }
+                let mut enabled = self.fixed_location.enabled;
+                if ui
+                    .add_enabled(valid.is_ok(), egui::Checkbox::new(&mut enabled, "Send stationary fix every second"))
+                    .changed()
+                {
+                    self.fixed_location.enabled = enabled;
+                    self.fixed_location.last_sent = None;
+                }
+                if let Err(error) = valid {
+                    ui.weak(error);
+                } else if self.fixed_location.enabled {
+                    ui.label(
+                        egui::RichText::new("Fixed location active — GPX replay is paused")
+                            .color(egui::Color32::from_rgb(80, 180, 110)),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    ui.weak("Place search ©");
+                    ui.hyperlink_to("OpenStreetMap contributors", "https://www.openstreetmap.org/copyright");
                 });
             });
             ui.add_space(6.0);
@@ -654,11 +898,13 @@ impl eframe::App for FeederApp {
                     }
                 });
             });
+            });
         });
 
-        // After the UI: queue compass-on-change, advance the replay, emit sensors, release holds, flush.
+        // After the UI: queue compass-on-change, emit one location source, sensors, releases, flush.
         self.queue_compass();
         let dt = ctx.input(|i| i.stable_dt) as f64;
+        self.step_fixed_location();
         self.step_playback(dt);
         self.step_sensors();
         self.flush_due_ups();
@@ -699,5 +945,36 @@ fn push_log(log: &mut std::collections::VecDeque<String>, line: String) {
     log.push_back(line);
     while log.len() > MAX {
         log.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_coordinates_become_stationary_microdegree_fix() {
+        assert_eq!(parse_fixed_fix("48.137154", "11.576124"), Ok(Fix::at(48_137_154, 11_576_124)));
+        assert_eq!(parse_fixed_fix(" -33.8688 ", "151.2093"), Ok(Fix::at(-33_868_800, 151_209_300)));
+    }
+
+    #[test]
+    fn fixed_coordinate_ranges_are_checked() {
+        assert_eq!(parse_fixed_fix("91", "0").unwrap_err(), "latitude must be between -90 and 90");
+        assert_eq!(parse_fixed_fix("0", "-181").unwrap_err(), "longitude must be between -180 and 180");
+        assert_eq!(parse_fixed_fix("north", "0").unwrap_err(), "enter a valid latitude");
+    }
+
+    #[test]
+    fn nominatim_results_decode_to_typed_places() {
+        let json = r#"[{"display_name":"München, Bayern, Deutschland","lat":"48.1371079","lon":"11.5753822"}]"#;
+        assert_eq!(
+            decode_place_results(json),
+            Ok(vec![PlaceResult {
+                name: "München, Bayern, Deutschland".to_string(),
+                lat: 48.1371079,
+                lon: 11.5753822,
+            }])
+        );
     }
 }

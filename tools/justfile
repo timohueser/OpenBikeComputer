@@ -145,9 +145,10 @@ flash-boot *args:
       _say "power-cycle the DK: one short LED0 blink (bootloader), then the app"
     fi
 
-# Feed a recorded ride to a debug-uart board over VCOM (obc-usb-host).
+# Drive a debug-uart board over VCOM (obc-usb-host). A GPX is optional: without one, the feeder's
+# fixed-location panel can stream an entered or searched coordinate instead.
 # Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
-# Feed a GPX to a debug-uart board over VCOM. Args: [TRACK.gpx] [-- --port TTY | --list]
+# Open the debug-uart GPS feeder. Args: [TRACK.gpx] [-- --port TTY | --list]
 uart *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -157,16 +158,17 @@ uart *args:
     # `--list` just enumerates serial ports; no GPX needed.
     for e in "${_EXTRA[@]:-}"; do [[ "$e" == --list ]] && { _run cargo run --release -p obc-usb-host -- --list; exit 0; }; done
     gpxf="$(resolve_gpx "${_POS[0]:-}")"
-    [[ -z "$gpxf" || "$gpxf" == none ]] && { _err "no GPX to feed. Pass one:  obc uart <track.gpx>"; exit 1; }
-    cmd=(cargo run --release -p obc-usb-host -- --gpx "$gpxf")
+    cmd=(cargo run --release -p obc-usb-host --)
+    [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
 
-# Indoor ride in one step: flash the debug-uart firmware, then feed it a GPX over
-# VCOM. Args: [ble] [TRACK.gpx]. Flashes with `probe-rs download` (returns cleanly,
+# Bench control in one step: flash the debug-uart firmware, then open the feeder over
+# VCOM. Args: [ble] [TRACK.gpx]. Without a GPX, use its fixed-location panel. Flashes with
+# `probe-rs download` (returns cleanly,
 # no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
 # `obc flash debug-uart` in a second terminal instead.
-# One step: flash debug-uart firmware, then feed it a GPX. Args: [ble] [TRACK.gpx]
+# One step: flash debug-uart firmware, then open the GPS feeder. Args: [ble] [TRACK.gpx]
 debug *args:
     #!/usr/bin/env bash
     set -euo pipefail
