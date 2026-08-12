@@ -613,11 +613,17 @@ pub(crate) async fn notify_bounded(
     handle: u16,
     bytes: &[u8],
     what: &str,
-) {
+) -> bool {
     match with_timeout(HOST_OP_TIMEOUT, server.notify(stack, handle, bytes)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!("ble: [coc] {} notify failed: {:?}", what, defmt::Debug2Format(&e)),
-        Err(_) => warn!("ble: [coc] {} notify timed out — abandoning", what),
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            warn!("ble: [coc] {} notify failed: {:?}", what, defmt::Debug2Format(&e));
+            false
+        }
+        Err(_) => {
+            warn!("ble: [coc] {} notify timed out — abandoning", what);
+            false
+        }
     }
 }
 

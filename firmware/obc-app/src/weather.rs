@@ -216,9 +216,9 @@ impl WeatherSnapshot {
     /// covered** (the claim corridor short-circuits on the first blocker and is skipped entirely
     /// when the frame already can't claim), `4 · half_width` further cell probes. Worst case on
     /// the shipped 1 km/15 min radar dataset (a wholly clean nine-frame sky, the one case that
-    /// pays in full): 45 warning probes + 184 claim probes = 229 `intensity_at` calls per pass
-    /// against a *single-entry* tile cache — of which ~36 are the claim corridor's first step
-    /// repeating the warning neighbours, and most of the rest are same-tile hits, since 16
+    /// pays in full): 45 centre/warning probes + 148 further claim probes = 193 `intensity_at`
+    /// calls per pass against a *single-entry* tile cache. The claim corridor reuses the warning
+    /// sweep's four first-step results; most remaining probes are same-tile hits, since 16
     /// consecutive cells along an arm share one tile. Run at refresh/fix cadence by the host,
     /// never per rendered frame; the SD-read figure behind it is on the WX8 mount-time
     /// measurement list.
@@ -229,20 +229,7 @@ impl WeatherSnapshot {
         projection: Option<(&RouteReader<'_>, RideProjection)>,
     ) -> Result<Self, WeatherError> {
         let header = reader.header();
-        let mut hourly = [HourlyRecord {
-            valid_time_offset_s: 0,
-            temperature_deci_c: 0,
-            precipitation_tenth_mm: 0,
-            precipitation_probability_pct: 0,
-            condition: 0,
-            wind_from_deg: 0,
-            wind_speed_deci_ms: 0,
-            wind_gust_deci_ms: 0,
-            flags: 0,
-        }; HOURLY_COUNT];
-        for (index, slot) in hourly.iter_mut().enumerate() {
-            *slot = reader.hourly(index)?;
-        }
+        let hourly = reader.hourly_records()?;
 
         let frame_count = header.frame_count as usize;
         let kept = frame_count.min(SNAPSHOT_MAX_FRAMES);
@@ -292,20 +279,29 @@ impl WeatherSnapshot {
                         // sample. Neighbours outside the grid / unreadable are ignored — the
                         // corridor widens the warning, never the coverage claim.
                         let mut max = center;
+                        let mut neighbours_support_dry_claim = true;
                         for (dlat, dlon) in [(cell.0, 0), (-cell.0, 0), (0, cell.1), (0, -cell.1)] {
-                            if let Ok(Some(v)) =
-                                reader.intensity_at(index, lat.saturating_add(dlat), lon.saturating_add(dlon), cache)
+                            match reader.intensity_at(index, lat.saturating_add(dlat), lon.saturating_add(dlon), cache)
                             {
-                                if v != INTENSITY_NODATA {
+                                Ok(Some(v)) if v != INTENSITY_NODATA => {
                                     max = max.max(v);
+                                    neighbours_support_dry_claim &= v < RAIN_MIN_INTENSITY;
                                 }
+                                // The warning corridor deliberately ignores missing neighbours,
+                                // but the dry claim must fail closed on them.
+                                _ => neighbours_support_dry_claim = false,
                             }
                         }
                         // Claim corridor — only worth paying for while a dry claim is still alive.
                         if max < RAIN_MIN_INTENSITY && !past_route_end {
                             let lead_s = projection.map_or(0, |(_, p)| frame.valid_at.saturating_sub(p.now));
                             let (half, capped) = spread_half_cells(lead_s, frame.cell_size_m);
-                            spread_uncertain = capped || !corridor_is_dry(reader, cache, index, (lat, lon), cell, half);
+                            // Step one is exactly the four-neighbour warning sweep above. Reusing
+                            // its dry/coverage verdict avoids four duplicate probes per clean
+                            // frame while keeping the warning and claim rules distinct.
+                            spread_uncertain = capped
+                                || !neighbours_support_dry_claim
+                                || !corridor_tail_is_dry(reader, cache, index, (lat, lon), cell, half);
                         }
                         max
                     } else {
@@ -635,7 +631,7 @@ fn spread_half_cells(lead_s: i64, cell_size_m: u16) -> (u32, bool) {
 /// The DRY claim's gate — fail-closed in every direction (a wet cell, a no-data cell, a cell
 /// outside the grid, or a failed read all answer `false`), and short-circuiting on the first
 /// blocker so the cost is only paid by corridors that actually turn out clean.
-fn corridor_is_dry<S: ByteSource + ?Sized>(
+fn corridor_tail_is_dry<S: ByteSource + ?Sized>(
     reader: &WeatherReader<'_, S>,
     cache: &mut WeatherCache,
     frame: usize,
@@ -646,7 +642,7 @@ fn corridor_is_dry<S: ByteSource + ?Sized>(
     for (dlat, dlon) in [(cell.0, 0), (-cell.0, 0), (0, cell.1), (0, -cell.1)] {
         // Walk each arm outward from the centre: consecutive cells share a tile, so the
         // single-entry tile cache is hit for all but the few steps that cross a tile edge.
-        for step in 1..=half as i32 {
+        for step in 2..=half as i32 {
             let probe_lat = lat.saturating_add(dlat.saturating_mul(step));
             let probe_lon = lon.saturating_add(dlon.saturating_mul(step));
             match reader.intensity_at(frame, probe_lat, probe_lon, cache) {

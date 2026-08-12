@@ -33,7 +33,8 @@ public enum GATT {
     /// Small imperative commands (delete object, …) — spec §4.4.
     nonisolated(unsafe) public static let command = CBUUID(string: "3C920001-9916-4EBA-ABC2-342FE08F6B10")
     /// Typed device → app notifications (`StatusMessage`, incl. the download
-    /// announce as `msg = 4`) — the **sole** device → app channel, spec §4.3.
+    /// announce as `msg = 4` and weather wake-up as `msg = 5`) — the **sole**
+    /// device → app channel, spec §4.3.
     nonisolated(unsafe) public static let status = CBUUID(string: "3C920002-9916-4EBA-ABC2-342FE08F6B10")
     // `0003` (`objectStore`) is **retired in v2** — the change signal is
     // `storeChanged` alone — and must not be reused.
