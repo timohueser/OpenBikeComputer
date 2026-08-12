@@ -327,14 +327,20 @@ pub struct BandTable {
 
 impl BandTable {
     /// The **recommended band table** — OBCA §1.5, measured for schema `bikepacking`
-    /// revision 1 over the shipped 7-LOD ladder:
+    /// revision 1 over the shipped 9-LOD ladder:
     ///
     /// | band | size | carries |
     /// | :-- | :-- | :-- |
-    /// | `coarse` | `2^20` | LOD 0, 1, 2 |
-    /// | `mid` | `2^19` | LOD 3, 4 |
-    /// | `fine` | `2^18` | LOD 5, 6 |
+    /// | `coarse` | `2^20` | LOD 0, 1, 2, 3, 4 |
+    /// | `mid` | `2^19` | LOD 5, 6 |
+    /// | `fine` | `2^18` | LOD 7, 8 |
     /// | `network` | `2^18` | nav graph + POIs, **no** LOD |
+    ///
+    /// The two far-zoom tiers the ladder gained (LOD 0 and 1) join `coarse`, which is where
+    /// the boundaries were measured: `coarse` still ends at the same *content* it always
+    /// carried (the tiers now numbered 2, 3, 4), and the two additions are the most
+    /// aggressively culled levels on the map, so the shard they land in is the one whose
+    /// budget can absorb them.
     ///
     /// These are *values*, not format constants: a catalog states them, a producer reads them from
     /// the catalog, and this default exists so the CLI and the tests have something to run with.
@@ -348,9 +354,9 @@ impl BandTable {
         };
         BandTable {
             bands: vec![
-                band("coarse", 20, &[0, 1, 2], &[], BandRole::Coarse),
-                band("mid", 19, &[3, 4], &[], BandRole::Geometry),
-                band("fine", 18, &[5, 6], &[], BandRole::Geometry),
+                band("coarse", 20, &[0, 1, 2, 3, 4], &[], BandRole::Coarse),
+                band("mid", 19, &[5, 6], &[], BandRole::Geometry),
+                band("fine", 18, &[7, 8], &[], BandRole::Geometry),
                 band("network", 18, &[], &["nav", "poi"], BandRole::Core),
             ],
         }
@@ -690,36 +696,36 @@ mod tests {
     #[test]
     fn recommended_band_table_is_the_spec_table() {
         let t = BandTable::recommended();
-        t.validate(7).expect("the recommended table partitions the 7-LOD ladder");
+        t.validate(9).expect("the recommended table partitions the 9-LOD ladder");
         assert_eq!(t.max_cell_log2(), 20, "S_MAX = 2^20");
         let by = |id: &str| t.band(id).expect("band").clone();
-        assert_eq!((by("coarse").cell_log2, by("coarse").lods), (20, vec![0, 1, 2]));
-        assert_eq!((by("mid").cell_log2, by("mid").lods), (19, vec![3, 4]));
-        assert_eq!((by("fine").cell_log2, by("fine").lods), (18, vec![5, 6]));
+        assert_eq!((by("coarse").cell_log2, by("coarse").lods), (20, vec![0, 1, 2, 3, 4]));
+        assert_eq!((by("mid").cell_log2, by("mid").lods), (19, vec![5, 6]));
+        assert_eq!((by("fine").cell_log2, by("fine").lods), (18, vec![7, 8]));
         let net = by("network");
         assert_eq!((net.cell_log2, net.role), (18, BandRole::Core));
         assert!(net.lods.is_empty(), "the core band carries no geometry (OBCA §5.1)");
         assert!(net.has_nav() && net.has_poi());
         // The ladder must match the table's expectation, not the other way round.
-        assert!(t.validate(6).is_err(), "a 6-LOD ladder leaves LOD 6 claimed by no level");
-        assert!(t.validate(8).is_err(), "an 8-LOD ladder leaves LOD 7 in no band");
+        assert!(t.validate(8).is_err(), "an 8-LOD ladder leaves LOD 8 claimed by no level");
+        assert!(t.validate(10).is_err(), "a 10-LOD ladder leaves LOD 9 in no band");
     }
 
     #[test]
     fn band_table_validation_catches_the_partition_and_role_traps() {
-        let err = |t: &BandTable| t.validate(7).expect_err("must be rejected");
+        let err = |t: &BandTable| t.validate(9).expect_err("must be rejected");
         let mut t = BandTable::recommended();
         // A LOD in two bands.
-        t.bands[1].lods.push(2);
+        t.bands[1].lods.push(4);
         assert!(err(&t).contains("in two bands"), "got {}", err(&t));
         // A LOD in no band.
         let mut t = BandTable::recommended();
-        t.bands[2].lods = vec![5];
-        assert!(err(&t).contains("LOD 6 is in no band"));
+        t.bands[2].lods = vec![7];
+        assert!(err(&t).contains("LOD 8 is in no band"));
         // Geometry in the core file.
         let mut t = BandTable::recommended();
-        t.bands[3].lods = vec![6];
-        t.bands[2].lods = vec![5];
+        t.bands[3].lods = vec![8];
+        t.bands[2].lods = vec![7];
         assert!(err(&t).contains("core band"));
         // Two nav bands.
         let mut t = BandTable::recommended();

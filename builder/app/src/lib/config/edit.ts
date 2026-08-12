@@ -17,13 +17,23 @@ export function autoSimplify(config: PackConfig, i: number): number {
 export function editLodTier(
     config: PackConfig,
     i: number,
-    field: "max_mpp" | "simplify" | "min_area_px",
+    field: "max_mpp" | "simplify" | "min_area_px" | "min_line_km",
     value: number,
 ) {
     if (field === "max_mpp" && i > 0 && config.lods[i - 1].simplify === config.lods[i].max_mpp) {
         config.lods[i - 1].simplify = value;
     }
     config.lods[i][field] = value;
+}
+
+/**
+ * Turn the shared-coverage fill simplify on or off for one tier. Off is stored as
+ * absence, not `false`: a config that never asked for the pass submits the bytes it
+ * always did.
+ */
+export function setLodCoverageSimplify(config: PackConfig, i: number, on: boolean) {
+    if (on) config.lods[i].coverage_simplify = true;
+    else delete config.lods[i].coverage_simplify;
 }
 
 /**

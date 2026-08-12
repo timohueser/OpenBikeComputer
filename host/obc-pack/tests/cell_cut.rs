@@ -354,8 +354,8 @@ fn a_seam_of_one_band_is_interior_to_another() {
     );
 }
 
-/// The same seam property under the **shipped preset** — 7 LODs, real simplify tolerances from 200 m
-/// down to 0.5 m, `merge_fills` and `merge_lines` both on, the recommended band table.
+/// The same seam property under the **shipped preset** — 9 LODs, real simplify tolerances from
+/// 2200 m down to 0.5 m, `merge_fills` and `merge_lines` both on, the recommended band table.
 ///
 /// This is the test that would fail if the cutter ever simplified *after* clipping, or merged
 /// per-cell: either would let two neighbours move their own copy of a seam vertex independently, and
@@ -600,7 +600,7 @@ fn a_broken_band_table_is_refused() {
     let out = Scratch::new("bad-bands");
     let cfg = config();
     let (ing, ways) = fixture(&cfg);
-    // The recommended table is a 7-LOD table; this config's ladder has three levels.
+    // The recommended table is a 9-LOD table; this config's ladder has three levels.
     let opts = CutOptions { bands: BandTable::recommended(), ..Default::default() };
     let err = cut_ingested(&ing, &ways, &cfg, out.path(), &opts, &Progress::silent()).expect_err("must refuse");
     assert!(err.contains("LOD"), "the error names the partition problem: {err}");

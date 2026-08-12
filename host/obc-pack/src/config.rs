@@ -199,6 +199,12 @@ struct LodDocument {
     #[serde(default = "default_zero_f64_document")]
     #[schemars(default = "default_zero_f64_document")]
     min_area_px: Option<f64>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    coverage_simplify: Option<bool>,
+    #[serde(default = "default_zero_f64_document")]
+    #[schemars(default = "default_zero_f64_document")]
+    min_line_km: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -264,7 +270,13 @@ fn default_features_document() -> Option<IndexMap<String, IndexMap<String, Style
 }
 
 fn default_lods_document() -> Option<Vec<LodDocument>> {
-    Some(vec![LodDocument { max_mpp: None, simplify: Some(0.0), min_area_px: Some(0.0) }])
+    Some(vec![LodDocument {
+        max_mpp: None,
+        simplify: Some(0.0),
+        min_area_px: Some(0.0),
+        coverage_simplify: Some(false),
+        min_line_km: Some(0.0),
+    }])
 }
 
 fn default_marker_document() -> Option<MarkerDocument> {
@@ -584,6 +596,25 @@ pub struct Lod {
     /// tier is never culled (no finer fallback), so its value is ignored. See
     /// [`crate::geom::footprint_below`].
     pub min_area_px: f64,
+    /// Simplify this tier's **plain fills** as one polygonal coverage instead of feature by
+    /// feature ([`crate::coverage`]), which also turns [`Lod::min_area_px`] from a drop into an
+    /// **elimination** (a face under it joins its longest neighbour rather than leaving a hole
+    /// in the tiling): every boundary two fills share is cut **once**, so
+    /// neighbouring classes stay glued at any `simplify_m` instead of drifting apart into
+    /// backdrop slivers. Only polygons whose style carries no `color2` take part; lines,
+    /// outlined polygons and every downstream stage are untouched. Default `false` ⇒ the tier
+    /// packs byte-identically to before.
+    pub coverage_simplify: bool,
+    /// Post-stitch minimum length for a **line** in **kilometres**; `0.0` ⇒ off (the default, and
+    /// byte-identical to a pack that predates the knob).
+    ///
+    /// Applied straight after [`crate::merge::merge_lines_with`], so it measures a *stitched*
+    /// record, not a raw OSM way — see [`crate::geom::line_below`] for why that distinction is the
+    /// whole safety argument. It exists for the far-zoom tiers, where a road class earns its place
+    /// by drawing a long-distance skeleton to orient on: there the junction stubs and roundabout
+    /// arms left over from stitching are sub-pixel, invisible, and each still costs a render span
+    /// and its vertices. Polygons are never touched.
+    pub min_line_km: f64,
 }
 
 /// The parsed `contours` config section (EL10a, #1094): what [`crate::contour`] traces out of the
@@ -719,7 +750,13 @@ impl Config {
                 .enumerate()
                 .map(|(index, lod)| lod.normalize(index))
                 .collect::<Result<Vec<_>, _>>()?,
-            _ => vec![Lod { max_mpp: None, simplify_m: 0.0, min_area_px: 0.0 }],
+            _ => vec![Lod {
+                max_mpp: None,
+                simplify_m: 0.0,
+                min_area_px: 0.0,
+                coverage_simplify: false,
+                min_line_km: 0.0,
+            }],
         };
 
         // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
@@ -733,6 +770,18 @@ impl Config {
         let chunk_size = document.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let merge_fills = document.merge_fills.unwrap_or(false);
         let merge_lines = document.merge_lines.unwrap_or(false);
+        // `min_line_km` only means anything on stitched records — without `merge_lines` it would
+        // measure raw OSM ways and punch the very holes `geom::footprint_below` refuses to. Reject
+        // the combination rather than silently ignoring the knob or silently shredding the roads.
+        if !merge_lines {
+            if let Some(i) = lods.iter().position(|l| l.min_line_km > 0.0) {
+                return Err(format!(
+                    "config lods[{i}].min_line_km: needs merge_lines enabled — it culls by the length of a \
+                     *stitched* line, and with no stitching it would drop the short fragments every OSM road is \
+                     built from"
+                ));
+            }
+        }
         let contours = document.contours.normalize()?;
         let routing = document.routing.normalize()?;
 
@@ -817,7 +866,17 @@ impl LodDocument {
         if min_area_px < 0.0 {
             return Err(format!("config lods[{index}].min_area_px: {min_area_px} must be >= 0"));
         }
-        Ok(Lod { max_mpp: self.max_mpp, simplify_m, min_area_px })
+        let min_line_km = self.min_line_km.unwrap_or(0.0);
+        if !(min_line_km.is_finite() && min_line_km >= 0.0) {
+            return Err(format!("config lods[{index}].min_line_km: {min_line_km} must be a finite value >= 0"));
+        }
+        Ok(Lod {
+            max_mpp: self.max_mpp,
+            simplify_m,
+            min_area_px,
+            coverage_simplify: self.coverage_simplify.unwrap_or(false),
+            min_line_km,
+        })
     }
 }
 
@@ -949,9 +1008,29 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
         Value::String("Topology-preserving simplify tolerance in meters; 0 means no simplification.".into());
     lod_props["simplify"]["minimum"] = Value::from(0.0);
     lod_props["min_area_px"]["description"] = Value::String(
-        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.".into(),
+        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a \
+         coverage_simplify tier it is an *elimination* threshold instead: a face this small is absorbed into the \
+         neighbour it shares the longest boundary with, so the ground stays covered."
+            .into(),
     );
     lod_props["min_area_px"]["minimum"] = Value::from(0.0);
+    lod_props["coverage_simplify"]["description"] = Value::String(
+        "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by \
+         feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open \
+         into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its \
+         largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically \
+         to before."
+            .into(),
+    );
+    lod_props["min_line_km"]["description"] = Value::String(
+        "Drop lines shorter than this many kilometres; 0 (the default) means no culling and packs byte-identically \
+         to before. Measured after same-class fragments are stitched together (merge_lines), so it drops the short \
+         leftovers stitching could not absorb — junction stubs, roundabout arms — and keeps the long-distance \
+         skeleton. For far-zoom tiers only: at 333 m/px a 40 m stub is an eighth of a pixel, invisible, and still \
+         costs the renderer a span. Polygons are never affected."
+            .into(),
+    );
+    lod_props["min_line_km"]["minimum"] = Value::from(0.0);
 
     let profile = defs.get_mut("profile").expect("profile schema");
     profile["description"] = Value::String(
@@ -1219,17 +1298,33 @@ mod tests {
     #[test]
     fn lods_marker_chunk_parsed() {
         let cfg = corpus_config();
-        // The default preset's 7-tier pyramid (coarsest first, max_mpp
-        // 30/16/10/5/3/1.2): the coarse tiers carry a footprint cull
+        // The default preset's 9-tier pyramid (coarsest first, max_mpp
+        // 400/120/30/16/10/5/3/1.2): the coarse tiers carry a footprint cull
         // (min_area_px) and the finest tier a small sub-pixel simplify (0.5 m)
         // that trims road vertices with no visible change.
-        assert_eq!(cfg.lods.len(), 7);
-        assert_eq!(cfg.lods[0].max_mpp, None);
-        assert_eq!(cfg.lods[0].simplify_m, 200.0);
-        assert_eq!(cfg.lods[0].min_area_px, 50.0);
-        assert_eq!(cfg.lods[1].max_mpp, Some(30.0));
-        assert_eq!(cfg.lods[6].simplify_m, 0.5);
-        assert_eq!(cfg.lods[6].min_area_px, 0.0);
+        assert_eq!(cfg.lods.len(), 9);
+        assert_eq!(
+            cfg.lods.iter().map(|l| l.max_mpp).collect::<Vec<_>>(),
+            [None, Some(400.0), Some(120.0), Some(30.0), Some(16.0), Some(10.0), Some(5.0), Some(3.0), Some(1.2)],
+            "strictly decreasing, coarsest first"
+        );
+        // The two far-zoom tiers: the only ones that run the coverage pass, where `min_area_px`
+        // is an elimination threshold rather than a drop (`crate::coverage`), and the only ones
+        // that cull short stitched lines. Both budgets are spent on the same trade: fills there
+        // are deliberately crude so the road classes have the render scratch to draw a skeleton.
+        assert!(cfg.lods[0].coverage_simplify && cfg.lods[1].coverage_simplify);
+        assert!(cfg.lods[2..].iter().all(|l| !l.coverage_simplify), "and the tiers that predate them are untouched");
+        assert_eq!((cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (3000.0, 350.0));
+        assert_eq!((cfg.lods[1].simplify_m, cfg.lods[1].min_area_px), (1500.0, 1000.0));
+        assert_eq!((cfg.lods[0].min_line_km, cfg.lods[1].min_line_km), (1.0, 0.5));
+        assert!(
+            cfg.lods[2..].iter().all(|l| l.min_line_km == 0.0),
+            "the tiers that predate the cull keep every stitched line, so they pack byte-identically"
+        );
+        // Tier 2 is the ladder's former coarsest rung, verbatim but for its new ceiling.
+        assert_eq!((cfg.lods[2].simplify_m, cfg.lods[2].min_area_px), (200.0, 50.0));
+        assert_eq!(cfg.lods[8].simplify_m, 0.5);
+        assert_eq!(cfg.lods[8].min_area_px, 0.0);
         // `"marker": {"color": "0xF800"}`
         assert_eq!(cfg.marker_color, 0xF800);
         // No chunk_size key ⇒ default.
@@ -1355,7 +1450,27 @@ mod tests {
         assert_eq!((cfg.marker_color, cfg.chunk_size), (DEFAULT_MARKER_COLOR, DEFAULT_CHUNK_SIZE));
         assert_eq!(cfg.lods.len(), 1);
         assert_eq!((cfg.lods[0].max_mpp, cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (None, 0.0, 0.0));
+        assert!(!cfg.lods[0].coverage_simplify, "the coverage pass is opt-in per tier");
         assert!(!cfg.merge_fills && !cfg.merge_lines);
+    }
+
+    /// The per-tier `coverage_simplify` knob: absent and `null` are both off (so every config
+    /// written before the pass existed still packs byte-identically), `true` reaches the parsed
+    /// ladder, and the schema's advertised default is the parser's.
+    #[test]
+    fn lod_coverage_simplify_defaults_off_and_parses() {
+        let ladder = |json: &str| Config::parse(json).expect("ladder parses").lods;
+        assert!(!ladder(r#"{"lods":[{"simplify":10}]}"#)[0].coverage_simplify, "absent ⇒ off");
+        assert!(!ladder(r#"{"lods":[{"simplify":10,"coverage_simplify":null}]}"#)[0].coverage_simplify, "null ⇒ off");
+        let mixed = ladder(r#"{"lods":[{"simplify":200,"coverage_simplify":true},{"max_mpp":30,"simplify":10}]}"#);
+        assert!(mixed[0].coverage_simplify, "on for the coarse tier");
+        assert!(!mixed[1].coverage_simplify, "and off for the next one — it is per tier, not global");
+        assert!(
+            Config::parse(r#"{"lods":[{"coverage_simplify":"yes"}]}"#).is_err(),
+            "a non-boolean must error rather than read as true"
+        );
+        let lod_props = &embedded_schema()["$defs"]["lod"]["properties"];
+        assert_eq!(lod_props["coverage_simplify"]["default"], Value::Bool(false), "the editor must not offer it on");
     }
 
     #[test]
@@ -1487,6 +1602,36 @@ mod tests {
         assert!(Config::parse(r#"{"merge_fills": "yes"}"#).is_err());
     }
 
+    /// `min_line_km` is optional and off by default, so every config written before the knob
+    /// existed parses to a ladder that culls nothing.
+    #[test]
+    fn min_line_km_defaults_to_off() {
+        let cfg = Config::parse(r#"{"merge_lines": true, "lods": [{"max_mpp": null}, {"max_mpp": 100}]}"#).unwrap();
+        assert!(cfg.lods.iter().all(|l| l.min_line_km == 0.0));
+        let null = Config::parse(r#"{"merge_lines": true, "lods": [{"max_mpp": null, "min_line_km": null}]}"#).unwrap();
+        assert_eq!(null.lods[0].min_line_km, 0.0, "an explicit null is the default, not an error");
+    }
+
+    /// It is a length, so it must be a finite, non-negative number — and it must have something
+    /// stitched to measure, which is `merge_lines`.
+    #[test]
+    fn min_line_km_is_validated_and_needs_merge_lines() {
+        let with = |lod: &str| format!(r#"{{"merge_lines": true, "lods": [{lod}]}}"#);
+        assert_eq!(Config::parse(&with(r#"{"min_line_km": 2.5}"#)).unwrap().lods[0].min_line_km, 2.5);
+        let neg = Config::parse(&with(r#"{"min_line_km": -1}"#)).err().expect("a negative length is refused");
+        assert!(neg.contains("min_line_km"), "the message names the field: {neg}");
+        assert!(Config::parse(&with(r#"{"min_line_km": "far"}"#)).is_err(), "typed: not a string");
+        // Without merge_lines the cull would measure raw OSM ways, so the pair is refused
+        // outright rather than quietly ignored (or quietly shredding every road).
+        let unstitched =
+            Config::parse(r#"{"lods": [{"min_line_km": 1.0}]}"#).err().expect("the knob needs merge_lines");
+        assert!(unstitched.contains("merge_lines"), "the message points at the missing pass: {unstitched}");
+        assert!(
+            Config::parse(r#"{"lods": [{"min_line_km": 0.0}]}"#).is_ok(),
+            "but the off value is fine anywhere, so an untouched ladder never trips it"
+        );
+    }
+
     #[test]
     fn schema_envelope_shape() {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
@@ -1553,11 +1698,13 @@ mod tests {
     /// tagged terrain, and the block itself **on**. Every one of those was argued from a rendered
     /// frame, so each is pinned rather than left to a re-read of the JSON.
     ///
-    /// Both classes reach **LOD 2** (#1104), one tier above the planning tier (LOD 3) where #1095
-    /// first put them; LODs 0–1 stay contour-free. The reach is the same number for both on purpose:
-    /// index-only at LOD 2 was tried and rejected — solid grey lines with no dashes around them read
-    /// as paths, because emphasis-by-continuity only means anything while the dashes are present
-    /// (Timo's on-glass pick, 2026-08-03).
+    /// Both classes reach **LOD 4** (#1104), one tier above the planning tier (LOD 5) where #1095
+    /// first put them; LODs 0–3 stay contour-free. (The reach was authored as LOD 2 and moved with
+    /// the ladder when two far-zoom tiers were prepended in front of it — the *tier* is the same
+    /// one, renumbered.) The reach is the same number for both on purpose: index-only there was
+    /// tried and rejected — solid grey lines with no dashes around them read as paths, because
+    /// emphasis-by-continuity only means anything while the dashes are present (Timo's on-glass
+    /// pick, 2026-08-03).
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
@@ -1568,8 +1715,8 @@ mod tests {
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
             assert_eq!(
-                style.min_lod, 2,
-                "#1104: {class:?} reaches LOD 2 — index-only at LOD 2 read as paths, so both classes \
+                style.min_lod, 4,
+                "#1104: {class:?} reaches LOD 4 — index-only there read as paths, so both classes \
                  travel together (Timo's on-glass pick 2026-08-03)"
             );
         }
