@@ -176,9 +176,9 @@ fn absent_groups_are_flagged_absent_not_zeroed_into_meaning() {
 }
 
 #[test]
-fn a_context_with_no_fix_still_carries_a_request_the_phone_can_answer() {
-    // Cold start indoors: no GPS yet, but the rider opened Weather. The phone can still fetch by
-    // its own location, so this must be a well-formed request rather than a suppressed one.
+fn a_context_with_no_fix_still_carries_a_diagnostic_request() {
+    // Cold start indoors: no GPS yet, but the rider opened Weather. It remains well-formed for
+    // diagnostics/retry even though the companion cannot fetch until the device supplies a fix.
     let ctx = WeatherRequestContext {
         reason: REASON_URGENT | REASON_NO_BUNDLE,
         request_id: 1,
@@ -559,7 +559,7 @@ fn a_weather_bundle_is_not_a_map_payload() {
 // the WX8 acceptance names, pinned here where the machine is pure. The board's task adds only the
 // plumbing (context fill, advertising arm, real sleep), which is exactly what these must not need.
 
-use obc_ble::weather_request::{BundleFacts, DueScheduler, RETRY_LADDER_S};
+use obc_ble::weather_request::{BundleFacts, DueScheduler, RETRY_LADDER_S, WEATHER_REQUEST_WINDOW_S};
 
 const MIN30: u64 = 30 * 60;
 
@@ -700,8 +700,10 @@ fn off_disables_scheduling_but_an_urgent_request_still_raises_and_ladders_out() 
     assert!(s.poll(t1, WeatherRefresh::Off, false, true, BundleFacts::NONE).is_some());
     assert!(s.poll(t2, WeatherRefresh::Off, false, true, BundleFacts::NONE).is_some());
     assert!(s.poll(t3, WeatherRefresh::Off, false, true, BundleFacts::NONE).is_some());
-    assert_eq!(s.pending_request_id(), None, "Off + ladder exhausted = the request lapses");
-    assert_eq!(s.next_wake_s(WeatherRefresh::Off, false, true), None);
+    assert!(s.pending_request_id().is_some(), "the final raise remains readable for its air window");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Off, false, true), Some(t3 + WEATHER_REQUEST_WINDOW_S));
+    assert_eq!(s.poll(t3 + WEATHER_REQUEST_WINDOW_S, WeatherRefresh::Off, false, true, BundleFacts::NONE), None);
+    assert_eq!(s.pending_request_id(), None, "Off + final air window = the request lapses");
 }
 
 #[test]
@@ -803,8 +805,10 @@ fn an_urgent_request_lapses_after_the_ladder_even_with_a_cadence_configured() {
         let retry = s.poll(t, WeatherRefresh::Every30, false, true, BundleFacts::NONE).expect("ladder rung");
         assert_eq!(retry.request_id, urgent.request_id);
     }
-    assert_eq!(s.pending_request_id(), None, "urgent + ladder exhausted = the request lapses");
-    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, false, true), None);
+    assert!(s.pending_request_id().is_some(), "the final raise remains readable for its air window");
+    assert_eq!(s.next_wake_s(WeatherRefresh::Every30, false, true), Some(t3 + WEATHER_REQUEST_WINDOW_S));
+    assert_eq!(s.poll(t3 + WEATHER_REQUEST_WINDOW_S, WeatherRefresh::Every30, false, true, BundleFacts::NONE), None);
+    assert_eq!(s.pending_request_id(), None, "urgent + final air window = the request lapses");
     // Hours later: still quiet — no cadence fallback for urgent, ever.
     assert_eq!(s.poll(t3 + 10 * MIN30, WeatherRefresh::Every30, false, true, BundleFacts::NONE), None);
 

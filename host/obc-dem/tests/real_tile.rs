@@ -42,7 +42,7 @@ use obc_dem::BboxUdeg;
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
 
-/// The exact box `apps/obc-sim/assets/repack.sh terrain` bakes the committed sidecar over, so this
+/// The exact box `fixtures/build-map-package.sh terrain` bakes the registered sidecar over, so this
 /// test walks the same path that produced the file in the tree.
 const GRIMSEL_BBOX: &str = "46.48261,8.15034,46.72070,8.46007";
 
@@ -65,7 +65,7 @@ fn a_real_glo30_tile_decodes_bakes_and_reads_back_at_surveyed_elevations() {
 
     // --- the spike proper: pure-Rust decode of the real thing ---------------------------------
     // Built from the tiles the *box* needs, not from everything in the cache directory — the same
-    // cache also holds the Teningen tile once `repack.sh terrain` has run.
+    // cache also holds the Teningen tile once `build-map-package.sh terrain` has run.
     let mut mosaic = DemMosaic::default();
     for path in &paths {
         mosaic.push(DemTile::open(path).expect("pure-Rust decode of a GLO-30 COG"));

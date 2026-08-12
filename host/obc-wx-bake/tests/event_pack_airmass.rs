@@ -11,7 +11,9 @@
 //!   re-bake exercises WXR9's *live* branch — a nowcast layer at f+15 … f+60 — where the derecho
 //!   pack exercises the fallback. Between them the two branches are both covered by a real pack.
 //! * it is the **hard case**: scattered airmass convection instead of an organised derecho. What
-//!   that is worth is `nowcast_skill_events.rs`; what it costs is 8.4 MB of git.
+//!   that is worth is `nowcast_skill_events.rs`; its 8.4 MB lives in the external package, not Git.
+
+#![cfg(feature = "external-fixtures")]
 
 use std::path::PathBuf;
 
@@ -21,7 +23,7 @@ use obc_wx_bake::pack::{self, rebake, Event, Role};
 const EVENT_ID: &str = "us-airmass-2023-06-24";
 
 fn pack_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/events").join(EVENT_ID)
+    obc_fixtures::root().join("weather-event-airmass")
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -31,7 +33,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn event() -> Event {
-    Event::read(&pack_root()).expect("the checked-in pack parses")
+    Event::read(&pack_root()).expect("the registry pack parses")
 }
 
 #[test]
@@ -56,13 +58,13 @@ fn the_pack_carries_its_motion_history_and_publishes_a_nowcast_layer() {
     let anchor = obc_wx_bake::timefmt::parse_rfc3339(&event.window_start).expect("window_start");
     let history = obc_wx_bake::source::mrms::object_url(anchor - obc_wx_bake::source::mrms::MOTION_LAG_SECONDS);
     // Each object appears twice — the adapter's HEAD probe and the body it then fetched. The body
-    // is the one that has to be checked in.
+    // is the one that has to be stored in the registry package.
     let member = event
         .members
         .iter()
         .find(|member| member.url == history && member.is_body_like())
         .unwrap_or_else(|| panic!("no body member for the motion-history observation {history}"));
-    assert!(member.stored, "{history} is recorded but not checked in");
+    assert!(member.stored, "{history} is recorded but not stored in the registry package");
     assert_eq!(member.role, Role::Service, "the motion history is part of what the service had");
 
     let report = rebake::bake_into(&pack_root(), &event, &scratch("nowcast")).expect("a re-bake");
@@ -70,7 +72,7 @@ fn the_pack_carries_its_motion_history_and_publishes_a_nowcast_layer() {
     assert!(summary.contains("advected forward frames"), "the cycle published no nowcast layer:\n{summary}");
 }
 
-/// Re-derive `service/`, `truth/` and `event.json` from the checked-in `upstream/`, offline.
+/// Re-derive `service/`, `truth/` and `event.json` from the registry-packaged `upstream/`, offline.
 ///
 /// Ignored, like the derecho pack's twin: it **rewrites the fixture**, so it runs when the baker
 /// deliberately changes and never in CI, where `the_pack_rebakes_byte_identically` is the check.
@@ -81,7 +83,7 @@ fn the_pack_carries_its_motion_history_and_publishes_a_nowcast_layer() {
 /// is the only fixture in the repository that notices. Raising `flow::MAX_FILL_NODES` from 6 to 9
 /// is exactly such a change, and this is where it showed up.
 #[test]
-#[ignore = "rewrites the checked-in pack; run deliberately after a baker change"]
+#[ignore = "rewrites the registry-packaged pack; run deliberately after a baker change"]
 fn regenerate() {
     let root = pack_root();
     let mut event = event();
@@ -118,8 +120,7 @@ fn the_truth_ladder_rebakes_byte_identically() {
 fn the_pack_stays_on_the_basemap_and_on_the_derechos_window() {
     let event = event();
     assert_eq!(event.basemap_region, pack::US_BASEMAP_REGION);
-    let derecho = Event::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/events/us-derecho-2020-08-10"))
-        .expect("the first pack");
+    let derecho = Event::read(&obc_fixtures::root().join("weather-event-derecho")).expect("the first pack");
     assert_eq!(
         event.bake.bbox_udeg, derecho.bake.bbox_udeg,
         "the second event is a controlled comparison: same window, same lattice, different weather"

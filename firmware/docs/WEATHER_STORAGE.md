@@ -12,8 +12,10 @@ how validated objects are published and read from a microSD card.
 - `obc-storage::weather` owns the transport-independent publication state machine through the
   `WeatherSlotIo` trait.
 - `obc-fw-nrf54l::sd` and `obc-sim::weather_store` are filesystem adapters. Both hand stable
-  `ByteSource`s to `obc-weather`, so simulator and firmware use exactly the same validator and
-  selector.
+`ByteSource`s to `obc-weather`, so simulator and firmware use exactly the same validator and
+selector. After that full validation, each host retains a `ValidatedBundle` proof beside the
+stable source; repeated sampling verifies only the header identity instead of CRC-walking and
+decoding every tile again.
 
 Provider clients, phone scheduling, BLE object routing, weather UI, and rendering are outside
 these layers. In particular, adding another provider does not change firmware storage.
@@ -68,6 +70,13 @@ selected inactive slot.
 descriptor, a four-entry tile-directory window, and one decoded 16 x 16 tile. Every cache key uses
 both generation and validated bundle CRC, so a later object cannot inherit bytes from an
 equal-generation predecessor.
+
+On the board, the selected slot remains open read-only for the session. Upload inspection reuses
+that handle (the FAT layer rejects a second open of the same file), while publication writes only
+the inactive slot. A successful commit closes the old reader, re-runs deterministic A/B selection,
+fully validates the winner once, and installs its new handle and proof together. Dashboard/hourly
+sampling and Rain Map rendering then use the proof's one-header fast reopen; no full-bundle
+validation occurs in a render or GPS-sampling hot path.
 
 The Thumb target reports a representative reader plus cache at **472 bytes**. Compile-time checks
 keep that total below the 2 KiB target and hard 4 KiB ceiling. The 46,480-byte DWD-shaped fixture

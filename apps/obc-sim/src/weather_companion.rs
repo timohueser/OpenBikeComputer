@@ -190,7 +190,8 @@ impl SimCompanion {
 }
 
 fn held_of(store: &SimWeather) -> Option<Held> {
-    held_from_bytes(store.bytes())
+    let (generation, generated_at, crc32) = store.validated_identity();
+    Some(Held { identity: BundleIdentity { generation, generated_at }, crc32 })
 }
 
 fn held_from_bytes(bytes: &[u8]) -> Option<Held> {

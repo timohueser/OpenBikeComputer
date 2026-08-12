@@ -13,16 +13,15 @@
 //!   and a `CancelRoutePlan` posted in the same input batch **annihilates** it, so the dispatcher
 //!   never starts a plan the rider already dismissed.
 
+#![cfg(feature = "external-fixtures")]
+
 use obc_app::{App, AppState};
 use obc_host_core::{HostLoop, MemRideStore, MemRouteStore, MemTrackStore};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
-const MAP: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel.obcm");
-const ROUTE: &[u8] = include_bytes!("../../../apps/obc-sim/assets/grimsel-climb.obcr");
-
 /// Run one dispatcher pass against a fresh map reader (the frame loop's `reconcile`, minus the tick).
-fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore) {
-    let src = SliceSource(MAP);
+fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore, map: &[u8]) {
+    let src = SliceSource(map);
     let tables = MapTables::parse(&src).expect("grimsel map parses");
     let cache = MapCache::new();
     let reader = Reader::new(&src, &tables, &cache);
@@ -38,8 +37,11 @@ fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore) {
 /// (not the stale) catalog.
 #[test]
 fn rescan_refeeds_the_catalog_like_the_board() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let route =
+        obc_fixtures::read("sim-grimsel", "routes/grimsel-climb.obcr").expect("full fixture suite requires route");
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    let mut routes = MemRouteStore::new(&[ROUTE, ROUTE]);
+    let mut routes = MemRouteStore::new(&[&route, &route]);
     app.set_routes_with_ids(routes.catalog(), routes.ids());
     assert_eq!(app.routes().len(), 2, "the app sees both seeded routes");
 
@@ -50,7 +52,7 @@ fn rescan_refeeds_the_catalog_like_the_board() {
     app.apply_event(obc_app::HostEvent::StoreChanged);
 
     let mut host = HostLoop::new();
-    reconcile(&mut host, &mut app, &mut routes);
+    reconcile(&mut host, &mut app, &mut routes, &map);
 
     assert_eq!(app.routes().len(), 1, "the dispatcher's RescanStore re-fed the rescanned catalog");
     assert!(!app.route_ids().contains(&gone), "the deleted id is gone from the app catalog too");
@@ -60,14 +62,17 @@ fn rescan_refeeds_the_catalog_like_the_board() {
 /// `PlanRoute` into the resumable [`NavPlan`] the same way (`is_planning` after the pass).
 #[test]
 fn plan_route_enters_the_resumable_planner_like_the_board() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let route =
+        obc_fixtures::read("sim-grimsel", "routes/grimsel-climb.obcr").expect("full fixture suite requires route");
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    let mut routes = MemRouteStore::new(&[ROUTE]);
+    let mut routes = MemRouteStore::new(&[&route]);
     app.set_routes_with_ids(routes.catalog(), routes.ids());
     app.debug_start_nav((8_330_000, 46_570_000), (8_340_000, 46_575_000), "Parity Plan");
 
     let mut host = HostLoop::new();
     assert!(!host.is_planning(), "nothing planning before the pass");
-    reconcile(&mut host, &mut app, &mut routes);
+    reconcile(&mut host, &mut app, &mut routes, &map);
     assert!(host.is_planning(), "the dispatcher consumed PlanRoute into the resumable planner");
 }
 
@@ -76,8 +81,11 @@ fn plan_route_enters_the_resumable_planner_like_the_board() {
 /// does for the board's `take_nav_cancel` before `take_nav_request`.
 #[test]
 fn cancel_before_the_pass_starts_no_plan() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let route =
+        obc_fixtures::read("sim-grimsel", "routes/grimsel-climb.obcr").expect("full fixture suite requires route");
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    let mut routes = MemRouteStore::new(&[ROUTE]);
+    let mut routes = MemRouteStore::new(&[&route]);
     app.set_routes_with_ids(routes.catalog(), routes.ids());
     app.debug_start_nav((8_330_000, 46_570_000), (8_340_000, 46_575_000), "Dismissed Plan");
     // The rider dismisses the planning screen in the same batch (Back on NavPlanning), annihilating
@@ -85,6 +93,6 @@ fn cancel_before_the_pass_starts_no_plan() {
     app.apply_gesture(obc_app::Gesture::Back);
 
     let mut host = HostLoop::new();
-    reconcile(&mut host, &mut app, &mut routes);
+    reconcile(&mut host, &mut app, &mut routes, &map);
     assert!(!host.is_planning(), "an annihilated request never starts a plan in the dispatcher");
 }

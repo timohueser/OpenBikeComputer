@@ -25,6 +25,17 @@ struct OBCCompanionApp: App {
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
+    /// The one real radio owner for the process. SwiftUI may re-evaluate `body` many times; creating
+    /// the transport from `makeTransport()` on each evaluation produced multiple central managers
+    /// with the same restoration identifier. Worse, the static weather bridge remained attached to
+    /// the first instance while `RootView` could retain another — a split brain where the visible app
+    /// was connected but the weather listener never saw the device's request.
+    @MainActor private static let liveTransport: BLETransport = {
+        let transport = BLETransport()
+        startWeatherJob(for: transport)
+        return transport
+    }()
+
     /// The notification tap router (#773 U5). Held here because
     /// `UNUserNotificationCenter.delegate` is a weak reference — a delegate created inline would be
     /// released before the first tap ever arrived.
@@ -116,8 +127,7 @@ struct OBCCompanionApp: App {
         #if DEBUG
         if let mockControl { return MockTransport(control: mockControl) }
         #endif
-        let transport = BLETransport()
-        Self.startWeatherJob(for: transport)
+        let transport = Self.liveTransport
         #if DEBUG
         // The WX3 Weather Request transport harness. Pair normally once so BLETransport has an
         // authenticated peripheral UUID, then launch the real BLE path with

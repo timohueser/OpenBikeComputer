@@ -779,6 +779,9 @@ pub enum StatusMessage {
     /// announce off `transferControl` and onto this envelope so all device → app control traffic is
     /// one notify characteristic.
     DownloadAnnounce(TransferControl),
+    /// `msg = 5`, 1 byte: a request is ready on the authenticated Weather Request context.
+    /// The app acknowledges by reading that characteristic; this status message is only a hint.
+    WeatherRequest,
 }
 
 impl StatusMessage {
@@ -814,6 +817,10 @@ impl StatusMessage {
                 b[0] = 4;
                 b[1..1 + TransferControl::ENCODED_LEN].copy_from_slice(&d.encode());
                 1 + TransferControl::ENCODED_LEN
+            }
+            Self::WeatherRequest => {
+                b[0] = 5;
+                1
             }
         };
         (b, len)
@@ -861,6 +868,7 @@ impl StatusMessage {
                 }
                 Self::DownloadAnnounce(TransferControl::decode(&data[1..])?)
             }
+            5 => Self::WeatherRequest,
             _ => return Ok(None),
         }))
     }

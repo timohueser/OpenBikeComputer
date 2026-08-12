@@ -310,7 +310,8 @@ final class ProtocolVectorTests: XCTestCase {
 
         // Cold start indoors: urgent, no fix, no bundle. Absence is a cleared flag, so the zero
         // coordinates must not put the rider at 0°N 0°E holding generation 0 — and `refresh == off`
-        // configures the *schedule*, not the right to ask, so this is still an answerable request.
+        // configures the *schedule*, not the right to ask, so this remains a diagnostic/retryable
+        // request even though the companion cannot fetch before the device supplies a fix.
         let noFixBytes = try fixture("weather-request-context-no-fix.bin")
         let noFix = try WeatherRequestContext(decoding: noFixBytes)
         XCTAssertEqual(noFix.reason, [.urgent, .noBundle])

@@ -172,9 +172,9 @@ struct WeatherRequestContextTests {
         #expect(decoded.reason.contains(.noBundle))
     }
 
-    /// Cold start indoors: no GPS yet, but the rider opened Weather. The phone can still fetch by
-    /// its own location, so this must be a well-formed request rather than a suppressed one.
-    @Test func aContextWithNoFixStillCarriesAnAnswerableRequest() throws {
+    /// Cold start indoors: no GPS yet, but the rider opened Weather. It remains well-formed for
+    /// diagnostics/retry even though the companion returns `noPosition` until a device fix exists.
+    @Test func aContextWithNoFixStillCarriesADiagnosticRequest() throws {
         let context = WeatherRequestContext(reason: [.urgent, .noBundle], requestID: 1)
         let decoded = try WeatherRequestContext(decoding: context.encode())
         #expect(decoded.requestID == 1)

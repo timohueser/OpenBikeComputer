@@ -336,9 +336,9 @@ public actor WeatherJobEngine {
                     continue
                 }
                 guard snapshot.weatherRequest.position != nil else {
-                    // §11.4 says a fixless request is still a request to answer — but answering by
-                    // the phone's own location needs CoreLocation and a permission prompt this
-                    // build does not carry. Honest failure; the device re-raises once it has a fix.
+                    // §11.4 keeps a fixless request well-formed for diagnostics/retry, but this
+                    // protocol version has no phone-location fallback. Honest failure; the device
+                    // re-raises once it has a fix.
                     finish(job: &job, outcome: .failed, failure: .noPosition, at: now())
                     return
                 }

@@ -1005,12 +1005,18 @@ msg = 4  downloadAnnounce (13 bytes total):
   msg         u8   = 4
   descriptor  12   the 12-byte TransferControl (§4.2), op = 2 (download), with
                    total_len + crc32 filled in for the object about to stream
+
+msg = 5  weatherRequest (1 byte total):
+  msg         u8   = 5; authenticated request context is ready to read
 ```
 
 The **`downloadAnnounce`** (v2) is the device's answer to a download request
 (§4.2): the announce moves off `transferControl` and onto this envelope so all
 device → app control traffic shares one notify characteristic and one ordering
 domain. Unknown `msg` values must be ignored by the app (forward compatibility).
+`weatherRequest` is only a live-link hint; the authenticated context read remains the receipt
+that consumes the request. A disconnected phone discovers the same request through the dedicated
+advertised service UUID.
 
 Each `storeChanged` store keeps **its own** monotonic-per-boot revision: a trip
 upload or delete bumps the **trip** store, never the route store. A UI-composed
@@ -1985,8 +1991,9 @@ conversion at exactly the boundary where a mistake is invisible.
 the equator; no bundle is *absent*, not generation `0`. This is the same rule §1
 applies to the identity read's trailing fields, and it exists for the same reason:
 a sentinel that is also a legal value eventually gets acted on. A device with no
-fix still raises a well-formed request — the phone can fetch by its own location,
-so a cold start indoors is a request to answer, not a request to suppress.
+fix still raises a well-formed request for diagnostics and retry, but the current
+companion cannot fetch until the device supplies a fix; there is no phone-location
+fallback in this protocol version.
 
 **Decoding.** The read is **length-declared**:
 

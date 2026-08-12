@@ -29,8 +29,8 @@ fn regions_lists_the_curated_coverage() {
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("europe/germany/bayern"), "{text}");
-    // DACH's 35, plus the one non-European region: Iowa, the basemap the weather event packs in
-    // `host/obc-wx-bake/tests/events/` are rendered over.
+    // DACH's 35, plus the one non-European region: Iowa, the basemap the fixture-registry
+    // weather event packs are rendered over.
     assert!(text.contains("north-america/us/iowa"), "{text}");
     assert!(text.contains("36 regions"), "{text}");
 }

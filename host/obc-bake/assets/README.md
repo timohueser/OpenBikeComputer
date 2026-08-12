@@ -72,7 +72,7 @@ mirror, over the same crop as the `.obcm` above, written latitude-first (which i
 `obc-dem`'s argument order, the opposite of `obc-pack`'s):
 
 ```text
-apps/obc-sim/assets/repack.sh terrain
+fixtures/build-map-package.sh terrain
 # = obc-dem bake --sources <dem> --bbox 48.119,7.798,48.141,7.830 \
 #     --cell-log2 16 --shard host/obc-bake/assets/teningen-preview.obcd
 ```

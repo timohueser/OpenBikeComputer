@@ -1,6 +1,7 @@
 # obc-wx-bake event packs
 
-An **event pack** is one real past weather event frozen on disk: the raw bytes the archives served,
+An **event pack** is one real past weather event frozen in an immutable fixture-registry package:
+the raw bytes the archives served,
 the tree the real baker makes of them, and what the radar actually saw over the following two
 hours. Packs exist so the simulator and the test suite can run against real radar instead of
 synthetic blobs.
@@ -12,6 +13,10 @@ wx-events/<event-id>/
   service/      the baked tree: wx/v2/manifest.json + wx/v2/<gen>/f<off>/s<col>-<row>.obcg
   truth/        the OBSERVED frames at the truth offsets — ground truth for later scoring
 ```
+
+The complete trees are the `weather-event-*` packages in `fixtures/catalog.toml`.
+Reviewable copies of their `event.json` manifests live under
+`fixtures/sources/weather-events/` and are byte-matched through `tracked_sources`.
 
 Capture, inspect and check a pack with `obc-wx-pack` (a second binary of this crate — see
 `src/bin/obc-wx-pack.rs`):
@@ -30,17 +35,17 @@ cargo run --release --bin obc-wx-pack -- fetch  <pack-dir>   # materialize recor
 
 **Nothing in a pack is a hand-made artifact, and nothing has to be fetched.** `service/` is what
 `cycle::run_cycle` writes when its `Upstream` is a `FixtureUpstream` loaded from `upstream/` — the
-same offline seam `tests/cycle.rs` and `tests/us_gfs_cycle.rs` already use. `truth/` is the same
+same offline seam `tests/canonical_mosaic.rs` uses. `truth/` is the same
 deal through `mrms::bake_observation`. `tests/event_pack.rs` re-derives **both** from the pack's
 own bytes and byte-compares, so a pack that stops reproducing is a baker regression, loudly. It
 also checks the converse both ways: no request the replay makes is unaccounted for by a member,
 and no member goes unread.
 
-That second half only became true once the truth ladder's raw MRMS observations were checked in
+That second half only became true once the truth ladder's raw MRMS observations were stored in the registry package
 (`--store-truth-upstream`, +4.3 MB). Before that, `truth/` was eight *baked artifacts* whose
 sources lived on a single free mirror — so a change to the observation lattice or the quantization
 table would have meant going back to MTArchive to re-derive them. For a fixture whose whole purpose
-is durability that was the wrong trade, and 4.3 MB in git is the cheaper half of it by a wide
+is durability that was the wrong trade, and 4.3 MB in the external package is the cheaper half of it by a wide
 margin. **Ship US packs with `--store-truth-upstream`.**
 
 **The archive is not the upstream.** The baker asks for
@@ -105,14 +110,14 @@ exact retrieval URL, byte range where one was used, length, sha256, and licence.
 
 ## Size discipline
 
-Full-domain packs are hundreds of megabytes, so two things keep a checked-in pack small:
+Full-domain packs are hundreds of megabytes, so two things keep a registry-packaged pack small:
 
 * `--bbox` crops the **baked** output (`src/pack/crop.rs`). The crop window is aligned outward to
   each frame's tile edge, so every retained tile's payload bytes are identical to the uncropped
   object's — a cropped pack is a *subset* of the real bake, not a different bake. The raw
   `upstream/` bytes are never cropped; they must stay byte-identical to what the archive served.
   The crop also re-verifies the composed product's lattice nesting, since it moves every origin.
-* Members with `"stored": false` are recorded with full provenance but not checked in.
+* Members with `"stored": false` are recorded with full provenance but not stored in the registry package.
   `obc-wx-pack fetch` materializes them from `archive_url` and refuses anything whose sha256 has
   moved. **The shipped pack has none** — durability beat 4.3 MB, see above — but the mechanism
   stays for a pack that is genuinely too large to carry.
@@ -167,7 +172,7 @@ two-hour observed ladder. **5,505,817 bytes on disk, and nothing to fetch.**
 | coverage | 40.480 N, 96.660 W .. 43.680 N, 89.940 W — basemap `north-america/us/iowa` |
 | service | 9 frames + manifest, 108,242 bytes |
 | truth | 8 observed frames, 245,673 bytes |
-| upstream | 20 members, 5,126,306 bytes, **all checked in** |
+| upstream | 20 members, 5,126,306 bytes, **all stored in the registry package** |
 
 ### Why 18:48 and 17Z, when the capture is clocked at 18:52
 
@@ -237,16 +242,16 @@ retrieved from
   sha256 `fb78ef1e5baf…` (the cycle's anchor).
 - the eight truth observations at 190200, 191800, 193200, 194800, 200200, 201800, 203200 and
   204800 — 464,823 / 488,065 / 512,256 / 539,054 / 547,051 / 559,673 / 570,840 / 578,683 bytes,
-  4,260,445 in total. All checked in, so `truth/` re-derives offline.
+  4,260,445 in total. All stored in the registry package, so `truth/` re-derives offline.
 
 **HRRR subhourly PRATE (CONUS forecast, 3 km / 15 min).** Objects
 `https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20200810/conus/hrrr.t17z.wrfsubhfFF.grib2`
 (`.idx` for the indexes) — NOAA's Big Data bucket is its own archive, so no rewrite. The objects
-are 187–198 MB and are never checked in; only the 45–50 KB `PRATE` messages the `.idx` selection
+are 187–198 MB and are never stored in the registry package; only the 45–50 KB `PRATE` messages the `.idx` selection
 resolves to, as explicit byte ranges. Upstream object lengths (what the range arithmetic is bounded
 by): `f02` 186,909,295, `f03` 192,621,021, `f04` 197,621,511. `f01` is HEAD-probed for run
 completeness and never read — no published lead lives in it, which is the request accounting
-`tests/us_gfs_cycle.rs` already pins.
+`tests/canonical_mosaic.rs` already pins.
 
 - `upstream/hrrr/hrrr.t17z.wrfsubhf02.grib2.idx` — 10,114 bytes.
 - `upstream/hrrr/hrrr.t17z.wrfsubhf03.grib2.idx` — 10,215 bytes.
@@ -272,7 +277,7 @@ cargo run --release --bin obc-wx-pack -- capture us-derecho-2020-08-10 \
 ```
 
 Both archives serve immutable objects, so a fresh capture reproduces these exact digests — the
-whole pack, `event.json` included, `diff -r`s clean against the checked-in one.
+whole pack, `event.json` included, `diff -r`s clean against the registry-packaged one.
 
 ---
 
@@ -305,13 +310,13 @@ argument rests on storm speed and nothing should be inferred from the name about
 |---|---|
 | capture instant (`--at`) | `2023-06-24T20:04:00Z` |
 | product reference time | `2023-06-24T20:00:00Z` |
-| motion history | `2023-06-24T19:50:00Z` — checked in, so this pack publishes a nowcast layer |
+| motion history | `2023-06-24T19:50:00Z` — stored in the registry package, so this pack publishes a nowcast layer |
 | HRRR run selected | 2023-06-24 **18Z**, subhourly `wrfsubhf03..04` |
 | crop (`--bbox`) | `40.5,-96.5,43.5,-90.0` — the derecho's window, deliberately |
 | coverage | 38.000 N, 98.080 W .. 45.680 N, 87.840 W — basemap `north-america/us/iowa` |
 | service | 9 frames + manifest, 116,106 bytes |
 | truth | 8 observed frames, 144,785 bytes |
-| upstream | 20 members, 8,427,640 bytes, **all checked in** |
+| upstream | 20 members, 8,427,640 bytes, **all stored in the registry package** |
 
 ### Why this qualifies as the hard case, in numbers rather than adjectives
 
@@ -406,12 +411,12 @@ probe — including the six the as-of guard suppressed — is in `event.json`.
 **MRMS PrecipRate**, canonical key
 `https://noaa-mrms-pds.s3.amazonaws.com/CONUS/PrecipRate_00.00/20230624/MRMS_PrecipRate_00.00_20230624-HHMMSS.grib2.gz`,
 retrieved from MTArchive: ten objects of 781–834 KB — the 20:00 anchor, the 19:50 motion history,
-and the eight truth observations. All checked in (7.9 MB), so both `service/` and `truth/` re-derive
+and the eight truth observations. All stored in the registry package (7.9 MB), so both `service/` and `truth/` re-derive
 offline.
 
 **HRRR subhourly PRATE**, run `hrrr.20230624/conus/hrrr.t18z.wrfsubhf0{3,4}.grib2` from NOAA's Big
 Data bucket: two `.idx` indexes (~12 KB each) plus eight `PRATE` messages as explicit byte ranges,
-62–73 KB each. The 187–203 MB objects themselves are never checked in.
+62–73 KB each. The 187–203 MB objects themselves are never stored in the registry package.
 
 ### Reproducing it
 

@@ -87,6 +87,9 @@ final class TransferDescriptorTests: XCTestCase {
         let encodedAnnounce = announce.encode()
         XCTAssertEqual(encodedAnnounce.count, 1 + TransferControl.encodedLength)
         XCTAssertEqual(try StatusMessage(decoding: encodedAnnounce), announce)
+
+        XCTAssertEqual(StatusMessage.weatherRequest.encode(), Data([5]))
+        XCTAssertEqual(try StatusMessage(decoding: Data([5])), .weatherRequest)
     }
 
     func testUnknownStatusMessageIsIgnorableNotFatal() throws {
