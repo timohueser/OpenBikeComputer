@@ -33,6 +33,8 @@ pub enum DescriptorError {
     /// either device → phone read. A caller that cannot tell the two apart cannot implement §11.8,
     /// and sharing a discriminant with every other unknown byte is exactly what would hide that.
     UnknownRefresh(u8),
+    /// A fixed-width field decoded correctly but names a value outside the command's contract.
+    Bounds,
 }
 
 /// The kind of object a bulk transfer carries.
@@ -528,6 +530,13 @@ pub const CMD_SET_CLOCK: u8 = 5;
 /// carries the assigned id) and on any user retention edit. The epic's draft table numbered it `4`;
 /// that predates `forgetBond`/`setClock` taking `4`/`5`, so it lands at `6` (the next-free command).
 pub const CMD_SET_ROUTE_RETENTION: u8 = 6;
+/// `command` byte: `weatherUnchanged` (§4.4, cmd 7) — `request_id u32 LE · retry_after_s u16 LE`.
+/// The bonded phone has conditionally checked both providers and proved that the selected bundle is
+/// still current, so the device can finish the request without receiving the bundle again.
+pub const CMD_WEATHER_UNCHANGED: u8 = 7;
+/// Bound a peer-provided manual-probe deferral. The ordinary configured refresh cadence remains the
+/// scheduled ceiling; this only prevents repeated dashboard opens during publication lag.
+pub const WEATHER_UNCHANGED_MAX_RETRY_S: u16 = 60 * 60;
 
 /// The largest valid `setRouteRetention` retention byte: `5` (2 months). A write above it is an
 /// out-of-range level (§4.4), rejected `error` — decoded here, mirrored by the iOS codec, and pinned
@@ -541,6 +550,38 @@ pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
 /// The magnitude bound on a `setClock` UTC offset: ±14 h (±840 min), the real-world offset span
 /// (−12:00 Baker Island … +14:00 Kiribati). A write outside it is rejected `error` (§4.4).
 pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
+
+/// The compact acknowledgement that replaces an unchanged OBCW upload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeatherUnchanged {
+    pub request_id: u32,
+    pub retry_after_s: u16,
+}
+
+impl WeatherUnchanged {
+    pub const ENCODED_LEN: usize = 7;
+
+    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
+        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
+        if bytes[0] != CMD_WEATHER_UNCHANGED {
+            return Err(DescriptorError::UnknownOp(bytes[0]));
+        }
+        let request_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+        let retry_after_s = u16::from_le_bytes([bytes[5], bytes[6]]);
+        if request_id == 0 || retry_after_s > WEATHER_UNCHANGED_MAX_RETRY_S {
+            return Err(DescriptorError::Bounds);
+        }
+        Ok(Self { request_id, retry_after_s })
+    }
+
+    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0; Self::ENCODED_LEN];
+        out[0] = CMD_WEATHER_UNCHANGED;
+        out[1..5].copy_from_slice(&self.request_id.to_le_bytes());
+        out[5..7].copy_from_slice(&self.retry_after_s.to_le_bytes());
+        out
+    }
+}
 
 /// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
 /// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status

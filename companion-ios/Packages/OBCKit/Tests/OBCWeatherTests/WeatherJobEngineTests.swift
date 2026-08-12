@@ -32,8 +32,10 @@ private final class ScriptedLink: WeatherDeviceLink, @unchecked Sendable {
     private let lock = NSLock()
     var readResults: [Result<WeatherContextReadReceipt, WeatherDeviceLinkError>] = []
     var uploadResults: [Result<WeatherBundleUploadReceipt, WeatherDeviceLinkError>] = []
+    var unchangedResults: [Result<WeatherBundleUploadReceipt, WeatherDeviceLinkError>] = []
     private(set) var readCalls = 0
     private(set) var uploadedPayloads: [Data] = []
+    private(set) var unchangedCalls: [(requestID: UInt32, retryAfterSeconds: UInt16)] = []
 
     func readRequestContext() async throws -> WeatherContextReadReceipt {
         let result: Result<WeatherContextReadReceipt, WeatherDeviceLinkError>? = lock.withLock {
@@ -48,6 +50,17 @@ private final class ScriptedLink: WeatherDeviceLink, @unchecked Sendable {
         let result: Result<WeatherBundleUploadReceipt, WeatherDeviceLinkError>? = lock.withLock {
             uploadedPayloads.append(bytes)
             return uploadResults.isEmpty ? nil : uploadResults.removeFirst()
+        }
+        guard let result else { throw WeatherDeviceLinkError.timedOut }
+        return try result.get()
+    }
+
+    func acknowledgeUnchanged(
+        requestID: UInt32, retryAfterSeconds: UInt16
+    ) async throws -> WeatherBundleUploadReceipt {
+        let result: Result<WeatherBundleUploadReceipt, WeatherDeviceLinkError>? = lock.withLock {
+            unchangedCalls.append((requestID, retryAfterSeconds))
+            return unchangedResults.isEmpty ? nil : unchangedResults.removeFirst()
         }
         guard let result else { throw WeatherDeviceLinkError.timedOut }
         return try result.get()
@@ -93,9 +106,11 @@ actor Gate {
 private final class ScriptedAssembler: WeatherAssembling, @unchecked Sendable {
     private let lock = NSLock()
     var results: [Result<BuiltWeatherBundle, Error>] = []
+    var preflightResults: [Result<WeatherAssemblyOutcome, Error>] = []
     /// When set, the *first* assemble parks here until the test opens it.
     var gate: Gate?
     private(set) var calls: [(requestID: UInt32, generation: UInt32)] = []
+    private(set) var preflightCalls: [(requestID: UInt32, allowReuse: Bool)] = []
 
     func assemble(
         request: WeatherRequest, generation: UInt32, now: Date
@@ -110,6 +125,18 @@ private final class ScriptedAssembler: WeatherAssembling, @unchecked Sendable {
         }
         guard let result else { throw WeatherProviderError.unavailable }
         return try result.get()
+    }
+
+    func assembleIfChanged(
+        request: WeatherRequest, generation: UInt32, heldBundleGeneratedAt _: Date?,
+        allowHeldBundleReuse: Bool, now: Date
+    ) async throws -> WeatherAssemblyOutcome {
+        let result: Result<WeatherAssemblyOutcome, Error>? = lock.withLock {
+            preflightCalls.append((request.requestID, allowHeldBundleReuse))
+            return preflightResults.isEmpty ? nil : preflightResults.removeFirst()
+        }
+        if let result { return try result.get() }
+        return .bundle(try await assemble(request: request, generation: generation, now: now))
     }
 }
 
@@ -261,6 +288,43 @@ struct WeatherJobEngineTests {
         #expect(entries.first?.readConnectedMilliseconds == 2_000)
         #expect(entries.first?.uploadConnectedMilliseconds == 3_000)
         #expect(entries.first?.bundleByteCount == 4)
+    }
+
+    @Test func unchangedProvidersFinishWithACommandAndNoBundleUpload() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(heldGeneration: 4, readAt: rig.clock.now)))]
+        rig.assembler.preflightResults = [.success(.unchanged(
+            retryAfterSeconds: 90, precipitationGeneration: "20260812T1200Z"))]
+        rig.link.unchangedResults = [.success(uploadReceipt())]
+
+        await rig.engine().kick(.deviceRaisedRequest)
+
+        #expect(rig.assembler.preflightCalls.map(\.allowReuse) == [true])
+        #expect(rig.link.unchangedCalls.count == 1)
+        #expect(rig.link.unchangedCalls.first?.requestID == 7)
+        #expect(rig.link.unchangedCalls.first?.retryAfterSeconds == 90)
+        #expect(rig.link.uploadedPayloads.isEmpty)
+        #expect(rig.store.load() == nil)
+        #expect(rig.history.entries().last?.outcome == .committed)
+    }
+
+    @Test func olderFirmwareFallsBackFromUnknownCommandToAFullUpload() async {
+        let rig = Rig()
+        rig.link.readResults = [.success(readReceipt(snapshot(heldGeneration: 4, readAt: rig.clock.now)))]
+        rig.assembler.preflightResults = [.success(.unchanged(
+            retryAfterSeconds: 90, precipitationGeneration: "20260812T1200Z"))]
+        rig.link.unchangedResults = [.failure(.bundleRejected)]
+        rig.assembler.results = [.success(builtBundle(
+            generation: 5, at: rig.clock.now, bytes: Data([9, 8, 7])))]
+        rig.link.uploadResults = [.success(uploadReceipt())]
+
+        await rig.engine().kick(.deviceRaisedRequest)
+
+        #expect(rig.link.unchangedCalls.count == 1)
+        #expect(rig.assembler.calls.map(\.generation) == [5])
+        #expect(rig.link.uploadedPayloads == [Data([9, 8, 7])])
+        #expect(rig.store.load() == nil)
+        #expect(rig.history.entries().last?.outcome == .committed)
     }
 
     @Test func contextIsCheckpointedBeforeTheFetchSoARelaunchNeverRereads() async {

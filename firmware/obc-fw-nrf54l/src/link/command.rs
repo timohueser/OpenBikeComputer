@@ -8,7 +8,7 @@ use core::cell::RefCell;
 
 use defmt::{info, warn};
 use obc_app::Retention;
-use obc_ble::{CommandResult, CommandStatus, ObjectType, SetClock, SetRouteRetention, StatusMessage};
+use obc_ble::{CommandResult, CommandStatus, ObjectType, SetClock, SetRouteRetention, StatusMessage, WeatherUnchanged};
 
 use crate::object_store::ObjectStore;
 use crate::SharedStore;
@@ -192,6 +192,21 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
                 }
             }
         }
+        (obc_ble::CMD_WEATHER_UNCHANGED, _) => match WeatherUnchanged::decode(data) {
+            Ok(ack) => {
+                #[cfg(feature = "ble")]
+                let accepted = crate::ble::weather_unchanged(ack.request_id, ack.retry_after_s);
+                #[cfg(not(feature = "ble"))]
+                let accepted = false;
+                if accepted {
+                    info!("link: [cmd] weatherUnchanged: request {} checked", ack.request_id);
+                    (CommandStatus::Ok, 0, None)
+                } else {
+                    (CommandStatus::NotFound, 0, None)
+                }
+            }
+            Err(_) => (CommandStatus::Error, 0, None),
+        },
         _ => (CommandStatus::UnknownCommand, 0, None),
     };
     CommandOutcome {
