@@ -4,7 +4,7 @@
 //! uses the same algorithm and constants: source polygons are sampled at 4x screen resolution,
 //! accumulated into 2-pixel cells, assigned by a local Potts/coverage energy over overlapping
 //! 10-cell windows, vectorised as one shared coverage, relaxed three times, and cleaned with a
-//! final sub-pixel coverage VW pass.  Hydrography is a separate one-pixel mask and never enters
+//! final one-cell coverage VW pass.  Hydrography is a separate one-pixel mask and never enters
 //! the categorical allocator.
 //!
 //! The grid is anchored in projected metres rather than to a viewport.  One shared ladder is built
@@ -14,13 +14,15 @@
 
 use std::collections::VecDeque;
 
-use geos::{Geom as _, Geometry};
+use geos::{Geom as _, Geometry, STRtree, SpatialIndex};
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Lod;
+#[cfg(debug_assertions)]
+use crate::geom::coverage_is_valid;
 use crate::geom::{
-    collect_lines, collect_polygons, coverage_is_valid, coverage_simplify_vw, from_geos, ring_to_coordseq,
-    topology_preserve_simplify, try_polygon_to_geos, union_all, Geom,
+    collect_lines, collect_polygons, coverage_simplify_vw, from_geos, ring_to_coordseq, topology_preserve_simplify,
+    try_polygon_to_geos, union_all, Geom,
 };
 use crate::ingest::IngestFeature;
 use crate::progress::Progress;
@@ -36,11 +38,15 @@ const DATA_WEIGHT: f64 = 4.0;
 const BOUNDARY_WEIGHT: f64 = 1.20;
 const QUOTA_WEIGHT: f64 = 0.85;
 const RARE_PENALTY: f64 = 8.0;
-const INITIAL_VW_PX: f64 = 1.1 * CELL_PX as f64;
+// Stay below one rendered pixel before relaxation: a tolerance larger than the two-pixel semantic
+// cell can replace both sides of a narrow channel by one shared diagonal and turn it into a long
+// triangular needle. The final pass operates on the already-smoothed shared coverage and is capped
+// at exactly one cell, never beyond it.
+const INITIAL_VW_PX: f64 = 0.45 * CELL_PX as f64;
 const SMOOTH_LIMIT_PX: f64 = 0.8;
 const SMOOTH_STEP: f64 = 0.34;
 const SMOOTH_PASSES: usize = 3;
-const FINAL_VW_PX: f64 = 0.45;
+const FINAL_VW_PX: f64 = CELL_PX as f64;
 const RASTER_TILE_CELLS: usize = 128;
 
 /// The exact categorical order used by the prototype.  Later classes paint over earlier ones.
@@ -266,7 +272,15 @@ pub fn build_semantic_lod(
     }
 
     let (support, mut water) = raster_support(&sources, &grid, projection, progress)?;
-    let labels = adaptive_labels(&support, &grid, prior);
+    let mut labels = adaptive_labels(&support, &grid, prior);
+    // At overview scale, smoothing a one- or two-cell-wide label chain turns it into the sharp
+    // needle/triangle artifact seen in the 130 m/px production rung. Move those cells into a nearby
+    // compact patch of the same class, preserving each class's exact coverage; detailed semantic
+    // tiers remain untouched.
+    if mpp >= 80.0 {
+        close_narrow_base_channels(&mut labels, &support, &grid);
+        compact_narrow_semantic_filaments(&mut labels, &support, &grid);
+    }
     let raw = vectorize_labels(&labels, &grid)?;
     let simplified = simplify_owned_coverage(raw, INITIAL_VW_PX * mpp)?;
     let smoothed = smooth_coverage(simplified, &grid, SMOOTH_LIMIT_PX * mpp, FINAL_VW_PX * mpp)?;
@@ -718,6 +732,159 @@ fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &[Window])
     out
 }
 
+/// Move one- and two-cell-wide land-cover filaments into nearby compact patches without changing
+/// any class's cell count. The allocator's overlapping quota windows can occasionally retain a
+/// class as a long thin chain; curve relaxation then turns that staircase into a sharp wedge. A
+/// swap is accepted only when the filament cell is surrounded by one dominant class and a nearby
+/// cell of that dominant class would join an existing patch of the filament class.
+fn compact_narrow_semantic_filaments(labels: &mut [u8], support: &[Support], grid: &Grid) {
+    if labels.len() != grid.cols * grid.rows || support.len() != labels.len() || grid.cols < 5 || grid.rows < 5 {
+        return;
+    }
+    for _ in 0..8 {
+        let mut used = vec![false; labels.len()];
+        let mut changed = false;
+        for y in 2..grid.rows - 2 {
+            for x in 2..grid.cols - 2 {
+                let from_index = grid.index(x, y);
+                let from = labels[from_index] as usize;
+                if from == SemanticClass::Base as usize || used[from_index] {
+                    continue;
+                }
+                let local = neighbourhood_counts(labels, grid, x, y, 2);
+                let (dominant, dominant_count) = local
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(class, _)| *class != from)
+                    .max_by_key(|(_, count)| *count)
+                    .unwrap_or((from, 0));
+                // A two-cell-wide straight strip contributes at most ten of the 25 cells; an
+                // ordinary broad-region edge contributes at least fifteen. Keep a margin between
+                // those cases so normal boundaries do not creep.
+                if local[from] > 10 || dominant_count < 12 {
+                    continue;
+                }
+
+                let x0 = x.saturating_sub(WINDOW_CELLS).max(2);
+                let y0 = y.saturating_sub(WINDOW_CELLS).max(2);
+                let x1 = (x + WINDOW_CELLS).min(grid.cols - 3);
+                let y1 = (y + WINDOW_CELLS).min(grid.rows - 3);
+                let mut best: Option<(i32, usize)> = None;
+                for candidate_y in y0..=y1 {
+                    for candidate_x in x0..=x1 {
+                        let to_index = grid.index(candidate_x, candidate_y);
+                        let distance = x.abs_diff(candidate_x) + y.abs_diff(candidate_y);
+                        if used[to_index] || labels[to_index] as usize != dominant || distance <= 1 {
+                            continue;
+                        }
+                        let candidate_neighbours = neighbour_counts(labels, grid, candidate_x, candidate_y);
+                        let candidate_local = neighbourhood_counts(labels, grid, candidate_x, candidate_y, 2);
+                        // A class represented only by a filament has no pre-existing broad patch.
+                        // Let an adjacent cell receive it so repeated perimeter-reducing swaps can
+                        // fold the chain into a compact blob; exact class counts remain unchanged.
+                        if candidate_neighbours[from] < 2 || candidate_local[from] < 3 {
+                            continue;
+                        }
+                        let before_edges = cardinal_disagreements(labels, grid, x, y, from)
+                            + cardinal_disagreements(labels, grid, candidate_x, candidate_y, dominant);
+                        let after_edges = cardinal_disagreements(labels, grid, x, y, dominant)
+                            + cardinal_disagreements(labels, grid, candidate_x, candidate_y, from);
+                        let boundary_gain = before_edges as i32 - after_edges as i32;
+                        if boundary_gain < 2 {
+                            continue;
+                        }
+                        let score = boundary_gain * 4096
+                            + i32::from(candidate_neighbours[from]) * 256
+                            + i32::from(support[to_index].0[from])
+                            - i32::from(support[to_index].0[dominant])
+                            - distance as i32;
+                        if best.is_none_or(|(best_score, _)| score > best_score) {
+                            best = Some((score, to_index));
+                        }
+                    }
+                }
+                let Some((_, to_index)) = best else { continue };
+                labels[from_index] = dominant as u8;
+                labels[to_index] = from as u8;
+                used[from_index] = true;
+                used[to_index] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Base is the absence of a sourced thematic class, not a semantic quota of its own. Keep only its
+/// broad interior (a complete 7×7 base neighbourhood), so tapering background channels cannot show
+/// the independent land underlay through the coverage as a needle. The grid frame is untouched.
+fn close_narrow_base_channels(labels: &mut [u8], support: &[Support], grid: &Grid) {
+    const RADIUS: usize = 3;
+    if labels.len() != grid.cols * grid.rows || support.len() != labels.len() || grid.cols < 7 || grid.rows < 7 {
+        return;
+    }
+    let before = labels.to_vec();
+    let mut eroded = vec![false; labels.len()];
+    for y in RADIUS..grid.rows - RADIUS {
+        for x in RADIUS..grid.cols - RADIUS {
+            eroded[grid.index(x, y)] = (y - RADIUS..=y + RADIUS)
+                .all(|ny| (x - RADIUS..=x + RADIUS).all(|nx| before[grid.index(nx, ny)] == SemanticClass::Base as u8));
+        }
+    }
+    for y in RADIUS..grid.rows - RADIUS {
+        for x in RADIUS..grid.cols - RADIUS {
+            let index = grid.index(x, y);
+            if before[index] != SemanticClass::Base as u8 || eroded[index] {
+                continue;
+            }
+            let neighbours = neighbourhood_counts(&before, grid, x, y, RADIUS);
+            let Some((replacement, _)) = neighbours
+                .iter()
+                .copied()
+                .enumerate()
+                .skip(1)
+                .filter(|(_, count)| *count > 0)
+                .max_by_key(|(class, count)| u16::from(*count) * 64 + u16::from(support[index].0[*class]))
+            else {
+                continue;
+            };
+            labels[index] = replacement as u8;
+        }
+    }
+}
+
+fn cardinal_disagreements(labels: &[u8], grid: &Grid, x: usize, y: usize, class: usize) -> u8 {
+    [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+        .into_iter()
+        .filter(|&(nx, ny)| labels[grid.index(nx, ny)] as usize != class)
+        .count() as u8
+}
+
+fn neighbour_counts(labels: &[u8], grid: &Grid, x: usize, y: usize) -> [u8; CLASSES] {
+    let mut counts = [0u8; CLASSES];
+    for ny in y - 1..=y + 1 {
+        for nx in x - 1..=x + 1 {
+            if nx != x || ny != y {
+                counts[labels[grid.index(nx, ny)] as usize] += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn neighbourhood_counts(labels: &[u8], grid: &Grid, x: usize, y: usize, radius: usize) -> [u8; CLASSES] {
+    let mut counts = [0u8; CLASSES];
+    for ny in y - radius..=y + radius {
+        for nx in x - radius..=x + radius {
+            counts[labels[grid.index(nx, ny)] as usize] += 1;
+        }
+    }
+    counts
+}
+
 fn vectorize_labels(labels: &[u8], grid: &Grid) -> Result<Vec<(u8, Geom)>, String> {
     vectorize_classes(labels, grid, CLASSES)
 }
@@ -805,13 +972,24 @@ fn vectorize_classes(labels: &[u8], grid: &Grid, classes: usize) -> Result<Vec<(
 
 fn simplify_owned_coverage(polys: Vec<(u8, Geom)>, tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
     let refs: Vec<&Geom> = polys.iter().map(|(_, geom)| geom).collect();
+    // `vectorize_classes` polygonizes one shared line network, so its faces are a coverage by
+    // construction. Validating that dense, unsimplified grid here made a country-scale bake spend
+    // minutes intersecting millions of redundant collinear segments. Retain the expensive audit in
+    // tests/debug builds, while production relies on the construction invariant.
+    #[cfg(debug_assertions)]
     if !coverage_is_valid(&refs, 0.0) {
         return Err("semantic vectorization did not form a valid coverage".into());
     }
     let simplified = coverage_simplify_vw(&refs, tolerance, false).ok_or("semantic coverage VW failed")?;
-    let refs: Vec<&Geom> = simplified.iter().collect();
-    if !coverage_is_valid(&refs, 0.0) {
-        return Err("semantic coverage VW returned an invalid coverage".into());
+    // GEOSCoverageSimplifyVW preserves the input coverage by contract. Audit that contract in
+    // tests/debug builds without making every production bake re-run GEOS's global segment
+    // intersection machinery over the complete extract.
+    #[cfg(debug_assertions)]
+    {
+        let refs: Vec<&Geom> = simplified.iter().collect();
+        if !coverage_is_valid(&refs, 0.0) {
+            return Err("semantic coverage VW returned an invalid coverage".into());
+        }
     }
     Ok(polys.into_iter().zip(simplified).map(|((class, _), geom)| (class, geom)).collect())
 }
@@ -894,16 +1072,32 @@ fn smooth_coverage(
     let mut faces = Vec::new();
     collect_polygons(from_geos(&polygonized), &mut faces);
 
+    // Cache source geometries once and query them spatially. The old nested loop rebuilt every
+    // source polygon for every face, making country-scale smoothing effectively quadratic while
+    // answering the same point-in-polygon question.
+    let mut source_geos = Vec::with_capacity(source.len());
+    let mut source_classes = Vec::with_capacity(source.len());
+    let mut source_index = STRtree::<usize>::with_capacity(10).map_err(|e| e.to_string())?;
+    for (class, geom) in &source {
+        let geos = try_polygon_to_geos(geom).ok_or("semantic source polygon became invalid")?;
+        let index = source_geos.len();
+        source_index.insert(&geos, index);
+        source_geos.push(geos);
+        source_classes.push(*class);
+    }
+
     let mut by_class: [Vec<Geom>; CLASSES] = std::array::from_fn(|_| Vec::new());
     for face in faces {
         let geos = try_polygon_to_geos(&face).ok_or("semantic smoothing emitted an invalid face")?;
         let point = geos.point_on_surface().map_err(|e| e.to_string())?;
         let mut owner = None;
         // Prototype assigns in reverse categorical paint order.
-        for (class, source_geom) in source.iter().rev() {
-            let candidate = try_polygon_to_geos(source_geom).ok_or("semantic source polygon became invalid")?;
-            if candidate.covers(&point).map_err(|e| e.to_string())? {
-                owner = Some(*class as usize);
+        let mut candidates = Vec::new();
+        source_index.query(&point, |&index| candidates.push(index));
+        candidates.sort_unstable_by(|a, b| b.cmp(a));
+        for index in candidates {
+            if source_geos[index].covers(&point).map_err(|e| e.to_string())? {
+                owner = Some(source_classes[index] as usize);
                 break;
             }
         }
@@ -1037,6 +1231,97 @@ mod tests {
         support[grid.index(5, 5)] = Support([12, 0, 0, 52, 0]);
         let labels = adaptive_labels(&support, &grid, None);
         assert!(labels.contains(&(SemanticClass::Forest as u8)));
+    }
+
+    #[test]
+    fn overview_cleanup_closes_a_base_filament() {
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 11, rows: 9, cell_m: 2.0 };
+        let forest = SemanticClass::Forest as u8;
+        let base = SemanticClass::Base as u8;
+        let mut labels = vec![forest; grid.cols * grid.rows];
+        let support = vec![Support([32, 0, 0, 32, 0]); labels.len()];
+        for y in 1..grid.rows - 1 {
+            labels[grid.index(6, y)] = base;
+        }
+        for y in 3..=5 {
+            for x in 2..=4 {
+                labels[grid.index(x, y)] = base;
+            }
+        }
+        labels[grid.index(4, 4)] = forest;
+        let base_before = labels.iter().filter(|&&class| class == base).count();
+
+        close_narrow_base_channels(&mut labels, &support, &grid);
+
+        assert!(labels.iter().filter(|&&class| class == base).count() < base_before);
+        assert!((1..grid.rows - 1).filter(|&y| labels[grid.index(6, y)] == base).count() < grid.rows - 2);
+    }
+
+    #[test]
+    fn overview_cleanup_preserves_broad_and_frame_base() {
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 15, rows: 15, cell_m: 2.0 };
+        let forest = SemanticClass::Forest as u8;
+        let mut labels = vec![forest; grid.cols * grid.rows];
+        let support = vec![Support([64, 0, 0, 0, 0]); labels.len()];
+        for y in 4..=10 {
+            for x in 4..=10 {
+                labels[grid.index(x, y)] = SemanticClass::Base as u8;
+            }
+        }
+        labels[grid.index(0, 7)] = SemanticClass::Base as u8;
+
+        close_narrow_base_channels(&mut labels, &support, &grid);
+
+        assert_eq!(labels[grid.index(7, 7)], SemanticClass::Base as u8);
+        assert_eq!(labels[grid.index(0, 7)], SemanticClass::Base as u8);
+    }
+
+    #[test]
+    fn overview_compaction_moves_a_filament_without_losing_coverage() {
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 11, rows: 9, cell_m: 2.0 };
+        let forest = SemanticClass::Forest as u8;
+        let grass = SemanticClass::Grass as u8;
+        let mut labels = vec![forest; grid.cols * grid.rows];
+        let support = vec![Support([0, 0, 32, 32, 0]); labels.len()];
+        for y in 1..grid.rows - 1 {
+            labels[grid.index(6, y)] = grass;
+        }
+        for y in 3..=5 {
+            for x in 2..=4 {
+                labels[grid.index(x, y)] = grass;
+            }
+        }
+        labels[grid.index(4, 4)] = forest;
+        let grass_before = labels.iter().filter(|&&class| class == grass).count();
+
+        compact_narrow_semantic_filaments(&mut labels, &support, &grid);
+
+        assert_eq!(labels.iter().filter(|&&class| class == grass).count(), grass_before);
+        assert!((1..grid.rows - 1).filter(|&y| labels[grid.index(6, y)] == grass).count() < grid.rows - 2);
+    }
+
+    #[test]
+    fn overview_compaction_preserves_broad_thematic_regions() {
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 9, rows: 9, cell_m: 2.0 };
+        let forest = SemanticClass::Forest as u8;
+        let grass = SemanticClass::Grass as u8;
+        let mut labels = vec![forest; grid.cols * grid.rows];
+        let support = vec![Support([0, 0, 64, 0, 0]); labels.len()];
+        for y in 2..=6 {
+            for x in 2..=6 {
+                labels[grid.index(x, y)] = grass;
+            }
+        }
+        let grass_before = labels.iter().filter(|&&class| class == grass).count();
+
+        compact_narrow_semantic_filaments(&mut labels, &support, &grid);
+
+        assert_eq!(labels.iter().filter(|&&class| class == grass).count(), grass_before);
+        for y in 3..=5 {
+            for x in 3..=5 {
+                assert_eq!(labels[grid.index(x, y)], grass);
+            }
+        }
     }
 
     #[test]

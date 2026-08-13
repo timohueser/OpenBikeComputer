@@ -65,7 +65,7 @@ use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
 };
 use crate::ingest::{Bbox, Ingested};
-use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_lines_with};
+use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with};
 use crate::nav::{self, CutRun, JunctionKey, NavGraph, RoutableWay};
 use crate::poi::Poi;
 use crate::progress::{PackError, Phase, Progress};
@@ -463,6 +463,8 @@ struct LodSet<'a> {
     buckets: HashMap<(i64, i64), Vec<u32>>,
     /// Simplify tolerance, degrees (`0.0` ⇒ none).
     tol: f64,
+    /// Line-only simplify tolerance, degrees (`0.0` ⇒ none).
+    line_tol: f64,
     /// The m/px the footprint cull measures at, `None` ⇒ no cull for this level.
     cull_mpp: Option<f64>,
     min_area_px: f64,
@@ -516,6 +518,7 @@ fn prepare_lod<'a>(
         .map(|f| (f.style_id, Cow::Borrowed(&f.geom)))
         .collect();
     let tol = if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 };
+    let line_tol = if l.line_simplify_m > 0.0 { l.line_simplify_m / M_PER_DEG } else { 0.0 };
     // `merge_fills` is skipped on a coverage tier: the coverage pass dissolves the same
     // candidate set itself, per class, as part of building the arrangement (see
     // [`crate::coverage`] and the pipeline's copy of this rule).
@@ -530,7 +533,12 @@ fn prepare_lod<'a>(
             owned = merged;
         }
         if config.merge_lines {
-            let (merged, m) = merge_lines_with(owned, &merge_line_classes(&styles), progress);
+            let classes = merge_line_classes(&styles);
+            let (merged, m) = if l.merge_line_trails {
+                merge_line_trails_with(owned, &classes, progress)
+            } else {
+                merge_lines_with(owned, &classes, progress)
+            };
             crate::pipeline::report_merge(progress, m, "line fragment", "into");
             owned = merged;
         }
@@ -581,7 +589,7 @@ fn prepare_lod<'a>(
     // The cull's reference scale is the next-finer tier's `max_mpp`; the finest tier is never culled
     // (a drop there would erase the feature at every zoom).
     let cull_mpp = (l.min_area_px > 0.0).then(|| config.lods.get(lod + 1).and_then(|n| n.max_mpp)).flatten();
-    LodSet { lod, feats, presimplified, buckets, tol, cull_mpp, min_area_px: l.min_area_px, cell_log2 }
+    LodSet { lod, feats, presimplified, buckets, tol, line_tol, cull_mpp, min_area_px: l.min_area_px, cell_log2 }
 }
 
 /// Degree bounds → µdeg, widened outward so a candidate is never missed to a rounding step.
@@ -600,8 +608,9 @@ impl LodSet<'_> {
         let mut out: Vec<(u8, Geom)> = Vec::new();
         for &k in candidates {
             let (style_id, geom) = &self.feats[k as usize];
-            let simplified = if self.tol > 0.0 && !self.presimplified[k as usize] {
-                topology_preserve_simplify(geom, self.tol)
+            let tolerance = if geom.is_lineal() { self.line_tol } else { self.tol };
+            let simplified = if tolerance > 0.0 && !self.presimplified[k as usize] {
+                topology_preserve_simplify(geom, tolerance)
             } else {
                 geom.as_ref().clone()
             };

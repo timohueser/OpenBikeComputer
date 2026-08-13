@@ -65,6 +65,17 @@ impl Geom {
             Geom::Multi(parts) => parts.iter().all(Geom::is_empty),
         }
     }
+
+    /// Whether every non-empty part is linework. Clip results may wrap lines in `Multi`, so callers
+    /// selecting a line-only operation must look through that container rather than match `Line`
+    /// only.
+    pub fn is_lineal(&self) -> bool {
+        match self {
+            Geom::Line(_) => true,
+            Geom::Multi(parts) => !parts.is_empty() && parts.iter().all(Geom::is_lineal),
+            Geom::Polygon { .. } | Geom::Empty => false,
+        }
+    }
 }
 
 #[inline]

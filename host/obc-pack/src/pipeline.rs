@@ -22,7 +22,9 @@ use crate::coverage::{coverage_simplify_fills_with, CoverageStats, Eliminate, Pr
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
-use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_lines_with, MergeStats};
+use crate::merge::{
+    merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with, MergeStats,
+};
 use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
 use crate::semantic::{build_semantic_levels, SemanticClass};
@@ -219,6 +221,7 @@ fn run(
                 return (Some(build_lod_with(Vec::new(), global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp);
             }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
+            let line_tol = if lod.line_simplify_m > 0.0 { lod.line_simplify_m / M_PER_DEG } else { 0.0 };
             // Coarse-LOD footprint cull: after simplify, drop features too small to
             // render at the finest scale this tier is ever shown at — the next-finer
             // tier's `max_mpp`. The finest tier has no finer fallback (a drop there
@@ -256,8 +259,12 @@ fn run(
                     if progress.is_cancelled() {
                         return None;
                     }
-                    let mut g =
-                        if simplify && tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                    let feature_tol = if geom.is_lineal() { line_tol } else { tol };
+                    let mut g = if simplify && feature_tol > 0.0 {
+                        topology_preserve_simplify(geom, feature_tol)
+                    } else {
+                        geom.clone()
+                    };
                     if let Some(mpp) = cull_mpp {
                         if !from_coverage && footprint_below(&g, mpp, min_area_px) {
                             culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -325,7 +332,11 @@ fn run(
                     .map(|f| (f.style_id, f.geom.clone()))
                     .collect();
                 if config.merge_lines {
-                    let (merged, m) = merge_lines_with(passthrough, &line_classes, progress);
+                    let (merged, m) = if lod.merge_line_trails {
+                        merge_line_trails_with(passthrough, &line_classes, progress)
+                    } else {
+                        merge_lines_with(passthrough, &line_classes, progress)
+                    };
                     report_merge(progress, m, "line fragment", "into");
                     passthrough = cull_short_lines(merged);
                 }
@@ -339,7 +350,11 @@ fn run(
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
                 if config.merge_lines {
-                    let (merged, m) = merge_lines_with(feats, &line_classes, progress);
+                    let (merged, m) = if lod.merge_line_trails {
+                        merge_line_trails_with(feats, &line_classes, progress)
+                    } else {
+                        merge_lines_with(feats, &line_classes, progress)
+                    };
                     report_merge(progress, m, "line fragment", "into");
                     feats = cull_short_lines(merged);
                 }
@@ -362,7 +377,11 @@ fn run(
                     feats = merged;
                 }
                 if config.merge_lines {
-                    let (merged, m) = merge_lines_with(feats, &line_classes, progress);
+                    let (merged, m) = if lod.merge_line_trails {
+                        merge_line_trails_with(feats, &line_classes, progress)
+                    } else {
+                        merge_lines_with(feats, &line_classes, progress)
+                    };
                     report_merge(progress, m, "line fragment", "into");
                     feats = cull_short_lines(merged);
                 }
