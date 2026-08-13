@@ -285,8 +285,20 @@ pub fn build_semantic_lod(
     let simplified = simplify_owned_coverage(raw, INITIAL_VW_PX * mpp)?;
     let smoothed = smooth_coverage(simplified, &grid, SMOOTH_LIMIT_PX * mpp, FINAL_VW_PX * mpp)?;
 
+    // A sub-pixel pond is not a useful area feature at overview scale. Keep every component at
+    // its real location, but remove components too small to cover a stable screen mark. The old
+    // implementation preserved their aggregate area by gathering unrelated water pixels into one
+    // invented block per 20×20 region; those blocks were the conspicuous square "pools" alongside
+    // rivers. Rivers themselves remain independent line geometry and are never filtered here.
     if mpp > 50.0 {
-        conserve_small_water(&mut water, grid.cols * CELL_PX, grid.rows * CELL_PX);
+        let min_pixels = if mpp > 120.0 {
+            4
+        } else if mpp > 80.0 {
+            3
+        } else {
+            2
+        };
+        remove_tiny_water_components(&mut water, grid.cols * CELL_PX, grid.rows * CELL_PX, min_pixels);
     }
     let water_grid = Grid {
         left: grid.left,
@@ -1116,79 +1128,38 @@ fn smooth_coverage(
     simplify_owned_coverage(rebuilt, final_tolerance)
 }
 
-fn conserve_small_water(mask: &mut [bool], width: usize, height: usize) {
+fn remove_tiny_water_components(mask: &mut [bool], width: usize, height: usize, min_pixels: usize) {
     if mask.len() != width * height {
         return;
     }
-    let mut component = vec![u32::MAX; mask.len()];
-    let mut sizes = Vec::<usize>::new();
+    let mut seen = vec![false; mask.len()];
     let mut queue = VecDeque::new();
     for start in 0..mask.len() {
-        if !mask[start] || component[start] != u32::MAX {
+        if !mask[start] || seen[start] {
             continue;
         }
-        let id = sizes.len() as u32;
-        component[start] = id;
+        seen[start] = true;
         queue.push_back(start);
-        let mut size = 0usize;
+        let mut members = Vec::new();
         while let Some(index) = queue.pop_front() {
-            size += 1;
+            members.push(index);
             let x = index % width;
             let y = index / width;
             for ny in y.saturating_sub(1)..=(y + 1).min(height - 1) {
                 for nx in x.saturating_sub(1)..=(x + 1).min(width - 1) {
                     let ni = ny * width + nx;
-                    if mask[ni] && component[ni] == u32::MAX {
-                        component[ni] = id;
+                    if mask[ni] && !seen[ni] {
+                        seen[ni] = true;
                         queue.push_back(ni);
                     }
                 }
             }
         }
-        sizes.push(size);
-    }
-    let large: Vec<bool> = component.iter().map(|&id| id != u32::MAX && sizes[id as usize] >= 64).collect();
-    let small: Vec<bool> = mask.iter().zip(&large).map(|(&wet, &is_large)| wet && !is_large).collect();
-    let mut compact = vec![false; mask.len()];
-    const BLOCK: usize = 20;
-    for y0 in (0..height).step_by(BLOCK) {
-        for x0 in (0..width).step_by(BLOCK) {
-            let y1 = (y0 + BLOCK).min(height);
-            let x1 = (x0 + BLOCK).min(width);
-            let mut count = 0usize;
-            let (mut sum_x, mut sum_y) = (0.0, 0.0);
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    if small[y * width + x] {
-                        count += 1;
-                        sum_x += (x - x0) as f64;
-                        sum_y += (y - y0) as f64;
-                    }
-                }
-            }
-            if count == 0 {
-                continue;
-            }
-            let center = (sum_x / count as f64, sum_y / count as f64);
-            let mut free = Vec::new();
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let index = y * width + x;
-                    if !large[index] {
-                        let dx = (x - x0) as f64 - center.0;
-                        let dy = (y - y0) as f64 - center.1;
-                        free.push((dx * dx + dy * dy, index));
-                    }
-                }
-            }
-            free.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-            for &(_, index) in free.iter().take(count) {
-                compact[index] = true;
+        if members.len() < min_pixels {
+            for index in members {
+                mask[index] = false;
             }
         }
-    }
-    for i in 0..mask.len() {
-        mask[i] = large[i] || compact[i];
     }
 }
 
@@ -1335,13 +1306,14 @@ mod tests {
     }
 
     #[test]
-    fn water_consolidation_preserves_cell_count() {
-        let mut water = vec![false; 40 * 20];
-        for (x, y) in [(1, 1), (5, 3), (18, 19), (24, 4), (39, 19)] {
-            water[y * 40 + x] = true;
+    fn tiny_water_is_removed_without_moving_larger_components() {
+        let mut water = vec![false; 8 * 4];
+        water[1] = true;
+        for (x, y) in [(4, 1), (5, 1), (5, 2)] {
+            water[y * 8 + x] = true;
         }
-        let before = water.iter().filter(|&&v| v).count();
-        conserve_small_water(&mut water, 40, 20);
-        assert_eq!(water.iter().filter(|&&v| v).count(), before);
+        remove_tiny_water_components(&mut water, 8, 4, 3);
+        assert!(!water[1], "the isolated sub-pixel pond is removed");
+        assert!(water[12] && water[13] && water[21], "the larger component stays in place");
     }
 }
