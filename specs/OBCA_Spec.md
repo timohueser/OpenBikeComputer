@@ -171,7 +171,7 @@ it **does not wrap**. Three consequences are normative:
 ### 1.5 The v1 band table (schema `bikepacking`, revision 1)
 
 These values are the measured recommendation of epic #1016 D1, taken over whole-extract bakes of
-`switzerland`, `austria`, and `freiburg-regbez` with the then-shipped 7-LOD bikepacking ladder
+`switzerland`, `austria`, and `freiburg-regbez` with the then-shipped bikepacking ladder
 ([`builder/presets/schema.json`](../builder/presets/schema.json)). They are **schema data**: a
 catalog states them (§6), a producer reads them from the catalog, and retuning them is a re-bake
 rather than a change to this document.
@@ -179,18 +179,17 @@ rather than a change to this document.
 | Band | Cell size | ≈ at 47°N | Carries | Assembly role (§5.1) |
 | :-- | :-- | :-- | :-- | :-- |
 | `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2, 3, 4 | **coarse shard** |
-| `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 5, 6 | geometry shard |
-| `fine` | `2^18` µdeg (0.262144°) | 29 × 20 km | ladder LOD 7, 8 | geometry shard |
+| `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 5, 6, 7, 8 (semantic through 20 m/px) | geometry shard |
+| `fine` | `2^18` µdeg (0.262144°) | 29 × 20 km | ladder LOD 9, 10, 11, 12, 13 (ordinary geometry from 16 m/px) | geometry shard |
 | `network` | `2^18` µdeg (0.262144°) | 29 × 20 km | nav graph (OBCM §8), POIs (OBCM §7), hours pool (OBCM §7.5) | **core file** |
 
 The largest cell size in the table, `S_MAX = 2^20`, is the assembly bbox's alignment modulus
 (§2.1).
 
-The ladder later grew two far-zoom rungs in front (LOD 0 and 1, out to ~400 m/px and beyond), and
-they joined `coarse`: the band still ends at exactly the content it was measured with — the tiers
-now numbered 2, 3, 4 — and the two additions are the most aggressively culled levels on the map, so
-they land in the shard whose budget can absorb them. The measured densities below predate them and
-are therefore a slight under-count of `coarse` at the current ladder, not of any other band.
+The current 14-rung ladder keeps its semantic overview tiers through 20 m/px in `mid`, and puts the
+ordinary 16 m/px-and-closer geometry in `fine`. The measured densities below predate that expanded
+ladder and semantic generalisation; they remain historical sizing evidence rather than current
+byte-exact forecasts.
 
 **Measured density**, in MiB per 1000 km² of covered ground — a latitude-free unit, unlike bytes
 per square degree. Three whole-extract bakes at this schema: `switzerland` (41 285 km²),
@@ -1140,7 +1139,7 @@ id per feature type, in one order — and a skin may change only the other seven
 record plus the header's `Marker Color`. That is the byte-level meaning of the schema/skin split,
 and it is what makes a restyle free (§4.7).
 
-The hosted catalog has **exactly one** schema: the 9-LOD bikepacking ladder. It is the ladder
+The hosted catalog has **exactly one** schema: the 14-LOD bikepacking ladder. It is the ladder
 tested to render inside the device's RAM and map-complexity budget; a superset schema was rejected
 because it would make every map carry complexity the device cannot honour. Hosted "presets" are
 therefore skins. Custom schemas remain a local-bake affair for the desktop app, which packs from

@@ -32,6 +32,7 @@
           "simplify": 0.0,
           "min_area_px": 0.0,
           "coverage_simplify": false,
+          "semantic_coverage": false,
           "min_line_km": 0.0
         }
       ],
@@ -419,7 +420,7 @@
           ],
           "format": "double",
           "default": 0.0,
-          "description": "Topology-preserving simplify tolerance in meters; 0 means no simplification.",
+          "description": "Topology-preserving simplify tolerance in meters; 0 means no simplification. On a semantic_coverage tier, this is instead the grid's nominal meters-per-pixel scale, which may be coarser than max_mpp to reserve renderer headroom.",
           "minimum": 0.0
         },
         "min_area_px": {
@@ -439,6 +440,14 @@
           ],
           "default": false,
           "description": "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically to before."
+        },
+        "semantic_coverage": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Replace the tier's classified land-cover fills with the approved 2-pixel semantic grid: localized class weight is conserved, shared boundaries are smoothed at bake time, and water is handled by a separate one-pixel mask. The output is ordinary OBCM polygon geometry."
         },
         "min_line_km": {
           "type": [

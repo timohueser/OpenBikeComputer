@@ -451,6 +451,10 @@ Rings are delta-encoded to minimize size. Bit depth is chosen **per feature**:
 if every `dx`/`dy` fits in `int8` (|d| ≤ 127), `Flags & 0x01 == 0` and deltas are
 `int8`; otherwise the flag is set and all deltas are `int16`.
 
+Polygon rings are **implicitly closed** from their last vertex back to their first. A
+writer should therefore omit a repeated final copy of the first vertex; readers and
+renderers must accept either representation. Line geometry is never implicitly closed.
+
 - **Exterior ring** (`Pt Count` vertices): the first vertex *is* the anchor;
   the remaining `Pt Count - 1` vertices follow as `(dx, dy)` pairs, each relative
   to the previous vertex.

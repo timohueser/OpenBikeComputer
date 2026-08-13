@@ -288,7 +288,15 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let mut packed_rings: Vec<(usize, Vec<i64>)> = Vec::with_capacity(f.rings.len());
 
     for (i, ring) in f.rings.iter().enumerate() {
-        let raw_pts: Vec<(i64, i64)> = ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
+        let mut raw_pts: Vec<(i64, i64)> = ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
+        // Polygon rings close implicitly in both the format and renderer. GEOS and the baker's
+        // topology stages conventionally repeat the first vertex at the end, but serializing that
+        // duplicate spends one frame point per ring without adding geometry. Lines keep their last
+        // point even when they happen to be loops: their stroke path is not implicitly closed.
+        if is_polygon && raw_pts.len() > 1 && raw_pts.first() == raw_pts.last() {
+            raw_pts.pop();
+        }
+        remove_redundant_vertices(&mut raw_pts, is_polygon);
 
         let start_ref = if i == 0 {
             anchor_lon = raw_pts[0].0 - node_bbox.0;
@@ -381,6 +389,41 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         }
     }
     data
+}
+
+/// Canonicalize integer geometry before delta encoding. Floating-point topology work can leave
+/// distinct coordinates that round onto the same microdegree, and clipping can split a straight
+/// edge with an exactly collinear middle vertex. Neither carries geometry once OBCM coordinates
+/// are integer, so remove both before they consume file bytes and renderer frame points.
+fn remove_redundant_vertices(points: &mut Vec<(i64, i64)>, closed: bool) {
+    points.dedup();
+    if closed {
+        while points.len() >= 4 {
+            let n = points.len();
+            let Some(index) =
+                (0..n).find(|&i| redundant_between(points[(i + n - 1) % n], points[i], points[(i + 1) % n]))
+            else {
+                break;
+            };
+            points.remove(index);
+        }
+    } else {
+        let mut out = Vec::with_capacity(points.len());
+        for &point in points.iter() {
+            while out.len() >= 2 && redundant_between(out[out.len() - 2], out[out.len() - 1], point) {
+                out.pop();
+            }
+            out.push(point);
+        }
+        *points = out;
+    }
+}
+
+#[inline]
+fn redundant_between(a: (i64, i64), b: (i64, i64), c: (i64, i64)) -> bool {
+    let (abx, aby) = (b.0 as i128 - a.0 as i128, b.1 as i128 - a.1 as i128);
+    let (bcx, bcy) = (c.0 as i128 - b.0 as i128, c.1 as i128 - b.1 as i128);
+    abx * bcy == aby * bcx && abx * bcx + aby * bcy >= 0
 }
 
 /// Pack features into one **tight** v11 chunk: the packed features back to back, then exactly one
@@ -1680,9 +1723,10 @@ mod tests {
     #[test]
     fn max_safe_chunk_size_keeps_features_within_reader_cap() {
         let n = obc_reader::MAX_FEAT_PTS;
-        // `n` points 1 µdeg apart: tiny deltas ⇒ densest 8-bit encoding (2 bytes/
-        // vertex), no densification.
-        let coords: Vec<(f64, f64)> = (0..n).map(|i| (i as f64 * 1e-6, 0.0)).collect();
+        // `n` points 1 µdeg apart in a tiny zig-zag: tiny deltas ⇒ densest 8-bit encoding (2
+        // bytes/vertex), no densification, while the lossless collinear cleanup cannot collapse
+        // this fixture to its two endpoints.
+        let coords: Vec<(f64, f64)> = (0..n).map(|i| (i as f64 * 1e-6, (i % 2) as f64 * 1e-6)).collect();
         let f = Feature { style_id: 1, kind: Kind::Line, rings: vec![coords] };
         let packed = pack_feature(&f, (0, 0, n as i64, 1));
 
