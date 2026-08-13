@@ -197,6 +197,11 @@ struct LodDocument {
     #[serde(default = "default_zero_f64_document")]
     #[schemars(default = "default_zero_f64_document")]
     simplify: Option<f64>,
+    #[serde(default)]
+    line_simplify: Option<f64>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    merge_line_trails: Option<bool>,
     #[serde(default = "default_zero_f64_document")]
     #[schemars(default = "default_zero_f64_document")]
     min_area_px: Option<f64>,
@@ -277,6 +282,8 @@ fn default_lods_document() -> Option<Vec<LodDocument>> {
     Some(vec![LodDocument {
         max_mpp: None,
         simplify: Some(0.0),
+        line_simplify: None,
+        merge_line_trails: Some(false),
         min_area_px: Some(0.0),
         coverage_simplify: Some(false),
         semantic_coverage: Some(false),
@@ -595,6 +602,13 @@ pub struct Lod {
     /// Simplify tolerance in **meters**; `0.0` ⇒ no simplify. On a semantic tier this is the
     /// grid's nominal meters-per-pixel scale, independent of the tier's display cutoff.
     pub simplify_m: f64,
+    /// Simplify tolerance for linework in metres. This normally equals [`Lod::simplify_m`], but
+    /// far-zoom semantic tiers may raise it independently so invisible road bends do not compete
+    /// with the land-cover coverage for device scratch.
+    pub line_simplify_m: f64,
+    /// Continue solid, uncased linework through junctions as edge-covering trails. This changes no
+    /// segment, but removes the per-junction record overhead that dominates far-zoom scratch.
+    pub merge_line_trails: bool,
     /// Coarse-LOD minimum-area cull threshold in **square pixels**; `0.0` ⇒ off.
     /// A **polygon** whose projected area is below this at the tier's finest
     /// on-screen scale — the next-finer tier's `max_mpp` — is dropped from this
@@ -763,6 +777,8 @@ impl Config {
             _ => vec![Lod {
                 max_mpp: None,
                 simplify_m: 0.0,
+                line_simplify_m: 0.0,
+                merge_line_trails: false,
                 min_area_px: 0.0,
                 coverage_simplify: false,
                 semantic_coverage: false,
@@ -900,8 +916,12 @@ impl StyleDocument {
 impl LodDocument {
     fn normalize(self, index: usize) -> Result<Lod, String> {
         let simplify_m = self.simplify.unwrap_or(0.0);
-        if simplify_m < 0.0 {
+        if !(simplify_m.is_finite() && simplify_m >= 0.0) {
             return Err(format!("config lods[{index}].simplify: {simplify_m} must be >= 0"));
+        }
+        let line_simplify_m = self.line_simplify.unwrap_or(simplify_m);
+        if !(line_simplify_m.is_finite() && line_simplify_m >= 0.0) {
+            return Err(format!("config lods[{index}].line_simplify: {line_simplify_m} must be a finite value >= 0"));
         }
         let min_area_px = self.min_area_px.unwrap_or(0.0);
         if min_area_px < 0.0 {
@@ -920,6 +940,8 @@ impl LodDocument {
         Ok(Lod {
             max_mpp: self.max_mpp,
             simplify_m,
+            line_simplify_m,
+            merge_line_trails: self.merge_line_trails.unwrap_or(false),
             min_area_px,
             coverage_simplify: self.coverage_simplify.unwrap_or(false),
             semantic_coverage,
@@ -1059,6 +1081,18 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
             .into(),
     );
     lod_props["simplify"]["minimum"] = Value::from(0.0);
+    lod_props["line_simplify"]["description"] = Value::String(
+        "Optional line-only topology-preserving simplify tolerance in meters. Absent or null inherits simplify. This \
+         lets far-zoom semantic tiers remove invisible road and river bends without coarsening the land-cover grid."
+            .into(),
+    );
+    lod_props["line_simplify"]["minimum"] = Value::from(0.0);
+    lod_props["merge_line_trails"]["description"] = Value::String(
+        "Continue same-style solid, uncased line segments through junctions as deterministic edge-covering trails. \
+         Every source segment remains exactly once, while artificial per-junction spans and rings disappear. Dashed \
+         and cased lines are never changed."
+            .into(),
+    );
     lod_props["min_area_px"]["description"] = Value::String(
         "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a \
          coverage_simplify tier it is an *elimination* threshold instead: a face this small is absorbed into the \
@@ -1383,6 +1417,10 @@ mod tests {
         assert!(cfg.lods[9..].iter().all(|lod| !lod.semantic_coverage));
         assert!(cfg.lods.iter().all(|lod| !lod.coverage_simplify));
         assert!(cfg.lods.iter().all(|lod| lod.min_line_km == 0.0));
+        assert_eq!((cfg.lods[0].line_simplify_m, cfg.lods[1].line_simplify_m), (1400.0, 1400.0));
+        assert!(cfg.lods[..=1].iter().all(|lod| lod.merge_line_trails));
+        assert!(cfg.lods[2..].iter().all(|lod| !lod.merge_line_trails));
+        assert!(cfg.lods[2..].iter().all(|lod| lod.line_simplify_m == lod.simplify_m));
         assert_eq!((cfg.lods[4].max_mpp, cfg.lods[4].simplify_m), (Some(110.0), 130.0));
         assert_eq!((cfg.lods[5].max_mpp, cfg.lods[5].simplify_m), (Some(80.0), 90.0));
         assert_eq!((cfg.lods[9].simplify_m, cfg.lods[9].min_area_px), (16.0, 2.0));
@@ -1663,6 +1701,17 @@ mod tests {
         assert!(cfg.merge_fills);
         assert!(!cfg.merge_lines);
         assert!(Config::parse(r#"{"merge_fills": "yes"}"#).is_err());
+    }
+
+    #[test]
+    fn line_simplify_inherits_or_overrides_polygon_tolerance() {
+        let inherited = Config::parse(r#"{"lods":[{"simplify":600}]}"#).unwrap();
+        assert_eq!(inherited.lods[0].line_simplify_m, 600.0);
+        let explicit = Config::parse(r#"{"lods":[{"simplify":600,"line_simplify":1200}]}"#).unwrap();
+        assert_eq!(explicit.lods[0].line_simplify_m, 1200.0);
+        let null = Config::parse(r#"{"lods":[{"simplify":600,"line_simplify":null}]}"#).unwrap();
+        assert_eq!(null.lods[0].line_simplify_m, 600.0);
+        assert!(Config::parse(r#"{"lods":[{"line_simplify":-1}]}"#).is_err());
     }
 
     /// `min_line_km` is optional and off by default, so every config written before the knob

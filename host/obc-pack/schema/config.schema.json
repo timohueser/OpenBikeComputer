@@ -30,6 +30,8 @@
         {
           "max_mpp": null,
           "simplify": 0.0,
+          "line_simplify": null,
+          "merge_line_trails": false,
           "min_area_px": 0.0,
           "coverage_simplify": false,
           "semantic_coverage": false,
@@ -422,6 +424,24 @@
           "default": 0.0,
           "description": "Topology-preserving simplify tolerance in meters; 0 means no simplification. On a semantic_coverage tier, this is instead the grid's nominal meters-per-pixel scale, which may be coarser than max_mpp to reserve renderer headroom.",
           "minimum": 0.0
+        },
+        "line_simplify": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null,
+          "description": "Optional line-only topology-preserving simplify tolerance in meters. Absent or null inherits simplify. This lets far-zoom semantic tiers remove invisible road and river bends without coarsening the land-cover grid.",
+          "minimum": 0.0
+        },
+        "merge_line_trails": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Continue same-style solid, uncased line segments through junctions as deterministic edge-covering trails. Every source segment remains exactly once, while artificial per-junction spans and rings disappear. Dashed and cased lines are never changed."
         },
         "min_area_px": {
           "type": [
