@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use crate::nav::{
     highway_class_index, surface_class_index, DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES, SURFACE_CLASS_NAMES,
 };
+use crate::semantic::{SemanticClass, SemanticScheme};
 use obc_formats::obcm::{NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN, VERSION as OBCM_VERSION};
 
 use crate::serialize::{NavProfile, Style};
@@ -202,6 +203,9 @@ struct LodDocument {
     #[serde(default = "default_false_document")]
     #[schemars(default = "default_false_document")]
     coverage_simplify: Option<bool>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    semantic_coverage: Option<bool>,
     #[serde(default = "default_zero_f64_document")]
     #[schemars(default = "default_zero_f64_document")]
     min_line_km: Option<f64>,
@@ -275,6 +279,7 @@ fn default_lods_document() -> Option<Vec<LodDocument>> {
         simplify: Some(0.0),
         min_area_px: Some(0.0),
         coverage_simplify: Some(false),
+        semantic_coverage: Some(false),
         min_line_km: Some(0.0),
     }])
 }
@@ -587,7 +592,8 @@ impl FeatureStyle {
 pub struct Lod {
     /// Meters-per-pixel upper bound; `None` ⇒ coarsest layer (`+inf`).
     pub max_mpp: Option<f64>,
-    /// Simplify tolerance in **meters**; `0.0` ⇒ no simplify.
+    /// Simplify tolerance in **meters**; `0.0` ⇒ no simplify. On a semantic tier this is the
+    /// grid's nominal meters-per-pixel scale, independent of the tier's display cutoff.
     pub simplify_m: f64,
     /// Coarse-LOD minimum-area cull threshold in **square pixels**; `0.0` ⇒ off.
     /// A **polygon** whose projected area is below this at the tier's finest
@@ -605,6 +611,10 @@ pub struct Lod {
     /// outlined polygons and every downstream stage are untouched. Default `false` ⇒ the tier
     /// packs byte-identically to before.
     pub coverage_simplify: bool,
+    /// Replace classified thematic fills with the fixed semantic-grid generalisation used by the
+    /// coarse-map prototype. The algorithm has intentionally fixed cartographic constants; this
+    /// flag selects it, it does not expose a second collection of simplification knobs.
+    pub semantic_coverage: bool,
     /// Post-stitch minimum length for a **line** in **kilometres**; `0.0` ⇒ off (the default, and
     /// byte-identical to a pack that predates the knob).
     ///
@@ -755,6 +765,7 @@ impl Config {
                 simplify_m: 0.0,
                 min_area_px: 0.0,
                 coverage_simplify: false,
+                semantic_coverage: false,
                 min_line_km: 0.0,
             }],
         };
@@ -830,6 +841,36 @@ impl Config {
     pub fn styles(&self) -> Vec<Style> {
         self.features.iter().flat_map(|(_, m)| m.values().map(FeatureStyle::to_style)).collect()
     }
+
+    /// The exact OSM-category grouping used by the approved semantic-coverage prototype.
+    pub fn semantic_scheme(&self) -> SemanticScheme {
+        let mut scheme = SemanticScheme::new();
+        for (key, values) in &self.features {
+            for (value, style) in values {
+                let class = match (key.as_str(), value.as_str()) {
+                    ("natural", "land") => Some(SemanticClass::Base),
+                    ("natural", "water" | "wetland")
+                    | ("waterway", "riverbank")
+                    | ("landuse", "reservoir" | "basin") => Some(SemanticClass::Water),
+                    (
+                        "landuse",
+                        "residential" | "commercial" | "industrial" | "retail" | "construction" | "railway",
+                    ) => Some(SemanticClass::Urban),
+                    ("landuse", "forest") | ("natural", "wood") => Some(SemanticClass::Forest),
+                    ("natural", "scrub" | "grassland" | "heath")
+                    | ("landuse", "grass" | "recreation_ground" | "village_green") => Some(SemanticClass::Grass),
+                    ("landuse", "farmland" | "farmyard" | "meadow" | "orchard" | "vineyard" | "allotments") => {
+                        Some(SemanticClass::Farmland)
+                    }
+                    _ => None,
+                };
+                if let Some(class) = class {
+                    scheme.insert(style.id, class);
+                }
+            }
+        }
+        scheme
+    }
 }
 
 impl StyleDocument {
@@ -870,11 +911,18 @@ impl LodDocument {
         if !(min_line_km.is_finite() && min_line_km >= 0.0) {
             return Err(format!("config lods[{index}].min_line_km: {min_line_km} must be a finite value >= 0"));
         }
+        let semantic_coverage = self.semantic_coverage.unwrap_or(false);
+        if semantic_coverage && self.max_mpp.is_some() && simplify_m <= 0.0 {
+            return Err(format!(
+                "config lods[{index}].simplify: a finite semantic_coverage tier needs a positive nominal grid scale"
+            ));
+        }
         Ok(Lod {
             max_mpp: self.max_mpp,
             simplify_m,
             min_area_px,
             coverage_simplify: self.coverage_simplify.unwrap_or(false),
+            semantic_coverage,
             min_line_km,
         })
     }
@@ -1004,8 +1052,12 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
     lod_props["max_mpp"]["description"] =
         Value::String("Meters-per-pixel upper bound for this tier; null means the coarsest tier.".into());
     lod_props["max_mpp"]["default"] = Value::Null;
-    lod_props["simplify"]["description"] =
-        Value::String("Topology-preserving simplify tolerance in meters; 0 means no simplification.".into());
+    lod_props["simplify"]["description"] = Value::String(
+        "Topology-preserving simplify tolerance in meters; 0 means no simplification. On a semantic_coverage tier, \
+         this is instead the grid's nominal meters-per-pixel scale, which may be coarser than max_mpp to reserve \
+         renderer headroom."
+            .into(),
+    );
     lod_props["simplify"]["minimum"] = Value::from(0.0);
     lod_props["min_area_px"]["description"] = Value::String(
         "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a \
@@ -1020,6 +1072,12 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
          into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its \
          largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically \
          to before."
+            .into(),
+    );
+    lod_props["semantic_coverage"]["description"] = Value::String(
+        "Replace the tier's classified land-cover fills with the approved 2-pixel semantic grid: localized class \
+         weight is conserved, shared boundaries are smoothed at bake time, and water is handled by a separate \
+         one-pixel mask. The output is ordinary OBCM polygon geometry."
             .into(),
     );
     lod_props["min_line_km"]["description"] = Value::String(
@@ -1298,33 +1356,38 @@ mod tests {
     #[test]
     fn lods_marker_chunk_parsed() {
         let cfg = corpus_config();
-        // The default preset's 9-tier pyramid (coarsest first, max_mpp
-        // 400/120/30/16/10/5/3/1.2): the coarse tiers carry a footprint cull
-        // (min_area_px) and the finest tier a small sub-pixel simplify (0.5 m)
-        // that trims road vertices with no visible change.
-        assert_eq!(cfg.lods.len(), 9);
+        // The default preset's 14-tier pyramid. Semantic coverage owns 20 m/px and above; the
+        // existing ordinary geometry remains in charge from 16 m/px down.
+        assert_eq!(cfg.lods.len(), 14);
         assert_eq!(
             cfg.lods.iter().map(|l| l.max_mpp).collect::<Vec<_>>(),
-            [None, Some(400.0), Some(120.0), Some(30.0), Some(16.0), Some(10.0), Some(5.0), Some(3.0), Some(1.2)],
+            [
+                None,
+                Some(400.0),
+                Some(260.0),
+                Some(180.0),
+                Some(110.0),
+                Some(80.0),
+                Some(50.0),
+                Some(35.0),
+                Some(20.0),
+                Some(16.0),
+                Some(10.0),
+                Some(5.0),
+                Some(3.0),
+                Some(1.2)
+            ],
             "strictly decreasing, coarsest first"
         );
-        // The two far-zoom tiers: the only ones that run the coverage pass, where `min_area_px`
-        // is an elimination threshold rather than a drop (`crate::coverage`), and the only ones
-        // that cull short stitched lines. Both budgets are spent on the same trade: fills there
-        // are deliberately crude so the road classes have the render scratch to draw a skeleton.
-        assert!(cfg.lods[0].coverage_simplify && cfg.lods[1].coverage_simplify);
-        assert!(cfg.lods[2..].iter().all(|l| !l.coverage_simplify), "and the tiers that predate them are untouched");
-        assert_eq!((cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (3000.0, 350.0));
-        assert_eq!((cfg.lods[1].simplify_m, cfg.lods[1].min_area_px), (1500.0, 1000.0));
-        assert_eq!((cfg.lods[0].min_line_km, cfg.lods[1].min_line_km), (1.0, 0.5));
-        assert!(
-            cfg.lods[2..].iter().all(|l| l.min_line_km == 0.0),
-            "the tiers that predate the cull keep every stitched line, so they pack byte-identically"
-        );
-        // Tier 2 is the ladder's former coarsest rung, verbatim but for its new ceiling.
-        assert_eq!((cfg.lods[2].simplify_m, cfg.lods[2].min_area_px), (200.0, 50.0));
-        assert_eq!(cfg.lods[8].simplify_m, 0.5);
-        assert_eq!(cfg.lods[8].min_area_px, 0.0);
+        assert!(cfg.lods[..=8].iter().all(|lod| lod.semantic_coverage));
+        assert!(cfg.lods[9..].iter().all(|lod| !lod.semantic_coverage));
+        assert!(cfg.lods.iter().all(|lod| !lod.coverage_simplify));
+        assert!(cfg.lods.iter().all(|lod| lod.min_line_km == 0.0));
+        assert_eq!((cfg.lods[4].max_mpp, cfg.lods[4].simplify_m), (Some(110.0), 130.0));
+        assert_eq!((cfg.lods[5].max_mpp, cfg.lods[5].simplify_m), (Some(80.0), 90.0));
+        assert_eq!((cfg.lods[9].simplify_m, cfg.lods[9].min_area_px), (16.0, 2.0));
+        assert_eq!(cfg.lods[13].simplify_m, 0.5);
+        assert_eq!(cfg.lods[13].min_area_px, 0.0);
         // `"marker": {"color": "0xF800"}`
         assert_eq!(cfg.marker_color, 0xF800);
         // No chunk_size key ⇒ default.
@@ -1698,10 +1761,10 @@ mod tests {
     /// tagged terrain, and the block itself **on**. Every one of those was argued from a rendered
     /// frame, so each is pinned rather than left to a re-read of the JSON.
     ///
-    /// Both classes reach **LOD 4** (#1104), one tier above the planning tier (LOD 5) where #1095
-    /// first put them; LODs 0–3 stay contour-free. (The reach was authored as LOD 2 and moved with
-    /// the ladder when two far-zoom tiers were prepended in front of it — the *tier* is the same
-    /// one, renumbered.) The reach is the same number for both on purpose: index-only there was
+    /// Both classes reach **LOD 9** (#1104), one tier above the planning tier (LOD 10) where #1095
+    /// first put them; LODs 0–8 stay contour-free. (The reach was authored as LOD 2 and moved with
+    /// each ladder expansion — the *tier* is the same one, renumbered.) The reach is the same
+    /// number for both on purpose: index-only there was
     /// tried and rejected — solid grey lines with no dashes around them read as paths, because
     /// emphasis-by-continuity only means anything while the dashes are present (Timo's on-glass
     /// pick, 2026-08-03).
@@ -1715,8 +1778,8 @@ mod tests {
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
             assert_eq!(
-                style.min_lod, 4,
-                "#1104: {class:?} reaches LOD 4 — index-only there read as paths, so both classes \
+                style.min_lod, 9,
+                "#1104: {class:?} reaches LOD 9 — index-only there read as paths, so both classes \
                  travel together (Timo's on-glass pick 2026-08-03)"
             );
         }

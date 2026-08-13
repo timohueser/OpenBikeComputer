@@ -25,6 +25,7 @@ use crate::land;
 use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_lines_with, MergeStats};
 use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
+use crate::semantic::{build_semantic_levels, SemanticClass};
 use crate::serialize::serialize_lods_streaming;
 use crate::terrain::TerrainSet;
 use obc_elevation::{ElevationSource, NullElevation};
@@ -156,6 +157,12 @@ fn run(
     // serialize — treats them as geometry it has always had, which is the point (#1094).
     crate::contour::add_contours(&mut ingested, config, global_bbox, terrain_set.as_ref(), progress)?;
     progress.check()?;
+
+    let semantic_scheme = config.semantic_scheme();
+    // The serializer consumes coarsest-to-finest, but semantic rungs carry a soft anchor from the
+    // preceding finer result. Build that small geometry ladder once in the correct direction.
+    let semantic_levels =
+        build_semantic_levels(&ingested.features, &config.lods, &semantic_scheme, global_bbox, progress)?;
     let mut sampler = match &terrain_set {
         None => None,
         Some(set) => {
@@ -296,7 +303,39 @@ fn run(
                 }
                 kept
             };
-            let level: Vec<(u8, Geom)> = if lod.coverage_simplify {
+            let level: Vec<(u8, Geom)> = if lod.semantic_coverage {
+                let mut passthrough: Vec<(u8, Geom)> = ingested
+                    .features
+                    .iter()
+                    .filter(|f| f.min_lod <= i)
+                    .filter(|f| {
+                        let semantic_polygon = matches!(f.geom, Geom::Polygon { .. } | Geom::Multi(_))
+                            && matches!(
+                                semantic_scheme.class_of(f.style_id),
+                                Some(
+                                    SemanticClass::Farmland
+                                        | SemanticClass::Grass
+                                        | SemanticClass::Forest
+                                        | SemanticClass::Urban
+                                        | SemanticClass::Water
+                                )
+                            );
+                        !semantic_polygon
+                    })
+                    .map(|f| (f.style_id, f.geom.clone()))
+                    .collect();
+                if config.merge_lines {
+                    let (merged, m) = merge_lines_with(passthrough, &line_classes, progress);
+                    report_merge(progress, m, "line fragment", "into");
+                    passthrough = cull_short_lines(merged);
+                }
+                let mut level: Vec<(u8, Geom)> =
+                    passthrough.par_iter().filter_map(|(sid, geom)| simplify_cull(*sid, geom, true, false)).collect();
+                level.extend(
+                    semantic_levels[i].as_ref().expect("every configured semantic rung is prebuilt").iter().cloned(),
+                );
+                level
+            } else if lod.coverage_simplify {
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
                 if config.merge_lines {

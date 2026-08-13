@@ -137,14 +137,14 @@ fn zero_area_collinear_polygon_fills_nothing() {
 /// exactly `BLOBS` of them plus the 4-point high-priority square consume the point budget, one more
 /// blob cannot, and `point_utilization` lands on 1.0 — far past anything the span or ring buffers
 /// could explain. `const` asserts hold that shape, so moving `MAX_FRAME_POINTS` (as this PR's review
-/// round did, 6,400 → 6,208) re-sizes the blob instead of quietly demoting the test to a
-/// non-saturating one. At the flat cap with the old hand-picked 1,582-point blob, only three would
-/// have fitted and utilization would have fallen to 0.76 — over the 0.75 floor by luck, not design.
+/// round did, 6,400 → 6,208 → 9,440) re-sizes the blob instead of quietly demoting the test to a
+/// non-saturating one. Five blobs keep each one below the independent per-feature decode cap while
+/// still filling the larger frame budget.
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
     /// How many blobs the budget must admit — several, so "a few pack in before saturation" is a
     /// real claim and not a single-feature edge case.
-    const BLOBS: usize = 4;
+    const BLOBS: usize = 5;
     /// The high-priority square's vertex count. Priority 1, so `select()` charges it first.
     const HI_PTS: usize = 4;
     /// Densified vertices per long edge — derived from whatever divides the remaining budget

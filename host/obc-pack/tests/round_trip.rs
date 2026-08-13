@@ -9,7 +9,8 @@
 //!
 //! Every coordinate is an exact integer microdegree fed in as `udeg / 1e6` (so
 //! `to_udeg` recovers it exactly) and every segment stays under the 30 000-µdeg
-//! densify threshold, so no midpoints are inserted and point counts are preserved.
+//! densify threshold, so no midpoints are inserted. Polygon closure is implicit in
+//! OBCM and therefore is the one deliberately omitted input point.
 
 use obc_elevation::NullElevation;
 use obc_map_scene::{BBox, Kind as ReadKind};
@@ -154,11 +155,15 @@ fn expect_line(style_id: u8, pts: &[(i32, i32)]) -> Decoded {
 }
 
 fn expect_poly(style_id: u8, ext: &[(i32, i32)], holes: &[&[(i32, i32)]]) -> Decoded {
+    let open_ring = |ring: &[(i32, i32)]| {
+        let end = ring.len() - usize::from(ring.len() > 1 && ring.first() == ring.last());
+        ring[..end].to_vec()
+    };
     Decoded {
         style_id,
         is_polygon: true,
-        exterior: ext.to_vec(),
-        interiors: holes.iter().map(|h| h.to_vec()).collect(),
+        exterior: open_ring(ext),
+        interiors: holes.iter().map(|h| open_ring(h)).collect(),
     }
 }
 

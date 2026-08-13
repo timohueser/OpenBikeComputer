@@ -1,8 +1,8 @@
 //! The **scratch arena** (issue #1146, P2) — one block of RAM, three arms, one owner at a time.
 //!
 //! Three of the board's largest resident blocks are never live at the same moment, and each used to
-//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, 117,408 B
-//! since #1146 P3 grew the frame caps into the dividend; 92,320 B before it),
+//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, below the
+//! 128 KiB USB arm; its exact target-side size is reported and compile-time checked below),
 //! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
 //! ~80.6 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
 //! two 64 KiB halves = 128 KiB since the upload retune; 16 KiB when this module was written). This
@@ -64,7 +64,8 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   Today USB is the maximum; render has 13,664 B of free headroom and nav 50,488 B.
+//!   Today USB is the maximum; the exact remaining headroom of every arm is emitted by the resource
+//!   report and the assertion below prevents render from crossing that zero-cost ceiling.
 //! - Growing the **maximum** arm (today: USB) costs the full delta, 1:1, exactly as before. Its
 //!   128 KiB size is deliberate: two 64 KiB halves let normal uploads issue 128-block writes.
 //!

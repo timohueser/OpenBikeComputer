@@ -127,7 +127,8 @@ fn pack_chunk_is_tight_and_ends_in_one_sentinel() {
 
 #[test]
 fn pack_polygon_with_hole() {
-    // Rings pre-closed: 4 distinct pts -> 5 stored.
+    // Rings arrive GEOS-closed, but the format closes polygon rings implicitly: the repeated
+    // endpoint is not stored or charged to the renderer's point budget.
     let ext = vec![(0.0, 0.0), (0.0001, 0.0), (0.0001, 0.0001), (0.0, 0.0001), (0.0, 0.0)];
     let hole = vec![(0.00002, 0.00002), (0.00008, 0.00002), (0.00008, 0.00008), (0.00002, 0.00008), (0.00002, 0.00002)];
     let f = Feature { style_id: 20, kind: Kind::Polygon, rings: vec![ext, hole] };
@@ -136,9 +137,23 @@ fn pack_polygon_with_hole() {
 
     assert_eq!(data[0], 20); // style
     assert_eq!(data[1], 0x06); // flags: poly | has-holes, 8-bit, compact
-    assert_eq!(data[2], 5); // exterior pt count (closed)
-    assert_eq!(data[15], 1); // hole count (after the 7-byte header + 8 exterior delta bytes)
-    assert_eq!(u16::from_le_bytes([data[16], data[17]]), 5); // hole pt count (still u16)
+    assert_eq!(data[2], 4); // exterior distinct-vertex count
+    assert_eq!(data[13], 1); // hole count (after the 7-byte header + 6 exterior delta bytes)
+    assert_eq!(u16::from_le_bytes([data[14], data[15]]), 4); // hole distinct-vertex count (still u16)
+}
+
+#[test]
+fn a_closed_line_keeps_its_final_vertex() {
+    let f = line(10, &[(0.0, 0.0), (0.0001, 0.0), (0.0, 0.0)]);
+    let data = pack_feature(&f, (0, 0, 200, 200));
+    assert_eq!(data[2], 3, "line loops are explicit stroke paths, not implicit polygon rings");
+}
+
+#[test]
+fn integer_collinear_vertices_are_not_serialized() {
+    let f = line(10, &[(0.0, 0.0), (0.00005, 0.0), (0.0001, 0.0)]);
+    let data = pack_feature(&f, (0, 0, 200, 200));
+    assert_eq!(data[2], 2, "the middle point lies exactly on the encoded integer segment");
 }
 
 #[test]
@@ -525,7 +540,7 @@ fn header_of(packed: &[u8]) -> (bool, usize, i32, i32) {
 #[test]
 fn compact_header_holds_up_to_255_vertices() {
     let node_bbox = (0, 0, 1_000_000, 1_000_000);
-    let ramp = |n: usize| line(1, &(0..n).map(|i| (i as f64 * 1e-6, 0.0)).collect::<Vec<_>>());
+    let ramp = |n: usize| line(1, &(0..n).map(|i| (i as f64 * 1e-6, (i % 2) as f64 * 1e-6)).collect::<Vec<_>>());
 
     let packed = pack_feature(&ramp(255), node_bbox);
     assert_eq!(header_of(&packed), (false, 255, 0, 0), "255 is the last compact count");

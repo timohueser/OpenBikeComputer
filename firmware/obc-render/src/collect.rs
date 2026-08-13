@@ -30,14 +30,17 @@ use obc_map_scene::{
     BBox, Candidate, Feature, FeatureError, FeatureToken, Kind, MapScene, ReadFailures, SelectedFeatures,
 };
 
-use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_SPANS};
+use crate::{
+    RenderStats, Viewport, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_LINE_PX,
+    MAX_SPANS,
+};
 
 /// The renderer's collection scratch: per-feature decode buffers plus the frame buffers that
 /// accumulate every visible feature's geometry (and its [`Span`]). Cleared (not freed) each frame.
 #[derive(Default)]
 pub(crate) struct FrameScratch {
-    // Per-feature decode scratch handed to the scene source's two streamed passes.
-    dec_points: Vec<(i32, i32), MAX_DECODE_POINTS>,
+    // Per-feature ring decode scratch handed to the scene source's two streamed passes. Point
+    // decode storage is phase-shared with the projected draw buffer by `DrawScratch`.
     dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
     // All drawn features' geometry, concatenated (filled in pass B).
     pub(crate) frame_points: Vec<(i32, i32), MAX_FRAME_POINTS>,
@@ -62,7 +65,8 @@ impl FrameScratch {
         &mut self,
         scene: &S,
         lod: usize,
-        view: &BBox,
+        viewport: &Viewport,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
         suppress_terrain: bool,
         stats: &mut RenderStats,
     ) {
@@ -89,9 +93,10 @@ impl FrameScratch {
             }
         }
 
-        let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats);
+        let view = viewport.visible_bbox();
+        let candidates = self.collect_stubs(scene, lod, viewport, dec_points, &vis_mask, stats);
         let winners = self.select();
-        let drawn = self.decode_winners(scene, lod, view, winners, stats);
+        let drawn = self.decode_winners(scene, lod, &view, dec_points, winners, stats);
 
         self.spans_len = drawn;
         stats.features_drawn = drawn;
@@ -114,18 +119,20 @@ impl FrameScratch {
         &mut self,
         scene: &S,
         lod: usize,
-        view: &BBox,
+        viewport: &Viewport,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
         vis_mask: &[u32; 8],
         stats: &mut RenderStats,
     ) -> usize {
         // Split the borrow so the decode callback can push stubs while `for_each_feature_filtered`
         // borrows the decode scratch.
-        let FrameScratch { dec_points, dec_ring_lens, slots, .. } = self;
+        let view = viewport.visible_bbox();
+        let FrameScratch { dec_ring_lens, slots, .. } = self;
         let mut candidates = 0usize;
         let mut arrival = 0u16;
         let report = scene.visit_candidates(
             lod,
-            view,
+            &view,
             dec_points,
             dec_ring_lens,
             |sid| vis_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0,
@@ -147,7 +154,14 @@ impl FrameScratch {
                 }
 
                 // Per-feature bbox cull (tighter than the leaf); bounds come free from decode.
-                if !f.bbox().intersects(view) {
+                if !f.bbox().intersects(&view) {
+                    return;
+                }
+                let margin = if f.kind == Kind::Line || style.color2.is_some() { MAX_LINE_PX as i32 } else { 0 };
+                if !viewport.bbox_might_be_visible(&f.bbox(), margin) {
+                    return;
+                }
+                if !viewport.geometry_might_be_visible(pts, f.ring_lens(), f.kind == Kind::Polygon, margin) {
                     return;
                 }
                 candidates += 1;
@@ -228,13 +242,14 @@ impl FrameScratch {
         scene: &S,
         lod: usize,
         view: &BBox,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
         winners: usize,
         stats: &mut RenderStats,
     ) -> usize {
         if winners == 0 {
             return 0;
         }
-        let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
+        let FrameScratch { dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
         // A winner slot, once rewritten to its `Span`, must not be re-read as a stub by a later
         // chunk's scan. `placed` marks the done slots so the scan skips them.
         let mut placed = [0u32; MAX_SPANS.div_ceil(32)];

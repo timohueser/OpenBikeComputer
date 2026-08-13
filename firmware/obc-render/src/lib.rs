@@ -19,6 +19,8 @@
 
 #![no_std]
 
+use core::mem::ManuallyDrop;
+
 use heapless::Vec;
 
 use embedded_graphics::prelude::*;
@@ -77,14 +79,11 @@ use stroke::{draw_line, Stroker};
 pub const MAX_SPANS: usize = 1792;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each) — one of the two
-/// budgets `select()` actually enforces. 4,768 → 6,208 across #1146 P3. Measured against the
-/// ring ceiling (the denominator that matters, not the span cap) that is a **cut**, 4,768/1,024 =
-/// 4.66 → 6,208/1,792 = 3.46 points per admitted feature; it is a safe cut because every busy
-/// frame measured for #1146 P3 sits well under that — 2.93–3.01 pts per admitted feature at these
-/// caps and never above 3.12 at any caps — so points still run out after rings. Point-dense scenes
-/// (contour bands) do not threaten it from the other side either: the 4 KB chunk budget bounds
-/// features × points, so they arrive a few hundred features at a time and cannot saturate.
-pub const MAX_FRAME_POINTS: usize = 6208;
+/// budgets `select()` actually enforces. The 9,440 cap remains below the board's already-resident
+/// 128 KiB scratch-arena ceiling: the per-feature decode points and per-feature projected screen
+/// points occupy the same phase-shared storage below, and the remainder uses otherwise-empty space
+/// under the larger USB arm (compile-time asserted by the board crate).
+pub const MAX_FRAME_POINTS: usize = 9440;
 
 /// Maximum total ring entries across all visible features per frame — and with it **the frame's
 /// feature ceiling**. Every admitted feature costs at least one ring, `Kind::Line` included:
@@ -144,7 +143,6 @@ pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_FRAME_POINTS * 8
     + MAX_FRAME_RINGS * 4
     + MAX_SPANS * core::mem::size_of::<Span>()
-    + MAX_SCREEN_POINTS * 8
     + MAX_CROSSINGS * 4
     // WX10: the rain overlay's per-frame decoded-tile cache (14 slots, ~3.6 KB; the two slots over
     // the original twelve are what keeps a smoothing kernel's wider reach inside one decode per
@@ -208,11 +206,50 @@ pub(crate) fn line_px(weight: u8, scale: f32, fixed_width: bool) -> u32 {
     }
 }
 
-/// The renderer's draw scratch: projected screen points (also the polyline run
-/// buffer) and the scanline-fill crossing buffer. Cleared per use.
+/// Decode and projected-point storage are phase-exclusive: collection finishes before drawing.
+/// Both element types are two `i32`s, so one union-backed `heapless::Vec` serves both phases and
+/// lets the frame buffer grow without keeping two redundant 16 KiB per-feature buffers resident.
+#[repr(C)]
+union SharedPoints {
+    decode: ManuallyDrop<Vec<(i32, i32), MAX_DECODE_POINTS>>,
+    screen: ManuallyDrop<Vec<Point, MAX_SCREEN_POINTS>>,
+}
+
+impl Default for SharedPoints {
+    fn default() -> Self {
+        Self { decode: ManuallyDrop::new(Vec::new()) }
+    }
+}
+
+impl SharedPoints {
+    fn decode(&mut self) -> &mut Vec<(i32, i32), MAX_DECODE_POINTS> {
+        // SAFETY: both union members have identical size/alignment and consist of a length plus an
+        // inline array of two-i32 Copy elements. Clearing immediately makes the active view empty.
+        let points = unsafe { &mut *(&mut self.decode as *mut ManuallyDrop<_> as *mut Vec<_, MAX_DECODE_POINTS>) };
+        points.clear();
+        points
+    }
+
+    fn screen(&mut self) -> &mut Vec<Point, MAX_SCREEN_POINTS> {
+        // SAFETY: as `decode`; `Point` is two `i32`s and the capacity is identical.
+        let points = unsafe { &mut *(&mut self.screen as *mut ManuallyDrop<_> as *mut Vec<_, MAX_SCREEN_POINTS>) };
+        points.clear();
+        points
+    }
+}
+
+const _: () = assert!(
+    core::mem::size_of::<Vec<(i32, i32), MAX_DECODE_POINTS>>() == core::mem::size_of::<Vec<Point, MAX_SCREEN_POINTS>>()
+);
+const _: () = assert!(
+    core::mem::align_of::<Vec<(i32, i32), MAX_DECODE_POINTS>>()
+        == core::mem::align_of::<Vec<Point, MAX_SCREEN_POINTS>>()
+);
+
+/// The renderer's draw scratch: phase-shared decoded/projected points and the scanline crossings.
 #[derive(Default)]
 pub(crate) struct DrawScratch {
-    pub(crate) screen: Vec<Point, MAX_SCREEN_POINTS>,
+    points: SharedPoints,
     pub(crate) xs: Vec<f32, MAX_CROSSINGS>,
 }
 
@@ -537,7 +574,6 @@ impl RenderScratch {
         let requested_lod = scene.select_lod_for_mpp(vp.meters_per_pixel());
         let lod = requested_lod.min(lod_count - 1);
         let is_finest = lod == lod_count - 1;
-        let view = vp.visible_bbox();
         let mut stats = RenderStats { lod, ..Default::default() };
         if requested_lod >= lod_count {
             stats.map_structure_failures = 1;
@@ -548,7 +584,12 @@ impl RenderScratch {
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
         // a fresh source adapter each frame or a reused one.
         let before = diagnostics(scene, &mut stats, Diagnostics::default());
-        self.frame.collect(scene, lod, &view, !cfg.terrain_layer, &mut stats);
+        {
+            // Collection and drawing are disjoint phases. Decode through the shared point backing
+            // now; `draw_map` reinterprets the same empty backing as projected screen points later.
+            let Self { frame, draw, .. } = self;
+            frame.collect(scene, lod, vp, draw.points.decode(), !cfg.terrain_layer, &mut stats);
+        }
         let after = diagnostics(scene, &mut stats, before);
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
@@ -721,7 +762,7 @@ impl RenderScratch {
                     line_px(span.weight, wscale, fixed_width) + 2 * Self::CASING_PX,
                     false,
                     None,
-                    &mut draw.screen,
+                    draw.points.screen(),
                 );
             }
         }
@@ -835,8 +876,9 @@ impl RenderScratch {
         let pts = &frame.frame_points[pt_start..pt_start + total];
         let color = color_fn(span.color);
 
+        let DrawScratch { points, xs } = draw;
         match span.kind {
-            Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
+            Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, points.screen(), xs),
             Kind::Line => {
                 // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
                 // `color2` quantizes through `color_fn` exactly like the primary. A missing
@@ -856,7 +898,7 @@ impl RenderScratch {
                     line_px(span.weight, wscale, fixed_width),
                     dashed,
                     color2,
-                    &mut draw.screen,
+                    points.screen(),
                 );
             }
         }
@@ -907,7 +949,7 @@ impl RenderScratch {
             // Stroke the ring **closed**: chain the first vertex again so the wall between the last and
             // first point is drawn. Projects lazily, exactly like a line's exterior ring.
             let closed = ring.iter().chain(ring.first()).map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, &mut draw.screen, color2, weight, w, h).stroke(closed);
+            Stroker::new(target, draw.points.screen(), color2, weight, w, h).stroke(closed);
         }
     }
 }

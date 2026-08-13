@@ -70,6 +70,7 @@ use crate::nav::{self, CutRun, JunctionKey, NavGraph, RoutableWay};
 use crate::poi::Poi;
 use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
+use crate::semantic::{build_semantic_levels, SemanticClass, SemanticScheme};
 use crate::serialize::{serialize_lods_streaming, validate_chunk_size, Node};
 use crate::terrain::TerrainSet;
 use obc_elevation::{ElevationSource, NullElevation};
@@ -301,6 +302,23 @@ pub fn cut_ingested(
         Some(path) => Some(TerrainSet::open(path)?),
     };
     let styles = config.styles();
+    let semantic_scheme = config.semantic_scheme();
+    // Build the exact same finer-to-coarser semantic ladder as the monolithic packer before it is
+    // clipped into canonical cells. Fine-only and network-only production jobs skip this relatively
+    // expensive bake-time pass altogether; neither selected band can consume its output. The device
+    // still receives ordinary OBCM polygons.
+    let needs_semantic = opts
+        .bands
+        .bands
+        .iter()
+        .filter(|band| opts.only_bands.is_empty() || opts.only_bands.contains(&band.id))
+        .flat_map(|band| band.lods.iter())
+        .any(|&lod| config.lods[lod].semantic_coverage);
+    let semantic_levels = if needs_semantic {
+        build_semantic_levels(&ing.features, &config.lods, &semantic_scheme, extract, progress)?
+    } else {
+        vec![None; config.lods.len()]
+    };
     let mut artifacts: Vec<CellArtifact> = Vec::new();
 
     for band in &opts.bands.bands {
@@ -317,13 +335,9 @@ pub fn cut_ingested(
         );
 
         // Per-band preparation, done once and read by every cell of the band.
-        // One memo per band: a band's coverage tiers dissolve the same classes over the same fills
-        // (see `crate::coverage::PredissolveCache`), and it dies with the band rather than sitting on
-        // memory through the cells. It is also cleared at the **first** tier of the band that does
-        // not want the pass — the coarse band runs LODs 0-4 and only its first two are coverage
-        // tiers, so holding a couple of hundred megabytes of dissolved geometry through the rest of
-        // the band is exactly the peak this pass is budgeted against (`pipeline::run` clears it on
-        // the same rule).
+        // One memo per band for custom schemas that still use coverage simplification. It dies with
+        // the band rather than sitting in memory through unrelated cells, and is cleared at the
+        // first tier that does not use that pass. Semantic tiers use the separately prebuilt ladder.
         let predissolved = PredissolveCache::new();
         let lod_sets: Vec<LodSet<'_>> = band
             .lods
@@ -332,7 +346,15 @@ pub fn cut_ingested(
                 if !config.lods[l].coverage_simplify {
                     predissolved.clear();
                 }
-                prepare_lod(ing, config, l, band.cell_log2, &predissolved, progress)
+                prepare_lod(
+                    ing,
+                    config,
+                    l,
+                    band.cell_log2,
+                    &predissolved,
+                    PreparedSemantic { features: semantic_levels[l].as_deref(), scheme: &semantic_scheme },
+                    progress,
+                )
             })
             .collect();
         drop(predissolved);
@@ -447,6 +469,11 @@ struct LodSet<'a> {
     cell_log2: u32,
 }
 
+struct PreparedSemantic<'a, 's> {
+    features: Option<&'a [(u8, Geom)]>,
+    scheme: &'s SemanticScheme,
+}
+
 /// Build a level's feature set exactly as [`crate::pipeline`] does — `min_lod` filter, then the
 /// optional fill-dissolve, line-stitch and coverage passes — and index it by cell.
 ///
@@ -462,6 +489,7 @@ fn prepare_lod<'a>(
     lod: usize,
     cell_log2: u32,
     predissolved: &PredissolveCache,
+    semantic: PreparedSemantic<'a, '_>,
     progress: &Progress,
 ) -> LodSet<'a> {
     let l = &config.lods[lod];
@@ -471,13 +499,27 @@ fn prepare_lod<'a>(
         .features
         .iter()
         .filter(|f| f.min_lod <= lod && !f.geom.is_empty())
+        .filter(|f| {
+            !(l.semantic_coverage
+                && matches!(f.geom, Geom::Polygon { .. } | Geom::Multi(_))
+                && matches!(
+                    semantic.scheme.class_of(f.style_id),
+                    Some(
+                        SemanticClass::Farmland
+                            | SemanticClass::Grass
+                            | SemanticClass::Forest
+                            | SemanticClass::Urban
+                            | SemanticClass::Water
+                    )
+                ))
+        })
         .map(|f| (f.style_id, Cow::Borrowed(&f.geom)))
         .collect();
     let tol = if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 };
     // `merge_fills` is skipped on a coverage tier: the coverage pass dissolves the same
     // candidate set itself, per class, as part of building the arrangement (see
     // [`crate::coverage`] and the pipeline's copy of this rule).
-    let want_merge_fills = config.merge_fills && !l.coverage_simplify;
+    let want_merge_fills = config.merge_fills && !l.coverage_simplify && !l.semantic_coverage;
     let mut presimplified = vec![false; feats.len()];
     if want_merge_fills || config.merge_lines || l.coverage_simplify {
         let styles = config.styles();
@@ -514,6 +556,18 @@ fn prepare_lod<'a>(
         } else {
             feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
             presimplified = vec![false; feats.len()];
+        }
+    }
+
+    if l.semantic_coverage {
+        let semantic_features = semantic.features.expect("every configured semantic rung is prebuilt");
+        feats.reserve(semantic_features.len());
+        presimplified.reserve(semantic_features.len());
+        for (style_id, geom) in semantic_features {
+            if !geom.is_empty() {
+                feats.push((*style_id, Cow::Borrowed(geom)));
+                presimplified.push(true);
+            }
         }
     }
 
