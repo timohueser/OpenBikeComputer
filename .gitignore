@@ -52,6 +52,7 @@ firmware/obc-settings.bin
 ui-snapshots/
 .pytest_cache/
 user_config.json
+.artifacts/
 .worktrees/
 # Claude Code's per-agent worktrees — real git worktrees, so `git add -A` would
 # otherwise record one as a submodule gitlink and break every clone.

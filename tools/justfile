@@ -15,6 +15,28 @@ lib := justfile_directory() / "obc-dev.sh"
 default:
     @just --justfile '{{justfile()}}' --list --unsorted
 
+# ── Deployed services ────────────────────────────────────────────────────────
+
+# Inspect, resume, or persistently pause the deployed weather bakery.
+#
+#   obc weather status
+#   obc weather stop
+#   obc weather start
+#
+# The SSH target defaults to root@wx. Set OBC_WX_SSH_TARGET in tools/obc.local
+# when that alias is not configured, or pass a one-off target as the second arg.
+# Stop disables the cycle timer and stops an in-flight bake; start enables the
+# canonical 15-minute publisher again.
+# Control the deployed weather bakery. Args: status|start|stop [root@HOST]
+weather *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    (( $# <= 2 )) || { _err "usage: obc weather status|start|stop [root@HOST]"; exit 2; }
+    action="${1:-status}"
+    resolved_target="${2:-${OBC_WX_SSH_TARGET:-root@wx}}"
+    _run "$OBC_TOOLS/weather-service.sh" "$action" "$resolved_target"
+
 # ── Simulator ────────────────────────────────────────────────────────────────
 
 # List, inspect, download, verify and prune the content-addressed fixture registry.

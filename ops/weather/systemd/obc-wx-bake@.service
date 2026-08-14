@@ -70,8 +70,7 @@ StandardError=journal
 SyslogIdentifier=obc-wx-bake
 
 # ── Resource caps ────────────────────────────────────────────────────────────────────────────
-# The epic's budget is <1 GB RSS per cycle. This was set against the multi-product baker's measured
-# 52 MB (RV+ICON, #1215); the mosaic's measured peak is **398 MB** at BAKE_THREADS=4 (WXR1 #1254),
+# The mosaic's measured peak is **398 MB** at BAKE_THREADS=4 (WXR1 #1254),
 # so the old MemoryHigh=384M sat *below* the measurement and would have throttled every cycle.
 #
 # **There is no MemoryHigh any more, and that is the deliberate half** (#1274 r2). MemoryHigh is a
@@ -95,8 +94,8 @@ SyslogIdentifier=obc-wx-bake
 # reviewer measured 725.4 MB independently), against 905 MB measured at +120. Keeping 1G would have let a self-imposed ceiling, rather than evidence, decide how far
 # ahead riders can see.
 #
-# 3G is ~4x the measured cycle and leaves the service under 40 % of the box with the old v1 baker
-# still alongside. It is still a fail-closed ceiling and still the only one: nothing about the
+# 3G is ~4x the measured cycle and leaves the service under 40 % of the box. It is still a
+# fail-closed ceiling and still the only one: nothing about the
 # reasoning above changes, only the number it is anchored to.
 MemoryMax=3G
 TasksMax=64

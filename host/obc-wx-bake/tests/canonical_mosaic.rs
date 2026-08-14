@@ -5,8 +5,7 @@
 //! 1. **No smoothing, still provably** — every published cell equals the quantized
 //!    nearest-neighbour source cell *of whichever source won the mosaic there*, checked against
 //!    independently decoded upstream bytes. This is `tests/cycle.rs`'s
-//!    `published_cells_equal_quantized_nearest_neighbour_source_cells` carried across the rewrite
-//!    (that file is gone with the multi-product path, #1246): the mosaic changed *which* source
+//!    `published_cells_equal_quantized_nearest_neighbour_source_cells`: the mosaic changes *which* source
 //!    answers a cell, never *how*.
 //! 2. **The priority table decides, and nothing else does** — two overlapping sources, deliberately
 //!    ranked against their cell sizes, so a mosaic that quietly preferred the finer lattice fails.
@@ -1394,11 +1393,7 @@ fn a_dry_shard_is_omitted_and_a_no_data_shard_is_published() {
 
 /// **A corrupt upstream publishes nothing, and the previous generation stands byte for byte.**
 ///
-/// Carried over from the multi-product suite #1246 deleted, and it says something simpler than it
-/// used to. That version had to prove *isolation*: one broken adapter must not cost the other
-/// products their publication, because the manifest listed four independently selectable products
-/// and a per-adapter systemd timer published one of them. There is one dataset now and the mosaic
-/// needs every source's cells, so isolation is neither available nor wanted — a cycle that cannot
+/// The mosaic needs every source's cells, so a cycle that cannot
 /// bake a source cannot bake a complete dataset, and publishing a partial one would swap in a
 /// manifest claiming the service is current over a hole.
 ///

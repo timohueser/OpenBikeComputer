@@ -88,19 +88,17 @@ class ProbeTests(unittest.TestCase):
         self.assertNotIn("ALERTS", output)
         self.assertIn("generation 20260810T1430Z, keeping 2 previous", output)
 
-    def test_a_v1_document_is_unsupported_rather_than_interpreted(self):
-        """WXR8 deleted the v1 half of this probe with the tree it read. A v1 manifest must now be
-        refused outright — interpreting a document whose fields mean something else is how a probe
-        reports confident nonsense."""
+    def test_an_unsupported_document_version_is_not_interpreted(self):
+        """Interpreting a document whose fields mean something else would report nonsense."""
         self.assertEqual(probe.SUPPORTED_MANIFEST_VERSIONS, {2})
         document = healthy()
-        document["version"] = 1
+        document["version"] = 99
         code, output = run(document)
         self.assertEqual(code, 1)
         self.assertIn("UNSUPPORTED", output)
 
     def test_the_manifest_path_is_the_v2_tree(self):
-        """The one line the cutover flips, and the reason it is a constant and not a flag."""
+        """The public manifest path is a constant rather than an operator flag."""
         self.assertEqual(probe.MANIFEST_PATH, "wx/v2/manifest.json")
         self.assertEqual(
             probe.manifest_url("https://wx.openbikecomputer.com"),
@@ -110,7 +108,7 @@ class ProbeTests(unittest.TestCase):
     def test_a_dead_timer_shows_up_as_a_stale_manifest(self):
         """With one dataset on one timer, "the manifest is fresh" and "the timer is alive" are the
         same statement — the timer that would be dead is the one that writes the manifest. This is
-        what replaced v1's per-product --expect check."""
+        why no separate per-source timer check is required."""
         document = healthy()
         document["generated_at"] = "2026-08-10T13:00:00Z"
         code, output = run(document)
@@ -297,16 +295,6 @@ class ProbeTests(unittest.TestCase):
         probe.check_sweep(document, "https://wx.invalid", 0.01, report, alerts, result)
         self.assertEqual(result["sweep_probe_key"], "wx/v2/20260810T1345Z/f0/s0-0.obcg")
         self.assertEqual(alerts, [], "an unreachable HEAD is inconclusive, never an alert")
-
-    # ── Cutover ergonomics ────────────────────────────────────────────────────────────────────
-
-    def test_the_retired_flags_are_accepted_and_ignored(self):
-        """`--mosaic` and `--expect` existed for the two-tree window. They must not crash the alarm
-        after the cutover, and they must say they did nothing."""
-        code, output = run(healthy(), "--mosaic", "--expect", "dwd-rv,icon-eu")
-        self.assertEqual(code, 0, output)
-        self.assertIn("accepted and ignored", output)
-
 
 if __name__ == "__main__":
     unittest.main()

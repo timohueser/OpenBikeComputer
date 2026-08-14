@@ -70,7 +70,7 @@ enum OBCGridWriter {
                 entries.append(nil)
                 continue
             }
-            // The generalized entry point, not the 256-cell one: OBCG picks a per-product tile
+            // The generalized entry point, not the 256-cell one: OBCG picks a per-grid tile
             // edge, and the production lattice's is 256, whose tile is 65,536 cells.
             let encoded = try! OBCPrecipitationTileCodec.encodeCells(tile)
             entries.append((

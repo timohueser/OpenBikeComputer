@@ -1,7 +1,6 @@
 //! `wx/v2/manifest.json`: the manifest of the **canonical sharded dataset** (WXR4 #1243).
 //!
-//! Manifest v1 exists so a client can *choose* — between products, tiers, bboxes and staleness.
-//! There is nothing left to choose between: the baker publishes one dataset, on one lattice, at one
+//! The baker publishes one dataset, on one lattice, at one
 //! cadence, cut into a fixed global shard grid. So v2 carries **nothing selectable**. What is left
 //! is the four things a client genuinely cannot compute:
 //!

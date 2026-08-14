@@ -286,7 +286,7 @@ pub trait Adapter {
     /// There is no unchanged short-circuit and no previously published entry to compare against.
     /// The mosaic needs every source's **cells**, not the knowledge that its objects are already
     /// published, so a cycle re-decodes every source every time. The short-circuit belonged to the
-    /// per-product path #1246 deleted, along with the manifest entry it read its validator out of.
+    /// publisher, along with the manifest attribution derived from it.
     fn bake(&self, upstream: &mut dyn Upstream, now: i64, warnings: &mut Vec<String>) -> Result<BakedSource, String>;
 }
 

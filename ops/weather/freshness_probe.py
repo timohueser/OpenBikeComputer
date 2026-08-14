@@ -11,11 +11,6 @@ point. The baker is a stateless publisher, so if it dies R2 keeps serving the la
 product degrades honestly through staleness. The heartbeat is therefore the published manifest, and
 the alarm lives somewhere the baker's death cannot silence it (WX18 runs it from GitHub Actions).
 
-**v2 only, since WXR8 (#1247).** The multi-product half of this probe went with the `wx/v1` tree it
-read; the cutover order that retires them together is in `ops/weather/RUNBOOK.md` §2. `--mosaic`
-and `--expect` are accepted and ignored so that a stale `OBC_WX_PROBE_ARGS` variable cannot turn a
-healthy cutover into a crashed alarm.
-
 Checks, in the order they are reported:
 
   1. the manifest is fetchable and parses, and its `version` is one this probe understands;
@@ -222,17 +217,15 @@ def check_presence(document, shard_count, report, alerts, result) -> int:
 def check_sources(document, expect, report, alerts, result) -> None:
     """4b. Every source that should be in the mosaic is still in `attribution[]`.
 
-    This is what replaced `--expect`'s product list, and it is worth being exact about what it can
-    see. `attribution[]` names every source that *may have painted a cell* — it comes from the
+    It is worth being exact about what this can see. `attribution[]` names every source that *may
+    have painted a cell* — it comes from the
     baker's priority table, not from a per-cell record — so this cannot detect an upstream outage;
     a source whose provider is down still appears, and the mosaic falls through to the next
     priority row, which is the designed behaviour and not an alert.
 
     What it does catch is a **deploy that went backwards**: an older binary rolled onto the box, or
     a build with a source accidentally dropped from `MOSAIC_PRIORITY`, silently degrades the
-    dataset's resolution over whole regions while every freshness check stays green. That failure
-    used to be caught by `--expect` noticing a missing product, and it would otherwise have no
-    witness at all.
+    dataset's resolution over whole regions while every freshness check stays green.
     """
     listed = [entry.get("source_id") for entry in document.get("attribution", [])]
     result["sources"] = listed
@@ -423,11 +416,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="skip the HEAD that proves the retention sweep is collecting")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--json", action="store_true", help="emit a machine-readable summary too")
-    # Accepted and ignored so a stale OBC_WX_PROBE_ARGS cannot crash the alarm mid-cutover. There is
-    # one dataset and it has no products, so neither flag has anything left to mean (WXR8 #1247).
-    parser.add_argument("--mosaic", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--expect", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--adapters-conf", type=Path, default=None, help=argparse.SUPPRESS)
     # Retired in round 1 of #1274's review: `retained = set x (1 + len(previous))` with `len` capped
     # at 2, so it could never fire without --max-set-bytes firing first. The figure is still
     # reported; only the gate is gone. Both spellings still parse so no invocation breaks.
@@ -530,8 +518,6 @@ def probe(args) -> int:
             check_sweep(document, args.url, args.timeout, report, alerts, result)
         except (KeyError, TypeError, ValueError) as error:
             report.append(f"note     sweep check skipped: {error}")
-    if args.expect or args.mosaic:
-        report.append("note     --expect/--mosaic are accepted and ignored: there is one dataset and it has no products")
     if args.max_retained_bytes is not None:
         report.append("note     --max-retained-bytes is accepted and ignored: it could never fire on its own; see --max-set-bytes")
 

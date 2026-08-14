@@ -292,8 +292,8 @@ pub fn coalesce(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 
 /// One object the plan says exists, with everything needed to address and verify it.
 ///
-/// The v1 shape of this was a `manifest::Frame` carrying its own geometry; under v2 the geometry is
-/// derived from the stated lattice and the identity is `(offset_min, shard)`, so what a reader
+/// The manifest frame carries temporal/object state while the dataset lattice carries geometry.
+/// Geometry is derived from the stated lattice and the identity is `(offset_min, shard)`, so what a reader
 /// needs is exactly this: where the bytes are, how many there should be, and what they must decode
 /// to agree with.
 #[derive(Debug, Clone, PartialEq, Eq)]
