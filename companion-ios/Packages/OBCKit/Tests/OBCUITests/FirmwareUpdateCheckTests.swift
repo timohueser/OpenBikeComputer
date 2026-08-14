@@ -405,9 +405,9 @@ private final class StubFetcher: ManifestFetching, @unchecked Sendable {
     }
 }
 
-/// The same minimal `DeviceTransport` the S7 state-machine tests use: a controllable link, a
-/// settable running version, and an inert firmware transfer.
-private final class StubTransport: DeviceTransport, @unchecked Sendable {
+/// The same minimal link + update capability pair the S7 state-machine tests use: a controllable
+/// link, a settable running version, and an inert firmware transfer.
+private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendable {
     private var stateConts: [AsyncStream<ConnectionState>.Continuation] = []
     private var lastState: ConnectionState = .connected
     var fwVersion = "1.3.0"
@@ -451,18 +451,6 @@ private final class StubTransport: DeviceTransport, @unchecked Sendable {
 
     func installFirmware() async throws -> FirmwareInstallResult { installResult }
 
-    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
-    func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
-    func deleteRoute(_ id: DeviceObjectID) async throws {}
-    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 }

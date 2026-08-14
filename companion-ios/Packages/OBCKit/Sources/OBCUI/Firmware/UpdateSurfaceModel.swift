@@ -37,7 +37,7 @@ public final class UpdateSurfaceModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink
     private let bondStore: any BondStore
     /// The shared decision path. `nil` in wiring that doesn't want a launch check (previews, the
     /// screens' own tests) — which leaves the app exactly the U4 app.
@@ -52,7 +52,7 @@ public final class UpdateSurfaceModel {
     @ObservationIgnored private var pendingDevice: LastSeenDevice?
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink,
         bondStore: any BondStore,
         runner: UpdateSurfaceRunner? = nil,
         notifier: (any UpdateNotifying)? = nil
