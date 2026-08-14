@@ -1,8 +1,9 @@
 //! Geometry LOD tables, quadtree chunk selection, and streaming feature decode.
 
+use super::cache::{ChunkLoc, WalkEntry, WALK_CACHE_ENTRIES};
 use super::{
-    expand_walk_bbox, index_end, intersect_bbox, CacheError, CapacityError, ChunkLoc, DecodeStatus, FeatureDecodeError,
-    FeatureReadError, MapReadError, QuadIndex, Reader, WalkEntry, MAX_QUADTREE_DEPTH, WALK_CACHE_ENTRIES,
+    expand_walk_bbox, index_end, intersect_bbox, CacheError, CapacityError, DecodeStatus, FeatureDecodeError,
+    FeatureReadError, MapReadError, QuadIndex, Reader, MAX_QUADTREE_DEPTH,
 };
 use crate::Error;
 use heapless::Vec;
