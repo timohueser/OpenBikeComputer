@@ -3,7 +3,7 @@
         "id": "default",
         "name": "Default",
         "description": "The shipped look: cream paper, warm through-roads, indigo cycleways, green vegetation.",
-        "version": 2,
+        "version": 3,
         "swatch": [
             "#FF5500",
             "#FFAA00",
@@ -53,8 +53,8 @@
             "*": {"color": "0x52AA", "z_index": 10, "weight": 1, "priority": 4}
         },
         "natural": {
-            "sea": {"color": "0x555F", "z_index": 0, "weight": 1, "priority": 1},
-            "land": {"color": "0xFFF5", "z_index": 1, "weight": 1, "priority": 1},
+            "sea": {"color": "0x555F", "z_index": 1, "weight": 1, "priority": 1},
+            "land": {"color": "0xFFF5", "z_index": 0, "weight": 1, "priority": 1},
             "water": {"color": "0x555F", "z_index": 14, "weight": 1, "priority": 2},
             "wood": {"color": "0x554A", "z_index": 4, "weight": 1, "priority": 2},
             "scrub": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},

@@ -47,8 +47,8 @@ const ITERS: usize = 10;
 /// The fixed scene matrix: `(name, meters-per-pixel, heading°)`. Rides the fixture's two LODs
 /// (riding = fine, mid/overview = coarse) both north-up and rotated; the overview pair must
 /// saturate the frame budget (`features_dropped > 0`) or the fixture has gone stale. What fills
-/// first there is the **ring** buffer — the fixture's coarse features are all single-ring, so its
-/// ring count equals its feature count and `MAX_FRAME_RINGS` is the ceiling.
+/// first there is the **span** buffer: screen-point packing let us raise the ring ceiling above the
+/// fixture's one-ring-per-feature span ceiling.
 const SCENES: [(&str, f32, f32); 6] = [
     ("riding", 0.5, 0.0),
     ("riding-rot", 0.5, 35.0),
@@ -763,14 +763,12 @@ mod tests {
         let map = obcm_testkit::build_bench_map();
         let clock = StdClock(Instant::now());
         let r = run_scene(&map, "overview", 30.0, 0.0, &clock);
-        assert!(
-            r.stats.features_tried > obc_render::MAX_FRAME_RINGS,
-            "fixture density under the feature ceiling MAX_FRAME_RINGS"
-        );
+        assert!(r.stats.features_tried > obc_render::MAX_SPANS, "fixture density under the feature ceiling MAX_SPANS");
         assert!(r.stats.features_dropped > 0, "overview must overflow the frame budget");
-        // Single-ring features, so the ring buffer is what fills — assert it, since the whole point
-        // of this scene is to exercise the drop path at its real trigger.
-        assert!(r.stats.ring_utilization >= 1.0, "the ring buffer is the saturated one");
+        // Single-ring features consume one span and one ring each. The rebalanced arena has more
+        // rings than spans, so spans are now the real trigger; pin that rather than preserving the
+        // pre-compaction bottleneck by accident.
+        assert!(r.stats.span_utilization >= 1.0, "the span buffer is the saturated one");
     }
 
     /// The riding scenes must land on the fine LOD and the overview on the coarse one, or the

@@ -12,17 +12,17 @@
 //! have identical seams. The emitted geometry remains ordinary OBCM polygons; the device has no
 //! semantic-grid code.
 
-use std::collections::VecDeque;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 
-use geos::{Geom as _, Geometry, STRtree, SpatialIndex};
+use geos::{Geom as _, Geometry};
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Lod;
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 use crate::geom::coverage_is_valid;
 use crate::geom::{
-    collect_lines, collect_polygons, coverage_simplify_vw, from_geos, ring_to_coordseq, topology_preserve_simplify,
-    try_polygon_to_geos, union_all, Geom,
+    collect_polygons, coverage_simplify_vw, from_geos, ring_to_coordseq, topology_preserve_simplify,
+    try_polygon_to_geos, Geom,
 };
 use crate::ingest::IngestFeature;
 use crate::progress::Progress;
@@ -38,10 +38,9 @@ const DATA_WEIGHT: f64 = 4.0;
 const BOUNDARY_WEIGHT: f64 = 1.20;
 const QUOTA_WEIGHT: f64 = 0.85;
 const RARE_PENALTY: f64 = 8.0;
-// Stay below one rendered pixel before relaxation: a tolerance larger than the two-pixel semantic
-// cell can replace both sides of a narrow channel by one shared diagonal and turn it into a long
-// triangular needle. The final pass operates on the already-smoothed shared coverage and is capped
-// at exactly one cell, never beyond it.
+// Stay below one rendered pixel before relaxation. The final pass reaches one two-pixel semantic
+// cell; its shared-graph simplifier protects planarity and minimum face size directly rather than
+// weakening the approved block-scale geometry when one face is fragile.
 const INITIAL_VW_PX: f64 = 0.45 * CELL_PX as f64;
 const SMOOTH_LIMIT_PX: f64 = 0.8;
 const SMOOTH_STEP: f64 = 0.34;
@@ -168,6 +167,9 @@ pub struct SemanticStats {
     pub cells: usize,
     pub thematic_points: usize,
     pub water_points: usize,
+    pub smoothed_faces: usize,
+    pub smoothing_shared_edges: usize,
+    pub smoothing_retries: usize,
 }
 
 pub struct SemanticLod {
@@ -220,8 +222,14 @@ pub fn build_semantic_levels(
             .collect();
         let level = build_semantic_lod(&eligible, scheme, bbox, nominal_mpp, prior.as_ref(), progress)?;
         progress.log(format!(
-            "  semantic grid: {} source polygon(s), {} cell(s), {} thematic + {} water point(s)",
-            level.stats.source_polygons, level.stats.cells, level.stats.thematic_points, level.stats.water_points
+            "  semantic grid: {} source polygon(s), {} cell(s), {} thematic + {} water point(s); smoothing: {} face(s), {} shared edge(s), {} retry(ies)",
+            level.stats.source_polygons,
+            level.stats.cells,
+            level.stats.thematic_points,
+            level.stats.water_points,
+            level.stats.smoothed_faces,
+            level.stats.smoothing_shared_edges,
+            level.stats.smoothing_retries,
         ));
         prior = Some(level.labels);
         levels[index] = Some(level.features);
@@ -272,18 +280,11 @@ pub fn build_semantic_lod(
     }
 
     let (support, mut water) = raster_support(&sources, &grid, projection, progress)?;
-    let mut labels = adaptive_labels(&support, &grid, prior);
-    // At overview scale, smoothing a one- or two-cell-wide label chain turns it into the sharp
-    // needle/triangle artifact seen in the 130 m/px production rung. Move those cells into a nearby
-    // compact patch of the same class, preserving each class's exact coverage; detailed semantic
-    // tiers remain untouched.
-    if mpp >= 80.0 {
-        close_narrow_base_channels(&mut labels, &support, &grid);
-        compact_narrow_semantic_filaments(&mut labels, &support, &grid);
-    }
+    let labels = adaptive_labels(&support, &grid, prior);
     let raw = vectorize_labels(&labels, &grid)?;
-    let simplified = simplify_owned_coverage(raw, INITIAL_VW_PX * mpp)?;
-    let smoothed = smooth_coverage(simplified, &grid, SMOOTH_LIMIT_PX * mpp, FINAL_VW_PX * mpp)?;
+    let simplified = simplify_semantic_coverage(&raw, INITIAL_VW_PX * mpp)?;
+    let (relaxed, smoothing) = smooth_coverage(simplified, &grid, SMOOTH_LIMIT_PX * mpp)?;
+    let smoothed = simplify_shared_coverage(&relaxed, &grid, FINAL_VW_PX * mpp)?;
 
     // A sub-pixel pond is not a useful area feature at overview scale. Keep every component at
     // its real location, but remove components too small to cover a stable screen mark. The old
@@ -357,8 +358,15 @@ pub fn build_semantic_lod(
         .into_iter()
         .map(|(style, geom)| (style, map_coords(geom, |x, y| projection.unproject(x, y))))
         .collect();
-    let stats =
-        SemanticStats { source_polygons: sources.len(), cells: grid.cols * grid.rows, thematic_points, water_points };
+    let stats = SemanticStats {
+        source_polygons: sources.len(),
+        cells: grid.cols * grid.rows,
+        thematic_points,
+        water_points,
+        smoothed_faces: smoothing.faces,
+        smoothing_shared_edges: smoothing.shared_edges,
+        smoothing_retries: smoothing.retries,
+    };
     Ok(SemanticLod { features, labels: SemanticLabels { grid, labels }, stats })
 }
 
@@ -487,10 +495,7 @@ fn raster_geom(
 ) {
     match geom {
         Geom::Polygon { exterior, interiors } => {
-            raster_ring(exterior, projection, tile_left, tile_top, sub_m, width, height, target, value);
-            for hole in interiors {
-                raster_ring(hole, projection, tile_left, tile_top, sub_m, width, height, target, 0);
-            }
+            raster_polygon(exterior, interiors, projection, tile_left, tile_top, sub_m, width, height, target, value);
         }
         Geom::Multi(parts) => {
             for part in parts {
@@ -502,8 +507,9 @@ fn raster_geom(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn raster_ring(
-    ring: &[(f64, f64)],
+fn raster_polygon(
+    exterior: &[(f64, f64)],
+    interiors: &[Vec<(f64, f64)>],
     projection: Projection,
     tile_left: f64,
     tile_top: f64,
@@ -513,29 +519,36 @@ fn raster_ring(
     target: &mut [u8],
     value: u8,
 ) {
-    if ring.len() < 3 {
+    if exterior.len() < 3 {
         return;
     }
-    let points: Vec<(f64, f64)> = ring
-        .iter()
-        .map(|&(lon, lat)| {
-            let (x, y) = projection.project(lon, lat);
-            ((x - tile_left) / sub_m, (tile_top - y) / sub_m)
+    let rings: Vec<Vec<(f64, f64)>> = std::iter::once(exterior)
+        .chain(interiors.iter().map(Vec::as_slice))
+        .filter(|ring| ring.len() >= 3)
+        .map(|ring| {
+            ring.iter()
+                .map(|&(lon, lat)| {
+                    let (x, y) = projection.project(lon, lat);
+                    ((x - tile_left) / sub_m, (tile_top - y) / sub_m)
+                })
+                .collect()
         })
         .collect();
-    let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
-    let max_y = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = rings.iter().flatten().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let max_y = rings.iter().flatten().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
     let row0 = (min_y - 0.5).ceil().max(0.0) as usize;
     let row1 = (max_y - 0.5).ceil().max(0.0).min(height as f64) as usize;
-    let mut crossings = Vec::with_capacity(points.len());
+    let mut crossings = Vec::with_capacity(rings.iter().map(Vec::len).sum());
     for row in row0..row1 {
         let scan_y = row as f64 + 0.5;
         crossings.clear();
-        for i in 0..points.len() {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            if (a.1 <= scan_y && scan_y < b.1) || (b.1 <= scan_y && scan_y < a.1) {
-                crossings.push(a.0 + (scan_y - a.1) * (b.0 - a.0) / (b.1 - a.1));
+        for points in &rings {
+            for i in 0..points.len() {
+                let a = points[i];
+                let b = points[(i + 1) % points.len()];
+                if (a.1 <= scan_y && scan_y < b.1) || (b.1 <= scan_y && scan_y < a.1) {
+                    crossings.push(a.0 + (scan_y - a.1) * (b.0 - a.0) / (b.1 - a.1));
+                }
             }
         }
         crossings.sort_by(f64::total_cmp);
@@ -569,11 +582,7 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
     for y in 0..grid.rows {
         for x in 0..grid.cols {
             let i = grid.index(x, y);
-            let prior_class = prior.and_then(|p| {
-                let cx = grid.left + (x as f64 + 0.5) * grid.cell_m;
-                let cy = grid.top() - (y as f64 + 0.5) * grid.cell_m;
-                p.grid.cell_at(cx, cy).map(|(px, py)| p.labels[p.grid.index(px, py)])
-            });
+            let prior_class = prior_class_at(prior, grid, x, y);
             let mut best = 0usize;
             let mut best_value = f64::NEG_INFINITY;
             for class in 0..CLASSES {
@@ -643,11 +652,7 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
                         neighbours[n_len] = labels[candidate];
                         n_len += 1;
                     }
-                    let prior_class = prior.and_then(|p| {
-                        let cx = grid.left + (x as f64 + 0.5) * grid.cell_m;
-                        let cy = grid.top() - (y as f64 + 0.5) * grid.cell_m;
-                        p.grid.cell_at(cx, cy).map(|(px, py)| p.labels[p.grid.index(px, py)])
-                    });
+                    let prior_class = prior_class_at(prior, grid, x, y);
                     let mut candidates = [false; CLASSES];
                     candidates[old] = true;
                     for &n in &neighbours[..n_len] {
@@ -717,6 +722,13 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
     labels
 }
 
+fn prior_class_at(prior: Option<&SemanticLabels>, grid: &Grid, x: usize, y: usize) -> Option<u8> {
+    let prior = prior?;
+    let cx = grid.left + (x as f64 + 0.5) * grid.cell_m;
+    let cy = grid.top() - (y as f64 + 0.5) * grid.cell_m;
+    prior.grid.cell_at(cx, cy).map(|(px, py)| prior.labels[prior.grid.index(px, py)])
+}
+
 #[inline]
 fn evidence(support: Support, class: usize, prior: Option<u8>) -> f64 {
     let source = support.0[class] as f64 / 64.0;
@@ -742,159 +754,6 @@ fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &[Window])
         }
     }
     out
-}
-
-/// Move one- and two-cell-wide land-cover filaments into nearby compact patches without changing
-/// any class's cell count. The allocator's overlapping quota windows can occasionally retain a
-/// class as a long thin chain; curve relaxation then turns that staircase into a sharp wedge. A
-/// swap is accepted only when the filament cell is surrounded by one dominant class and a nearby
-/// cell of that dominant class would join an existing patch of the filament class.
-fn compact_narrow_semantic_filaments(labels: &mut [u8], support: &[Support], grid: &Grid) {
-    if labels.len() != grid.cols * grid.rows || support.len() != labels.len() || grid.cols < 5 || grid.rows < 5 {
-        return;
-    }
-    for _ in 0..8 {
-        let mut used = vec![false; labels.len()];
-        let mut changed = false;
-        for y in 2..grid.rows - 2 {
-            for x in 2..grid.cols - 2 {
-                let from_index = grid.index(x, y);
-                let from = labels[from_index] as usize;
-                if from == SemanticClass::Base as usize || used[from_index] {
-                    continue;
-                }
-                let local = neighbourhood_counts(labels, grid, x, y, 2);
-                let (dominant, dominant_count) = local
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .filter(|(class, _)| *class != from)
-                    .max_by_key(|(_, count)| *count)
-                    .unwrap_or((from, 0));
-                // A two-cell-wide straight strip contributes at most ten of the 25 cells; an
-                // ordinary broad-region edge contributes at least fifteen. Keep a margin between
-                // those cases so normal boundaries do not creep.
-                if local[from] > 10 || dominant_count < 12 {
-                    continue;
-                }
-
-                let x0 = x.saturating_sub(WINDOW_CELLS).max(2);
-                let y0 = y.saturating_sub(WINDOW_CELLS).max(2);
-                let x1 = (x + WINDOW_CELLS).min(grid.cols - 3);
-                let y1 = (y + WINDOW_CELLS).min(grid.rows - 3);
-                let mut best: Option<(i32, usize)> = None;
-                for candidate_y in y0..=y1 {
-                    for candidate_x in x0..=x1 {
-                        let to_index = grid.index(candidate_x, candidate_y);
-                        let distance = x.abs_diff(candidate_x) + y.abs_diff(candidate_y);
-                        if used[to_index] || labels[to_index] as usize != dominant || distance <= 1 {
-                            continue;
-                        }
-                        let candidate_neighbours = neighbour_counts(labels, grid, candidate_x, candidate_y);
-                        let candidate_local = neighbourhood_counts(labels, grid, candidate_x, candidate_y, 2);
-                        // A class represented only by a filament has no pre-existing broad patch.
-                        // Let an adjacent cell receive it so repeated perimeter-reducing swaps can
-                        // fold the chain into a compact blob; exact class counts remain unchanged.
-                        if candidate_neighbours[from] < 2 || candidate_local[from] < 3 {
-                            continue;
-                        }
-                        let before_edges = cardinal_disagreements(labels, grid, x, y, from)
-                            + cardinal_disagreements(labels, grid, candidate_x, candidate_y, dominant);
-                        let after_edges = cardinal_disagreements(labels, grid, x, y, dominant)
-                            + cardinal_disagreements(labels, grid, candidate_x, candidate_y, from);
-                        let boundary_gain = before_edges as i32 - after_edges as i32;
-                        if boundary_gain < 2 {
-                            continue;
-                        }
-                        let score = boundary_gain * 4096
-                            + i32::from(candidate_neighbours[from]) * 256
-                            + i32::from(support[to_index].0[from])
-                            - i32::from(support[to_index].0[dominant])
-                            - distance as i32;
-                        if best.is_none_or(|(best_score, _)| score > best_score) {
-                            best = Some((score, to_index));
-                        }
-                    }
-                }
-                let Some((_, to_index)) = best else { continue };
-                labels[from_index] = dominant as u8;
-                labels[to_index] = from as u8;
-                used[from_index] = true;
-                used[to_index] = true;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-}
-
-/// Base is the absence of a sourced thematic class, not a semantic quota of its own. Keep only its
-/// broad interior (a complete 7×7 base neighbourhood), so tapering background channels cannot show
-/// the independent land underlay through the coverage as a needle. The grid frame is untouched.
-fn close_narrow_base_channels(labels: &mut [u8], support: &[Support], grid: &Grid) {
-    const RADIUS: usize = 3;
-    if labels.len() != grid.cols * grid.rows || support.len() != labels.len() || grid.cols < 7 || grid.rows < 7 {
-        return;
-    }
-    let before = labels.to_vec();
-    let mut eroded = vec![false; labels.len()];
-    for y in RADIUS..grid.rows - RADIUS {
-        for x in RADIUS..grid.cols - RADIUS {
-            eroded[grid.index(x, y)] = (y - RADIUS..=y + RADIUS)
-                .all(|ny| (x - RADIUS..=x + RADIUS).all(|nx| before[grid.index(nx, ny)] == SemanticClass::Base as u8));
-        }
-    }
-    for y in RADIUS..grid.rows - RADIUS {
-        for x in RADIUS..grid.cols - RADIUS {
-            let index = grid.index(x, y);
-            if before[index] != SemanticClass::Base as u8 || eroded[index] {
-                continue;
-            }
-            let neighbours = neighbourhood_counts(&before, grid, x, y, RADIUS);
-            let Some((replacement, _)) = neighbours
-                .iter()
-                .copied()
-                .enumerate()
-                .skip(1)
-                .filter(|(_, count)| *count > 0)
-                .max_by_key(|(class, count)| u16::from(*count) * 64 + u16::from(support[index].0[*class]))
-            else {
-                continue;
-            };
-            labels[index] = replacement as u8;
-        }
-    }
-}
-
-fn cardinal_disagreements(labels: &[u8], grid: &Grid, x: usize, y: usize, class: usize) -> u8 {
-    [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
-        .into_iter()
-        .filter(|&(nx, ny)| labels[grid.index(nx, ny)] as usize != class)
-        .count() as u8
-}
-
-fn neighbour_counts(labels: &[u8], grid: &Grid, x: usize, y: usize) -> [u8; CLASSES] {
-    let mut counts = [0u8; CLASSES];
-    for ny in y - 1..=y + 1 {
-        for nx in x - 1..=x + 1 {
-            if nx != x || ny != y {
-                counts[labels[grid.index(nx, ny)] as usize] += 1;
-            }
-        }
-    }
-    counts
-}
-
-fn neighbourhood_counts(labels: &[u8], grid: &Grid, x: usize, y: usize, radius: usize) -> [u8; CLASSES] {
-    let mut counts = [0u8; CLASSES];
-    for ny in y - radius..=y + radius {
-        for nx in x - radius..=x + radius {
-            counts[labels[grid.index(nx, ny)] as usize] += 1;
-        }
-    }
-    counts
 }
 
 fn vectorize_labels(labels: &[u8], grid: &Grid) -> Result<Vec<(u8, Geom)>, String> {
@@ -982,7 +841,7 @@ fn vectorize_classes(labels: &[u8], grid: &Grid, classes: usize) -> Result<Vec<(
     Ok(out)
 }
 
-fn simplify_owned_coverage(polys: Vec<(u8, Geom)>, tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
+fn simplify_owned_coverage(polys: &[(u8, Geom)], tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
     let refs: Vec<&Geom> = polys.iter().map(|(_, geom)| geom).collect();
     // `vectorize_classes` polygonizes one shared line network, so its faces are a coverage by
     // construction. Validating that dense, unsimplified grid here made a country-scale bake spend
@@ -1003,30 +862,451 @@ fn simplify_owned_coverage(polys: Vec<(u8, Geom)>, tolerance: f64) -> Result<Vec
             return Err("semantic coverage VW returned an invalid coverage".into());
         }
     }
-    Ok(polys.into_iter().zip(simplified).map(|((class, _), geom)| (class, geom)).collect())
+    Ok(polys.iter().zip(simplified).map(|((class, _), geom)| (*class, geom)).collect())
 }
 
-fn smooth_coverage(
-    source: Vec<(u8, Geom)>,
-    grid: &Grid,
-    limit: f64,
-    final_tolerance: f64,
-) -> Result<Vec<(u8, Geom)>, String> {
-    let mut boundaries = Vec::with_capacity(source.len());
-    for (_, geom) in &source {
-        boundaries.push(
-            try_polygon_to_geos(geom)
-                .ok_or("semantic smoothing received an invalid polygon")?
-                .boundary()
-                .map_err(|e| e.to_string())?,
-        );
+/// Simplify the shared coverage without ever letting an orthogonal raster face collapse to three
+/// corners. Triangles cannot originate in `vectorize_classes`: every non-empty grid component has
+/// at least four turns, and smoothing moves those vertices without deleting them. If GEOS removes
+/// one anyway, retry the complete coverage at a lower tolerance so both copies of every shared edge
+/// still move together. The unsimplified input is the final, topology-safe fallback.
+fn simplify_semantic_coverage(polys: &[(u8, Geom)], tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
+    if polys.iter().any(|(_, geom)| has_triangular_face(geom)) {
+        return Err("semantic coverage contains a triangular face before simplification".into());
     }
-    let network = Geometry::create_geometry_collection(boundaries)
-        .and_then(|collection| collection.unary_union())
-        .and_then(|network| network.line_merge())
-        .map_err(|e| format!("semantic boundary merge: {e}"))?;
-    let mut chains = Vec::new();
-    collect_lines(from_geos(&network), &mut chains);
+    let mut attempt = tolerance;
+    for _ in 0..8 {
+        let simplified = simplify_owned_coverage(polys, attempt)?;
+        let triangles = simplified.iter().map(|(_, geom)| triangular_face_count(geom)).sum::<usize>();
+        if triangles == 0 {
+            return Ok(simplified);
+        }
+        attempt *= 0.75;
+    }
+    Ok(polys.to_vec())
+}
+
+fn has_triangular_face(geom: &Geom) -> bool {
+    triangular_face_count(geom) != 0
+}
+
+fn triangular_face_count(geom: &Geom) -> usize {
+    match geom {
+        Geom::Polygon { exterior, .. } => {
+            usize::from(exterior.len().saturating_sub(usize::from(exterior.first() == exterior.last())) == 3)
+        }
+        Geom::Multi(parts) => parts.iter().map(triangular_face_count).sum(),
+        Geom::Line(_) | Geom::Empty => 0,
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SmoothStats {
+    faces: usize,
+    shared_edges: usize,
+    retries: usize,
+}
+
+type PointKey = (u64, u64);
+
+#[derive(Debug, Clone)]
+struct SharedVertex {
+    original: (f64, f64),
+    current: (f64, f64),
+    neighbours: Vec<PointKey>,
+}
+
+fn point_key((x, y): (f64, f64)) -> PointKey {
+    // GEOS can turn +0 into -0 while preserving the same coordinate. Canonicalize the only two
+    // distinct bit patterns that compare equal as floats; every other finite coordinate is exact.
+    (if x == 0.0 { 0 } else { x.to_bits() }, if y == 0.0 { 0 } else { y.to_bits() })
+}
+
+fn ring_vertices(ring: &[(f64, f64)]) -> &[(f64, f64)] {
+    if ring.len() > 1 && ring.first() == ring.last() {
+        &ring[..ring.len() - 1]
+    } else {
+        ring
+    }
+}
+
+fn insert_ring_graph(ring: &[(f64, f64)], graph: &mut HashMap<PointKey, SharedVertex>) {
+    let ring = ring_vertices(ring);
+    for (a, b) in ring.iter().copied().zip(ring.iter().copied().cycle().skip(1)).take(ring.len()) {
+        if a == b {
+            continue;
+        }
+        let ak = point_key(a);
+        let bk = point_key(b);
+        let av = graph.entry(ak).or_insert_with(|| SharedVertex { original: a, current: a, neighbours: Vec::new() });
+        if !av.neighbours.contains(&bk) {
+            av.neighbours.push(bk);
+        }
+        let bv = graph.entry(bk).or_insert_with(|| SharedVertex { original: b, current: b, neighbours: Vec::new() });
+        if !bv.neighbours.contains(&ak) {
+            bv.neighbours.push(ak);
+        }
+    }
+}
+
+fn insert_geom_graph(geom: &Geom, graph: &mut HashMap<PointKey, SharedVertex>) {
+    match geom {
+        Geom::Polygon { exterior, interiors } => {
+            insert_ring_graph(exterior, graph);
+            for hole in interiors {
+                insert_ring_graph(hole, graph);
+            }
+        }
+        Geom::Multi(parts) => {
+            for part in parts {
+                insert_geom_graph(part, graph);
+            }
+        }
+        Geom::Line(_) | Geom::Empty => {}
+    }
+}
+
+fn map_shared_geom(geom: &Geom, graph: &HashMap<PointKey, SharedVertex>) -> Geom {
+    match geom {
+        Geom::Line(points) => Geom::Line(points.iter().map(|&point| graph[&point_key(point)].current).collect()),
+        Geom::Polygon { exterior, interiors } => Geom::Polygon {
+            exterior: exterior.iter().map(|&point| graph[&point_key(point)].current).collect(),
+            interiors: interiors
+                .iter()
+                .map(|ring| ring.iter().map(|&point| graph[&point_key(point)].current).collect())
+                .collect(),
+        },
+        Geom::Multi(parts) => Geom::Multi(parts.iter().map(|part| map_shared_geom(part, graph)).collect()),
+        Geom::Empty => Geom::Empty,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OrdF64(f64);
+
+impl Eq for OrdF64 {}
+
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrdF64 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimplifyVertex {
+    point: (f64, f64),
+    neighbours: Vec<PointKey>,
+    active: bool,
+    revision: u32,
+}
+
+fn collect_ring_keys(geom: &Geom, rings: &mut Vec<Vec<PointKey>>) {
+    match geom {
+        Geom::Polygon { exterior, interiors } => {
+            rings.push(ring_vertices(exterior).iter().copied().map(point_key).collect());
+            for ring in interiors {
+                rings.push(ring_vertices(ring).iter().copied().map(point_key).collect());
+            }
+        }
+        Geom::Multi(parts) => {
+            for part in parts {
+                collect_ring_keys(part, rings);
+            }
+        }
+        Geom::Line(_) | Geom::Empty => {}
+    }
+}
+
+fn simplified_ring(ring: &[(f64, f64)], graph: &HashMap<PointKey, SimplifyVertex>) -> Vec<(f64, f64)> {
+    let closed = ring.len() > 1 && ring.first() == ring.last();
+    let mut out: Vec<_> =
+        ring_vertices(ring).iter().copied().filter(|&point| graph[&point_key(point)].active).collect();
+    if closed && !out.is_empty() {
+        out.push(out[0]);
+    }
+    out
+}
+
+fn map_simplified_geom(geom: &Geom, graph: &HashMap<PointKey, SimplifyVertex>) -> Geom {
+    match geom {
+        Geom::Polygon { exterior, interiors } => Geom::Polygon {
+            exterior: simplified_ring(exterior, graph),
+            interiors: interiors.iter().map(|ring| simplified_ring(ring, graph)).collect(),
+        },
+        Geom::Multi(parts) => Geom::Multi(parts.iter().map(|part| map_simplified_geom(part, graph)).collect()),
+        Geom::Line(points) => Geom::Line(simplified_ring(points, graph)),
+        Geom::Empty => Geom::Empty,
+    }
+}
+
+fn vertex_error(graph: &HashMap<PointKey, SimplifyVertex>, key: PointKey) -> Option<f64> {
+    let vertex = graph.get(&key)?;
+    if !vertex.active || vertex.neighbours.len() != 2 {
+        return None;
+    }
+    let a = graph.get(&vertex.neighbours[0])?;
+    let b = graph.get(&vertex.neighbours[1])?;
+    if !a.active || !b.active || vertex.neighbours[0] == vertex.neighbours[1] {
+        return None;
+    }
+    let base = (b.point.0 - a.point.0).hypot(b.point.1 - a.point.1);
+    if base == 0.0 {
+        return None;
+    }
+    let twice_area = ((vertex.point.0 - a.point.0) * (b.point.1 - a.point.1)
+        - (vertex.point.1 - a.point.1) * (b.point.0 - a.point.0))
+        .abs();
+    Some(twice_area / base)
+}
+
+fn replace_neighbour(neighbours: &mut [PointKey], old: PointKey, new: PointKey) {
+    let index = neighbours.iter().position(|&candidate| candidate == old).expect("shared graph edge is symmetric");
+    neighbours[index] = new;
+}
+
+#[derive(Clone, Copy)]
+struct PlanarSegment {
+    a_key: PointKey,
+    b_key: PointKey,
+    a: (f64, f64),
+    b: (f64, f64),
+}
+
+fn cross(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+fn point_on_segment(point: (f64, f64), a: (f64, f64), b: (f64, f64), epsilon: f64) -> bool {
+    cross(a, b, point).abs() <= epsilon
+        && point.0 >= a.0.min(b.0) - epsilon
+        && point.0 <= a.0.max(b.0) + epsilon
+        && point.1 >= a.1.min(b.1) - epsilon
+        && point.1 <= a.1.max(b.1) + epsilon
+}
+
+fn segments_conflict(first: PlanarSegment, second: PlanarSegment, epsilon: f64) -> bool {
+    let shared = if first.a_key == second.a_key || first.a_key == second.b_key {
+        Some((first.a_key, first.b))
+    } else if first.b_key == second.a_key || first.b_key == second.b_key {
+        Some((first.b_key, first.a))
+    } else {
+        None
+    };
+    if let Some((shared_key, first_other)) = shared {
+        let shared_point = if first.a_key == shared_key { first.a } else { first.b };
+        let second_other = if second.a_key == shared_key { second.b } else { second.a };
+        // Ordinary graph edges may meet at any angle. Collinear edges on the same ray overlap for
+        // a non-zero length, however, which means a removed chord skipped a live vertex.
+        if cross(shared_point, first_other, second_other).abs() > epsilon {
+            return false;
+        }
+        let first_vec = (first_other.0 - shared_point.0, first_other.1 - shared_point.1);
+        let second_vec = (second_other.0 - shared_point.0, second_other.1 - shared_point.1);
+        return first_vec.0 * second_vec.0 + first_vec.1 * second_vec.1 > epsilon;
+    }
+
+    let bbox_overlaps = first.a.0.min(first.b.0) <= second.a.0.max(second.b.0) + epsilon
+        && first.a.0.max(first.b.0) + epsilon >= second.a.0.min(second.b.0)
+        && first.a.1.min(first.b.1) <= second.a.1.max(second.b.1) + epsilon
+        && first.a.1.max(first.b.1) + epsilon >= second.a.1.min(second.b.1);
+    if !bbox_overlaps {
+        return false;
+    }
+    let (o1, o2) = (cross(first.a, first.b, second.a), cross(first.a, first.b, second.b));
+    let (o3, o4) = (cross(second.a, second.b, first.a), cross(second.a, second.b, first.b));
+    (o1 > epsilon && o2 < -epsilon || o1 < -epsilon && o2 > epsilon)
+        && (o3 > epsilon && o4 < -epsilon || o3 < -epsilon && o4 > epsilon)
+        || o1.abs() <= epsilon && point_on_segment(second.a, first.a, first.b, epsilon)
+        || o2.abs() <= epsilon && point_on_segment(second.b, first.a, first.b, epsilon)
+        || o3.abs() <= epsilon && point_on_segment(first.a, second.a, second.b, epsilon)
+        || o4.abs() <= epsilon && point_on_segment(first.b, second.a, second.b, epsilon)
+}
+
+struct SegmentIndex {
+    bucket_m: f64,
+    bucket_cols: usize,
+    bucket_rows: usize,
+    left: f64,
+    bottom: f64,
+    epsilon: f64,
+    buckets: Vec<Vec<usize>>,
+    segments: Vec<PlanarSegment>,
+    seen: Vec<usize>,
+    stamp: usize,
+}
+
+impl SegmentIndex {
+    const BUCKET_CELLS: usize = 8;
+
+    fn new(graph: &HashMap<PointKey, SimplifyVertex>, grid: &Grid) -> Self {
+        let mut index = Self {
+            bucket_m: grid.cell_m * Self::BUCKET_CELLS as f64,
+            bucket_cols: grid.cols.div_ceil(Self::BUCKET_CELLS).max(1),
+            bucket_rows: grid.rows.div_ceil(Self::BUCKET_CELLS).max(1),
+            left: grid.left,
+            bottom: grid.bottom,
+            epsilon: grid.cell_m * grid.cell_m * 1e-10,
+            buckets: vec![
+                Vec::new();
+                grid.cols.div_ceil(Self::BUCKET_CELLS).max(1) * grid.rows.div_ceil(Self::BUCKET_CELLS).max(1)
+            ],
+            segments: Vec::new(),
+            seen: Vec::new(),
+            stamp: 0,
+        };
+        for (&a_key, vertex) in graph {
+            for &b_key in &vertex.neighbours {
+                if a_key < b_key {
+                    index.insert(PlanarSegment { a_key, b_key, a: vertex.point, b: graph[&b_key].point });
+                }
+            }
+        }
+        index
+    }
+
+    fn bucket_x(&self, x: f64) -> usize {
+        (((x - self.left) / self.bucket_m).floor() as isize).clamp(0, self.bucket_cols as isize - 1) as usize
+    }
+
+    fn bucket_y(&self, y: f64) -> usize {
+        (((y - self.bottom) / self.bucket_m).floor() as isize).clamp(0, self.bucket_rows as isize - 1) as usize
+    }
+
+    fn bucket_bounds(&self, segment: PlanarSegment) -> (usize, usize, usize, usize) {
+        (
+            self.bucket_x(segment.a.0.min(segment.b.0)),
+            self.bucket_x(segment.a.0.max(segment.b.0)),
+            self.bucket_y(segment.a.1.min(segment.b.1)),
+            self.bucket_y(segment.a.1.max(segment.b.1)),
+        )
+    }
+
+    fn insert(&mut self, segment: PlanarSegment) {
+        let (x0, x1, y0, y1) = self.bucket_bounds(segment);
+        let id = self.segments.len();
+        self.segments.push(segment);
+        self.seen.push(0);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                self.buckets[y * self.bucket_cols + x].push(id);
+            }
+        }
+    }
+
+    /// Whether a proposed replacement chord would stop the current active graph being planar.
+    /// Records for superseded edges stay in the buckets, but the live graph makes them free to
+    /// discard here; this keeps updates O(1) and avoids a second mutable spatial data structure.
+    fn conflicts(
+        &mut self,
+        candidate: PlanarSegment,
+        removed: PointKey,
+        graph: &HashMap<PointKey, SimplifyVertex>,
+    ) -> bool {
+        self.stamp = self.stamp.wrapping_add(1).max(1);
+        if self.stamp == 1 {
+            self.seen.fill(0);
+        }
+        let (x0, x1, y0, y1) = self.bucket_bounds(candidate);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                for &id in &self.buckets[y * self.bucket_cols + x] {
+                    if self.seen[id] == self.stamp {
+                        continue;
+                    }
+                    self.seen[id] = self.stamp;
+                    let edge = self.segments[id];
+                    if edge.a_key == removed || edge.b_key == removed {
+                        continue;
+                    }
+                    let Some(a) = graph.get(&edge.a_key) else { continue };
+                    let Some(b) = graph.get(&edge.b_key) else { continue };
+                    if !a.active || !b.active || !a.neighbours.contains(&edge.b_key) {
+                        continue;
+                    }
+                    if segments_conflict(candidate, edge, self.epsilon) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
+/// A shared boundary remains a valid categorical coverage exactly while its active graph stays
+/// planar. Check that directly with a coarse uniform index: every unique edge is compared only to
+/// edges whose bounding boxes touch the same eight-cell bucket. This catches chord crossings,
+/// T-junctions, and overlaps without GEOS rebuilding and cross-validating every polygon pair.
+fn shared_graph_is_planar(graph: &HashMap<PointKey, SimplifyVertex>, grid: &Grid) -> bool {
+    let mut index = SegmentIndex {
+        bucket_m: grid.cell_m * SegmentIndex::BUCKET_CELLS as f64,
+        bucket_cols: grid.cols.div_ceil(SegmentIndex::BUCKET_CELLS).max(1),
+        bucket_rows: grid.rows.div_ceil(SegmentIndex::BUCKET_CELLS).max(1),
+        left: grid.left,
+        bottom: grid.bottom,
+        epsilon: grid.cell_m * grid.cell_m * 1e-10,
+        buckets: vec![
+            Vec::new();
+            grid.cols.div_ceil(SegmentIndex::BUCKET_CELLS).max(1)
+                * grid.rows.div_ceil(SegmentIndex::BUCKET_CELLS).max(1)
+        ],
+        segments: Vec::new(),
+        seen: Vec::new(),
+        stamp: 0,
+    };
+    for (&a_key, vertex) in graph {
+        if !vertex.active {
+            continue;
+        }
+        for &b_key in &vertex.neighbours {
+            if a_key >= b_key || !graph[&b_key].active {
+                continue;
+            }
+            let segment = PlanarSegment { a_key, b_key, a: vertex.point, b: graph[&b_key].point };
+            if index.conflicts(segment, (u64::MAX, u64::MAX), graph) {
+                return false;
+            }
+            index.insert(segment);
+        }
+    }
+    true
+}
+
+/// Simplify the already-smoothed categorical coverage directly on its shared planar graph.
+///
+/// GEOS coverage VW is topology-safe but permits a four-corner raster face to become a triangle.
+/// Retrying the *entire* country at a lower tolerance protected that face at the cost of roughly
+/// half again as many points everywhere else. Here a degree-two vertex is removed once globally,
+/// so both rings sharing an edge receive the identical chord. Junctions and the canonical frame
+/// are pinned, and every ring keeps at least four distinct vertices. A spatially indexed planarity
+/// audit rejects crossings, overlaps, and T-junctions; debug builds additionally cross-check the
+/// accepted graph with GEOS's independent polygon and coverage validators.
+fn simplify_shared_coverage(source: &[(u8, Geom)], grid: &Grid, tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
+    let mut shared = HashMap::new();
+    for (_, geom) in source {
+        insert_geom_graph(geom, &mut shared);
+    }
+
+    let mut rings = Vec::new();
+    for (_, geom) in source {
+        collect_ring_keys(geom, &mut rings);
+    }
+    let mut memberships: HashMap<PointKey, Vec<usize>> = HashMap::new();
+    for (ring_id, ring) in rings.iter().enumerate() {
+        for &key in ring {
+            let owners = memberships.entry(key).or_default();
+            if !owners.contains(&ring_id) {
+                owners.push(ring_id);
+            }
+        }
+    }
+
     let epsilon = (grid.cols.max(grid.rows) as f64 * grid.cell_m) * 1e-10;
     let right = grid.left + grid.cols as f64 * grid.cell_m;
     let top = grid.top();
@@ -1036,96 +1316,158 @@ fn smooth_coverage(
             || (y - grid.bottom).abs() <= epsilon
             || (y - top).abs() <= epsilon
     };
-    let mut relaxed_geos = Vec::with_capacity(chains.len());
-    for chain in chains {
-        let Geom::Line(original) = chain else { continue };
-        if original.len() < 3 {
-            relaxed_geos.push(Geometry::create_line_string(ring_to_coordseq(&original)).map_err(|e| e.to_string())?);
+
+    let mut graph: HashMap<_, _> = shared
+        .iter()
+        .map(|(&key, vertex)| {
+            (
+                key,
+                SimplifyVertex {
+                    point: vertex.original,
+                    neighbours: vertex.neighbours.clone(),
+                    active: true,
+                    revision: 0,
+                },
+            )
+        })
+        .collect();
+    let mut edge_index = SegmentIndex::new(&graph, grid);
+    let mut ring_counts: Vec<_> = rings.iter().map(Vec::len).collect();
+    let mut heap = BinaryHeap::new();
+    for (&key, vertex) in &graph {
+        if vertex.neighbours.len() == 2 && !on_frame(vertex.point) {
+            if let Some(error) = vertex_error(&graph, key) {
+                heap.push(std::cmp::Reverse((OrdF64(error), key, vertex.revision)));
+            }
+        }
+    }
+
+    while let Some(std::cmp::Reverse((OrdF64(error), key, revision))) = heap.pop() {
+        if error > tolerance {
+            break;
+        }
+        let Some(vertex) = graph.get(&key) else { continue };
+        if !vertex.active || vertex.revision != revision || vertex.neighbours.len() != 2 {
             continue;
         }
-        let mut points = original.clone();
-        let closed = distance(original[0], *original.last().expect("non-empty")) <= epsilon;
-        let stop = points.len() - usize::from(closed);
+        let Some(current_error) = vertex_error(&graph, key) else { continue };
+        if current_error != error {
+            continue;
+        }
+        let owners = memberships.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+        if owners.iter().any(|&ring_id| ring_counts[ring_id] <= 4) {
+            continue;
+        }
+        let [a, b] = [vertex.neighbours[0], vertex.neighbours[1]];
+        if graph[&a].neighbours.contains(&b) || graph[&b].neighbours.contains(&a) {
+            continue;
+        }
+        let chord = PlanarSegment { a_key: a, b_key: b, a: graph[&a].point, b: graph[&b].point };
+        if edge_index.conflicts(chord, key, &graph) {
+            continue;
+        }
+
+        graph.get_mut(&key).expect("candidate exists").active = false;
+        for &ring_id in owners {
+            ring_counts[ring_id] -= 1;
+        }
+        replace_neighbour(&mut graph.get_mut(&a).expect("first neighbour exists").neighbours, key, b);
+        replace_neighbour(&mut graph.get_mut(&b).expect("second neighbour exists").neighbours, key, a);
+        edge_index.insert(chord);
+        for neighbour in [a, b] {
+            let node = graph.get_mut(&neighbour).expect("updated neighbour exists");
+            node.revision = node.revision.wrapping_add(1);
+            if node.neighbours.len() == 2 && !on_frame(node.point) {
+                let revision = node.revision;
+                if let Some(error) = vertex_error(&graph, neighbour) {
+                    heap.push(std::cmp::Reverse((OrdF64(error), neighbour, revision)));
+                }
+            }
+        }
+    }
+
+    let planar = shared_graph_is_planar(&graph, grid);
+    let simplified: Vec<_> = source.iter().map(|(class, geom)| (*class, map_simplified_geom(geom, &graph))).collect();
+    #[cfg(debug_assertions)]
+    if planar {
+        let refs: Vec<_> = simplified.iter().map(|(_, geom)| geom).collect();
+        debug_assert!(
+            simplified.iter().all(|(_, geom)| polygonal_geom_is_valid(geom)) && coverage_is_valid(&refs, 0.0),
+            "planar shared-graph simplification must remain a valid coverage"
+        );
+    }
+    if planar {
+        return Ok(simplified);
+    }
+
+    Ok(source.to_vec())
+}
+
+fn polygonal_geom_is_valid(geom: &Geom) -> bool {
+    try_polygon_to_geos(geom).is_some_and(|geos| geos.is_valid().unwrap_or(false))
+}
+
+fn smooth_coverage(source: Vec<(u8, Geom)>, grid: &Grid, limit: f64) -> Result<(Vec<(u8, Geom)>, SmoothStats), String> {
+    let mut graph = HashMap::new();
+    for (_, geom) in &source {
+        insert_geom_graph(geom, &mut graph);
+    }
+    let shared_edges = graph.values().map(|vertex| vertex.neighbours.len()).sum::<usize>() / 2;
+    let epsilon = (grid.cols.max(grid.rows) as f64 * grid.cell_m) * 1e-10;
+    let right = grid.left + grid.cols as f64 * grid.cell_m;
+    let top = grid.top();
+    let on_frame = |(x, y): (f64, f64)| {
+        (x - grid.left).abs() <= epsilon
+            || (x - right).abs() <= epsilon
+            || (y - grid.bottom).abs() <= epsilon
+            || (y - top).abs() <= epsilon
+    };
+
+    // The GEOS implementation first unioned every boundary, line-merged the result, moved each
+    // degree-two chain vertex, unioned again, and polygonized. The source is already a valid shared
+    // coverage: doing the same Laplacian update directly on its unique vertex graph preserves both
+    // copies of every edge and keeps each class attached to its face. No regional overlay is needed.
+    for attempt in 0..4 {
+        let attempt_limit = limit * 0.5f64.powi(attempt as i32);
+        for vertex in graph.values_mut() {
+            vertex.current = vertex.original;
+        }
         for _ in 0..SMOOTH_PASSES {
-            let mut next = points.clone();
-            for i in 0..stop {
-                if (!closed && (i == 0 || i + 1 == stop)) || on_frame(original[i]) {
+            let current: HashMap<_, _> = graph.iter().map(|(&key, vertex)| (key, vertex.current)).collect();
+            for vertex in graph.values_mut() {
+                // Degree != 2 is a chain endpoint or junction. Moving it would detach incident
+                // chains; frame vertices likewise define the exact coverage extent.
+                if vertex.neighbours.len() != 2 || on_frame(vertex.original) {
                     continue;
                 }
-                let prev = points[(i + stop - 1) % stop];
-                let following = points[(i + 1) % stop];
+                let prev = current[&vertex.neighbours[0]];
+                let following = current[&vertex.neighbours[1]];
                 let target = ((prev.0 + following.0) * 0.5, (prev.1 + following.1) * 0.5);
                 let mut candidate = (
-                    points[i].0 + SMOOTH_STEP * (target.0 - points[i].0),
-                    points[i].1 + SMOOTH_STEP * (target.1 - points[i].1),
+                    vertex.current.0 + SMOOTH_STEP * (target.0 - vertex.current.0),
+                    vertex.current.1 + SMOOTH_STEP * (target.1 - vertex.current.1),
                 );
-                let displacement = (candidate.0 - original[i].0, candidate.1 - original[i].1);
+                let displacement = (candidate.0 - vertex.original.0, candidate.1 - vertex.original.1);
                 let length = displacement.0.hypot(displacement.1);
-                if length > limit {
+                if length > attempt_limit {
                     candidate = (
-                        original[i].0 + displacement.0 * limit / length,
-                        original[i].1 + displacement.1 * limit / length,
+                        vertex.original.0 + displacement.0 * attempt_limit / length,
+                        vertex.original.1 + displacement.1 * attempt_limit / length,
                     );
                 }
-                next[i] = candidate;
+                vertex.current = candidate;
             }
-            if closed {
-                next[stop] = next[0];
-            }
-            points = next;
         }
-        relaxed_geos.push(Geometry::create_line_string(ring_to_coordseq(&points)).map_err(|e| e.to_string())?);
-    }
-    let rebuilt_network = Geometry::create_geometry_collection(relaxed_geos)
-        .and_then(|collection| collection.unary_union())
-        .map_err(|e| format!("semantic relaxed network: {e}"))?;
-    let polygonized =
-        Geometry::polygonize(&[rebuilt_network]).map_err(|e| format!("semantic relaxed polygonize: {e}"))?;
-    let mut faces = Vec::new();
-    collect_polygons(from_geos(&polygonized), &mut faces);
-
-    // Cache source geometries once and query them spatially. The old nested loop rebuilt every
-    // source polygon for every face, making country-scale smoothing effectively quadratic while
-    // answering the same point-in-polygon question.
-    let mut source_geos = Vec::with_capacity(source.len());
-    let mut source_classes = Vec::with_capacity(source.len());
-    let mut source_index = STRtree::<usize>::with_capacity(10).map_err(|e| e.to_string())?;
-    for (class, geom) in &source {
-        let geos = try_polygon_to_geos(geom).ok_or("semantic source polygon became invalid")?;
-        let index = source_geos.len();
-        source_index.insert(&geos, index);
-        source_geos.push(geos);
-        source_classes.push(*class);
+        let moved: Vec<_> = source.iter().map(|(class, geom)| (*class, map_shared_geom(geom, &graph))).collect();
+        if moved.iter().all(|(_, geom)| polygonal_geom_is_valid(geom)) {
+            return Ok((moved, SmoothStats { faces: source.len(), shared_edges, retries: attempt }));
+        }
     }
 
-    let mut by_class: [Vec<Geom>; CLASSES] = std::array::from_fn(|_| Vec::new());
-    for face in faces {
-        let geos = try_polygon_to_geos(&face).ok_or("semantic smoothing emitted an invalid face")?;
-        let point = geos.point_on_surface().map_err(|e| e.to_string())?;
-        let mut owner = None;
-        // Prototype assigns in reverse categorical paint order.
-        let mut candidates = Vec::new();
-        source_index.query(&point, |&index| candidates.push(index));
-        candidates.sort_unstable_by(|a, b| b.cmp(a));
-        for index in candidates {
-            if source_geos[index].covers(&point).map_err(|e| e.to_string())? {
-                owner = Some(source_classes[index] as usize);
-                break;
-            }
-        }
-        let owner = owner.ok_or("semantic smoothing could not assign a rebuilt face")?;
-        by_class[owner].push(face);
-    }
-    let mut rebuilt = Vec::new();
-    for (class, group) in by_class.iter().enumerate() {
-        if group.is_empty() {
-            continue;
-        }
-        let refs: Vec<&Geom> = group.iter().collect();
-        let unioned = union_all(&refs).ok_or("semantic class dissolve failed")?;
-        rebuilt.extend(unioned.into_iter().map(|geom| (class as u8, geom)));
-    }
-    simplify_owned_coverage(rebuilt, final_tolerance)
+    // Smoothing is cosmetic. If even a one-eighth displacement makes a face invalid, retain the
+    // already-valid shared coverage rather than polygonizing a crossed network and guessing labels.
+    let faces = source.len();
+    Ok((source, SmoothStats { faces, shared_edges, retries: 4 }))
 }
 
 fn remove_tiny_water_components(mask: &mut [bool], width: usize, height: usize, min_pixels: usize) {
@@ -1186,11 +1528,6 @@ fn point_count(geom: &Geom) -> usize {
     }
 }
 
-#[inline]
-fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
-    (a.0 - b.0).hypot(a.1 - b.1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1205,94 +1542,22 @@ mod tests {
     }
 
     #[test]
-    fn overview_cleanup_closes_a_base_filament() {
-        let grid = Grid { left: 0.0, bottom: 0.0, cols: 11, rows: 9, cell_m: 2.0 };
-        let forest = SemanticClass::Forest as u8;
-        let base = SemanticClass::Base as u8;
-        let mut labels = vec![forest; grid.cols * grid.rows];
-        let support = vec![Support([32, 0, 0, 32, 0]); labels.len()];
-        for y in 1..grid.rows - 1 {
-            labels[grid.index(6, y)] = base;
-        }
-        for y in 3..=5 {
-            for x in 2..=4 {
-                labels[grid.index(x, y)] = base;
-            }
-        }
-        labels[grid.index(4, 4)] = forest;
-        let base_before = labels.iter().filter(|&&class| class == base).count();
+    fn overlapping_polygon_hole_does_not_erase_prior_coverage() {
+        let projection = Projection { x_scale: 1.0, y_scale: 1.0 };
+        let solid = Geom::Polygon { exterior: vec![(1.0, 1.0), (7.0, 1.0), (7.0, 7.0), (1.0, 7.0)], interiors: vec![] };
+        let with_hole = Geom::Polygon {
+            exterior: vec![(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)],
+            interiors: vec![vec![(3.0, 3.0), (5.0, 3.0), (5.0, 5.0), (3.0, 5.0)]],
+        };
 
-        close_narrow_base_channels(&mut labels, &support, &grid);
+        let mut hole_only = [0u8; 8 * 8];
+        raster_geom(&with_hole, projection, 0.0, 8.0, 1.0, 8, 8, &mut hole_only, 1);
+        assert_eq!(hole_only[4 * 8 + 4], 0, "a standalone polygon keeps its hole");
 
-        assert!(labels.iter().filter(|&&class| class == base).count() < base_before);
-        assert!((1..grid.rows - 1).filter(|&y| labels[grid.index(6, y)] == base).count() < grid.rows - 2);
-    }
-
-    #[test]
-    fn overview_cleanup_preserves_broad_and_frame_base() {
-        let grid = Grid { left: 0.0, bottom: 0.0, cols: 15, rows: 15, cell_m: 2.0 };
-        let forest = SemanticClass::Forest as u8;
-        let mut labels = vec![forest; grid.cols * grid.rows];
-        let support = vec![Support([64, 0, 0, 0, 0]); labels.len()];
-        for y in 4..=10 {
-            for x in 4..=10 {
-                labels[grid.index(x, y)] = SemanticClass::Base as u8;
-            }
-        }
-        labels[grid.index(0, 7)] = SemanticClass::Base as u8;
-
-        close_narrow_base_channels(&mut labels, &support, &grid);
-
-        assert_eq!(labels[grid.index(7, 7)], SemanticClass::Base as u8);
-        assert_eq!(labels[grid.index(0, 7)], SemanticClass::Base as u8);
-    }
-
-    #[test]
-    fn overview_compaction_moves_a_filament_without_losing_coverage() {
-        let grid = Grid { left: 0.0, bottom: 0.0, cols: 11, rows: 9, cell_m: 2.0 };
-        let forest = SemanticClass::Forest as u8;
-        let grass = SemanticClass::Grass as u8;
-        let mut labels = vec![forest; grid.cols * grid.rows];
-        let support = vec![Support([0, 0, 32, 32, 0]); labels.len()];
-        for y in 1..grid.rows - 1 {
-            labels[grid.index(6, y)] = grass;
-        }
-        for y in 3..=5 {
-            for x in 2..=4 {
-                labels[grid.index(x, y)] = grass;
-            }
-        }
-        labels[grid.index(4, 4)] = forest;
-        let grass_before = labels.iter().filter(|&&class| class == grass).count();
-
-        compact_narrow_semantic_filaments(&mut labels, &support, &grid);
-
-        assert_eq!(labels.iter().filter(|&&class| class == grass).count(), grass_before);
-        assert!((1..grid.rows - 1).filter(|&y| labels[grid.index(6, y)] == grass).count() < grid.rows - 2);
-    }
-
-    #[test]
-    fn overview_compaction_preserves_broad_thematic_regions() {
-        let grid = Grid { left: 0.0, bottom: 0.0, cols: 9, rows: 9, cell_m: 2.0 };
-        let forest = SemanticClass::Forest as u8;
-        let grass = SemanticClass::Grass as u8;
-        let mut labels = vec![forest; grid.cols * grid.rows];
-        let support = vec![Support([0, 0, 64, 0, 0]); labels.len()];
-        for y in 2..=6 {
-            for x in 2..=6 {
-                labels[grid.index(x, y)] = grass;
-            }
-        }
-        let grass_before = labels.iter().filter(|&&class| class == grass).count();
-
-        compact_narrow_semantic_filaments(&mut labels, &support, &grid);
-
-        assert_eq!(labels.iter().filter(|&&class| class == grass).count(), grass_before);
-        for y in 3..=5 {
-            for x in 3..=5 {
-                assert_eq!(labels[grid.index(x, y)], grass);
-            }
-        }
+        let mut overlap = [0u8; 8 * 8];
+        raster_geom(&solid, projection, 0.0, 8.0, 1.0, 8, 8, &mut overlap, 1);
+        raster_geom(&with_hole, projection, 0.0, 8.0, 1.0, 8, 8, &mut overlap, 1);
+        assert_eq!(overlap[4 * 8 + 4], 1, "a later polygon's hole cannot erase an earlier polygon");
     }
 
     #[test]
@@ -1303,6 +1568,107 @@ mod tests {
         let refs: Vec<&Geom> = polys.iter().map(|(_, geom)| geom).collect();
         assert!(coverage_is_valid(&refs, 0.0));
         assert_eq!(polys.iter().map(|(class, _)| *class).collect::<std::collections::BTreeSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn coverage_tolerance_does_not_turn_diagonal_cells_into_triangles() {
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 31, rows: 31, cell_m: 2.0 };
+        let forest = SemanticClass::Forest as u8;
+        let base = SemanticClass::Base as u8;
+        let mut labels = vec![forest; grid.cols * grid.rows];
+        for y in 0..24 {
+            labels[grid.index(5 + y / 2, y)] = base;
+        }
+        for y in 20..27 {
+            for x in 12..=20 {
+                labels[grid.index(x, y)] = base;
+            }
+        }
+
+        let raw = vectorize_labels(&labels, &grid).unwrap();
+        let simplified = simplify_semantic_coverage(&raw, INITIAL_VW_PX).unwrap();
+        let (relaxed, _) = smooth_coverage(simplified, &grid, SMOOTH_LIMIT_PX).unwrap();
+        let unsafe_faces = simplify_owned_coverage(&relaxed, CELL_PX as f64).unwrap();
+        let safe_faces = simplify_semantic_coverage(&relaxed, CELL_PX as f64).unwrap();
+        let shared_faces = simplify_shared_coverage(&relaxed, &grid, CELL_PX as f64).unwrap();
+        let exterior_lengths = |faces: &[(u8, Geom)]| {
+            faces
+                .iter()
+                .filter_map(|(class, geom)| match geom {
+                    Geom::Polygon { exterior, .. } if *class == base => Some(exterior.len()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(exterior_lengths(&unsafe_faces).contains(&4), "the fixture must exercise the old triangle collapse");
+        assert!(
+            exterior_lengths(&safe_faces).into_iter().all(|vertices| vertices >= 5),
+            "every raster cell keeps at least four distinct corners"
+        );
+        assert!(
+            exterior_lengths(&shared_faces).into_iter().all(|vertices| vertices >= 5),
+            "shared-graph simplification keeps every raster face non-triangular"
+        );
+        let refs: Vec<_> = shared_faces.iter().map(|(_, geom)| geom).collect();
+        assert!(coverage_is_valid(&refs, 0.0));
+        assert!(shared_faces.iter().all(|(_, geom)| polygonal_geom_is_valid(geom)));
+        assert!(
+            shared_faces.iter().map(|(_, geom)| point_count(geom)).sum::<usize>()
+                <= safe_faces.iter().map(|(_, geom)| point_count(geom)).sum::<usize>(),
+            "local constraints must be no less efficient than the global tolerance fallback"
+        );
+    }
+
+    #[test]
+    fn smoothed_face_ownership_comes_from_boundary_not_sample_point() {
+        let square = |x0: f64, y0: f64, x1: f64, y1: f64| vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)];
+        let forest =
+            Geom::Polygon { exterior: square(0.0, 0.0, 10.0, 10.0), interiors: vec![square(4.0, 4.0, 6.0, 6.0)] };
+        let urban = Geom::Polygon { exterior: square(4.0, 4.0, 6.0, 6.0), interiors: vec![] };
+        let rebuilt_face = Geom::Polygon { exterior: square(0.0, 0.0, 10.0, 10.0), interiors: vec![] };
+        let source_geos = [try_polygon_to_geos(&forest).unwrap(), try_polygon_to_geos(&urban).unwrap()];
+        let face = try_polygon_to_geos(&rebuilt_face).unwrap();
+
+        let sample = face.point_on_surface().unwrap();
+        assert!(
+            source_geos[1].covers(&sample).unwrap(),
+            "the old point lookup would assign this mostly-forest face to Urban"
+        );
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 10, rows: 10, cell_m: 1.0 };
+        let (smoothed, _) = smooth_coverage(
+            vec![(SemanticClass::Forest as u8, forest), (SemanticClass::Urban as u8, urban)],
+            &grid,
+            0.5,
+        )
+        .unwrap();
+        assert_eq!(smoothed.iter().map(|(class, _)| *class).collect::<Vec<_>>(), vec![3, 4]);
+    }
+
+    #[test]
+    fn ordinary_boundary_motion_preserves_face_ownership_without_overlay() {
+        let shared = [(5.0, 0.0), (5.0, 4.0), (6.0, 5.0), (5.0, 6.0), (5.0, 10.0)];
+        let forest = Geom::Polygon {
+            exterior: vec![(0.0, 0.0), shared[0], shared[1], shared[2], shared[3], shared[4], (0.0, 10.0), (0.0, 0.0)],
+            interiors: vec![],
+        };
+        let urban = Geom::Polygon {
+            exterior: vec![shared[0], (10.0, 0.0), (10.0, 10.0), shared[4], shared[3], shared[2], shared[1], shared[0]],
+            interiors: vec![],
+        };
+        let grid = Grid { left: 0.0, bottom: 0.0, cols: 10, rows: 10, cell_m: 1.0 };
+        let (smoothed, stats) = smooth_coverage(
+            vec![(SemanticClass::Forest as u8, forest), (SemanticClass::Urban as u8, urban)],
+            &grid,
+            0.5,
+        )
+        .unwrap();
+
+        assert_eq!(smoothed.iter().map(|(class, _)| *class).collect::<Vec<_>>(), vec![3, 4]);
+        assert!(stats.shared_edges > 0);
+        let Geom::Polygon { exterior: forest_ring, .. } = &smoothed[0].1 else { panic!("expected forest polygon") };
+        let Geom::Polygon { exterior: urban_ring, .. } = &smoothed[1].1 else { panic!("expected urban polygon") };
+        assert_ne!(forest_ring[3], shared[2], "the ordinary degree-two kink should actually move");
+        assert_eq!(forest_ring[1..=5], urban_ring[3..=7].iter().copied().rev().collect::<Vec<_>>());
     }
 
     #[test]

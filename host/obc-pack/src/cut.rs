@@ -533,11 +533,11 @@ fn prepare_lod<'a>(
             owned = merged;
         }
         if config.merge_lines {
-            let classes = merge_line_classes(&styles);
+            let line_classes = merge_line_classes(&styles);
             let (merged, m) = if l.merge_line_trails {
-                merge_line_trails_with(owned, &classes, progress)
+                merge_line_trails_with(owned, &line_classes, progress)
             } else {
-                merge_lines_with(owned, &classes, progress)
+                merge_lines_with(owned, &line_classes, progress)
             };
             crate::pipeline::report_merge(progress, m, "line fragment", "into");
             owned = merged;
@@ -577,6 +577,14 @@ fn prepare_lod<'a>(
                 presimplified.push(true);
             }
         }
+    }
+
+    // Keep the full land base through merge/coverage construction, then omit it at the same final
+    // boundary as the monolithic packer. The cell's renderer clear is land now; indexing and
+    // clipping these faces would only recreate thousands of redundant per-cell vertices.
+    if let Some(land_id) = config.implicit_land_style_id() {
+        let filtered = feats.into_iter().zip(presimplified).filter(|((style_id, _), _)| *style_id != land_id);
+        (feats, presimplified) = filtered.unzip();
     }
 
     let bounds: Vec<Bounds> = feats.iter().map(|(_, g)| g.bounds()).collect();
@@ -1194,9 +1202,50 @@ pub fn artifact_path(out_dir: &Path, artifact: &CellArtifact) -> PathBuf {
 mod tests {
     use super::*;
     use crate::grid::{on_grid_line, GRID_ORIGIN};
+    use crate::ingest::IngestFeature;
 
     const LOG2: u32 = 18;
     const S: i64 = 1 << LOG2;
+
+    #[test]
+    fn land_backdrop_is_kept_for_preparation_then_removed_from_cell_geometry() {
+        let config = Config::parse(
+            r#"{
+                "features":{"natural":{
+                    "sea":{"z_index":1,"color":"0x001f"},
+                    "land":{"z_index":0,"color":"0xffff"}
+                }}
+            }"#,
+        )
+        .unwrap();
+        let polygon = |style_id| IngestFeature {
+            style_id,
+            min_lod: 0,
+            geom: Geom::Polygon {
+                exterior: vec![(0.0, 0.0), (0.1, 0.0), (0.1, 0.1), (0.0, 0.1), (0.0, 0.0)],
+                interiors: Vec::new(),
+            },
+        };
+        let ing = Ingested {
+            features: vec![polygon(2), polygon(1)], // land first, explicit sea second
+            coastlines: Vec::new(),
+            pois: Vec::new(),
+            nav_graph: NavGraph::default(),
+        };
+        let semantic_scheme = config.semantic_scheme();
+        let predissolved = PredissolveCache::new();
+        let set = prepare_lod(
+            &ing,
+            &config,
+            0,
+            LOG2,
+            &predissolved,
+            PreparedSemantic { features: None, scheme: &semantic_scheme },
+            &Progress::silent(),
+        );
+        assert_eq!(set.feats.iter().map(|(style_id, _)| *style_id).collect::<Vec<_>>(), [1]);
+        assert_eq!(set.presimplified.len(), set.feats.len(), "parallel preparation metadata stays aligned");
+    }
 
     /// A coordinate on the `2^18` grid: cell (i, j)'s min corner plus offsets, as `(lon, lat)`.
     fn at(i: i64, j: i64, dlat: i64, dlon: i64) -> (i32, i32) {

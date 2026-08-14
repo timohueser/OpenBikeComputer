@@ -14,7 +14,9 @@
 //!     done in 3857 *before* reprojecting the result.
 //!
 //! Output is one [`Geom::Polygon`] per land face (flattened to simple polygons,
-//! like the relation path, then styled `natural.land` by [`crate::pipeline`]).
+//! like the relation path). The pipeline keeps those faces internally as the semantic-coverage
+//! base, but when land is the renderer backdrop it serializes only their complement as
+//! `natural.sea`.
 
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
@@ -23,7 +25,9 @@ use std::sync::{Arc, Mutex};
 
 use geos::{Geom as _, Geometry};
 
-use crate::geom::{box_polygon, collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
+use crate::geom::{
+    box_polygon, collect_polygons, from_geos, geom_from_geos, ring_to_coordseq, try_polygon_to_geos, Geom,
+};
 use crate::net;
 use crate::progress::Progress;
 
@@ -103,6 +107,36 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) ->
     let mut out = Vec::new();
     let index = land_index(&shp, progress)?;
     read_shapefile(&shp, &index, qbox, &box_geom, &mut out, progress)?;
+    Ok(out)
+}
+
+/// The part of `bbox_deg` not covered by `land`, flattened to serializable sea polygons.
+///
+/// This is the representation flip's one topology operation: the global dataset remains land
+/// internally (so the coverage builders retain their complete base), while the final map carries
+/// only the usually-small coastline complement. A real union is required before `difference`:
+/// shapefile records may overlap without sharing vertices, and subtracting an even-odd
+/// multipolygon directly could turn an overlap into a spurious water hole.
+pub(crate) fn sea_complement(bbox_deg: (f64, f64, f64, f64), land: &[Geom]) -> Result<Vec<Geom>, String> {
+    let bbox = box_polygon(bbox_deg).map_err(|e| format!("sea bbox: {e}"))?;
+    if land.is_empty() {
+        let mut out = Vec::new();
+        collect_polygons(from_geos(&bbox), &mut out);
+        return Ok(out);
+    }
+
+    let mut parts = Vec::with_capacity(land.len());
+    for (index, polygon) in land.iter().enumerate() {
+        parts.push(
+            try_polygon_to_geos(polygon)
+                .ok_or_else(|| format!("land polygon {index} is not a valid polygon while generating sea"))?,
+        );
+    }
+    let collection = Geometry::create_multipolygon(parts).map_err(|e| format!("assemble land union: {e}"))?;
+    let unioned = collection.unary_union().map_err(|e| format!("union land for sea complement: {e}"))?;
+    let sea = bbox.difference(&unioned).map_err(|e| format!("subtract land from sea bbox: {e}"))?;
+    let mut out = Vec::new();
+    collect_polygons(from_geos(&sea), &mut out);
     Ok(out)
 }
 
@@ -412,6 +446,17 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    fn square(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Geom {
+        Geom::Polygon {
+            exterior: vec![(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y), (min_x, min_y)],
+            interiors: Vec::new(),
+        }
+    }
+
+    fn area(polygons: &[Geom]) -> f64 {
+        polygons.iter().map(|g| try_polygon_to_geos(g).unwrap().area().unwrap()).sum()
+    }
+
     /// Forward then inverse round-trips to the input (well within µdeg).
     #[test]
     fn reproject_roundtrip() {
@@ -431,6 +476,19 @@ mod tests {
         // 180° E is exactly half the Mercator world width (πR).
         let (x180, _) = merc_forward(180.0, 0.0);
         assert!((x180 - std::f64::consts::PI * R).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sea_complement_is_exact_for_empty_partial_and_full_land() {
+        let bbox = (0.0, 0.0, 10.0, 10.0);
+        let all_sea = sea_complement(bbox, &[]).unwrap();
+        assert!((area(&all_sea) - 100.0).abs() < 1e-9);
+
+        let coast = sea_complement(bbox, &[square(0.0, 0.0, 6.0, 10.0)]).unwrap();
+        assert!((area(&coast) - 40.0).abs() < 1e-9, "the right-hand 40% remains sea");
+
+        let inland = sea_complement(bbox, &[square(0.0, 0.0, 10.0, 10.0)]).unwrap();
+        assert!(inland.is_empty(), "an all-land extract serializes no sea polygon");
     }
 
     /// `parse_polygon_rings` decodes a hand-built single-ring (square) record body.

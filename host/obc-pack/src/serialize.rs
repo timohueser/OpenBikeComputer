@@ -41,6 +41,12 @@ use obc_map_scene::ground_dist_m;
 /// midpoints `densify` will insert.
 pub(crate) const MAX_SEGMENT: i64 = 30_000;
 
+/// Largest safe first delta from a feature's exterior anchor to a hole vertex. Unlike a real ring
+/// edge this jump must never be densified: inserted points would become part of the hole boundary.
+/// Keep it at the symmetric positive `i16` limit (rather than accepting the lone `-32768` value)
+/// because anchor selection reasons about unsigned Chebyshev distance.
+pub(crate) const MAX_HOLE_ANCHOR_DELTA: i64 = i16::MAX as i64;
+
 // The serializer's blob length must equal `hours.rs`'s `Schedule::encode` width, or
 // the pool bytes and the `POI_HOURS_BLOB_LEN` the directory advertises disagree.
 const _: () = assert!(POI_HOURS_BLOB_LEN == crate::hours::BLOB_LEN, "hours blob length must match hours.rs");
@@ -194,6 +200,58 @@ pub(crate) fn to_udeg(v: f64) -> i64 {
     (v * 1e6).round_ties_even() as i64
 }
 
+/// Round one geometry ring exactly as [`pack_feature`] will and remove vertices that carry no
+/// integer geometry. Kept crate-visible so the quadtree can enforce the hole-anchor invariant on
+/// the exact coordinates the serializer will see, rather than on approximately equivalent floats.
+pub(crate) fn canonical_ring_udeg(ring: &[(f64, f64)], closed: bool) -> Vec<(i64, i64)> {
+    let mut points: Vec<(i64, i64)> = ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
+    if closed && points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    remove_redundant_vertices(&mut points, closed);
+    points
+}
+
+#[inline]
+pub(crate) fn coordinate_delta(a: (i64, i64), b: (i64, i64)) -> i64 {
+    (b.0 - a.0).abs().max((b.1 - a.1).abs())
+}
+
+/// Find the exterior vertex that minimizes the worst first-delta distance to all holes. Closed
+/// rings are cyclic, so choosing a different first vertex is lossless. The returned distance is
+/// exact for the serializer: every hole is independently rotated to its closest vertex after the
+/// exterior is rotated to `index`.
+pub(crate) fn best_exterior_anchor(exterior: &[(i64, i64)], interiors: &[Vec<(i64, i64)>]) -> Option<(usize, i64)> {
+    exterior
+        .iter()
+        .enumerate()
+        .map(|(index, &anchor)| {
+            let worst = interiors
+                .iter()
+                .map(|hole| hole.iter().map(|&point| coordinate_delta(anchor, point)).min().unwrap_or(i64::MAX))
+                .max()
+                .unwrap_or(0);
+            (index, worst)
+        })
+        .min_by_key(|&(index, worst)| (worst, index))
+}
+
+/// Rotate a closed ring to the vertex requiring the shortest first delta from the feature anchor.
+/// Ring rotation is geometry-preserving; it often avoids a quadtree split for a hole near one side
+/// of a large exterior. Returns that shortest Chebyshev delta in microdegrees.
+fn rotate_ring_near_anchor(points: &mut [(i64, i64)], anchor: (i64, i64)) -> i64 {
+    let Some((index, distance)) = points
+        .iter()
+        .enumerate()
+        .map(|(index, &point)| (index, coordinate_delta(anchor, point)))
+        .min_by_key(|&(_, distance)| distance)
+    else {
+        return i64::MAX;
+    };
+    points.rotate_left(index);
+    distance
+}
+
 /// Append intermediate points between `p1` and `p2` (then `p2`) so no single
 /// (dx, dy) step exceeds the 16-bit delta range, using an integer step count and
 /// banker's-rounded midpoints.
@@ -287,28 +345,47 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let mut max_delta = 0i64;
     let mut packed_rings: Vec<(usize, Vec<i64>)> = Vec::with_capacity(f.rings.len());
 
-    for (i, ring) in f.rings.iter().enumerate() {
-        let mut raw_pts: Vec<(i64, i64)> = ring.iter().map(|&(lon, lat)| (to_udeg(lon), to_udeg(lat))).collect();
+    let mut raw_rings: Vec<Vec<(i64, i64)>> =
+        f.rings.iter().map(|ring| canonical_ring_udeg(ring, is_polygon)).collect();
+    assert!(!raw_rings.is_empty() && !raw_rings[0].is_empty(), "feature has no encodable exterior vertices");
+    if is_polygon {
+        let (index, distance) = best_exterior_anchor(&raw_rings[0], &raw_rings[1..])
+            .expect("non-empty polygon exterior has an anchor candidate");
+        assert!(
+            distance <= MAX_HOLE_ANCHOR_DELTA,
+            "polygon hole is {distance} µdeg from its best exterior anchor; build it through the quadtree before packing"
+        );
+        raw_rings[0].rotate_left(index);
+    }
+
+    let mut feature_anchor = (0i64, 0i64);
+    for (i, raw_pts) in raw_rings.iter_mut().enumerate() {
         // Polygon rings close implicitly in both the format and renderer. GEOS and the baker's
         // topology stages conventionally repeat the first vertex at the end, but serializing that
         // duplicate spends one frame point per ring without adding geometry. Lines keep their last
         // point even when they happen to be loops: their stroke path is not implicitly closed.
-        if is_polygon && raw_pts.len() > 1 && raw_pts.first() == raw_pts.last() {
-            raw_pts.pop();
-        }
-        remove_redundant_vertices(&mut raw_pts, is_polygon);
-
         let start_ref = if i == 0 {
             anchor_lon = raw_pts[0].0 - node_bbox.0;
             anchor_lat = raw_pts[0].1 - node_bbox.1;
-            raw_pts[0]
+            feature_anchor = raw_pts[0];
+            feature_anchor
         } else {
-            (node_bbox.0 + anchor_lon, node_bbox.1 + anchor_lat)
+            // OBCM gives holes no independent anchor: their first delta is relative to the
+            // exterior anchor. Rotating a ring is lossless and minimizes that jump. If even the
+            // nearest vertex is too far away, inserting bridge vertices would change the hole into
+            // a long wedge (the PR #1299 coarse-map artifact). The quadtree must split first.
+            let distance = rotate_ring_near_anchor(raw_pts, feature_anchor);
+            debug_assert!(
+                distance <= MAX_HOLE_ANCHOR_DELTA,
+                "best exterior-anchor calculation disagreed with hole rotation"
+            );
+            feature_anchor
         };
 
-        // Jump from the reference point to the first vertex, then walk the ring.
-        let mut pts: Vec<(i64, i64)> = Vec::new();
-        densify(start_ref, raw_pts[0], &mut pts);
+        // Walk actual ring edges only. In particular, never densify the exterior-anchor → hole
+        // jump: those intermediate coordinates would become vertices of the hole and the implicit
+        // closing edge would turn the bridge into a triangular cutout.
+        let mut pts: Vec<(i64, i64)> = vec![raw_pts[0]];
         for &p2 in &raw_pts[1..] {
             let last = *pts.last().unwrap();
             densify(last, p2, &mut pts);
@@ -330,6 +407,8 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         }
         packed_rings.push((pts.len(), deltas));
     }
+
+    assert!(max_delta <= i16::MAX as i64, "quadtree/serializer delta invariant exceeded i16");
 
     let is16 = max_delta > 127;
     if is16 {
