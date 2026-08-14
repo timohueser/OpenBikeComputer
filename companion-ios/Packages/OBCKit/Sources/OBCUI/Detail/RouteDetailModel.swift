@@ -169,7 +169,7 @@ public final class RouteDetailModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink & DeviceObjects
     @ObservationIgnored private var started = false
     @ObservationIgnored private var connectionWatch: Task<Void, Never>?
 
@@ -177,7 +177,7 @@ public final class RouteDetailModel {
     /// root passes it for routes saved from an import this session, whose
     /// waypoints/profile live app-side, not on the device.
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink & DeviceObjects,
         dressing: Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
