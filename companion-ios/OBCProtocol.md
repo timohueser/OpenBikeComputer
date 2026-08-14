@@ -42,8 +42,9 @@ not parsed as release versions and therefore never produce an automatic update o
 ### Data plane
 
 Bulk objects move over one encrypted L2CAP CoC. `L2CAPByteChannel` owns the stream,
-`BLEChannel` owns whole-object transfer orchestration, and semantic features use `DeviceTransport`.
-The app never exposes CoreBluetooth types above `OBCTransport/BLE/`.
+`BLEChannel` owns whole-object transfer orchestration, and semantic features use capability-sized
+protocols from `OBCTransport`. The app never exposes CoreBluetooth types above `OBCTransport/BLE/`;
+the composition root alone chooses the concrete `DeviceTransport` aggregate.
 
 ### Bulk transfers
 
