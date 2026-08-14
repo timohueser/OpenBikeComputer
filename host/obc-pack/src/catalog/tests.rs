@@ -8,6 +8,9 @@
 
 use std::fs;
 
+use serde_json::Value;
+
+use super::schema::{CELL_ID_PATTERN, ID_PATTERN, PINNED_URL_PATTERN, SHA256_PATTERN, TIMESTAMP_PATTERN};
 use super::*;
 
 use obc_formats::io::put_i32;

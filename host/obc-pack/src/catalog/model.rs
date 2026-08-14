@@ -1,15 +1,14 @@
 //! Wire documents shared by catalog generation, schema generation, and callers.
 //!
-//! This module owns only the serialized catalog model and its canonical cell-id
-//! boundary. Tree scanning, validation, hashing, and publication stay in the catalog
-//! façade until their own ownership-complete seams are extracted.
+//! This module owns only the serialized catalog model. Tree scanning, validation,
+//! hashing, and publication live behind separate catalog owners.
 
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::grid::{axis_cells, id_width, CellId, GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE};
+use crate::grid::{GRID_ORIGIN, WORLD_SIDE};
 
 use super::boundary;
 
@@ -33,41 +32,6 @@ pub const GRID_ORIGIN_UDEG: i32 = GRID_ORIGIN as i32;
 /// deliberately wider than the geographic domain, so a cell may overhang ±90°/±180° and
 /// MUST NOT be clamped.
 pub const WORLD_SIDE_UDEG: i32 = WORLD_SIDE as i32;
-
-/// Parse the canonical `<log2>/<i>/<j>` id (`OBCA_Spec.md` §1.3), **strictly**.
-///
-/// [`CellId::parse`] is deliberately lenient about the zero padding — a human types ids at
-/// a CLI. A catalog cannot be: producers MUST widen rather than truncate, so `18/1204/52`
-/// and `18/01204/1052` are *different strings for the same cell* and exactly the kind of
-/// ambiguity a content-addressed store must not have. Every id this module reads out of a
-/// document or off a path comes through here.
-pub fn parse_strict_id(s: &str) -> Result<CellId, String> {
-    let mut parts = s.split('/');
-    let (Some(log2), Some(i), Some(j), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
-        return Err(format!("cell id `{s}` is not `<log2>/<i>/<j>`"));
-    };
-    if log2.is_empty() || log2.len() > 2 || !log2.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("cell id `{s}`: `{log2}` is not a 1–2 digit cell size"));
-    }
-    let log2: u32 = log2.parse().map_err(|_| format!("cell id `{s}`: bad cell size"))?;
-    if !(MIN_CELL_LOG2..=MAX_CELL_LOG2).contains(&log2) {
-        return Err(format!("cell id `{s}`: cell size 2^{log2} µdeg is outside 2^{MIN_CELL_LOG2}..=2^{MAX_CELL_LOG2}"));
-    }
-    let width = id_width(log2);
-    let count = axis_cells(log2);
-    let mut idx = [0i64; 2];
-    for (slot, (text, axis)) in idx.iter_mut().zip([(i, "i"), (j, "j")]) {
-        if text.len() != width || !text.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(format!("cell id `{s}`: `{axis}` must be {width} digits, zero-padded (got `{text}`)"));
-        }
-        let v: i64 = text.parse().map_err(|_| format!("cell id `{s}`: `{text}` is not a number"))?;
-        if v >= count {
-            return Err(format!("cell id `{s}`: `{axis}` = {v} is off the grid (0..{count})"));
-        }
-        *slot = v;
-    }
-    Ok(CellId { log2, i: idx[0], j: idx[1] })
-}
 
 // --- the root document (§3) ------------------------------------------------------------
 
