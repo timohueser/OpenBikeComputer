@@ -66,7 +66,7 @@ pub(crate) const MINUTES_PER_DAY: u16 = 1440;
 
 impl WeeklySchedule {
     /// Decode a 29-byte pool blob (spec §7.5) into a schedule. `blob` must be exactly
-    /// [`POI_HOURS_BLOB_LEN`](obc_formats::obcm::POI_HOURS_BLOB_LEN) bytes; a shorter slice yields
+    /// [`POI_HOURS_BLOB_LEN`] bytes; a shorter slice yields
     /// `None` (a corrupt/truncated pool is handled cleanly, never a panic). Every
     /// quarter-hour byte is taken as-is — the packer guarantees `0..=96`, and the eval
     /// helpers stay total for any byte value regardless.
@@ -171,7 +171,7 @@ impl WeeklySchedule {
 /// Weekday of a Gregorian date, **Mon = 0 .. Sun = 6** (the blob's day order, spec
 /// §7.5), via Zeller's congruence. Pure, `DateTime`-free — the shared bottom of the
 /// hours stack that `obc-app` (#444) calls as `weekday_from_ymd(dt.year, dt.month,
-/// dt.day)` before [`WeeklySchedule::is_open`]/[`today_intervals`].
+/// dt.day)` before [`WeeklySchedule::is_open`]/[`WeeklySchedule::today_intervals`].
 ///
 /// `month` is `1..=12`, `day` `1..=31`; an out-of-range `month` is clamped into range
 /// so the function stays total (a corrupt clock never panics). Valid for any Gregorian
