@@ -10,12 +10,13 @@ use std::fs;
 
 use serde_json::Value;
 
+use super::cells::{KnownEmptyState, CELL_EXT, CELL_SIDECAR_EXT};
 use super::regions::{REGIONS_DIR, REGION_DOC, REGION_POLY};
 use super::schema::{CELL_ID_PATTERN, ID_PATTERN, PINNED_URL_PATTERN, SHA256_PATTERN, TIMESTAMP_PATTERN};
 use super::*;
 
 use obc_formats::io::put_i32;
-use obc_formats::obcm::{HEADER_LEN, MAGIC};
+use obc_formats::obcm::{HEADER_LEN, MAGIC, VERSION as OBCM_VERSION};
 
 use crate::grid::id_width;
 
