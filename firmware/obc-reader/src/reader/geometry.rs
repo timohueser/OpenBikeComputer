@@ -47,7 +47,7 @@ pub struct Lod {
     pub chunk_size: usize,
     pub chunk_count: usize,
     /// Total bytes of this level's chunk-data region — `offsets[chunk_count]`, the last entry of
-    /// the offset table, read once in [`parse_lod_table`]. Resident so a per-chunk fetch can
+    /// the offset table, read once in `parse_lod_table`. Resident so a per-chunk fetch can
     /// bound its offset pair without a second read.
     pub chunk_bytes_total: usize,
 }

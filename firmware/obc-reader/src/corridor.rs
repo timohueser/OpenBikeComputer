@@ -136,7 +136,7 @@ pub struct CorridorPoi {
     pub dist_along_m: u32,
     /// Signed lateral distance from the route line, meters: **positive = right** of the direction
     /// of travel, negative = left. U3 renders `←`/`→` from the sign once the magnitude passes its
-    /// threshold. Magnitude never exceeds [`CORRIDOR_HALF_WIDTH_M`].
+    /// threshold. Magnitude never exceeds `CORRIDOR_HALF_WIDTH_M`.
     pub offset_m: i32,
 }
 

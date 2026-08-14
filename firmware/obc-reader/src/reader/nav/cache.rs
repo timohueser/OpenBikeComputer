@@ -12,13 +12,13 @@ use obc_formats::io::{ByteSource, Error as IoError};
 /// which had ~69 KiB below the 128 KiB USB maximum, so this growth costs zero linked resident RAM.
 /// Fully-associative round-robin is retained: 32 tag compares are negligible beside a card command
 /// and preserve the measured hit rate without conflict misses.
-pub(in crate::reader) const NAV_TILE_SLOTS: usize = 32;
+const NAV_TILE_SLOTS: usize = 32;
 
 /// Route-private aligned quadtree-index windows. Real nav indexes are about 8 KiB; the render cache's
 /// seven windows repeatedly scanned and thrashed because every settled node re-descends the tree.
 /// Sixteen scan-resistant RRIP windows keep that working set inside the route-only arena arm and
 /// leave the renderer's carefully-budgeted seven-window cache untouched.
-pub(in crate::reader) const NAV_INDEX_BLOCKS: usize = 16;
+const NAV_INDEX_BLOCKS: usize = 16;
 
 /// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u32::MAX`
 /// (its whole extent must lie inside a `u32`-addressed source).
@@ -53,7 +53,7 @@ impl NavCacheStats {
 /// two chunk spaces can't collide. [`crate::Reader::for_each_nav_node_cached`] and
 /// [`crate::Reader::nav_edge_oriented`] stream through it so the router's per-settle spatial re-fetch
 /// doesn't re-read the same leaf from the SD (epic #116's named risk). Round-robin eviction: across
-/// the [`NAV_TILE_SLOTS`] slots the measured hit rate matches LRU's within noise (the frontier's
+/// the `NAV_TILE_SLOTS` slots the measured hit rate matches LRU's within noise (the frontier's
 /// live-leaf set has no strong recency skew), so the cheaper cursor is kept.
 ///
 /// ~25 KB, owned by the caller (the device puts it in the route-only scratch-arena arm); `new()` is
@@ -204,5 +204,78 @@ impl NavTileCache {
 impl Default for NavTileCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SliceSource;
+    use obc_formats::obcm::NAV_CHUNK_SIZE;
+
+    /// The graph-tile cache holds [`NAV_TILE_SLOTS`] distinct chunks resident at once, and
+    /// round-robin eviction drops the **oldest** on the next miss.
+    #[test]
+    fn nav_tile_cache_holds_the_full_working_set_and_evicts_round_robin() {
+        const LEN: usize = NAV_CHUNK_SIZE; // 512, = one pinned v9 nav chunk
+                                           // NAV_TILE_SLOTS + 1 distinct chunks; every byte of chunk k is `k`, so contents are checkable.
+        let mut data = [0u8; (NAV_TILE_SLOTS + 1) * LEN];
+        for (k, b) in data.iter_mut().enumerate() {
+            *b = (k / LEN) as u8;
+        }
+        let src = SliceSource(&data);
+        let mut cache = NavTileCache::new();
+        let off = |i: usize| (i * LEN) as u32;
+
+        // Prime every slot: misses only, contents correct.
+        for i in 0..NAV_TILE_SLOTS {
+            assert_eq!(cache.chunk(&src, off(i), LEN).unwrap()[0], i as u8);
+        }
+        assert_eq!(cache.stats(), NavCacheStats { hits: 0, misses: NAV_TILE_SLOTS as u32, ..NavCacheStats::default() });
+
+        // Re-touch all slots — every one still resident, so no new read.
+        for i in 0..NAV_TILE_SLOTS {
+            assert_eq!(cache.chunk(&src, off(i), LEN).unwrap()[0], i as u8);
+        }
+        assert_eq!(
+            cache.stats(),
+            NavCacheStats { hits: NAV_TILE_SLOTS as u32, misses: NAV_TILE_SLOTS as u32, ..NavCacheStats::default() }
+        );
+
+        // One more distinct chunk evicts the oldest (round-robin cursor = slot 0 = chunk 0).
+        assert_eq!(cache.chunk(&src, off(NAV_TILE_SLOTS), LEN).unwrap()[0], NAV_TILE_SLOTS as u8);
+        assert_eq!(cache.stats().misses, NAV_TILE_SLOTS as u32 + 1);
+
+        // Chunk 1 survived the eviction ⇒ hits; chunk 0 was evicted ⇒ re-reads. (Order matters: the
+        // chunk-0 re-read then evicts the next round-robin victim, so check the hit first.)
+        let s = cache.stats();
+        cache.chunk(&src, off(1), LEN).unwrap();
+        assert_eq!(cache.stats().hits, s.hits + 1, "a still-resident chunk hits");
+        let s = cache.stats();
+        cache.chunk(&src, off(0), LEN).unwrap();
+        assert_eq!(cache.stats().misses, s.misses + 1, "the evicted oldest re-reads");
+    }
+
+    /// A route re-descends the same quadtree for every settled node. The private index cache is
+    /// deliberately scan-resistant: a cycle one sector larger than capacity should churn one
+    /// probation slot, not evict the entire warm index as LRU would.
+    #[test]
+    fn nav_index_cache_resists_a_repeated_scan_larger_than_capacity() {
+        const WORKING_BLOCKS: usize = NAV_INDEX_BLOCKS + 1;
+        let data = [0u8; WORKING_BLOCKS * INDEX_BLOCK];
+        let src = SliceSource(&data);
+        let mut cache = NavTileCache::new();
+        let mut word = [0u8; 4];
+
+        for block in 0..WORKING_BLOCKS {
+            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+        }
+        assert_eq!(cache.stats().index_misses, WORKING_BLOCKS as u32);
+
+        for block in 0..WORKING_BLOCKS {
+            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+        }
+        assert_eq!(cache.stats().index_hits, (WORKING_BLOCKS - 2) as u32);
+        assert_eq!(cache.stats().index_misses, (WORKING_BLOCKS + 2) as u32);
     }
 }

@@ -17,7 +17,7 @@ use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 
 /// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1), and the byte size of one
 /// [`NavTileCache`] slot. v9 pins the wire value to exactly [`NAV_CHUNK_SIZE`] (512), so this equals
-/// it: the cache holds whole 512 B chunks and [`NavTileCache::chunk`]'s `debug_assert` guards that
+/// it: the cache holds whole 512 B chunks and `NavTileCache::chunk`'s `debug_assert` guards that
 /// no larger chunk is ever routed through a slot.
 pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
@@ -44,7 +44,7 @@ pub struct NavDirectory {
     /// Number of `chunk_size`-byte chunks in the edge pool.
     pub edge_chunk_count: usize,
     /// Fixed capacity (bytes) of every nav chunk — node chunks and edge-pool chunks alike. v9 pins
-    /// this to [`NAV_CHUNK_SIZE`] (512); [`parse_nav_directory`] rejects any other value.
+    /// this to [`NAV_CHUNK_SIZE`] (512); `parse_nav_directory` rejects any other value.
     pub chunk_size: usize,
     /// Absolute byte offset of the §8.6 profile table (written immediately after this directory).
     pub profile_table_offset: usize,
@@ -84,7 +84,7 @@ impl NavDirectory {
     }
 
     /// Byte offset where the node data chunks begin (right after the index), or `None` on
-    /// `usize` overflow (a corrupt directory on the 32-bit MCU) — see [`index_end`].
+    /// `usize` overflow (a corrupt directory on the 32-bit MCU) — see `index_end`.
     #[inline]
     pub fn data_start(&self) -> Option<usize> {
         index_end(self.index_offset, self.node_count)
@@ -141,7 +141,7 @@ impl QuadIndex for NavSnapIndex {
 /// One §8.6 routing profile resident in [`super::MapTables`]: a display name plus the two multiplier
 /// tables (`u8` fixed-point 1/16, indexed by way-kind's highway class 0..=31 / surface class
 /// 0..=7; `16` = 1.0×, `0` = forbidden). N3 selects one by index and weights each edge by
-/// [`MapProfile::multiplier`]. Parsed by [`parse_nav_profiles`], which clamps any non-zero byte
+/// [`MapProfile::multiplier`]. Parsed by `parse_nav_profiles`, which clamps any non-zero byte
 /// below 16 up to 16 (defensive — the packer already enforces the admissibility invariant).
 #[derive(Debug, Clone, Copy)]
 pub struct MapProfile {
@@ -482,7 +482,7 @@ impl<'a> Reader<'a> {
     /// spatial re-fetch settles one node at a time (a degenerate one-point `view`). It does **not**
     /// walk a single advancing neighborhood: the heap pops the globally best-`f` node, so successive
     /// settles scatter across the frontier's several live quadtree leaves. The route-private
-    /// [`cache::NAV_TILE_SLOTS`] working set keeps those leaves resident so the per-settle re-fetch mostly
+    /// navigation-cache working set keeps those leaves resident so the per-settle re-fetch mostly
     /// hits. Same decode, same corrupt-input posture, same reentrancy rule as the uncached walk.
     pub fn for_each_nav_node_cached(
         &self,
@@ -1122,6 +1122,3 @@ pub(super) fn parse_nav_profiles(
     }
     Ok(out)
 }
-
-#[cfg(test)]
-pub(in crate::reader) use cache::{NAV_INDEX_BLOCKS, NAV_TILE_SLOTS};

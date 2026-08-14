@@ -23,7 +23,7 @@
 //!
 //! The per-shard records are the only part of a mount that is *big*: [`ShardTables`] is 408 B on
 //! the device (a `heapless::Vec<Lod, 16>` is at capacity whatever the ladder's length — the
-//! format's 16-rung maximum is what the type reserves), a [`Mounted`] record 440 B, and the
+//! format's 16-rung maximum is what the type reserves), a `Mounted` record 440 B, and the
 //! 32-shard array therefore **14,084 B**. That must not travel through a caller's frame: an
 //! embassy task allocates every local at entry and keeps it for the task's life (#270), so a set
 //! mounted into a local would cost the task frame 14 KB even while nothing is mounted, against a
