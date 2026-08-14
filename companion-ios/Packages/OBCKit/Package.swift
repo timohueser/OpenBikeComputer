@@ -11,7 +11,8 @@ import PackageDescription
 //                and the OBCW bundle builder. Depends on OBCDomain + OBCWeatherWire,
 //                never on OBCTransport (no CoreBluetooth anywhere near it) and never
 //                on SwiftUI
-//   OBCTransport → DeviceTransport protocol + (B1) BLETransport, depends on OBCDomain
+//   OBCTransport → capability-sized protocols + the DeviceTransport aggregate +
+//                (B1) BLETransport, depends on OBCDomain
 //                + OBCWeather (WX9: the transport conforms to the weather job's
 //                `WeatherDeviceLink` seam — the dependency points *down* into the
 //                weather domain, never the other way around)
@@ -19,8 +20,9 @@ import PackageDescription
 //                depends on OBCDomain — sits beside OBCTransport, never on it
 //   OBCMock    → #if DEBUG fixtures + MockTransport, depends on OBCTransport
 //   OBCUI      → SwiftUI component kit (B11) + feature screens (B2+), depends on
-//                OBCDomain + OBCTransport (feature view models consume the
-//                DeviceTransport protocol — never OBCMock, never CoreBluetooth)
+//                OBCDomain + OBCTransport (feature view models consume capability-sized
+//                OBCTransport protocols; DeviceTransport is for true aggregates/composition —
+//                never OBCMock, never CoreBluetooth)
 //
 // Every target compiles in the Swift 6 language mode (see `languageMode` below).
 
