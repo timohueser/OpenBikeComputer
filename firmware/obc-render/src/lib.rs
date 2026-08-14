@@ -47,8 +47,8 @@ pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
 pub use viewport::{mpp_for_zoom, round_coord, zoom_for_mpp, Viewport};
 
-use collect::{FrameScratch, Span};
-use fill::fill_polygon_proj;
+use collect::{FrameScratch, ScreenPoint, Span};
+use fill::fill_polygon;
 use stroke::{draw_line, Stroker};
 
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
@@ -56,43 +56,46 @@ use stroke::{draw_line, Stroker};
 // simulator and tests build too, so they render exactly what the device will — features start
 // dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so the
 // sim shows that limit rather than an unattainable host-fidelity map). The renderer scratch
-// (`MCU_SCRATCH_BYTES` below, ~115 KB) is sized alongside the 75 KB RGB222 framebuffer, the
+// (`MCU_SCRATCH_BYTES` below, under 128 KiB) is sized alongside the 75 KB RGB222 framebuffer, the
 // map/route caches, the on-device router, the BLE stack (issue #270 — map + BLE share one image),
 // and a ~75 KB stack reserve. The board crate's budget assert is the binding fit check.
 //
-// **Where the current numbers came from (#1146 P3).** The board's scratch arena made these caps
-// the *largest arm* of a three-way union (render ⊥ nav ⊥ usb), and max-of-arms accounting freed
-// ~76 KB of resident RAM; P3 spends ~25 KB of that back here, where it buys visible map. Growing
-// them still costs the device 1:1 — the render arm *is* the arena's maximum, so there is no free
-// headroom on this side of the union (`firmware/obc-fw-nrf54l/src/arena.rs` explains the cliff).
+// **Where the current numbers came from (#1146 P3).** The board's scratch arena made these caps one
+// arm of a three-way union (render ⊥ nav ⊥ usb), and max-of-arms accounting freed ~76 KB of
+// resident RAM; P3 spent ~25 KB of that back here, where it buys visible map. The USB arm later grew
+// to 128 KiB and became the maximum. This coarse-LOD work phase-shares the two per-feature point
+// buffers and spends the resulting headroom on frame points without moving that 128 KiB ceiling
+// (`firmware/obc-fw-nrf54l/src/arena.rs` explains the cliff).
 // (The old `nrf-mem` feature — the culled 256 KB nRF54L15-DK profile — was deleted when the LM20
 // hardware arrived; its history lives in git and the #677/#270 discussions.)
 
 /// Capacity of pass-A's candidate reservoir — every stub the collector may hold before `select()`
-/// picks the winners (a slot is `Span`-sized, 14 bytes). This is **not** the frame's feature
-/// ceiling: `select()` budgets points and rings and never counts spans, so what a surplus of
-/// reservoir buys is *backfill* — the supply of lower-priority candidates still available to take
-/// a slot after a large feature is skipped on the point budget. The ceiling is
-/// [`MAX_FRAME_RINGS`]; a frame draws at most `min(MAX_SPANS, MAX_FRAME_RINGS)` features.
-/// 1,152 → 1,792 in #1146 P3, and level with the ring cap since this PR's review round, which is
-/// what makes the whole reservoir reachable rather than dead weight.
-pub const MAX_SPANS: usize = 1792;
+/// picks the winners (a slot is `Span`-sized, 12 bytes). It is the frame's candidate/feature
+/// ceiling, while its surplus over a typical selected frame buys *backfill* — lower-priority
+/// candidates remain available to take a slot after a large feature is skipped on the point or ring
+/// budget. A frame draws at most `min(MAX_SPANS, MAX_FRAME_RINGS)` features.
+/// This PR packs the candidate metadata and removes the span's redundant resolved color. The
+/// packed screen-space frame vertices below free enough bytes to hold 3,072 candidates while
+/// staying inside the same arena arm.
+pub const MAX_SPANS: usize = 3072;
 
-/// Maximum total vertices across all visible features per frame (8 bytes each) — one of the two
-/// budgets `select()` actually enforces. The 9,440 cap remains below the board's already-resident
-/// 128 KiB scratch-arena ceiling: the per-feature decode points and per-feature projected screen
-/// points occupy the same phase-shared storage below, and the remainder uses otherwise-empty space
-/// under the larger USB arm (compile-time asserted by the board crate).
-pub const MAX_FRAME_POINTS: usize = 9440;
+/// Maximum total retained vertices across all visible features per frame — one of the two budgets
+/// `select()` actually enforces. These are already-projected signed-16-bit screen coordinates
+/// ([`ScreenPoint`]), four bytes per vertex instead of the former eight-byte map coordinates. The
+/// recovered bytes are reinvested here and in the span/ring reservoirs; 16,323 is deliberately the
+/// exact capacity that fills the board's 128 KiB arena arm after alignment rather than leaving a
+/// second, smaller render limit inside it.
+pub const MAX_FRAME_POINTS: usize = 16323;
 
-/// Maximum total ring entries across all visible features per frame — and with it **the frame's
-/// feature ceiling**. Every admitted feature costs at least one ring, `Kind::Line` included:
+/// Maximum total ring entries across all visible features per frame. Every admitted feature costs
+/// at least one ring, `Kind::Line` included:
 /// `select()` charges `ring_count`, a candidate with empty `ring_lens` is rejected outright
 /// (`Feature::has_valid_rings`), and `ring_count == 0` is reserved as pass-B's failure sentinel.
-/// So no frame draws more features than this, however much span or point room is left over.
-/// 1,024 → 1,792 across #1146 P3 — the cap that was in fact doing the dropping, raised to meet
-/// [`MAX_SPANS`].
-pub const MAX_FRAME_RINGS: usize = 1792;
+/// So no frame draws more features than `min(MAX_SPANS, MAX_FRAME_RINGS)`, however much point room
+/// is left over. Ring lengths are `u16`, which halves their MCU storage; the crossing-buffer
+/// packed-coordinate rebalance raises this cap to 3,328, above the candidate reservoir because
+/// polygons may contribute more than one ring.
+pub const MAX_FRAME_RINGS: usize = 3328;
 
 /// Maximum vertices for a single feature during decode (reused per feature). Equals the OBCM
 /// production source's maximum feature size — full format fidelity.
@@ -101,20 +104,19 @@ pub const MAX_DECODE_POINTS: usize = 2048;
 /// Maximum rings for a single feature during decode. Matches the production source bound.
 pub const MAX_DECODE_RINGS: usize = 32;
 
-/// Maximum projected screen points for drawing one feature. The fill/polyline path projects
-/// **every** vertex of a decoded feature into this buffer before walking it, so it must hold a
-/// whole decode buffer (invariant asserted below; dropping under it makes `fill_polygon` index
-/// past the projected points).
+/// Maximum screen points buffered while drawing one feature. Polygon fills unpack every retained
+/// [`ScreenPoint`] into this buffer; the stroker reuses it for its current clipped run, so it must
+/// hold a whole decode buffer (invariant asserted below).
 pub const MAX_SCREEN_POINTS: usize = 2048;
 
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
-/// [`fill_polygon`]) — sized to fit the MCU RAM budget asserted below, not the
-/// worst-case comb (which could approach [`MAX_SCREEN_POINTS`]). 256 → 640 in #1146 P3, as cheap
-/// insurance rather than a fix: no scene in the pinned corpus or the A/B fixtures was ever
-/// observed to exceed 256 crossings on a row, so this buys margin against a polygon more complex
-/// than anything measured — at 4 B a crossing, 1,536 B for that margin.
-pub const MAX_CROSSINGS: usize = 640;
+/// [`fill_polygon`]) — sized to fit the MCU RAM budget asserted below, not the worst-case comb
+/// (which could approach [`MAX_SCREEN_POINTS`]). No scene in the pinned corpus or A/B fixtures has
+/// exceeded 256 crossings on one row. Keeping 384 retains 50% measured headroom; the 1,024 bytes
+/// recovered from the former 640-entry insurance cap fund 96 frame points and 128 ring entries,
+/// where coarse-volume stress frames demonstrably use them.
+pub const MAX_CROSSINGS: usize = 384;
 
 // `Span` packs its buffer offsets into `u16` to stay small, so the frame buffers
 // it indexes must fit in a `u16`. These guard that invariant at compile time.
@@ -128,27 +130,26 @@ const _: () = assert!(
     "every feature costs one span and >=1 ring; a ring cap below the span cap makes MAX_SPANS unreachable dead weight"
 );
 
-// The draw path projects a whole decoded feature into `screen` before walking its rings
-// (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
-// past the points and panics.
+// The draw path unpacks a whole decoded feature into `screen` before walking its rings, so it must
+// hold at least a full decode buffer or it indexes past the points and panics.
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
 // These values are pinned by the production-source integration tests.
 
 /// Static RAM a [`RenderScratch`]'s buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
-/// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
-/// the MCU.) ~115 KB.
+/// without re-deriving the formula. (`ScreenPoint` is 4 bytes, `(i32, i32)` / `Point` are 8,
+/// frame ring lengths are `u16`, and `usize`/`f32` are 4 on the MCU.) Exactly fills the 128 KiB
+/// board arena arm after `RenderScratch`'s alignment, including [`rain::RainScratch`].
 pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
-    + MAX_FRAME_POINTS * 8
-    + MAX_FRAME_RINGS * 4
+    + MAX_FRAME_POINTS * core::mem::size_of::<ScreenPoint>()
+    + MAX_FRAME_RINGS * 2
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_CROSSINGS * 4
-    // WX10: the rain overlay's per-frame decoded-tile cache (14 slots, ~3.6 KB; the two slots over
-    // the original twelve are what keeps a smoothing kernel's wider reach inside one decode per
-    // visible tile — see `RAIN_TILE_SLOTS`). On the board this grows the arena's render arm, which
-    // still sits ~10 KB below the USB arm's max — so it costs the device zero resident bytes until
-    // the render arm ever overtakes USB (the arena assert names that cliff).
+    // WX10: the rain overlay's per-frame decoded-tile cache (16 slots, ~4.1 KB; the slots over the
+    // original twelve keep a smoothing kernel's wider reach inside one decode per visible tile —
+    // see `RAIN_TILE_SLOTS`). It shares the render arm with the buffers above; the board assertion
+    // is the byte-accurate authority that the complete arm remains under USB's 128 KiB ceiling.
     + core::mem::size_of::<rain::RainScratch>();
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
@@ -223,18 +224,17 @@ impl Default for SharedPoints {
 
 impl SharedPoints {
     fn decode(&mut self) -> &mut Vec<(i32, i32), MAX_DECODE_POINTS> {
-        // SAFETY: both union members have identical size/alignment and consist of a length plus an
-        // inline array of two-i32 Copy elements. Clearing immediately makes the active view empty.
-        let points = unsafe { &mut *(&mut self.decode as *mut ManuallyDrop<_> as *mut Vec<_, MAX_DECODE_POINTS>) };
-        points.clear();
-        points
+        // Writing a union member is safe and makes this the active member. `Vec::new()` initializes
+        // only its empty metadata; the inline MaybeUninit backing is deliberately left untouched.
+        self.decode = ManuallyDrop::new(Vec::new());
+        // SAFETY: `decode` was initialized as the active member immediately above.
+        unsafe { &mut self.decode }
     }
 
     fn screen(&mut self) -> &mut Vec<Point, MAX_SCREEN_POINTS> {
-        // SAFETY: as `decode`; `Point` is two `i32`s and the capacity is identical.
-        let points = unsafe { &mut *(&mut self.screen as *mut ManuallyDrop<_> as *mut Vec<_, MAX_SCREEN_POINTS>) };
-        points.clear();
-        points
+        self.screen = ManuallyDrop::new(Vec::new());
+        // SAFETY: `screen` was initialized as the active member immediately above.
+        unsafe { &mut self.screen }
     }
 }
 
@@ -420,7 +420,7 @@ impl Default for RenderConfig {
 /// decides what a frame looks like ([`RenderConfig`] does), and nothing here means anything between
 /// frames: every buffer is written before it is read.
 ///
-/// **Never construct one by value on a device stack.** It is ~90 KB of `heapless::Vec`s
+/// **Never construct one by value on a device stack.** It is 128 KiB of `heapless::Vec`s
 /// ([`MCU_SCRATCH_BYTES`]); a by-value constructor only stays off the stack via return-value
 /// optimization, a guarantee a debug build or a different toolchain can decline — the way
 /// `RouteIndex::read_into` earned its own in-place constructor after a STKOF HardFault. The device
@@ -445,7 +445,7 @@ impl RenderScratch {
 
     /// Initialize a scratch **in place** at `slot` as the empty, ready-to-render state — the MCU
     /// placement path, building the resident scratch straight into a fixed RAM region without ever
-    /// materializing its ~90 KB of buffers on the stack.
+    /// materializing its 128 KiB of buffers on the stack.
     ///
     /// Every buffer is a [`heapless::Vec`], whose empty state (`len = 0` over an uninitialized
     /// backing array) is exactly the all-zero bit pattern, so `write_bytes(0, 1)` lowers to a
@@ -734,20 +734,21 @@ impl RenderScratch {
 
         // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
         // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
-        // fills step 3 paints on top. Re-projects each cased line (accepted; reuses `DrawScratch`).
+        // fills step 3 paints on top. Reuses the collected screen points and `DrawScratch`.
         if is_finest {
             for span in &spans[split..] {
                 if span.kind != Kind::Line || !is_cased(span.style_id) {
                     continue;
                 }
                 // A line uses only its exterior (first) ring — the leading `n` frame points.
-                let n = frame.frame_ring_lens[span.ring_start as usize];
+                let n = frame.frame_ring_lens[span.ring_start as usize] as usize;
                 let pt_start = span.pt_start as usize;
                 let pts = &frame.frame_points[pt_start..pt_start + n];
                 // `is_cased` guarantees `color2.is_some()`; quantize it like the fill color. The
                 // `unwrap_or` is a defensive no-op (falls back to an invisible same-color casing).
                 let style = scene.style(span.style_id);
-                let casing_color = color_fn(style.and_then(|s| s.color2).unwrap_or(span.color));
+                let casing_color =
+                    color_fn(style.and_then(|s| s.color2).unwrap_or_else(|| style.map_or(0, |s| s.color)));
                 // Casing is defined *relative to the fill* — "the fill's width plus one px a side" —
                 // so it composes with #1095's fixed width rather than being special-cased against
                 // it: a fixed-width cased style would case its verbatim `weight`. No shipped style
@@ -872,18 +873,27 @@ impl RenderScratch {
         let ring_start = span.ring_start as usize;
         let pt_start = span.pt_start as usize;
         let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
-        let total: usize = ring_lens.iter().sum();
+        let total: usize = ring_lens.iter().map(|&len| len as usize).sum();
         let pts = &frame.frame_points[pt_start..pt_start + total];
-        let color = color_fn(span.color);
+        let color = color_fn(scene.style(span.style_id).map_or(0, |style| style.color));
 
         let DrawScratch { points, xs } = draw;
         match span.kind {
-            Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, points.screen(), xs),
+            Kind::Polygon => {
+                let screen = points.screen();
+                // A retained feature can never exceed the per-feature decode cap, which is equal
+                // to this buffer's cap (asserted above). Unpacking is infallible and replaces the
+                // old second projection of every frame vertex.
+                for p in pts {
+                    assert!(screen.push(p.point()).is_ok(), "screen buffer matches decode cap");
+                }
+                fill_polygon(target, screen, ring_lens, color, vp.w as i32, vp.h as i32, xs);
+            }
             Kind::Line => {
                 // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
                 // `color2` quantizes through `color_fn` exactly like the primary. A missing
                 // style (never collected) falls back to today's solid stroke.
-                let n = ring_lens.first().copied().unwrap_or(0);
+                let n = ring_lens.first().copied().unwrap_or(0) as usize;
                 let style = scene.style(span.style_id);
                 let dashed = style.is_some_and(|s| s.flags.dashed());
                 let color2 = style.and_then(|s| s.color2).map(color_fn);
@@ -908,7 +918,7 @@ impl RenderScratch {
     /// point repeated) in its style's `color2`, at a **fixed hairline** width `weight.max(1)`. The #560
     /// finest-LOD outline: called from [`draw_spans`](Self::draw_spans)'s pass 2 for a span the
     /// `outlined_mask` already vetted (`color2.is_some()`). Reuses `DrawScratch` — no new buffers; each
-    /// ring projects exactly like a line's exterior. At the preset `weight 1` this is the thin Bresenham
+    /// ring reuses its collected screen coordinates. At the preset `weight 1` this is the thin Bresenham
     /// polyline path.
     ///
     /// **Fixed, not ramped.** A line's *stroke* ramps with zoom ([`scale_weight`], #579), but a
@@ -933,7 +943,8 @@ impl RenderScratch {
     {
         // `outlined_mask` guarantees `color2.is_some()`; the `unwrap_or` is a defensive no-op that
         // falls back to an invisible same-color outline rather than panicking.
-        let color2 = color_fn(scene.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+        let style = scene.style(span.style_id);
+        let color2 = color_fn(style.and_then(|s| s.color2).unwrap_or_else(|| style.map_or(0, |s| s.color)));
         let weight = span.weight.max(1) as u32;
         let (w, h) = (vp.w as i32, vp.h as i32);
 
@@ -941,14 +952,15 @@ impl RenderScratch {
         let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
         let mut off = span.pt_start as usize;
         for &rl in ring_lens {
+            let rl = rl as usize;
             let ring = &frame.frame_points[off..off + rl];
             off += rl;
             if rl < 2 {
                 continue;
             }
-            // Stroke the ring **closed**: chain the first vertex again so the wall between the last and
-            // first point is drawn. Projects lazily, exactly like a line's exterior ring.
-            let closed = ring.iter().chain(ring.first()).map(|&(lon, lat)| vp.project(lon, lat));
+            // Stroke the ring **closed**: chain the first vertex again so the wall between the last
+            // and first point is drawn. The collector already projected each retained vertex.
+            let closed = ring.iter().chain(ring.first()).map(|p| p.point());
             Stroker::new(target, draw.points.screen(), color2, weight, w, h).stroke(closed);
         }
     }
@@ -956,6 +968,21 @@ impl RenderScratch {
 
 #[cfg(test)]
 extern crate std;
+
+#[cfg(test)]
+mod shared_points_tests {
+    use super::SharedPoints;
+    use embedded_graphics::prelude::Point;
+
+    #[test]
+    fn switching_phases_reinitializes_the_active_vector() {
+        let mut points = SharedPoints::default();
+        points.decode().push((1, 2)).unwrap();
+        assert!(points.screen().is_empty());
+        points.screen().push(Point::new(3, 4)).unwrap();
+        assert!(points.decode().is_empty());
+    }
+}
 
 #[cfg(test)]
 mod width_ramp_tests {

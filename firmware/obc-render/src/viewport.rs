@@ -235,11 +235,11 @@ fn projections_overlap(a: &[(i32, i32); 4], b: &[(i32, i32); 4], axis: (i64, i64
 }
 
 #[inline]
-fn point_in_rect(point: (i32, i32), rect: (i32, i32, i32, i32)) -> bool {
+pub(crate) fn point_in_rect(point: (i32, i32), rect: (i32, i32, i32, i32)) -> bool {
     point.0 >= rect.0 && point.0 <= rect.2 && point.1 >= rect.1 && point.1 <= rect.3
 }
 
-fn segment_intersects_rect(a: (i32, i32), b: (i32, i32), rect: (i32, i32, i32, i32)) -> bool {
+pub(crate) fn segment_intersects_rect(a: (i32, i32), b: (i32, i32), rect: (i32, i32, i32, i32)) -> bool {
     if a.0.max(b.0) < rect.0 || a.0.min(b.0) > rect.2 || a.1.max(b.1) < rect.1 || a.1.min(b.1) > rect.3 {
         return false;
     }

@@ -483,7 +483,7 @@ With the visible features collected, the renderer sorts the spans — not the ge
 self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
 ```
 
-Each style carries a `z_index`; sea draws under land draws under forest draws under roads. Ties break on `seq`, the order the feature was collected in — a stable, allocation-free tiebreak so the result is deterministic. Note that **priority and z-index are different axes**: priority decides *whether* a feature survives the memory budget; z-index decides *where in the stack* the survivors are painted.
+Each style carries a `z_index`; the shipped map clears to its land style, then sea geometry draws under forest, which draws under roads. Ties break on `seq`, the order the feature was collected in — a stable, allocation-free tiebreak so the result is deterministic. Note that **priority and z-index are different axes**: priority decides *whether* a feature survives the memory budget; z-index decides *where in the stack* the survivors are painted.
 
 ## 6 · Rasterising: fills and strokes
 
@@ -853,14 +853,14 @@ Everything above happens in fixed-size buffers owned by the renderer and **clear
 
 | Buffer | Holds | Capacity |
 | :-- | :-- | --: |
-| `frame_points` | every visible feature's vertices, concatenated | 12 288 |
-| `frame_ring_lens` | per-feature ring lengths | 3 072 |
-| `spans` | per-feature 14-byte draw records | 3 072 |
+| `frame_points` | every visible feature's projected vertices, packed as two `i16`s | 16 323 |
+| `frame_ring_lens` | per-feature ring lengths | 3 328 |
+| `spans` | candidate / per-feature 12-byte draw records | 3 072 |
 | `dec_points` | one feature's vertices during decode | 2 048 |
-| `screen` | projected points for the feature being drawn | 4 096 |
-| `xs` | scanline crossings for one row | 256 |
+| `screen` | unpacked points for the feature being drawn | 2 048 |
+| `xs` | scanline crossings for one row | 384 |
 
-A compile-time assertion fails the build if the renderer's total buffer footprint grows past its RAM budget — so you can't accidentally blow the memory ceiling by bumping a constant. The frame buffers are the reason the collector drops by priority: they're deliberately *too small* for the densest views, and the global priority order is what makes "too small" degrade gracefully instead of catastrophically.
+A target-side compile-time assertion requires the renderer to match the existing 128 KiB scratch arena exactly — so you can't accidentally blow the memory ceiling by bumping a constant, and the bytes already reserved by the arena are not left idle. The frame buffers are the reason the collector drops by priority: they're deliberately finite, and the global priority order is what makes saturation degrade gracefully instead of catastrophically.
 
 ---
 

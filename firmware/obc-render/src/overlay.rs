@@ -107,7 +107,7 @@ impl RenderScratch {
             None => {
                 const R: f32 = 7.0;
                 let diamond = [round_pt(cx, cy - R), round_pt(cx + R, cy), round_pt(cx, cy + R), round_pt(cx - R, cy)];
-                fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
+                fill_polygon(target, &diamond, &[4usize], color, w, h, &mut self.draw.xs);
             }
         }
     }
@@ -285,7 +285,7 @@ pub(crate) fn fill_chevron<D>(
         round_pt(c.0 - fx * back + rx * half, c.1 - fy * back + ry * half),
         round_pt(c.0 - fx * back - rx * half, c.1 - fy * back - ry * half),
     ];
-    fill_polygon(target, &tri, &[3], color, w, h, xs);
+    fill_polygon(target, &tri, &[3usize], color, w, h, xs);
 }
 
 #[cfg(test)]

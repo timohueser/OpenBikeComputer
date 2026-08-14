@@ -18,7 +18,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::geom::{clip_to_box, packed_size_budget, to_feature, trim_excess_holes, Bounds, Geom};
+use crate::geom::{
+    clip_to_box, hole_anchors_encodable, packed_size_budget, to_feature, trim_excess_holes, Bounds, Geom,
+};
 use crate::progress::Progress;
 use crate::serialize::Node;
 use obc_reader::MAX_FEAT_RINGS;
@@ -35,6 +37,65 @@ struct StoredFeature {
     /// A simple geometry (Line/Polygon), post-flatten.
     geom: Geom,
     bounds: Bounds,
+}
+
+/// Store a simple geometry only once every polygon hole can be encoded from that feature's
+/// exterior anchor. The OBCM format has no per-hole anchor, so this is a **feature-local** format
+/// constraint rather than a reason to subdivide the whole spatial index: clip only the offending
+/// polygon into two lossless pieces and keep both in the same quadtree node. This avoids making
+/// every unrelated road, fill, and boundary pay several extra tree levels for one large holed
+/// coverage polygon.
+fn store_encodable(style_id: u8, geom: Geom, bounds: Bounds, out: &mut Vec<StoredFeature>) {
+    if hole_anchors_encodable(&geom) {
+        out.push(StoredFeature { style_id, geom, bounds });
+        return;
+    }
+
+    let Geom::Polygon { .. } = geom else { unreachable!("only polygons can have an unencodable hole anchor") };
+
+    // Enclose the floating geometry in an integer-µdeg box. A binary cut along the longer axis
+    // minimizes the number of new features; recursive cuts eventually make a piece at most
+    // MAX_SEGMENT wide in both dimensions, at which point any exterior/hole vertex pair fits.
+    let ibox = (
+        (bounds.0 * 1e6).floor() as i64,
+        (bounds.1 * 1e6).floor() as i64,
+        (bounds.2 * 1e6).ceil() as i64,
+        (bounds.3 * 1e6).ceil() as i64,
+    );
+    let width = ibox.2 - ibox.0;
+    let height = ibox.3 - ibox.1;
+    assert!(width > 1 || height > 1, "sub-µdeg polygon unexpectedly has an unencodable hole anchor");
+
+    let boxes = if width >= height && width > 1 {
+        let mid = (ibox.0 + ibox.2).div_euclid(2);
+        [(ibox.0, ibox.1, mid, ibox.3), (mid, ibox.1, ibox.2, ibox.3)]
+    } else {
+        let mid = (ibox.1 + ibox.3).div_euclid(2);
+        [(ibox.0, ibox.1, ibox.2, mid), (ibox.0, mid, ibox.2, ibox.3)]
+    };
+
+    for bbox in boxes {
+        store_clipped_polygon_parts(style_id, clip_to_box(&geom, bbox), out);
+    }
+}
+
+/// Flatten the areal result of clipping a polygon and feed each polygon back through
+/// [`store_encodable`]. A box that merely touches the source can make GEOS return a line in a
+/// collection; that zero-area intersection is not a polygon feature and must not inherit its fill
+/// style as a stroked line.
+fn store_clipped_polygon_parts(style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
+    match geom {
+        Geom::Polygon { .. } => {
+            let bounds = geom.bounds();
+            store_encodable(style_id, geom, bounds, out);
+        }
+        Geom::Multi(parts) => {
+            for part in parts {
+                store_clipped_polygon_parts(style_id, part, out);
+            }
+        }
+        Geom::Line(_) | Geom::Empty => {}
+    }
 }
 
 /// Below this many features a node builds its four children serially — the rayon
@@ -62,7 +123,7 @@ fn place(
     }
     // Contain: fully inside ⇒ keep whole, no clip, no bounds recompute.
     if bounds.0 >= minxf && bounds.2 <= maxxf && bounds.1 >= minyf && bounds.3 <= maxyf {
-        out.push(StoredFeature { style_id, geom, bounds });
+        store_encodable(style_id, geom, bounds, out);
         return;
     }
     // Straddle: clip to the box and flatten whatever comes back.
@@ -79,7 +140,7 @@ fn flatten(style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
     match geom {
         Geom::Line(_) | Geom::Polygon { .. } => {
             let bounds = geom.bounds();
-            out.push(StoredFeature { style_id, geom, bounds });
+            store_encodable(style_id, geom, bounds, out);
         }
         Geom::Multi(parts) => {
             for p in parts {
@@ -326,6 +387,28 @@ mod tests {
     }
 
     #[test]
+    fn distant_hole_splits_only_its_feature_before_serialization() {
+        // OBCM stores every hole's first delta relative to the exterior anchor. This hole is much
+        // farther than i16 can encode from every exterior-start candidate in the unsplit feature;
+        // a byte-small polygon must therefore split for correctness, not just for chunk capacity.
+        let poly = Geom::Polygon { exterior: sq(0.01, 0.01, 0.18), interiors: vec![sq(0.12, 0.12, 0.03)] };
+        let tree = build_lod([(1u8, poly)], (0, 0, 200_000, 200_000), 100_000);
+        assert!(!is_branch(&tree), "a format constraint on one polygon must not deepen the whole spatial index");
+        assert!(leaf_feature_count(&tree) > 1, "the offending polygon itself is clipped into encodable pieces");
+
+        let mut populated = 0usize;
+        for (features, bbox) in leaves(&tree) {
+            if features.is_empty() {
+                continue;
+            }
+            let (_, dropped) = crate::serialize::pack_chunk(features, bbox, 100_000);
+            assert_eq!(dropped, 0, "every clipped piece is encodable without a topology-changing bridge");
+            populated += 1;
+        }
+        assert!(populated > 0);
+    }
+
+    #[test]
     fn recursion_guard_blocks_tiny_box() {
         // Box 8 µdeg wide, chunk_size 1 → would split, but guard (<10) blocks it.
         let n = build_lod([(1u8, line(&[(0.0, 0.0), (0.000005, 0.000005)]))], (0, 0, 8, 8), 1);
@@ -468,15 +551,17 @@ mod tests {
         let poly = Geom::Polygon { exterior: sq(0.1, 0.1, 0.8), interiors };
         // chunk_size 100_000: the byte budget can never force a split — only the cap.
         let tree = build_lod([(1u8, poly)], (0, 0, 1_000_000, 1_000_000), 100_000);
-        assert!(is_branch(&tree), "a feature over the ring cap must split even under the byte budget");
         let mut holes = 0usize;
+        let mut pieces = 0usize;
         for (features, _) in leaves(&tree) {
             for f in features {
                 assert!(f.rings.len() <= MAX_FEAT_RINGS, "every leaf feature fits the reader's ring cap");
                 holes += f.rings.len() - 1;
+                pieces += 1;
             }
         }
-        assert!(holes > 0, "clipping spreads the holes across children, it doesn't erase them");
+        assert!(pieces > 1, "the oversized polygon must be partitioned, whether feature-locally or by the tree");
+        assert!(holes > 0, "clipping spreads the holes across pieces, it doesn't erase them");
     }
 
     /// At the 10-µdeg split floor a many-holed polygon can't be clipped apart, so

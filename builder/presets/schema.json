@@ -3,7 +3,7 @@
         "id": "bikepacking",
         "name": "Bikepacking",
         "description": "The full touring map: roads by class, trails and cycleways, rail, water, forests and landuse, buildings up close.",
-        "version": 8,
+        "version": 9,
         "swatch": [
             "#FF5500",
             "#FFAA00",
@@ -17,9 +17,9 @@
     "lods": [
         {"max_mpp": null, "simplify": 600, "line_simplify": 1400, "merge_line_trails": true, "semantic_coverage": true},
         {"max_mpp": 400, "simplify": 600, "line_simplify": 1400, "merge_line_trails": true, "semantic_coverage": true},
-        {"max_mpp": 260, "simplify": 390, "semantic_coverage": true},
+        {"max_mpp": 260, "simplify": 390, "line_simplify": 1400, "merge_line_trails": true, "semantic_coverage": true},
         {"max_mpp": 180, "simplify": 270, "semantic_coverage": true},
-        {"max_mpp": 110, "simplify": 130, "semantic_coverage": true},
+        {"max_mpp": 110, "simplify": 130, "line_simplify": 500, "merge_line_trails": true, "semantic_coverage": true},
         {"max_mpp": 80, "simplify": 90, "semantic_coverage": true},
         {"max_mpp": 50, "simplify": 50, "semantic_coverage": true},
         {"max_mpp": 35, "simplify": 35, "semantic_coverage": true},
@@ -69,8 +69,8 @@
             "*": {"z_index": 10, "color": "0x52AA", "weight": 1, "min_lod": 13, "priority": 4}
         },
         "natural": {
-            "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
-            "land": {"z_index": 1, "color": "0xFFF5", "weight": 1, "min_lod": 0, "priority": 1},
+            "sea": {"z_index": 1, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
+            "land": {"z_index": 0, "color": "0xFFF5", "weight": 1, "min_lod": 0, "priority": 1},
             "water": {"z_index": 14, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 2},
             "wood": {"z_index": 4, "color": "0x554A", "weight": 1, "min_lod": 0, "priority": 2},
             "scrub": {"z_index": 6, "color": "0xAFF5", "weight": 1, "min_lod": 0, "priority": 2},

@@ -350,8 +350,7 @@ fn pack_feature_antimeridian_negative_anchor() {
 // The quadtree splits on `geom::packed_size_budget`; if that ever under-counts
 // what `pack_feature` really emits, a leaf survives splitting and `pack_chunk`
 // silently drops the overflow. Pin `budget >= packed.len()` for the cases that
-// used to be under-counted: densified long segments, densified anchor→hole
-// jumps, and hole bookkeeping bytes.
+// used to be under-counted: densified long segments and hole bookkeeping bytes.
 
 #[test]
 fn budget_covers_packed_bytes_for_densify_and_holes() {
@@ -368,11 +367,11 @@ fn budget_covers_packed_bytes_for_densify_and_holes() {
     let long = vec![(0.1, 0.5), (3.1, 0.5)];
     check("densified line", &Geom::Line(long.clone()), &Feature { style_id: 1, kind: Kind::Line, rings: vec![long] });
 
-    // A polygon with two holes, each ~1° from the anchor: the anchor→hole jumps
-    // densify too, and the hole count/pt_count bookkeeping bytes must be counted.
-    let ext = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)];
-    let h1 = vec![(1.0, 1.0), (1.01, 1.0), (1.01, 1.01), (1.0, 1.01), (1.0, 1.0)];
-    let h2 = vec![(1.5, 1.5), (1.51, 1.5), (1.51, 1.51), (1.5, 1.51), (1.5, 1.5)];
+    // Two nearby holes exercise the count/pt_count bookkeeping without violating OBCM's first-hole
+    // delta invariant (far holes are split by the quadtree and covered end-to-end below).
+    let ext = vec![(0.0, 0.0), (0.02, 0.0), (0.02, 0.02), (0.0, 0.02), (0.0, 0.0)];
+    let h1 = vec![(0.005, 0.005), (0.006, 0.005), (0.006, 0.006), (0.005, 0.006), (0.005, 0.005)];
+    let h2 = vec![(0.012, 0.012), (0.013, 0.012), (0.013, 0.013), (0.012, 0.013), (0.012, 0.012)];
     check(
         "polygon with far holes",
         &Geom::Polygon { exterior: ext.clone(), interiors: vec![h1.clone(), h2.clone()] },
@@ -386,6 +385,29 @@ fn budget_covers_packed_bytes_for_densify_and_holes() {
         &Geom::Line(small.clone()),
         &Feature { style_id: 3, kind: Kind::Line, rings: vec![small] },
     );
+}
+
+#[test]
+#[should_panic(expected = "build it through the quadtree before packing")]
+fn pack_feature_refuses_to_turn_a_far_hole_anchor_jump_into_ring_vertices() {
+    let ext = vec![(0.0, 0.0), (0.2, 0.0), (0.2, 0.2), (0.0, 0.2), (0.0, 0.0)];
+    let hole = vec![(0.12, 0.12), (0.15, 0.12), (0.15, 0.15), (0.12, 0.15), (0.12, 0.12)];
+    let feature = Feature { style_id: 2, kind: Kind::Polygon, rings: vec![ext, hole] };
+    let _ = pack_feature(&feature, (0, 0, 200_000, 200_000));
+}
+
+#[test]
+fn pack_feature_rotates_the_exterior_before_splitting_a_nearby_hole() {
+    // The input happens to start at the southwest corner, >i16::MAX from the hole. The northeast
+    // exterior vertex is only 5k µdeg away, so cyclically starting there preserves this polygon as
+    // one feature and avoids an unnecessary quadtree clip.
+    let ext = vec![(0.0, 0.0), (0.04, 0.0), (0.04, 0.04), (0.0, 0.04), (0.0, 0.0)];
+    let hole = vec![(0.035, 0.035), (0.037, 0.035), (0.037, 0.037), (0.035, 0.037), (0.035, 0.035)];
+    let feature = Feature { style_id: 2, kind: Kind::Polygon, rings: vec![ext, hole] };
+    let packed = pack_feature(&feature, (0, 0, 50_000, 50_000));
+
+    assert_eq!(u16::from_le_bytes([packed[3], packed[4]]), 40_000, "anchor longitude rotates northeast");
+    assert_eq!(u16::from_le_bytes([packed[5], packed[6]]), 40_000, "anchor latitude rotates northeast");
 }
 
 // === Chunk-size overflow drop ===============================================

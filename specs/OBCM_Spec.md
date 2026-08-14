@@ -545,9 +545,11 @@ free), lines as weighted polylines.
 
 **Backdrop convention.** Before drawing geometry, a renderer clears the screen to
 the **backdrop color**: the color of the style with the lowest `Z-Index` (the
-bottom of the paint order — by convention the sea/background, e.g. `natural.sea`
-at `z_index 0`). This is derived from the style table, not a fixed style ID, so
-it survives the packer's automatic ID assignment. Land is then painted on top.
+bottom of the paint order — in the shipped schema, `natural.land` at `z_index
+0`). This is derived from the style table, not a fixed style ID, so it survives
+the packer's automatic ID assignment. The shipped packer writes the coastline
+complement as `natural.sea` geometry on top; schemas with a different lowest
+style remain valid.
 
 ---
 

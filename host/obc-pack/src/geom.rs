@@ -337,11 +337,25 @@ fn densify_extra(p1: (i64, i64), p2: (i64, i64)) -> usize {
     }
 }
 
+/// Whether some cyclic exterior start lets every polygon hole choose a cyclic start whose first
+/// delta fits the serializer. OBCM holes have no independent anchor, and adding intermediate points
+/// to this jump changes the ring topology. A false result therefore means the quadtree must clip
+/// the polygon into smaller pieces.
+pub(crate) fn hole_anchors_encodable(g: &Geom) -> bool {
+    let Geom::Polygon { exterior, interiors } = g else { return true };
+    if interiors.is_empty() {
+        return true;
+    }
+    let exterior = crate::serialize::canonical_ring_udeg(exterior, true);
+    let interiors: Vec<_> = interiors.iter().map(|ring| crate::serialize::canonical_ring_udeg(ring, true)).collect();
+    crate::serialize::best_exterior_anchor(&exterior, &interiors)
+        .is_some_and(|(_, distance)| distance <= crate::serialize::MAX_HOLE_ANCHOR_DELTA)
+}
+
 /// Upper bound on the bytes `pack_feature` will emit for this geometry, for
 /// quadtree chunk-size accounting: `12 + pts*4` plus the hole bookkeeping bytes,
-/// where `pts` counts the **densified** vertices — the same µdeg rounding and
-/// `MAX_SEGMENT` walk the serializer uses, including the anchor→first-vertex jump
-/// of each hole. Budgeting raw vertices instead would under-count features with
+/// where `pts` counts the **densified ring-edge** vertices using the same µdeg rounding and
+/// `MAX_SEGMENT` walk as the serializer. Budgeting raw vertices instead would under-count features with
 /// long segments (clipped land rectangles, coarse-LOD lines), and a leaf whose
 /// real bytes overflow the chunk gets features silently dropped at pack time.
 /// Always ≥ the packed size: deltas are budgeted at the 16-bit worst case, and
@@ -367,21 +381,26 @@ pub fn packed_size_budget(g: &Geom) -> usize {
     if ext.is_empty() {
         return 0;
     }
-    let anchor = ext[0];
-    // Densified vertex count of one ring walked from `start` (the anchor for
-    // holes, the ring's own first vertex — a zero-length jump — for the exterior).
-    let ring_pts = |pts: &[(i64, i64)], start: (i64, i64)| -> usize {
-        let mut prev = start;
-        let mut n = 0;
-        for &p in pts {
-            n += 1 + densify_extra(prev, p);
-            prev = p;
+    // Count every cyclic edge for polygons. `pack_feature` rotates hole rings and leaves the final
+    // closing edge implicit, so counting the full cycle is a conservative upper bound independent
+    // of which vertex becomes first. A repeated GEOS closure merely contributes one zero edge.
+    let ring_pts = |pts: &[(i64, i64)], closed: bool| -> usize {
+        if pts.is_empty() {
+            return 0;
+        }
+        let mut n = pts.len();
+        for pair in pts.windows(2) {
+            n += densify_extra(pair[0], pair[1]);
+        }
+        if closed {
+            n += densify_extra(*pts.last().unwrap(), pts[0]);
         }
         n
     };
-    let mut pts = ring_pts(&ext, anchor);
+    let closed = matches!(g, Geom::Polygon { .. });
+    let mut pts = ring_pts(&ext, closed);
     for hole in interiors {
-        pts += ring_pts(&udeg(hole), anchor);
+        pts += ring_pts(&udeg(hole), true);
     }
     // Hole bookkeeping: 1 count byte + a 2-byte pt_count per hole.
     let hole_overhead = if interiors.is_empty() { 0 } else { 1 + 2 * interiors.len() };

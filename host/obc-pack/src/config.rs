@@ -797,10 +797,27 @@ impl Config {
         let chunk_size = document.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let merge_fills = document.merge_fills.unwrap_or(false);
         let merge_lines = document.merge_lines.unwrap_or(false);
+        if let Some(i) = lods.iter().position(|lod| lod.coverage_simplify && lod.semantic_coverage) {
+            return Err(format!(
+                "config lods[{i}]: coverage_simplify and semantic_coverage are alternative polygon pipelines"
+            ));
+        }
+        if lods.iter().any(|lod| lod.semantic_coverage && lod.max_mpp.is_none())
+            && !lods.iter().any(|lod| lod.semantic_coverage && lod.max_mpp.is_some())
+        {
+            return Err(
+                "config lods: an infinite semantic_coverage fallback needs at least one finite semantic tier".into()
+            );
+        }
         // `min_line_km` only means anything on stitched records — without `merge_lines` it would
         // measure raw OSM ways and punch the very holes `geom::footprint_below` refuses to. Reject
         // the combination rather than silently ignoring the knob or silently shredding the roads.
         if !merge_lines {
+            if let Some(i) = lods.iter().position(|lod| lod.merge_line_trails) {
+                return Err(format!(
+                    "config lods[{i}].merge_line_trails: needs merge_lines enabled — there is no merged network to decompose"
+                ));
+            }
             if let Some(i) = lods.iter().position(|l| l.min_line_km > 0.0) {
                 return Err(format!(
                     "config lods[{i}].min_line_km: needs merge_lines enabled — it culls by the length of a \
@@ -846,6 +863,26 @@ impl Config {
         self.feature_style("natural", "land")
     }
 
+    /// The `natural.sea` style used for the coastline complement, if configured.
+    pub fn sea_style(&self) -> Option<&FeatureStyle> {
+        self.feature_style("natural", "sea")
+    }
+
+    /// The `natural.land` style id when land is the actual renderer backdrop (lowest paint key).
+    ///
+    /// In that layout land geometry is useful while the packer builds a complete semantic
+    /// coverage, but redundant in the serialized LODs: the renderer's clear already supplies it.
+    /// Custom schemas whose backdrop is sea keep the legacy explicit-land representation.
+    pub fn implicit_land_style_id(&self) -> Option<u8> {
+        let land = self.land_style()?;
+        let backdrop = self
+            .features
+            .iter()
+            .flat_map(|(_, styles)| styles.values())
+            .min_by_key(|style| (style.z_index, style.id))?;
+        (backdrop.id == land.id).then_some(land.id)
+    }
+
     /// The style for one traced contour class, if the config asks for it. `None` ⇒ that class is
     /// not packed (and not even traced).
     pub fn contour_style(&self, class: ContourClass) -> Option<&FeatureStyle> {
@@ -874,7 +911,8 @@ impl Config {
                     ) => Some(SemanticClass::Urban),
                     ("landuse", "forest") | ("natural", "wood") => Some(SemanticClass::Forest),
                     ("natural", "scrub" | "grassland" | "heath")
-                    | ("landuse", "grass" | "recreation_ground" | "village_green") => Some(SemanticClass::Grass),
+                    | ("landuse", "grass" | "grassland" | "recreation_ground" | "village_green")
+                    | ("leisure", "park" | "recreation_ground") => Some(SemanticClass::Grass),
                     ("landuse", "farmland" | "farmyard" | "meadow" | "orchard" | "vineyard" | "allotments") => {
                         Some(SemanticClass::Farmland)
                     }
@@ -1307,6 +1345,12 @@ mod tests {
         assert!(!config.features.is_empty(), "the schema must carry feature styles");
         assert!(!config.lods.is_empty(), "the schema must carry an LOD pyramid");
         assert!(!config.routing.profiles.is_empty(), "the schema must carry routing profiles");
+        assert_eq!(
+            config.implicit_land_style_id(),
+            config.land_style().map(|style| style.id),
+            "the shipped schema uses land as its geometry-free backdrop"
+        );
+        assert!(config.sea_style().is_some(), "the shipped schema must style the explicit coastline complement");
     }
 
     #[test]
@@ -1388,6 +1432,25 @@ mod tests {
     }
 
     #[test]
+    fn shipped_semantic_scheme_covers_every_overview_land_fill() {
+        let cfg = corpus_config();
+        let scheme = cfg.semantic_scheme();
+        for (key, value, expected) in [
+            ("natural", "water", SemanticClass::Water),
+            ("natural", "wood", SemanticClass::Forest),
+            ("natural", "scrub", SemanticClass::Grass),
+            ("landuse", "residential", SemanticClass::Urban),
+            ("landuse", "forest", SemanticClass::Forest),
+            ("landuse", "grassland", SemanticClass::Grass),
+            ("landuse", "farmland", SemanticClass::Farmland),
+            ("leisure", "park", SemanticClass::Grass),
+        ] {
+            let style = cfg.feature_style(key, value).unwrap_or_else(|| panic!("shipped style {key}={value}"));
+            assert_eq!(scheme.class_of(style.id), Some(expected), "{key}={value}");
+        }
+    }
+
+    #[test]
     fn lods_marker_chunk_parsed() {
         let cfg = corpus_config();
         // The default preset's 14-tier pyramid. Semantic coverage owns 20 m/px and above; the
@@ -1418,9 +1481,15 @@ mod tests {
         assert!(cfg.lods.iter().all(|lod| !lod.coverage_simplify));
         assert!(cfg.lods.iter().all(|lod| lod.min_line_km == 0.0));
         assert_eq!((cfg.lods[0].line_simplify_m, cfg.lods[1].line_simplify_m), (1400.0, 1400.0));
-        assert!(cfg.lods[..=1].iter().all(|lod| lod.merge_line_trails));
-        assert!(cfg.lods[2..].iter().all(|lod| !lod.merge_line_trails));
-        assert!(cfg.lods[2..].iter().all(|lod| lod.line_simplify_m == lod.simplify_m));
+        assert!(cfg.lods[..=2].iter().all(|lod| lod.merge_line_trails));
+        assert!(cfg.lods[4].merge_line_trails);
+        assert!(cfg.lods[3..].iter().enumerate().all(|(index, lod)| index == 1 || !lod.merge_line_trails));
+        assert!(cfg.lods[..=2].iter().all(|lod| lod.line_simplify_m == 1400.0));
+        assert_eq!(cfg.lods[4].line_simplify_m, 500.0);
+        assert!(cfg.lods[3..]
+            .iter()
+            .enumerate()
+            .all(|(index, lod)| index == 1 || lod.line_simplify_m == lod.simplify_m));
         assert_eq!((cfg.lods[4].max_mpp, cfg.lods[4].simplify_m), (Some(110.0), 130.0));
         assert_eq!((cfg.lods[5].max_mpp, cfg.lods[5].simplify_m), (Some(80.0), 90.0));
         assert_eq!((cfg.lods[9].simplify_m, cfg.lods[9].min_area_px), (16.0, 2.0));
@@ -1712,6 +1781,17 @@ mod tests {
         let null = Config::parse(r#"{"lods":[{"simplify":600,"line_simplify":null}]}"#).unwrap();
         assert_eq!(null.lods[0].line_simplify_m, 600.0);
         assert!(Config::parse(r#"{"lods":[{"line_simplify":-1}]}"#).is_err());
+    }
+
+    #[test]
+    fn semantic_and_trail_modes_reject_ambiguous_or_inert_configurations() {
+        assert!(Config::parse(
+            r#"{"lods":[{"max_mpp":100,"simplify":100,"semantic_coverage":true,"coverage_simplify":true}]}"#
+        )
+        .is_err());
+        assert!(Config::parse(r#"{"lods":[{"simplify":100,"semantic_coverage":true}]}"#).is_err());
+        assert!(Config::parse(r#"{"lods":[{"merge_line_trails":true}]}"#).is_err());
+        assert!(Config::parse(r#"{"merge_lines":true,"lods":[{"merge_line_trails":true}]}"#).is_ok());
     }
 
     /// `min_line_km` is optional and off by default, so every config written before the knob
