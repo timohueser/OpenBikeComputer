@@ -32,11 +32,9 @@ The rain is decoded straight out of a baked **OBCG** object — `obc-wx-bake`'s 
 upstream bytes. Nothing is synthetic: a demo pattern cannot answer a complaint about how real radar
 looks.
 
-> **The repro below was re-derived on 2026-08-11 for #1246**, which deleted the per-product tree
-> these sheets were originally baked from (`wx/v1/us/...` and `wx/v1/dwd-rv/...`) along with the two
-> test binaries that left it in `$TMPDIR`. The recipe still renders the same cells, from the same
-> upstream bytes, through the same renderer. What moved
-> is where a baked object comes from — one dataset at `wx/v2/<generation>/f<offset>/s<col>-<row>.obcg`
+> **The repro below was re-derived on 2026-08-11 for #1246.** The recipe renders the same cells,
+> from the same upstream bytes, through the same renderer. A baked object now comes from the one
+> dataset at `wx/v2/<generation>/f<offset>/s<col>-<row>.obcg`
 > — and the US half of the repro is now **more** reproducible than it was, because the event pack
 > carries its own upstream bytes.
 

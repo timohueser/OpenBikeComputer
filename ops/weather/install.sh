@@ -241,26 +241,14 @@ supports_adapter() {
     case $out in *"pick a destination"*) return 0 ;; *) return 1 ;; esac
 }
 
-# ── The version gate, and it is load-bearing (#1246) ─────────────────────────────────────────
-#
-# `supports_adapter` cannot catch a misordered cutover, and it is worth being explicit about why.
-# adapters.conf's one row is named `cycle`; the PREVIOUS binary also had a `cycle` subcommand — it
-# baked all four v1 products into the `wx/v1` tree — and it fails a destination-less probe with the
-# same "pick a destination" string. So running this installer against a not-yet-replaced binary
-# would retire every per-adapter timer and install a v1 multi-product cycle on a 15-minute timer:
-# the whole-cycle coupling the per-adapter timers existed to avoid, with `dwd-rv` at a third of its
-# poll rate, and nothing anywhere reporting a problem.
-#
-# The discriminator is a subcommand only the OLD binary has. The one-dataset binary refuses
-# `dwd-rv` with its usage text; the multi-product one accepts it and complains about the
-# destination. Positive test, no version string to keep in step, and it fails loudly.
-if supports_adapter dwd-rv; then
-    die "$BIN_PATH still has the per-product subcommands (it accepts \`dwd-rv\`), so it predates #1246.
-     adapters.conf's \`cycle\` row names a subcommand THIS binary also has, meaning a run here would
-     quietly replace the per-adapter timers with a v1 multi-product cycle on a 15-minute timer.
-     Deploy the one-dataset binary first (--binary PATH or --from-source), then re-run. See
-     RUNBOOK.md's cutover banner for the full order."
-fi
+# Require the canonical publisher by what it positively exposes, not by a filename or build date.
+# `cycle` alone is too weak a contract; the schema fields below are the dataset the deployed clients
+# consume and must travel with any compatible replacement binary.
+schema=$($BIN_PATH schema 2>/dev/null) || die "$BIN_PATH cannot print the canonical manifest schema"
+case $schema in
+    *'"previous_generations"'*'"lattice"'*'"frames"'*) ;;
+    *) die "$BIN_PATH does not expose the canonical one-dataset manifest schema" ;;
+esac
 
 # ── Units ────────────────────────────────────────────────────────────────────────────────────
 step "systemd units"

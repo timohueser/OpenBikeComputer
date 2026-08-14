@@ -8,10 +8,8 @@ import OBCWeatherWire
 /// (`specs/vectors/wx-manifest-v2.json` plus the `bbox_equivalence` table in
 /// `specs/vectors/manifest.json`), and a difference between them is a bug in whichever one differs.
 ///
-/// v1's reader existed to *choose*: it ranked products by tier, tested bbox containment and compared
-/// staleness deadlines. None of that survives, because there is nothing to choose between — one
-/// dataset, one lattice, one generation. This module answers exactly two questions, and neither is a
-/// policy:
+/// There is nothing to choose between — one dataset, one lattice, one generation. This module
+/// answers exactly two questions, and neither is a policy:
 ///
 /// 1. **which shards cover my bbox** — ``WeatherLattice/shards(for:)``, a handful of divisions;
 /// 2. **what is at that shard** — ``WeatherManifestFrame/state(of:in:)``: an object to fetch, a dry
@@ -45,8 +43,7 @@ import OBCWeatherWire
 /// A shard that is entirely **no-data** is `present` with an object full of intensity 15, because
 /// "we do not know" is data the rider is owed. Only genuinely dry shards are absent.
 ///
-/// Strictness splits the way the phone already split it for v1, and for the same reason: the
-/// document is strict (bad JSON, an unknown `version` or an unusable lattice is a hard failure), an
+/// The document is strict (bad JSON, an unknown `version` or an unusable lattice is a hard failure), an
 /// entry is lenient (a malformed frame is skipped and counted, never fatal).
 public struct WeatherManifestV2: Equatable, Sendable {
     /// The one key the whole dataset hangs off (OBCG §10).

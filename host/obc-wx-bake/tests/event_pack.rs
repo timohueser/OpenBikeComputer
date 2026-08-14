@@ -204,7 +204,7 @@ fn the_pack_stays_on_the_basemap_it_names() {
     //      request, before a single tile is aligned;
     //   2. a pack's window then aligns outward to whole tiles of the **published** lattice, and
     //      since #1246 that is one tile edge of 256 canonical cells — 2.56 degrees, four times the
-    //      stride the per-product observation lattice used to align to. The pack buys production
+    //      stride the observation lattice used to align to. The pack buys production
     //      tile geometry and pays for it in overhang; the objects stay small because the extra
     //      ground is dry or model fill.
     //
