@@ -1847,7 +1847,6 @@ mod tests {
         // offsets and the trailing sections in the streaming path are easy to
         // drift, so the fixture carries POIs of a few categories (two sharing one
         // pooled schedule) *and* a small nav graph.
-        use crate::geom::Geom;
         use crate::nav::{Edge, Node as NavNode};
         use crate::poi::Poi;
         use std::io::Cursor;
@@ -1868,16 +1867,26 @@ mod tests {
             LodLayer {
                 max_mpp: Some(100.0),
                 chunk_size: 256,
-                root: crate::quadtree::build_lod([(1u8, Geom::Line(vec![(0.1, 0.1), (0.9, 0.9)]))], bbox, 256),
+                root: Node::Leaf {
+                    bbox,
+                    features: vec![Feature {
+                        style_id: 1,
+                        kind: Kind::Line,
+                        rings: vec![vec![(0.1, 0.1), (0.9, 0.9)]],
+                    }],
+                },
             },
             LodLayer {
                 max_mpp: None,
                 chunk_size: 256,
-                root: crate::quadtree::build_lod(
-                    [(1u8, Geom::Line(vec![(0.2, 0.2), (0.8, 0.8), (0.5, 0.1)]))],
+                root: Node::Leaf {
                     bbox,
-                    256,
-                ),
+                    features: vec![Feature {
+                        style_id: 1,
+                        kind: Kind::Line,
+                        rings: vec![vec![(0.2, 0.2), (0.8, 0.8), (0.5, 0.1)]],
+                    }],
+                },
             },
         ];
         let poi = |subtype, lon, lat, name: Option<&str>, hours: Option<&str>| Poi {
