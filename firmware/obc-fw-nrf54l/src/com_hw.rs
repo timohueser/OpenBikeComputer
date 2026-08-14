@@ -15,18 +15,16 @@
 //!
 //! ## Why GPIOTE works where PWM didn't
 //!
-//! **PWM20 will not drive** the COM pins (the lines sit dead `Lo`); GPIOTE drives the GPIO through the
-//! dedicated GPIOTE→GPIO task path (the same one a plain `Output` write uses), not the PWM output
-//! routing that failed — so a GPIOTE **toggle task** reaches the pin where PWM could not.
+//! On the retired P2.07/P2.08/P2.10 bring-up routing, **PWM20 would not drive** the then-COM pins (the
+//! lines sat dead `Lo`). That result is historical, not a claim about today's P1.22–24 nets. GPIOTE
+//! drives GPIO through the dedicated task path (the same path a plain `Output` write uses).
 //!
 //! ## Pins — must be GPIOTE-capable (P1/P3, or P0)
 //!
 //! In embassy-nrf 0.11 **only P0 (→GPIOTE30) and P1/P3 (→GPIOTE20) are GPIOTE-capable; P2 has no
-//! GPIOTE mapping** (on either the nRF54L15 or the nRF54LM20). The DK wires COM on **P2**, so this
-//! driver **cannot** run there and the DK keeps [`crate::com`]. It is the path the **production board**
-//! turns on (the `com-hw` feature): route the three COM lines onto P1/P3 and this drives them for free.
-//! Keep all three on **one** GPIOTE instance (one power domain) so a single DPPI channel toggles them
-//! in lockstep — here GPIOTE20 (P1/P3) + TIMER21 + DPPIC20, all in the peripheral domain.
+//! GPIOTE mapping**. The canonical board ledger routes VCOM/VB/VA to **P1.22/P1.23/P1.24**, and both
+//! the default M33 driver and this opt-in hardware driver own those same nets. All three stay on
+//! GPIOTE20 so one DPPI channel toggles them in lockstep with TIMER21 + DPPIC20.
 //!
 //! ⚠️ **On-glass + logic-analyzer verification pending**: this compiles for the target and the wiring
 //! is golden-ref'd against [`crate::com`]'s waveform, but it has not yet run on glass. The COM phase

@@ -63,8 +63,8 @@ mod arena;
 mod com;
 // Zero-CPU hardware COM: drive the COM square wave from a TIMER→DPPI→GPIOTE toggle chain instead of
 // the M33 `com_task`, so the panel's anti-DC-bias COM keeps alternating with no core wakes and the M33
-// can WFI between events. Opt-in (`com-hw`) + production-board-only — the DK wires COM on P2, which has
-// no GPIOTE — so the default DK build keeps `com::com_task`. See `com_hw.rs`.
+// can WFI between events. The opt-in path and the default `com::com_task` both own the canonical
+// P1.22/P1.23/P1.24 COM nets; hardware-waveform verification is why `com-hw` stays off by default.
 #[cfg(feature = "com-hw")]
 mod com_hw;
 // The LS021/FLPR panel — this crate's display-contract presenter backend (the impls are folded in
@@ -1035,8 +1035,8 @@ async fn main(_spawner: Spawner) {
         // share the one high-priority executor (COM must keep alternating whatever the map plane does).
         //
         // ⚠️ These five P1 gate/BSP lines **must match `src/flpr/flpr_scan.c`'s masks** — confirm
-        // each is broken out on your DK and remap all three together if not (the source bus, BCK, and
-        // COM stay on P2).
+        // each is broken out on your DK and remap all three together if not (the source bus and BCK
+        // stay on P2; COM is the P1.22–24 group pinned in `board`).
         let mut display = {
             // Gate + frame lines: one contiguous P1.10–14 run (with BSP below) so the gate harness
             // is a single uninterrupted cable on the DK's port-1 header. (P1.01/02 stay NFC.)
@@ -1073,13 +1073,10 @@ async fn main(_spawner: Spawner) {
             // init-black frame below, then started. Default (DK): three plain `Output`s the M33
             // `com_task` toggles at 60 Hz — VCOM=P1.22, VB=P1.23 in phase, VA=P1.24 inverse. COM lived
             // on P2.07/08/10 until the #1158 rehome gave the whole of P2 to the source bus + the microSD
-            // card (those three are `BCK`/`R1`/`G1` now); P1.22–24 have no GPIOTE either, so the default
-            // build still drives them from the M33. With `com-hw` (production board): the COM lines are
-            // GPIOTE **toggle** channels a TIMER+DPPI free-runs with zero CPU (so the M33 can WFI
-            // between events) — GPIOTE-capable P1 pins, all on GPIOTE20, so one DPPI channel toggles
-            // them in lockstep. Those pins are **placeholders** (P1.04/05/15) to be matched to the
-            // production board's COM routing. `HwCom::start` establishes VA's inverse phase before
-            // enabling the toggle.
+            // card (those three are `BCK`/`R1`/`G1` now). With `com-hw`, the same P1.22–24 nets become
+            // GPIOTE20 **toggle** channels that a TIMER+DPPI chain free-runs with zero CPU (so the M33
+            // can WFI between events). `HwCom::start` establishes VA's inverse phase before enabling
+            // the toggle.
             #[cfg(not(feature = "com-hw"))]
             let (vcom, vb, va) = (
                 Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive),
@@ -1192,7 +1189,7 @@ async fn main(_spawner: Spawner) {
         // Arm the completion vector first: P1, the default peripheral lane, beside the display's
         // EGU20 frame-ack (the ISR is one store + a latched-event clear, so priority only has to
         // stay under the P0 GRTC driver). The per-boot *gates* are `Semmc::boot_firmware`'s.
-        // SAFETY: enabling an NVIC line whose handler is the `VPR00` vector above.
+        // SAFETY: enabling an NVIC line whose handler is bound in `board::VPR00`.
         unsafe {
             interrupt::VPR00.set_priority(Priority::P1);
             interrupt::VPR00.enable();
