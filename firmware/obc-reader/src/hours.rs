@@ -65,8 +65,8 @@ pub struct WeeklySchedule {
 pub(crate) const MINUTES_PER_DAY: u16 = 1440;
 
 impl WeeklySchedule {
-    /// Decode a 29-byte pool blob (spec §7.5) into a schedule. `blob` must contain exactly the public
-    /// [`hours-blob length`](obc_formats::obcm::POI_HOURS_BLOB_LEN) in bytes; a shorter slice yields
+    /// Decode a 29-byte pool blob (spec §7.5) into a schedule. `blob` must contain exactly
+    /// `POI_HOURS_BLOB_LEN` bytes; a shorter slice yields
     /// `None` (a corrupt/truncated pool is handled cleanly, never a panic). Every
     /// quarter-hour byte is taken as-is — the packer guarantees `0..=96`, and the eval
     /// helpers stay total for any byte value regardless.
