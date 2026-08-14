@@ -402,6 +402,31 @@ mod tests {
     }
 
     #[test]
+    fn active_slot_remains_readable_through_an_inactive_write_failure() {
+        let old = bundle(MINIMAL, 10, 100);
+        let new = bundle(DWD, 11, 200);
+        let mut io = MemoryIo::new(Some(old.clone()), None);
+        let active = inspect_slots(&mut io).active.unwrap();
+        let mut upload = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
+
+        for chunk in new.chunks(173) {
+            upload.push(&mut io, chunk).unwrap();
+            let reader = SliceSource(io.bytes(active.slot).unwrap());
+            assert_eq!(
+                validate_slot(active.slot, &reader),
+                SlotValidation::Valid(active),
+                "the session-long active reader changed while the inactive slot was written"
+            );
+        }
+
+        io.failure = Failure::Close;
+        assert_eq!(upload.finish(&mut io), Err(UploadError::Io(FakeError::Close)));
+        io.power_cut();
+        assert_eq!(io.bytes(active.slot), Some(old.as_slice()));
+        assert_eq!(inspect_slots(&mut io).active, Some(active));
+    }
+
+    #[test]
     fn oversize_push_releases_the_slot_for_retry_without_reboot() {
         let old = bundle(MINIMAL, 10, 100);
         let new = bundle(DWD, 11, 200);

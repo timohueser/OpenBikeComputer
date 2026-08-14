@@ -1,10 +1,10 @@
 //! The USB **bulk data plane**: the object stream the control plane ([`super::control`]) arms
 //! through [`TRANSFER_ARM`].
 //!
-//! This is a near line-for-line twin of [`crate::ble::data_plane`], and that is the point — the two
-//! differ only in `ch.receive`/`ch.send` becoming `ep.read`/`ep.write`. The bulk endpoints carry
-//! **only the object's payload bytes** (no per-chunk framing); the whole transfer state machine and
-//! the transfer state machine is the host-tested [`obc_ble`] crate, unchanged and unforked:
+//! This shares the host-tested descriptor/receiver codecs and transfer skeleton with
+//! [`crate::ble::data_plane`], but USB also owns endpoint drain/re-enumeration, map-set staging and
+//! link-checked map policy. The bulk endpoints carry **only the object's payload bytes** (no
+//! per-chunk framing); the shared wire state machines remain in [`obc_ble`]:
 //!
 //! - **Echo loopback** ([`run_echo`]): stream each packet straight back through an
 //!   [`obc_ble::Receiver`] (a running CRC, no reassembly buffer), verify **one** whole-object
