@@ -155,7 +155,7 @@ static inline void fence(void)
  * the half-width ≈ **210 ns** (~3× under spec). Glass-verified clean (solids, map colours, fine
  * contours, bulge — the F5 column-doubling mode checked). Caveats, in writing:
  *   - **single-unit validation** (one bench panel, room temperature); the LM20 build must re-run
- *     the glass check and `firmware/docs/flpr-timing.md`'s lever log;
+ *     the glass checks and timing captures in `firmware/docs/flpr-timing.md`;
  *   - in-spec halves (660 ns) were *costed*: ~+36 ms/frame (~80 ms total) — declined;
  *   - colours sparkle / doubled columns on a future unit ⇒ re-pace the hot loop: add a
  *     `busy(k)` after each present in `drive_subline` (k=1 ≈ +183 ns/half ≈ +14 ms/frame).

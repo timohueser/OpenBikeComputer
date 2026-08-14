@@ -17,7 +17,7 @@ Atom feed at `blog/feed.xml`. Two extra fenced directives are available (blog or
 ```` ```compare ```` (before/after image slider) and ```` ```model ```` (interactive
 GLB viewer + optional STEP download) — each takes `key: value` lines; see BLOG.md.
 
-Supported markdown (a small, predictable CommonMark-ish subset — see DOCS_PLAN.md):
+Supported markdown (a small, predictable CommonMark-ish subset — see README.md):
 headings (auto-slugged), paragraphs, `**bold**`, `*italic*`, `` `code` ``,
 `[text](href)`, `-`/`1.` lists (incl. one level of nesting), ``` fenced code,
 pipe tables, `>` blockquote callouts, `---` rules, and **raw block HTML/SVG

@@ -1,11 +1,9 @@
 import SwiftUI
 
-/// The OBC design tokens mapped to SwiftUI — colors, chrome metrics, radii, and
-/// spacing. Source of truth:
-/// `project/_ds/openbikecomputer-design-system-*/tokens/*.css` plus the iOS
-/// additions declared in `project/OBC Companion App.dc.html` (§9): the track
-/// colors, `tint`, and the 44/54/13 chrome metrics. **No new colors outside
-/// these tokens** (issue #240 acceptance).
+/// The companion UI's tracked design-token authority: colors, chrome metrics,
+/// radii, and spacing. Reuse these values from views and components instead of
+/// introducing one-off styling. The component gallery and screenshot tests are
+/// the visual reference for how the tokens compose.
 public enum OBCTheme {
     // ------------------------------------------------------------- base
     /// `--parchment` #ece8cf — page base, moss-tinted cream.
