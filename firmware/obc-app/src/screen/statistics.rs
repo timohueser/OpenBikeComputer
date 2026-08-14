@@ -25,6 +25,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::app::step_zoom;
 use crate::input::Gesture;
 use crate::settings::Settings;
 use crate::stat_fields;
@@ -34,8 +35,6 @@ use super::{palette, title_frame, ClimbScreen, Ctx, MapScreen, Render, Screen, S
 
 /// Cursor scrub per Up/Down step, as a fraction of the whole route — ~42 steps end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
-/// Zoom multiplier per Up/Down step (matches the Map's zoom feel).
-const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps: `1.0` = whole route; the max is a touch under where the base stops adding detail.
 const MIN_ZOOM: f32 = 1.0;
 const MAX_ZOOM: f32 = 8.0;
@@ -218,13 +217,7 @@ impl StatisticsScreen {
                 self.cursor = Some((c + n as f32 * step).clamp(0.0, 1.0));
             }
             Mode::Zoom => {
-                // Multiply per step (no_std: no powf).
-                let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-                let mut z = self.zoom;
-                for _ in 0..n.unsigned_abs() {
-                    z *= step;
-                }
-                self.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
+                self.zoom = step_zoom(self.zoom, n, MIN_ZOOM, MAX_ZOOM);
             }
             Mode::Follow => {}
         }
@@ -448,6 +441,7 @@ fn waypoint_tick_x(dist_along_m: u32, total: u32, chart_x: i32, chart_w: i32) ->
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::app::ZOOM_STEP;
     use crate::screen::test_ctx;
     use crate::settings::ClimbMode;
     use crate::AppState;
