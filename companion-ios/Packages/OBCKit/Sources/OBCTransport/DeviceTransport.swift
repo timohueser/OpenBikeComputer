@@ -24,27 +24,8 @@ public enum RetentionWriteOutcome: Equatable, Sendable {
     case unsupported
 }
 
-/// The device configuration control plane, separated from link and object
-/// transport so config-only policies do not acquire unrelated capabilities.
-public protocol DeviceConfiguration: Sendable {
-    /// Read the device config blob.
-    func readConfig() async throws -> DeviceConfig
-    /// Write the device config blob — including device rename (H3, Delta 1).
-    func writeConfig(_ config: DeviceConfig) async throws
-}
-
-/// The aggregate device boundary (Tier 1 — semantic), composed from the
-/// capability protocols that focused policies and view models use directly.
-/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
-///
-///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
-///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
-///
-/// Everything a screen (B2–B11) needs must be expressible through these
-/// capabilities. `Sendable` lets conformers cross concurrency domains.
-public protocol DeviceTransport: DeviceConfiguration {
-    // MARK: Lifecycle
-
+/// The device link lifecycle and identity handshake, without unrelated capabilities.
+public protocol DeviceLink: Sendable {
     /// Link lifecycle. **Replays the latest** value to late subscribers (a fresh
     /// stream immediately yields the current state), then streams changes.
     var state: AsyncStream<ConnectionState> { get }
@@ -81,11 +62,31 @@ public protocol DeviceTransport: DeviceConfiguration {
     /// (the S4 banner owns the degraded-link story); callers only invoke this
     /// when a link existed before the suspend.
     func resumeLink() async
+    /// Device identity (DIS + `protocol_version`) established by discovery.
+    func deviceInfo() async throws -> DeviceInfo
+}
 
+/// The device configuration control plane, separated from link and object
+/// transport so config-only policies do not acquire unrelated capabilities.
+public protocol DeviceConfiguration: Sendable {
+    /// Read the device config blob.
+    func readConfig() async throws -> DeviceConfig
+    /// Write the device config blob — including device rename (H3, Delta 1).
+    func writeConfig(_ config: DeviceConfig) async throws
+}
+
+/// The aggregate device boundary (Tier 1 — semantic), composed from the
+/// capability protocols that focused policies and view models use directly.
+/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
+///
+///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
+///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
+///
+/// Everything a screen (B2–B11) needs must be expressible through these
+/// capabilities. `Sendable` lets conformers cross concurrency domains.
+public protocol DeviceTransport: DeviceLink, DeviceConfiguration {
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
 
-    /// Device identity (DIS + `protocol_version`).
-    func deviceInfo() async throws -> DeviceInfo
     /// Battery percentage (BAS notify). **Replays the latest** value.
     var battery: AsyncStream<Int> { get }
     /// Unsolicited device store movements (`storeChanged`, spec §4.3 msg 2) —
@@ -219,7 +220,7 @@ public protocol DeviceTransport: DeviceConfiguration {
     func installFirmware() async throws -> FirmwareInstallResult
 }
 
-extension DeviceTransport {
+extension DeviceLink {
     /// Default single-phase behaviour for conformers that don't split pairing
     /// (SwiftUI previews, future stand-ins): `discover()` does the whole connect
     /// and `authenticate()` is a no-op. `BLETransport` and `MockTransport` override
@@ -236,7 +237,9 @@ extension DeviceTransport {
     /// discover/authenticate continuations over any still waiting).
     public func suspendLink() async { await disconnect() }
     public func resumeLink() async { try? await connect() }
+}
 
+extension DeviceTransport {
     /// Default: no possession ack — for preview/test stand-ins that model no
     /// device-side synced state. `BLETransport` sends the real command;
     /// `MockTransport` records the ack for tests. Safe as a no-op because the
