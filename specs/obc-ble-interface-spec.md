@@ -16,9 +16,9 @@ canonical source the firmware Track-A issues (epic #267) implement.
 > parallel — a v1 peer reads `version = 2` first and surfaces its mismatch path
 > (§1). The one-line "what changed and why" for each item lives in its section.
 
-> **This document is canonical.** The iOS mirror
-> ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) defers to it:
-> where they disagree, this spec wins and the mirror is corrected. §9 lists the
+> **This document is canonical.** The iOS implementation notes
+> ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) defer to it:
+> where they disagree, this spec wins and the notes are corrected. §9 lists the
 > v1 → v2 wire changes so the app-side repin is a checklist, not a diff hunt.
 
 > **The title says BLE; most of the document does not.** BLE came first and named
@@ -1284,7 +1284,7 @@ receiver policy only — it changes no wire bytes, fixture, or protocol version.
 A route object's payload is **exactly the bytes of an OBCR v3 file** — see
 [`OBCR_Spec.md`](OBCR_Spec.md), including the waypoints section (categorized and
 carrying a signed lateral offset since v3). The phone encodes imported GPX/TCX to
-OBCR v3 (waypoints included — Delta 2 in the mirror); the device writes the
+OBCR v3 (waypoints included — see the iOS implementation notes); the device writes the
 payload to SD verbatim and serves it back verbatim. The device **rejects** a v1/v2
 payload at commit, so an app build that still encodes v2 must be updated with this
 bump rather than silently uploading routes the device won't open.
@@ -1676,9 +1676,9 @@ The object length is fully determined by its header: `56 + 2·stage_count` bytes
 
 ## 9. Changes from v1 (the repin list)
 
-Protocol v2 (epic #632) is the one coordinated wire break. The iOS mirror
-([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) is updated to
-match in the same change; each item below is a single-spot repin on both sides,
+Protocol v2 (epic #632) is the one coordinated wire break. The iOS implementation
+notes ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) point back
+to this list; each item below is a single-spot repin on both sides,
 pinned by the shared `specs/vectors/` fixtures:
 
 1. **`protocolVersion` read widened** `u16` → `version u16 · store_epoch u32`
@@ -1765,13 +1765,13 @@ byte:
   writer produces with no refresh field is byte-identical to the pre-WX3 one,
   which is what keeps the existing Config fixture meaningful.
 
-The iOS mirror's repin is the codec side of those four: the widened identity read
+The iOS implementation handles those four on the codec side: the widened identity read
 decoded by length, the second service scanned for and read, the type-`20` upload,
 and the Config field written only when the rider set one. The shared
 `specs/vectors/weather-request-*.bin` fixtures pin the context layout from both
 languages.
 
-Their iOS mirror repin — `setClock`/`setRouteRetention` sent at the documented
+The corresponding iOS implementation — `setClock`/`setRouteRetention` sent at the documented
 times, the 84-byte `routeList` entry decoded by `entry_len`, and the
 `command-set-clock.bin` / `command-set-route-retention.bin` / regenerated
 `route-list.bin` fixtures pinned — **landed in S6 (#646)**, the epic's iOS

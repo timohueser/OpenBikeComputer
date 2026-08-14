@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// The `setRouteRetention` command encoder (spec §4.4, cmd `6` — mirrored in
+/// The `setRouteRetention` command encoder (spec §4.4, cmd `6`; see
 /// `OBCProtocol.md`): `cmd u8 = 6 · object_id u16 LE · retention u8`, the phone
 /// setting a stored route's expiry policy **without re-uploading** it (epic #638).
 ///
