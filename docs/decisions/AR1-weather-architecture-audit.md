@@ -23,11 +23,14 @@ Two planning assumptions are already obsolete:
   request kernel and thin board/simulator adapters. Companion work belongs to AR6 and must retain
   one queue-confined CoreBluetooth owner.
 
-**Epic gate: NO-GO while this audit PR is unreviewed. GO after it merges and the overlapping
-weather-closeout work is idle, subject to the issue-specific dependencies below.** No downstream
+**AR1 planning gate: NO-GO while this audit PR is unreviewed. After review and merge, GO means only
+that downstream work may use this ownership map and corrected scope. It is not approval for an
+unprototyped primitive or storage substitution.** AR2 remains NO-GO to merge a FAT-ownership change
+until the retained real-file handle passes its HIL gate; AR5/AR8 remain NO-GO to merge primitive or
+event-state replacements until their candidate linked-size and wake evidence exists; #1292/#1296
+remain NO-GO to merge a shared runner until its throughput/device evidence exists. No downstream
 change may start from the old MainScreenModel/DeviceWeather assumptions. The on-device proofs in
-the final section are gates for the changes that touch static placement, storage durability or data
-plane buffering; they are not required for this documentation/test-only change.
+the final section are gates for the affected implementation changes, not for this audit itself.
 
 At audit time another worktree owns uncommitted closeout changes in companion `OBCWeather` /
 `OBCWeatherWire`, formats/docs and `obc-wx-bake` / client surfaces. This audit reads shipping
@@ -75,9 +78,10 @@ The concrete hand-offs are:
    and the ordinary shared transfer slot/CoC exchange at [lines 927-1045](../../companion-ios/Packages/OBCKit/Sources/OBCTransport/BLE/BLETransport.swift#L927).
 4. The board's shared classifier arms type 20 like other uploads, but BLE routes it into the
    weather-specific repository ([`ble/data_plane.rs` lines 125-145](../../firmware/obc-fw-nrf54l/src/ble/data_plane.rs#L125),
-   [lines 308-389](../../firmware/obc-fw-nrf54l/src/ble/data_plane.rs#L308)). `ObjectStore` carries
-   only the transaction token and maps its typed verdict to the wire
-   ([`object_store.rs` lines 1347-1519](../../firmware/obc-fw-nrf54l/src/object_store.rs#L1347)).
+   [lines 308-389](../../firmware/obc-fw-nrf54l/src/ble/data_plane.rs#L308)). The transaction token
+   lives in module-static `WEATHER_TX`; `ObjectStore` only mediates access and maps its typed verdict
+   to the wire ([`object_store.rs` line 488](../../firmware/obc-fw-nrf54l/src/object_store.rs#L488),
+   [lines 1347-1519](../../firmware/obc-fw-nrf54l/src/object_store.rs#L1347)).
 5. `obc-storage::weather` selects only an inactive safe target, holds the magic, streams, closes,
    validates and patches the eligibility marker
    ([`weather.rs` lines 22-45](../../firmware/obc-storage/src/weather.rs#L22),
@@ -168,44 +172,65 @@ oversize/append failure and same-boot retry, a power cut at every important head
 boundary, outer and embedded CRC corruption, stale/wrapped generations, card removal/full,
 unreadable targets, and seek/flush/close ambiguity
 ([`weather.rs` test module](../../firmware/obc-storage/src/weather.rs#L222)). AR1 adds the missing
-characterization that repeatedly validates the old active reader after every inactive-slot append
-and again after close failure/reboot. `obc-weather` separately pins deterministic selection,
-half-range/wrap rules and overlay validation
+host characterization with a logical reader handle opened before the transaction. The fake pins a
+stable file identity to that same handle, validates through it after every inactive append and the
+inactive close failure, closes it on the simulated power cut, then separately runs boot selection
+and opens a distinct handle to the exact selected identity. This proves the transport-neutral
+`WeatherUpload` never targets/rebinds the active identity and never closes its logical reader. It
+does **not** execute `sd.rs` or prove that a real FAT handle remains usable while a sibling file is
+truncated/flushed; AR2 must retain the real-media/HIL gate below before a FAT-ownership change can
+merge. `obc-weather` separately pins deterministic selection, half-range/wrap rules and overlay validation
 ([`slots.rs` tests](../../firmware/obc-weather/src/slots.rs#L191)). These are sufficient for AR2 to
-extract filesystem ownership without a board test harness; real-media power-loss remains a release
-gate for a changed transaction implementation.
+prototype the transport-neutral transaction kernel. They are not sufficient to merge a board
+filesystem-ownership or transaction change without the retained-handle and power-loss device proof.
 
 ## Essential / Policy / Accidental primitive matrix
 
-“Current cost” is target-ABI RAM unless stated otherwise. Candidate sizes came from a temporary
-`resource-report` table in a Thumb release build with the repository toolchain; the rows were
-removed after extraction. No shipping allocation changed, so this PR's linked RAM/flash/future,
-stack, wakes and throughput deltas are all zero. A candidate implementation must re-run the linked
-guards because type size alone does not predict async-frame or alignment cost.
+“Current cost” is target-ABI type layout unless stated otherwise. AR1's eleven `audit_*` rows are
+retained in the board's report-only `.obc_resources` table, which is absent from shipping ELFs. They
+are reproducible in both production profiles with the CI commands:
+
+```sh
+cd firmware/obc-fw-nrf54l
+cargo build --release --locked --features resource-report
+python3 ../tools/resource_guard.py report --profile default --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+cargo build --release --locked --no-default-features --features ble,resource-report
+python3 ../tools/resource_guard.py report --profile ble --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+```
+
+The rows measure layouts, not candidate allocations. This PR's zero shipping linked/runtime delta
+only proves that the audit and test do not alter production; it is **not** substitution evidence.
+AR1 did not implement candidate firmware, so there is no honest candidate linked RAM, flash,
+future/boot/stack, wake or throughput delta to report. Decisions below are therefore either retain/
+reject decisions based on shipping semantics, or explicitly provisional proposals whose owning
+issue remains NO-GO until a concrete before/after prototype supplies those dimensions.
 
 | Current mechanism | Cause class and stated cause | Measured comparison | Decision / downstream owner |
 | --- | --- | --- | --- |
-| Bounded every-item commands | **Essential:** FIFO and explicit backpressure are domain semantics | `Channel<CriticalSectionRawMutex,u16,8>` = 48 B | **Adopt/retain `Channel`**; AR5 names ports/capacities, no generic bus. |
-| One-consumer latest/coalescing request | **Essential:** overwriting intermediate requests is the contract | `Signal<()>` = 12 B; `Signal<WeatherSnapshot>` = 48 B | **Adopt `Signal<T>`** where every write may wake. |
+| Bounded every-item commands | **Essential:** FIFO and explicit backpressure are domain semantics | `Channel<CriticalSectionRawMutex,u16,8>` = 48 B | **Retain current `Channel`**; AR5 names ports/capacities, no generic bus. No queue substitution is authorized here. |
+| One-consumer latest/coalescing request | **Essential:** overwriting intermediate requests is the contract | `Signal<()>` = 12 B; `Signal<WeatherSnapshot>` = 48 B | **Retain current `Signal` uses** where every write may wake; this is a rule, not approval to swap another boundary. |
 | Snapshot level + material-change wake | **Essential:** GPS changes at 1 Hz but the sleeping radio task must have zero idle wakes | current snapshot mutex 48 B + signal 12 B; payload `Signal` 48 B would wake on each update; `Watch<Snapshot,1>` 80 B | **Retain split**. The 12 B apparent saving would change wake behavior. |
-| Latest value with independent receivers | **Essential only when N receivers really consume independently** | `Watch<Snapshot,1>` 80 B; `Watch<Snapshot,2>` 88 B | **Adopt only for N>=2**; no current weather boundary qualifies. |
+| Latest value with independent receivers | **Essential only when N receivers really consume independently** | `Watch<Snapshot,1>` 80 B; `Watch<Snapshot,2>` 88 B | **Reject for current weather boundaries**; a future N>=2 use needs its own evidence. |
 | Coherent synchronous shared state | **Essential:** multi-field snapshot/budget transitions cannot tear | blocking weather snapshot mutex = 48 B, equal to `Signal<Snapshot>` | **Retain blocking `Mutex<Cell/RefCell>`** for synchronous reads. |
 | Async SD owner + typed transaction token | **Essential:** one FAT owner/handle may span storage awaits; the token is linear session state | async `Mutex<_,u8>` shell = 20 B; `WeatherUpload` is compile-time capped at <=64 B; shipping token is static because putting it in `ObjectStore` measured boot frame 14,692 -> 27,556 B | **Retain** async owner and typed sessions; never hold across unrelated transport waits. |
-| Event-or-deadline sleep | **Essential:** request cadence with zero periodic idle wake | shipping `select(WAKE, Timer)` at `ble/weather.rs` 252-260; guarded poll frame 9,728 B | **Adopt/retain `select` + timer**, no new task/poll. |
+| Event-or-deadline sleep | **Essential:** request cadence with zero periodic idle wake | shipping `select(WAKE, Timer)` at `ble/weather.rs` 252-260; guarded poll frame 9,728 B | **Retain shipping `select` + timer**, no new task/poll. |
 | `MaybeUninit` in-place board statics | **Essential:** warm reset may preserve `StaticCell`'s used flag | `MaybeUninit<Snapshot>` 48 B; `StaticCell<Snapshot>` 56 B (+8 B); current boot stack gates below | **Retain** until the exact reset path proves cell re-arming. `ptr::write` is the owner, not boilerplate. |
 | Local random-access/FAT transaction traits | **Essential:** `read_at`, root-file identity, closed-file validation and sync/patch ambiguity are not sequential byte-I/O semantics | `WeatherSlotIo` has 6 operations and no adapter allocation | **Retain thin domain port**; AR2 may compose a shared staged kernel underneath it. |
-| USB Stage / arena arm | **Accidental:** map throughput work was implemented only in the cable runner | current `arena_usb` 131,072 B but costs 0 incremental resident bytes while tied with `arena_total`; on-glass staged 7.3-7.9 MB/s vs ~0.20 MB/s unstaged | **Unify in #1292/#1296**, preserving DMA/FAT lifetime. Estimate 5-8 engineer-days now plus device soak; continuing divergence costs ~3-5 days/year and repeats correctness fixes. |
+| USB Stage / arena arm | **Accidental:** map throughput work was implemented only in the cable runner | current `arena_usb` 131,072 B but costs 0 incremental resident bytes while tied with `arena_total`; historical on-glass staged 7.3-7.9 MB/s vs ~0.20 MB/s unstaged; no shared-runner prototype measured | **Provisional for #1292/#1296**; NO-GO until a concrete shared prototype preserves DMA/FAT lifetime and supplies linked/frame/stack plus device throughput/wake evidence. Estimate 5-8 engineer-days now plus device soak; continuing divergence costs ~3-5 days/year and repeats correctness fixes. |
 | Generic `Pipe` / zerocopy channel proposal | **Essential mismatch:** ordinary rings do not carry FAT span coalescing, aligned arena loans or in-flight CMD25 lifetime | no candidate implementation; current arena arm 128 KiB, guarded resource numbers below | **Reject as drop-in**. Measure only as an implementation inside the staged kernel. |
-| Transfer/search gate split across `AtomicU8` + `AtomicBool` | **Accidental:** search was added after the transport-owner gate | current type = 2 B; both check-then-CAS sequences rely on same-executor non-preemption (`link_gate.rs` 67-70) | **Replace with one tagged `AtomicU8`** in AR5: Idle/Ble/Usb/Search. Estimate <=1 day now; annual cost ~1 day plus high-severity race risk whenever an owner is added. |
-| Weather scheduler event flags (`URGENT`, `COMMITTED`, id, unchanged slot) | **Accidental spellings around Essential independent facts** | historical weather due plane +408 B resident, including ~62 B event plumbing and ~286 B task future; revision gating +96 B; current guards below | **Fold into AR8's tested kernel state/actions**, but keep the zero-wake snapshot split. Estimate 3-5 days; annual cost ~2-3 days of mirrored board/sim transition changes. |
-| Advertising pending + edge + budget | **Essential deadline/level; Accidental three-field representation** | weather request service historically +216 B, including attribute table and intent trio; exact replacement not implemented | **AR5/AR8 may unify as one coherent state only if linked RAM/future stay flat and original deadline survives reconnects.** |
+| Transfer/search gate split across `AtomicU8` + `AtomicBool` | **Accidental:** search was added after the transport-owner gate | current type = 2 B; tagged `AtomicU8` layout = 1 B; both check-then-CAS sequences rely on same-executor non-preemption (`link_gate.rs` 67-70); no linked/runtime prototype exists | **Provisional AR5 proposal:** Idle/Ble/Usb/Search in one tagged atomic. NO-GO until model tests plus default/BLE linked RAM/flash/future/boot/stack results show equivalence. Estimate <=1 day now; annual cost ~1 day plus high-severity race risk whenever an owner is added. |
+| Weather scheduler event flags (`URGENT`, `COMMITTED`, id, unchanged slot) | **Accidental spellings around Essential independent facts** | historical weather due plane +408 B resident, including ~62 B event plumbing and ~286 B task future; revision gating +96 B; no consolidated-kernel prototype exists | **Provisional AR8 proposal:** fold into tested kernel state/actions while keeping the zero-wake snapshot split. NO-GO until linked dimensions plus RTT/power wake and transition equivalence are measured. Estimate 3-5 days; annual cost ~2-3 days of mirrored board/sim transition changes. |
+| Advertising pending + edge + budget | **Essential deadline/level; Accidental three-field representation** | weather request service historically +216 B, including attribute table and intent trio; no replacement prototype exists | **Provisional AR5/AR8 proposal:** unify only after linked RAM/flash/future/boot/stack stay within gates and device timing proves the original deadline survives reconnects. |
 | PubSub/generic event bus | **Accidental complexity with no consumer topology** | no current allocation or true broadcast | **Delete/reject proposal**. |
 | Independent Rust/Swift/TypeScript codecs | **Essential:** independent implementations are drift oracles | golden vectors, not LOC minimization | **Retain**, never consolidate across language boundary. |
 
 Planning estimates above are deliberately rough engineering estimates, not performance
-measurements. The measured acceptance for every implementation PR is: linked resident/flash,
-target type table, task/poll/boot frames, idle wake count, transfer throughput and the relevant
-behavioral suites.
+measurements. The current board baseline below supplies all linked/frame/stack dimensions for the
+shipping side only. Every provisional implementation PR must record same-host before/after linked
+resident/flash, target rows, task/poll/boot frames and residual stack. It must additionally measure
+idle wakes for message/request changes and device throughput for data-plane changes; “not
+applicable” is valid only with the boundary-specific reason. Until those results exist, the
+affected proposal remains NO-GO regardless of this audit's merge state.
 
 ## Transport split for #1292
 
@@ -301,13 +326,13 @@ justify crossing an ownership boundary.
 
 | Issue | Refined scope / dependency after AR1 |
 | --- | --- |
-| **AR2 #1258** | Evidence-based answer: weather **is** a special repository. Preserve `obc-weather` selection/freshness and `obc-storage::weather` transaction; make board FAT ownership explicit. Share only staged stream/close/sync/commit-marker mechanics with #1296. Start after AR1 merge and storage weather-closeout paths are idle; keep the characterization matrix green. |
+| **AR2 #1258** | Evidence-based answer: weather **is** a special repository. Preserve `obc-weather` selection/freshness and `obc-storage::weather` transaction; make board FAT ownership explicit. Share only staged stream/close/sync/commit-marker mechanics with #1296. Design/prototyping may start after AR1 merge and after storage weather-closeout paths are idle, but a FAT-ownership/transaction change is NO-GO to merge until the same retained reader handle and power-cut matrix pass on real media. |
 | **AR3 #1263** | Drop the stale screen-registration seam: the UI already has one screen table/shared vocabulary. Work against `app.rs`'s current 3,518 production-prefix / 7,128 physical lines, not the older 4,480-NLOC claim. Preserve the host-owned weather feed and the small neutral request snapshot; do not move forecast storage into `App`. May run independently after AR1. |
 | **AR4 #1262** | `ride.rs` owns the current board weather cache/sampling adapter. AR4 may move that state into `RideRuntime`, but AR8 owns request-kernel semantics and context construction. Agree the seam first; do not duplicate a weather runtime or add a task. Static movement must pass linked and warm-reset gates. |
-| **AR5 #1257** | Use the message table above. Keep every-item `Channel`, payload `Signal` only where every update may wake, snapshot mutex+material edge where updates must be quiet, and no `Watch` without multiple receivers. Replace the two-atomic transfer/search gate with one tagged atomic. Coordinate advertising/event consolidation with AR8. |
+| **AR5 #1257** | Use the message table above. Keep every-item `Channel`, payload `Signal` only where every update may wake, snapshot mutex+material edge where updates must be quiet, and no `Watch` without multiple receivers. Prototype the one-tag transfer/search gate, but keep it NO-GO until model equivalence plus default/BLE linked RAM/flash/future/boot/stack results are recorded. Coordinate advertising/event consolidation and wake measurement with AR8. |
 | **AR6 #1259** | `DeviceWeather` as a new broad capability is obsolete: `WeatherDeviceLink` already supplies the narrow read/upload/unchanged API and `WeatherSettingsModel` is already focused. Keep the one `setWeatherWatch` discovery toggle on `DeviceTransport` until the broader capability split makes a smaller discovery capability useful. Extract BLETransport's 389-1112 weather one-shot/session bookkeeping behind the existing link, without a second CoreBluetooth owner. Start only when companion closeout paths are idle. |
 | **AR7 #1261** | Catalog remains independent of weather codecs. Coordinate only the four-phase publication module with #1293; do not merge producer/consumer/oracle validators. The current gravity well is 3,130 production PLOC and one internal import cycle. Avoid active `obc-wx-bake` closeout paths. |
-| **AR8 #1287** | Remove the already-completed companion-extraction step. Scope: extend the existing Rust `DueScheduler` into one pure request/context/action kernel; drive board and simulator through it; consolidate eligible board inputs with AR5 measurements. Preserve simulator's host-only HTTP/camera fallback, board zero-idle-wake behavior, and the specialized storage boundary. Rust stages can start after AR1 when board/sim paths are idle; any iOS cleanup is AR6. |
+| **AR8 #1287** | Remove the already-completed companion-extraction step. Scope: extend the existing Rust `DueScheduler` into one pure request/context/action kernel; drive board and simulator through it; consolidate eligible board inputs with AR5 measurements. Preserve simulator's host-only HTTP/camera fallback, board zero-idle-wake behavior, and the specialized storage boundary. Rust prototyping can start after AR1 when board/sim paths are idle, but consolidation is NO-GO until linked dimensions and RTT/power wake/transition equivalence are recorded; any iOS cleanup is AR6. |
 
 Cross-cutting order: AR1 merge -> #1292/#1296 strategy vocabulary -> AR2 repository composition;
 AR5 and AR8 agree the board messages/kernel before either edits `ble/weather.rs`; AR6 alone edits the
