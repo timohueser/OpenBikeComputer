@@ -1683,7 +1683,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 
 ## Where this lives
 
-- Map reader, quadtree walk, chunk decode, the POI nearest-16 query, and the nav directory / node-leaf walk / edge fetch: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- Map reader, quadtree walk, chunk decode, and the POI nearest-16 query: [`obc-reader/src/reader/mod.rs`](src:firmware/obc-reader/src/reader/mod.rs); nav directory, node-leaf walk, and edge fetch: [`obc-reader/src/reader/nav.rs`](src:firmware/obc-reader/src/reader/nav.rs)
 - The canonical POI category/subtype ids and fallback labels (shared by reader + packer): [`obc-formats/src/obcm.rs`](src:firmware/obc-formats/src/obcm.rs); the packer's OSM-tag classifier stays in [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
 - The route-corridor POI query, its `RoutePath` seam and the projection maths: [`obc-reader/src/corridor.rs`](src:firmware/obc-reader/src/corridor.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs); the GPX `<sym>`/`<type>` → category table: [`obc-route/src/symbol.rs`](src:firmware/obc-route/src/symbol.rs)
