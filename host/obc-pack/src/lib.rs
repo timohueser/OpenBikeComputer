@@ -39,6 +39,7 @@ pub mod pipeline;
 pub mod poi;
 pub mod progress;
 pub mod quadtree;
+pub mod semantic;
 pub mod serialize;
 pub mod terrain;
 

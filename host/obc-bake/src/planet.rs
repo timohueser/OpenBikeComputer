@@ -1703,6 +1703,27 @@ mod tests {
         }
     }
 
+    /// Keep the planet bookkeeping fixture deliberately small. Its assertions exercise leaf reuse,
+    /// known-empty ranges, and deletion; making it bake every production LOD turns one bookkeeping
+    /// test into a multi-minute geometry benchmark whenever the shipped ladder grows.
+    fn test_schema(out: &Path) -> crate::presets::StyleDoc {
+        let source = std::fs::read_to_string(repo("builder/presets/schema.json")).unwrap();
+        let mut document: serde_json::Value = serde_json::from_str(&source).unwrap();
+        let lods = document.get_mut("lods").and_then(serde_json::Value::as_array_mut).unwrap();
+        lods.truncate(9);
+        for lod in lods {
+            let lod = lod.as_object_mut().unwrap();
+            lod.shift_remove("semantic_coverage");
+            lod.shift_remove("merge_line_trails");
+            lod.shift_remove("line_simplify");
+        }
+        let presets = out.join(".fixture-presets");
+        std::fs::create_dir_all(&presets).unwrap();
+        std::fs::write(presets.join(crate::presets::SCHEMA_DOC), serde_json::to_string_pretty(&document).unwrap())
+            .unwrap();
+        crate::presets::load_schema(&presets).unwrap()
+    }
+
     struct AllEmptyCutter;
 
     impl CellCutter for AllEmptyCutter {
@@ -1764,7 +1785,7 @@ mod tests {
             sha256,
             logical_bbox: leaf_cell.square(),
         };
-        let schema = crate::presets::load_schema(&repo("builder/presets")).unwrap();
+        let schema = test_schema(&dir);
         let cutter = crate::cells::ObcCutter { no_land: true, chunk_size: None };
         let run = || PlanetBake {
             input: &input,
@@ -1787,7 +1808,7 @@ mod tests {
             },
         };
         let first = run().run_inner(&Progress::silent()).unwrap();
-        assert_eq!(first.leaves_cut, 1);
+        assert_eq!(first.leaves_cut, 1, "{:?}", first.failures);
         assert!(first.artifacts_cut > 0, "fixture content produces real cell artifacts");
         assert!(first.known_empty_cut > 0, "quiet child cells become compact zero-byte coverage");
         assert!(dir.join("cells/fine/.known-empty.json").is_file());

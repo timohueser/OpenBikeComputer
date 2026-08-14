@@ -147,7 +147,7 @@ pub struct Catalog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceEntry>,
     /// The catalog's **single** schema. Not an array: the hosted store carries the
-    /// 9-LOD bikepacking ladder and nothing else, because a second schema would make
+    /// 14-LOD bikepacking ladder and nothing else, because a second schema would make
     /// the whole planet-shaped cell store exist twice (§3, epic #1016 D2).
     pub schema: SchemaEntry,
     /// Every skin offered, sorted by `id`. Inlined rather than referenced: one is

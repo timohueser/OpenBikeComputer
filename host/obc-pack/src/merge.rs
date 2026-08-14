@@ -294,6 +294,26 @@ pub fn merge_lines_with(
     classes: &HashMap<u8, (LineClassKey, u8)>,
     progress: &Progress,
 ) -> (Vec<(u8, Geom)>, MergeStats) {
+    merge_lines_mode(features, classes, progress, false)
+}
+
+/// Far-zoom form of [`merge_lines_with`]. Solid, uncased networks continue through junctions as
+/// deterministic edge-covering trails, so every segment is retained exactly once while junctions
+/// stop costing one record per arm. Dashed and cased styles keep ordinary GEOS line-merge semantics.
+pub fn merge_line_trails_with(
+    features: Vec<(u8, Geom)>,
+    classes: &HashMap<u8, (LineClassKey, u8)>,
+    progress: &Progress,
+) -> (Vec<(u8, Geom)>, MergeStats) {
+    merge_lines_mode(features, classes, progress, true)
+}
+
+fn merge_lines_mode(
+    features: Vec<(u8, Geom)>,
+    classes: &HashMap<u8, (LineClassKey, u8)>,
+    progress: &Progress,
+    through_junctions: bool,
+) -> (Vec<(u8, Geom)>, MergeStats) {
     // --- Phase 1: lay out slots, accumulate group members (both in input order). ---
     let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
     let mut members: HashMap<u8, Vec<(u8, Geom)>> = HashMap::new();
@@ -333,7 +353,13 @@ pub fn merge_lines_with(
                 return (canonical, None);
             }
             let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
-            (canonical, merge_lines_geos(&refs))
+            let solid_uncased = classes.get(&canonical).is_some_and(|(key, _)| !key.4 && key.5.is_none());
+            let merged = if through_junctions && solid_uncased {
+                merge_edge_covering_trails(&refs)
+            } else {
+                merge_lines_geos(&refs)
+            };
+            (canonical, merged)
         })
         .collect();
 
@@ -369,6 +395,153 @@ pub fn merge_lines_with(
         }
     }
     (out, stats)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Endpoint(u64, u64);
+
+fn endpoint((x, y): (f64, f64)) -> Endpoint {
+    // GEOS can spell zero with either sign; geometrically those are the same junction.
+    Endpoint(if x == 0.0 { 0 } else { x.to_bits() }, if y == 0.0 { 0 } else { y.to_bits() })
+}
+
+/// Decompose an undirected line network into the minimum number of deterministic edge-covering
+/// trails. Each input polyline is one graph edge and appears in exactly one output, possibly
+/// reversed. Odd vertices are paired with virtual edges, Hierholzer produces one Euler circuit per
+/// component, and splitting at those virtual edges yields exactly `odd / 2` trails (or one circuit
+/// when there are no odd vertices). A trail may revisit a junction, which is harmless for a solid
+/// stroke and is precisely what lets a branched network occupy fewer renderer records without
+/// deleting an arm.
+fn merge_edge_covering_trails(lines: &[&Geom]) -> Option<Vec<Geom>> {
+    struct Edge {
+        ends: (usize, usize),
+        points: Option<Vec<(f64, f64)>>,
+    }
+
+    let mut sources = Vec::<Vec<(f64, f64)>>::with_capacity(lines.len());
+    for geom in lines {
+        let Geom::Line(points) = geom else { return None };
+        if points.len() >= 2 {
+            sources.push(points.clone());
+        }
+    }
+    if sources.is_empty() {
+        return None;
+    }
+
+    let mut vertex_ids = HashMap::<Endpoint, usize>::new();
+    let mut adjacency = Vec::<Vec<usize>>::new();
+    let mut edges = Vec::<Edge>::with_capacity(sources.len());
+    for points in sources {
+        let mut id = |key: Endpoint| {
+            *vertex_ids.entry(key).or_insert_with(|| {
+                adjacency.push(Vec::new());
+                adjacency.len() - 1
+            })
+        };
+        let a = id(endpoint(points[0]));
+        let b = id(endpoint(*points.last().expect("an edge has two points")));
+        let edge = edges.len();
+        edges.push(Edge { ends: (a, b), points: Some(points) });
+        adjacency[a].push(edge);
+        adjacency[b].push(edge);
+    }
+
+    fn root(parent: &mut [usize], mut vertex: usize) -> usize {
+        while parent[vertex] != vertex {
+            parent[vertex] = parent[parent[vertex]];
+            vertex = parent[vertex];
+        }
+        vertex
+    }
+
+    let mut parent: Vec<usize> = (0..adjacency.len()).collect();
+    for edge in &edges {
+        let (a, b) = edge.ends;
+        let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+        if ra != rb {
+            parent[rb] = ra;
+        }
+    }
+    let mut components = Vec::<Vec<usize>>::new();
+    let mut component_by_root = HashMap::<usize, usize>::new();
+    for vertex in 0..adjacency.len() {
+        let component_root = root(&mut parent, vertex);
+        let component = *component_by_root.entry(component_root).or_insert_with(|| {
+            components.push(Vec::new());
+            components.len() - 1
+        });
+        components[component].push(vertex);
+    }
+
+    // Pair odd vertices inside each component. The virtual edges make that component Eulerian;
+    // removing them again later creates the mathematically minimal number of open trails.
+    for component in &components {
+        let odd: Vec<_> = component.iter().copied().filter(|&vertex| adjacency[vertex].len() % 2 == 1).collect();
+        debug_assert_eq!(odd.len() % 2, 0);
+        for pair in odd.chunks_exact(2) {
+            let edge = edges.len();
+            edges.push(Edge { ends: (pair[0], pair[1]), points: None });
+            adjacency[pair[0]].push(edge);
+            adjacency[pair[1]].push(edge);
+        }
+    }
+
+    let mut used = vec![false; edges.len()];
+    let mut cursor = vec![0usize; adjacency.len()];
+    let mut trails = Vec::new();
+    for component in components {
+        let start = *component.first().expect("a component has a vertex");
+        let mut vertices = vec![start];
+        let mut incoming = Vec::<(usize, bool)>::new();
+        let mut reverse_circuit = Vec::<(usize, bool)>::new();
+        while let Some(&vertex) = vertices.last() {
+            while cursor[vertex] < adjacency[vertex].len() && used[adjacency[vertex][cursor[vertex]]] {
+                cursor[vertex] += 1;
+            }
+            if cursor[vertex] < adjacency[vertex].len() {
+                let edge = adjacency[vertex][cursor[vertex]];
+                cursor[vertex] += 1;
+                if used[edge] {
+                    continue;
+                }
+                used[edge] = true;
+                let (a, b) = edges[edge].ends;
+                let forward = vertex == a;
+                vertices.push(if forward { b } else { a });
+                incoming.push((edge, forward));
+            } else {
+                vertices.pop();
+                if let Some(step) = incoming.pop() {
+                    reverse_circuit.push(step);
+                }
+            }
+        }
+        reverse_circuit.reverse();
+
+        let first_virtual = reverse_circuit.iter().position(|(edge, _)| edges[*edge].points.is_none());
+        let offset = first_virtual.map_or(0, |index| index + 1);
+        let mut points = Vec::new();
+        for index in 0..reverse_circuit.len() {
+            let (edge, forward) = reverse_circuit[(offset + index) % reverse_circuit.len()];
+            let Some(source) = &edges[edge].points else {
+                if points.len() >= 2 {
+                    trails.push(Geom::Line(std::mem::take(&mut points)));
+                }
+                continue;
+            };
+            if forward {
+                points.extend(source.iter().copied().skip(usize::from(!points.is_empty())));
+            } else {
+                points.extend(source.iter().rev().copied().skip(usize::from(!points.is_empty())));
+            }
+        }
+        if points.len() >= 2 {
+            trails.push(Geom::Line(points));
+        }
+    }
+    debug_assert!(used.iter().all(|used| *used));
+    Some(trails)
 }
 
 #[cfg(test)]
@@ -684,6 +857,33 @@ mod tests {
         ];
         let (out, _) = merge_lines(feats, &classes);
         assert_eq!(count_lines(&out), 3, "a degree-3 junction leaves all three arms unstitched");
+    }
+
+    #[test]
+    fn far_zoom_trails_cover_every_y_arm_in_two_records() {
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
+        let feats = vec![
+            (1u8, line(&[(0.0, 0.0), (1.0, 0.0)])),
+            (1u8, line(&[(0.0, 0.0), (-1.0, 0.0)])),
+            (1u8, line(&[(0.0, 0.0), (0.0, 1.0)])),
+        ];
+        let input_segments = feats.iter().map(|(_, geom)| verts(geom) - 1).sum::<usize>();
+        let (out, stats) = merge_line_trails_with(feats, &classes, &Progress::silent());
+        assert_eq!(count_lines(&out), 2, "four odd vertices require exactly two trails");
+        assert_eq!(out.iter().map(|(_, geom)| verts(geom) - 1).sum::<usize>(), input_segments);
+        assert_eq!((stats.merged_inputs, stats.merged_outputs), (3, 2));
+    }
+
+    #[test]
+    fn far_zoom_trails_leave_dashed_junctions_unmodified() {
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, true, None)]);
+        let feats = vec![
+            (1u8, line(&[(0.0, 0.0), (1.0, 0.0)])),
+            (1u8, line(&[(0.0, 0.0), (-1.0, 0.0)])),
+            (1u8, line(&[(0.0, 0.0), (0.0, 1.0)])),
+        ];
+        let (out, _) = merge_line_trails_with(feats, &classes, &Progress::silent());
+        assert_eq!(count_lines(&out), 3, "joining at the junction would alter dash phase");
     }
 
     #[test]

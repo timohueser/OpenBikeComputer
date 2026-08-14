@@ -106,9 +106,11 @@ fn priority_one_survives_point_budget_saturation() {
         (2, 1, HIGH_565, 1, 1, false, None), // priority 1 (highest) — one small polygon, in the late chunk
     ];
 
-    // Each low polygon carries ~60 vertices, so relatively few of them overflow the point buffer
-    // while the span buffer stays far from full — isolating point-budget saturation.
-    let low_deltas: Vec<(i8, i8)> = (0..59).map(|i| if i % 2 == 0 { (2i8, 1i8) } else { (1i8, -2i8) }).collect();
+    // Each low polygon carries ~60 real projected corners, so relatively few of them overflow the
+    // point buffer while the span buffer stays far from full — isolating point-budget saturation.
+    // The wide alternating sawtooth is deliberate: a densely sampled straight edge is now removed
+    // by the raster-lossless viewport compactor and therefore cannot create point pressure.
+    let low_deltas: Vec<(i8, i8)> = (0..59).map(|i| if i % 2 == 0 { (100i8, 1i8) } else { (-100i8, 1i8) }).collect();
     let pts_per = 1 + low_deltas.len(); // exterior anchor + deltas
     let num_low = MAX_FRAME_POINTS / pts_per + 64; // overflow the point budget…
     assert!(num_low < MAX_SPANS, "the setup must saturate points, not spans");
