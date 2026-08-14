@@ -29,7 +29,7 @@ use obc_render::{
 };
 use obc_route::WptEntry;
 
-use crate::app::{Pan, PanBasis, PanTool};
+use crate::app::{step_zoom, Pan, PanBasis, PanTool, MAX_ZOOM, MIN_ZOOM};
 use crate::input::Gesture;
 use crate::settings::{DateTime, Units, WaypointMode};
 use crate::wall_clock::MinuteTicker;
@@ -190,7 +190,7 @@ impl MapScreen {
         }
         match g {
             Gesture::Step(n) => {
-                cx.state.zoom_step(n);
+                cx.state.zoom = step_zoom(cx.state.zoom, n, MIN_ZOOM, MAX_ZOOM);
                 Transition::None
             }
             // hold = enter Pan mode: the camera detaches and the pan HUD appears.

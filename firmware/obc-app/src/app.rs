@@ -376,7 +376,7 @@ impl AppState {
     pub fn pan_step(&mut self, steps: i32, route_total_m: u32) {
         let Some(pan) = self.pan else { return };
         if pan.tool == PanTool::Zoom {
-            self.zoom_step(steps);
+            self.zoom = step_zoom(self.zoom, steps, MIN_ZOOM, MAX_ZOOM);
             return;
         }
         if pan.basis == PanBasis::Route {
@@ -394,17 +394,6 @@ impl AppState {
             let d = steps as f32 * PAN_STEP_PX;
             self.pan_by_pixels(ux * d, uy * d);
         }
-    }
-
-    /// Multiply zoom once per signed Up/Down step. Positive (Down) zooms in, matching the normal
-    /// map binding; negative (Up) zooms out.
-    pub(crate) fn zoom_step(&mut self, steps: i32) {
-        let step = if steps >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-        let mut zoom = self.zoom;
-        for _ in 0..steps.unsigned_abs() {
-            zoom *= step;
-        }
-        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
     /// Resolve a dirty route inspection cursor to its coordinate. Called once at the App's
@@ -452,6 +441,15 @@ pub(crate) const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps (pixels per microdegree-lat), shared by both map modes.
 pub(crate) const MIN_ZOOM: f32 = 1e-6;
 pub(crate) const MAX_ZOOM: f32 = 1e4;
+
+/// Apply the app's signed multiplicative zoom step within a caller-owned range.
+pub(crate) fn step_zoom(mut zoom: f32, steps: i32, min: f32, max: f32) -> f32 {
+    let step = if steps >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+    for _ in 0..steps.unsigned_abs() {
+        zoom *= step
+    }
+    zoom.clamp(min, max)
+}
 
 /// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer. One frame yields at
 /// most one gesture per raw event (the input queue is bounded — `ButtonInput`'s is 8) plus the
