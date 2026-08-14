@@ -5,7 +5,7 @@ import OBCTransport
 
 /// State for the firmware-update screen (S7) — import an `UPDATE.BIN`, stream it
 /// to the device as a `fwImage` (spec §7.6), then request the on-glass install
-/// (`installFw`, §4.4). Depends only on `DeviceTransport` (the golden rule).
+/// (`installFw`, §4.4). Depends only on the link and update capabilities.
 ///
 /// The state machine:
 ///
@@ -123,7 +123,7 @@ public final class FirmwareUpdateModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink & DeviceUpdates
     /// The foreground-only policy's in-flight ledger (#459), shared with the
     /// upload sheet + ride-sync coordinator. A firmware send claims a token
     /// while `.transferring` so it, too, is drained (not dropped) across a
@@ -153,7 +153,7 @@ public final class FirmwareUpdateModel {
     @ObservationIgnored private let autoSend: Bool
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink & DeviceUpdates,
         deviceName: String,
         activity: TransferActivity? = nil,
         updateChecker: UpdateChecker? = nil,
