@@ -1,8 +1,8 @@
 //! nRF54LM20-DK pin, electrical, peripheral, and interrupt contract.
 //!
 //! Pin names use embassy-nRF's `P{port}_{pin}` form. P2 is the fast MCU domain used by the FLPR;
-//! P1 is the PERI domain; P0 is the low-power domain. Constructors stay beside their owning
-//! driver for now, but every board assignment and interrupt binding is recorded here.
+//! P1 is the PERI domain; P0 is the low-power domain. Data-path constructors stay beside their
+//! owning driver; boot hardware policy, every board assignment, and interrupt bindings live here.
 //!
 //! ## User input and diagnostics
 //!
@@ -74,3 +74,47 @@ bind_interrupts!(pub(crate) struct UartIrqs {
 bind_interrupts!(pub(crate) struct SensorIrqs {
     SERIAL22 => twim::InterruptHandler<peripherals::SERIAL22>;
 });
+
+/// Run the M33 at 128 MHz: embassy's CK64 default materially regresses the CPU-bound map render.
+/// MPSL radio timing requires the external HF crystal. LFCLK deliberately remains on the calibrated
+/// internal RC because the unprogrammed LFXO load caps put its crystal off-frequency and cause HCI
+/// 0x3E connection failures; see `ble.rs`.
+macro_rules! init {
+    () => {{
+        let mut config = embassy_nrf::config::Config::default();
+        config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
+        #[cfg(feature = "ble")]
+        {
+            config.hfclk_source = embassy_nrf::config::HfclkSource::ExternalXtal;
+            config.lfclk_source = embassy_nrf::config::LfclkSource::InternalRC;
+        }
+        embassy_nrf::init(config)
+    }};
+}
+pub(crate) use init;
+
+/// Read and clear the secure RESET block's write-one-to-clear reason register.
+macro_rules! take_reset_reason {
+    () => {{
+        const RESETREAS: *mut u32 = 0x5010_E600 as *mut u32;
+        let v = unsafe { RESETREAS.read_volatile() };
+        unsafe { RESETREAS.write_volatile(v) };
+        v
+    }};
+}
+pub(crate) use take_reset_reason;
+
+/// Start or re-adopt the one-handle watchdog used across app and bootloader warm resets.
+///
+/// It counts through sleep, pauses under debugger halt, and deliberately leaves a foreign
+/// configuration unfed so that it expires once and the next boot can start clean. The caller passes
+/// `obc_dfu::WDT_TIMEOUT_TICKS`, keeping the app and bootloader's warm-reset configuration identical.
+macro_rules! watchdog {
+    ($peripheral:expr, $timeout_ticks:expr) => {{
+        let mut cfg = embassy_nrf::wdt::Config::default();
+        cfg.timeout_ticks = $timeout_ticks;
+        cfg.action_during_debug_halt = embassy_nrf::wdt::HaltConfig::Pause;
+        embassy_nrf::wdt::Watchdog::try_new::<_, 1>($peripheral, cfg)
+    }};
+}
+pub(crate) use watchdog;

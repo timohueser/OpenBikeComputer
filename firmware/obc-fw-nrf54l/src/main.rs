@@ -137,7 +137,6 @@ use core::mem::MaybeUninit;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-use embassy_nrf::wdt;
 // The shared GPS/altimeter I²C bus — real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use embassy_nrf::twim::{self, Twim};
@@ -185,7 +184,6 @@ use embassy_nrf::uarte;
 use board::SensorIrqs;
 #[cfg(feature = "debug-uart")]
 use board::UartIrqs;
-
 // ============================ Board memory budget ============================
 // The nRF54L15 has 256 KB RAM and no external RAM, so the whole resident working set of a full map
 // redraw must fit there. This build-time assert fails the build — rather than overflowing RAM on
@@ -888,23 +886,7 @@ static SENSOR_HUB: obc_platform::SensorHub = obc_platform::SensorHub::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    // Run the M33 at its full **128 MHz** — embassy-nrf's `Config::default()` boots it at only
-    // 64 MHz (`ClockSpeed::CK64`), which halves the M33's map render (the CPU-bound `render_map` +
-    // the RGB222 quantise into the framebuffer). The FLPR then scans that framebuffer itself, so the
-    // render is the M33's biggest per-frame cost — this is the single biggest frame-time lever.
-    let p = {
-        let mut config = embassy_nrf::config::Config::default();
-        config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
-        // BLE: the HF **crystal** is an MPSL hard requirement (radio timing); LFCLK stays the internal
-        // RC, MPSL-calibrated — NOT the 32 k crystal, whose internal load caps nothing programs on the
-        // nRF54L yet (off-frequency LFXO → HCI 0x3E on every connect). See `ble.rs`.
-        #[cfg(feature = "ble")]
-        {
-            config.hfclk_source = embassy_nrf::config::HfclkSource::ExternalXtal;
-            config.lfclk_source = embassy_nrf::config::LfclkSource::InternalRC;
-        }
-        embassy_nrf::init(config)
-    };
+    let p = board::init!();
 
     // Arm the hardware stack limit first (#677 — overflow = an immediate, precise fault, never
     // silent corruption of the statics below the stack), then paint the stack (still shallow) so
@@ -917,18 +899,10 @@ async fn main(_spawner: Spawner) {
     // the staged version after an install (epic #615 S4).
     info!("obc-fw-nrf54l {=str}+{=str}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
 
-    // Why did this boot happen? (#349) `RESETREAS` @ 0x5010_E600 (the secure RESET block; raw MMIO
-    // — the same precedent as the VPR00/EGU20 registers in `ls021_flpr`). A **watchdog** reset
-    // (dog0 = our WDT31/`WDT0` instance) is logged distinctly — it means a plane wedged and the
-    // dog fired last session. Write-1-to-clear, cleared here so the *next* boot reads only its own
-    // cause; the raw mask is also annotated onto the RRAM boot-counter line below.
     let reset_reas = {
-        const RESETREAS: *mut u32 = 0x5010_E600 as *mut u32;
-        let v = unsafe { RESETREAS.read_volatile() };
-        unsafe { RESETREAS.write_volatile(v) }; // W1C
+        let v = board::take_reset_reason!();
         if v & 0x6 != 0 {
-            // bits 1..2 = the two watchdogs. On-glass: the `WDT0` instance this build feeds
-            // (= the WDT31 block) reports as **bit 2** — don't trust the PAC's dog0/dog1 naming.
+            // Bits 1..2 are the two watchdogs. The WDT31/WDT0 instance used here reports as bit 2.
             defmt::error!("boot: WATCHDOG reset (RESETREAS=0x{=u32:08x}) — a plane wedged last session", v);
         } else {
             defmt::info!("boot: RESETREAS=0x{=u32:08x}", v);
@@ -1409,20 +1383,6 @@ async fn main(_spawner: Spawner) {
         // one-shot read of a page this store already owns — see `dfu::seed_firmware_revision`.
         dfu::seed_firmware_revision(&mut settings_store);
 
-        // The hardware watchdog (#349): the last-resort net under both planes, fed by the ride
-        // loop (gated on the input plane's heartbeat) in every build. 24 s is generous on purpose: the
-        // dog must never fire on a slow frame or a long SD reconcile, only on a genuine wedge. It
-        // counts through sleep but **pauses under a debugger halt** (`HaltConfig::Pause`) so a
-        // breakpoint doesn't cascade into a reset — and so probe-rs can flash with the dog live.
-        // Once started a WDT can never be stopped; a warm reset carries it over, in which case
-        // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
-        // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
-        // period fires once and the next boot starts clean. Since DR1 (#729) the bootloader plays
-        // the same game from its side: it adopts + pets this dog across a DFU install (the arm's
-        // warm reset carries it in) and pre-starts an identical one before jumping into a trial
-        // boot — which is then exactly what this `try_new` adopts. The config contract (timeout,
-        // halt/sleep behavior, one handle) is documented on `obc_dfu::WDT_TIMEOUT_TICKS`.
-        //
         // INVARIANT (#729): because EVERY trial boot now enters with the dog already counting,
         // everything between app entry and this line must complete well inside one WDT period
         // (24 s) on a trial boot — or the dog resets a perfectly healthy trial image and the
@@ -1430,16 +1390,11 @@ async fn main(_spawner: Spawner) {
         // upstream (a missing/slow card does NOT block boot — the build idles without one).
         // Keep it that way: never move a blocking or open-ended retry loop (SD mount, sensor
         // bring-up) above this point.
-        let wdt_handle = {
-            let mut cfg = wdt::Config::default();
-            cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;
-            cfg.action_during_debug_halt = wdt::HaltConfig::Pause;
-            match wdt::Watchdog::try_new::<_, 1>(p.WDT0, cfg) {
-                Ok((_wdt, [handle])) => Some(handle),
-                Err(_) => {
-                    defmt::warn!("WDT: already running with a foreign config — cannot feed it; expect one reset");
-                    None
-                }
+        let wdt_handle = match board::watchdog!(p.WDT0, ride::WDT_TIMEOUT_TICKS) {
+            Ok((_wdt, [handle])) => Some(handle),
+            Err(_) => {
+                defmt::warn!("WDT: already running with a foreign config — cannot feed it; expect one reset");
+                None
             }
         };
 
