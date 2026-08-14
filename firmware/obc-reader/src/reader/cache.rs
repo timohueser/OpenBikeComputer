@@ -42,7 +42,7 @@ pub(in crate::reader) const WALK_CACHE_ENTRIES: usize = 12;
 const _: () = assert!(CACHE_SLOT_BYTES <= MAX_CHUNK_BYTES, "a cached chunk must fit the scratch");
 const _: () = assert!(MAX_CHUNK_BYTES <= u16::MAX as usize, "chunk_size is a u16 in the format");
 
-/// A snapshot of the [`super::Reader`]'s streaming counters: chunk-cache hit/miss tally and raw SD-read
+/// A snapshot of the [`Reader`](super::Reader)'s streaming counters: chunk-cache hit/miss tally and raw SD-read
 /// overhead (read calls + bytes). The renderer reports the per-frame delta.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
@@ -247,7 +247,7 @@ const _: () = assert!(core::mem::size_of::<WalkCache>() * WALK_CACHE_SLOTS == co
 /// bounded expanded-walk results. Caller-owned and reusable across frames. ≈37 KB, dominated by
 /// the geometry buffers and decode scratch.
 ///
-/// Wraps its mutable state in a `RefCell` so a [`super::Reader`] can read through it on `&self` paths; the
+/// Wraps its mutable state in a `RefCell` so a [`Reader`](super::Reader) can read through it on `&self` paths; the
 /// borrows are tightly scoped (one index-node read, or one chunk load + decode) so they never overlap.
 pub struct MapCache {
     pub(in crate::reader) inner: RefCell<MapCacheInner>,
@@ -290,15 +290,15 @@ impl MapCache {
     }
 
     /// Drop every resident chunk, index block, and expanded walk. Slots are keyed only inside one
-    /// parse generation, so [`super::Reader::new`] also guards map switches via [`MapCache::adopt`]. Cheap
+    /// parse generation, so [`Reader::new`](super::Reader::new) also guards map switches via [`MapCache::adopt`]. Cheap
     /// — only validity metadata and counters are touched, not the backing buffers.
     pub fn clear(&self) -> Result<(), CacheError> {
         self.inner.try_borrow_mut().map_err(|_| CacheError::Busy)?.clear();
         Ok(())
     }
 
-    /// Bind the cache to a [`super::MapTables`] parse `generation`, running the [`MapCache::clear`] logic
-    /// first if it last served a different one. Called by [`super::Reader::new`], which is what makes the
+    /// Bind the cache to a [`MapTables`](super::MapTables) parse `generation`, running the [`MapCache::clear`] logic
+    /// first if it last served a different one. Called by [`Reader::new`](super::Reader::new), which is what makes the
     /// forgotten-`clear()`-on-map-switch cross-serve impossible by construction. A zeroed cache
     /// sits at generation 0 — never a live generation — so the first adopt after boot clears an
     /// already-empty cache (harmless).
@@ -325,7 +325,7 @@ impl MapCache {
 /// The cache's mutable interior (see [`MapCache`]). `tick` counts geometry fills and supplies the
 /// occasional protected RRIP insertion used to resist a repeated scan just over capacity.
 pub(in crate::reader) struct MapCacheInner {
-    /// The [`super::MapTables::parse`] generation the resident slots belong to; 0 (the zero-init state)
+    /// The [`MapTables::parse`](super::MapTables::parse) generation the resident slots belong to; 0 (the zero-init state)
     /// means "unowned". Written only by [`MapCache::adopt`] — deliberately *not* reset by `clear`,
     /// which empties the slots and so is safe under any generation.
     pub(in crate::reader) generation: u32,
