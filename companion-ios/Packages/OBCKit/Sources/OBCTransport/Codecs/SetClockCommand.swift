@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// The `setClock` command encoder (spec §4.4, cmd `5` — mirrored in `OBCProtocol.md`):
+/// The `setClock` command encoder (spec §4.4, cmd `5`; see `OBCProtocol.md`):
 /// `cmd u8 = 5 · utc u32 LE · offset_min i16 LE`, the phone stamping the device's
 /// **trusted wall clock** on every connect (epic #638). The device has no RTC; this
 /// (and a GPS fix) is what marks its clock trusted for the boot — the retention

@@ -206,7 +206,7 @@ time-share `P2.00/.04` with the card's `D3/D1`.
 
 The gate/`BSP` pins, the masks in `src/flpr/flpr_scan.c`, and the physical 21-pin FPC harness must
 all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK header and
-remap all three together. Full pin/protocol detail:
+remap all three together. Cross-core display architecture and protocol:
 [firmware/docs/ls021-flpr.md](../docs/ls021-flpr.md).
 
 ### microSD over sEMMC — the storage transport

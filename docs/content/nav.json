@@ -22,14 +22,8 @@
     {
       "title": "Hardware",
       "pages": [
-        { "path": "hardware/index", "title": "Hardware", "soon": true },
+        { "path": "hardware/index", "title": "Hardware" },
         { "path": "hardware/display-protocol", "title": "The display protocol" }
-      ]
-    },
-    {
-      "title": "Building one",
-      "pages": [
-        { "path": "build/index", "title": "Build guide", "soon": true }
       ]
     },
     {

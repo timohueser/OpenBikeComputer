@@ -3,7 +3,7 @@
 
 /// The GATT service/characteristic map `BLETransport` discovers — the control
 /// plane of `obc-ble-interface-spec.md` (§3, **pinned by firmware S0 / PR #279**;
-/// mirrored in `OBCProtocol.md`).
+/// summarized for iOS in `OBCProtocol.md`).
 ///
 /// The OBC Control UUIDs use the random base `3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`
 /// where the 16-bit `XXXX` block selects the entity (`0000` = the service, `000N` =

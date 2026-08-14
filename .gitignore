@@ -43,6 +43,7 @@ __pycache__/
 # byte-identity test reads it, so it must ship in-repo like the other protocol vectors.
 !specs/vectors/*.obct
 # The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
+/obc-settings.bin
 firmware/obc-settings.bin
 # `obc-wx-pack capture`'s default output directory. A full-domain event pack is hundreds of MB;
 # the small cropped ones that ship live under host/obc-wx-bake/tests/events/ instead.
@@ -64,7 +65,6 @@ user_config.json
 !specs/vectors/*.gpx
 # ...and the iOS companion's bundled GPX import fixture (three OBCKit tests load it).
 !companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx
-project/
 # The wasm conversion bridge's build output (#896): `wasm-pack build` writes it into the
 # frontend, `npm run build:wasm` rebuilds it, and CI builds it fresh on every run. wasm-pack
 # drops its own `pkg/.gitignore` too — this entry is here so the intent is visible in one place.

@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// The `ackRides` command encoder (spec §4.4, cmd `2` — mirrored in `OBCProtocol.md`):
+/// The `ackRides` command encoder (spec §4.4, cmd `2`; see `OBCProtocol.md`):
 /// `cmd u8 · count u8 · count × object_id u16 LE`, the phone's **ride-possession ack**.
 ///
 /// The device's per-ride "synced" flag (its Rides screen's delete-guard cue) is otherwise set only

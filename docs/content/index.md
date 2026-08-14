@@ -1,6 +1,6 @@
 ---
 title: Overview
-description: How the OpenBikeComputer project fits together, and where to find what — hardware, software internals, and a build guide.
+description: How the OpenBikeComputer project fits together, and where to find its hardware and software internals.
 ---
 
 # OpenBikeComputer documentation
@@ -121,12 +121,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
   <a class="doc-card" href="hardware/">
     <span class="dc-tag">Hardware</span>
     <h3>Hardware</h3>
-    <p>The reflective memory-LCD panel, the nRF54L microcontroller, schematic and PCB. <span class="pill">coming soon</span></p>
-  </a>
-  <a class="doc-card" href="build/">
-    <span class="dc-tag">Building one</span>
-    <h3>Build guide</h3>
-    <p>Bill of materials, the tools you'll need, flashing the firmware, and putting it together. <span class="pill">coming soon</span></p>
+    <p>The current nRF54LM20 development platform, reflective memory-LCD, sensors, storage, and links to the live wiring and display references.</p>
   </a>
 </div>
 
