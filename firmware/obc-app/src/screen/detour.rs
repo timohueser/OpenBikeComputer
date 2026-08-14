@@ -25,7 +25,7 @@ use obc_render::{
 };
 
 use crate::activity::{Activity, DetourRequest};
-use crate::app::{MAX_ZOOM, MIN_ZOOM};
+use crate::app::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP};
 use crate::host::DetourPreview;
 use crate::input::Gesture;
 use crate::Msg;
@@ -51,7 +51,6 @@ const INSPECT_ENTRY_EXP: i8 = 5;
 const INSPECT_MAX_EXP: i8 = 13;
 const INSPECT_ENTRY_LEVEL: u8 = (INSPECT_ENTRY_EXP - INSPECT_MIN_EXP + 1) as u8;
 const INSPECT_MAX_LEVEL: u8 = (INSPECT_MAX_EXP - INSPECT_MIN_EXP + 1) as u8;
-const INSPECT_ZOOM_STEP: f32 = 1.2;
 const HUD_H: i32 = 76;
 const HUD_MARGIN: i32 = 10;
 const FIT_MARGIN: f32 = 24.0;
@@ -116,11 +115,11 @@ impl DetourScreen {
         let mut zoom = 1.0;
         if exponent >= 0 {
             for _ in 0..exponent {
-                zoom *= INSPECT_ZOOM_STEP;
+                zoom *= ZOOM_STEP;
             }
         } else {
             for _ in exponent..0 {
-                zoom /= INSPECT_ZOOM_STEP;
+                zoom /= ZOOM_STEP;
             }
         }
         zoom
