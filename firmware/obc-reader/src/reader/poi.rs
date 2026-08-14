@@ -68,7 +68,7 @@ impl PoiCatEntry {
 
     /// Byte offset where this category's data chunks begin (right after its index),
     /// or `None` if the arithmetic overflows `usize` (a corrupt directory on the
-    /// 32-bit MCU) — the shared §7.1 convention, see [`index_end`].
+    /// 32-bit MCU) — the shared §7.1 convention, see `index_end`.
     #[inline]
     pub fn data_start(&self) -> Option<usize> {
         index_end(self.index_offset, self.node_count)
@@ -398,7 +398,7 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// The POIs of `cats` sitting within [`CORRIDOR_HALF_WIDTH_M`] of the route **ahead** of
+    /// The POIs of `cats` sitting within `CORRIDOR_HALF_WIDTH_M` of the route **ahead** of
     /// `progress_m`, ascending by along-route distance, capped at [`MAX_CORRIDOR_RESULTS`] — the
     /// data source behind the "Up ahead" timeline (epic #946). Fills the caller-owned `out` (cleared
     /// first). On-demand (a snapshot taken on screen entry / filter change), **never** per frame.
@@ -413,14 +413,14 @@ impl<'a> Reader<'a> {
     /// index the breadcrumb/progress machinery already holds, so no full-route re-read. For each
     /// chunk still ahead of `progress_m`:
     ///
-    /// 1. its bbox is inflated by the corridor half-width ([`inflate_bbox`]) — a tight window, since
+    /// 1. its bbox is inflated by the corridor half-width (`inflate_bbox`) — a tight window, since
     ///    a route chunk spans a few hundred meters, not the whole route;
     /// 2. the chunk's polyline is decoded **once** into the path's own scratch;
     /// 3. each selected category's quadtree is walked over that window (the same
-    ///    [`walk_leaves`](Reader::walk_leaves) the geometry and nearest-N queries use), and every POI
+    ///    `walk_leaves` the geometry and nearest-N queries use), and every POI
     ///    record streams through a 512-byte stack scratch exactly as in
     ///    [`nearest_pois`](Reader::nearest_pois) — no per-leaf buffer, no [`super::MapCache`] growth;
-    /// 4. each record is projected onto that chunk ([`project_onto_chunk`]) and folded into `out` if
+    /// 4. each record is projected onto that chunk (`project_onto_chunk`) and folded into `out` if
     ///    it is inside the corridor and at or past `progress_m`.
     ///
     /// **Cost bound.** At most one route-chunk decode plus one quadtree descent per (remaining
