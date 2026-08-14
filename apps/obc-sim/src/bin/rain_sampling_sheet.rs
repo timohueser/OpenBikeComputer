@@ -58,7 +58,7 @@ const MODES: [(RainSampling, &str, &str); 4] = [
 
 /// Whole-object OBCG reader exposing a baked product as a [`RainOverlaySource`].
 ///
-/// OBCG picks a per-product power-of-two tile edge while the overlay seam speaks OBCW's fixed
+/// OBCG picks a per-grid power-of-two tile edge while the overlay seam speaks OBCW's fixed
 /// 16 x 16, so this re-tiles: it decodes the OBCG tile a requested 16 x 16 window falls in
 /// (caching the last one, which is what makes a whole frame cheap) and copies the window out.
 /// Cells outside the declared grid are `no-data`, exactly as both formats mandate.

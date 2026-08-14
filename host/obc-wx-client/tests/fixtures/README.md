@@ -19,11 +19,6 @@ have missed: MET supplied **neither** `probability_of_precipitation` nor `wind_s
 any of the 24 hours — the WX1 record's "Oslo has both, Manila has neither" geography difference, in
 a German capture. The client must represent both as *unavailable*, never as zero.
 
-`manifest-production.json` used to sit beside it: a recording of `wx/v1/manifest.json`, kept
-deliberately un-edited so it still showed the `us` product's pre-nesting 27,000 x 34,000 microdegree
-lattice. WXR5 (#1244) deleted it with the v1 reader that was its only consumer. Nothing it proved
-still exists to prove — there are no products to parse, no tiers to rank and no lattices to nest.
-
 Re-capture with:
 
 ```sh

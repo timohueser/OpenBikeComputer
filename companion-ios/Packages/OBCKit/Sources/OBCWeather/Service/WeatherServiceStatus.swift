@@ -9,9 +9,7 @@ import Foundation
 /// being credited the same way. That is the epic's law ("adding a source is a baker deploy") enforced
 /// by having nothing else to render from.
 ///
-/// It describes **one dataset**, because there is one (#1244). The per-product rows this type used to
-/// carry — tier, bbox, a staleness deadline each — described a choice the client no longer makes, and
-/// a screen that still listed them would be inviting a rider to wonder which one they got.
+/// It describes **one dataset**, because there is one (#1244).
 public struct WeatherServiceStatus: Equatable, Sendable {
     /// The published generation. Provenance and a cache key, never a switch.
     public var generation: String

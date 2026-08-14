@@ -2,7 +2,7 @@
 //! forward frames.
 //!
 //! Every rideable coordinate on Earth is covered by this product; the radar and model tiers sit
-//! above it where they exist. IMERG Early is an explicit v1 NO-GO (WX1), so the floor is
+//! above it where they exist. IMERG Early is excluded by the source contract (WX1), so the floor is
 //! GFS-only: it never synthesizes an observation frame, never backdates a forecast, and never
 //! emits an empty frame that would look like dry weather.
 //!

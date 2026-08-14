@@ -38,5 +38,10 @@ OBC_R2_PREFIX="cell-catalog"
 #OBC_R2_ACCESS_KEY_ID="..."
 #OBC_R2_SECRET_ACCESS_KEY="..."
 
+# Weather VPS operator target for `obc weather status|start|stop`. The command
+# deliberately requires a root SSH login because it controls systemd units. This
+# is not the public R2 hostname; use the VPS hostname/IP or a configured SSH alias.
+#OBC_WX_SSH_TARGET="root@wx-server.example.com"
+
 # RISC-V gcc for the board's FLPR blob, if it isn't on your PATH.
 #RISCV_GCC="$HOME/.local/xPacks/riscv-none-elf-gcc/14.2.0-3/bin/riscv-none-elf-gcc"
