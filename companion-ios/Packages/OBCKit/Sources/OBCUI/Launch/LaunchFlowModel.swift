@@ -21,7 +21,7 @@ import OBCTransport
 ///                              └───┘                                  paired (D4) ─► main
 /// ```
 ///
-/// Depends only on `DeviceTransport` + `BondStore` (the golden rule). Pairing is a
+/// Depends only on `DeviceLink` + `BondStore` (the golden rule). Pairing is a
 /// two-phase connect (#297): `startPairing` runs the un-gated `discover()` (surfaces
 /// the D2 row), and the row tap runs the gated `authenticate()` — the op that raises
 /// the system passkey sheet once the firmware requires encryption (A8), so the sheet
@@ -146,7 +146,7 @@ public final class LaunchFlowModel {
 
     public private(set) var phase: Phase = .idle
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink
     private let bondStore: any BondStore
     private let timing: Timing
     @ObservationIgnored private var flowTask: Task<Void, Never>?
@@ -154,7 +154,7 @@ public final class LaunchFlowModel {
     @ObservationIgnored private var connectAttempt: Task<Void, Never>?
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink,
         bondStore: any BondStore,
         timing: Timing = Timing()
     ) {

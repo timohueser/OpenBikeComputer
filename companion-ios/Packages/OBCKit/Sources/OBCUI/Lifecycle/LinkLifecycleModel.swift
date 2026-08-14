@@ -22,7 +22,7 @@ import OBCTransport
 ///   `TransferActivity` ledger is non-empty, the suspend drains under a system
 ///   grace window (`BackgroundTaskRunner`) and disconnects after. An idle link
 ///   suspends promptly.
-/// - The suspend goes through `DeviceTransport.suspendLink()`, whose contract
+/// - The suspend goes through `DeviceLink.suspendLink()`, whose contract
 ///   is drop **and pause the transport's reconnect loop** — otherwise the loop
 ///   fights the intentional disconnect and re-raises the link.
 /// - Foreground re-raises via `resumeLink()` — the existing bonded
@@ -32,7 +32,7 @@ import OBCTransport
 ///   `MainScreenModel`'s existing reload, truing up anything that changed on
 ///   the device while the app was away.
 ///
-/// Depends only on `DeviceTransport` + the two seams (the golden rule) — the
+/// Depends only on `DeviceLink` + the two seams (the golden rule) — the
 /// host view feeds it raw `ScenePhase` changes; UIKit stays in the app target.
 @MainActor @Observable
 public final class LinkLifecycleModel {
@@ -50,7 +50,7 @@ public final class LinkLifecycleModel {
 
     public private(set) var phase: LinkPhase = .foreground
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink
     private let activity: TransferActivity
     private let backgroundTasks: any BackgroundTaskRunner
 
@@ -76,7 +76,7 @@ public final class LinkLifecycleModel {
     @ObservationIgnored private var started = false
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink,
         activity: TransferActivity,
         backgroundTasks: any BackgroundTaskRunner
     ) {

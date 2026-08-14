@@ -5,8 +5,8 @@ import OBCUI
 /// Keeps the screen awake while a transfer is in flight (#754). `UIApplication
 /// .isIdleTimerDisabled` is UIKit, so — like `UIKitBackgroundTaskRunner` — the
 /// touch lives at the composition root; the OBCKit view models never see it
-/// (they depend only on `DeviceTransport` + the observable `TransferActivity`
-/// ledger — the golden rule).
+/// (they depend only on capability-sized `OBCTransport` protocols + the observable
+/// `TransferActivity` ledger — the golden rule).
 ///
 /// It reads the app-level in-flight ledger, which every transfer already claims
 /// a token from — route uploads (`UploadSheetModel`), ride syncs
