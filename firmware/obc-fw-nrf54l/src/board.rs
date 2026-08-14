@@ -75,7 +75,10 @@ bind_interrupts!(pub(crate) struct SensorIrqs {
     SERIAL22 => twim::InterruptHandler<peripherals::SERIAL22>;
 });
 
-/// Run the M33 at 128 MHz; BLE uses crystal HFCLK and calibrated internal-RC LFCLK.
+/// Run the M33 at 128 MHz: embassy's CK64 default materially regresses the CPU-bound map render.
+/// MPSL radio timing requires the external HF crystal. LFCLK deliberately remains on the calibrated
+/// internal RC because the unprogrammed LFXO load caps put its crystal off-frequency and cause HCI
+/// 0x3E connection failures; see `ble.rs`.
 macro_rules! init {
     () => {{
         let mut config = embassy_nrf::config::Config::default();
