@@ -252,9 +252,35 @@ mod tests {
         CommitClosePatchPersisted,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ReaderError {
+        Closed,
+        Rebound,
+    }
+
+    /// A logical session-open file handle. The handle keeps both the directory slot and the file
+    /// identity it opened, so a later truncate/rebind of that slot cannot silently masquerade as
+    /// the same reader.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ReaderHandle {
+        handle_id: u32,
+        slot: Slot,
+        file_id: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ReaderState {
+        handle: ReaderHandle,
+        open: bool,
+    }
+
     struct MemoryIo {
         slots: [Option<Vec<u8>>; 2],
+        file_ids: [Option<u32>; 2],
         open: Option<Slot>,
+        readers: Vec<ReaderState>,
+        next_file_id: u32,
+        next_handle_id: u32,
         failure: Failure,
         appended: usize,
         abandon_calls: usize,
@@ -263,15 +289,52 @@ mod tests {
 
     impl MemoryIo {
         fn new(a: Option<Vec<u8>>, b: Option<Vec<u8>>) -> Self {
-            Self { slots: [a, b], open: None, failure: Failure::None, appended: 0, abandon_calls: 0, io_calls: 0 }
+            let file_ids = [a.as_ref().map(|_| 1), b.as_ref().map(|_| 2)];
+            Self {
+                slots: [a, b],
+                file_ids,
+                open: None,
+                readers: Vec::new(),
+                next_file_id: 3,
+                next_handle_id: 1,
+                failure: Failure::None,
+                appended: 0,
+                abandon_calls: 0,
+                io_calls: 0,
+            }
         }
 
         fn bytes(&self, slot: Slot) -> Option<&[u8]> {
             self.slots[index(slot)].as_deref()
         }
 
+        fn open_reader(&mut self, slot: Slot) -> Option<ReaderHandle> {
+            let file_id = self.file_ids[index(slot)]?;
+            let handle = ReaderHandle { handle_id: self.next_handle_id, slot, file_id };
+            self.next_handle_id += 1;
+            self.readers.push(ReaderState { handle, open: true });
+            Some(handle)
+        }
+
+        fn validate_reader(&self, handle: ReaderHandle) -> Result<SlotValidation, ReaderError> {
+            let Some(state) = self.readers.iter().find(|state| state.handle.handle_id == handle.handle_id) else {
+                return Err(ReaderError::Closed);
+            };
+            if !state.open {
+                return Err(ReaderError::Closed);
+            }
+            if state.handle != handle || self.file_ids[index(handle.slot)] != Some(handle.file_id) {
+                return Err(ReaderError::Rebound);
+            }
+            let Some(bytes) = self.bytes(handle.slot) else { return Err(ReaderError::Rebound) };
+            Ok(validate_slot(handle.slot, &SliceSource(bytes)))
+        }
+
         fn power_cut(&mut self) {
             self.open = None;
+            for reader in &mut self.readers {
+                reader.open = false;
+            }
         }
     }
 
@@ -299,7 +362,16 @@ mod tests {
             if let Failure::Begin(error) = self.failure {
                 return Err(error);
             }
-            self.slots[index(slot)] = Some(Vec::new());
+            let slot_index = index(slot);
+            if let Some(bytes) = self.slots[slot_index].as_mut() {
+                // FAT truncate keeps the directory/file identity. A retained handle to a wrongly
+                // selected active slot therefore observes the destructive truncate in this fake.
+                bytes.clear();
+            } else {
+                self.slots[slot_index] = Some(Vec::new());
+                self.file_ids[slot_index] = Some(self.next_file_id);
+                self.next_file_id += 1;
+            }
             self.open = Some(slot);
             self.appended = 0;
             Ok(())
@@ -402,28 +474,42 @@ mod tests {
     }
 
     #[test]
-    fn active_slot_remains_readable_through_an_inactive_write_failure() {
+    fn retained_active_reader_survives_inactive_write_failure_then_boot_reopens() {
         let old = bundle(MINIMAL, 10, 100);
         let new = bundle(DWD, 11, 200);
         let mut io = MemoryIo::new(Some(old.clone()), None);
         let active = inspect_slots(&mut io).active.unwrap();
+        let reader = io.open_reader(active.slot).unwrap();
+        assert_eq!(io.validate_reader(reader), Ok(SlotValidation::Valid(active)));
         let mut upload = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
 
         for chunk in new.chunks(173) {
             upload.push(&mut io, chunk).unwrap();
-            let reader = SliceSource(io.bytes(active.slot).unwrap());
             assert_eq!(
-                validate_slot(active.slot, &reader),
-                SlotValidation::Valid(active),
-                "the session-long active reader changed while the inactive slot was written"
+                io.validate_reader(reader),
+                Ok(SlotValidation::Valid(active)),
+                "the retained active handle changed while the inactive slot was written"
             );
         }
 
         io.failure = Failure::Close;
         assert_eq!(upload.finish(&mut io), Err(UploadError::Io(FakeError::Close)));
+        assert_eq!(
+            io.validate_reader(reader),
+            Ok(SlotValidation::Valid(active)),
+            "closing/abandoning the inactive writer invalidated the retained active handle"
+        );
+
+        // A reboot closes session handles, runs the canonical selector from stable bytes, and
+        // opens a distinct handle to the exact selected file.
         io.power_cut();
-        assert_eq!(io.bytes(active.slot), Some(old.as_slice()));
-        assert_eq!(inspect_slots(&mut io).active, Some(active));
+        assert_eq!(io.validate_reader(reader), Err(ReaderError::Closed));
+        let boot_active = inspect_slots(&mut io).active.unwrap();
+        assert_eq!(boot_active, active);
+        let reopened = io.open_reader(boot_active.slot).unwrap();
+        assert_ne!(reopened.handle_id, reader.handle_id);
+        assert_eq!(reopened.file_id, reader.file_id);
+        assert_eq!(io.validate_reader(reopened), Ok(SlotValidation::Valid(boot_active)));
     }
 
     #[test]

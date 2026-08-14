@@ -517,7 +517,39 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    const ENTRIES: usize = 32;
+    // AR1 (#1260) primitive audit inputs. These are target-ABI type layouts, not allocations and
+    // not evidence that substituting one primitive preserves linked size or runtime behaviour.
+    // They stay in the report so downstream prototype PRs can reproduce the layout half of their
+    // before/after evidence with the same toolchain instead of copying one-off numbers from prose.
+    type AuditRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    type AuditSnapshot = obc_app::ble::WeatherSnapshot;
+    const AUDIT_PRIMITIVE_ENTRIES: [Entry; 11] = [
+        entry("audit_signal_unit", core::mem::size_of::<embassy_sync::signal::Signal<AuditRawMutex, ()>>()),
+        entry(
+            "audit_signal_weather",
+            core::mem::size_of::<embassy_sync::signal::Signal<AuditRawMutex, AuditSnapshot>>(),
+        ),
+        entry(
+            "audit_watch_weather_1",
+            core::mem::size_of::<embassy_sync::watch::Watch<AuditRawMutex, AuditSnapshot, 1>>(),
+        ),
+        entry(
+            "audit_watch_weather_2",
+            core::mem::size_of::<embassy_sync::watch::Watch<AuditRawMutex, AuditSnapshot, 2>>(),
+        ),
+        entry(
+            "audit_snapshot_mutex",
+            core::mem::size_of::<embassy_sync::blocking_mutex::Mutex<AuditRawMutex, core::cell::Cell<AuditSnapshot>>>(),
+        ),
+        entry("audit_channel_u16_8", core::mem::size_of::<embassy_sync::channel::Channel<AuditRawMutex, u16, 8>>()),
+        entry("audit_async_mutex_u8", core::mem::size_of::<embassy_sync::mutex::Mutex<AuditRawMutex, u8>>()),
+        entry("audit_maybe_weather", core::mem::size_of::<core::mem::MaybeUninit<AuditSnapshot>>()),
+        entry("audit_static_weather", core::mem::size_of::<static_cell::StaticCell<AuditSnapshot>>()),
+        entry("audit_transfer_gate", core::mem::size_of::<obc_app::TransferGate>()),
+        entry("audit_tagged_gate", core::mem::size_of::<core::sync::atomic::AtomicU8>()),
+    ];
+
+    const ENTRIES: usize = 43;
 
     #[used]
     #[no_mangle]
@@ -578,6 +610,17 @@ mod resource_report {
         // callers) and the `Semmc` host-driver state itself.
         entry("sd_bounce", sd::BOUNCE_BYTES),
         entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
+        AUDIT_PRIMITIVE_ENTRIES[0],
+        AUDIT_PRIMITIVE_ENTRIES[1],
+        AUDIT_PRIMITIVE_ENTRIES[2],
+        AUDIT_PRIMITIVE_ENTRIES[3],
+        AUDIT_PRIMITIVE_ENTRIES[4],
+        AUDIT_PRIMITIVE_ENTRIES[5],
+        AUDIT_PRIMITIVE_ENTRIES[6],
+        AUDIT_PRIMITIVE_ENTRIES[7],
+        AUDIT_PRIMITIVE_ENTRIES[8],
+        AUDIT_PRIMITIVE_ENTRIES[9],
+        AUDIT_PRIMITIVE_ENTRIES[10],
     ];
 }
 
