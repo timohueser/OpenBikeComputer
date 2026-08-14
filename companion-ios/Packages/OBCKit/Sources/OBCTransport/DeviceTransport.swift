@@ -75,28 +75,9 @@ public protocol DeviceConfiguration: Sendable {
     func writeConfig(_ config: DeviceConfig) async throws
 }
 
-/// The aggregate device boundary (Tier 1 — semantic), composed from the
-/// capability protocols that focused policies and view models use directly.
-/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
-///
-///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
-///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
-///
-/// Everything a screen (B2–B11) needs must be expressible through these
-/// capabilities. `Sendable` lets conformers cross concurrency domains.
-public protocol DeviceTransport: DeviceLink, DeviceConfiguration {
-    // MARK: Control plane (GATT — DIS / BAS / OBC Control)
-
-    /// Battery percentage (BAS notify). **Replays the latest** value.
-    var battery: AsyncStream<Int> { get }
-    /// Unsolicited device store movements (`storeChanged`, spec §4.3 msg 2) —
-    /// an object committed or deleted **on the device** while connected (the
-    /// on-device route delete, epic #447 P6). **Live edges only, no replay**:
-    /// a movement is an event, not a state — late subscribers reconcile via
-    /// their own connect-time reload, never against a stale edge. Consumers
-    /// also audit catalogs at low cadence while connected because a BLE notify
-    /// can be dropped without replay.
-    var storeChanges: AsyncStream<StoreChanged> { get }
+/// Stored route, trip, and ride operations, without link lifecycle, device
+/// configuration, diagnostics, weather discovery, or firmware update authority.
+public protocol DeviceObjects: Sendable {
     // MARK: Data plane (bulk objects — progress + cancel + restart)
     //
     // Ids on this plane are **device-namespace** (`DeviceObjectID`, spec §4.1 —
@@ -154,6 +135,30 @@ public protocol DeviceTransport: DeviceLink, DeviceConfiguration {
     /// a long list across writes. Ids outside the device namespace (mock/test
     /// ids that never came from a catalog) are skipped.
     func ackRides(_ ids: [RideID]) async throws
+}
+
+/// The aggregate device boundary (Tier 1 — semantic), composed from the
+/// capability protocols that focused policies and view models use directly.
+/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
+///
+///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
+///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
+///
+/// Everything a screen (B2–B11) needs must be expressible through these
+/// capabilities. `Sendable` lets conformers cross concurrency domains.
+public protocol DeviceTransport: DeviceLink, DeviceConfiguration, DeviceObjects {
+    // MARK: Control plane (GATT — DIS / BAS / OBC Control)
+
+    /// Battery percentage (BAS notify). **Replays the latest** value.
+    var battery: AsyncStream<Int> { get }
+    /// Unsolicited device store movements (`storeChanged`, spec §4.3 msg 2) —
+    /// an object committed or deleted **on the device** while connected (the
+    /// on-device route delete, epic #447 P6). **Live edges only, no replay**:
+    /// a movement is an event, not a state — late subscribers reconcile via
+    /// their own connect-time reload, never against a stale edge. Consumers
+    /// also audit catalogs at low cadence while connected because a BLE notify
+    /// can be dropped without replay.
+    var storeChanges: AsyncStream<StoreChanged> { get }
     /// Stamp the device's **trusted wall clock** (`setClock`, spec §4.4 cmd 5,
     /// epic #638). Sent on **every connect, after encryption and before the first
     /// `ackRides` / reconcile write** — the device has no RTC, and this (or a GPS
@@ -239,14 +244,16 @@ extension DeviceLink {
     public func resumeLink() async { try? await connect() }
 }
 
-extension DeviceTransport {
+extension DeviceObjects {
     /// Default: no possession ack — for preview/test stand-ins that model no
     /// device-side synced state. `BLETransport` sends the real command;
     /// `MockTransport` records the ack for tests. Safe as a no-op because the
     /// ack is pure reconciliation — skipping it only leaves the device's
     /// synced flags where they were.
     public func ackRides(_ ids: [RideID]) async throws {}
+}
 
+extension DeviceTransport {
     /// Default: the device can't stamp its clock — for preview/test stand-ins that
     /// don't model expiry (a device predating `setClock` reads the same way, spec
     /// §4.4 compat). Reads as `unsupported` so S7 hides expiry UI and no retention
@@ -286,7 +293,9 @@ extension DeviceTransport {
     /// that does not scan has nothing to turn off. The rider's preference is stored by
     /// ``WeatherPreferencesStore`` either way, so the setting survives a stand-in run.
     public func setWeatherWatch(_ enabled: Bool) {}
+}
 
+extension DeviceObjects {
     // MARK: Trips (TR8) — defaults for stand-ins that don't model trips
     //
     // A preview/test transport that predates trips (or doesn't care) reads as a
