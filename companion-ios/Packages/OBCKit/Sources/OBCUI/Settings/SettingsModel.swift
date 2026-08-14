@@ -3,10 +3,8 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// State for the Settings screen (B8, design G) — the device identity cluster,
-/// the H3 rename, and the H2 forget. Depends only on `DeviceTransport` +
-/// `BondStore` (the golden rule); the coming-soon groups (OTA, services) are
-/// static copy in the view.
+/// Settings screen state (B8, design G): device identity, H3 rename, and H2 forget.
+/// Depends on link, battery, configuration, and bonding capabilities plus `BondStore`.
 ///
 /// **Rename (H3)** is a `writeConfig` with a changed `name` — device name lives
 /// in the Config blob (B-S0 Delta 1), there is no separate rename command. The
@@ -85,7 +83,7 @@ public final class SettingsModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink & DeviceBattery & DeviceConfiguration & DeviceBonding
     private let bondStore: any BondStore
     /// The app-local default-retention preference (epic #638) — the persist seam
     /// behind the Auto-delete row, shared with `MainScreenModel` so a change here
@@ -104,7 +102,7 @@ public final class SettingsModel {
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink & DeviceBattery & DeviceConfiguration & DeviceBonding,
         bondStore: any BondStore,
         retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),

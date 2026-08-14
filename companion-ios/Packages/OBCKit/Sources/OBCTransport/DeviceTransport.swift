@@ -66,6 +66,12 @@ public protocol DeviceLink: Sendable {
     func deviceInfo() async throws -> DeviceInfo
 }
 
+/// Battery telemetry, without link lifecycle or mutation authority.
+public protocol DeviceBattery: Sendable {
+    /// Battery percentage (BAS notify). **Replays the latest** value.
+    var battery: AsyncStream<Int> { get }
+}
+
 /// The device configuration control plane, separated from link and object
 /// transport so config-only policies do not acquire unrelated capabilities.
 public protocol DeviceConfiguration: Sendable {
@@ -73,6 +79,25 @@ public protocol DeviceConfiguration: Sendable {
     func readConfig() async throws -> DeviceConfig
     /// Write the device config blob — including device rename (H3, Delta 1).
     func writeConfig(_ config: DeviceConfig) async throws
+}
+
+/// Device-side bond administration, without unrelated feature authority.
+public protocol DeviceBonding: Sendable {
+    /// Ask the device to dissolve **its** side of the bond (`forgetBond`, spec
+    /// §4.4 cmd 4). The app's "Forget device" otherwise clears only the phone's
+    /// `BondRecord`; the device keeps its bond, and the reject-when-bonded posture
+    /// (spec §8) then refuses every new pairing until the rider also runs Forget
+    /// phone on the device — a one-sided forget leaves the pair wedged. This
+    /// command, honoured **only over the already-encrypted bonded link** (the
+    /// bonded phone asking to clear its own bond is fully consistent with
+    /// reject-when-bonded — a stranger can never issue it), makes the device clear
+    /// its bond and return to open-pairing advertising. **Best-effort**: the
+    /// device answers `commandResult(ok)` then drops the link, so the transport
+    /// waits only briefly for the ack; the caller (Settings forget) clears its
+    /// local record whether this succeeds, times out, or throws. Invoke it only
+    /// while connected — an offline forget can't reach the device (it keeps its
+    /// bond until the rider forgets the phone on it).
+    func forgetBond() async throws
 }
 
 /// Stored route, trip, and ride operations, without link lifecycle, device
@@ -166,11 +191,10 @@ public protocol DeviceUpdates: Sendable {
 ///
 /// Everything a screen (B2–B11) needs must be expressible through these
 /// capabilities. `Sendable` lets conformers cross concurrency domains.
-public protocol DeviceTransport: DeviceLink, DeviceConfiguration, DeviceObjects, DeviceUpdates {
+public protocol DeviceTransport: DeviceLink, DeviceBattery, DeviceConfiguration,
+    DeviceBonding, DeviceObjects, DeviceUpdates {
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
 
-    /// Battery percentage (BAS notify). **Replays the latest** value.
-    var battery: AsyncStream<Int> { get }
     /// Unsolicited device store movements (`storeChanged`, spec §4.3 msg 2) —
     /// an object committed or deleted **on the device** while connected (the
     /// on-device route delete, epic #447 P6). **Live edges only, no replay**:
@@ -198,22 +222,6 @@ public protocol DeviceTransport: DeviceLink, DeviceConfiguration, DeviceObjects,
     func setRouteRetention(_ id: DeviceObjectID, _ retention: Retention) async throws -> RetentionWriteOutcome
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
-
-    /// Ask the device to dissolve **its** side of the bond (`forgetBond`, spec
-    /// §4.4 cmd 4). The app's "Forget device" otherwise clears only the phone's
-    /// `BondRecord`; the device keeps its bond, and the reject-when-bonded posture
-    /// (spec §8) then refuses every new pairing until the rider also runs Forget
-    /// phone on the device — a one-sided forget leaves the pair wedged. This
-    /// command, honoured **only over the already-encrypted bonded link** (the
-    /// bonded phone asking to clear its own bond is fully consistent with
-    /// reject-when-bonded — a stranger can never issue it), makes the device clear
-    /// its bond and return to open-pairing advertising. **Best-effort**: the
-    /// device answers `commandResult(ok)` then drops the link, so the transport
-    /// waits only briefly for the ack; the caller (Settings forget) clears its
-    /// local record whether this succeeds, times out, or throws. Invoke it only
-    /// while connected — an offline forget can't reach the device (it keeps its
-    /// bond until the rider forgets the phone on it).
-    func forgetBond() async throws
 
     // MARK: Weather (spec §11 — the standing watch)
 
@@ -272,6 +280,16 @@ extension DeviceUpdates {
     public func installFirmware() async throws -> FirmwareInstallResult { .unsupported }
 }
 
+extension DeviceBonding {
+    /// Default: no device-side bond to dissolve — for preview/test stand-ins
+    /// (a device predating `forgetBond` reads the same way, spec §4.4 compat).
+    /// Safe as a no-op because it's pure best-effort: skipping it only leaves the
+    /// device's bond where it was, which the caller's local-record clear already
+    /// tolerates. `BLETransport` sends the real command; `MockTransport` records
+    /// the request.
+    public func forgetBond() async throws {}
+}
+
 extension DeviceTransport {
     /// Default: the device can't stamp its clock — for preview/test stand-ins that
     /// don't model expiry (a device predating `setClock` reads the same way, spec
@@ -285,14 +303,6 @@ extension DeviceTransport {
     public func setRouteRetention(
         _ id: DeviceObjectID, _ retention: Retention
     ) async throws -> RetentionWriteOutcome { .unsupported }
-
-    /// Default: no device-side bond to dissolve — for preview/test stand-ins
-    /// (a device predating `forgetBond` reads the same way, spec §4.4 compat).
-    /// Safe as a no-op because it's pure best-effort: skipping it only leaves the
-    /// device's bond where it was, which the caller's local-record clear already
-    /// tolerates. `BLETransport` sends the real command; `MockTransport` records
-    /// the request.
-    public func forgetBond() async throws {}
 
     /// Default: no radio, so no watch to arm — for preview/test stand-ins. Safe as a no-op in a
     /// way the other defaults are not merely conveniently: the watch *is* a scan, and a transport
