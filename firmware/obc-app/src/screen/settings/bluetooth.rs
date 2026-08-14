@@ -67,7 +67,7 @@ impl BluetoothScreen {
             Gesture::Step(n) => {
                 // The bond vanishing from under the cursor (a completed forget) clamps it back
                 // onto the toggle before the step, so a step never walks a hidden row.
-                let len = rows(cx.state.ble_paired);
+                let len = rows(cx.state.device_status().ble_paired);
                 self.selected = self.selected.min(len - 1);
                 self.selected = crate::screen::list::step_selection(self.selected, n, len);
                 Transition::None
@@ -80,7 +80,7 @@ impl BluetoothScreen {
             }
             // Forget phone: the guarded hold, live only while a bond is stored. Records the
             // one-shot request for the host ([`App::drain_host_commands`](crate::App::drain_host_commands)).
-            Gesture::Hold if self.selected == FORGET && cx.state.ble_paired => {
+            Gesture::Hold if self.selected == FORGET && cx.state.device_status().ble_paired => {
                 cx.state.ble_forget_pending = true;
                 Transition::None
             }
@@ -95,7 +95,8 @@ impl BluetoothScreen {
         title_frame(cv, w, h, rx.t(Msg::BluetoothTitle), "");
 
         // A stale below-the-end cursor (the bond was just forgotten) reads as the toggle row.
-        let selected = self.selected.min(rows(rx.state.ble_paired) - 1);
+        let device = rx.state.device_status();
+        let selected = self.selected.min(rows(device.ble_paired) - 1);
 
         // Row 0 — the radio switch.
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
@@ -110,7 +111,7 @@ impl BluetoothScreen {
         let y0 = LIST_TOP + 8 + ROW_H + 16;
         cv.text(rx.t(Msg::BluetoothStatus), Point::new(info_x, y0), Font::Label, TextAlign::Left, SUBTEXT);
         cv.text(
-            status_label(rx.settings, rx.state.ble_link, rx.settings.language),
+            status_label(rx.settings, device.ble_link, rx.settings.language),
             Point::new(info_x, y0 + 24),
             Font::Body,
             TextAlign::Left,
@@ -118,12 +119,12 @@ impl BluetoothScreen {
         );
         let y1 = y0 + 62;
         cv.text(rx.t(Msg::BluetoothPaired), Point::new(info_x, y1), Font::Label, TextAlign::Left, SUBTEXT);
-        let paired = if rx.state.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
+        let paired = if device.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
         // The Forget row, drawn only while a bond is stored — with nothing to forget the row simply
         // isn't there (the round-1 only-when-possible grammar).
-        if rx.state.ble_paired {
+        if device.ble_paired {
             super::forget_footer(cv, w, h, rx.t(Msg::BluetoothForget), selected == FORGET, rx.hold_progress);
         }
     }
