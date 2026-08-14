@@ -137,6 +137,26 @@ public protocol DeviceObjects: Sendable {
     func ackRides(_ ids: [RideID]) async throws
 }
 
+/// Firmware delivery and install requests, without link lifecycle, device
+/// configuration, stored-object, diagnostics, or weather authority.
+public protocol DeviceUpdates: Sendable {
+    // MARK: Firmware update (S7 — DFU delivery)
+
+    /// Upload a firmware update (app → device, S7). The payload is the whole OBCU
+    /// container (spec §7.6 — `fwImage` type 5, the **singleton** object id `0`):
+    /// progress + cancel + whole-object restart, exactly like a route upload. A
+    /// CRC-verified commit promotes the bytes to `/UPDATE.BIN` on the card,
+    /// replacing any existing one; a torn transfer never becomes a visible file.
+    /// Staging never installs — that's `installFirmware()`.
+    func uploadFirmware(_ container: Data) -> TransferHandle
+    /// Ask the device to install the staged `/UPDATE.BIN` (`installFw`, spec §4.4
+    /// cmd 3). The command only *requests*: the device runs its on-glass check →
+    /// confirm flow and installs only on a physical Select press. Returns the
+    /// mapped request outcome (`accepted` opens that flow); throws only on a link
+    /// failure (`notConnected` / `writeFailed`), never on a device reply.
+    func installFirmware() async throws -> FirmwareInstallResult
+}
+
 /// The aggregate device boundary (Tier 1 — semantic), composed from the
 /// capability protocols that focused policies and view models use directly.
 /// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
@@ -146,7 +166,7 @@ public protocol DeviceObjects: Sendable {
 ///
 /// Everything a screen (B2–B11) needs must be expressible through these
 /// capabilities. `Sendable` lets conformers cross concurrency domains.
-public protocol DeviceTransport: DeviceLink, DeviceConfiguration, DeviceObjects {
+public protocol DeviceTransport: DeviceLink, DeviceConfiguration, DeviceObjects, DeviceUpdates {
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
 
     /// Battery percentage (BAS notify). **Replays the latest** value.
@@ -207,22 +227,6 @@ public protocol DeviceTransport: DeviceLink, DeviceConfiguration, DeviceObjects 
     /// may not reach past `DeviceTransport` to find one (the golden rule). Stand-ins that model no
     /// radio ignore it, which is the truthful stand-in behaviour — there is no scan to arm.
     func setWeatherWatch(_ enabled: Bool)
-
-    // MARK: Firmware update (S7 — DFU delivery)
-
-    /// Upload a firmware update (app → device, S7). The payload is the whole OBCU
-    /// container (spec §7.6 — `fwImage` type 5, the **singleton** object id `0`):
-    /// progress + cancel + whole-object restart, exactly like a route upload. A
-    /// CRC-verified commit promotes the bytes to `/UPDATE.BIN` on the card,
-    /// replacing any existing one; a torn transfer never becomes a visible file.
-    /// Staging never installs — that's `installFirmware()`.
-    func uploadFirmware(_ container: Data) -> TransferHandle
-    /// Ask the device to install the staged `/UPDATE.BIN` (`installFw`, spec §4.4
-    /// cmd 3). The command only *requests*: the device runs its on-glass check →
-    /// confirm flow and installs only on a physical Select press. Returns the
-    /// mapped request outcome (`accepted` opens that flow); throws only on a link
-    /// failure (`notConnected` / `writeFailed`), never on a device reply.
-    func installFirmware() async throws -> FirmwareInstallResult
 }
 
 extension DeviceLink {
@@ -253,6 +257,21 @@ extension DeviceObjects {
     public func ackRides(_ ids: [RideID]) async throws {}
 }
 
+extension DeviceUpdates {
+    /// Default: no firmware delivery — for preview/test stand-ins that don't model
+    /// DFU. `BLETransport` streams the real `fwImage`; `MockTransport` paces a
+    /// fixture transfer. An update offered against such a stand-in fails as "no
+    /// link" rather than trapping.
+    public func uploadFirmware(_ container: Data) -> TransferHandle {
+        .immediatelyFinished(.failed(.notConnected))
+    }
+
+    /// Default: the device can't be updated over Bluetooth — for stand-ins that
+    /// don't model the `installFw` command (a device predating BLE DFU reads the
+    /// same way, spec §4.4 compat).
+    public func installFirmware() async throws -> FirmwareInstallResult { .unsupported }
+}
+
 extension DeviceTransport {
     /// Default: the device can't stamp its clock — for preview/test stand-ins that
     /// don't model expiry (a device predating `setClock` reads the same way, spec
@@ -266,19 +285,6 @@ extension DeviceTransport {
     public func setRouteRetention(
         _ id: DeviceObjectID, _ retention: Retention
     ) async throws -> RetentionWriteOutcome { .unsupported }
-
-    /// Default: no firmware delivery — for preview/test stand-ins that don't model
-    /// DFU. `BLETransport` streams the real `fwImage`; `MockTransport` paces a
-    /// fixture transfer. An update offered against such a stand-in fails as "no
-    /// link" rather than trapping.
-    public func uploadFirmware(_ container: Data) -> TransferHandle {
-        .immediatelyFinished(.failed(.notConnected))
-    }
-
-    /// Default: the device can't be updated over Bluetooth — for stand-ins that
-    /// don't model the `installFw` command (a device predating BLE DFU reads the
-    /// same way, spec §4.4 compat).
-    public func installFirmware() async throws -> FirmwareInstallResult { .unsupported }
 
     /// Default: no device-side bond to dissolve — for preview/test stand-ins
     /// (a device predating `forgetBond` reads the same way, spec §4.4 compat).

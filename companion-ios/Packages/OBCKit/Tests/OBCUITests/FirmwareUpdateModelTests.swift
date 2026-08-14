@@ -330,10 +330,10 @@ struct FirmwareUpdateModelTests {
     }
 }
 
-/// A minimal `DeviceTransport` for the model tests: a controllable link-state
-/// stream, a settable running version, and a firmware transfer whose completion /
-/// failure and `installFw` reply the test drives. Everything else is an inert stub.
-private final class StubTransport: DeviceTransport, @unchecked Sendable {
+/// A minimal link + update capability pair for the model tests: a controllable
+/// link-state stream, a settable running version, and a firmware transfer whose
+/// completion / failure and `installFw` reply the test drives.
+private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendable {
     /// Last-value multicast, like the real transports (`AsyncMulticast`): every
     /// `state` access is a fresh subscription that replays the latest value —
     /// what lets the model's re-entrant `stop()`/`start()` re-subscribe (a
@@ -364,7 +364,7 @@ private final class StubTransport: DeviceTransport, @unchecked Sendable {
         uploadOutcome.fulfill(.failed(error))
     }
 
-    // MARK: DeviceTransport — the bits the model uses
+    // MARK: DeviceLink + DeviceUpdates
 
     var state: AsyncStream<ConnectionState> {
         AsyncStream { cont in
@@ -394,20 +394,6 @@ private final class StubTransport: DeviceTransport, @unchecked Sendable {
         return installResult
     }
 
-    // MARK: DeviceTransport — inert stubs
-
-    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
-    func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
-    func deleteRoute(_ id: DeviceObjectID) async throws {}
-    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 }
