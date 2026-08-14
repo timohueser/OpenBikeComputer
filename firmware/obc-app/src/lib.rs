@@ -33,6 +33,7 @@ pub mod ble;
 pub mod breadcrumb;
 pub mod catalog_state;
 pub mod corridor;
+mod device_status;
 pub mod dfu;
 pub mod dirty;
 pub mod fault;
@@ -75,6 +76,7 @@ pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, 
 pub use ble::{BleLink, BleStatus, WeatherFix};
 pub use breadcrumb::Breadcrumb;
 pub use corridor::{CorridorKey, CorridorScratch};
+pub use device_status::DeviceStatus;
 pub use dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 pub use dirty::Dirty;
 pub use fault::{draw_boot_fault, BootFault};

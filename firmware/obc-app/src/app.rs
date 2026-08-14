@@ -22,6 +22,7 @@ use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFl
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::{UiRuntime, UploadEvent};
 use crate::wall_clock::WallClock;
+use crate::DeviceStatus;
 use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors, TrackPoint};
 
@@ -138,19 +139,11 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](obc_ports::FuelGauge);
-    /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
+    /// Battery charge, 0–100 %; the battery fact in [`device_status`](AppState::device_status).
     pub battery_pct: u8,
-    /// The BLE link phase (Off / Advertising / Connected). [`App::set_ble_status`] writes it from
-    /// the host's [`BleStatus`](crate::BleStatus); the connected indicator (the menu title bar's
-    /// right slot and the Home battery row) draws on [`Connected`](crate::BleLink::Connected) only
-    /// — see [`ble_connected`](AppState::ble_connected) — while the Bluetooth settings screen's
-    /// status line shows all three states. It lives **on** `AppState` — unlike `temp_c` — precisely
-    /// because drawn views react to it: a change is meant to gate a repaint, and the
-    /// `state != state_before` comparison already routes that to the screen that draws it.
+    /// The phone link phase; the link fact in [`device_status`](AppState::device_status).
     pub ble_link: crate::BleLink,
-    /// A BLE bond is stored (the board's RRAM bond slot / the sim's injected flag) — the Bluetooth
-    /// screen's "Paired: yes/no" row. Fed by [`App::set_ble_status`] like [`ble_link`](AppState::ble_link).
+    /// Whether a phone bond is stored; the bond fact in [`device_status`](AppState::device_status).
     pub ble_paired: bool,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
     /// guarded hold, drained by the host via [`App::drain_host_commands`] — which clears the RRAM bond
@@ -210,6 +203,15 @@ impl AppState {
         }
     }
 
+    /// The focused snapshot of small platform-fed facts rendered by app chrome.
+    ///
+    /// The existing public fields remain the storage/API; commands and domain state stay outside
+    /// this narrower [`DeviceStatus`] vocabulary.
+    #[inline]
+    pub const fn device_status(&self) -> DeviceStatus {
+        DeviceStatus { battery_pct: self.battery_pct, ble_link: self.ble_link, ble_paired: self.ble_paired }
+    }
+
     /// Clamp the camera to the rain map's zoom-out floor ([`rain_zoom_min`](AppState::rain_zoom_min)).
     /// Called by the weather screens on rain-map entry and after each Inspect zoom step; a
     /// disengaged floor (`0.0`) is a no-op, and zooming *in* is never touched.
@@ -222,7 +224,7 @@ impl AppState {
     /// Whether a phone holds the BLE link — the connected indicator's one question
     /// ([`ble_link`](AppState::ble_link) == [`Connected`](crate::BleLink::Connected)).
     pub fn ble_connected(&self) -> bool {
-        self.ble_link == crate::BleLink::Connected
+        self.device_status().ble_connected()
     }
 
     /// Advance one tick: poll the location source and, in [`Follow`](CameraMode::Follow) mode,
