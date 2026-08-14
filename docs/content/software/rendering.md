@@ -338,7 +338,7 @@ Within an OBCM source's chosen LOD, geometry is bucketed into fixed-size **chunk
 <figcaption>Children split <b>NW · NE · SW · SE</b> at floor-division midpoints — identical math at every level. Here the view <b>straddles the NE/SE boundary</b>, so the walk descends into both — and within each it visits only the sub-cells the view actually touches, pruning the other two along with the whole NW and SW quadrants. The walk reads only <code>u32</code> index nodes (no geometry), and a bounded result cache usually reuses its ordered leaves during a slow pan. It remains <b>uncapped</b> — a wide view can overlap hundreds of leaves and every one is visited.</figcaption>
 </figure>
 
-The walk is a recursive descent that prunes whole subtrees by bounding box and reads the index as raw bits — a high bit flags a branch, a sentinel marks an empty leaf ([`walk_leaves`](src:firmware/obc-reader/src/reader.rs)):
+The walk is a recursive descent that prunes whole subtrees by bounding box and reads the index as raw bits — a high bit flags a branch, a sentinel marks an empty leaf ([`walk_leaves`](src:firmware/obc-reader/src/reader/mod.rs)):
 
 ```rust
 if idx >= lod.node_count || depth > MAX_DEPTH || !node.intersects(view) {
@@ -868,6 +868,6 @@ A target-side compile-time assertion requires the renderer to match the existing
 
 - The renderer and all its rasterisers: [`obc-render/src/`](src:firmware/obc-render/src) — the frame loop and buffers in `lib.rs`; projection, collection, stroking, polygon fill and the overlays in `viewport.rs` / `collect.rs` / `stroke.rs` / `fill.rs` / `overlay.rs`
 - The streamed scene contract: [`obc-map-scene/src/lib.rs`](src:firmware/obc-map-scene/src/lib.rs); the production OBCM adapter: [`obc-reader/src/scene.rs`](src:firmware/obc-reader/src/scene.rs)
-- The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader/mod.rs`](src:firmware/obc-reader/src/reader/mod.rs)
 
 For how this renderer gets *driven* — the camera, the screen stack, and the per-frame loop — see [system architecture](../architecture/). For the map format it reads, see [data formats](../formats/).

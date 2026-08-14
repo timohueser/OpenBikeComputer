@@ -182,8 +182,9 @@ screen space is the renderer's responsibility, not the format's.
 [Nav Directory][Profile Table][Node Index + Chunks][Edge Pool] (§8 — file tail)
 ```
 
-The byte layout is produced by `host/obc-pack/src/serialize.rs` (`serialize_lods`) and
-parsed by `firmware/obc-reader/src/reader.rs`. All multi-byte integers are **little-endian**.
+The byte layout is produced by `host/obc-pack/src/serialize.rs` (`serialize_lods`) and parsed by
+`firmware/obc-reader/src/reader/mod.rs` plus `firmware/obc-reader/src/reader/nav.rs`. All multi-byte
+integers are **little-endian**.
 
 ---
 
