@@ -11,10 +11,11 @@
 //!
 //! ### Why a GPIO toggle on a timer, not a PWM peripheral
 //!
-//! **PWM20 will not drive the COM pins** `P2.07/08/10`: with the PWM running, the analyzer shows the
-//! lines dead `Lo`, while a plain `gpio::Output` on the *same* pins toggles them cleanly — the PWM
-//! output does not route onto that GPIO port here. So COM is a **GRTC/timer-backed GPIO square wave**:
-//! [`com_task`] flips the three lines and `await`s half a period, forever.
+//! On the retired P2.07/P2.08/P2.10 bring-up routing, **PWM20 would not drive the then-COM pins**:
+//! the analyzer showed the lines dead `Lo`, while plain GPIO toggled them cleanly. The current board
+//! contract is P1.22/P1.23/P1.24; the shipping path remains a **GRTC/timer-backed GPIO square wave**
+//! until the opt-in GPIOTE driver is verified. [`com_task`] flips the lines and `await`s half a
+//! period, forever.
 //!
 //! To keep it free-running **while the M33 is busy elsewhere**, spawn `com_task` on a **high-priority
 //! `InterruptExecutor`** (see the callers): the GRTC wakeup pends that executor and preempts
