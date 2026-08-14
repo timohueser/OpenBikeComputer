@@ -268,17 +268,11 @@ mod tests {
         file_id: u32,
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct ReaderState {
-        handle: ReaderHandle,
-        open: bool,
-    }
-
     struct MemoryIo {
         slots: [Option<Vec<u8>>; 2],
         file_ids: [Option<u32>; 2],
         open: Option<Slot>,
-        readers: Vec<ReaderState>,
+        reader: Option<ReaderHandle>,
         next_file_id: u32,
         next_handle_id: u32,
         failure: Failure,
@@ -294,7 +288,7 @@ mod tests {
                 slots: [a, b],
                 file_ids,
                 open: None,
-                readers: Vec::new(),
+                reader: None,
                 next_file_id: 3,
                 next_handle_id: 1,
                 failure: Failure::None,
@@ -312,18 +306,15 @@ mod tests {
             let file_id = self.file_ids[index(slot)]?;
             let handle = ReaderHandle { handle_id: self.next_handle_id, slot, file_id };
             self.next_handle_id += 1;
-            self.readers.push(ReaderState { handle, open: true });
+            self.reader = Some(handle);
             Some(handle)
         }
 
         fn validate_reader(&self, handle: ReaderHandle) -> Result<SlotValidation, ReaderError> {
-            let Some(state) = self.readers.iter().find(|state| state.handle.handle_id == handle.handle_id) else {
-                return Err(ReaderError::Closed);
-            };
-            if !state.open {
+            if self.reader != Some(handle) {
                 return Err(ReaderError::Closed);
             }
-            if state.handle != handle || self.file_ids[index(handle.slot)] != Some(handle.file_id) {
+            if self.file_ids[index(handle.slot)] != Some(handle.file_id) {
                 return Err(ReaderError::Rebound);
             }
             let Some(bytes) = self.bytes(handle.slot) else { return Err(ReaderError::Rebound) };
@@ -332,9 +323,7 @@ mod tests {
 
         fn power_cut(&mut self) {
             self.open = None;
-            for reader in &mut self.readers {
-                reader.open = false;
-            }
+            self.reader = None;
         }
     }
 
