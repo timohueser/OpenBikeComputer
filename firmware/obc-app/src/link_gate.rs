@@ -18,23 +18,22 @@
 //! # The search arm (issue #1146, P2)
 //!
 //! The gate arbitrates a second resource now: the scratch arena's `nav ⊥ usb` rule (no reroute
-//! while docked-transferring). A route search and a cable transfer want the same RAM, and neither
-//! belongs to a wire, so the gate carries a **search flag** beside the transfer owner —
-//! [`begin_search`](TransferGate::begin_search) / [`end_search`](TransferGate::end_search) — and the
-//! two exclude each other: a live search refuses [`claim`](TransferGate::claim), a held transfer
-//! refuses `begin_search`.
+//! while docked-transferring). A route search and a cable transfer want the same RAM. They are four
+//! mutually-exclusive states in one tagged atomic: idle, BLE transfer, USB transfer, or search.
+//! [`begin_search`](TransferGate::begin_search) and [`claim`](TransferGate::claim) therefore compete
+//! in one compare-exchange instead of each checking one atomic before claiming another.
 //!
-//! Deliberately a second flag rather than a third [`GateOwner`]: `GateOwner` answers *which wire*,
-//! and a search is on no wire. Folding it in would have made [`holder`](TransferGate::holder) —
-//! which routes an `Abort` to the data plane actually transferring — answer with something no
-//! transport can equal, quietly turning aborts during a search into `busy`. So the split predicates
-//! stay honest: [`in_flight`](TransferGate::in_flight) means *a transfer is streaming* (unchanged),
-//! and [`busy`](TransferGate::busy) is the "may a new transfer start?" test a control plane answers
-//! `busy` from. A control plane that still tests `in_flight` is not *wrong* — [`claim`](TransferGate::claim)
-//! is the hard gate and refuses regardless — it is merely late and impolite, arming a transfer that
-//! then cannot take the gate.
+//! Search deliberately remains outside [`GateOwner`]: `GateOwner` answers *which wire*, while a
+//! search is on no wire. [`holder`](TransferGate::holder) therefore still returns `None` for search,
+//! [`in_flight`](TransferGate::in_flight) still means *a transfer is streaming*, and
+//! [`busy`](TransferGate::busy) remains the wider "may a new transfer start?" predicate.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
+
+const IDLE: u8 = 0;
+const BLE: u8 = 1;
+const USB: u8 = 2;
+const SEARCH: u8 = 3;
 
 /// Which wire holds the transfer gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,15 +47,15 @@ pub enum GateOwner {
 impl GateOwner {
     const fn tag(self) -> u8 {
         match self {
-            GateOwner::Ble => 1,
-            GateOwner::Usb => 2,
+            GateOwner::Ble => BLE,
+            GateOwner::Usb => USB,
         }
     }
 
     const fn from_tag(tag: u8) -> Option<GateOwner> {
         match tag {
-            1 => Some(GateOwner::Ble),
-            2 => Some(GateOwner::Usb),
+            BLE => Some(GateOwner::Ble),
+            USB => Some(GateOwner::Usb),
             _ => None,
         }
     }
@@ -69,43 +68,39 @@ impl GateOwner {
 /// read between their own await points. [`claim`](Self::claim) is nonetheless a compare-exchange
 /// rather than a store, so the gate cannot be taken twice even if that ever changes.
 pub struct TransferGate {
-    owner: AtomicU8,
-    searching: AtomicBool,
+    state: AtomicU8,
 }
 
 impl TransferGate {
     /// An idle gate.
     pub const fn new() -> TransferGate {
-        TransferGate { owner: AtomicU8::new(0), searching: AtomicBool::new(false) }
+        TransferGate { state: AtomicU8::new(IDLE) }
     }
 
     /// Take the gate for `owner`. `false` = someone already holds it **or a route search is
     /// running**, and the caller must answer `busy` rather than arm.
     pub fn claim(&self, owner: GateOwner) -> bool {
-        if self.search_live() {
-            return false;
-        }
-        self.owner.compare_exchange(0, owner.tag(), Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        self.state.compare_exchange(IDLE, owner.tag(), Ordering::Relaxed, Ordering::Relaxed).is_ok()
     }
 
     /// Release the gate — **only if `owner` is the one holding it**. A teardown on the wire that
     /// is not transferring is a no-op, which is the whole point: it must not open the door on a
     /// transfer the other wire is still running.
     pub fn release(&self, owner: GateOwner) {
-        let _ = self.owner.compare_exchange(owner.tag(), 0, Ordering::Relaxed, Ordering::Relaxed);
+        let _ = self.state.compare_exchange(owner.tag(), IDLE, Ordering::Relaxed, Ordering::Relaxed);
     }
 
     /// Whether any transfer is in flight — the `busy` test, and it is deliberately wire-blind:
     /// a second transfer is refused whichever wire offers it.
     pub fn in_flight(&self) -> bool {
-        self.owner.load(Ordering::Relaxed) != 0
+        matches!(self.state.load(Ordering::Relaxed), BLE | USB)
     }
 
     /// Who holds it, if anyone. Lets a control plane tell "my own transfer" from "the other wire's"
     /// — an abort aimed at a transfer this wire is not running cannot be forwarded to a data plane
     /// that is not listening.
     pub fn holder(&self) -> Option<GateOwner> {
-        GateOwner::from_tag(self.owner.load(Ordering::Relaxed))
+        GateOwner::from_tag(self.state.load(Ordering::Relaxed))
     }
 
     /// Take the **search** side of the gate (issue #1146: the nav arm of the scratch arena).
@@ -117,30 +112,32 @@ impl TransferGate {
     /// two independent wires.
     #[must_use = "a refused search must not start planning — the arena belongs to the transfer"]
     pub fn begin_search(&self) -> bool {
-        if self.in_flight() {
-            return false;
-        }
-        self.searching.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        self.state.compare_exchange(IDLE, SEARCH, Ordering::Relaxed, Ordering::Relaxed).is_ok()
     }
 
     /// End the search (the plan answered, failed, or was cancelled). Idempotent, and it releases
     /// **only** the search — a transfer that started after it is untouched, exactly as
     /// [`release`](TransferGate::release) leaves the other wire's claim alone.
+    ///
+    /// Keep this transition out of line: ARM's byte compare-exchange expands to an interrupt-safe
+    /// retry loop, and duplicating that loop inside the ride task costs flash for a path that runs
+    /// only when a route search ends.
+    #[inline(never)]
     pub fn end_search(&self) {
-        self.searching.store(false, Ordering::Relaxed);
+        let _ = self.state.compare_exchange(SEARCH, IDLE, Ordering::Relaxed, Ordering::Relaxed);
     }
 
     /// Whether a route search holds the gate's search side. The
     /// [`TransferReady`](crate::arena_gate::TransferReady) precondition reads this.
     pub fn search_live(&self) -> bool {
-        self.searching.load(Ordering::Relaxed)
+        self.state.load(Ordering::Relaxed) == SEARCH
     }
 
     /// Whether a **new transfer** would be refused — a transfer already streaming *or* a live
     /// search. The `busy` test a `transferControl` open should answer from; [`in_flight`](TransferGate::in_flight)
     /// stays the narrower "is a transfer streaming" fact that abort routing and the data planes use.
     pub fn busy(&self) -> bool {
-        self.in_flight() || self.search_live()
+        self.state.load(Ordering::Relaxed) != IDLE
     }
 }
 
@@ -153,6 +150,115 @@ impl Default for TransferGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ModelState {
+        Idle,
+        Ble,
+        Usb,
+        Search,
+    }
+
+    impl ModelState {
+        const ALL: [ModelState; 4] = [ModelState::Idle, ModelState::Ble, ModelState::Usb, ModelState::Search];
+
+        const fn tag(self) -> u8 {
+            match self {
+                ModelState::Idle => IDLE,
+                ModelState::Ble => BLE,
+                ModelState::Usb => USB,
+                ModelState::Search => SEARCH,
+            }
+        }
+
+        const fn holder(self) -> Option<GateOwner> {
+            match self {
+                ModelState::Ble => Some(GateOwner::Ble),
+                ModelState::Usb => Some(GateOwner::Usb),
+                ModelState::Idle | ModelState::Search => None,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Action {
+        Claim(GateOwner),
+        Release(GateOwner),
+        BeginSearch,
+        EndSearch,
+    }
+
+    impl Action {
+        const ALL: [Action; 6] = [
+            Action::Claim(GateOwner::Ble),
+            Action::Claim(GateOwner::Usb),
+            Action::Release(GateOwner::Ble),
+            Action::Release(GateOwner::Usb),
+            Action::BeginSearch,
+            Action::EndSearch,
+        ];
+    }
+
+    fn model_step(state: ModelState, action: Action) -> (ModelState, Option<bool>) {
+        match action {
+            Action::Claim(owner) => match state {
+                ModelState::Idle => (
+                    match owner {
+                        GateOwner::Ble => ModelState::Ble,
+                        GateOwner::Usb => ModelState::Usb,
+                    },
+                    Some(true),
+                ),
+                _ => (state, Some(false)),
+            },
+            Action::Release(owner) if state.holder() == Some(owner) => (ModelState::Idle, None),
+            Action::Release(_) => (state, None),
+            Action::BeginSearch if state == ModelState::Idle => (ModelState::Search, Some(true)),
+            Action::BeginSearch => (state, Some(false)),
+            Action::EndSearch if state == ModelState::Search => (ModelState::Idle, None),
+            Action::EndSearch => (state, None),
+        }
+    }
+
+    fn apply(gate: &TransferGate, action: Action) -> Option<bool> {
+        match action {
+            Action::Claim(owner) => Some(gate.claim(owner)),
+            Action::Release(owner) => {
+                gate.release(owner);
+                None
+            }
+            Action::BeginSearch => Some(gate.begin_search()),
+            Action::EndSearch => {
+                gate.end_search();
+                None
+            }
+        }
+    }
+
+    /// Exhaust the complete four-state transition table. This is stronger than sampling traces:
+    /// every action's successor is itself one of these four rows, so arbitrary-length traces are
+    /// closed under the transitions checked here.
+    #[test]
+    fn tagged_gate_matches_the_reference_model_for_every_transition() {
+        for before in ModelState::ALL {
+            for action in Action::ALL {
+                let gate = TransferGate { state: AtomicU8::new(before.tag()) };
+                let (after, expected_result) = model_step(before, action);
+
+                assert_eq!(apply(&gate, action), expected_result, "{before:?} -> {action:?}");
+                assert_eq!(gate.holder(), after.holder(), "holder after {before:?} -> {action:?}");
+                assert_eq!(gate.in_flight(), matches!(after, ModelState::Ble | ModelState::Usb));
+                assert_eq!(gate.search_live(), after == ModelState::Search);
+                assert_eq!(gate.busy(), after != ModelState::Idle);
+            }
+        }
+    }
+
+    #[test]
+    fn gate_is_exactly_one_atomic_byte() {
+        assert_eq!(core::mem::size_of::<TransferGate>(), core::mem::size_of::<AtomicU8>());
+        assert_eq!(core::mem::align_of::<TransferGate>(), core::mem::align_of::<AtomicU8>());
+    }
 
     #[test]
     fn a_claimed_gate_refuses_a_second_claim_from_either_wire() {
