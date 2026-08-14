@@ -1,6 +1,7 @@
 //! Caller-owned navigation tile and quadtree-index cache.
 
-use super::super::{rrip_victim, IndexBlock, QuadIndex, INDEX_BLOCK};
+use super::super::cache::{rrip_victim, IndexBlock, INDEX_BLOCK};
+use super::super::QuadIndex;
 use super::NAV_MAX_CHUNK_BYTES;
 use obc_formats::io::{ByteSource, Error as IoError};
 
