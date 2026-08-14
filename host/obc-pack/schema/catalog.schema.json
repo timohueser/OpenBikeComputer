@@ -28,7 +28,7 @@
       ]
     },
     "schema": {
-      "description": "The catalog's **single** schema. Not an array: the hosted store carries the 9-LOD bikepacking ladder and nothing else, because a second schema would make the whole planet-shaped cell store exist twice (§3, epic #1016 D2).",
+      "description": "The catalog's **single** schema. Not an array: the hosted store carries the 14-LOD bikepacking ladder and nothing else, because a second schema would make the whole planet-shaped cell store exist twice (§3, epic #1016 D2).",
       "$ref": "#/$defs/SchemaEntry"
     },
     "skins": {

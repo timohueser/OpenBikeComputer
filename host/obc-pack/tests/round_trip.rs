@@ -9,7 +9,8 @@
 //!
 //! Every coordinate is an exact integer microdegree fed in as `udeg / 1e6` (so
 //! `to_udeg` recovers it exactly) and every segment stays under the 30 000-µdeg
-//! densify threshold, so no midpoints are inserted and point counts are preserved.
+//! densify threshold, so no midpoints are inserted. Polygon closure is implicit in
+//! OBCM and therefore is the one deliberately omitted input point.
 
 use obc_elevation::NullElevation;
 use obc_map_scene::{BBox, Kind as ReadKind};
@@ -154,11 +155,15 @@ fn expect_line(style_id: u8, pts: &[(i32, i32)]) -> Decoded {
 }
 
 fn expect_poly(style_id: u8, ext: &[(i32, i32)], holes: &[&[(i32, i32)]]) -> Decoded {
+    let open_ring = |ring: &[(i32, i32)]| {
+        let end = ring.len() - usize::from(ring.len() > 1 && ring.first() == ring.last());
+        ring[..end].to_vec()
+    };
     Decoded {
         style_id,
         is_polygon: true,
-        exterior: ext.to_vec(),
-        interiors: holes.iter().map(|h| h.to_vec()).collect(),
+        exterior: open_ring(ext),
+        interiors: holes.iter().map(|h| open_ring(h)).collect(),
     }
 }
 
@@ -381,4 +386,100 @@ fn many_holed_polygon_survives_the_reader() {
     }
     assert!(complete > 0, "the polygon's pieces all decoded");
     assert!(holes > 0, "the clearings survived the split");
+}
+
+fn ring_contains(ring: &[(i32, i32)], point: (i32, i32)) -> bool {
+    let (px, py) = (point.0 as f64, point.1 as f64);
+    let mut inside = false;
+    let mut previous = ring.len() - 1;
+    for current in 0..ring.len() {
+        let (xi, yi) = (ring[current].0 as f64, ring[current].1 as f64);
+        let (xj, yj) = (ring[previous].0 as f64, ring[previous].1 as f64);
+        if (yi > py) != (yj > py) && px < xi + (py - yi) * (xj - xi) / (yj - yi) {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn decoded_covers(features: &[Decoded], point: (i32, i32)) -> bool {
+    features.iter().any(|feature| {
+        feature.is_polygon
+            && ring_contains(&feature.exterior, point)
+            && !feature.interiors.iter().any(|hole| ring_contains(hole, point))
+    })
+}
+
+fn assert_rectilinear_ring(ring: &[(i32, i32)]) {
+    for (&a, &b) in ring.iter().zip(ring.iter().cycle().skip(1)).take(ring.len()) {
+        assert!(a.0 == b.0 || a.1 == b.1, "decoded ring gained diagonal edge {a:?} -> {b:?}: {ring:?}");
+    }
+}
+
+/// The PR #1299 wedge reproducer through every downstream geometry stage. The semantic vectorizer
+/// emits this shape as rectilinear coverage, then the production path unprojects it to degrees,
+/// clips it to the requested/canonical bbox, subdivides it, packs it, and decodes it. Before the
+/// hole-anchor fix, `pack_feature` densified the exterior-anchor -> hole jump into the hole itself;
+/// this test saw a diagonal bridge and a triangular false clearing with either chunk size.
+#[test]
+fn distant_hole_stays_local_through_clip_subdivide_pack_and_decode() {
+    use obc_pack::geom::{clip_to_box, Geom};
+    use obc_pack::quadtree::build_lod;
+
+    const BBOX: (i64, i64, i64, i64) = (20_000, 20_000, 220_000, 220_000);
+    let square = |x0: f64, y0: f64, side: f64| {
+        vec![(x0, y0), (x0 + side, y0), (x0 + side, y0 + side), (x0, y0 + side), (x0, y0)]
+    };
+    let source = Geom::Polygon {
+        // Deliberately crosses BBOX so the root path clips it. The hole is >30k µdeg from the
+        // exterior anchor and reproduces the real semantic-forest failure.
+        exterior: square(0.0, 0.0, 0.24),
+        interiors: vec![square(0.12, 0.12, 0.03)],
+    };
+
+    let decode = |chunk_size: usize, canonical_preclip: bool| {
+        let input = if canonical_preclip { clip_to_box(&source, BBOX) } else { source.clone() };
+        let root = build_lod([(12u8, input)], BBOX, chunk_size);
+        let (bytes, dropped) = serialize_lods(
+            &[LodLayer { max_mpp: None, chunk_size, root }],
+            &styles(),
+            MARKER,
+            BBOX,
+            &[],
+            &Default::default(),
+            &obc_pack::config::default_profiles(),
+            &mut NullElevation,
+        );
+        assert_eq!(dropped, 0);
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let reader = Reader::new(&src, &tables, &cache);
+        decode_lod(&reader, 0)
+    };
+
+    let variants = [
+        ("monolithic/large", decode(4096, false)),
+        ("monolithic/small", decode(256, false)),
+        ("canonical-preclip/large", decode(4096, true)),
+        ("canonical-preclip/small", decode(256, true)),
+    ];
+    for (name, features) in &variants {
+        assert!(!features.is_empty(), "{name} emitted coverage");
+        for feature in features {
+            assert_rectilinear_ring(&feature.exterior);
+            for hole in &feature.interiors {
+                assert_rectilinear_ring(hole);
+            }
+        }
+        // Compare actual decoded coverage, not ring ordering: subdivision may legitimately split
+        // one polygon into several pieces, but it must not change any sampled interior decision.
+        for y in (25_000..220_000).step_by(10_000) {
+            for x in (25_000..220_000).step_by(10_000) {
+                let expected = !(120_000 < x && x < 150_000 && 120_000 < y && y < 150_000);
+                assert_eq!(decoded_covers(features, (x, y)), expected, "{name} coverage at ({x},{y})");
+            }
+        }
+    }
 }

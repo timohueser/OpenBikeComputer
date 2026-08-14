@@ -123,6 +123,7 @@ fn stage_lines_still_match_the_web_builders_markers() {
         ("Pass 2", Phase::Ingest),
         ("Calculating BBox", Phase::Bbox),
         ("Generating land", Phase::Land),
+        ("Building semantic coverage", Phase::Quadtree),
         ("Building Quadtree", Phase::Quadtree),
         ("Serializing", Phase::Serialize),
         ("Writing", Phase::Serialize),
@@ -175,7 +176,7 @@ fn cancelling_stops_the_run_and_removes_the_partial_output() {
 }
 
 /// The shipped preset with every tier's `min_line_km` forced to `value`, so a test can move one
-/// knob and change nothing else about a real 9-tier ladder.
+/// knob and change nothing else about the real shipped ladder.
 fn preset_with_min_line_km(value: f64) -> Config {
     let text = std::fs::read_to_string(preset_path()).expect("preset readable");
     let mut doc: serde_json::Value = serde_json::from_str(&text).expect("preset is JSON");
@@ -187,7 +188,7 @@ fn preset_with_min_line_km(value: f64) -> Config {
 
 /// `min_line_km: 0` is the off value, and off must mean *untouched*: a ladder that sets it to zero
 /// everywhere packs to the same bytes as one that never mentions the knob. This is what lets the
-/// cull ship on two far-zoom tiers without disturbing the seven the preset already had.
+/// cull remain available to custom schemas without disturbing the shipped preset.
 #[test]
 fn the_line_cull_switched_off_is_byte_identical() {
     let dir = out_dir("cull-off");
@@ -198,9 +199,11 @@ fn the_line_cull_switched_off_is_byte_identical() {
     let b = dir.join("zeroed.obcm");
     pack(&[fixture_pbf()], &shipped, &a, &opts(), &Progress::silent()).expect("pack");
     pack(&[fixture_pbf()], &zeroed, &b, &opts(), &Progress::silent()).expect("pack");
-    // The shipped preset does cull on tiers 0-1, so zeroing it can only *add* lines back; the
-    // point is that the zeroed run is exactly a run of the pre-knob packer.
-    assert_ne!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap(), "the shipped ladder does cull something");
+    assert_eq!(
+        std::fs::read(&a).unwrap(),
+        std::fs::read(&b).unwrap(),
+        "the shipped ladder explicitly leaves the optional line cull off"
+    );
 
     let mut no_knob: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(preset_path()).unwrap()).expect("preset is JSON");

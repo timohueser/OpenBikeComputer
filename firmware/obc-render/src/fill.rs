@@ -4,21 +4,28 @@ use heapless::Vec;
 
 use embedded_graphics::{prelude::*, primitives::Rectangle};
 
+use crate::{MAX_CROSSINGS, MAX_DECODE_RINGS};
+
+#[cfg(test)]
 use crate::viewport::Viewport;
-use crate::{MAX_CROSSINGS, MAX_DECODE_RINGS, MAX_SCREEN_POINTS};
+#[cfg(test)]
+use crate::MAX_SCREEN_POINTS;
 
 /// Project a feature's microdegree rings into `screen` and scanline-fill them. The draw phase's
-/// `Kind::Polygon` arm; also the marker diamond's path.
-pub(crate) fn fill_polygon_proj<D>(
+/// former `Kind::Polygon` path, retained as the framebuffer-equivalence oracle for the collector's
+/// screen-space compaction tests.
+#[cfg(test)]
+pub(crate) fn fill_polygon_proj<D, L>(
     target: &mut D,
     vp: &Viewport,
     pts: &[(i32, i32)],
-    ring_lens: &[usize],
+    ring_lens: &[L],
     color: D::Color,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
     xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
+    L: Copy + Into<usize>,
 {
     screen.clear();
     for &(lon, lat) in pts {
@@ -31,16 +38,17 @@ pub(crate) fn fill_polygon_proj<D>(
 /// `ring_lens` partitions them (exterior first, then holes — holes fall out of the even-odd rule
 /// for free). A row overflowing `xs` is skipped to keep even-odd parity intact rather than pairing
 /// spans from a truncated crossing list.
-pub(crate) fn fill_polygon<D>(
+pub(crate) fn fill_polygon<D, L>(
     target: &mut D,
     screen: &[Point],
-    ring_lens: &[usize],
+    ring_lens: &[L],
     color: D::Color,
     w: i32,
     h: i32,
     xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
+    L: Copy + Into<usize>,
 {
     let mut ymin = i32::MAX;
     let mut ymax = i32::MIN;
@@ -62,6 +70,7 @@ pub(crate) fn fill_polygon<D>(
     {
         let mut base = 0usize;
         for &len in ring_lens {
+            let len = len.into();
             let mut ry_min = i32::MAX;
             let mut ry_max = i32::MIN;
             for p in &screen[base..base + len] {
@@ -80,6 +89,7 @@ pub(crate) fn fill_polygon<D>(
         let mut base = 0usize;
         let mut saturated = false;
         'rings: for (r, &len) in ring_lens.iter().enumerate() {
+            let len = len.into();
             let ring = &screen[base..base + len];
             base += len;
             if len < 2 {

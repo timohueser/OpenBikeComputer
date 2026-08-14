@@ -22,9 +22,12 @@ use crate::coverage::{coverage_simplify_fills_with, CoverageStats, Eliminate, Pr
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
-use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_lines_with, MergeStats};
+use crate::merge::{
+    merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with, MergeStats,
+};
 use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
+use crate::semantic::{build_semantic_levels, SemanticClass};
 use crate::serialize::serialize_lods_streaming;
 use crate::terrain::TerrainSet;
 use obc_elevation::{ElevationSource, NullElevation};
@@ -132,8 +135,9 @@ fn run(
     progress.stage(Phase::Bbox, "Calculating BBox...");
     let global_bbox = compute_bbox(&ingested);
 
-    // --- Land: clip the global land-polygon dataset to the bbox and add the
-    // faces as features, styled by `natural.land`. ---
+    // --- Coastline base: clip the global land-polygon dataset to the bbox. Land stays in the
+    // working set for semantic coverage; when it is the implicit backdrop, its complement is added
+    // as explicit sea and land itself is stripped only after each LOD has been built. ---
     add_land(&mut ingested, config, global_bbox, opts.no_land, progress)?;
     progress.check()?;
 
@@ -156,6 +160,13 @@ fn run(
     // serialize — treats them as geometry it has always had, which is the point (#1094).
     crate::contour::add_contours(&mut ingested, config, global_bbox, terrain_set.as_ref(), progress)?;
     progress.check()?;
+
+    let semantic_scheme = config.semantic_scheme();
+    let implicit_land_style_id = config.implicit_land_style_id();
+    // The serializer consumes coarsest-to-finest, but semantic rungs carry a soft anchor from the
+    // preceding finer result. Build that small geometry ladder once in the correct direction.
+    let semantic_levels =
+        build_semantic_levels(&ingested.features, &config.lods, &semantic_scheme, global_bbox, progress)?;
     let mut sampler = match &terrain_set {
         None => None,
         Some(set) => {
@@ -212,6 +223,7 @@ fn run(
                 return (Some(build_lod_with(Vec::new(), global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp);
             }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
+            let line_tol = if lod.line_simplify_m > 0.0 { lod.line_simplify_m / M_PER_DEG } else { 0.0 };
             // Coarse-LOD footprint cull: after simplify, drop features too small to
             // render at the finest scale this tier is ever shown at — the next-finer
             // tier's `max_mpp`. The finest tier has no finer fallback (a drop there
@@ -249,8 +261,12 @@ fn run(
                     if progress.is_cancelled() {
                         return None;
                     }
-                    let mut g =
-                        if simplify && tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                    let feature_tol = if geom.is_lineal() { line_tol } else { tol };
+                    let mut g = if simplify && feature_tol > 0.0 {
+                        topology_preserve_simplify(geom, feature_tol)
+                    } else {
+                        geom.clone()
+                    };
                     if let Some(mpp) = cull_mpp {
                         if !from_coverage && footprint_below(&g, mpp, min_area_px) {
                             culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -296,11 +312,51 @@ fn run(
                 }
                 kept
             };
-            let level: Vec<(u8, Geom)> = if lod.coverage_simplify {
+            let mut level: Vec<(u8, Geom)> = if lod.semantic_coverage {
+                let mut passthrough: Vec<(u8, Geom)> = ingested
+                    .features
+                    .iter()
+                    .filter(|f| f.min_lod <= i)
+                    .filter(|f| {
+                        let semantic_polygon = matches!(f.geom, Geom::Polygon { .. } | Geom::Multi(_))
+                            && matches!(
+                                semantic_scheme.class_of(f.style_id),
+                                Some(
+                                    SemanticClass::Farmland
+                                        | SemanticClass::Grass
+                                        | SemanticClass::Forest
+                                        | SemanticClass::Urban
+                                        | SemanticClass::Water
+                                )
+                            );
+                        !semantic_polygon
+                    })
+                    .map(|f| (f.style_id, f.geom.clone()))
+                    .collect();
+                if config.merge_lines {
+                    let (merged, m) = if lod.merge_line_trails {
+                        merge_line_trails_with(passthrough, &line_classes, progress)
+                    } else {
+                        merge_lines_with(passthrough, &line_classes, progress)
+                    };
+                    report_merge(progress, m, "line fragment", "into");
+                    passthrough = cull_short_lines(merged);
+                }
+                let mut level: Vec<(u8, Geom)> =
+                    passthrough.par_iter().filter_map(|(sid, geom)| simplify_cull(*sid, geom, true, false)).collect();
+                level.extend(
+                    semantic_levels[i].as_ref().expect("every configured semantic rung is prebuilt").iter().cloned(),
+                );
+                level
+            } else if lod.coverage_simplify {
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
                 if config.merge_lines {
-                    let (merged, m) = merge_lines_with(feats, &line_classes, progress);
+                    let (merged, m) = if lod.merge_line_trails {
+                        merge_line_trails_with(feats, &line_classes, progress)
+                    } else {
+                        merge_lines_with(feats, &line_classes, progress)
+                    };
                     report_merge(progress, m, "line fragment", "into");
                     feats = cull_short_lines(merged);
                 }
@@ -323,7 +379,11 @@ fn run(
                     feats = merged;
                 }
                 if config.merge_lines {
-                    let (merged, m) = merge_lines_with(feats, &line_classes, progress);
+                    let (merged, m) = if lod.merge_line_trails {
+                        merge_line_trails_with(feats, &line_classes, progress)
+                    } else {
+                        merge_lines_with(feats, &line_classes, progress)
+                    };
                     report_merge(progress, m, "line fragment", "into");
                     feats = cull_short_lines(merged);
                 }
@@ -336,6 +396,13 @@ fn run(
                     .filter_map(|f| simplify_cull(f.style_id, &f.geom, true, false))
                     .collect()
             };
+            // A land-backdrop map still carries land through every merge/coverage operation above:
+            // that complete base is what lets small semantic faces be absorbed without opening
+            // holes. It becomes redundant only at this serialization boundary, where the renderer's
+            // clear supplies exactly the same fill for free.
+            if let Some(land_id) = implicit_land_style_id {
+                level.retain(|(style_id, _)| *style_id != land_id);
+            }
             let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
             if culled > 0 {
                 progress.log(format!("  culled {culled} feature(s) below {} px² footprint", lod.min_area_px));
@@ -369,8 +436,10 @@ fn run(
     Ok(PackSummary { bytes: total, dropped })
 }
 
-/// Clip the global land-polygon dataset to `global_bbox` and append the faces to `ingested` as
-/// `natural.land` features. A no-op when the config has no land style or `no_land` is set.
+/// Clip the global land-polygon dataset to `global_bbox` and append the faces to the working set as
+/// `natural.land`. When land is the actual backdrop, also append `bbox - land` as `natural.sea`;
+/// final LOD construction removes the now-redundant land records after coverage processing.
+/// A no-op when the config has no land style or `no_land` is set.
 ///
 /// Shared with the cell cutter ([`crate::cut`]): land is generated **once** over the whole extract
 /// and then cut like any other feature, so a cell's coastline geometry cannot depend on which cell
@@ -387,19 +456,36 @@ pub(crate) fn add_land(
     }
     let Some(land) = config.land_style() else { return Ok(()) };
     let (lid, lmin) = (land.id, land.min_lod);
-    progress.stage(Phase::Land, "Generating land...");
+    let implicit_land = config.implicit_land_style_id() == Some(lid);
+    let sea_style = config.sea_style().map(|style| (style.id, style.min_lod));
+    progress.stage(Phase::Land, if implicit_land { "Generating coastline..." } else { "Generating land..." });
     let bbox_deg = (
         global_bbox.0 as f64 / 1e6,
         global_bbox.1 as f64 / 1e6,
         global_bbox.2 as f64 / 1e6,
         global_bbox.3 as f64 / 1e6,
     );
-    let polys = land::get_land_polygons(bbox_deg, progress)?;
-    let n = polys.len();
-    for geom in polys {
+    let land_polys = land::get_land_polygons(bbox_deg, progress)?;
+    progress.check()?;
+    let sea_polys =
+        if implicit_land && sea_style.is_some() { land::sea_complement(bbox_deg, &land_polys)? } else { Vec::new() };
+    let land_count = land_polys.len();
+    let sea_count = sea_polys.len();
+    for geom in land_polys {
         ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
     }
-    progress.log(format!("Successfully added {n} land polygons."));
+    if let Some((style_id, min_lod)) = sea_style {
+        for geom in sea_polys {
+            ingested.features.push(IngestFeature { style_id, min_lod, geom });
+        }
+    }
+    if implicit_land {
+        progress.log(format!(
+            "Added {land_count} internal land polygon(s) and {sea_count} serialized sea-complement polygon(s)."
+        ));
+    } else {
+        progress.log(format!("Successfully added {land_count} land polygons."));
+    }
     Ok(())
 }
 

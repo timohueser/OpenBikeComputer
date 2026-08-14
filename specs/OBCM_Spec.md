@@ -451,6 +451,10 @@ Rings are delta-encoded to minimize size. Bit depth is chosen **per feature**:
 if every `dx`/`dy` fits in `int8` (|d| ≤ 127), `Flags & 0x01 == 0` and deltas are
 `int8`; otherwise the flag is set and all deltas are `int16`.
 
+Polygon rings are **implicitly closed** from their last vertex back to their first. A
+writer should therefore omit a repeated final copy of the first vertex; readers and
+renderers must accept either representation. Line geometry is never implicitly closed.
+
 - **Exterior ring** (`Pt Count` vertices): the first vertex *is* the anchor;
   the remaining `Pt Count - 1` vertices follow as `(dx, dy)` pairs, each relative
   to the previous vertex.
@@ -541,9 +545,11 @@ free), lines as weighted polylines.
 
 **Backdrop convention.** Before drawing geometry, a renderer clears the screen to
 the **backdrop color**: the color of the style with the lowest `Z-Index` (the
-bottom of the paint order — by convention the sea/background, e.g. `natural.sea`
-at `z_index 0`). This is derived from the style table, not a fixed style ID, so
-it survives the packer's automatic ID assignment. Land is then painted on top.
+bottom of the paint order — in the shipped schema, `natural.land` at `z_index
+0`). This is derived from the style table, not a fixed style ID, so it survives
+the packer's automatic ID assignment. The shipped packer writes the coastline
+complement as `natural.sea` geometry on top; schemas with a different lowest
+style remain valid.
 
 ---
 

@@ -23,6 +23,29 @@ fn obc_bake() -> Command {
     cmd
 }
 
+/// The CLI loop tests orchestration, idempotency, and publication. Keep its geometry fixture small
+/// so enabling an expensive production-only LOD pass does not turn this contract test into a map
+/// benchmark; the shipped ladder has dedicated packer and real-map coverage.
+fn fixture_presets(dir: &Path) -> PathBuf {
+    let presets = dir.join("presets");
+    let skins = presets.join("skins");
+    std::fs::create_dir_all(&skins).unwrap();
+    let source = std::fs::read_to_string(repo("builder/presets/schema.json")).unwrap();
+    let mut document: serde_json::Value = serde_json::from_str(&source).unwrap();
+    let lods = document.get_mut("lods").and_then(serde_json::Value::as_array_mut).unwrap();
+    for lod in lods {
+        let lod = lod.as_object_mut().unwrap();
+        lod.shift_remove("semantic_coverage");
+        lod.shift_remove("merge_line_trails");
+        lod.shift_remove("line_simplify");
+    }
+    std::fs::write(presets.join("schema.json"), serde_json::to_string_pretty(&document).unwrap()).unwrap();
+    for skin in ["default.json", "dusk.json"] {
+        std::fs::copy(repo(&format!("builder/presets/skins/{skin}")), skins.join(skin)).unwrap();
+    }
+    presets
+}
+
 #[test]
 fn regions_lists_the_curated_coverage() {
     let out = obc_bake().arg("regions").output().expect("run");
@@ -49,6 +72,7 @@ fn bake_then_publish_is_the_whole_loop() {
     let regions = dir.join("regions.toml");
     std::fs::write(&regions, "regions = [ { id = \"europe/testland\", name = \"Testland\" } ]\n").unwrap();
     let tree = dir.join("tree");
+    let presets = fixture_presets(&dir);
 
     let out = obc_bake()
         .args(["bake", "--out"])
@@ -57,10 +81,10 @@ fn bake_then_publish_is_the_whole_loop() {
         .arg("--regions")
         .arg(&regions)
         .arg("--presets-dir")
-        .arg(repo("builder/presets"))
+        .arg(&presets)
         .args(["--source"])
         .arg(dir.join("extracts"))
-        .arg("--no-land")
+        .args(["--no-land", "--no-terrain"])
         .output()
         .expect("run bake");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -77,10 +101,10 @@ fn bake_then_publish_is_the_whole_loop() {
         .arg("--regions")
         .arg(&regions)
         .arg("--presets-dir")
-        .arg(repo("builder/presets"))
+        .arg(&presets)
         .args(["--source"])
         .arg(dir.join("extracts"))
-        .arg("--no-land")
+        .args(["--no-land", "--no-terrain"])
         .output()
         .expect("run bake again");
     assert!(out.status.success());

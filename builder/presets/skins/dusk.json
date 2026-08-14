@@ -3,7 +3,7 @@
         "id": "dusk",
         "name": "Dusk",
         "description": "The after-sundown look: light features on a dark ground — warm through-roads, tan trails, violet cycleways, deep water, a yellow marker.",
-        "version": 2,
+        "version": 3,
         "swatch": [
             "#FF5500",
             "#FFAA00",
@@ -53,8 +53,8 @@
             "*": {"color": "0x52AA", "z_index": 10, "weight": 1, "priority": 4}
         },
         "natural": {
-            "sea": {"color": "0x02B5", "z_index": 0, "weight": 1, "priority": 1},
-            "land": {"color": "0x0000", "z_index": 1, "weight": 1, "priority": 1},
+            "sea": {"color": "0x02B5", "z_index": 1, "weight": 1, "priority": 1},
+            "land": {"color": "0x0000", "z_index": 0, "weight": 1, "priority": 1},
             "water": {"color": "0x02B5", "z_index": 14, "weight": 1, "priority": 2},
             "wood": {"color": "0x02A0", "z_index": 4, "weight": 1, "priority": 2},
             "scrub": {"color": "0x52A0", "z_index": 6, "weight": 1, "priority": 2},

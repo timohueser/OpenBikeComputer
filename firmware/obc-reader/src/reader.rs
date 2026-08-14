@@ -2350,9 +2350,9 @@ impl<'a> Reader<'a> {
     }
 
     /// The backdrop style: the one at the bottom of the paint order (lowest
-    /// `z_index`, ties broken by lowest id). By convention the map's sea/
-    /// background style sits here, so its color fills the screen before any
-    /// geometry is drawn. Resolved once in [`MapTables::parse`]; returns `None`
+    /// `z_index`, ties broken by lowest id). By convention the map's backdrop
+    /// style sits here, so its color fills the screen before any geometry is
+    /// drawn. Resolved once in [`MapTables::parse`]; returns `None`
     /// only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
         self.tables.backdrop.as_ref()

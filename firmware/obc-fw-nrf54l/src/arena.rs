@@ -1,8 +1,9 @@
 //! The **scratch arena** (issue #1146, P2) — one block of RAM, three arms, one owner at a time.
 //!
 //! Three of the board's largest resident blocks are never live at the same moment, and each used to
-//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, 117,408 B
-//! since #1146 P3 grew the frame caps into the dividend; 92,320 B before it),
+//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, below the
+//! 128 KiB USB arm; its recovered screen-point bytes are reinvested so the two arms now match
+//! exactly, target-side size reported and compile-time checked below),
 //! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
 //! ~80.6 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
 //! two 64 KiB halves = 128 KiB since the upload retune; 16 KiB when this module was written). This
@@ -64,7 +65,9 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   Today USB is the maximum; render has 13,664 B of free headroom and nav 50,488 B.
+//!   USB set that ceiling; the render arm deliberately spends all of its former headroom on visible
+//!   frame capacity and now matches it exactly. The resource report and assertion below keep that
+//!   accounting literal.
 //! - Growing the **maximum** arm (today: USB) costs the full delta, 1:1, exactly as before. Its
 //!   128 KiB size is deliberate: two 64 KiB halves let normal uploads issue 128-block writes.
 //!
@@ -157,8 +160,8 @@ pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
 // budget assert would then name the wrong arm, and the next reviewer would price a free growth as a
 // 1:1 one (or the reverse). Fail the build rather than let the docs go quietly stale.
 const _: () = assert!(
-    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES <= ARENA_BYTES && ARENA_BYTES == USB_ARM_BYTES,
-    "the USB arm is no longer the largest — the max-of-arms cliff moved; re-read the growth-asymmetry \
+    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES == ARENA_BYTES && ARENA_BYTES == USB_ARM_BYTES,
+    "the render and USB arms no longer exactly share the arena ceiling — re-read the growth-asymmetry \
      notes in arena.rs and at main.rs's budget assert before re-pinning anything"
 );
 

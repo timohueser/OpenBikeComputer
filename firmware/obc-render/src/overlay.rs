@@ -107,7 +107,7 @@ impl RenderScratch {
             None => {
                 const R: f32 = 7.0;
                 let diamond = [round_pt(cx, cy - R), round_pt(cx + R, cy), round_pt(cx, cy + R), round_pt(cx - R, cy)];
-                fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
+                fill_polygon(target, &diamond, &[4usize], color, w, h, &mut self.draw.xs);
             }
         }
     }
@@ -144,8 +144,10 @@ impl RenderScratch {
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let view = vp.visible_bbox();
-        // Split the borrow so the fills can take `xs` while we build the polyline in `screen`.
-        let DrawScratch { screen, xs } = &mut self.draw;
+        // Split the borrow so the fills can take `xs` while we build the polyline in the
+        // phase-shared projected-point buffer.
+        let DrawScratch { points, xs } = &mut self.draw;
+        let screen = points.screen();
         let (mut route_chunks, mut route_points, mut route_drawn) = (0usize, 0usize, 0usize);
 
         // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
@@ -219,8 +221,9 @@ impl RenderScratch {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let projected = pts.into_iter().map(|(lon, lat)| vp.project(lon, lat));
         // The thick-segment fill scan-converts from a stack edge record, so the stroker needs only
-        // `screen`; `xs` stays reserved for the general polygon/chevron fills elsewhere.
-        let DrawScratch { screen, .. } = &mut self.draw;
+        // projected points; `xs` stays reserved for the general polygon/chevron fills elsewhere.
+        let DrawScratch { points, .. } = &mut self.draw;
+        let screen = points.screen();
         Stroker::new(target, screen, color, weight, w, h).stroke(projected);
     }
 }
@@ -282,7 +285,7 @@ pub(crate) fn fill_chevron<D>(
         round_pt(c.0 - fx * back + rx * half, c.1 - fy * back + ry * half),
         round_pt(c.0 - fx * back - rx * half, c.1 - fy * back - ry * half),
     ];
-    fill_polygon(target, &tri, &[3], color, w, h, xs);
+    fill_polygon(target, &tri, &[3usize], color, w, h, xs);
 }
 
 #[cfg(test)]
