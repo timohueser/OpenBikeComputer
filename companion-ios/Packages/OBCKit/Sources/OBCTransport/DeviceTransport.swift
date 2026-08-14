@@ -24,17 +24,25 @@ public enum RetentionWriteOutcome: Equatable, Sendable {
     case unsupported
 }
 
-/// The spine of the app (Tier 1 — semantic). **Every view model depends only on
-/// this protocol**, never on CoreBluetooth. Two conformers:
+/// The device configuration control plane, separated from link and object
+/// transport so config-only policies do not acquire unrelated capabilities.
+public protocol DeviceConfiguration: Sendable {
+    /// Read the device config blob.
+    func readConfig() async throws -> DeviceConfig
+    /// Write the device config blob — including device rename (H3, Delta 1).
+    func writeConfig(_ config: DeviceConfig) async throws
+}
+
+/// The aggregate device boundary (Tier 1 — semantic), composed from the
+/// capability protocols that focused policies and view models use directly.
+/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
 ///
 ///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
 ///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
 ///
-/// Everything a screen (B2–B11) needs must be expressible here — if a screen needs
-/// data, it comes through `DeviceTransport`, never a CoreBluetooth detour.
-/// `Sendable` so conformers can be actors or `@unchecked Sendable` classes and
-/// still cross concurrency domains.
-public protocol DeviceTransport: Sendable {
+/// Everything a screen (B2–B11) needs must be expressible through these
+/// capabilities. `Sendable` lets conformers cross concurrency domains.
+public protocol DeviceTransport: DeviceConfiguration {
     // MARK: Lifecycle
 
     /// Link lifecycle. **Replays the latest** value to late subscribers (a fresh
@@ -88,11 +96,6 @@ public protocol DeviceTransport: Sendable {
     /// also audit catalogs at low cadence while connected because a BLE notify
     /// can be dropped without replay.
     var storeChanges: AsyncStream<StoreChanged> { get }
-    /// Read the device config blob.
-    func readConfig() async throws -> DeviceConfig
-    /// Write the device config blob — including device rename (H3, Delta 1).
-    func writeConfig(_ config: DeviceConfig) async throws
-
     // MARK: Data plane (bulk objects — progress + cancel + restart)
     //
     // Ids on this plane are **device-namespace** (`DeviceObjectID`, spec §4.1 —
