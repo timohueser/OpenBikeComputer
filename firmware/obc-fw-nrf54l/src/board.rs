@@ -1,8 +1,8 @@
 //! nRF54LM20-DK pin, electrical, peripheral, and interrupt contract.
 //!
 //! Pin names use embassy-nRF's `P{port}_{pin}` form. P2 is the fast MCU domain used by the FLPR;
-//! P1 is the PERI domain; P0 is the low-power domain. Data-path constructors stay beside their
-//! owning driver; boot hardware policy, every board assignment, and interrupt bindings live here.
+//! P1 is the PERI domain; P0 is the low-power domain. Service/task composition stays beside its
+//! owning driver; boot policy, move-only input construction, board assignments and IRQ policy live here.
 //!
 //! ## User input and diagnostics
 //!
@@ -118,3 +118,43 @@ macro_rules! watchdog {
     }};
 }
 pub(crate) use watchdog;
+
+// The move-only HAL values stay constructed at their original call sites: this macro is only the
+// board-owned input assignment/electrical policy, with no call frame, singleton, or reordered init.
+macro_rules! input_hardware {
+    (buttons $p:ident) => {{
+        use embassy_nrf::interrupt::InterruptExt as _;
+        let buttons = obc_platform::ButtonInput::new(
+            embassy_nrf::gpio::Input::new($p.P1_26, embassy_nrf::gpio::Pull::Up),
+            embassy_nrf::gpio::Input::new($p.P1_09, embassy_nrf::gpio::Pull::Up),
+            embassy_nrf::gpio::Input::new($p.P0_05, embassy_nrf::gpio::Pull::Up),
+            embassy_nrf::gpio::Input::new($p.P1_08, embassy_nrf::gpio::Pull::Up),
+        );
+        embassy_nrf::interrupt::SWI01.set_priority(embassy_nrf::interrupt::Priority::P3);
+        buttons
+    }};
+    (uart $p:ident, $rx_buf:expr, $tx_buf:expr) => {
+        embassy_nrf::buffered_uarte::BufferedUarte::new(
+            $p.SERIAL20,
+            $p.P1_17,
+            $p.P1_16,
+            $crate::board::UartIrqs,
+            embassy_nrf::uarte::Config::default(),
+            $rx_buf,
+            $tx_buf,
+        )
+    };
+    (sensors $p:ident, $tx_buf:expr) => {{
+        use embassy_nrf::interrupt::InterruptExt as _;
+        let mut config = embassy_nrf::twim::Config::default();
+        config.frequency = embassy_nrf::twim::Frequency::K400;
+        config.sda_pullup = true;
+        config.scl_pullup = true;
+        let twim =
+            embassy_nrf::twim::Twim::new($p.SERIAL22, $crate::board::SensorIrqs, $p.P1_04, $p.P1_03, config, $tx_buf);
+        embassy_nrf::interrupt::SERIAL22.set_priority(embassy_nrf::interrupt::Priority::P3);
+        let txready = embassy_nrf::gpio::Input::new($p.P1_05, embassy_nrf::gpio::Pull::Down);
+        (twim, txready)
+    }};
+}
+pub(crate) use input_hardware;
