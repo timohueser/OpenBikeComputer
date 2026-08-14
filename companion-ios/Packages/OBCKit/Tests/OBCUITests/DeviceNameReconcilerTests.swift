@@ -97,10 +97,11 @@ final class DeviceNameReconcilerTests: XCTestCase {
 
 // MARK: - Test doubles (shared with SettingsModelTests / MainScreenModelTests)
 
-/// Call-counting `DeviceTransport` stand-in for the config plane: serves one
-/// config, records successful writes, and can fail either leg once. Everything
-/// else is inert (the reconciler must never touch it).
-final class ConfigSpyTransport: DeviceTransport, @unchecked Sendable {
+/// Call-counting link/config/battery/bonding stand-in: serves one config,
+/// records successful writes, and can fail either leg once. The Settings tests
+/// also use its inert status and bonding surfaces.
+final class ConfigSpyTransport: DeviceLink, DeviceBattery, DeviceConfiguration, DeviceBonding,
+    @unchecked Sendable {
     private let lock = NSLock()
     private var _config: DeviceConfig
     private var _readConfigCalls = 0
@@ -144,27 +145,16 @@ final class ConfigSpyTransport: DeviceTransport, @unchecked Sendable {
         }
     }
 
-    // Inert remainder — a connected link, nothing stored.
+    // Inert remainder — a connected link with no battery sample.
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
     var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo {
         DeviceInfo(name: config.name, firmwareVersion: "0.0.0")
     }
-    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
-    func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        .immediatelyFinished(.failed(.notConnected))
-    }
-    func deleteRoute(_ id: DeviceObjectID) async throws {}
-    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 }
 
 /// In-memory `BondStore` with real save/load semantics — unlike `MockBondStore`
