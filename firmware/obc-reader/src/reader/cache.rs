@@ -269,12 +269,12 @@ impl MapCache {
     /// Allocate a fresh, empty cache **directly on the heap**, never on the stack.
     ///
     /// The cache is ≈37 KB, so `Box::new(MapCache::new())` first builds the whole value on the
-    /// stack and then copies it — and a debug build walks [`MapCacheInner::new`]'s `zeroed()`
+    /// stack and then copies it — and a debug build walks `MapCacheInner::new`'s `zeroed()`
     /// interior across the stack several more un-elided-copy times — a silent overflow on a
     /// small stack (the web demo's default 1 MiB wasm shadow stack, PR #661). Like `obc-route`'s
     /// `NavScratch::new_boxed`, this owns the crate-private invariant that a zeroed allocation
     /// *is* [`MapCache::new`]:
-    /// - a zeroed [`MapCacheInner`] is exactly [`MapCacheInner::new`] (which zero-inits — see
+    /// - a zeroed `MapCacheInner` is exactly `MapCacheInner::new` (which zero-inits — see
     ///   the field-by-field argument there);
     /// - the `RefCell` around it keeps its borrow state in a `Cell<isize>` whose *not borrowed*
     ///   value is 0, so the zeroed wrapper reads as unborrowed. That is a `core` implementation
@@ -290,7 +290,7 @@ impl MapCache {
     }
 
     /// Drop every resident chunk, index block, and expanded walk. Slots are keyed only inside one
-    /// parse generation, so [`Reader::new`](super::Reader::new) also guards map switches via [`MapCache::adopt`]. Cheap
+    /// parse generation, so [`Reader::new`](super::Reader::new) also guards map switches via `MapCache::adopt`. Cheap
     /// — only validity metadata and counters are touched, not the backing buffers.
     pub fn clear(&self) -> Result<(), CacheError> {
         self.inner.try_borrow_mut().map_err(|_| CacheError::Busy)?.clear();
