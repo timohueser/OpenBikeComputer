@@ -4,7 +4,7 @@
 //! where the state is drawn (Home / the menu title bar / the Bluetooth screen), never on a riding
 //! view or a static screen whose status is unchanged.
 
-use obc_app::{App, AppState, BleLink, BleStatus, Dirty, HostCommand, HostMailbox};
+use obc_app::{App, AppState, BleLink, BleStatus, DeviceStatus, Dirty, HostCommand, HostMailbox};
 
 mod common;
 
@@ -30,6 +30,12 @@ fn set_ble_status_records_link_paired_and_passkey() {
     assert_eq!(app.ble_passkey(), None, "no passkey at boot");
 
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: true });
+    assert_eq!(
+        app.state.device_status(),
+        DeviceStatus { battery_pct: 75, ble_link: BleLink::Connected, ble_paired: true },
+        "the focused status projects only the small platform facts",
+    );
+    assert!(core::mem::size_of::<DeviceStatus>() <= 4, "the per-read snapshot stays register-sized");
     assert!(app.state.ble_connected(), "connection is recorded on AppState (the indicator reads it)");
     assert!(app.state.ble_paired, "the stored-bond flag rides the seam (the Paired row reads it)");
     assert_eq!(app.ble_passkey(), Some(123_456), "passkey rides the seam (P2 consumes it)");
