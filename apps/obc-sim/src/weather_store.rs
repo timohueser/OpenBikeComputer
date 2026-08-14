@@ -1,7 +1,7 @@
 //! Host filesystem adapter for the production OBCW reader/slot selector.
 //!
-//! WX14 will attach transfers and controls. WX7 deliberately adds only the truthful file seam so
-//! simulator tests and firmware boot already make byte-for-byte identical A/B decisions.
+//! The simulator's companion lifecycle writes this store; selection remains the same pure
+//! `obc-weather` policy the firmware uses so both make byte-for-byte identical A/B decisions.
 
 #![allow(dead_code)]
 
