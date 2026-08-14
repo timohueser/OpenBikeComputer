@@ -14,7 +14,7 @@ import OBCTransport
 ///   • `.failed`      — the transfer failed for good (H4 no link, or the
 ///                      device rejected the object)
 ///
-/// The drop signal is `DeviceTransport.state` → `.outOfRange` **or**
+/// The drop signal is `DeviceLink.state` → `.outOfRange` **or**
 /// `.disconnected` (both are a drop, matching `MainScreenModel`'s sync watch) —
 /// the handle's progress stream stays open, stalled (see `TransferHandle`).
 /// Cancel aborts the transfer; the sheet leaves no upload running behind it
@@ -87,7 +87,7 @@ public final class UploadSheetModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink & DeviceObjects
     private let blob: RouteBlob
     private let timing: Timing
     /// Fires once when the upload completes, carrying the **device-assigned object
@@ -116,7 +116,7 @@ public final class UploadSheetModel {
     @ObservationIgnored private var linkUp = true
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink & DeviceObjects,
         blob: RouteBlob,
         deviceName: String,
         retention: Retention = .appDefault,
