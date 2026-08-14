@@ -185,11 +185,12 @@ impl MenuScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        let ble = rx.state.ble_connected();
+        let device = rx.state.device_status();
+        let ble = device.ble_connected();
         let txt = MenuText::resolve(rx);
         // The title bar's right readout: the battery percentage, in Home's `NN%` formatting.
         let mut batt: heapless::String<8> = heapless::String::new();
-        let _ = write!(batt, "{}%", rx.state.battery_pct);
+        let _ = write!(batt, "{}%", device.battery_pct);
         if COMPASS {
             self.dial.draw(cv, rx.w, rx.h, ble, &batt, txt.title, &txt.items, CompassIcons::Main);
         } else {

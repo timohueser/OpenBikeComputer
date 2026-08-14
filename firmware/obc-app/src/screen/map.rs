@@ -229,7 +229,7 @@ impl MapScreen {
         // Low-battery cue (top-left corner): a small warning-red battery glyph only when the charge
         // has dropped below LOW_BATTERY_PCT — nothing above it, so there's no permanent map battery
         // indicator. Shown in pan mode too (the top-right corner belongs to the pan compass rose).
-        if rx.state.battery_pct < LOW_BATTERY_PCT {
+        if rx.state.device_status().battery_pct < LOW_BATTERY_PCT {
             draw_low_battery(cv);
         }
 
