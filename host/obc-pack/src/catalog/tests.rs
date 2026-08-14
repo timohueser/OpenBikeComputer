@@ -13,6 +13,8 @@ use super::*;
 use obc_formats::io::put_i32;
 use obc_formats::obcm::{HEADER_LEN, MAGIC};
 
+use crate::grid::id_width;
+
 // --- fixtures ------------------------------------------------------------------------------
 
 /// A scratch directory that removes itself (the packer
@@ -496,18 +498,18 @@ fn cell_index_doc(g: &GeneratedCatalog, band: &str) -> CellIndexDocument {
 
 #[test]
 fn non_canonical_cell_ids_are_refused() {
-    for bad in [
-        "18/1204",            // not three parts
-        "18/1204/1052/3",     // four
-        "9/1204/1052",        // cell size below 2^10
-        "29/1204/1052",       // above 2^28
-        "18/204/1052",        // truncated padding
-        "18/01204/1052",      // over-padded
-        "18/2048/1052",       // off the grid (2^29/2^18 = 2048 rows)
-        "18/12o4/1052",       // not a number
-        "eighteen/1204/1052", // nor is that
+    for (bad, refusal) in [
+        ("18/1204", "cell id `18/1204` is not `<log2>/<i>/<j>`"),
+        ("18/1204/1052/3", "cell id `18/1204/1052/3` is not `<log2>/<i>/<j>`"),
+        ("9/1204/1052", "cell id `9/1204/1052`: cell size 2^9 µdeg is outside 2^10..=2^28"),
+        ("29/1204/1052", "cell id `29/1204/1052`: cell size 2^29 µdeg is outside 2^10..=2^28"),
+        ("18/204/1052", "cell id `18/204/1052`: `i` must be 4 digits, zero-padded (got `204`)"),
+        ("18/01204/1052", "cell id `18/01204/1052`: `i` must be 4 digits, zero-padded (got `01204`)"),
+        ("18/2048/1052", "cell id `18/2048/1052`: `i` = 2048 is off the grid (0..2048)"),
+        ("18/12o4/1052", "cell id `18/12o4/1052`: `i` must be 4 digits, zero-padded (got `12o4`)"),
+        ("eighteen/1204/1052", "cell id `eighteen/1204/1052`: `eighteen` is not a 1–2 digit cell size"),
     ] {
-        assert!(parse_strict_id(bad).is_err(), "`{bad}` must be refused");
+        assert_eq!(parse_strict_id(bad).unwrap_err(), refusal, "`{bad}` refusal changed");
     }
 }
 
