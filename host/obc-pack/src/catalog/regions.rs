@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::cells::{BandIndex, IndexedCell};
+use super::terrain::{IndexedTerrain, TerrainIndex};
 use super::{
-    boundary, document_json, file_name, parse_strict_id, sorted_entries, validate_id, Boundary, IndexedTerrain,
-    RegionCellsDocument, RegionEntry, RegionTerrain, Satellite, SchemaDoc, TerrainIndex, CATALOG_SCHEMA_VERSION,
-    SCHEMA_DOC,
+    boundary, document_json, file_name, parse_strict_id, sorted_entries, validate_id, Boundary, RegionCellsDocument,
+    RegionEntry, RegionTerrain, Satellite, SchemaDoc, CATALOG_SCHEMA_VERSION, SCHEMA_DOC,
 };
 
 /// A boundary bigger than this is worth a warning: §7 budgets "a few KB" per
