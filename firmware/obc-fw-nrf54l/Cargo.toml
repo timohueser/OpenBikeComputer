@@ -68,10 +68,9 @@ debug-uart = ["obc-platform/debug-link"]
 # Zero-CPU hardware COM driver (issue #219): generate the LS021 `VCOM`/`VB`/`VA` square wave from a
 # **TIMER → DPPI → GPIOTE** toggle chain instead of the M33 `com_task` GPIO toggle, so the panel's
 # anti-DC-bias COM keeps alternating with **no CPU wakes** and the M33 can WFI between events — the
-# lever that turns the event-driven loop into a real idle-power win. Requires the three COM lines on
-# **GPIOTE-capable pins** (P1/P3 → GPIOTE20, or P0 → GPIOTE30); on the DK they're stuck on P2 (no
-# GPIOTE), so this is **off by default** (the DK keeps `com_task`) and is the path the production
-# board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
+# lever that turns the event-driven loop into a real idle-power win. It owns the same canonical
+# P1.22/P1.23/P1.24 COM nets as the default driver, through GPIOTE20. This stays **off by default**
+# until its waveform is verified on glass and a logic analyzer. See `src/com_hw.rs` + `src/board.rs`.
 com-hw = []
 
 # Developer/CI-only compile-time allocation report. This adds a self-describing
