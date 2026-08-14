@@ -218,11 +218,22 @@ pub fn publish(
         return Ok(report(warnings));
     }
 
+    publish_planned_objects(store, &objects, publish_opts.verbose)?;
+    Ok(report(warnings))
+}
+
+/// Commit an already-built plan without knowing how the catalog was generated.
+///
+/// This is the publication boundary #1293 will share with the weather bakery: all
+/// immutable/mutable content is uploaded, every destination size is proved, and
+/// only then is the single manifest object written. Keeping that ordering in one
+/// function also gives the refusal contract a credential-free test seam.
+fn publish_planned_objects(store: &dyn ObjectStore, objects: &[PlannedObject], verbose: bool) -> Result<(), String> {
     let (root_object, content) = objects.split_last().ok_or("nothing to publish")?;
     debug_assert_eq!(root_object.kind, ObjectKind::Manifest);
     let content_bytes: u64 = content.iter().map(|object| object.bytes).sum();
     let started = std::time::Instant::now();
-    if publish_opts.verbose {
+    if verbose {
         eprintln!(
             "uploading {} content objects ({}) before the catalog root",
             content.len(),
@@ -231,12 +242,12 @@ pub fn publish(
     }
     let mut completed_bytes = 0_u64;
     for (index, object) in content.iter().enumerate() {
-        if publish_opts.verbose {
+        if verbose {
             eprintln!("upload [{:>3}/{}] {}  {}", index + 1, content.len(), human_bytes(object.bytes), object.key);
         }
         store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
         completed_bytes = completed_bytes.saturating_add(object.bytes);
-        if publish_opts.verbose {
+        if verbose {
             eprintln!(
                 "       done  {} / {}  {}  ETA {}",
                 human_bytes(completed_bytes),
@@ -246,11 +257,11 @@ pub fn publish(
             );
         }
     }
-    if publish_opts.verbose {
+    if verbose {
         eprintln!("verifying {} remote objects before replacing catalog.json", content.len());
     }
     for (index, object) in content.iter().enumerate() {
-        if publish_opts.verbose {
+        if verbose {
             eprintln!("verify [{:>3}/{}] {}", index + 1, content.len(), object.key);
         }
         match store.head(&object.key)? {
@@ -264,14 +275,14 @@ pub fn publish(
             None => return Err(format!("{}: not fetchable after upload — refusing to swap the root in", object.key)),
         }
     }
-    if publish_opts.verbose {
+    if verbose {
         eprintln!("root             {}  {}", human_bytes(root_object.bytes), root_object.key);
     }
     store.put(root_object).map_err(|e| format!("{}: {e}", root_object.key))?;
-    if publish_opts.verbose {
+    if verbose {
         eprintln!("published catalog root last; total elapsed {}", duration(started.elapsed()));
     }
-    Ok(report(warnings))
+    Ok(())
 }
 
 fn percent(done: u64, total: u64) -> String {
@@ -652,6 +663,78 @@ mod tests {
                 ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret.into()),
             ],
             program: PathBuf::from("rclone"),
+        }
+    }
+
+    struct RecordingStore {
+        events: std::cell::RefCell<Vec<String>>,
+        heads: std::collections::BTreeMap<String, Option<u64>>,
+    }
+
+    impl RecordingStore {
+        fn new(heads: impl IntoIterator<Item = (&'static str, Option<u64>)>) -> Self {
+            Self {
+                events: std::cell::RefCell::new(Vec::new()),
+                heads: heads.into_iter().map(|(key, bytes)| (key.to_string(), bytes)).collect(),
+            }
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.events.borrow().clone()
+        }
+    }
+
+    impl ObjectStore for RecordingStore {
+        fn describe(&self) -> String {
+            "recording store".to_string()
+        }
+
+        fn put(&self, object: &PlannedObject) -> Result<(), String> {
+            self.events.borrow_mut().push(format!("put {}", object.key));
+            Ok(())
+        }
+
+        fn head(&self, key: &str) -> Result<Option<u64>, String> {
+            self.events.borrow_mut().push(format!("head {key}"));
+            Ok(self.heads.get(key).copied().unwrap_or(None))
+        }
+    }
+
+    fn recorded_object(key: &str, bytes: u64, kind: ObjectKind) -> PlannedObject {
+        PlannedObject { key: key.to_string(), path: PathBuf::new(), bytes, kind }
+    }
+
+    #[test]
+    fn publication_uploads_all_content_then_proves_it_then_swaps_the_root() {
+        let store = RecordingStore::new([("cells/a.obcm", Some(11)), ("regions/a.json", Some(7))]);
+        let objects = [
+            recorded_object("cells/a.obcm", 11, ObjectKind::Pinned),
+            recorded_object("regions/a.json", 7, ObjectKind::Mutable),
+            recorded_object("catalog.json", 5, ObjectKind::Manifest),
+        ];
+
+        publish_planned_objects(&store, &objects, false).expect("publish");
+
+        assert_eq!(
+            store.events(),
+            ["put cells/a.obcm", "put regions/a.json", "head cells/a.obcm", "head regions/a.json", "put catalog.json",]
+        );
+    }
+
+    #[test]
+    fn destination_proof_refusals_leave_the_root_untouched() {
+        for (remote, refusal) in [
+            (None, "cells/a.obcm: not fetchable after upload — refusing to swap the root in"),
+            (Some(9), "cells/a.obcm: published as 9 bytes but the tree has 11 — refusing to swap the root in"),
+        ] {
+            let store = RecordingStore::new([("cells/a.obcm", remote)]);
+            let objects = [
+                recorded_object("cells/a.obcm", 11, ObjectKind::Pinned),
+                recorded_object("catalog.json", 5, ObjectKind::Manifest),
+            ];
+
+            assert_eq!(publish_planned_objects(&store, &objects, false), Err(refusal.to_string()));
+            assert_eq!(store.events(), ["put cells/a.obcm", "head cells/a.obcm"]);
         }
     }
 
