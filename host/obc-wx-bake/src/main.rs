@@ -11,12 +11,6 @@
 //! with nothing selectable in it — one generation, one grid, a shard presence bitmap. Which source
 //! painted which cell is baker configuration and reaches nobody.
 //!
-//! There used to be one subcommand per adapter, publishing four products at four resolutions into
-//! a `wx/v1` tree that clients chose between by tier. #1246 deleted all of it, and the isolation
-//! that arrangement bought — one broken upstream costing only its own product's freshness — goes
-//! with it by construction: the mosaic needs every source's cells, so a cycle either publishes a
-//! complete dataset or publishes nothing and leaves the previous generation standing.
-//!
 //! Every invocation is idempotent and stateless: state lives only in the published manifest. Two
 //! invocations must never overlap; the shipped units serialize every instance behind one `flock`.
 //! `--now` exists for deterministic replays; production timers omit it. `--store <dir>` publishes
@@ -47,10 +41,8 @@ fn main() {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     if command == "schema" {
-        // Reject rather than ignore. `schema --mosaic` used to mean "the canonical dataset's
-        // schema, not the multi-product one"; there is one schema now, so the flag would be muscle
-        // memory getting the right answer for the wrong reason — and the next flag someone invents
-        // would too.
+        // Reject rather than ignore unknown flags so the next flag someone invents cannot appear
+        // to work while being silently discarded.
         if let Some(unknown) = args.get(1) {
             return Err(format!("schema takes no arguments (got {unknown})\n{}", usage()));
         }

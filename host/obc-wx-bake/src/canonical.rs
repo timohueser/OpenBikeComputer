@@ -5,7 +5,7 @@
 //! 0.01 degree lattice, overlapping sources are resolved per cell by one ordered priority table
 //! ([`crate::source::MOSAIC_PRIORITY`]), and what leaves the bakery is a single provider-agnostic
 //! dataset: 24 shards x 9 frames of OBCG, all on the same lattice, all at the same cell size. It
-//! is the only thing the bakery publishes; #1246 deleted the per-product path beside it.
+//! is the only thing the bakery publishes.
 //!
 //! ## Why the resample is here and not in each adapter
 //!
@@ -165,7 +165,7 @@ const FULL_CIRCLE_UDEG: i64 = 360_000_000;
 ///
 /// GFS's *window* does not — the adapter drops the antimeridian column, because a `GridGeometry`
 /// window cannot cross ±180° — but its *grid* does: the column east of the last one is the first
-/// one again. Under the per-product path that distinction was invisible. Under one global lattice
+/// one again. Under one global lattice
 /// it is a 25-column stripe of permanent no-data through Fiji, so the mosaic has to know.
 pub fn is_globally_periodic(source: &GridGeometry) -> bool {
     let span = i64::from(source.width) * i64::from(source.cell_lon_udeg);

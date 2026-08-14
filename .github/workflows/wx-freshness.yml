@@ -20,9 +20,7 @@ name: Weather freshness
 #                          What it catches is a deploy that went backwards: an older binary, or a
 #                          build missing a source, silently coarsening the dataset over whole regions
 #                          while every freshness check stays green. Keep it in step with
-#                          `source::MOSAIC_PRIORITY`. (The old OBC_WX_EXPECT named v1 products and
-#                          has nothing left to mean; the probe ignores `--expect` rather than
-#                          crashing on a variable someone forgot to delete.)
+#                          `source::MOSAIC_PRIORITY`.
 #   vars.OBC_WX_PROBE_ARGS optional extra freshness_probe.py arguments (e.g. a wider grace while
 #                          an upstream is known-broken). Normally empty.
 #
