@@ -27,8 +27,8 @@
 //! MPSL requires the HF **crystal**; LFCLK runs the internal **RC** with MPSL calibration, *not* the
 //! 32 k crystal: the nRF54L's XO internal load caps are never programmed by embassy-nrf 0.11 or
 //! nrf-mpsl, so the LFXO runs off-frequency and every connection dies at establishment with HCI 0x3E
-//! (advertising works — the failure needs a sync anchor). `main.rs` sets both knobs in its `ble`-build
-//! boot config.
+//! (advertising works — the failure needs a sync anchor). [`crate::board::init!`] sets both knobs in
+//! its `ble`-build boot config.
 
 mod control;
 mod data_plane;
