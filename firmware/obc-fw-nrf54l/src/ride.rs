@@ -194,16 +194,25 @@ pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     app.set_routes_with_meta(&catalog, storage.route_ids(), &metas);
 }
 
-/// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
-/// durable object id + its synced flag (from the `/tracks` synced-set sidecar). Called at boot and on
-/// every store-changed edge (a finished ride, an on-device or phone-side ride delete). Its own
-/// `#[inline(never)]` frame for the same stack reason as [`load_routes`]: the ride catalog is popped
-/// on return, never resident under the deep render path.
+/// Perform normal boot's one media scan that seeds the canonical stored-ride repository before the
+/// UI projection and link publication. Map recovery performs the corresponding scan at its own
+/// composition point; hydrate deliberately does not repeat either scan. Runtime ride edges
+/// mutate/rescan the repository before advertising their revision.
 #[inline(never)]
-pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
+pub(crate) fn scan_rides_at_boot(storage: &mut sd::Storage, catalog: &mut sd::StoredRideCatalog) {
+    storage.rides(catalog).scan();
+}
+
+/// Project the canonical stored-ride repository into the app's newest-rides menu, carrying each
+/// durable id + synced flag. Runtime store edges call this without rescanning media, so route-only
+/// changes cannot mutate the companion-visible ride catalog behind its revision. Its own
+/// `#[inline(never)]` frame keeps the menu summaries and ids out of the long-lived ride-loop frame.
+#[inline(never)]
+pub(crate) fn load_rides(storage: &mut sd::Storage, ride_catalog: &mut sd::StoredRideCatalog, app: &mut App) {
     let mut catalog = heapless::Vec::new();
-    storage.scan_rides_into(&mut catalog);
-    app.set_rides(&catalog, storage.ride_ids());
+    let mut ids = heapless::Vec::new();
+    storage.rides(ride_catalog).snapshot_into(&mut catalog, &mut ids);
+    app.set_rides(&catalog, &ids);
     // Feed the **full** compact ride-retention inventory (finding #876-2): every synced ride, not
     // just the newest-32 the menu shows, so the auto-delete sweep + eager stamp reach older synced
     // rides. Independent of the display catalog above; one extra synced-set read.
@@ -241,11 +250,11 @@ pub(crate) fn load_trips(storage: &mut sd::Storage, app: &mut App) {
 /// are popped on return — never resident in [`run_app`]'s poll frame under the deep render path
 /// (the fill runs sequentially with, never beneath, the render).
 #[inline(never)]
-fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
+fn fill_ride_profile(storage: &mut Option<sd::Storage>, ride_catalog: &mut sd::StoredRideCatalog, app: &mut App) {
     // The `LoadRideTrack` derived fill level, answered off the pure predicate (#812): nothing is
     // consumed, so a missed pass re-asks and the cue clears the moment `set_ride_profile` lands.
     let Some(id) = app.ride_track_request() else { return };
-    let profile = storage.as_mut().and_then(|s| s.ride_profile_by_id(id));
+    let profile = storage.as_mut().and_then(|s| s.rides(ride_catalog).profile(id));
     if profile.is_none() {
         defmt::warn!("ride profile: fill for id {=u16} failed — the detail's band stays empty", id);
     }
@@ -253,7 +262,7 @@ fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
     // The track-shape preview (#678 rework 3) rides the same drain: a second forward stream of
     // the `RD{id}.ORD` into the ≤ 64-point resident (a 512 B copy + the ~448 B block buffer in
     // this same popped frame — small next to the profile builder's column scratch above).
-    let preview = storage.as_mut().map(|s| s.ride_preview_by_id(id)).unwrap_or_default();
+    let preview = storage.as_mut().map(|s| s.rides(ride_catalog).preview(id)).unwrap_or_default();
     app.set_ride_preview(&preview);
 }
 
@@ -1355,7 +1364,7 @@ pub(crate) async fn run_app(
                     // is the DR6 stale-ref case — the bootloader re-verifies the staged image
                     // after the reset regardless.
                     let mut store_guard = shared.lock().await;
-                    let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+                    let SharedStore { storage, settings: settings_store, .. } = &mut *store_guard;
                     match storage.as_mut() {
                         // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed
                         // either way). Absent ⇒ `run_install` re-scans (the `dfu-install` path).
@@ -1377,7 +1386,7 @@ pub(crate) async fn run_app(
                 // (the menu greys the row mid-ride anyway). One short store guard of its own.
                 let result = {
                     let mut store_guard = shared.lock().await;
-                    let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+                    let SharedStore { storage, settings: settings_store, .. } = &mut *store_guard;
                     match storage.as_mut() {
                         Some(s) => crate::dfu::run_scan(s, settings_store, &mut wdt),
                         None => Err(obc_app::DfuScanError::NotFound),
@@ -1412,7 +1421,7 @@ pub(crate) async fn run_app(
         let (rendered, dirty_map, hold_p, store_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_store = Instant::now();
-            let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+            let SharedStore { storage, rides, settings: settings_store } = &mut *store_guard;
 
             // ── Live route catalog (#450), on the store-changed edge only ──
             // A BLE commit/delete moved `/routes` under the app: re-run the boot scan (same
@@ -1436,9 +1445,9 @@ pub(crate) async fn run_app(
                     s.reconcile_route(None);
                     load_routes(s, app);
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
-                    // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
-                    // its highlight by id (#454). Cheap when nothing ride-related moved.
-                    load_rides(s, app);
+                    // flipped a synced flag): project the canonical repository into the Rides menu,
+                    // which remaps its highlight by id (#454). No route-only edge rescans ride media.
+                    load_rides(s, rides, app);
                     // …and trips (epic #526 TR4): a trip upload/delete moved the trip store, or a member
                     // route delete changed a trip's resolvable stage totals — rescan `/routes` for trips
                     // and re-feed the folders (resolved against the freshly-scanned route catalog above).
@@ -1530,7 +1539,7 @@ pub(crate) async fn run_app(
             // An open detail wants its recorded track profiled for the elevation band: stream the
             // `RD{id}.ORD` once into the app's resident buffer, in this pass, under the store lock —
             // sequential with (never under) the render below, and a no-op on every other pass.
-            fill_ride_profile(storage, app);
+            fill_ride_profile(storage, rides, app);
 
             // ── The resumable route planner (#499), one bounded step per pass ──
             // A drained create-route request opens the reserved file, (re)writes the `.bss` planner
@@ -2333,7 +2342,7 @@ pub(crate) async fn run_app(
         let (save_pending, tail_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_tail = Instant::now();
-            let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+            let SharedStore { storage, rides: _rides, settings: settings_store } = &mut *store_guard;
 
             // ── DFU trial confirm (epic #615 S4, #619), once, at the health anchor ──
             // A frame just landed on glass and the SD mounted at boot: if this boot is a
@@ -2374,7 +2383,8 @@ pub(crate) async fn run_app(
                 crate::object_store::note_ride_saved();
                 #[cfg(not(feature = "ble"))]
                 if let Some(s) = storage.as_mut() {
-                    load_rides(s, app);
+                    s.rides(_rides).scan();
+                    load_rides(s, _rides, app);
                 }
             }
             (storage.as_ref().is_some_and(|s| s.has_pending_save()), t_tail.elapsed().as_micros())

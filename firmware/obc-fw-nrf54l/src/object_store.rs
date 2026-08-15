@@ -1,6 +1,7 @@
 //! The device object store — the board half that turns the object plane into SD files and RRAM
 //! settings. `obc-ble` owns the wire (descriptors, CRC, transfer sequencing); [`crate::sd::Storage`]
-//! owns FatFs; this module owns the **catalog semantics** between them:
+//! owns FatFs; this module coordinates route catalog state, repository-backed ride/trip catalogs,
+//! transfer state, and revision publication between them:
 //!
 //! - **Object ids**: `u16`, **durable for uploaded objects** — the id is encoded in the SD filename
 //!   (`RT{id}.OBR`, see `sd.rs`), recovered at the mount scan, and fresh ids continue monotonically
@@ -30,8 +31,9 @@
 //! Everything here is synchronous SD I/O. The SD card + RRAM store are **not** owned here — they
 //! live in the shared [`crate::SharedStore`] (the async mutex the map plane's ride loop also locks,
 //! #270), passed as a `&mut SharedStore` into each storage/settings method; a BLE plane locks it per
-//! call and drops the guard before its next `await`. `ObjectStore` itself (catalog + settings cache)
-//! stays behind a `RefCell` the BLE planes borrow **never across an `await`** (single executor).
+//! call and drops the guard before its next `await`. `ObjectStore` itself (route catalog, transfer
+//! state, and settings cache) stays behind a `RefCell` the BLE planes borrow **never across an
+//! `await`** (single executor).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -42,7 +44,7 @@ use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
 use obc_app::settings::DeviceName;
-use obc_app::{Retention, Settings, MAX_ROUTES, MAX_TRIPS};
+use obc_app::{Retention, Settings, MAX_RIDES, MAX_ROUTES, MAX_TRIPS};
 use obc_ble::{
     Crc32, ListHeader, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender, TransferControl,
     TransferStatus, TripListEntry,
@@ -366,17 +368,12 @@ pub(crate) fn take_ble_clock() -> Option<(u32, i16)> {
     BLE_CLOCK_SET.try_take()
 }
 
-/// One catalog slot: the object id and where its bytes live (routes and rides alike).
+/// One route-catalog slot: the object id and where its bytes live.
 struct ObjectSlot {
     id: u16,
     file: ShortFileName,
     byte_len: u32,
 }
-
-/// Ride catalog capacity. Rides accumulate — the device keeps every tracked ride until a (future)
-/// manual delete — so this is roomier than [`MAX_ROUTES`]; past it the newest rides stop being listed
-/// (warned at scan) until the card is tidied.
-pub const MAX_RIDES: usize = 128;
 
 /// The list-object buffer: header + one entry per slot of whichever catalog encodes **larger** (both
 /// lists stream from the same scratch — one transfer at a time). Protocol v2 gives the two lists
@@ -427,11 +424,6 @@ pub struct ObjectStore {
     /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
     routes: Vec<ObjectSlot, MAX_ROUTES>,
-    /// The stored rides: scanned at boot and re-scanned on the saved-ride edge ([`RIDE_SAVED`]) —
-    /// since the de-split the `ble` build *is* the map build, so the ride loop records new rides
-    /// mid-session and this catalog must follow (it feeds the `rideList` object the phone syncs
-    /// against).
-    rides: Vec<ObjectSlot, MAX_RIDES>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
     /// The store revision: monotonic per boot, bumped on every route/ride commit/delete.
@@ -443,8 +435,6 @@ pub struct ObjectStore {
     /// (epic #632 item 7). Equal to `routes.len()` when the card fits the cap; greater when the scan
     /// dropped the excess, which the app surfaces as a truncation warning.
     route_total: u16,
-    /// Full ride-catalog size before the [`MAX_RIDES`] cap — the `rideList` header's `total`.
-    ride_total: u16,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
     /// The **volume set** being received, if any (issue #1039). A set is several transfers, so
@@ -506,12 +496,10 @@ impl ObjectStore {
     pub const EMPTY: ObjectStore = ObjectStore {
         settings: Settings::DEFAULT,
         routes: Vec::new(),
-        rides: Vec::new(),
         next_id: 0,
         revision: 1,
         trip_revision: 1,
         route_total: 0,
-        ride_total: 0,
         list_buf: [0; LIST_BUF_LEN],
         set_upload: None,
     };
@@ -523,7 +511,9 @@ impl ObjectStore {
     pub fn hydrate(&mut self, shared: &mut SharedStore) {
         self.settings = shared.settings.load().unwrap_or_default();
         self.rescan(shared);
-        self.rescan_rides(shared);
+        // The canonical ride catalog is scanned exactly once at each composition point: normal
+        // boot does it before projecting the UI, while map recovery does it before calling
+        // `init_store`. Hydrate must not rescan behind the already-projected UI without a revision.
         // Seed the canonical trip repository for every link-store composition point. Normal boot
         // already scanned once to build the pre-link App, but map-recovery USB calls `init_store`
         // before App construction and depends on this scan for trip visibility and id recovery.
@@ -602,43 +592,6 @@ impl ObjectStore {
         defmt::info!("store: {=usize} route object(s), next id {=u16}", self.routes.len(), self.next_id);
     }
 
-    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`) — the id is durable in the filename, like
-    /// the routes'. An interrupted save (the held-back version byte, exactly
-    /// that signature) is swept; a merely unreadable file is kept off the catalog but never
-    /// deleted. Ordered as the directory lists them; the app sorts by `start_time`.
-    fn rescan_rides(&mut self, shared: &mut SharedStore) {
-        self.rides.clear();
-        self.ride_total = 0;
-        let Some(storage) = &mut shared.storage else { return };
-        let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
-        // Count the excess the cap drops (epic #632 item 7) rather than boolean-flagging it, so
-        // the `rideList` header's `total` makes the truncation visible on the wire.
-        let mut over_cap: u16 = 0;
-        storage.for_each_ride_file(|id, n| {
-            if entries.push((id, n.clone())).is_err() {
-                over_cap = over_cap.saturating_add(1);
-            }
-        });
-        if over_cap > 0 {
-            defmt::warn!("store: more than {=usize} ride objects — {=u16} not listed", MAX_RIDES, over_cap);
-        }
-        for (id, name) in &entries {
-            match storage.ride_object_info(name) {
-                Some((byte_len, _)) => {
-                    let _ = self.rides.push(ObjectSlot { id: *id, file: name.clone(), byte_len });
-                }
-                None => {
-                    if storage.is_aborted_ride_object(name) {
-                        defmt::info!("store: sweeping interrupted ride save {}", defmt::Debug2Format(name));
-                        let _ = storage.delete_ride_file(name);
-                    }
-                }
-            }
-        }
-        self.ride_total = (self.rides.len() as u16).saturating_add(over_cap);
-        defmt::info!("store: {=usize} ride object(s)", self.rides.len());
-    }
-
     /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
     /// stamps it into the `storeChanged` status message (protocol v2's sole change signal — the
     /// `objectStore` digest characteristic is retired).
@@ -698,8 +651,9 @@ impl ObjectStore {
     }
 
     /// Whether a ride object with this id exists (the download-request `notFound` check).
-    pub fn has_ride(&self, id: u16) -> bool {
-        self.rides.iter().any(|s| s.id == id)
+    pub fn has_ride(&self, shared: &mut SharedStore, id: u16) -> bool {
+        let SharedStore { storage, rides, .. } = shared;
+        storage.as_mut().is_some_and(|storage| storage.rides(rides).contains(id))
     }
 
     // ==================== config ↔ settings ====================
@@ -798,15 +752,11 @@ impl ObjectStore {
     /// `storeChanged`) so the phone's device-rides reconcile; retires the ride's synced-set flag too.
     /// `true` = deleted. Ids never reuse, so the phone's synced/tombstone bookkeeping stays coherent.
     pub fn delete_ride(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.rides.iter().position(|s| s.id == id) else { return false };
-        let Some(storage) = &mut shared.storage else { return false };
-        if !storage.delete_ride_file(&self.rides[idx].file) {
+        let SharedStore { storage, rides, .. } = shared;
+        let Some(storage) = storage else { return false };
+        if !storage.rides(rides).delete(id) {
             return false;
         }
-        // Retire the synced flag (belt-and-braces — ids never reuse) so the sidecar stays tidy.
-        storage.forget_ride_synced(id);
-        self.rides.remove(idx);
-        self.ride_total = self.ride_total.saturating_sub(1);
         self.bump_revision();
         true
     }
@@ -862,8 +812,8 @@ impl ObjectStore {
     /// download-completion mark). Returns the newly-flagged count (the `commandResult.detail`,
     /// saturating at 255).
     pub fn ack_rides(&mut self, shared: &mut SharedStore, ack: &obc_ble::AckRides) -> u8 {
-        let Some(storage) = &mut shared.storage else { return 0 };
-        let rides = &self.rides;
+        let SharedStore { storage, rides, .. } = shared;
+        let Some(storage) = storage else { return 0 };
         // `synced_at = 0` (auto-expiry epic #638, S3): the BLE plane here has no trusted-clock
         // handle, so the ride is flagged synced now with an unset stamp. S2's `setClock` precedes
         // `ackRides` on every connect, so the clock is trusted in practice — and the app's **eager**
@@ -872,7 +822,10 @@ impl ObjectStore {
         // re-feeds this flag. An old app that never sends `setClock` leaves the clock untrusted and
         // the stamp waits for the first trusted tick — the lazy fallback (invariant 5: a
         // synced-without-timestamp ride is never deleted on sight, its countdown just starts later).
-        let added = storage.mark_rides_synced(ack.iter().filter(|id| rides.iter().any(|s| s.id == *id)), 0);
+        // AckRides can carry 255 ids and may repeat them. Walk the at-most-128 canonical rows once
+        // so duplicates cannot fill a temporary and hide valid ids that appear later.
+        let cataloged = rides.matching_ids(|id| ack.iter().any(|requested| requested == id));
+        let added = storage.mark_rides_synced(cataloged.into_iter(), 0);
         if added > 0 {
             self.bump_revision();
         }
@@ -923,7 +876,10 @@ impl ObjectStore {
     /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete
     /// takes. Driven by [`wait_ride_saved`] in `ble::run`'s `ride_saved_task`.
     pub fn adopt_saved_rides(&mut self, shared: &mut SharedStore) {
-        self.rescan_rides(shared);
+        let SharedStore { storage, rides, .. } = shared;
+        if let Some(storage) = storage {
+            storage.rides(rides).scan();
+        }
         self.bump_revision();
     }
 
@@ -1204,7 +1160,7 @@ impl ObjectStore {
                     // The media commit made `candidate` visible. This is the sequence's only
                     // advance; it also owns the persisted-floor handoff, so abort/validation
                     // failures above cannot burn an id.
-                    let SharedStore { storage, settings } = shared;
+                    let SharedStore { storage, settings, .. } = shared;
                     let id = storage
                         .as_mut()
                         .expect("trip media commit requires mounted storage")
@@ -1924,10 +1880,13 @@ impl ObjectStore {
             // A ride download is the same verbatim stream — the stored `RD{id}.ORD` *is* the wire
             // object — just out of `/tracks`.
             ObjectType::Ride => {
-                let Some(slot) = self.rides.iter().find(|s| s.id == desc.object_id) else {
+                let file = {
+                    let SharedStore { storage, rides, .. } = &mut *shared;
+                    storage.as_mut().and_then(|storage| storage.rides(rides).file(desc.object_id))
+                };
+                let Some(file) = file else {
                     return Err(TransferStatus::NotFound);
                 };
-                let file = slot.file.clone();
                 self.open_object_download(shared, desc, &file, true)
             }
             // Diagnostics: render the text blob into the object buffer and stream it like a list.
@@ -1947,7 +1906,11 @@ impl ObjectStore {
     /// Render the diagnostics text (an opaque, human-readable UTF-8 blob, **not** an API) into
     /// [`Self::list_buf`], returning its byte length: identity, the persisted boot counter, uptime, the
     /// link counters, and the store's view of the card.
-    fn build_diagnostics(&mut self, shared: &SharedStore, link: &DiagInput<'_>) -> usize {
+    fn build_diagnostics(&mut self, shared: &mut SharedStore, link: &DiagInput<'_>) -> usize {
+        let ride_count = {
+            let SharedStore { storage, rides, .. } = &mut *shared;
+            storage.as_mut().map_or(0, |storage| storage.rides(rides).len())
+        };
         let mut w = BufWriter { buf: &mut self.list_buf, len: 0 };
         let _ = core::fmt::write(
             &mut w,
@@ -1965,7 +1928,7 @@ impl ObjectStore {
                 link.disconnects,
                 link.last_disconnect_reason,
                 self.routes.len(),
-                self.rides.len(),
+                ride_count,
                 if shared.storage.is_some() { "ok" } else { "--" },
                 // The A9 soak-rig health numbers: the deepest stack use the ride loop has painted
                 // (0 until the first scan) against the total usable stack — the "stack high-water + RAM
@@ -2037,8 +2000,8 @@ impl ObjectStore {
     /// list would make it drop a still-present object. `None` → the caller answers a typed `error`
     /// and the app retries, keeping its links.
     ///
-    /// The v2 header carries `total` (the pre-cap catalog size, from [`Self::route_total`] /
-    /// [`Self::ride_total`]) beside `count`, so a `MAX_ROUTES`/`MAX_RIDES` truncation is visible on
+    /// The v2 header carries `total` (the pre-cap catalog size, from [`Self::route_total`] or the
+    /// canonical ride repository) beside `count`, so a `MAX_ROUTES`/`MAX_RIDES` truncation is visible on
     /// the wire. `routeList` entries also carry the content CRC (see [`Self::build_route_list`]).
     fn build_list(&mut self, shared: &mut SharedStore, ty: ObjectType) -> Option<usize> {
         let (body_len, count, total, entry_len) = match ty {
@@ -2120,16 +2083,18 @@ impl ObjectStore {
 
     /// Build the `rideList` into [`Self::list_buf`] — unchanged 72-byte entries (no content CRC).
     /// Returns `(body_len, count, total, entry_len)`; `None` on a transient header-read failure.
-    fn build_ride_list(&mut self, shared: &SharedStore) -> Option<(usize, u16, u16, u8)> {
-        let Some(storage) = shared.storage.as_ref() else {
+    fn build_ride_list(&mut self, shared: &mut SharedStore) -> Option<(usize, u16, u16, u8)> {
+        let SharedStore { storage, rides, .. } = shared;
+        let Some(storage) = storage else {
             return Some((ListHeader::ENCODED_LEN, 0, 0, RideListEntry::ENTRY_LEN as u8));
         };
         let mut off = ListHeader::ENCODED_LEN;
-        let mut count: u16 = 0;
-        for slot in &self.rides {
-            let (byte_len, info) = storage.ride_object_info(&slot.file)?; // transient → fail whole list
+        let list_buf = &mut self.list_buf;
+        let repository = storage.rides(rides);
+        let total = repository.total();
+        let count = repository.for_each_list_row(|id, byte_len, info| {
             let entry = RideListEntry {
-                object_id: slot.id,
+                object_id: id,
                 byte_len,
                 start_time: info.start_time,
                 distance_m: info.distance_m,
@@ -2139,11 +2104,10 @@ impl ObjectStore {
                 name: info.name.as_bytes(),
             }
             .encode();
-            self.list_buf[off..off + RideListEntry::ENTRY_LEN].copy_from_slice(&entry);
+            list_buf[off..off + RideListEntry::ENTRY_LEN].copy_from_slice(&entry);
             off += RideListEntry::ENTRY_LEN;
-            count += 1;
-        }
-        Some((off, count, self.ride_total, RideListEntry::ENTRY_LEN as u8))
+        })?;
+        Some((off, count, total, RideListEntry::ENTRY_LEN as u8))
     }
 
     /// Build the `tripList` into [`Self::list_buf`] (spec §7.4) — the trip twin of

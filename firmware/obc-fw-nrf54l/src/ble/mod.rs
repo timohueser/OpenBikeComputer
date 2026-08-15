@@ -917,11 +917,11 @@ async fn ride_delete_task(
 }
 
 /// Drain the ride loop's **saved-ride** edge for the whole `ble::run` lifetime: a locally-finished
-/// ride committed its `RD{id}.ORD` (`Storage::run_pending_save`), so re-scan `/tracks` into the
-/// [`ObjectStore`] catalog and bump the revision ([`ObjectStore::adopt_saved_rides`]). That one edge
+/// ride committed its `RD{id}.ORD` (`Storage::run_pending_save`), so rescan the canonical borrowed
+/// ride repository and bump the revision ([`ObjectStore::adopt_saved_rides`]). That one edge
 /// then feeds everyone the way an upload commit does: a connected phone gets `storeChanged(ride)` +
 /// (its next `listRides` includes the ride), and the `STORE_CHANGED` edge re-feeds
-/// the on-device Rides menu next pass. Before this task existed, both catalogs were boot-scans only
+/// the on-device Rides menu next pass. Before this task existed, both projections were boot-scans only
 /// and a freshly-finished ride was invisible everywhere until a reboot.
 async fn ride_saved_task(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,

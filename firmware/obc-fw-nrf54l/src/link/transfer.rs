@@ -332,7 +332,7 @@ pub(crate) fn classify_transfer(
             // its CRC pre-pass) opens on the data plane, off the control-reply path.
             let known = match desc.ty {
                 ObjectType::Route => store.borrow().has_route(desc.object_id),
-                ObjectType::Ride => store.borrow().has_ride(desc.object_id),
+                ObjectType::Ride => store.borrow().has_ride(shared, desc.object_id),
                 ObjectType::Trip => store.borrow().has_trip(shared, desc.object_id),
                 _ => true,
             };

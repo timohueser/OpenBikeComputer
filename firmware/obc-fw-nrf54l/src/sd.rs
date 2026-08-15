@@ -81,8 +81,13 @@ use obc_storage::{route_name, trip_name};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
+mod rides;
+pub(crate) use rides::Rides;
 mod trips;
 pub(crate) use trips::Trips;
+
+const RIDE_CATALOG_CAP: usize = MAX_RIDES;
+pub(crate) type StoredRideCatalog = obc_storage::RideCatalog<RIDE_CATALOG_CAP>;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -528,14 +533,6 @@ pub struct Storage {
     /// indices by across live rescans (#450). Uploaded routes carry it in the filename
     /// (`RT{id}.OBR`); side-loaded `.obcr` files get a session id from [`sideload_id`](Storage::sideload_id).
     route_ids: Vec<u16, MAX_ROUTES>,
-    /// 8.3 filename of each *ride* catalog entry, parallel to the ride order
-    /// [`scan_rides_into`](Storage::scan_rides_into) last returned — so a ride's durable object id resolves back
-    /// to the `RD{id}.ORD` file for detail reads and object-store deletes.
-    ride_files: Vec<ShortFileName, UI_RIDES_CAP>,
-    /// Each ride catalog entry's **durable object id**, parallel to [`ride_files`](Storage::ride_files)
-    /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
-    /// synced/tombstone sets key on.
-    ride_ids: Vec<u16, UI_RIDES_CAP>,
     /// The one trip catalog shared by the on-device folders and companion-link repository. The
     /// three aligned columns have exactly the same size/layout as the former `trip_ids` /
     /// `trip_files` / `trip_metas` fields; an optional metadata niche lets a just-committed trip
@@ -1284,8 +1281,6 @@ impl Storage {
             tracks_dir,
             route_files: Vec::new(),
             route_ids: Vec::new(),
-            ride_files: Vec::new(),
-            ride_ids: Vec::new(),
             trip_catalog: obc_storage::TripCatalog::new(),
             sideload_ids: Vec::new(),
             next_sideload: SIDELOAD_ID_BASE as u32,
@@ -1416,95 +1411,10 @@ impl Storage {
         Trips::new(self)
     }
 
-    /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
-    /// [`RideSummary`](obc_app::RideSummary) per `RD{id}.ORD` — the **newest [`UI_RIDES_CAP`]**
-    /// (by `start_time`), newest first — each stamped with its `synced` flag from the
-    /// [`SYNCED_SET`] sidecar (read once here, not per file). Fills the parallel
-    /// [`ride_files`](Storage::ride_files)/[`ride_ids`](Storage::ride_ids) tables so a
-    /// hold-to-delete can resolve a durable id back to its file.
-    ///
-    /// **Stack discipline** (this fn hard-faulted the 256 KB part at boot, twice, before it
-    /// respected the budget): the first cut stacked an ~8 KB aligned sort temp on the ~6 KB
-    /// 128-cap catalog (>16 KB one frame); the second kept a 128-cap catalog whose *resident*
-    /// twin in `App`+`Storage` ate the deep-render path's last ~1.6 KB of margin — statics and
-    /// stack are zero-sum on this part. Now the catalog is [`UI_RIDES_CAP`]-capped (~1.4 KB) and
-    /// ordering is a bounded **top-K insertion** as summaries are read — no sort temp at all.
-    /// Fills the **caller's** catalog rather than returning one — see [`scan_routes_into`] for
-    /// why (the by-value return doubles the catalog on the caller's frame).
-    ///
-    /// [`scan_routes_into`]: Self::scan_routes_into
-    pub fn scan_rides_into(&mut self, catalog: &mut Vec<obc_app::RideSummary, UI_RIDES_CAP>) {
-        catalog.clear();
-        self.ride_files.clear();
-        self.ride_ids.clear();
-        let synced = self.load_synced_set();
-        let Some(dir) = self.tracks_dir else { return };
-
-        // Collect (id, name) for every RD{id}.ORD; an in-flight download's open handle is read
-        // through rather than re-opened (embedded-sdmmc refuses a second open, #480).
-        let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
-        let mut overflow = false;
-        self.iter_dir_lfn(dir, |e, _| {
-            if let Some(id) = stored_ride_id(&e.name) {
-                if entries.push((id, e.name.clone())).is_err() {
-                    overflow = true;
-                }
-            }
-        });
-        if overflow {
-            defmt::warn!("SD: scan: more than {=usize} ride files — the excess is not listed", MAX_RIDES);
-        }
-
-        // Read each header and keep the newest UI_RIDES_CAP via bounded insertion: find the
-        // summary's slot by descending start_time; a full catalog drops the oldest (or skips the
-        // candidate when it is the oldest). The three parallel tables move together on every
-        // insert/evict, staying aligned.
-        for (id, n) in &entries {
-            let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
-                Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
-                Err(_) => match &self.open_object {
-                    Some((on, of, olen)) if on == n => (*of, *olen, true),
-                    _ => {
-                        defmt::warn!("SD: scan: cannot open ride {} — not listed", defmt::Debug2Format(n));
-                        continue;
-                    }
-                },
-            };
-            match RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)) {
-                Ok(info) => {
-                    let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id), synced.synced_at(*id));
-                    let pos = catalog.iter().position(|c| sum.start_time > c.start_time).unwrap_or(catalog.len());
-                    // A full catalog evicts its oldest for a newer candidate; a candidate older
-                    // than everything listed is simply not one of the newest UI_RIDES_CAP.
-                    if catalog.is_full() && pos < catalog.len() {
-                        let _ = catalog.pop();
-                        let _ = self.ride_files.pop();
-                        let _ = self.ride_ids.pop();
-                    }
-                    if pos <= catalog.len() && !catalog.is_full() {
-                        let _ = catalog.insert(pos, sum);
-                        let _ = self.ride_files.insert(pos, n.clone());
-                        let _ = self.ride_ids.insert(pos, *id);
-                    }
-                }
-                Err(_) => defmt::warn!("SD: scan: ride {} unreadable — not listed", defmt::Debug2Format(n)),
-            }
-            if !borrowed {
-                let _ = self.vmgr.close_file(file);
-            }
-        }
-
-        if entries.len() > catalog.len() {
-            defmt::info!("SD: rides menu lists the newest {=usize} of {=usize} stored", catalog.len(), entries.len());
-        }
-        defmt::info!("SD: {=usize} ride(s) in /tracks", catalog.len());
-    }
-
-    /// Each ride catalog entry's durable object id, parallel to the catalog
-    /// [`scan_rides_into`](Storage::scan_rides_into) last returned — the second argument to
-    /// [`App::set_rides`](obc_app::App::set_rides).
-    pub fn ride_ids(&self) -> &[u16] {
-        &self.ride_ids
+    /// Borrow the sole stored-ride repository. The view cannot outlive this storage lock and every
+    /// caller drops it before an `await`.
+    pub(crate) fn rides<'a>(&'a mut self, catalog: &'a mut StoredRideCatalog) -> Rides<'a> {
+        Rides::new(self, catalog)
     }
 
     /// Read the synced-ride sidecar (`/tracks/SYNCED.SET`) into a [`SyncedRides`] set. A missing,
@@ -1820,67 +1730,6 @@ impl Storage {
         let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
         let n = encode_synced_rides(set, &mut buf);
         self.rewrite_sidecar(self.tracks_dir, SYNCED_SET, &buf[..n])
-    }
-
-    /// Build the stored ride `id`'s recorded-track elevation [`Profile`] — the Ride detail's band
-    /// fill (epic #678 T2 / #680), answering
-    /// [`App::ride_track_request`](obc_app::App::ride_track_request). Resolves the id
-    /// through the scan-parallel [`ride_ids`](Storage::ride_ids)/[`ride_files`](Storage::ride_files)
-    /// tables and streams the `RD{id}.ORD` once through the shared `ride_elevation_profile`
-    /// (~448 B per SD read, no whole-track buffer — the ~36 KB stack budget's discipline; the
-    /// returned `Profile` is the nrf-mem ~3 KB build). An in-flight BLE download's open handle is
-    /// read through rather than re-opened (embedded-sdmmc refuses a second open, #480), exactly as
-    /// [`scan_rides_into`](Storage::scan_rides_into) does. `None` = unknown id / unopenable / torn file —
-    /// the caller parks the failure so the read isn't ground against every pass.
-    pub fn ride_profile_by_id(&mut self, id: u16) -> Option<Profile> {
-        let pos = self.ride_ids.iter().position(|&x| x == id)?;
-        let name = self.ride_files[pos].clone();
-        let dir = self.tracks_dir?;
-        let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
-            Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
-            Err(_) => match &self.open_object {
-                Some((on, of, olen)) if *on == name => (*of, *olen, true),
-                _ => {
-                    defmt::warn!("SD: ride profile: cannot open {} — band stays empty", defmt::Debug2Format(&name));
-                    return None;
-                }
-            },
-        };
-        let profile = ride_elevation_profile(&SdByteSource::new(&self.vmgr, file, len)).ok();
-        if !borrowed {
-            let _ = self.vmgr.close_file(file);
-        }
-        profile
-    }
-
-    /// Build the stored ride `id`'s decimated recorded-track shape polyline (#678 rework 3) —
-    /// the preview half of the Ride detail's track-request answer, `ride_profile_by_id`'s twin:
-    /// the same id resolution, the same open-or-borrow handle discipline (#480), one forward
-    /// streaming pass through the shared `ride_preview_polyline` (~448 B blocks, no whole-track
-    /// buffer, no backward seeks — the #502 FAT lesson). Empty = unknown id / unopenable / torn
-    /// file — the detail's track page just leaves its slot blank.
-    pub fn ride_preview_by_id(&mut self, id: u16) -> heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }> {
-        let Some(pos) = self.ride_ids.iter().position(|&x| x == id) else { return heapless::Vec::new() };
-        let name = self.ride_files[pos].clone();
-        let Some(dir) = self.tracks_dir else { return heapless::Vec::new() };
-        let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
-            Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
-            Err(_) => match &self.open_object {
-                Some((on, of, olen)) if *on == name => (*of, *olen, true),
-                _ => {
-                    defmt::warn!(
-                        "SD: ride preview: cannot open {} — track page stays empty",
-                        defmt::Debug2Format(&name)
-                    );
-                    return heapless::Vec::new();
-                }
-            },
-        };
-        let pts = ride_preview_polyline(&SdByteSource::new(&self.vmgr, file, len)).unwrap_or_default();
-        if !borrowed {
-            let _ = self.vmgr.close_file(file);
-        }
-        pts
     }
 
     /// The **session-scoped** id for a side-loaded route file: the one already registered for this
@@ -4285,22 +4134,11 @@ impl Storage {
         None
     }
 
-    /// Visit every stored ride object in `/tracks` (the `RD{id}.ORD` files) with its filename-encoded
-    /// durable id. An in-progress `TRACK.OBT` (or any foreign file) never matches.
-    pub fn for_each_ride_file(&self, mut f: impl FnMut(u16, &ShortFileName)) {
-        let Some(dir) = self.tracks_dir else { return };
-        self.iter_dir_lfn(dir, |e, _| {
-            if let Some(id) = stored_ride_id(&e.name) {
-                f(id, &e.name);
-            }
-        });
-    }
-
     /// Whether a stored ride file is an **interrupted save** — the held-back version byte still
     /// zeroed because [`track_to_ride`]'s final patch never ran. Only that exact signature is
     /// sweepable (the ride-scan's analogue of [`is_aborted_commit`](Self::is_aborted_commit));
     /// a merely unreadable file must be kept.
-    pub fn is_aborted_ride_object(&self, name: &ShortFileName) -> bool {
+    fn is_aborted_ride_object(&self, name: &ShortFileName) -> bool {
         let Some(dir) = self.tracks_dir else { return false };
         let Ok(file) = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) else {
             return false;
@@ -4309,24 +4147,6 @@ impl Storage {
         let zeroed = matches!(self.vmgr.read(file, &mut version), Ok(1)) && version[0] == 0;
         let _ = self.vmgr.close_file(file);
         zeroed
-    }
-
-    /// Delete a stored ride object file (the boot sweep of interrupted saves).
-    pub fn delete_ride_file(&mut self, name: &ShortFileName) -> bool {
-        let Some(dir) = self.tracks_dir else { return false };
-        self.vmgr.delete_file_in_dir(dir, name).is_ok()
-    }
-
-    /// A stored ride object's byte length + the header facts its `rideList` entry serves. One header
-    /// read; `None` when the file doesn't validate as a ride object v1 (incl. an interrupted save's
-    /// held-back version byte — see [`track_to_ride`]).
-    pub fn ride_object_info(&self, name: &ShortFileName) -> Option<(u32, RideInfo)> {
-        let dir = self.tracks_dir?;
-        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        let info = RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)).ok();
-        let _ = self.vmgr.close_file(file);
-        Some((len, info?))
     }
 
     /// Open a stored route for a detail download (the OBCR bytes verbatim), returning its byte

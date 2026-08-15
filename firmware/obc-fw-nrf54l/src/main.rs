@@ -292,6 +292,10 @@ const BLE_RESIDENT: usize = 0;
 /// ships in every build — and counted in the same sum as the map and BLE planes so "USB doesn't fit
 /// beside them" is a *compile-time* fact rather than an on-glass overflow.
 const USB_RESIDENT: usize = usb::RESIDENT_BYTES;
+/// The one full-capacity stored-ride catalog shared by the UI and companion repositories. It is a
+/// standalone static rather than part of the BLE sum because map-recovery USB and the ride UI own
+/// the same rows even when no BLE connection exists.
+const RIDE_CATALOG_RESIDENT: usize = core::mem::size_of::<sd::StoredRideCatalog>();
 
 /// The resident set that must coexist during a redraw (see the table above).
 const RESIDENT_BYTES: usize = FB_BYTES
@@ -299,7 +303,8 @@ const RESIDENT_BYTES: usize = FB_BYTES
     + MAP_RESIDENT
     + ARENA_RESIDENT
     + BLE_RESIDENT
-    + USB_RESIDENT;
+    + USB_RESIDENT
+    + RIDE_CATALOG_RESIDENT;
 // ⚠️ **The budget has a cliff in it now** (#1146 P2), and it points both ways — read this before
 // "optimizing" any of the three arena arms, and before waving one through:
 //
@@ -390,7 +395,7 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    const ENTRIES: usize = 32;
+    const ENTRIES: usize = 33;
 
     #[used]
     #[no_mangle]
@@ -407,6 +412,7 @@ mod resource_report {
         entry("set_sources", sd::SET_SOURCES_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
+        entry("ride_catalog", RIDE_CATALOG_RESIDENT),
         // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
         // target-ABI size report, not a second allocation; the linked resident gate remains the
         // authority once WX10 places the cache in the rain-render path.
@@ -486,6 +492,11 @@ static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
 /// geometry off the card every frame.
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
+/// The canonical stored-ride catalog. The full companion-visible capacity is too large to travel
+/// through `main`'s async frame, so its backing rows live in `.bss`; [`SharedStore`] owns the sole
+/// mutable reference after boot. The normal and map-recovery compositions are mutually exclusive
+/// boot paths and each initializes/scans this one catalog before publishing a link plane.
+static mut RIDE_CATALOG: sd::StoredRideCatalog = sd::StoredRideCatalog::new();
 /// The SD/settings mutex is initialized on exactly one boot path: the normal ride application or
 /// the USB recovery plane used when the selected map is structurally unreadable.
 static mut SHARED_STORE_SLOT: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
@@ -562,6 +573,7 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
 /// thread-mode executor and no ISR touches storage, so no critical section is needed.
 pub(crate) struct SharedStore {
     pub(crate) storage: Option<sd::Storage>,
+    pub(crate) rides: &'static mut sd::StoredRideCatalog,
     pub(crate) settings: settings::RramSettingsStore,
 }
 /// The shared-store handle threaded into [`ride::run_app`] and the BLE object plane (#270).
@@ -665,12 +677,23 @@ async fn spawn_map_recovery_usb(
     let shared_store: &'static SharedStoreMutex = unsafe {
         init_static(
             core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
-            SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
+            SharedStoreMutex::new(SharedStore {
+                storage: Some(storage),
+                // SAFETY: the recovery plane is mutually exclusive with normal app construction;
+                // this is the catalog's sole program-lifetime mutable reference.
+                rides: &mut *core::ptr::addr_of_mut!(RIDE_CATALOG),
+                settings: settings_store,
+            }),
         )
     };
     let objects = {
         let mut guard = shared_store.lock().await;
-        if let Some(storage) = guard.storage.as_mut() {
+        let SharedStore { storage, rides, .. } = &mut *guard;
+        if let Some(storage) = storage.as_mut() {
+            // Map recovery has no App/UI bootstrap, so this is its one authoritative ride scan.
+            // Normal boot scans before constructing SharedStore and hydrate deliberately does not
+            // repeat it; both paths publish a link store from a settled canonical catalog.
+            storage.rides(rides).scan();
             storage.select_weather_at_boot();
         }
         link::init_store(&mut guard)
@@ -1273,9 +1296,13 @@ async fn main(_spawner: Spawner) {
             App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
+        // SAFETY: normal app construction is mutually exclusive with the map-recovery path and
+        // hands this sole mutable reference into `SharedStore` below.
+        let ride_catalog: &'static mut sd::StoredRideCatalog = unsafe { &mut *core::ptr::addr_of_mut!(RIDE_CATALOG) };
         {
             ride::load_routes(&mut storage, app);
-            ride::load_rides(&mut storage, app);
+            ride::scan_rides_at_boot(&mut storage, ride_catalog);
+            ride::load_rides(&mut storage, ride_catalog, app);
             // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages against
             // the route catalog just loaded — after `load_routes`, so the stage resolution sees it.
             ride::scan_trips_at_boot(&mut storage);
@@ -1365,7 +1392,11 @@ async fn main(_spawner: Spawner) {
         let shared_store: &'static SharedStoreMutex = unsafe {
             init_static(
                 core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
-                SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
+                SharedStoreMutex::new(SharedStore {
+                    storage: Some(storage),
+                    rides: ride_catalog,
+                    settings: settings_store,
+                }),
             )
         };
 
