@@ -292,6 +292,8 @@ const BLE_RESIDENT: usize = 0;
 /// ships in every build — and counted in the same sum as the map and BLE planes so "USB doesn't fit
 /// beside them" is a *compile-time* fact rather than an on-glass overflow.
 const USB_RESIDENT: usize = usb::RESIDENT_BYTES;
+/// The canonical route id/file/length catalog shared by UI geometry and companion object planes.
+const ROUTE_CATALOG_RESIDENT: usize = core::mem::size_of::<sd::StoredRouteCatalog>();
 /// The one full-capacity stored-ride catalog shared by the UI and companion repositories. It is a
 /// standalone static rather than part of the BLE sum because map-recovery USB and the ride UI own
 /// the same rows even when no BLE connection exists.
@@ -304,6 +306,7 @@ const RESIDENT_BYTES: usize = FB_BYTES
     + ARENA_RESIDENT
     + BLE_RESIDENT
     + USB_RESIDENT
+    + ROUTE_CATALOG_RESIDENT
     + RIDE_CATALOG_RESIDENT;
 // ⚠️ **The budget has a cliff in it now** (#1146 P2), and it points both ways — read this before
 // "optimizing" any of the three arena arms, and before waving one through:
@@ -395,7 +398,7 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    const ENTRIES: usize = 33;
+    const ENTRIES: usize = 34;
 
     #[used]
     #[no_mangle]
@@ -412,6 +415,7 @@ mod resource_report {
         entry("set_sources", sd::SET_SOURCES_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
+        entry("route_catalog", ROUTE_CATALOG_RESIDENT),
         entry("ride_catalog", RIDE_CATALOG_RESIDENT),
         // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
         // target-ABI size report, not a second allocation; the linked resident gate remains the
@@ -492,6 +496,9 @@ static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
 /// geometry off the card every frame.
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
+/// The canonical stored-route catalog. Normal and map-recovery boot paths take the sole mutable
+/// reference and pass it through [`SharedStore`]; the large `Storage` value remains move-stable.
+static mut ROUTE_CATALOG: sd::StoredRouteCatalog = sd::StoredRouteCatalog::new();
 /// The canonical stored-ride catalog. The full companion-visible capacity is too large to travel
 /// through `main`'s async frame, so its backing rows live in `.bss`; [`SharedStore`] owns the sole
 /// mutable reference after boot. The normal and map-recovery compositions are mutually exclusive
@@ -573,6 +580,7 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
 /// thread-mode executor and no ISR touches storage, so no critical section is needed.
 pub(crate) struct SharedStore {
     pub(crate) storage: Option<sd::Storage>,
+    pub(crate) routes: &'static mut sd::StoredRouteCatalog,
     pub(crate) rides: &'static mut sd::StoredRideCatalog,
     pub(crate) settings: settings::RramSettingsStore,
 }
@@ -679,6 +687,8 @@ async fn spawn_map_recovery_usb(
             core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
             SharedStoreMutex::new(SharedStore {
                 storage: Some(storage),
+                // SAFETY: recovery is mutually exclusive with normal app construction.
+                routes: &mut *core::ptr::addr_of_mut!(ROUTE_CATALOG),
                 // SAFETY: the recovery plane is mutually exclusive with normal app construction;
                 // this is the catalog's sole program-lifetime mutable reference.
                 rides: &mut *core::ptr::addr_of_mut!(RIDE_CATALOG),
@@ -688,8 +698,10 @@ async fn spawn_map_recovery_usb(
     };
     let objects = {
         let mut guard = shared_store.lock().await;
-        let SharedStore { storage, rides, .. } = &mut *guard;
+        let SharedStore { storage, routes, rides, .. } = &mut *guard;
         if let Some(storage) = storage.as_mut() {
+            // Map recovery has no App/UI bootstrap, so this is its authoritative route scan.
+            storage.routes(routes).scan();
             // Map recovery has no App/UI bootstrap, so this is its one authoritative ride scan.
             // Normal boot scans before constructing SharedStore and hydrate deliberately does not
             // repeat it; both paths publish a link store from a settled canonical catalog.
@@ -1299,8 +1311,12 @@ async fn main(_spawner: Spawner) {
         // SAFETY: normal app construction is mutually exclusive with the map-recovery path and
         // hands this sole mutable reference into `SharedStore` below.
         let ride_catalog: &'static mut sd::StoredRideCatalog = unsafe { &mut *core::ptr::addr_of_mut!(RIDE_CATALOG) };
+        // SAFETY: normal app construction is mutually exclusive with map recovery and hands the
+        // sole mutable route-catalog reference into SharedStore below.
+        let route_catalog: &'static mut sd::StoredRouteCatalog =
+            unsafe { &mut *core::ptr::addr_of_mut!(ROUTE_CATALOG) };
         {
-            ride::load_routes(&mut storage, app);
+            ride::load_routes_at_boot(&mut storage, route_catalog, app);
             ride::scan_rides_at_boot(&mut storage, ride_catalog);
             ride::load_rides(&mut storage, ride_catalog, app);
             // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages against
@@ -1394,6 +1410,7 @@ async fn main(_spawner: Spawner) {
                 core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
                 SharedStoreMutex::new(SharedStore {
                     storage: Some(storage),
+                    routes: route_catalog,
                     rides: ride_catalog,
                     settings: settings_store,
                 }),

@@ -132,7 +132,7 @@ const fn weather_refresh_in_flight() -> bool {
 }
 
 /// The loop's third select arm: a sensor/host datapoint, **or** (`ble` builds) a store movement —
-/// a BLE route commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
+/// a BLE route commit/delete wakes the loop so the canonical-catalog projection (#450) lands now, not at
 /// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
 #[cfg(feature = "ble")]
 async fn wait_host_or_sensor_event(
@@ -176,22 +176,30 @@ impl obc_render::Clock for InstantClock {
     }
 }
 
-/// Scan the card's `/routes` catalog into the app's Route menu, carrying each entry's durable
-/// object id so the app can remap held indices by identity across rescans (#450). Called at boot
-/// (from `main`) and again on every store-changed edge (the live rescan below — same machinery).
+/// Perform normal boot's one media scan that seeds the canonical route repository before the UI
+/// projection and link publication. Map recovery performs the corresponding scan at its own
+/// composition point; runtime store edges project existing canonical rows without rescanning.
+#[inline(never)]
+pub(crate) fn load_routes_at_boot(storage: &mut sd::Storage, routes: &mut sd::StoredRouteCatalog, app: &mut App) {
+    storage.routes(routes).scan();
+    load_routes(storage, routes, app);
+}
+
+/// Project the canonical route repository into the app's Route menu, carrying each entry's durable
+/// object id so the app can remap held indices by identity across store movements (#450).
 /// Deliberately its **own `#[inline(never)]` frame**: the ~5 KB [`Catalog`](obc_app::Catalog)
 /// (`Vec<RouteSummary, MAX_ROUTES>`, 64 × ~84 B) lives here and is popped on return, so it never
 /// sits resident *beneath* the long-lived [`run_app`] ride loop — where 5 KB would steal from the
 /// deep route-load render path's stack and overflow the 256 KB part. The mid-session call runs
 /// sequentially with (never under) that deep render path, so it adds nothing to the pass's peak.
 #[inline(never)]
-pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
+fn load_routes(storage: &mut sd::Storage, routes: &mut sd::StoredRouteCatalog, app: &mut App) {
     let mut catalog = heapless::Vec::new();
-    storage.scan_routes_into(&mut catalog);
-    // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
-    // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
-    let metas = storage.route_retention_metas();
-    app.set_routes_with_meta(&catalog, storage.route_ids(), &metas);
+    let mut ids = heapless::Vec::new();
+    let mut metas = heapless::Vec::new();
+    let repository = storage.routes(routes);
+    repository.snapshot_into(app.routes(), app.route_ids(), &mut catalog, &mut ids, &mut metas);
+    app.set_routes_with_meta(&catalog, &ids, &metas);
 }
 
 /// Perform normal boot's one media scan that seeds the canonical stored-ride repository before the
@@ -444,16 +452,19 @@ fn nav_step(
     planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink)
 }
 
-/// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the
-/// id-carrying catalog on success (sequential with — never nested under — the step frames, the
-/// #496 de-nesting kept), emit the one `nav route:` RTT line with the per-phase breakdown
+/// Finish a **completed** plan: discard a failed hidden stage, or validate and copy-promote a
+/// successful `NAV.TMP` while holding `_NAV.OBR`'s magic back until its body is durable. Catalog
+/// publication + revision stay in this shared-store critical section (sequential with — never
+/// nested under — the step frames, the #496 de-nesting kept). Emit the one `nav route:` RTT line
+/// with the per-phase breakdown
 /// (issue #499's DoD), and answer the app — the `NavPlanned` event activates the route and swaps
 /// the planning screen for the computed-route overview (or the failure card).
 ///
 /// The RTT line (grep `nav route:`): outcome; route length; `total_ms` = wall time from the
 /// request drain (it spans every pass the plan was spread over); `snap/search/emit_ms` = step
 /// time attributed to the planner's phase before each step (emit includes the finishing header
-/// patch); `write_ms` = the file flush/close; `rescan_ms` = the catalog rescan; `source_reads` =
+/// patch); `write_ms` = stage finish/promotion/recovery; `rescan_ms` = UI projection/publication;
+/// `source_reads` =
 /// logical graph-chunk plus index-window fills; `settles`; and the stackmeter high-water,
 /// force-rescanned here — sentinel evidence is permanent, so it still reads the in-step peak.
 /// With `sd-bench`, a second line reports the planner steps' physical card commands and time.
@@ -462,6 +473,7 @@ fn nav_step(
 #[allow(clippy::too_many_arguments)]
 fn nav_finish(
     storage: &mut sd::Storage,
+    routes: &mut sd::StoredRouteCatalog,
     app: &mut App,
     nav: &mut NavBuffers,
     run: NavRun,
@@ -475,14 +487,22 @@ fn nav_finish(
         obc_route::Step::Running => Err(NavError::NoPath), // unreachable: callers pass terminals
     };
     let tw = Instant::now();
-    storage.nav_route_finish(run.file, planned.is_ok());
+    let (result, publish): (Result<(u16, u32), NavError>, bool) = match planned {
+        Err(error) => {
+            storage.routes(routes).nav_abort(run.file);
+            (Err(error), false)
+        }
+        Ok(len) => match storage.routes(routes).nav_commit(run.file) {
+            sd::NavCommit::Published(id) => (Ok((id, len)), true),
+            sd::NavCommit::Failed { revision } => (Err(NavError::NoPath), revision),
+        },
+    };
     let write_us = tw.elapsed().as_micros();
     let tr = Instant::now();
-    let result: Result<(u16, u32), NavError> = planned.and_then(|len| {
-        load_routes(storage, app);
-        let id = storage.nav_route_id().ok_or(NavError::NoPath)?;
-        Ok((id, len))
-    });
+    if publish {
+        load_routes(storage, routes, app);
+        crate::object_store::publish_local_route_changed();
+    }
     let rescan_us = tr.elapsed().as_micros();
     let cache = nav.guard.tiles.stats();
     // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
@@ -613,7 +633,7 @@ struct HostPass {
     /// itself is **not** staged across the pass's awaits (it would dominate this struct and re-inflate
     /// the task future, #808/#812): the planner's `.bss` slot is written from it synchronously at the
     /// drain (`nav_begin` needs no store lock), and only this flag rides into the store phase, where
-    /// `nav_route_begin` opens the reserved file and arms the run. The `ble` image (no router) answers
+    /// `Routes::nav_begin` opens the hidden stage and arms the run. The `ble` image (no router) answers
     /// the failure tier at the drain instead, so it never sets this.
     #[cfg(has_nav)]
     plan_armed: bool,
@@ -1110,7 +1130,7 @@ pub(crate) async fn run_app(
                         // Write the planner slot from the request **now** (synchronously, no store
                         // lock needed) so the 44-byte `NavRequest` never rides into the store phase
                         // across the pass's awaits (#808/#812) — only the flag does; the store phase
-                        // opens the reserved file and arms the run. The `ble` image ships without the
+                        // opens the hidden stage and arms the run. The `ble` image ships without the
                         // router, so it answers the failure tier here instead of arming.
                         //
                         // Since #1146 P2 the slot lives in the scratch arena, so the search must
@@ -1154,7 +1174,7 @@ pub(crate) async fn run_app(
                     // flow holds the planned detour's OBCR **in RAM** from `DetourPlanned` until the
                     // rider commits, then stream-splices `original[0..anchor] + detour +
                     // original[rejoin..]` into a derived route. The host does both with a `Vec`; the
-                    // board has one reserved computed-route file (`_NAV.OBR`) and no heap, so the
+                    // board has one committed computed-route file (`_NAV.OBR`) and no heap, so the
                     // splice has nowhere to read the detour from while it writes. That is a storage
                     // design, with its own on-glass acceptance — a separate issue.
                     //
@@ -1421,36 +1441,28 @@ pub(crate) async fn run_app(
         let (rendered, dirty_map, hold_p, store_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_store = Instant::now();
-            let SharedStore { storage, rides, settings: settings_store } = &mut *store_guard;
+            let SharedStore { storage, routes, rides, settings: settings_store } = &mut *store_guard;
 
             // ── Live route catalog (#450), on the store-changed edge only ──
-            // A BLE commit/delete moved `/routes` under the app: re-run the boot scan (same
-            // `load_routes` machinery — its ~5 KB catalog lives in its own popped frame, sequential
-            // with, never under, the deep render path) and re-feed `set_routes_with_ids`, which
-            // remaps every held catalog index by durable object id — so the route being navigated
-            // (or highlighted, or pending in a swap prompt) can never silently shift. Then force the
-            // reconcile below to re-derive everything positional: the filename table was rebuilt (the
-            // open handle's index may now name a different file) and a replace-upload may have
-            // swapped the bytes under the open geometry handle — close it and let the reconcile
-            // reopen + re-index off the fresh scan.
+            // A store mutation already moved the canonical repositories under the same lock as its
+            // revision. Re-project them into App (the ~5 KB route summaries live in `load_routes`'s
+            // popped frame) and remap held UI indices by durable object id. Then force derived route
+            // geometry/index state to reopen: a replace may have swapped bytes under the same id.
             #[cfg(feature = "ble")]
             if host_pass.rescan {
                 if let Some(s) = storage.as_mut() {
-                    // Close the active route's geometry handle BEFORE the scan: embedded-sdmmc
-                    // refuses a second open of an open file (`FileAlreadyOpen`, even ReadOnly), so a
-                    // scan that met the still-open geometry silently omitted it — and the identity
-                    // remap then unloaded the navigated route and it vanished from the Route menu
-                    // until the next rescan (the #480 vanishing-routes bug). The forced reconcile
-                    // below reopens it off the fresh tables.
-                    s.reconcile_route(None);
-                    load_routes(s, app);
+                    // Close the active geometry before the canonical projection. A route mutation
+                    // can shift UI indices; the forced reconcile below reopens by the freshly
+                    // remapped durable id.
+                    s.routes(routes).reconcile(None);
+                    load_routes(s, routes, app);
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
                     // flipped a synced flag): project the canonical repository into the Rides menu,
                     // which remaps its highlight by id (#454). No route-only edge rescans ride media.
                     load_rides(s, rides, app);
                     // …and trips (epic #526 TR4): a trip upload/delete moved the trip store, or a member
-                    // route delete changed a trip's resolvable stage totals — rescan `/routes` for trips
-                    // and re-feed the folders (resolved against the freshly-scanned route catalog above).
+                    // route delete changed a trip's resolvable stage totals — re-feed the folders
+                    // against the canonical route projection above.
                     load_trips(s, app);
                 }
                 prev_active = None; // force reconcile_route/track to re-run against the new indexing
@@ -1462,7 +1474,7 @@ pub(crate) async fn run_app(
             // durable object id. Route it to storage **through `ObjectStore`** (never raw SD) so the
             // catalog, revision, digest, and phone `storeChanged` notify all move together, exactly as a
             // phone-initiated delete does — then the store-changed edge (next pass) brings the live
-            // rescan + P3 remap around, so `active_route` and the menu highlight follow by identity.
+            // projection + P3 remap around, so `active_route` and the menu highlight follow by identity.
             //
             // `ObjectStore` lives behind the BLE task's `RefCell`, so post the id to that plane. It
             // owns the coherent catalog revision, notification, and rescan path.
@@ -1526,7 +1538,7 @@ pub(crate) async fn run_app(
             // mirrored the value into its resident meta, so no re-feed is needed.
             if let Some((id, utc)) = host_pass.stamp_route {
                 if let Some(s) = storage.as_mut() {
-                    s.stamp_route_last_used(id, utc);
+                    s.routes(routes).stamp_last_used(id, utc);
                 }
             }
             if let Some((id, utc)) = host_pass.stamp_ride {
@@ -1542,16 +1554,15 @@ pub(crate) async fn run_app(
             fill_ride_profile(storage, rides, app);
 
             // ── The resumable route planner (#499), one bounded step per pass ──
-            // A drained create-route request opens the reserved file, (re)writes the `.bss` planner
+            // A drained create-route request opens the hidden stage, (re)writes the `.bss` planner
             // slot, and arms a `NavRun`; each subsequent pass runs **one** `nav_step` at this shallow
             // depth and then continues the normal pass (render, input, the pass-top watchdog feed) —
             // the UI stays live while the route computes. A drained cancel (Back on the planning
-            // screen) aborts: close + delete the partial file, answer nothing. On a terminal step,
-            // `nav_finish` flushes/patches (or deletes) the file, rescans the catalog (sequential,
-            // never nested — the #496 de-nesting), emits the per-phase RTT line, and answers the app;
-            // the positional state is then forced to re-derive, exactly like the store-changed rescan
-            // above (the plan closed the active geometry handle and may have rewritten bytes under
-            // the reserved name).
+            // screen) aborts: close + delete only the stage, answer nothing. On a terminal step,
+            // `nav_finish` validates and promotes the stage (sequential, never nested — the #496
+            // de-nesting), atomically publishes the repository revision, emits the per-phase RTT
+            // line, and answers the app. A failed search leaves the committed route and its handles
+            // untouched; a successful promotion forces derived geometry to reopen the new bytes.
             //
             // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
             // the request is still drained and answered with the generic failure tier ("Couldn't find
@@ -1566,14 +1577,14 @@ pub(crate) async fn run_app(
                 if host_pass.plan_armed {
                     // The planner slot was already written from the request at the pass-top drain
                     // (`nav_begin`, no store lock) — which is also where the arena's nav arm was
-                    // claimed; here we just open the reserved file and arm the run against it. A
+                    // claimed; here we just open the hidden stage and arm the run against it. A
                     // request while a plan is somehow still in flight replaces it (can't happen
                     // through the UI — the planning screen blocks a second confirm — but stay safe;
                     // the drain already overwrote the slot for the new plan and kept the same guard).
                     if let (Some(run), Some(s)) = (nav_run.take(), storage.as_mut()) {
-                        s.nav_route_finish(run.file, false);
+                        s.routes(routes).nav_abort(run.file);
                     }
-                    match storage.as_mut().and_then(|s| s.nav_route_begin()) {
+                    match storage.as_mut().and_then(|s| s.routes(routes).nav_begin()) {
                         Some(file) => {
                             nav_run = Some(NavRun {
                                 file,
@@ -1600,7 +1611,7 @@ pub(crate) async fn run_app(
                 if nav_cancel && !host_pass.plan_armed {
                     if let Some(run) = nav_run.take() {
                         if let Some(s) = storage.as_mut() {
-                            s.nav_route_finish(run.file, false); // close + delete the partial file
+                            s.routes(routes).nav_abort(run.file); // close + delete only the hidden stage
                         }
                         defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
                         // No notify: the planning screen is already gone (Back popped it).
@@ -1634,9 +1645,9 @@ pub(crate) async fn run_app(
                         run.read_perf[phase_idx].add_assign(sd::read_perf_snapshot().since(reads_before));
                         if !matches!(step, obc_route::Step::Running) {
                             let run = nav_run.take().expect("just borrowed it");
-                            nav_finish(s, app, &mut bufs, run, step, now);
+                            nav_finish(s, routes, app, &mut bufs, run, step, now);
                             search_ended = true;
-                            prev_active = None; // reopen geometry / rebuild the index off the fresh scan
+                            prev_active = None; // reopen geometry / rebuild the index after publication
                             index_route = None;
                         }
                     }
@@ -1668,7 +1679,7 @@ pub(crate) async fn run_app(
                 // Build the route's mini elevation band from the just-committed OBCR (#682) — one scoped
                 // stream at commit time — so the idle received card can draw it (the swap / active-
                 // replace variants ignore it). A missing store or a no-elevation route yields `None`.
-                let elevation = storage.as_mut().and_then(|s| s.route_elevation_sparkline(id));
+                let elevation = storage.as_mut().and_then(|s| s.routes(routes).elevation_sparkline(id));
                 app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
             }
 
@@ -1792,7 +1803,8 @@ pub(crate) async fn run_app(
                 // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
                 // map build always has `Some`. No card ⇒ nothing to reconcile.
                 if let Some(s) = storage.as_mut() {
-                    s.reconcile_route(active);
+                    let active_id = active.and_then(|index| app.route_ids().get(index).copied());
+                    s.routes(routes).reconcile(active_id);
                     s.reconcile_track(action, session, &name, stats.as_ref(), settings_store);
                 }
                 prev_active = active;
@@ -2342,7 +2354,7 @@ pub(crate) async fn run_app(
         let (save_pending, tail_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_tail = Instant::now();
-            let SharedStore { storage, rides: _rides, settings: settings_store } = &mut *store_guard;
+            let SharedStore { storage, rides: _rides, settings: settings_store, .. } = &mut *store_guard;
 
             // ── DFU trial confirm (epic #615 S4, #619), once, at the health anchor ──
             // A frame just landed on glass and the SD mounted at boot: if this boot is a

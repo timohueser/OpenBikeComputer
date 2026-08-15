@@ -611,7 +611,7 @@ public final class MainScreenModel {
         //    (unknown) entry proves nothing, so the link is kept conservatively.
         for (id, var record) in plannedRecords {
             guard let link = record.deviceLink, link.matches(scope) else { continue }
-            let present = listed.contains(link.objectID)
+            let present = link.objectID.isPersistable && listed.contains(link.objectID)
             let catalogCRC = deviceRouteCRCs[link.objectID] ?? 0
             let crcMismatch = present && catalogCRC != 0
                 && record.uploadedCRC32 != nil && catalogCRC != record.uploadedCRC32
@@ -650,7 +650,7 @@ public final class MainScreenModel {
         // Adoptable = listed entries with a known (non-zero) CRC not already
         // claimed. Device order is preserved, so the "adopt the first" tie-break
         // falls out of the scan below.
-        let adoptable = catalog.filter { $0.crc32 != 0 && !claimed.contains($0.id) }
+        let adoptable = catalog.filter { $0.id.isPersistable && $0.crc32 != 0 && !claimed.contains($0.id) }
         guard !adoptable.isEmpty else { return }
         // Records with no *valid* link, in a deterministic (stable id) order so
         // an adoption is reproducible run to run.
@@ -818,7 +818,7 @@ public final class MainScreenModel {
         let listed = Set(catalog.map(\.id))
         for var trip in library.trips() {
             guard let link = trip.deviceLink, link.matches(scope) else { continue }
-            let present = listed.contains(link.objectID)
+            let present = link.objectID.isPersistable && listed.contains(link.objectID)
             let catalogCRC = deviceTripCRCs[link.objectID] ?? 0
             let crcMismatch = present && catalogCRC != 0
                 && trip.uploadedCRC32 != nil && catalogCRC != trip.uploadedCRC32
@@ -840,7 +840,7 @@ public final class MainScreenModel {
             guard let link = trip.deviceLink, link.matches(scope) else { return nil }
             return link.objectID
         })
-        let adoptable = catalog.filter { $0.crc32 != 0 && !claimed.contains($0.id) }
+        let adoptable = catalog.filter { $0.id.isPersistable && $0.crc32 != 0 && !claimed.contains($0.id) }
         guard !adoptable.isEmpty else { return }
         let candidates = library.trips()
             .filter { trip in
@@ -1510,6 +1510,14 @@ public final class MainScreenModel {
         _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32, retention: Retention?, adopt: Bool
     ) {
         guard var record = plannedRecords[id] else { return }
+        guard objectID.isPersistable else {
+            record.deviceLink = nil
+            record.uploadedCRC32 = nil
+            plannedRecords[id] = record
+            library.savePlannedRoute(record)
+            refreshOnDeviceStates()
+            return
+        }
         if let scope = connectedScope {
             record.deviceLink = DeviceRouteLink(
                 serial: scope.serial, epoch: scope.epoch, objectID: objectID)
@@ -1555,7 +1563,7 @@ public final class MainScreenModel {
     /// safe direction: the next push or reconcile re-links).
     public func markTripUploaded(_ id: TripID, objectID: DeviceObjectID?, crc32: UInt32) {
         guard var trip = trip(id) else { return }
-        if let scope = connectedScope, let objectID {
+        if let scope = connectedScope, let objectID, objectID.isPersistable {
             trip.deviceLink = DeviceRouteLink(serial: scope.serial, epoch: scope.epoch, objectID: objectID)
             trip.uploadedCRC32 = crc32
             // The transfer verified this whole-object CRC — record it as device

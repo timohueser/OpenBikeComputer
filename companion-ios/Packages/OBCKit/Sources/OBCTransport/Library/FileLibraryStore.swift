@@ -446,7 +446,7 @@ private struct PlannedRouteFile: Codable {
         summary = RouteSummaryDTO(record.summary)
         route = ImportedRouteDTO(record.route)
         sourceFileName = record.sourceFileName
-        deviceObjectID = record.deviceLink?.objectID.raw
+        deviceObjectID = record.deviceLink.flatMap { $0.objectID.isPersistable ? $0.objectID.raw : nil }
         deviceSerial = record.deviceLink?.serial
         deviceStoreEpoch = record.deviceLink?.epoch
         uploadedCRC32 = record.uploadedCRC32
@@ -458,7 +458,8 @@ private struct PlannedRouteFile: Codable {
 
     func record(sourceFileData: Data) -> PlannedRouteRecord {
         let link: DeviceRouteLink? =
-            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch,
+               DeviceObjectID(deviceObjectID).isPersistable {
                 DeviceRouteLink(
                     serial: deviceSerial, epoch: deviceStoreEpoch,
                     objectID: DeviceObjectID(deviceObjectID))
@@ -511,7 +512,7 @@ private struct TripFile: Codable {
         id = record.id.rawValue
         name = record.name
         stageIDs = record.stageIDs.map(\.rawValue)
-        deviceObjectID = record.deviceLink?.objectID.raw
+        deviceObjectID = record.deviceLink.flatMap { $0.objectID.isPersistable ? $0.objectID.raw : nil }
         deviceSerial = record.deviceLink?.serial
         deviceStoreEpoch = record.deviceLink?.epoch
         uploadedCRC32 = record.uploadedCRC32
@@ -520,7 +521,8 @@ private struct TripFile: Codable {
 
     var record: TripRecord {
         let link: DeviceRouteLink? =
-            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch,
+               DeviceObjectID(deviceObjectID).isPersistable {
                 DeviceRouteLink(
                     serial: deviceSerial, epoch: deviceStoreEpoch,
                     objectID: DeviceObjectID(deviceObjectID))

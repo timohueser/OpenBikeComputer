@@ -14,9 +14,9 @@
 //! | [`fat_extents`] | the map file's FAT chain resolved once into extent runs → direct-block `read_at` (#500): the fast path for the one big read-only file (`.obcm`) whose scattered reads dominate | `embedded-sdmmc` |
 //! | [`ObjectIdSequence`] | monotonic durable-object id candidate, recovery, commit, and persisted-floor handoff | none |
 //! | [`RideCatalog`] | fixed-capacity aligned stored-ride id/filename ownership and scan mutation policy | `embedded-sdmmc`, `heapless` |
+//! | [`Catalog`] | fixed-capacity aligned object rows, durable/session ids, and scan mutation policy | `embedded-sdmmc`, `heapless` |
 //! | [`route_name`] | classify uploaded/side-loaded route filenames and durable ids | none |
 //! | [`trip_name`] | classify uploaded/side-loaded trip filenames and durable ids | none |
-//! | [`TripCatalog`] | fixed-capacity aligned trip id/file/metadata ownership and scan mutation policy | `embedded-sdmmc`, `heapless` |
 //! | [`weather`] | transport-neutral inactive-slot upload transaction: running outer CRC, held magic, canonical post-close validation and magic-flush commit | `obc-weather`, `obc-crc` |
 
 #![no_std]
@@ -24,18 +24,18 @@
 #[cfg(test)]
 extern crate std;
 
+mod catalog;
 pub mod fat_extents;
 mod object_id;
 mod object_name;
 mod ride_catalog;
 pub mod route_name;
 pub mod sd;
-mod trip_catalog;
 pub mod trip_name;
 pub mod weather;
 
+pub use catalog::{Catalog, RemoveAction, ScanAction, ScanRead};
 pub use fat_extents::{ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity};
 pub use object_id::ObjectIdSequence;
 pub use ride_catalog::{RideCatalog, RideRemoveAction, RideScanAction, RideScanRead};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
-pub use trip_catalog::{trip_crc, TripCatalog, TripRemoveAction, TripScanAction, TripScanRead};

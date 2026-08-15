@@ -1,8 +1,9 @@
 import Foundation
 
-/// A **device object id** (`obc-ble-interface-spec.md` §4.1): the durable `u16`
-/// the device's object store names its routes and rides by — assigned on
-/// upload/record, stable across reboots for the life of the stored object.
+/// A **device object id** (`obc-ble-interface-spec.md` §4.1): the wire `u16` the device uses
+/// to name a route, ride, or trip. Values below `0xFF00` are durable for the stored object's life;
+/// `0xFF00...0xFFFE` are session-only side-load identities, and `0xFFFF` is the fresh-object
+/// sentinel. Neither session identities nor the sentinel may be persisted as library links.
 ///
 /// Distinct from the app's **library identity** (`RouteID`) on purpose: the two
 /// namespaces meet only at `PlannedRouteRecord.deviceObjectID` (the persisted
@@ -14,6 +15,10 @@ import Foundation
 /// `UInt16` keep their on-disk shape.
 public struct DeviceObjectID: Hashable, Sendable, Codable {
     public let raw: UInt16
+
+    /// Whether this is a durable object identity that may be persisted as a library link. The
+    /// session-only side-load band and fresh-object sentinel are both deliberately excluded.
+    public var isPersistable: Bool { raw < 0xFF00 }
 
     public init(_ raw: UInt16) { self.raw = raw }
 

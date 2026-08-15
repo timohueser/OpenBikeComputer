@@ -485,7 +485,7 @@ pub async fn run(
                 weather::run(server, store, shared),
             ),
             ride_delete_task(stack, server, store, shared),
-            ride_saved_task(stack, server, store, shared),
+            local_store_changed_task(stack, server, store, shared),
             async {
                 loop {
                     // A Forget-phone request latched between phases: honour it before the next advertise,
@@ -923,19 +923,25 @@ async fn ride_delete_task(
 /// (its next `listRides` includes the ride), and the `STORE_CHANGED` edge re-feeds
 /// the on-device Rides menu next pass. Before this task existed, both projections were boot-scans only
 /// and a freshly-finished ride was invisible everywhere until a reboot.
-async fn ride_saved_task(
+async fn local_store_changed_task(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     store: &core::cell::RefCell<ObjectStore>,
     shared: &'static SharedStoreMutex,
 ) -> ! {
     loop {
-        crate::object_store::wait_ride_saved().await;
-        {
-            let mut guard = shared.lock().await;
-            store.borrow_mut().adopt_saved_rides(&mut guard);
+        let (route, ride) = crate::object_store::wait_local_store_changed().await;
+        if route {
+            info!("ble: [store] publishing local route catalog change");
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
         }
-        info!("ble: [store] adopted freshly-saved ride(s) into the catalog");
-        data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Ride).await;
+        if ride {
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().adopt_saved_rides(&mut guard);
+            }
+            info!("ble: [store] adopted freshly-saved ride(s) into the catalog");
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Ride).await;
+        }
     }
 }

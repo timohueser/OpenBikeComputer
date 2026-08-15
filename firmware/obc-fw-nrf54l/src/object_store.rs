@@ -35,14 +35,13 @@
 //! state, and settings cache) stays behind a `RefCell` the BLE planes borrow **never across an
 //! `await`** (single executor).
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
-use heapless::Vec;
 use obc_app::settings::DeviceName;
 use obc_app::{Retention, Settings, MAX_RIDES, MAX_ROUTES, MAX_TRIPS};
 use obc_ble::{
@@ -50,7 +49,6 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
-use obc_storage::route_name;
 use obc_storage::weather as weather_store;
 
 use crate::sd::Storage;
@@ -76,18 +74,32 @@ pub enum SetRetentionResult {
 /// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
 /// phone's `storeChanged`. The map plane's ride loop drains it each pass via
 /// [`take_store_changed`] and rings [`App::apply_event`](obc_app::App::apply_event),
-/// so the on-device catalog can react (the live rescan is P3 #450). A counter, not a flag, so a
+/// so the on-device projections can react. A counter, not a flag, so a
 /// burst of commits between passes is never coalesced into a single missed edge.
 ///
 /// It lives as a module static rather than a field because the `ObjectStore` lives behind the BLE
 /// planes' `RefCell` while the app lives in the ride loop — this is the lock-free hand-off between
 /// them, matching the `ble::state` publish pattern.
 static STORE_CHANGED: AtomicU32 = AtomicU32::new(0);
+/// Canonical route-store revision. Keeping it atomic lets the ride loop publish a locally planned
+/// `_NAV.OBR` in the same shared-store critical section that mutates the route catalog; USB and BLE
+/// can therefore never observe new rows under the previous revision.
+static ROUTE_REVISION: AtomicU32 = AtomicU32::new(1);
 
 /// Drain the count of store movements since the last call (epic #447). The ride loop calls this once
 /// per pass and rings `App::apply_event` that many times. `0` = nothing moved.
 pub fn take_store_changed() -> u32 {
     STORE_CHANGED.swap(0, Ordering::Relaxed)
+}
+
+/// Commit one route-catalog revision edge. ObjectStore mutations and local navigation both funnel
+/// through this exact operation; callers perform it while their catalog mutation is still under
+/// the shared-store lock.
+fn bump_route_revision() -> u32 {
+    let revision = ROUTE_REVISION.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
+    STORE_WAKE.signal(());
+    revision
 }
 
 /// The latest **committed route upload** for the app UI (epic #447, P4): which durable id landed
@@ -97,8 +109,8 @@ pub fn take_store_changed() -> u32 {
 /// uploads replace the prompt, most recent wins), so a burst between passes needs no queue.
 ///
 /// Published by [`ObjectStore::upload_finish`] **before** its revision bump, so the pass the
-/// [`STORE_WAKE`] pulls out of warm sleep sees the rescan edge and this event together; the ride
-/// loop drains the rescan **first** (the id must resolve against the fresh catalog), then rings
+/// [`STORE_WAKE`] pulls out of warm sleep sees the projection edge and this event together; the ride
+/// loop refreshes the projection **first** (the id must resolve against the canonical catalog), then rings
 /// [`App::apply_event`](obc_app::App::apply_event). Same module-static
 /// hand-off pattern as [`STORE_CHANGED`] — the store lives behind the BLE planes' `RefCell`, the
 /// app in the ride loop; both are cooperative tasks on the one executor, so `Relaxed` suffices.
@@ -235,24 +247,33 @@ pub(crate) async fn wait_trip_cascade() -> u16 {
     TRIP_CASCADE_REQ.wait().await
 }
 
-/// A locally-finished ride committed its `RD{id}.ORD` (the ride loop drained
-/// [`Storage::take_ride_saved`](crate::sd::Storage::take_ride_saved)). The BLE plane drains this and
-/// runs [`ObjectStore::adopt_saved_rides`] — the `/tracks` rescan + revision bump — so **one edge**
-/// feeds every consumer exactly like an upload or delete does: the phone gets `storeChanged(ride)` +
-/// the fresh digest, and the resulting [`STORE_CHANGED`] edge re-feeds the on-device Rides menu next
-/// pass. Without it a finished ride was invisible everywhere until a reboot (the boot scan was the
-/// only thing that ever read `/tracks` into either catalog). A coalescing `Signal<()>` — the drain
-/// rescans the whole directory, so a burst of saves needs no queue and no payload.
-static RIDE_SAVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Local media changes already committed by the ride loop: a finished ride needs repository adopt,
+/// while a newly planned `_NAV.OBR` has already moved the canonical route revision and needs its BLE
+/// notification. A bitset preserves both kinds if they land before the existing single BLE drain
+/// task runs; the signal only wakes that task and adds no queue or task.
+static LOCAL_STORE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static LOCAL_STORE_KINDS: AtomicU8 = AtomicU8::new(0);
+const LOCAL_ROUTE: u8 = 1;
+const LOCAL_RIDE: u8 = 2;
+
+/// Publish a local route catalog change atomically: advance the shared revision and wake the link.
+pub(crate) fn publish_local_route_changed() {
+    bump_route_revision();
+    LOCAL_STORE_KINDS.fetch_or(LOCAL_ROUTE, Ordering::Relaxed);
+    LOCAL_STORE_CHANGED.signal(());
+}
 
 /// Post the saved-ride edge from the ride loop.
 pub(crate) fn note_ride_saved() {
-    RIDE_SAVED.signal(());
+    LOCAL_STORE_KINDS.fetch_or(LOCAL_RIDE, Ordering::Relaxed);
+    LOCAL_STORE_CHANGED.signal(());
 }
 
-/// The BLE plane's saved-ride arm: resolves once a ride object lands after the last drain.
-pub(crate) async fn wait_ride_saved() {
-    RIDE_SAVED.wait().await
+/// The BLE plane's existing local-store arm: resolves with every kind posted since its last drain.
+pub(crate) async fn wait_local_store_changed() -> (bool, bool) {
+    LOCAL_STORE_CHANGED.wait().await;
+    let kinds = LOCAL_STORE_KINDS.swap(0, Ordering::Relaxed);
+    (kinds & LOCAL_ROUTE != 0, kinds & LOCAL_RIDE != 0)
 }
 
 // ==================== BLE-initiated DFU install request (S6, #621) ====================
@@ -368,13 +389,6 @@ pub(crate) fn take_ble_clock() -> Option<(u32, i16)> {
     BLE_CLOCK_SET.try_take()
 }
 
-/// One route-catalog slot: the object id and where its bytes live.
-struct ObjectSlot {
-    id: u16,
-    file: ShortFileName,
-    byte_len: u32,
-}
-
 /// The list-object buffer: header + one entry per slot of whichever catalog encodes **larger** (both
 /// lists stream from the same scratch — one transfer at a time). Protocol v2 gives the two lists
 /// different entry sizes (`routeList` 76 B with its content CRC, `rideList` 72 B), so the larger
@@ -391,8 +405,9 @@ const LIST_BUF_LEN: usize = {
     }
 };
 
-// The side-load id band base lives in `sd.rs` beside the session registry both scanners share
-// (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
+// Routes and trips use the same wire-reserved side-load band but have independent per-type catalog
+// registries: a route-heavy card cannot exhaust trip session ids, and reordered names cannot share
+// stale side-band identity across object types.
 use crate::sd::SIDELOAD_ID_BASE;
 
 /// The one place a volume-set refusal becomes a wire status (issue #1039). `obc_app::set_upload`
@@ -420,21 +435,12 @@ pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
     /// card and the RRAM store themselves are **not** owned here: they live in the shared
     /// [`SharedStore`] both planes lock, which each storage/settings method takes as a `&mut` param
-    /// (#270). Keeping only the catalog + this cache in `ObjectStore` lets the BLE planes hold it
+    /// (#270). Keeping only this cache and transfer scratch in `ObjectStore` lets the BLE planes hold it
     /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
-    routes: Vec<ObjectSlot, MAX_ROUTES>,
-    /// The next fresh-upload object id (ids are never reused within a boot).
-    next_id: u16,
-    /// The store revision: monotonic per boot, bumped on every route/ride commit/delete.
-    revision: u32,
     /// The **trip** store revision — monotonic per boot, its own counter (spec §4.3: a trip
     /// commit/delete bumps the trip store, never the route store). Stamped into `storeChanged(trip)`.
     trip_revision: u32,
-    /// Full route-catalog size **before** the [`MAX_ROUTES`] cap — the `routeList` header's `total`
-    /// (epic #632 item 7). Equal to `routes.len()` when the card fits the cap; greater when the scan
-    /// dropped the excess, which the app surfaces as a truncation warning.
-    route_total: u16,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
     /// The **volume set** being received, if any (issue #1039). A set is several transfers, so
@@ -493,24 +499,15 @@ impl ObjectStore {
     /// `RefCell::new(empty())` and stack the two ~13.6 KB temporaries again (the boot-chain guard
     /// caught it, as designed). A constant can't be duplicated onto the stack; everything that
     /// scans stays in [`hydrate`], operating on the slot directly.
-    pub const EMPTY: ObjectStore = ObjectStore {
-        settings: Settings::DEFAULT,
-        routes: Vec::new(),
-        next_id: 0,
-        revision: 1,
-        trip_revision: 1,
-        route_total: 0,
-        list_buf: [0; LIST_BUF_LEN],
-        set_upload: None,
-    };
+    pub const EMPTY: ObjectStore =
+        ObjectStore { settings: Settings::DEFAULT, trip_revision: 1, list_buf: [0; LIST_BUF_LEN], set_upload: None };
 
-    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings, scan
-    /// `/routes` into the id table, and sweep aborted commits (files whose held-back magic never
-    /// got patched — see `sd.rs`). Runs under a boot-time lock of the shared store (`shared`),
-    /// which it borrows for the settings load + scans.
+    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings, recover the
+    /// canonical trip repository for every link composition, and apply persisted id floors to the
+    /// route/trip owners. Route and ride scans already ran at the normal or map-recovery composition
+    /// point, before this link store becomes visible.
     pub fn hydrate(&mut self, shared: &mut SharedStore) {
         self.settings = shared.settings.load().unwrap_or_default();
-        self.rescan(shared);
         // The canonical ride catalog is scanned exactly once at each composition point: normal
         // boot does it before projecting the UI, while map recovery does it before calling
         // `init_store`. Hydrate must not rescan behind the already-projected UI without a revision.
@@ -525,7 +522,9 @@ impl ObjectStore {
         // so an id deleted last session can't be re-issued (the phone's persisted `deviceObjectID`s
         // key on it). A blank/torn line is "no floor" → exactly the old scan-derived start.
         if let Some(m) = shared.settings.load_id_marks() {
-            self.next_id = self.next_id.max(m.next_route_id);
+            if let Some(storage) = &mut shared.storage {
+                storage.routes(shared.routes).observe_floor(m.next_route_id);
+            }
         }
         // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
         if let Some(floor) = shared.settings.load_trip_mark() {
@@ -534,6 +533,10 @@ impl ObjectStore {
             }
         }
         if let Some(storage) = &mut shared.storage {
+            let routes = storage.routes(shared.routes);
+            let (route_len, _, route_candidate) = routes.state();
+            let route_candidate = route_candidate.unwrap_or(SIDELOAD_ID_BASE);
+            defmt::info!("store: {=usize} route object(s), next id {=u16}", route_len, route_candidate);
             let trips = storage.trips();
             let len = trips.len();
             let candidate = trips.candidate().unwrap_or(SIDELOAD_ID_BASE);
@@ -541,77 +544,20 @@ impl ObjectStore {
         }
     }
 
-    /// (Re)build the id table from the card. Uploaded files carry their **durable id in the
-    /// filename** (`RT{id}.OBR`); side-loaded `.obcr` files get session ids from the
-    /// [`SIDELOAD_ID_BASE`] band. `next_id` resumes past the highest stored upload id, so a
-    /// fresh upload can't alias a stored object across reboots.
-    fn rescan(&mut self, shared: &mut SharedStore) {
-        self.routes.clear();
-        self.route_total = 0;
-        let Some(storage) = &mut shared.storage else { return };
-        let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
-        // Count how many route files the cap dropped (epic #632 item 7): `route_total` = listed +
-        // dropped, so the `routeList` header's `total` exceeds `count` exactly when the scan
-        // truncated — the app then warns instead of silently answering "up to date".
-        let mut over_cap: u16 = 0;
-        storage.for_each_route_file(|n| {
-            if names.push(n.clone()).is_err() {
-                over_cap = over_cap.saturating_add(1);
-            }
-        });
-        for name in &names {
-            match storage.route_object_info(name) {
-                Some((byte_len, _)) => {
-                    let id = match route_name::uploaded_id(name.base_name(), name.extension()) {
-                        Some(id) => {
-                            self.next_id = self.next_id.max(id.saturating_add(1));
-                            id
-                        }
-                        // Side-loads draw from the session registry shared with the ride loop's
-                        // catalog scan (`Storage::sideload_id`) so both tables carry identical
-                        // ids; `None` = band/registry exhausted → not listed rather than aliased.
-                        None => match storage.sideload_id(name) {
-                            Some(id) => id,
-                            None => continue,
-                        },
-                    };
-                    let _ = self.routes.push(ObjectSlot { id, file: name.clone(), byte_len });
-                }
-                // Unreadable: reclaim it only if it carries the aborted-commit signature (the
-                // zeroed magic) — transiently unreadable real routes must be kept.
-                None => {
-                    if storage.is_aborted_commit(name) {
-                        defmt::info!("store: sweeping aborted commit {}", defmt::Debug2Format(name));
-                        let _ = storage.delete_route_file(name);
-                    }
-                }
-            }
-        }
-        // `total` = listed entries + those the cap dropped (see `over_cap` above).
-        self.route_total = (self.routes.len() as u16).saturating_add(over_cap);
-        defmt::info!("store: {=usize} route object(s), next id {=u16}", self.routes.len(), self.next_id);
-    }
-
     /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
     /// stamps it into the `storeChanged` status message (protocol v2's sole change signal — the
     /// `objectStore` digest characteristic is retired).
     pub fn revision(&self) -> u32 {
-        self.revision
+        ROUTE_REVISION.load(Ordering::Relaxed)
     }
 
     fn bump_revision(&mut self) -> u32 {
-        self.revision = self.revision.wrapping_add(1);
-        // Signal the app UI (epic #447): every commit/delete funnels through here, so this is the one
-        // spot that raises the store-changed edge the ride loop drains — the same movement that
-        // notifies the phone's `storeChanged` — and wakes the loop if it's parked (#450).
-        STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
-        STORE_WAKE.signal(());
-        self.revision
+        bump_route_revision()
     }
 
     /// Bump the **trip** store's own revision (epic #526 TR4; spec §4.3 — separate from the route
-    /// revision) and raise the same app-side rescan edge a route/ride move does (the ride loop rescans
-    /// routes + rides + trips off one `STORE_CHANGED` counter).
+    /// revision) and raise the same app-side projection edge a route/ride move does (the ride loop
+    /// refreshes routes + rides + trips off one `STORE_CHANGED` counter).
     fn bump_trip_revision(&mut self) -> u32 {
         self.trip_revision = self.trip_revision.wrapping_add(1);
         STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
@@ -629,25 +575,9 @@ impl ObjectStore {
         shared.storage.as_mut().is_some_and(|storage| storage.trips().contains(id))
     }
 
-    fn slot_index(&self, id: u16) -> Option<usize> {
-        self.routes.iter().position(|s| s.id == id)
-    }
-
-    /// The stored **route** holding exactly this content — same byte length AND the same
-    /// whole-object CRC in the `/routes` sidecar — or `None`. The fresh-upload dedup lookup
-    /// (`upload_finish`): content identity is the CRC (epic #632), the length check is free
-    /// belt-and-braces. A route with no sidecar entry yet (side-loaded, not yet listed) simply
-    /// never matches — the safe direction (worst case a true duplicate of a side-load, never a
-    /// wrong id).
-    fn find_route_by_content(&self, shared: &SharedStore, crc: u32, byte_len: u32) -> Option<u16> {
-        let storage = shared.storage.as_ref()?;
-        let crcs = storage.load_route_crcs();
-        self.routes.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
-    }
-
     /// Whether a route object with this id exists (the control plane's cheap `notFound` check).
-    pub fn has_route(&self, id: u16) -> bool {
-        self.slot_index(id).is_some()
+    pub fn has_route(&self, shared: &mut SharedStore, id: u16) -> bool {
+        shared.storage.as_mut().is_some_and(|storage| storage.routes(shared.routes).admission(id).0)
     }
 
     /// Whether a ride object with this id exists (the download-request `notFound` check).
@@ -731,18 +661,11 @@ impl ObjectStore {
 
     /// Delete a stored route by object id. `true` = deleted (revision bumped).
     pub fn delete_route(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.slot_index(id) else { return false };
-        let Some(storage) = &mut shared.storage else { return false };
-        if !storage.delete_route_file(&self.routes[idx].file) {
+        let SharedStore { storage, routes, .. } = shared;
+        let Some(storage) = storage else { return false };
+        if !storage.routes(routes).delete(id) {
             return false;
         }
-        // Retire the route's content-CRC sidecar entry (epic #632 item 6) — ids never reuse, so this
-        // is belt-and-braces tidiness that keeps the sidecar from carrying a stale fingerprint.
-        storage.forget_route_crc(id);
-        // …and its retention entry (auto-expiry epic #638, S3), same never-reuse tidiness.
-        storage.forget_route_retention(id);
-        self.routes.remove(idx);
-        self.route_total = self.route_total.saturating_sub(1);
         self.bump_revision();
         true
     }
@@ -767,7 +690,8 @@ impl ObjectStore {
     /// (never the route store, §4.3). `true` = deleted; an unknown id → `false` (the handler answers
     /// `notFound`).
     pub fn delete_trip(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(storage) = &mut shared.storage else { return false };
+        let SharedStore { storage, .. } = shared;
+        let Some(storage) = storage else { return false };
         if !storage.trips().delete(id) {
             return false;
         }
@@ -853,17 +777,16 @@ impl ObjectStore {
         id: u16,
         retention: Retention,
     ) -> SetRetentionResult {
-        if !self.has_route(id) {
-            return SetRetentionResult::NotFound;
-        }
-        let Some(storage) = shared.storage.as_mut() else {
+        let SharedStore { storage, routes, .. } = shared;
+        let Some(storage) = storage else { return SetRetentionResult::NotFound };
+        let Some(result) = storage.routes(routes).set_retention(id, retention) else {
             return SetRetentionResult::NotFound;
         };
-        match storage.set_route_retention_level(id, retention) {
+        match result {
             Ok(false) => SetRetentionResult::Unchanged, // already that level — `ok`, no bump (idempotence pin)
             Ok(true) => {
                 // Durable success only: bump the route revision so `storeChanged(route)` + the ride
-                // loop's rescan re-feed the fresh retention.
+                // loop's projection re-feed the fresh retention.
                 self.bump_revision();
                 SetRetentionResult::Changed
             }
@@ -874,7 +797,7 @@ impl ObjectStore {
     /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
     /// the phone's `storeChanged(ride)` + digest and the ride loop's [`STORE_CHANGED`] edge (→ the
     /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete
-    /// takes. Driven by [`wait_ride_saved`] in `ble::run`'s `ride_saved_task`.
+    /// takes. Driven by [`wait_local_store_changed`] in `ble::run`'s local-store task.
     pub fn adopt_saved_rides(&mut self, shared: &mut SharedStore) {
         let SharedStore { storage, rides, .. } = shared;
         if let Some(storage) = storage {
@@ -885,7 +808,7 @@ impl ObjectStore {
 
     /// Mark a ride as synced (epic #447, P7): set the `/tracks` synced-set flag when a ride download
     /// **completes**, so the Rides screen's delete footer drops the "not synced" cue. A revision bump
-    /// funnels the change to the ride loop (via `STORE_CHANGED`) so its live rescan re-feeds the Rides
+    /// funnels the change to the ride loop (via `STORE_CHANGED`) so its live projection re-feeds the Rides
     /// menu with the freshened flag — without changing the ride *count* the phone reconciles on.
     /// A no-op (no bump) when the ride was already flagged.
     pub fn mark_ride_synced(&mut self, shared: &mut SharedStore, id: u16) {
@@ -903,20 +826,21 @@ impl ObjectStore {
     /// offset is rejected (`Receiver::new`) — the app always sends 0. The SD temp is **not** opened
     /// here: the data plane opens it via [`upload_begin`](Self::upload_begin) at the first CoC byte,
     /// so an armed transfer whose CoC never opens holds no storage handle.
-    pub fn upload_open(&mut self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+    pub fn upload_open(
+        &mut self,
+        shared: &mut SharedStore,
+        desc: &TransferControl,
+    ) -> Result<Receiver, TransferStatus> {
         // Descriptor-open reject, before any byte streams (issue #452): a *new* upload (id 0xFFFF or a
         // named id we don't hold) is refused when the catalog can't grow — StorageFull if the route
         // table is at MAX_ROUTES or the durable-id space is exhausted, NotFound for a named-but-unknown
         // id with room to spare. A replace-by-id of an existing route reuses its slot and is exempt
         // (updating the actively-navigated route must never hit the cap). The wire crate owns the rule.
-        let catalog_full = self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE;
-        let id_known = self.slot_index(desc.object_id).is_some();
-        if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, id_known, catalog_full) {
+        let Some(storage) = shared.storage.as_mut() else { return Err(TransferStatus::Error) };
+        let routes = storage.routes(shared.routes);
+        let (known, full, _, candidate) = routes.admission(desc.object_id);
+        if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, known, full || candidate.is_none()) {
             return Err(status);
-        }
-        // No card ⇒ no upload; answer now rather than after the CoC opens.
-        if shared.storage.is_none() {
-            return Err(TransferStatus::Error);
         }
         Receiver::new(desc).map_err(|_| TransferStatus::Error)
     }
@@ -1029,56 +953,45 @@ impl ObjectStore {
         // that id exactly as if the first ack had arrived. Checked before the storage-full backstop:
         // a dedup hit consumes no slot, so a full catalog must not fail it.
         if fresh {
-            if let Some(id) = self.find_route_by_content(shared, whole_crc, rx.total_len()) {
+            let duplicate = shared
+                .storage
+                .as_mut()
+                .and_then(|storage| storage.routes(shared.routes).find_by_content(whole_crc, rx.total_len()));
+            if let Some(id) = duplicate {
                 self.upload_discard(shared);
                 return (id, TransferStatus::Committed);
             }
         }
-        if fresh && (self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE) {
+        let (catalog_full, replace_file, candidate) = {
+            let Some(storage) = shared.storage.as_mut() else { return (rx.object_id(), TransferStatus::Error) };
+            let routes = storage.routes(shared.routes);
+            let (_, full, file, candidate) = routes.admission(rx.object_id());
+            (full || candidate.is_none(), (!fresh).then_some(file).flatten(), candidate)
+        };
+        if fresh && catalog_full {
             // Storage-full backstop: `upload_open` already rejects new uploads at descriptor-open
             // time (before any byte streams), so reaching here means the catalog filled *during* the
             // transfer. Same typed status, so the phone's handling is identical either way.
             self.upload_discard(shared);
             return (rx.object_id(), TransferStatus::StorageFull);
         }
-        let replace_idx = if fresh { None } else { self.slot_index(rx.object_id()) };
-        let Some(storage) = &mut shared.storage else { return (rx.object_id(), TransferStatus::Error) };
-        let replace_file = replace_idx.map(|i| self.routes[i].file.clone());
-        match storage.upload_commit(replace_file.as_ref(), self.next_id) {
-            Some((file, byte_len, _info)) => {
-                let id = match replace_idx {
-                    Some(i) => {
-                        self.routes[i].byte_len = byte_len;
-                        self.routes[i].file = file;
-                        self.routes[i].id
-                    }
-                    None => {
-                        let id = self.next_id;
-                        self.next_id += 1;
-                        // Bump the persisted high-water past the assignment (#450) — one 16-byte
-                        // RRAM line per fresh upload — so this id stays reserved across deletes
-                        // and reboots. The ride floor in the same line is untouched.
-                        let mut m = shared.settings.load_id_marks().unwrap_or_default();
-                        m.next_route_id = m.next_route_id.max(self.next_id);
-                        shared.settings.save_id_marks(&m);
-                        let _ = self.routes.push(ObjectSlot { id, file, byte_len });
-                        // A fresh route grows the catalog (a replace reuses its slot) — keep `total`
-                        // in step so the next `routeList` header's count == total (untruncated).
-                        self.route_total = self.route_total.saturating_add(1);
-                        id
-                    }
-                };
-                // Persist the verified whole-object CRC into the `/routes` content-CRC sidecar in the
-                // same movement (epic #632 item 6) — a replace upserts the id's fingerprint, a fresh
-                // upload records it — so the route's `routeList` entry serves its CRC immediately,
-                // never lazily. (A side-loaded route, which never passes through here, fills lazily.)
-                storage.set_route_crc(id, whole_crc);
+        let fresh_id = candidate.unwrap_or(SIDELOAD_ID_BASE);
+        let SharedStore { storage, routes, settings, .. } = shared;
+        let Some(storage) = storage else { return (rx.object_id(), TransferStatus::Error) };
+        match storage.routes(routes).promote_temp(replace_file.as_ref(), fresh_id) {
+            Some((file, byte_len)) => {
+                let replaced = replace_file.is_some();
+                let id = storage
+                    .routes(routes)
+                    .record_commit(replaced.then_some(rx.object_id()), file, byte_len, whole_crc, |floor| {
+                        let mut marks = settings.load_id_marks().unwrap_or_default();
+                        marks.next_route_id = marks.next_route_id.max(floor);
+                        settings.save_id_marks(&marks);
+                    })
+                    .expect("validated media commit must fit its reserved canonical route row");
                 // The app-UI upload event (#451): the committed id + fresh-vs-replace, published
                 // before the revision bump so the STORE_WAKE'd pass sees both edges together.
-                UPLOAD_EVENT.store(
-                    UPLOAD_EVENT_PRESENT | ((replace_idx.is_some() as u32) << 16) | id as u32,
-                    Ordering::Relaxed,
-                );
+                UPLOAD_EVENT.store(UPLOAD_EVENT_PRESENT | ((replaced as u32) << 16) | id as u32, Ordering::Relaxed);
                 self.bump_revision();
                 (id, TransferStatus::Committed)
             }
@@ -1086,14 +999,8 @@ impl ObjectStore {
                 // Validation/copy failed. If this was a replace, the old file may already be
                 // gone (deleted after validation, before the copy landed) — re-check it and
                 // drop its slot if so, so the catalog matches the card.
-                if let Some(i) = replace_idx {
-                    let gone =
-                        shared.storage.as_ref().is_none_or(|s| s.route_object_info(&self.routes[i].file).is_none());
-                    if gone {
-                        self.routes.remove(i);
-                        self.route_total = self.route_total.saturating_sub(1);
-                        self.bump_revision();
-                    }
+                if !fresh && storage.routes(routes).repair_failed_replace(rx.object_id()) {
+                    self.bump_revision();
                 }
                 (rx.object_id(), TransferStatus::Error)
             }
@@ -1175,7 +1082,7 @@ impl ObjectStore {
                     .is_some_and(|storage| storage.trips().record_commit(id, replaced, commit, whole_crc));
                 debug_assert!(recorded, "validated trip commit must fit its reserved catalog row");
                 // The app-UI trip upload event: the committed id + fresh-vs-replace, published
-                // before the revision bump so the STORE_WAKE'd pass sees the rescan edge and this
+                // before the revision bump so the STORE_WAKE'd pass sees the projection edge and this
                 // event together. Only a *fresh* trip pops the "TRIP RECEIVED" card — the app
                 // suppresses the replace case, a host-side edit (see [`TRIP_UPLOAD_EVENT`]).
                 TRIP_UPLOAD_EVENT
@@ -1185,10 +1092,9 @@ impl ObjectStore {
             }
             None => {
                 if replaced {
-                    let gone = shared
-                        .storage
-                        .as_mut()
-                        .is_none_or(|storage| storage.trips().repair_failed_replace(rx.object_id()));
+                    let SharedStore { storage, .. } = shared;
+                    let gone =
+                        storage.as_mut().is_none_or(|storage| storage.trips().repair_failed_replace(rx.object_id()));
                     if gone {
                         self.bump_trip_revision();
                     }
@@ -1862,10 +1768,13 @@ impl ObjectStore {
                 Ok((tx, DownloadSource::List))
             }
             ObjectType::Route => {
-                let Some(idx) = self.slot_index(desc.object_id) else {
+                let file = shared
+                    .storage
+                    .as_mut()
+                    .and_then(|storage| storage.routes(shared.routes).admission(desc.object_id).2);
+                let Some(file) = file else {
                     return Err(TransferStatus::NotFound);
                 };
-                let file = self.routes[idx].file.clone();
                 self.open_object_download(shared, desc, &file, false)
             }
             // A trip detail download is the same verbatim stream as a route — the stored `TP{id}.OBT`
@@ -1907,6 +1816,7 @@ impl ObjectStore {
     /// [`Self::list_buf`], returning its byte length: identity, the persisted boot counter, uptime, the
     /// link counters, and the store's view of the card.
     fn build_diagnostics(&mut self, shared: &mut SharedStore, link: &DiagInput<'_>) -> usize {
+        let route_count = shared.storage.as_mut().map_or(0, |storage| storage.routes(shared.routes).state().0);
         let ride_count = {
             let SharedStore { storage, rides, .. } = &mut *shared;
             storage.as_mut().map_or(0, |storage| storage.rides(rides).len())
@@ -1927,7 +1837,7 @@ impl ObjectStore {
                 link.connects,
                 link.disconnects,
                 link.last_disconnect_reason,
-                self.routes.len(),
+                route_count,
                 ride_count,
                 if shared.storage.is_some() { "ok" } else { "--" },
                 // The A9 soak-rig health numbers: the deepest stack use the ride loop has painted
@@ -2000,8 +1910,8 @@ impl ObjectStore {
     /// list would make it drop a still-present object. `None` → the caller answers a typed `error`
     /// and the app retries, keeping its links.
     ///
-    /// The v2 header carries `total` (the pre-cap catalog size, from [`Self::route_total`] or the
-    /// canonical ride repository) beside `count`, so a `MAX_ROUTES`/`MAX_RIDES` truncation is visible on
+    /// The v2 header carries `total` (the canonical repositories' pre-cap catalog size) beside
+    /// `count`, so a `MAX_ROUTES`/`MAX_RIDES` truncation is visible on
     /// the wire. `routeList` entries also carry the content CRC (see [`Self::build_route_list`]).
     fn build_list(&mut self, shared: &mut SharedStore, ty: ObjectType) -> Option<usize> {
         let (body_len, count, total, entry_len) = match ty {
@@ -2025,37 +1935,15 @@ impl ObjectStore {
     /// entry_len)`. `None` on a transient header-read failure (fails the whole list — see
     /// [`Self::build_list`]).
     fn build_route_list(&mut self, shared: &mut SharedStore) -> Option<(usize, u16, u16, u8)> {
-        let Some(storage) = shared.storage.as_mut() else {
+        let SharedStore { storage, routes, .. } = shared;
+        let Some(storage) = storage else {
             return Some((ListHeader::ENCODED_LEN, 0, 0, RouteListEntry::ENTRY_LEN as u8));
         };
-        let mut crcs = storage.load_route_crcs();
-        // The per-route retention state (auto-expiry epic #638 S4): one sidecar read for the whole
-        // build. Each entry's `expires_at` is device-computed (`last_used + retention days`, `0` for
-        // Never or an unstarted clock) — **volatile** state, so it rides the entry tail *after* the
-        // content crc32, never conflated with the route-content fingerprint.
-        let retention = storage.load_route_retention();
-        let mut crcs_dirty = false;
         let mut off = ListHeader::ENCODED_LEN;
-        let mut count: u16 = 0;
-        for i in 0..self.routes.len() {
-            let id = self.routes[i].id;
-            let file = self.routes[i].file.clone();
-            let (byte_len, info) = storage.route_object_info(&file)?; // transient → fail whole list
-            let crc = match crcs.get(id) {
-                Some(c) => c,
-                // Lazy fill: stream the whole file once through the detail-download handle slot
-                // (idle during a list build) to compute the CRC, then remember it as dirty.
-                None => match storage.file_crc(&file) {
-                    Some(c) => {
-                        if crcs.insert(id, c) {
-                            crcs_dirty = true;
-                        }
-                        c
-                    }
-                    None => RouteListEntry::CRC_UNKNOWN, // transient read failure → 0 = unknown
-                },
-            };
-            let meta = retention.get(id);
+        let list_buf = &mut self.list_buf;
+        let mut repository = storage.routes(routes);
+        let total = repository.state().1;
+        let count = repository.for_each_list_row(|id, byte_len, info, crc, meta| {
             let entry = RouteListEntry {
                 object_id: id,
                 byte_len,
@@ -2070,15 +1958,10 @@ impl ObjectStore {
                 retention: meta.retention.as_u8(),
             }
             .encode();
-            self.list_buf[off..off + RouteListEntry::ENTRY_LEN].copy_from_slice(&entry);
+            list_buf[off..off + RouteListEntry::ENTRY_LEN].copy_from_slice(&entry);
             off += RouteListEntry::ENTRY_LEN;
-            count += 1;
-        }
-        // Persist any lazy fills in one write (skipped when every route already had a sidecar entry).
-        if crcs_dirty {
-            storage.write_route_crcs(&crcs);
-        }
-        Some((off, count, self.route_total, RouteListEntry::ENTRY_LEN as u8))
+        })?;
+        Some((off, count, total, RouteListEntry::ENTRY_LEN as u8))
     }
 
     /// Build the `rideList` into [`Self::list_buf`] — unchanged 72-byte entries (no content CRC).
@@ -2120,16 +2003,18 @@ impl ObjectStore {
     /// `0 = unknown`. Returns `(body_len, count, total, entry_len)`; `None` on a transient trip-header
     /// read failure (fails the whole list — see [`build_list`](Self::build_list)).
     fn build_trip_list(&mut self, shared: &mut SharedStore) -> Option<(usize, u16, u16, u8)> {
-        let Some(storage) = shared.storage.as_mut() else {
+        let SharedStore { storage, routes, .. } = shared;
+        let Some(storage) = storage else {
             return Some((ListHeader::ENCODED_LEN, 0, 0, TripListEntry::ENTRY_LEN as u8));
         };
         let mut off = ListHeader::ENCODED_LEN;
-        let routes = &self.routes;
+        let route_catalog = &**routes;
         let list_buf = &mut self.list_buf;
         let mut trips = storage.trips();
         let total = trips.total();
         let count = trips.for_each_list_row(
-            |stage_id| routes.iter().find(|slot| slot.id == stage_id).map(|slot| slot.file.clone()),
+            route_catalog,
+            |stage_id| route_catalog.get(stage_id).map(|(_, file, _)| file.clone()),
             |id, byte_len, total_distance_m, total_ascent_m, stage_count, meta, crc| {
                 let entry = TripListEntry {
                     object_id: id,

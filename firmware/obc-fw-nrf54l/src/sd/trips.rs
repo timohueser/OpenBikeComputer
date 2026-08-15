@@ -5,16 +5,20 @@
 //! and companion-link planes therefore observe the same ids, filenames, ordering, and metadata.
 
 use super::*;
-use obc_storage::{trip_crc, TripCatalog, TripRemoveAction, TripScanAction, TripScanRead};
+use obc_storage::{Catalog, RemoveAction, ScanAction, ScanRead};
+
+const CRC_BINDING: u8 = 0;
 
 const _: () = {
     assert!(core::mem::size_of::<Option<TripMeta>>() == core::mem::size_of::<TripMeta>());
     assert!(core::mem::align_of::<Option<TripMeta>>() == core::mem::align_of::<TripMeta>());
     assert!(
-        core::mem::size_of::<TripCatalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>>()
+        core::mem::size_of::<Catalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>>()
             == core::mem::size_of::<Vec<u16, MAX_TRIPS>>()
                 + core::mem::size_of::<Vec<ShortFileName, MAX_TRIPS>>()
                 + core::mem::size_of::<Vec<TripMeta, MAX_TRIPS>>()
+                + core::mem::size_of::<Vec<ShortFileName, MAX_TRIPS>>()
+                + core::mem::size_of::<u32>()
     );
 };
 
@@ -32,6 +36,7 @@ impl<'a> Trips<'a> {
     /// Rebuild the canonical catalog in directory order. Only the exact zero-marker interrupted
     /// commit is swept; a generic read failure remains on media for a later rescan.
     pub(crate) fn scan(&mut self) {
+        self.rebind_sideload_crcs();
         self.storage.trip_catalog.clear();
         let Some(dir) = self.storage.routes_dir else { return };
         let mut names: Vec<ShortFileName, MAX_TRIPS> = Vec::new();
@@ -46,30 +51,30 @@ impl<'a> Trips<'a> {
         }
 
         for name in names {
-            let uploaded = trip_name::uploaded_id(name.base_name(), name.extension());
-            let Some(id) = uploaded.or_else(|| self.storage.sideload_id(&name)) else {
+            let parsed = trip_name::uploaded_id(name.base_name(), name.extension());
+            let Some((id, uploaded)) = self.storage.trip_catalog.id_for_scan(parsed, &name) else {
                 defmt::warn!("SD: trip {} has no object id — not listed", defmt::Debug2Format(&name));
                 continue;
             };
             let read = match self.read_file(&name) {
-                Some((_, meta, _)) => TripScanRead::Valid(Some(meta)),
-                None if self.storage.is_aborted_commit(&name) => TripScanRead::ZeroMarker,
-                None => TripScanRead::Unreadable,
+                Some((_, meta, _)) => ScanRead::Valid(Some(meta)),
+                None if self.storage.is_aborted_commit(&name) => ScanRead::ZeroMarker,
+                None => ScanRead::Unreadable,
             };
-            match self.storage.trip_catalog.observe_scan(id, uploaded.is_some(), name.clone(), read) {
-                TripScanAction::Cataloged => {}
-                TripScanAction::Sweep => {
+            match self.storage.trip_catalog.observe_scan(id, uploaded, name.clone(), read) {
+                ScanAction::Cataloged => {}
+                ScanAction::Sweep => {
                     defmt::info!("store: sweeping aborted trip commit {}", defmt::Debug2Format(&name));
                     let _ = self.delete_file(&name);
                 }
-                TripScanAction::KeepUnlisted => {
+                ScanAction::KeepUnlisted => {
                     defmt::warn!("SD: trip {} unreadable — kept for a later rescan", defmt::Debug2Format(&name));
                 }
-                TripScanAction::Full => unreachable!("directory names are capped before catalog insertion"),
+                ScanAction::Full => unreachable!("directory names are capped before catalog insertion"),
             }
         }
-        let listed = self.storage.trip_catalog.row_count();
-        let _ = self.storage.trip_catalog.finish_scan(over_cap);
+        let listed = self.storage.trip_catalog.len();
+        self.storage.trip_catalog.finish_scan(over_cap);
         defmt::info!("store: {=usize} trip object(s)", listed);
     }
 
@@ -84,7 +89,7 @@ impl<'a> Trips<'a> {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.storage.trip_catalog.row_count()
+        self.storage.trip_catalog.len()
     }
 
     pub(crate) fn total(&self) -> u16 {
@@ -128,7 +133,7 @@ impl<'a> Trips<'a> {
     /// dedup hit. Missing CRCs deliberately do not match.
     pub(crate) fn find_by_content(&self, crc: u32, byte_len: u32) -> Option<u16> {
         let crcs = self.load_crcs();
-        self.storage.trip_catalog.find_by_content(crc, byte_len, |id| crcs.get(id), |file| self.file_len(file))
+        self.storage.trip_catalog.find_by_content(crc, byte_len, |id| crcs.get(id), |file, _| self.file_len(file))
     }
 
     /// Delete one cataloged trip and its sidecar fingerprint, shifting the three resident columns
@@ -139,7 +144,7 @@ impl<'a> Trips<'a> {
             return false;
         }
         self.forget_crc(id);
-        if self.storage.trip_catalog.remove(id) == TripRemoveAction::Backfill {
+        if self.storage.trip_catalog.remove(id) == RemoveAction::Backfill {
             self.scan();
         }
         true
@@ -241,7 +246,7 @@ impl<'a> Trips<'a> {
         if self.read_file(&file).is_some() {
             return false;
         }
-        if self.storage.trip_catalog.remove(id) == TripRemoveAction::Backfill {
+        if self.storage.trip_catalog.remove(id) == RemoveAction::Backfill {
             self.scan();
         }
         true
@@ -251,16 +256,17 @@ impl<'a> Trips<'a> {
     /// most once. Route lookup stays bounded by the caller's route catalog.
     pub(crate) fn for_each_list_row(
         &mut self,
+        routes: &StoredRouteCatalog,
         mut route_file: impl FnMut(u16) -> Option<ShortFileName>,
         mut emit: impl FnMut(u16, u32, u32, u32, u16, &TripMeta, u32),
     ) -> Option<u16> {
         let mut crcs = self.load_crcs();
         let mut crcs_dirty = false;
         let mut count = 0u16;
-        let len = self.storage.trip_catalog.row_count();
+        let len = self.storage.trip_catalog.len();
         for index in 0..len {
             let (id, file) = {
-                let (id, file, _) = self.storage.trip_catalog.entry_at(index)?;
+                let (id, file, _) = self.storage.trip_catalog.iter().nth(index)?;
                 (id, file.clone())
             };
             let (byte_len, meta, stage_count) = self.read_file(&file)?;
@@ -268,7 +274,7 @@ impl<'a> Trips<'a> {
             let mut total_ascent_m = 0u32;
             for stage_id in &meta.stage_ids {
                 if let Some(route) = route_file(*stage_id) {
-                    if let Some((_, info)) = self.storage.route_object_info(&route) {
+                    if let Some((_, info)) = self.storage.route_object_info(routes, &route) {
                         total_distance_m = total_distance_m.saturating_add(info.distance_m);
                         total_ascent_m = total_ascent_m.saturating_add(info.ascent_m);
                     }
@@ -322,7 +328,23 @@ impl<'a> Trips<'a> {
     }
 
     fn load_crcs(&self) -> RouteCrcs {
-        self.storage.load_crc_sidecar(TRIP_CRCS)
+        let mut map = self.storage.load_crc_sidecar(TRIP_CRCS);
+        if !self.storage.trip_catalog.sideband_bound(CRC_BINDING) {
+            clear_session_crcs(&mut map);
+        }
+        map
+    }
+
+    fn rebind_sideload_crcs(&mut self) {
+        if self.storage.trip_catalog.sideband_bound(CRC_BINDING) {
+            return;
+        }
+        let (mut map, authoritative) = self.storage.load_crc_sidecar_status(TRIP_CRCS);
+        clear_session_crcs(&mut map);
+        if authoritative {
+            let persisted = self.storage.write_crc_sidecar(TRIP_CRCS, &map);
+            self.storage.trip_catalog.record_sideband_rewrite(CRC_BINDING, persisted);
+        }
     }
 
     fn set_crc(&mut self, id: u16, crc: u32) {
@@ -340,8 +362,20 @@ impl<'a> Trips<'a> {
     }
 
     fn write_crcs(&mut self, map: &RouteCrcs) {
-        if !self.storage.write_crc_sidecar(TRIP_CRCS, map) {
+        let persisted = self.storage.write_crc_sidecar(TRIP_CRCS, map);
+        self.storage.trip_catalog.record_sideband_rewrite(CRC_BINDING, persisted);
+        if !persisted {
             defmt::warn!("SD: trip-crc sidecar not persisted — a trip may serve crc 0 next list build");
         }
+    }
+}
+
+const fn trip_crc(stored: Option<u32>, computed: Option<u32>) -> (u32, Option<u32>) {
+    match stored {
+        Some(crc) => (crc, None),
+        None => match computed {
+            Some(crc) => (crc, Some(crc)),
+            None => (0, None),
+        },
     }
 }

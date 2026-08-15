@@ -246,6 +246,24 @@ struct TripReconcileModelTests {
         #expect(plan.tripObject == .replace(deviceTripID))
     }
 
+    @Test
+    func sessionScopedTripCommitCannotBecomeAPersistedLink() async {
+        let (model, _, library) = await makeMainWithLibrary()
+        model.markTripUploaded(tripID, objectID: DeviceObjectID(0xFF00), crc32: 0x1234_5678)
+        #expect(library.trips().first { $0.id == tripID }?.deviceLink == nil)
+    }
+
+    @Test
+    func sessionScopedRouteCommitClearsRatherThanPreservesALink() async {
+        let (model, _, library) = await makeMainWithLibrary()
+        let route = library.plannedRoutes().first!
+        #expect(route.deviceLink != nil)
+        model.markRouteUploaded(route.id, objectID: DeviceObjectID(0xFF00), crc32: 0x1234_5678)
+        let saved = library.plannedRoutes().first { $0.id == route.id }
+        #expect(saved?.deviceLink == nil)
+        #expect(saved?.uploadedCRC32 == nil)
+    }
+
     /// The user's exact retry path: upload "failed" (ack lost after the device
     /// committed), they tap **Upload trip** again. `prepareTripUpload` re-reads
     /// the catalogs first, the reconcile adopts what actually landed, and the

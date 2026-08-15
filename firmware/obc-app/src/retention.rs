@@ -291,6 +291,14 @@ impl RouteRetentionStore {
         self.entries.len() != before
     }
 
+    /// Drop every entry in the session-only side-load id band. Persisted rows in that band cannot
+    /// survive a reboot because filenames can receive different session ids in a new FAT order.
+    pub fn clear_ids_from(&mut self, first: u16) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.id < first);
+        self.entries.len() != before
+    }
+
     /// The stored rows, for the codec / tests.
     fn rows(&self) -> &[RetEntry] {
         &self.entries
@@ -888,6 +896,19 @@ mod tests {
         assert_eq!(store.get(2), RouteRetentionMeta::default());
         assert_eq!(store.get(1).last_used_utc, 10);
         assert!(!store.retain_ids(&[1, 3]), "idempotent — nothing more to drop");
+    }
+
+    #[test]
+    fn sidecar_rebind_drops_session_ids_and_preserves_durable_rows() {
+        let mut store = RouteRetentionStore::new();
+        store.set(7, RouteRetentionMeta::new(Retention::Week1, 10));
+        store.set(0xff00, RouteRetentionMeta::new(Retention::Day1, 20));
+        store.set(0xfffe, RouteRetentionMeta::new(Retention::Month1, 30));
+        assert!(store.clear_ids_from(0xff00));
+        assert_eq!(store.get(7), RouteRetentionMeta::new(Retention::Week1, 10));
+        assert_eq!(store.get(0xff00), RouteRetentionMeta::default());
+        assert_eq!(store.get(0xfffe), RouteRetentionMeta::default());
+        assert!(!store.clear_ids_from(0xff00));
     }
 
     /// Unknown retention byte in the sidecar decodes to Never (never deletes) — the forward-compat

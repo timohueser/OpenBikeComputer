@@ -113,6 +113,14 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.first, record)
     }
 
+    func testSessionScopedRouteLinkDoesNotSurviveRelaunch() {
+        let (store, dir) = makeFileStore()
+        var record = makeRecord()
+        record.deviceLink = DeviceRouteLink(serial: "OBC-1", epoch: 7, objectID: DeviceObjectID(0xFF00))
+        store.savePlannedRoute(record)
+        XCTAssertNil(FileLibraryStore(directory: dir).plannedRoutes().first?.deviceLink)
+    }
+
     func testReplaceImportRewritesSourceSidecar() {
         // A re-import reuses the id, so the sidecar already exists — the new bytes
         // must land, not be silently dropped (the old bug kept the stale file).

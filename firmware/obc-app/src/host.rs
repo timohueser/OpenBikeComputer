@@ -114,8 +114,8 @@ pub enum HostCommand {
     /// one-shot; the host reads [`ride_stats`](crate::App::ride_stats) in the same pass so the
     /// wall-clock anchor pairs with the log's last points.
     FinishTrack(TrackAction),
-    /// Run the on-device router from `from` to `to` (epic #116, R4): write the emitted OBCR to the
-    /// reserved nav route, rescan, and answer with [`HostEvent::NavPlanned`]. One-shot; the
+    /// Run the on-device router from `from` to `to` (epic #116, R4): stage the emitted OBCR, publish
+    /// the committed nav route, and answer with [`HostEvent::NavPlanned`]. One-shot; the
     /// confirm-screen flow guarantees at most one plan is posted per drain, and a
     /// [`CancelRoutePlan`](HostCommand::CancelRoutePlan) posted while this request is still
     /// undrained **annihilates it** (see that variant) — a request the host receives was never
@@ -129,7 +129,7 @@ pub enum HostCommand {
     /// annihilates it, exactly like the [`PlanRoute`](HostCommand::PlanRoute) pair.
     PlanDetour(DetourRequest),
     /// Commit the planned detour (#882): splice the held detour bytes into the active route
-    /// (Phase B), write the derived OBCR to the reserved computed-route slot, rescan, and answer
+    /// (Phase B), stage and publish the derived OBCR in the computed-route slot, then answer
     /// with [`HostEvent::DetourCommitted`]. Persistence-critical one-shot, modal-flow-guarded
     /// (only the preview screen's Press posts it, once).
     CommitDetour,

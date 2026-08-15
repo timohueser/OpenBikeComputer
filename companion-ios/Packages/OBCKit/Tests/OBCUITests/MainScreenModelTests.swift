@@ -779,6 +779,23 @@ final class MainScreenModelTests: XCTestCase {
                        "adopted content is byte-identical → up to date, no upload needed")
     }
 
+    func testSessionScopedSideLoadIsNeverAdoptedByContent() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        let template = importedRecord(id: "lib-session", name: "Side Loaded")
+        var fixtures = control.fixtures
+        fixtures.routes.append(RouteEntry(
+            summary: template.summary, points: template.route.points,
+            waypoints: template.route.waypoints, payloadByteCount: 100,
+            deviceObjectID: DeviceObjectID(0xFF00)))
+        control.fixtures = fixtures
+        library.savePlannedRoute(template)
+
+        await startLoaded(model)
+        XCTAssertNil(library.plannedRoutes().first { $0.id == template.id }?.deviceLink)
+        XCTAssertNil(model.plannedDeviceObjectID(for: template.id))
+    }
+
     /// Adopted-upload-replaces: after adoption an edit re-uploads to the adopted
     /// object id (replace-by-id), so the device gains no duplicate (#770).
     func testAdoptedRouteUploadsAsReplaceNotDuplicate() async {

@@ -157,6 +157,18 @@ struct TripLibraryStoreTests {
     }
 
     @Test
+    func sessionScopedTripLinkDoesNotSurviveRelaunch() {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("obc-trip-session-\(UUID().uuidString)", isDirectory: true)
+        var t = trip("t1", ["r1"])
+        t.deviceLink = DeviceRouteLink(serial: "OBC-1", epoch: 7, objectID: DeviceObjectID(0xFF00))
+        let store = FileLibraryStore(directory: dir)
+        store.savePlannedRoute(plannedRoute("r1"))
+        store.saveTrip(t)
+        #expect(FileLibraryStore(directory: dir).trips().first?.deviceLink == nil)
+    }
+
+    @Test
     func aPartialOnDiskLinkDecodesAsNoLink() throws {
         // #769's all-or-nothing rule, same as PlannedRouteFile: a trip file
         // carrying a bare object id (no serial/epoch) must load with **no**

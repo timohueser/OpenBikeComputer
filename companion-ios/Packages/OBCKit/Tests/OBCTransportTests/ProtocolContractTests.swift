@@ -32,6 +32,13 @@ final class ProtocolContractTests: XCTestCase {
             [DeviceObjectID(7)])
     }
 
+    func testDeviceObjectIDSeparatesDurableAndSessionNamespaces() {
+        XCTAssertTrue(DeviceObjectID(0xFEFF).isPersistable)
+        XCTAssertFalse(DeviceObjectID(0xFF00).isPersistable)
+        XCTAssertFalse(DeviceObjectID(0xFFFE).isPersistable)
+        XCTAssertFalse(DeviceObjectID(.max).isPersistable)
+    }
+
     func testRideIDBridgesTheDeviceNamespace() {
         // Ride identity is deliberately shared across the BLE boundary
         // (#289/#290): a device-minted id round-trips through the typed

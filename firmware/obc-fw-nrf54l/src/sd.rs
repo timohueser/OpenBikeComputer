@@ -83,11 +83,15 @@ use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelect
 
 mod rides;
 pub(crate) use rides::Rides;
+mod routes;
+pub(crate) use routes::{NavCommit, Routes};
 mod trips;
 pub(crate) use trips::Trips;
 
 const RIDE_CATALOG_CAP: usize = MAX_RIDES;
 pub(crate) type StoredRideCatalog = obc_storage::RideCatalog<RIDE_CATALOG_CAP>;
+pub(crate) type StoredRouteCatalog = obc_storage::Catalog<u32, MAX_ROUTES, SIDELOAD_ID_BASE>;
+type StoredTripCatalog = obc_storage::Catalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -221,11 +225,21 @@ const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 /// device uses the `.OBR` twin the catalog scan already lists. No `RT` prefix ⇒ no durable
 /// upload id; the scan hands it a session-scoped side-load id, exactly like a side-loaded `.obcr`.
 const NAV_ROUTE_FILE: &str = "_NAV.OBR";
+/// Hidden local-planner stage. Its `.TMP` extension is never admitted by [`is_route_entry`], so a
+/// cancelled or interrupted search cannot replace the last committed `_NAV.OBR` publication.
+const NAV_TMP: &str = "NAV.TMP";
 
 /// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files (their
-/// names carry no durable id — see [`Storage::sideload_id`]). Uploaded ids grow monotonically from
+/// names carry no durable id — the canonical [`obc_storage::Catalog`] assigns them session
+/// ids). Uploaded ids grow monotonically from
 /// 0 and reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
 pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
+
+fn clear_session_crcs(crcs: &mut RouteCrcs) {
+    while let Some(id) = crcs.entries().iter().find_map(|(id, _)| (*id >= SIDELOAD_ID_BASE).then_some(*id)) {
+        crcs.remove(id);
+    }
+}
 
 /// The concrete SD stack for this board: [`SemmcCard`] — the card in native 4-bit mode on the FLPR
 /// — under a 16-file/4-dir [`VolumeManager`].
@@ -524,33 +538,14 @@ pub struct Storage {
     /// `/tracks` (created on mount if absent), or `None` if it couldn't be opened/created
     /// (rides then can't be saved, but the rest still works).
     tracks_dir: Option<RawDirectory>,
-    /// 8.3 filename of each catalog entry, parallel to the app's route order — so a selected
-    /// route index reopens the right `.obcr` (the menu shows the *internal* route name, not
-    /// the filename, so 8.3 truncation is invisible).
-    route_files: Vec<ShortFileName, MAX_ROUTES>,
-    /// Each catalog entry's **object id**, parallel to [`route_files`](Storage::route_files) —
-    /// the identity [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) remaps held
-    /// indices by across live rescans (#450). Uploaded routes carry it in the filename
-    /// (`RT{id}.OBR`); side-loaded `.obcr` files get a session id from [`sideload_id`](Storage::sideload_id).
-    route_ids: Vec<u16, MAX_ROUTES>,
     /// The one trip catalog shared by the on-device folders and companion-link repository. The
     /// three aligned columns have exactly the same size/layout as the former `trip_ids` /
     /// `trip_files` / `trip_metas` fields; an optional metadata niche lets a just-committed trip
     /// remain addressable through a transient metadata reread failure until the live rescan.
-    trip_catalog: obc_storage::TripCatalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>,
-    /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
-    /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
-    /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
-    /// without this, a delete would shift later side-load ids between the two scans' tables and
-    /// the identity remap would unload the wrong route. Session-scoped by design: the app never
-    /// persists these ids, and side-loaded files only change while the card is out of the device.
-    sideload_ids: Vec<(ShortFileName, u16), MAX_ROUTES>,
-    /// Next unassigned side-load id, `u32` so the exhausted case is "past `u16::MAX`", not a
-    /// saturating collapse onto 0xFFFF (an aliased id would remap/serve the wrong file).
-    next_sideload: u32,
-    /// The active route's open geometry file: `(catalog index, handle, length)`. Reopened only
-    /// when the selected route changes.
-    open_route: Option<(usize, RawFile, u32)>,
+    trip_catalog: StoredTripCatalog,
+    /// The active route's open geometry file: `(durable object id, handle, length)`. Reopened only
+    /// when the selected route changes; the id remains stable across reorder and projection gaps.
+    open_route: Option<(u16, RawFile, u32)>,
     /// The map `.obcm`, opened once at startup and held open for the whole session: `(handle,
     /// length)`. The map streams through this (issue #37) instead of being read resident into
     /// RAM — `map_source` hands out a fresh source over it each redraw.
@@ -1279,11 +1274,7 @@ impl Storage {
             root,
             routes_dir,
             tracks_dir,
-            route_files: Vec::new(),
-            route_ids: Vec::new(),
-            trip_catalog: obc_storage::TripCatalog::new(),
-            sideload_ids: Vec::new(),
-            next_sideload: SIDELOAD_ID_BASE as u32,
+            trip_catalog: StoredTripCatalog::new(),
             open_route: None,
             open_map: None,
             open_set: None,
@@ -1305,104 +1296,10 @@ impl Storage {
         })
     }
 
-    /// Scan `/routes` for the catalog (side-loaded `.obcr` + uploaded `.OBR`), read each header
-    /// into a [`RouteSummary`], and return the catalog for
-    /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids). Also records, parallel to
-    /// the catalog, the 8.3 filenames (so a later selection reopens the right file) and each
-    /// entry's object id ([`route_ids`](Storage::route_ids)) — recovered from an upload's
-    /// `RT{id}.OBR` name, or a session-stable [`sideload_id`](Storage::sideload_id) for `.obcr`
-    /// files. Filenames are collected first, then opened — opening a file inside the iteration
-    /// callback would re-enter the volume manager's lock.
-    ///
-    /// Called at boot **and** on every store-changed edge (#450) — the live rescan is this same
-    /// scan re-run; identity across the re-runs is exactly what the id column carries.
-    ///
-    /// Matching is on the **long** name: the 8.3 short name truncates `.obcr`/`.obcm` to the
-    /// 3-char `OBC`, so the short extension can't tell routes from maps. The long name also lets
-    /// us skip macOS `._*`/`.DS_Store` clutter (any dot-prefixed name).
-    /// Fills the **caller's** catalog rather than returning one: a `Vec<RouteSummary, MAX_ROUTES>`
-    /// is ~6 KB, and a by-value return keeps the builder's copy and the caller's alive in one
-    /// frame (measured 12.3 KB in `ride::load_routes`, 2026-07-24 — two copies of exactly this).
-    pub fn scan_routes_into(&mut self, catalog: &mut Vec<RouteSummary, MAX_ROUTES>) {
-        catalog.clear();
-        // A file this `Storage` already holds open can't be opened a second time — embedded-sdmmc
-        // 0.9 answers `FileAlreadyOpen` for *any* re-open, ReadOnly included — so a scan that meets
-        // one must read through the existing handle or the route silently drops out of the catalog
-        // and the identity remap unloads it from the menu (the #480 vanishing-routes bug). The ride
-        // loop closes the geometry handle before its rescan; this is the backstop for that, and the
-        // fix for a scan racing an in-flight detail download (`open_object`). The geometry's name is
-        // resolved against the *outgoing* table, before the clear below.
-        let open_geometry =
-            self.open_route.and_then(|(i, f, len)| self.route_files.get(i).map(|n| (n.clone(), f, len)));
-        self.route_files.clear();
-        self.route_ids.clear();
-        let Some(dir) = self.routes_dir else { return };
-
-        let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
-        let mut overflow = false;
-        self.iter_dir_lfn(dir, |e, long| {
-            if is_route_entry(e, long) && names.push(e.name.clone()).is_err() {
-                overflow = true;
-            }
-        });
-        if overflow {
-            defmt::warn!("SD: scan: more than {=usize} route files — the excess is not listed", MAX_ROUTES);
-        }
-
-        for n in &names {
-            // Id first: a route without an id can't be listed (the remap and the BLE catalog both
-            // key on it) — only the exhausted side-load band hits this, warned in `sideload_id`.
-            let Some(id) = route_name::uploaded_id(n.base_name(), n.extension()).or_else(|| self.sideload_id(n)) else {
-                defmt::warn!("SD: scan: {} has no object id — not listed", defmt::Debug2Format(n));
-                continue;
-            };
-            // Open the file — or serve it through a handle this `Storage` already holds (above).
-            let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
-                Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
-                Err(e) => match (&open_geometry, &self.open_object) {
-                    (Some((gn, gf, glen)), _) if gn == n => (*gf, *glen, true),
-                    (_, Some((on, of, olen))) if on == n => (*of, *olen, true),
-                    _ => {
-                        defmt::warn!(
-                            "SD: scan: cannot open {}: {} — route not listed until the next rescan",
-                            defmt::Debug2Format(n),
-                            defmt::Debug2Format(&e)
-                        );
-                        continue;
-                    }
-                },
-            };
-            let src = SdByteSource::new(&self.vmgr, file, len);
-            match RouteSummary::read(&src) {
-                Ok(sum) => {
-                    if catalog.push(sum).is_ok() {
-                        let _ = self.route_files.push(n.clone());
-                        let _ = self.route_ids.push(id);
-                    }
-                }
-                Err(_) => defmt::warn!("SD: scan: {} unreadable — not listed", defmt::Debug2Format(n)),
-            }
-            if !borrowed {
-                let _ = self.vmgr.close_file(file);
-            }
-        }
-        // The open geometry's catalog *index* may have moved with the rebuilt tables — re-point it
-        // so `reconcile_route`/`route_source` keep serving the right file (or release the handle if
-        // the file left the catalog altogether).
-        if let Some((gn, gf, glen)) = open_geometry {
-            self.open_route = self.route_files.iter().position(|n| *n == gn).map(|i| (i, gf, glen));
-            if self.open_route.is_none() {
-                let _ = self.vmgr.close_file(gf);
-            }
-        }
-        defmt::info!("SD: {=usize} route(s) in /routes", catalog.len());
-    }
-
-    /// Each catalog entry's object id, parallel to the catalog [`scan_routes_into`](Storage::scan_routes_into)
-    /// last returned — the second argument to
-    /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
-    pub fn route_ids(&self) -> &[u16] {
-        &self.route_ids
+    /// Borrow the sole route repository. The view cannot outlive this storage lock and callers drop
+    /// it before any `await`.
+    pub(crate) fn routes<'a>(&'a mut self, catalog: &'a mut StoredRouteCatalog) -> Routes<'a> {
+        Routes::new(self, catalog)
     }
 
     /// Borrow the sole trip repository. The view cannot outlive this storage lock and callers drop
@@ -1495,38 +1392,31 @@ impl Storage {
     /// A missing, torn, or malformed sidecar decodes to the **empty** map (every route serves
     /// `0 = unknown`) — never a panic (the codec + torn-line semantics are host-tested in
     /// `obc-app::settings`). One file read.
-    pub fn load_route_crcs(&self) -> RouteCrcs {
+    fn load_route_crcs(&self) -> RouteCrcs {
         self.load_crc_sidecar(ROUTE_CRCS)
     }
 
     fn load_crc_sidecar(&self, name: &str) -> RouteCrcs {
-        let Some(dir) = self.routes_dir else { return RouteCrcs::new() };
-        let Ok(file) = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) else {
-            return RouteCrcs::new(); // absent = no CRC known
+        self.load_crc_sidecar_status(name).0
+    }
+
+    /// Return decoded rows plus whether the read authoritatively proved the on-card contents. A
+    /// transient open/read/close failure is not equivalent to an absent sidecar for session-id
+    /// rebinding: callers keep FF00+ masked and must not overwrite durable low-id rows from an
+    /// untrustworthy empty decode.
+    fn load_crc_sidecar_status(&self, name: &str) -> (RouteCrcs, bool) {
+        let Some(dir) = self.routes_dir else { return (RouteCrcs::new(), false) };
+        let file = match self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) {
+            Ok(file) => file,
+            Err(embedded_sdmmc::Error::NotFound) => return (RouteCrcs::new(), true),
+            Err(_) => return (RouteCrcs::new(), false),
         };
         let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
-        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
-        let _ = self.vmgr.close_file(file);
-        decode_route_crcs(&buf[..n])
-    }
-
-    /// Upsert route `id`'s whole-object CRC into the sidecar, persisting only when it actually
-    /// changed (a re-upload with the same content rewrites nothing). Called at an upload commit —
-    /// the CRC is already verified there. Read-modify-write within the call (open, write truncating,
-    /// close), so it never counts against the open-file budget across an `await`.
-    pub fn set_route_crc(&mut self, id: u16, crc: u32) {
-        let mut map = self.load_route_crcs();
-        if map.insert(id, crc) {
-            self.write_route_crcs(&map);
-        }
-    }
-
-    /// Retire route `id`'s CRC entry from the sidecar (a deleted route — ids never reuse, so this is
-    /// belt-and-braces tidiness). Rewrites only when the entry was present.
-    pub fn forget_route_crc(&mut self, id: u16) {
-        let mut map = self.load_route_crcs();
-        if map.remove(id) {
-            self.write_route_crcs(&map);
+        let read = self.vmgr.read(file, &mut buf);
+        let closed = self.vmgr.close_file(file).is_ok();
+        match read {
+            Ok(n) if closed => (decode_route_crcs(&buf[..n]), true),
+            _ => (RouteCrcs::new(), false),
         }
     }
 
@@ -1578,10 +1468,12 @@ impl Storage {
 
     /// Overwrite the route-CRC sidecar (truncating). A write failure is warned, not fatal — the
     /// worst case is a route serves `0 = unknown` and re-fills lazily next list build, never a crash.
-    pub fn write_route_crcs(&mut self, map: &RouteCrcs) {
-        if !self.write_crc_sidecar(ROUTE_CRCS, map) {
+    fn write_route_crcs(&mut self, map: &RouteCrcs) -> bool {
+        let persisted = self.write_crc_sidecar(ROUTE_CRCS, map);
+        if !persisted {
             defmt::warn!("SD: route-crc sidecar not persisted — a route may serve crc 0 next list build");
         }
+        persisted
     }
 
     fn write_crc_sidecar(&mut self, name: &str, map: &RouteCrcs) -> bool {
@@ -1594,78 +1486,32 @@ impl Storage {
     /// (auto-expiry epic #638, S3). A missing, torn, or malformed sidecar decodes to the **empty**
     /// store (every route reads `Never` → nothing deletes) — never a panic (the codec + torn-line
     /// semantics are host-tested in `obc-app::retention`). One file read.
-    pub fn load_route_retention(&self) -> RouteRetentionStore {
-        let Some(dir) = self.routes_dir else { return RouteRetentionStore::new() };
-        let Ok(file) = self.vmgr.open_file_in_dir(dir, ROUTE_RETENTION, Mode::ReadOnly) else {
-            return RouteRetentionStore::new(); // absent = nothing has retention (all Never)
+    fn load_route_retention(&self) -> RouteRetentionStore {
+        self.load_route_retention_status().0
+    }
+
+    fn load_route_retention_status(&self) -> (RouteRetentionStore, bool) {
+        let Some(dir) = self.routes_dir else { return (RouteRetentionStore::new(), false) };
+        let file = match self.vmgr.open_file_in_dir(dir, ROUTE_RETENTION, Mode::ReadOnly) {
+            Ok(file) => file,
+            Err(embedded_sdmmc::Error::NotFound) => return (RouteRetentionStore::new(), true),
+            Err(_) => return (RouteRetentionStore::new(), false),
         };
         let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
-        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
-        let _ = self.vmgr.close_file(file);
-        decode_route_retention(&buf[..n])
-    }
-
-    /// Each catalog entry's retention meta, parallel to [`route_ids`](Storage::route_ids) — the
-    /// second argument to [`App::set_routes_with_meta`](obc_app::App::set_routes_with_meta) so the
-    /// auto-expiry sweep reads device-truth retention alongside the summaries. One sidecar read.
-    pub fn route_retention_metas(&self) -> Vec<RouteRetentionMeta, MAX_ROUTES> {
-        let store = self.load_route_retention();
-        let mut out = Vec::new();
-        for &id in &self.route_ids {
-            let _ = out.push(store.get(id));
-        }
-        out
-    }
-
-    /// Set route `id`'s retention **level** in the sidecar (the app's `setRouteRetention` command,
-    /// §4.4 cmd 6 / epic #638 S4) **without touching `last_used`** — changing retention never resets
-    /// the usage clock. Read-modify-write within the call; persists (truncating rewrite) only when the
-    /// level actually changed, and returns whether it did so the caller bumps the route store revision
-    /// on a real change only (setting the same value twice is a no-op — the idempotence pin). A row
-    /// that reverts to `Never` with `last_used == 0` is dropped (the empty default reads that way).
-    /// Returns `Ok(true)` on a durable change, `Ok(false)` when the value was already that level (a
-    /// no-op — nothing to persist), or `Err` when the sidecar rewrite did not reach the card
-    /// (finding #876-5). The caller (`ObjectStore::set_route_retention`) bumps the revision and
-    /// replies `ok` **only** on `Ok(true)`; an `Err` is surfaced as `command` `Error`, never a false
-    /// `ok`.
-    pub fn set_route_retention_level(&mut self, id: u16, retention: Retention) -> Result<bool, SidecarWriteError> {
-        let mut store = self.load_route_retention();
-        let meta = RouteRetentionMeta { retention, last_used_utc: store.get(id).last_used_utc };
-        if !store.set(id, meta) {
-            return Ok(false); // already that level — durable by definition, nothing rewritten
-        }
-        self.write_route_retention(&store)?;
-        Ok(true)
-    }
-
-    /// Stamp route `id`'s `last_used` in the sidecar (auto-expiry epic #638, S3 — the sweep's
-    /// clock-start / active re-stamp, the once-per-activation stamp, and the upload-commit stamp),
-    /// keeping its retention level. Persists only when it changed.
-    pub fn stamp_route_last_used(&mut self, id: u16, utc: u32) {
-        let mut store = self.load_route_retention();
-        if store.stamp_last_used(id, utc) {
-            // Best-effort: a torn stamp is safe (the route keeps its old/`0` `last_used` and is
-            // re-stamped or left unexpired next sweep — never a wrong deletion). The helper logs.
-            let _ = self.write_route_retention(&store);
-        }
-    }
-
-    /// Retire route `id`'s retention entry from the sidecar (a deleted route — ids never reuse, so
-    /// belt-and-braces). Rewrites only when the entry was present (setting a route back to the
-    /// default drops its row).
-    pub fn forget_route_retention(&mut self, id: u16) {
-        let mut store = self.load_route_retention();
-        if store.set(id, RouteRetentionMeta::default()) {
-            let _ = self.write_route_retention(&store); // best-effort tidy; the helper logs a failure
+        let read = self.vmgr.read(file, &mut buf);
+        let closed = self.vmgr.close_file(file).is_ok();
+        match read {
+            Ok(n) if closed => (decode_route_retention(&buf[..n]), true),
+            _ => (RouteRetentionStore::new(), false),
         }
     }
 
     /// Overwrite the route-retention sidecar (truncating), returning whether the whole rewrite —
     /// open, write, flush, close — reached the card (finding #876-5). A torn write is safe by design
-    /// (a route reads `Never` next list build → nothing deletes), so the stamp/forget callers ignore
-    /// the result; only [`set_route_retention_level`](Storage::set_route_retention_level) propagates
-    /// it so `setRouteRetention` never claims `ok` ahead of durability.
-    pub fn write_route_retention(&mut self, store: &RouteRetentionStore) -> Result<(), SidecarWriteError> {
+    /// (a route reads `Never` next list build → nothing deletes). The borrowed [`Routes`] owner
+    /// decides which mutations must propagate failure so `setRouteRetention` never claims `ok`
+    /// ahead of durability.
+    fn write_route_retention(&mut self, store: &RouteRetentionStore) -> Result<(), SidecarWriteError> {
         let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
         let n = encode_route_retention(store, &mut buf);
         self.rewrite_sidecar(self.routes_dir, ROUTE_RETENTION, &buf[..n])
@@ -1730,28 +1576,6 @@ impl Storage {
         let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
         let n = encode_synced_rides(set, &mut buf);
         self.rewrite_sidecar(self.tracks_dir, SYNCED_SET, &buf[..n])
-    }
-
-    /// The **session-scoped** id for a side-loaded route file: the one already registered for this
-    /// name, or the next from the [`SIDELOAD_ID_BASE`] band. The registry is append-only for the
-    /// session (see the field doc), so every scan — the ride loop's and the BLE `ObjectStore`'s,
-    /// in any order, across deletes — hands the same name the same id. `None` when the band or the
-    /// registry is exhausted (the route is then not listed, rather than aliased onto a wrong id).
-    pub(crate) fn sideload_id(&mut self, name: &ShortFileName) -> Option<u16> {
-        if let Some((_, id)) = self.sideload_ids.iter().find(|(n, _)| n == name) {
-            return Some(*id);
-        }
-        if self.next_sideload > u16::MAX as u32 {
-            defmt::warn!("SD: side-load id band exhausted — a route is not listed");
-            return None;
-        }
-        let id = self.next_sideload as u16;
-        if self.sideload_ids.push((name.clone(), id)).is_err() {
-            defmt::warn!("SD: side-load id registry full — a route is not listed");
-            return None;
-        }
-        self.next_sideload += 1;
-        Some(id)
     }
 
     /// Open the card's **selected** map and hold it open for the session, so the map can **stream**
@@ -2697,23 +2521,10 @@ impl Storage {
         self.open_map.is_some() && self.map_extents.is_none()
     }
 
-    /// Make the open route geometry match the app's selected route (a catalog index), reopening
-    /// the `.obcr` only when the selection changes — cheap to call every frame, like the sim's
-    /// `RouteStore::sync_active`.
-    pub fn reconcile_route(&mut self, want: Option<usize>) {
-        if self.open_route.map(|(i, _, _)| i) == want {
-            return;
-        }
+    /// Release retained route geometry. The borrowed repository resolves/open a selected row.
+    fn close_route(&mut self) {
         if let Some((_, f, _)) = self.open_route.take() {
             let _ = self.vmgr.close_file(f);
-        }
-        if let (Some(i), Some(dir)) = (want, self.routes_dir) {
-            if let Some(n) = self.route_files.get(i) {
-                if let Ok(file) = self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
-                    let len = self.vmgr.file_length(file).unwrap_or(0);
-                    self.open_route = Some((i, file, len));
-                }
-            }
         }
     }
 
@@ -2740,69 +2551,10 @@ impl Storage {
         idx.read_into(&src).is_ok()
     }
 
-    /// The mini elevation sparkline for the route with object id `id` (#682): open its `.obcr` on a
-    /// scoped handle, stream it once through [`obc_route::elevation_sparkline`], and close it — the
-    /// board side of the route-upload seam, built at commit time so the idle "ROUTE RECEIVED" card
-    /// can draw the band. `None` when the id is unknown, the file won't open (e.g. it's held by the
-    /// active geometry — that route replaces navigation and never draws the band anyway), or the
-    /// route carries no elevation. Cheap and one-shot: called once per upload, off the render path.
-    pub fn route_elevation_sparkline(&mut self, id: u16) -> Option<[u8; obc_route::SPARKLINE_BUCKETS]> {
-        let dir = self.routes_dir?;
-        let pos = self.route_ids.iter().position(|&x| x == id)?;
-        let name = self.route_files.get(pos)?.clone();
-        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        let spark = obc_route::elevation_sparkline(&SdByteSource::new(&self.vmgr, file, len));
-        let _ = self.vmgr.close_file(file);
-        spark
-    }
-
-    /// Open (truncating) the reserved computed-route file `/routes/_NAV.OBR` for the router's
-    /// OBCR emit (epic #116, R4). Releases every handle this `Storage` may hold **on that file**
-    /// first — the reserved route can be the actively-previewed/ridden route (its geometry open)
-    /// or mid-detail-download — because embedded-sdmmc refuses a truncate-open of an open file
-    /// (`FileAlreadyOpen`). The ride loop re-derives + reopens geometry after the plan (it forces
-    /// its reconcile), so dropping the handles here is always safe. `None` = no card / no dir /
-    /// open failure — the caller degrades to the generic routing-failure tier.
-    pub fn nav_route_begin(&mut self) -> Option<RawFile> {
-        // Close the active geometry unconditionally (cheap; the loop reopens off the fresh scan) —
-        // and a detail download parked on the nav file, if any.
-        self.reconcile_route(None);
-        if let Ok(nav) = ShortFileName::create_from_str(NAV_ROUTE_FILE) {
-            if matches!(&self.open_object, Some((on, ..)) if *on == nav) {
-                self.close_object();
-            }
-        }
-        let dir = self.routes_dir_or_create()?;
-        self.vmgr.open_file_in_dir(dir, NAV_ROUTE_FILE, Mode::ReadWriteCreateOrTruncate).ok()
-    }
-
     /// A [`ByteSink`](obc_formats::io::ByteSink) over the open nav-route file — what
     /// [`plan_route`](obc_route::plan_route) streams the emitted OBCR through.
     pub fn nav_sink(&self, file: RawFile) -> Sink<'_> {
         SdByteSink::new(&self.vmgr, file)
-    }
-
-    /// Flush + close the nav-route file after the plan. On failure (`ok == false`) the partial
-    /// file is deleted — a torn emit must not linger where the catalog scan would list it as an
-    /// unreadable route (the reserved name is rewritten on every plan anyway).
-    pub fn nav_route_finish(&mut self, file: RawFile, ok: bool) {
-        let _ = self.vmgr.flush_file(file);
-        let _ = self.vmgr.close_file(file);
-        if !ok {
-            if let Some(dir) = self.routes_dir {
-                let _ = self.vmgr.delete_file_in_dir(dir, NAV_ROUTE_FILE);
-            }
-        }
-    }
-
-    /// The committed nav route's object id, resolved against the tables the **last catalog scan**
-    /// filled — call after the post-plan [`scan_routes_into`](Storage::scan_routes_into). `None` when the
-    /// reserved file isn't in the catalog (the emit failed, or the scan couldn't read it).
-    pub fn nav_route_id(&self) -> Option<u16> {
-        let nav = ShortFileName::create_from_str(NAV_ROUTE_FILE).ok()?;
-        let pos = self.route_files.iter().position(|n| *n == nav)?;
-        self.route_ids.get(pos).copied()
     }
 
     /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*
@@ -3023,33 +2775,6 @@ impl Storage {
         self.routes_dir
     }
 
-    /// Visit every catalog file in `/routes` (side-loaded `.obcr` + uploaded `.OBR`).
-    pub fn for_each_route_file(&self, mut f: impl FnMut(&ShortFileName)) {
-        let Some(dir) = self.routes_dir else { return };
-        self.iter_dir_lfn(dir, |e, long| {
-            if is_route_entry(e, long) {
-                f(&e.name);
-            }
-        });
-    }
-
-    /// A stored route's byte length + the wire facts its `routeList` entry serves. One header (+ v2
-    /// extension) read; `None` when the file doesn't parse as OBCR.
-    ///
-    /// The actively-open geometry is read **through its existing handle**: embedded-sdmmc refuses
-    /// a second open (`FileAlreadyOpen`), which otherwise failed every mid-ride `routeList` build
-    /// (the whole list errors on one unreadable slot, by design) and made `upload_finish`'s
-    /// liveness re-check misread the open — very much present — file as gone (issue #480).
-    pub fn route_object_info(&self, name: &ShortFileName) -> Option<(u32, RouteObjectInfo)> {
-        if let Some((i, f, len)) = self.open_route {
-            if self.route_files.get(i) == Some(name) {
-                let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, f, len)).ok()?;
-                return Some((len, info));
-            }
-        }
-        self.with_routes_object(name, |src, len| Some((len, RouteObjectInfo::read(src).ok()?)))
-    }
-
     /// Read a `/routes` object through a matching retained detail handle, or a scoped fresh handle.
     /// The callback never outlives this call and a fresh handle is closed on success or refusal.
     fn with_routes_object<T>(
@@ -3069,51 +2794,25 @@ impl Storage {
         out
     }
 
-    /// Whether a catalog file is an **aborted commit** — the held-back magic still zeroed
-    /// because the commit's final patch never ran. Only that exact signature is sweepable; a
-    /// merely unreadable file (a transient bus glitch) must be kept.
-    pub fn is_aborted_commit(&self, name: &ShortFileName) -> bool {
-        self.with_routes_object(name, |src, _| {
+    /// Read route-list facts through retained geometry/detail handles or a scoped fresh handle.
+    fn route_object_info(&self, catalog: &StoredRouteCatalog, name: &ShortFileName) -> Option<(u32, RouteObjectInfo)> {
+        if let Some((id, file, len)) = self.open_route {
+            if catalog.get(id).is_some_and(|(_, open_name, _)| open_name == name) {
+                let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, file, len)).ok()?;
+                return Some((len, info));
+            }
+        }
+        self.with_routes_object(name, |source, len| Some((len, RouteObjectInfo::read(source).ok()?)))
+    }
+
+    /// Whether a `/routes` object carries the exact zero-magic interrupted-commit signature.
+    fn is_aborted_commit(&self, name: &ShortFileName) -> bool {
+        self.with_routes_object(name, |source, _| {
             let mut magic = [0u8; 4];
-            ByteSource::read_at(src, 0, &mut magic).ok()?;
-            Some(magic == [0u8; 4])
+            ByteSource::read_at(source, 0, &mut magic).ok()?;
+            Some(magic == [0; 4])
         })
         .unwrap_or(false)
-    }
-
-    /// Release the active route's open geometry handle **if** it is `name`. embedded-sdmmc 0.9
-    /// refuses to delete — or truncate-open, or re-open — a file with a live handle
-    /// (`FileAlreadyOpen`), so every path about to delete or replace a route file must call this
-    /// first: an idle-previewed route keeps its geometry open, and a phone-side delete/replace of
-    /// the navigated route arrives with it open too. Dropping the handle here is always safe —
-    /// the store-changed edge forces the ride loop's reconcile to re-derive and reopen
-    /// (`prev_active = None`).
-    fn close_route_if_open(&mut self, name: &ShortFileName) {
-        if let Some((i, f, _)) = self.open_route {
-            if self.route_files.get(i) == Some(name) {
-                let _ = self.vmgr.close_file(f);
-                self.open_route = None;
-            }
-        }
-    }
-
-    /// Delete a stored route file (the `deleteObject` command / a replace-upload's swap / the
-    /// on-device hold-to-delete). Closes our own open geometry handle on it first — an open file
-    /// can't be deleted (see [`close_route_if_open`](Self::close_route_if_open)).
-    pub fn delete_route_file(&mut self, name: &ShortFileName) -> bool {
-        let Some(dir) = self.routes_dir else { return false };
-        self.close_route_if_open(name);
-        match self.vmgr.delete_file_in_dir(dir, name) {
-            Ok(()) => true,
-            Err(e) => {
-                defmt::warn!(
-                    "SD: delete {} failed: {} — file kept, catalog unchanged",
-                    defmt::Debug2Format(name),
-                    defmt::Debug2Format(&e)
-                );
-                false
-            }
-        }
     }
 
     /// Open (truncating) the upload temp for a fresh transfer, dropping any stale handle.
@@ -3195,9 +2894,8 @@ impl Storage {
         }
     }
 
-    /// Flush + close the streaming handle, keeping the bytes on the card — the step
-    /// [`upload_commit`] runs before it re-opens the temp to validate + promote it, and every map /
-    /// set commit runs before it re-opens its own file to patch the magic in.
+    /// Flush + close the streaming handle, keeping the bytes on the card before its repository or
+    /// map/set commit re-opens it to validate and publish.
     pub fn upload_close(&mut self) {
         if upload_pipe_enabled() && !upload_pipe_end() {
             defmt::warn!("SD: deferred upload write failed while closing — target remains inert");
@@ -3231,90 +2929,6 @@ impl Storage {
         if let Some(dir) = self.routes_dir {
             let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
         }
-    }
-
-    /// Promote the CRC-verified temp into the catalog (see the section doc for the power-cut
-    /// story). `replace` is the file the upload's object id already owns (deleted only *after* the
-    /// temp validated — a failed CRC/validation never touches the old copy); `None` names the file
-    /// `RT{fresh_id}.OBR`, so the object id is durable in the filename and a rescan after a reboot
-    /// recovers it. Returns the final name + byte length + wire facts, or `None` with the temp deleted
-    /// (invalid payload) or kept (transient copy failure).
-    pub fn upload_commit(
-        &mut self,
-        replace: Option<&ShortFileName>,
-        fresh_id: u16,
-    ) -> Option<(ShortFileName, u32, RouteObjectInfo)> {
-        self.upload_close();
-        let dir = self.routes_dir?;
-
-        // Validate: the temp must parse as OBCR (magic/version/header) — the transfer CRC only
-        // proved the bytes match what the app sent, not that they are a route.
-        let src_file = self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadOnly).ok()?;
-        let len = self.vmgr.file_length(src_file).unwrap_or(0);
-        let info = RouteObjectInfo::read(&SdByteSource::new(&self.vmgr, src_file, len)).ok();
-        let Some(info) = info else {
-            let _ = self.vmgr.close_file(src_file);
-            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
-            defmt::warn!("SD: upload is not a valid OBCR — rejected");
-            return None;
-        };
-
-        // The final name: a replace reuses (and now frees) its object's file — the id stays in
-        // the name; fresh encodes its assigned id (confirmed absent, the `name_is_free`
-        // discipline: a bus glitch can never green-light overwriting a stored route).
-        let final_name = match replace {
-            Some(name) => {
-                // A replace of the actively-navigated (or idle-previewed) route arrives with its
-                // geometry handle open — release it first, or both this delete *and* the
-                // truncate-open below are refused (`FileAlreadyOpen`) and the whole commit fails
-                // with the old file intact but the upload lost (issue #480).
-                self.close_route_if_open(name);
-                if let Err(e) = self.vmgr.delete_file_in_dir(dir, name) {
-                    defmt::warn!(
-                        "SD: replace: cannot delete old {}: {}",
-                        defmt::Debug2Format(name),
-                        defmt::Debug2Format(&e)
-                    );
-                }
-                name.clone()
-            }
-            None => match self.fresh_upload_name(dir, fresh_id) {
-                Some(name) => name,
-                None => {
-                    let _ = self.vmgr.close_file(src_file);
-                    defmt::warn!("SD: upload name RT{=u16}.OBR unavailable", fresh_id);
-                    return None;
-                }
-            },
-        };
-
-        // Copy temp → final, magic held back; patch it in as the commit point.
-        let copied = match self.vmgr.open_file_in_dir(dir, &final_name, Mode::ReadWriteCreateOrTruncate) {
-            Ok(dst_file) => {
-                let ok = self.copy_with_held_magic(src_file, dst_file, len);
-                if !ok {
-                    // On a replace the old file is already deleted — this is the destructive
-                    // window (temp dropped below, old bytes gone): must be loud, never silent.
-                    defmt::warn!("SD: upload copy failed — commit aborted (a replaced route's old file is gone)");
-                }
-                let _ = self.vmgr.close_file(dst_file);
-                ok
-            }
-            Err(e) => {
-                defmt::warn!("SD: cannot create {}: {}", defmt::Debug2Format(&final_name), defmt::Debug2Format(&e));
-                false
-            }
-        };
-        let _ = self.vmgr.close_file(src_file);
-        if !copied {
-            // The final file (if any) still has a zero magic — invisible to catalogs, reclaimed
-            // by the boot sweep. Drop the temp too: a retry is a whole fresh upload.
-            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
-            return None;
-        }
-        let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
-        defmt::info!("SD: route committed → routes/{} ({=u32} B)", defmt::Debug2Format(&final_name), len);
-        Some((final_name, len, info))
     }
 
     /// Promote the CRC-verified upload temp to `/UPDATE.BIN` in the card **root** — the `fwImage`
