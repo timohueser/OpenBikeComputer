@@ -76,7 +76,7 @@ use obc_storage::fat_extents::{
     BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
 };
 use obc_storage::weather::{self as weather_store, WeatherSlotIo};
-use obc_storage::{route_name, trip_name};
+use obc_storage::{route_name, trip_name, SideloadIdRegistry};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
@@ -212,11 +212,6 @@ const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 /// device uses the `.OBR` twin the catalog scan already lists. No `RT` prefix ⇒ no durable
 /// upload id; the scan hands it a session-scoped side-load id, exactly like a side-loaded `.obcr`.
 const NAV_ROUTE_FILE: &str = "_NAV.OBR";
-
-/// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files (their
-/// names carry no durable id — see [`Storage::sideload_id`]). Uploaded ids grow monotonically from
-/// 0 and reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
-pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 
 /// The concrete SD stack for this board: [`SemmcCard`] — the card in native 4-bit mode on the FLPR
 /// — under a 16-file/4-dir [`VolumeManager`].
@@ -546,16 +541,14 @@ pub struct Storage {
     /// resolves each stage id against the live route catalog. Held resident (like the route/ride
     /// filename tables) so the `TripInput`s can borrow stable storage across the `set_trips` call.
     trip_metas: Vec<TripMeta, MAX_TRIPS>,
-    /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
+    /// The session's side-load id registry: filename → assigned
+    /// [`SIDELOAD_ID_BASE`](obc_storage::SIDELOAD_ID_BASE)-band id.
     /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
     /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
     /// without this, a delete would shift later side-load ids between the two scans' tables and
     /// the identity remap would unload the wrong route. Session-scoped by design: the app never
     /// persists these ids, and side-loaded files only change while the card is out of the device.
-    sideload_ids: Vec<(ShortFileName, u16), MAX_ROUTES>,
-    /// Next unassigned side-load id, `u32` so the exhausted case is "past `u16::MAX`", not a
-    /// saturating collapse onto 0xFFFF (an aliased id would remap/serve the wrong file).
-    next_sideload: u32,
+    sideload_ids: SideloadIdRegistry<MAX_ROUTES>,
     /// The active route's open geometry file: `(catalog index, handle, length)`. Reopened only
     /// when the selected route changes.
     open_route: Option<(usize, RawFile, u32)>,
@@ -1294,8 +1287,7 @@ impl Storage {
             trip_ids: Vec::new(),
             trip_files: Vec::new(),
             trip_metas: Vec::new(),
-            sideload_ids: Vec::new(),
-            next_sideload: SIDELOAD_ID_BASE as u32,
+            sideload_ids: SideloadIdRegistry::new(),
             open_route: None,
             open_map: None,
             open_set: None,
@@ -1960,25 +1952,17 @@ impl Storage {
     }
 
     /// The **session-scoped** id for a side-loaded route file: the one already registered for this
-    /// name, or the next from the [`SIDELOAD_ID_BASE`] band. The registry is append-only for the
-    /// session (see the field doc), so every scan — the ride loop's and the BLE `ObjectStore`'s,
-    /// in any order, across deletes — hands the same name the same id. `None` when the band or the
-    /// registry is exhausted (the route is then not listed, rather than aliased onto a wrong id).
+    /// name, or the next from the [`SIDELOAD_ID_BASE`](obc_storage::SIDELOAD_ID_BASE) band. The
+    /// registry is append-only for the session (see the field doc), so every scan — the ride loop's
+    /// and the BLE `ObjectStore`'s, in any order, across deletes — hands the same name the same id.
+    /// `None` when the band or registry is exhausted (the route is then not listed, rather than
+    /// aliased onto a wrong id).
     pub(crate) fn sideload_id(&mut self, name: &ShortFileName) -> Option<u16> {
-        if let Some((_, id)) = self.sideload_ids.iter().find(|(n, _)| n == name) {
-            return Some(*id);
+        let id = self.sideload_ids.id_for(name);
+        if id.is_none() {
+            defmt::warn!("SD: side-load id registry/band exhausted — a route is not listed");
         }
-        if self.next_sideload > u16::MAX as u32 {
-            defmt::warn!("SD: side-load id band exhausted — a route is not listed");
-            return None;
-        }
-        let id = self.next_sideload as u16;
-        if self.sideload_ids.push((name.clone(), id)).is_err() {
-            defmt::warn!("SD: side-load id registry full — a route is not listed");
-            return None;
-        }
-        self.next_sideload += 1;
-        Some(id)
+        id
     }
 
     /// Open the card's **selected** map and hold it open for the session, so the map can **stream**

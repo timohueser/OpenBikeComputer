@@ -49,8 +49,8 @@ use obc_ble::{
 };
 use obc_ports::SettingsStore;
 use obc_storage::weather as weather_store;
-use obc_storage::ObjectIdSequence;
 use obc_storage::{route_name, trip_name};
+use obc_storage::{ObjectIdSequence, SIDELOAD_ID_BASE};
 
 use crate::sd::Storage;
 use crate::SharedStore;
@@ -394,10 +394,6 @@ const LIST_BUF_LEN: usize = {
         trip
     }
 };
-
-// The side-load id band base lives in `sd.rs` beside the session registry both scanners share
-// (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
-use crate::sd::SIDELOAD_ID_BASE;
 
 /// The one place a volume-set refusal becomes a wire status (issue #1039). `obc_app::set_upload`
 /// names the *reason* so its rules can be tested without a wire vocabulary; this maps each onto the
