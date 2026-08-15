@@ -246,24 +246,19 @@ public struct UploadSheetView: View {
 #if DEBUG
 /// Preview-only transport whose upload pumps paced ticks (OBCUI can't import
 /// OBCMock) — F animates, then holds F₂.
-private struct PreviewUploadTransport: DeviceTransport {
+private struct PreviewUploadTransport: DeviceLink, DeviceObjects {
     var dropAt: Double?
 
     var state: AsyncStream<ConnectionState> { AsyncStream { _ in } }
-    var battery: AsyncStream<Int> { AsyncStream { _ in } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Trailhead", firmwareVersion: "0") }
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()

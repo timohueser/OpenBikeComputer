@@ -11,7 +11,7 @@ import Foundation
 /// stream that replays the current value on subscribe, then yields on change.
 public protocol NetworkReachability: Sendable {
     /// Online/offline updates. **Replays** the current value immediately on
-    /// subscribe (like `DeviceTransport.state`), then emits on every change.
+    /// subscribe (like `DeviceLink.state`), then emits on every change.
     var updates: AsyncStream<Bool> { get }
 }
 

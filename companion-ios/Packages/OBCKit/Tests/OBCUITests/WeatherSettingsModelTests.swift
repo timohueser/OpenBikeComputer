@@ -102,7 +102,6 @@ private final class ConfigLinkTransport: DeviceTransport, @unchecked Sendable {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
     var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
