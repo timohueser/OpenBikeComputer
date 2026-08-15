@@ -552,7 +552,7 @@ trait FlattenTree: TreeWalk {
 /// while geometry chunks are tight and need their lengths to build the v11 offset table
 /// ([`serialize_tree`]).
 fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<Vec<u8>>, usize) {
-    let (nodes, first_child) = bfs_nodes(root);
+    let (nodes, first_child) = obc_tree_walk::breadth_first(root, TreeWalk::children);
 
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut chunks: Vec<Vec<u8>> = Vec::new();
@@ -577,25 +577,6 @@ fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, V
         index_bytes.extend_from_slice(&v.to_le_bytes());
     }
     (index_bytes, index.len() as u32, chunks, dropped)
-}
-
-/// Enumerate a resident quadtree in wire-order BFS while recording each branch's
-/// first child. Children are appended contiguously, so `first_child > parent`.
-fn bfs_nodes<N: TreeWalk>(root: &N) -> (Vec<&N>, Vec<usize>) {
-    let mut nodes = vec![root];
-    let mut first_child = vec![0];
-    let mut i = 0;
-    while i < nodes.len() {
-        if let Some(children) = nodes[i].children() {
-            first_child[i] = nodes.len();
-            for child in children {
-                nodes.push(child);
-                first_child.push(0);
-            }
-        }
-        i += 1;
-    }
-    (nodes, first_child)
 }
 
 impl TreeWalk for Node {
@@ -990,7 +971,7 @@ trait FlattenBinnedTree: TreeWalk {
 }
 
 fn flatten_binned_tree<N: FlattenBinnedTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
-    let (nodes, first_child) = bfs_nodes(root);
+    let (nodes, first_child) = obc_tree_walk::breadth_first(root, TreeWalk::children);
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut bins: Vec<Vec<u8>> = Vec::new();
     let mut dropped: usize = 0;

@@ -8,6 +8,8 @@ description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 [dependencies]
 # Normative OBCM constants and primitive codecs shared with every producer/consumer.
 obc-formats = { path = "../../firmware/obc-formats" }
+# Resident quadtree BFS numbering shared with the assembler and byte-fixture oracle.
+obc-tree-walk = { path = "../obc-tree-walk" }
 # High-level reader algorithms used for round-trip comparison, geometry capacity, POI distance,
 # and the obcm_diff tool. Format facts come from obc-formats, not this consumer.
 #

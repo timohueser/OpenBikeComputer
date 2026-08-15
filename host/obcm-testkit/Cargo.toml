@@ -9,3 +9,6 @@ description = "Hand-written OBCM byte builder shared by obc-reader and obc-rende
 # Import normative constants only. Byte assembly remains deliberately independent of production
 # serializers/parsers so this crate stays a meaningful oracle.
 obc-formats = { path = "../../firmware/obc-formats" }
+# Resident quadtree BFS numbering shared with both production writers. The fixture's
+# tree construction and byte packing remain deliberately independent.
+obc-tree-walk = { path = "../obc-tree-walk" }
