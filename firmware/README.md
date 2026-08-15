@@ -144,15 +144,13 @@ firmware runs. `freiburg.obcm` in the repo root is a current sample.
 ./target/release/obc-sim freiburg.obcm
 
 ./target/release/obc-sim freiburg.obcm --size 480x640 --scale 2  # bigger window
-./target/release/obc-sim freiburg.obcm --true-color             # skip 64-color quantization
-./target/release/obc-sim freiburg.obcm --gpx kandel.gpx            # replay a GPX as a fake GPS
+./target/release/obc-sim freiburg.obcm --gpx kandel.gpx         # replay a GPX as a fake GPS
 ./target/release/obc-sim freiburg.obcm --png out.png            # headless one-frame render
-./target/release/obc-sim freiburg.obcm --screenshot gui.png     # capture the live GUI's first frame
 ```
 
-Run `obc-sim --help` for the full flag set (routes/tracks folders, `--import`,
-`--physical`/`--calibrate`, `--script`/`--boot`, headless `--center`/`--zoom`).
-Packing maps and the web builder are covered in the [repo README](../README.md).
+See the [simulator guide](../apps/obc-sim/README.md) or run `obc-sim --help` for the grouped flag
+reference, screenshot workflow, GUI-only housing/calibration controls, and fixture syntax. Packing
+maps and the web builder are covered in the [repo README](../README.md).
 
 ## Run the web demo (`obc-web-demo`)
 
