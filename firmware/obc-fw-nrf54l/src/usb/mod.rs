@@ -43,8 +43,8 @@
 //!
 //! **Zero GPIO cost**: D+/D−/VBUS/TXRTUNE are dedicated USBHS pins, so nothing in the board's pin
 //! plan moves. The driver needs AHB ≥ 30 MHz (asserted in its `calculate_trdt`); the board runs
-//! 128 MHz. It starts the **XO24M** oscillator itself while enabled, and claims two vectors —
-//! `USBHS` and `VREGUSB` — neither of which MPSL or the SDC touch (MPSL takes `RADIO_0`,
+//! 128 MHz. It starts the **XO24M** oscillator itself while enabled. The board binding gives it
+//! `USBHS` and `VREGUSB`; neither vector overlaps MPSL or the SDC (MPSL takes `RADIO_0`,
 //! `TIMER10`, `GRTC_3`, `CLOCK_POWER`, `SWI00`; the board's high-priority input executor is on
 //! `SWI01`).
 //!
@@ -67,7 +67,7 @@ use defmt::{info, warn};
 use embassy_futures::join::join;
 use embassy_nrf::usb::vbus_detect::{HardwareVbusDetect, VbusDetect};
 use embassy_nrf::usb::{self as nrf_usb, Driver as UsbhsDriver};
-use embassy_nrf::{bind_interrupts, interrupt, pac, peripherals, Peri};
+use embassy_nrf::{interrupt, pac, peripherals, Peri};
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::{Builder, Config, UsbDevice};
@@ -76,13 +76,6 @@ use crate::init_static;
 use crate::link::identity;
 
 use control::ControlTx;
-
-bind_interrupts!(struct Irqs {
-    USBHS => nrf_usb::InterruptHandler<peripherals::USBHS>;
-    // Two handlers on the one vector, and the order between them does not matter — see
-    // [`VbusEdge`] for why ours reads nothing and clears nothing.
-    VREGUSB => VbusEdge, nrf_usb::vbus_detect::InterruptHandler;
-});
 
 // ============================ Identity on the wire ============================
 
@@ -417,10 +410,10 @@ pub(crate) fn release_stage() {
 /// whole synchronisation story.
 static VBUS_WAKER: AtomicWaker = AtomicWaker::new();
 
-/// The board's VREGUSB interrupt handler: wake [`VBUS_WAKER`], and nothing else.
+/// The USB service's VREGUSB edge handler: wake [`VBUS_WAKER`], and nothing else.
 ///
 /// Bound **alongside** embassy's `vbus_detect::InterruptHandler` rather than instead of it (see
-/// [`Irqs`]), which is what makes the ordering between the two irrelevant and is worth spelling out,
+/// [`crate::board::UsbIrqs`]), which makes the ordering between the two irrelevant and is worth spelling out,
 /// because "own the vector" is the obvious reading of #937 and it is the weaker design:
 ///
 ///   - **Ours reads nothing and clears nothing.** It cannot lose an edge to a handler that ran
@@ -436,7 +429,7 @@ static VBUS_WAKER: AtomicWaker = AtomicWaker::new();
 ///
 /// The cost of keeping embassy's handler is one atomic store and two wakes of wakers nothing of
 /// ours registers on, on an event a human generates by hand.
-struct VbusEdge;
+pub(crate) struct VbusEdge;
 
 impl interrupt::typelevel::Handler<interrupt::typelevel::VREGUSB> for VbusEdge {
     unsafe fn on_interrupt() {
@@ -586,7 +579,7 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     usb_config.out_burst_packets = BULK_OUT_BURST_PACKETS;
     // [`BoardVbusDetect`] rather than embassy's `HardwareVbusDetect` so the driver and the poll
     // guard read the one register, not two views of it — the arming still happened in [`run`].
-    let driver = UsbhsDriver::new(usb_p, Irqs, BoardVbusDetect, &mut ep_buffer.0, usb_config);
+    let driver = UsbhsDriver::new(usb_p, crate::board::UsbIrqs, BoardVbusDetect, &mut ep_buffer.0, usb_config);
 
     let mut config = Config::new(VENDOR_ID, PRODUCT_ID);
     config.manufacturer = Some(MANUFACTURER);
@@ -689,7 +682,7 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // again, this line is the last one printed and VREGUSB — not USBHS — is the culprit, which is
     // the one reading the analysis below cannot rule out from source alone.
     info!("usb: arming VBUS detect (VREGUSB); no USBHS access until a cable is present");
-    let _vbus_armed = HardwareVbusDetect::new(Irqs);
+    let _vbus_armed = HardwareVbusDetect::new(crate::board::UsbIrqs);
 
     let cable_present = vbus_present();
     set_usb_radio_inhibited(cable_present);
