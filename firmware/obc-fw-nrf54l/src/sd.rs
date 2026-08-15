@@ -75,6 +75,7 @@ use obc_route::{
 use obc_storage::fat_extents::{
     BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
 };
+use obc_storage::trip_name;
 use obc_storage::weather::{self as weather_store, WeatherSlotIo};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
@@ -1451,7 +1452,7 @@ impl Storage {
         for n in &names {
             // A trip without a resolvable id can't be listed (the app's folder remap keys on it) —
             // only the exhausted side-load band hits this, warned in `sideload_id`.
-            let Some(id) = uploaded_trip_id(n).or_else(|| self.sideload_id(n)) else {
+            let Some(id) = trip_name::uploaded_id(n.base_name(), n.extension()).or_else(|| self.sideload_id(n)) else {
                 defmt::warn!("SD: scan: trip {} has no object id — not listed", defmt::Debug2Format(n));
                 continue;
             };
@@ -5064,15 +5065,13 @@ pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RD", b"ORD")
 }
 
-/// Whether a `/routes` directory entry is a trip file (epic #526 TR4): a BLE-uploaded `TP{id}.OBT`
-/// (plain 8.3 like the route uploads' `.OBR`) **or** a side-loaded `.obt` (long-filename match, the
-/// trip twin of `.obcr`). Dot-prefixed clutter is excluded on both arms. (The ride log's `TRACK.OBT`
-/// shares the `OBT` extension but lives in `/tracks`, never `/routes`, so it can't collide here.)
+/// Bind a FAT entry to the host-tested trip filename classifier. The ride log's `TRACK.OBT` lives
+/// in `/tracks`, so it never reaches this `/routes` binding.
 fn is_trip_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
     if e.attributes.is_directory() {
         return false;
     }
-    long_has_ext(long, b".obt") || (e.name.extension() == b"OBT" && !long.is_some_and(|n| n.starts_with('.')))
+    trip_name::is_admitted(e.name.extension(), long)
 }
 
 /// Whether a card-root directory entry belongs to the **map** catalog (issue #927): a side-loaded
@@ -5272,13 +5271,6 @@ fn map_choices(maps: &[MapSummary]) -> Vec<obc_app::MapChoice, MAX_MAPS> {
 /// ([`obc_app::is_superseded_upload`]) is stated in terms of the same indices.
 fn choose_map_index(maps: &[MapSummary]) -> Option<usize> {
     obc_app::choose_map(&map_choices(maps))
-}
-
-/// The **durable trip object id** in an uploaded trip's filename — `TP{id}.OBT` → `id` (spec §7.7;
-/// trip ids draw from a device counter separate from routes/rides, §4.1). `None` for a side-loaded
-/// `.obt` (no id in the name — it gets a session-scoped one from the reserved band).
-pub fn uploaded_trip_id(name: &ShortFileName) -> Option<u16> {
-    id_in_name(name, b"TP", b"OBT")
 }
 
 /// Parse `{prefix}{decimal u16}.{ext}` from an 8.3 name; `None` for anything else.
