@@ -201,7 +201,7 @@ export class RideLibraryError extends Error {
 // --- the pull ------------------------------------------------------------------
 
 /** One ride the pull could not land, and why. The rest of the batch still lands. */
-export interface RideFailure {
+interface RideFailure {
     readonly objectId: number;
     readonly name: string;
     readonly message: string;
