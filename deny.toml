@@ -1,8 +1,18 @@
 # cargo-deny: supply-chain gate for both cargo roots (the firmware workspace and the
 # standalone obc-fw-nrf54l board crate). Run from the repo root against each lockfile:
-#   cargo deny --manifest-path firmware/Cargo.toml --all-features check
+#   cargo deny --all-features check
 #   cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check
+#   cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features check
 # Checks advisories (RustSec), licenses, banned crates, and dependency sources.
+#
+# ONE THING THIS FILE CANNOT SEE, so it is written down here (#907): `geos-src`
+# declares MIT — that is the licence of the *wrapper crate*, not of the GEOS C++
+# sources it carries, which are **LGPL-2.1**. The desktop app statically links them,
+# which is fine (LGPL-2.1 §3 permits GPL-2-or-later, and this project is GPL-3) but
+# is not free of obligations: a distributed binary has to come with the licence text
+# and the corresponding source. D3 (#908) owns the installers and therefore owns
+# putting that in them. Nothing changed about *which* code we link — the dynamic
+# build carried the same library — only about it now being inside the artifact.
 
 [graph]
 # Resolve every feature so feature-gated deps (debug-link, the sim's eframe stack...) are
@@ -55,6 +65,12 @@ private = { ignore = true }
 # to just this crate rather than allowing OFL globally.
 exceptions = [
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "LicenseRef-UFL-1.0"] },
+    # Mozilla's CA root store, as data, under the Community Data License Agreement
+    # (permissive — attribution only, no copyleft on anything that uses it). Reached
+    # through ureq's rustls in the desktop app (#906), which needs a trust store to
+    # fetch Geofabrik over TLS. Scoped to the crate rather than allowing CDLA
+    # globally: this is the only place a *data* licence is appropriate.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]
@@ -74,4 +90,14 @@ unknown-git = "deny"
 # nrf-sdc/nrf-mpsl (BLE controller, issue #269): the crates.io releases predate nRF54L support
 # and pin embassy-nrf 0.7, so the board crate rev-pins git main (the same rev TrouBLE's nrf54
 # example pins — see the crate README's BLE section). Drop when a ≥0.4 release ships.
-allow-git = ["https://github.com/alexmoon/nrf-sdc"]
+#
+# embedded-sdmmc (map-upload speed, #889): our fork of the v0.9.0 tag, teaching
+# `VolumeManager::write` to hand the device a whole cluster of contiguous blocks in one call so
+# `SdCard` can issue ACMD23 + CMD25. Stock 0.9's one-block `BlockCache` makes that path
+# unreachable from above, which cost the upload ~5x (2458 vs 478 µs/block, measured — see
+# `sd_bench`'s `wr-*` shapes). The patch is in both resolve roots' `[patch.crates-io]`; drop this
+# entry if the change ever lands upstream and a release carries it.
+allow-git = [
+    "https://github.com/alexmoon/nrf-sdc",
+    "https://github.com/timohueser/embedded-sdmmc-rs",
+]

@@ -28,7 +28,7 @@ const NO_FIX_FLOOR_MS: u32 = 5_000;
 /// How many configured fix intervals of silence count as "lost" before the floor takes over.
 const NO_FIX_INTERVALS: u32 = 3;
 
-/// How often the tick reads the battery [`FuelGauge`](crate::FuelGauge). Charge drifts over
+/// How often the tick reads the battery [`FuelGauge`](obc_ports::FuelGauge). Charge drifts over
 /// minutes, so a ~30 s cadence keeps the Home gauge fresh while reading the PMIC a few times a
 /// minute at most. Independent of redraws: an unchanged reading repaints nothing.
 const BATTERY_POLL_MS: u32 = 30_000;
@@ -174,14 +174,15 @@ pub(crate) struct RideEngine {
     /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix and drawn on the Map;
     /// cleared when [`ride_session`](RideEngine::ride_session) changes.
     pub(crate) breadcrumb: Breadcrumb,
-    /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the
+    /// Millis of the last battery [`FuelGauge`](obc_ports::FuelGauge) poll, or `None` before the
     /// first. Read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a real PMIC
     /// read never spins the I²C bus at the frame rate.
     last_battery_poll_ms: Option<u32>,
     /// Last ambient temperature (°C), or `None` before the first sample / no thermometer. Held
     /// across ticks. No screen consumes it yet, so it lives **off**
     /// [`AppState`](crate::AppState) — storing it there would gate a needless map redraw on every
-    /// reading, breaking render-on-demand. Read via [`App::temperature_c`](crate::App).
+    /// reading, breaking render-on-demand. No screen or public app façade consumes the cached
+    /// sample yet; the tick path only updates this ride-owned state.
     pub(crate) temp_c: Option<f32>,
     /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever. Drives the
     /// "No GPS Fix" banner via [`has_live_fix`](RideEngine::has_live_fix). Lives **off**
@@ -189,6 +190,16 @@ pub(crate) struct RideEngine {
     /// every fix (incl. a stationary one) never trips the `state != state_before` redraw gate; the
     /// banner's own repaint edge comes from the end-of-tick flip below.
     pub(crate) last_fix_ms: Option<u32>,
+    /// The coordinate `(lat, lon)` of the freshest fix that has **not yet** been handed a terrain
+    /// sample (EL8, epic #1068), or `None` once one has been (or before the first fix).
+    ///
+    /// This one-shot *is* the sampling cadence: `tick` arms it only on a fresh fix, and
+    /// [`App::sample_terrain`](crate::App::sample_terrain) disarms it, so a host that calls the
+    /// sampler every frame still reads at most one terrain tile per fix — the whole point, since a
+    /// per-frame sample would be an SD read on the render path. Lives **off**
+    /// [`AppState`](crate::AppState) for the same reason as
+    /// [`last_fix_ms`](RideEngine::last_fix_ms): it must never trip the redraw gate.
+    pub(crate) pending_terrain: Option<(i32, i32)>,
     /// The no-fix state at the previous tick's end, so the timer edge that flips the "No GPS Fix"
     /// banner dirties the live-data views exactly once. Starts `true` — no fix at boot.
     pub(crate) prev_no_fix: bool,
@@ -199,7 +210,31 @@ pub(crate) struct RideEngine {
     /// so without this edge a live tile only repainted when something *else* happened to dirty the
     /// frame — frozen solid on an indoor bench with no fix (epic #744, SR3).
     pub(crate) prev_live_sensors: (Option<u16>, Option<u16>, Option<u8>),
+    /// The rider's **travel direction** (degrees CW from north) for the route-relative wind
+    /// arrows (WX12, #1197): the active route's general heading ahead of the matched progress
+    /// while on-route (held while stopped — the wind question at a rest stop is about the ride
+    /// ahead), else `None` — the arrows then render neutral, never a fabricated head/tail.
+    ///
+    /// **Route or nothing** (owner tuning round). The momentary GPS course used to stand in
+    /// without a route, and it is not a claim the panel can keep honest: a rider stopped at a
+    /// junction, turning the bars to show a partner the screen, would repaint every arrow against
+    /// a direction they aren't going. A planned route is the one direction that survives standing
+    /// still. Updated per fresh fix in `App::tick`; cleared with the route-derived state.
+    pub(crate) travel_deg: Option<f32>,
+    /// The progress the route heading in [`travel_deg`](RideEngine::travel_deg) was computed at —
+    /// the recompute hysteresis key, so the two `position_at` chunk decodes run only when the
+    /// rider has actually moved along the route (≥ [`HEADING_MOVE_M`]), not per fix.
+    pub(crate) travel_at_m: Option<u32>,
+    /// The bounded recent moving-speed window feeding the weather ride projection (WX12) — see
+    /// [`SpeedWindow`](crate::weather::SpeedWindow). Cleared with the session.
+    pub(crate) speed_win: crate::weather::SpeedWindow,
 }
+
+/// Progress the rider must cover before the route heading is re-derived (two chunk decodes).
+/// Sized against [`TRAVEL_CHORD_M`](crate::weather::TRAVEL_CHORD_M): a kilometre-long chord cannot
+/// swing within a few tens of metres, so anything finer only re-reads the card — and a stationary
+/// rider's GPS jitter must never do that at all.
+pub(crate) const HEADING_MOVE_M: u32 = 50;
 
 impl RideEngine {
     /// The boot state: no route caches, no session, nothing sensed yet.
@@ -221,8 +256,12 @@ impl RideEngine {
             last_battery_poll_ms: None,
             temp_c: None,
             last_fix_ms: None,
+            pending_terrain: None,
             prev_no_fix: true,
             prev_live_sensors: (None, None, None),
+            travel_deg: None,
+            travel_at_m: None,
+            speed_win: crate::weather::SpeedWindow::new(),
         }
     }
 
@@ -257,8 +296,12 @@ impl RideEngine {
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
             addr_of_mut!((*slot).temp_c).write(None);
             addr_of_mut!((*slot).last_fix_ms).write(None);
+            addr_of_mut!((*slot).pending_terrain).write(None);
             addr_of_mut!((*slot).prev_no_fix).write(true);
             addr_of_mut!((*slot).prev_live_sensors).write((None, None, None));
+            addr_of_mut!((*slot).travel_deg).write(None);
+            addr_of_mut!((*slot).travel_at_m).write(None);
+            addr_of_mut!((*slot).speed_win).write(crate::weather::SpeedWindow::new());
             // Exhaustiveness guard: a field added to `RideEngine` fails to compile here until its
             // `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
             let RideEngine {
@@ -278,8 +321,12 @@ impl RideEngine {
                 last_battery_poll_ms: _,
                 temp_c: _,
                 last_fix_ms: _,
+                pending_terrain: _,
                 prev_no_fix: _,
                 prev_live_sensors: _,
+                travel_deg: _,
+                travel_at_m: _,
+                speed_win: _,
             } = &*slot;
         }
     }
@@ -301,13 +348,25 @@ impl RideEngine {
     pub(crate) fn sync_route_state(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
         let mut dirty = false;
         if activity.active_route != self.matched_route {
+            // Deliberately do NOT clear a pending seam re-anchor here: a detour commit queues it
+            // for the *just-adopted* spliced route, so this route-change edge is exactly the tick
+            // it must survive into. Stale seams die on the request's own route-key check.
             self.route_match.reset();
             self.matched_route = activity.active_route;
+            // The old route's tangent means nothing on the new line (WX12) — neutral until the
+            // next fix matches.
+            self.travel_deg = None;
+            self.travel_at_m = None;
             dirty = true; // route load / swap repaints the route line + recenters
         }
         if activity.session != self.ride_session {
+            // A new tracking session on the same route is a new navigation pass too: discard a
+            // previous session's floor before the first match.
+            self.route_match.reset();
             activity.reset_ride();
             self.breadcrumb.clear();
+            // A new session is a new pace too (WX12's projection window restarts with the ride).
+            self.speed_win.clear();
             self.ride_session = activity.session;
             dirty = true; // the breadcrumb cleared — the map's travelled trail changed
         }
@@ -354,11 +413,12 @@ impl RideEngine {
                 (Some(_), None) => { /* geometry not yet streamable — keep the old table, retry next tick */ }
             }
         }
+        activity.waypoint_count = self.waypoints.len();
         dirty
     }
 
     /// Whether the ~30 s battery-poll cadence is due at `now_ms` — and if so, stamp it consumed.
-    /// The caller (the tick) does the actual [`FuelGauge`](crate::FuelGauge) read + the Home-only
+    /// The caller (the tick) does the actual [`FuelGauge`](obc_ports::FuelGauge) read + the Home-only
     /// repaint gate.
     pub(crate) fn battery_poll_due(&mut self, now_ms: u32) -> bool {
         let due = self.last_battery_poll_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= BATTERY_POLL_MS);
@@ -374,6 +434,46 @@ impl RideEngine {
     pub(crate) fn match_fix(&mut self, activity: &mut Activity, fix: obc_ports::Fix, route: &RouteReader) {
         let m = self.route_match.update(fix.lon, fix.lat, route);
         activity.apply_match(m);
+    }
+
+    /// A fresh fix went **unmatched** — the Recalculating freeze (#1146 P2) holds the matcher for
+    /// the length of a route search, which is seconds, not one fix. Arm a one-shot wide re-lock so
+    /// the first match after the freeze reaches wherever the rider actually got to: the tight
+    /// on-route window is sized for one fix's travel, and a rider who rode past it would otherwise
+    /// come out of the freeze with a false off-route chip and frozen progress.
+    ///
+    /// **The freezes this covers are the ones that end *without* new geometry** — a cancel, a
+    /// `NoPath`/`Exhausted` answer, a detour's terminal edge. A search that *succeeds* never needs
+    /// it: committing the result runs `drop_route_derived_state`, and its `RouteMatch::reset`
+    /// clears this flag along with the rest of the lock, leaving the matcher unstarted so the next
+    /// fix scans the whole new route regardless. This is for the rider who was shown
+    /// "Recalculating" and then handed back the route they were already riding.
+    pub(crate) fn note_unmatched_fix(&mut self) {
+        self.route_match.relock_wide();
+    }
+
+    /// Apply a queued seam re-anchor (#882) once matching route geometry is available: install
+    /// matcher progress + the forward-only floor at the splice seam. Returns `true` when the
+    /// matcher/progress floor moved; a transient `None` reader leaves the request queued, while a
+    /// route-key mismatch drops it rather than applying the distance to different geometry.
+    pub(crate) fn apply_pending_seam(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
+        let Some(req) = activity.pending_seam() else { return false };
+        if activity.active_route != Some(req.route) {
+            activity.clear_seam();
+            return false;
+        }
+        let Some(route) = route else { return false };
+        if let Some(pos) = self.route_match.set_progress_floor(route, req.anchor_m) {
+            activity.clear_seam();
+            activity.apply_match(obc_route::Match { progress_m: pos.progress_m, off_route: false, dist_m: 0 });
+            activity.active_climb = None;
+            activity.next_waypoint = None;
+            true
+        } else {
+            // A transient decode failure is retryable. Keep both the request and the old visible
+            // progress; clearing one without moving the matcher would split the two anchors.
+            false
+        }
     }
 
     /// Recompute [`Activity::active_climb`] from the freshly-matched `progress_m`, applying
@@ -457,6 +557,7 @@ impl RideEngine {
                 }
             }
         }
+        activity.waypoint_count = self.waypoints.len();
         let prev = activity.next_waypoint;
         let next = resolve_next_waypoint(&self.waypoints, activity.progress_m, prev);
         if next != prev {
@@ -484,6 +585,9 @@ impl RideEngine {
     /// remap deliberately preserves same-id state, and these are exactly the cases where that
     /// preservation would carry stale state onto new geometry. The recording session is untouched.
     pub(crate) fn drop_route_derived_state(&mut self, activity: &mut Activity) {
+        // `reset` also clears any wide re-lock armed by a freeze (`note_unmatched_fix`), and should:
+        // an unstarted matcher scans the whole route on its next fix, which is wider still. That is
+        // why the wide window is only ever spent on a freeze that ended without new geometry.
         self.route_match.reset();
         self.matched_route = None; // tick re-locks the matcher from the current fix
         self.profile = None;
@@ -494,9 +598,46 @@ impl RideEngine {
         self.waypoints = Waypoints::new();
         self.waypoints_route = None; // the next tick re-loads from the reopened geometry
         activity.next_waypoint = None;
+        activity.waypoint_count = 0;
         activity.progress_m = 0;
         activity.off_route = false;
         activity.dist_to_route_m = 0;
+        activity.clear_seam();
+        // The route tangent was measured on the old geometry — neutral until the next fix
+        // re-derives it (WX12). The speed window survives: the rider's pace is route-agnostic.
+        self.travel_deg = None;
+        self.travel_at_m = None;
+    }
+
+    /// Update the WX12 travel direction from this tick's fresh fix (see
+    /// [`travel_deg`](RideEngine::travel_deg) — the route's general heading, or neutral). Runs
+    /// after the matcher, so `activity` carries this fix's match. The heading recomputes only when
+    /// the rider moved ≥ [`HEADING_MOVE_M`] along the route (two `position_at` chunk decodes,
+    /// fix-cadence-bounded).
+    pub(crate) fn update_travel(&mut self, activity: &Activity, route: Option<&RouteReader>) {
+        let on_route = route.is_some() && activity.active_route.is_some() && self.started() && !activity.off_route;
+        if on_route {
+            let route = route.unwrap();
+            let moved = self.travel_at_m.is_none_or(|at| activity.progress_m.abs_diff(at) >= HEADING_MOVE_M);
+            if !moved && self.travel_deg.is_some() {
+                return; // held heading (stopped, or sub-hysteresis creep)
+            }
+            if let Some(deg) = crate::weather::route_heading_deg(route, activity.progress_m) {
+                self.travel_deg = Some(deg);
+                self.travel_at_m = Some(activity.progress_m);
+                return;
+            }
+            // Undecodable geometry: neutral, like having no route at all.
+        }
+        // Off-route, no route, or no readable geometry: neutral — the momentary heading is not a
+        // direction the panel can stand behind (see `travel_deg`).
+        self.travel_deg = None;
+        self.travel_at_m = None;
+    }
+
+    /// Whether the route matcher has locked onto the active route at least once this load.
+    pub(crate) fn started(&self) -> bool {
+        self.route_match.started()
     }
 
     /// Re-point every route-keyed cache after a catalog replacement (#450): each build key follows
@@ -509,6 +650,11 @@ impl RideEngine {
         // navigation unloads and the stale per-route state is dropped with it.
         let old_active = activity.active_route;
         activity.active_route = old_active.and_then(remap);
+        // A queued seam re-anchor (one tick between detour commit and geometry) and a queued
+        // detour-plan request both follow the same durable route identity as `active_route`, or
+        // are cancelled if that route vanished.
+        activity.remap_seam_route(remap);
+        activity.remap_detour_route(remap);
         if old_active.is_some() && activity.active_route.is_none() {
             self.route_match.reset(); // drop stale progress/off-route from the vanished route
         }
@@ -534,6 +680,7 @@ impl RideEngine {
         if old_wpts.is_some() && self.waypoints_route.is_none() {
             self.waypoints = Waypoints::new();
             activity.next_waypoint = None;
+            activity.waypoint_count = 0;
         }
     }
 
@@ -555,6 +702,7 @@ impl RideEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::support::wpts;
 
     // --- the pure climb resolver (C3, #509) ---
     //
@@ -563,7 +711,7 @@ mod tests {
     // the once-per-entry `ClimbProfile::fill`, the C5 auto-switch) stays pinned end-to-end in
     // `app.rs` over the committed Grimsel fixture.
 
-    use obc_route::{ClimbSeg, WptEntry};
+    use obc_route::ClimbSeg;
 
     /// A `ClimbSeg` over `[start_m, end_m]` — the other fields don't affect the interval hysteresis.
     fn seg(start_m: u32, end_m: u32) -> ClimbSeg {
@@ -574,7 +722,6 @@ mod tests {
             top_ele_m: (end_m - start_m) as i16,
             gain_m: (end_m - start_m) as u16,
             avg_grade_pct: 5,
-            category: 0,
         }
     }
 
@@ -664,17 +811,6 @@ mod tests {
     // table: the linger advance, the anti-flap jitter guard, the past-the-last `None`, and a fresh
     // route starting at index 0. (The App-side wiring — build-on-load, off-route freeze, re-window,
     // route-swap clear — rides the same `tick`/`Activity` machinery the climb wiring does.)
-
-    /// A `Waypoints` table from `(dist_along_m, name)` pairs, in route order.
-    fn wpts(items: &[(u32, &str)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for &(dist_along_m, name) in items {
-            let mut n = heapless::String::new();
-            n.push_str(name).unwrap();
-            w.entries.push(WptEntry { dist_along_m, lon: 0, lat: 0, name: n }).unwrap();
-        }
-        w
-    }
 
     /// The index advances at exactly `dist + WAYPOINT_LINGER_M`, and not one metre before — the
     /// passed waypoint lingers the whole 100 m band.

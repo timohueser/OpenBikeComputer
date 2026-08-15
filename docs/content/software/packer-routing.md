@@ -7,14 +7,14 @@ description: How OpenStreetMap data becomes a device-ready OBCM map (the obc-pac
 
 Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer, and (as of v8) it also bakes a [routable navigation graph](#building-the-navigation-graph) into the map — one that v9 makes [bike-type-aware](#weighting-the-graph-bike-profiles). **Routing** is the lighter on-device work: turning a GPX you upload into a navigable `.obcr`, **map-matching** your live position onto it as you ride, and — new this iteration — **computing** a route to a POI on the device itself over that baked graph. So "routing" here is mostly *following* a line you brought, with a memory-bounded bit of *pathfinding* when you ask the device to reach a POI on its own.
 
-The packer ([`obc-pack`](src:firmware/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
+The packer ([`obc-pack`](src:host/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
 
 ## Packing a map
 
 The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`. Two stages carry the weight — ingest and the per-LOD build — and the rest are quick.
 
 <figure class="fig">
-<svg viewBox="0 0 820 240" role="img" aria-label="The packer pipeline as a trail: starting from an OSM .pbf plus a config, the stages are merge, ingest, compute bounding box, generate land, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages.">
+<svg viewBox="0 0 820 240" role="img" aria-label="The packer pipeline as a trail: starting from one or more OSM .pbf files plus a config, the stages are ingest (which also merges and crops), compute bounding box, generate land, trace contours from terrain, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages; contour tracing only runs when the config asks for it and terrain was supplied.">
   <text class="d-tag" x="20" y="24">From OpenStreetMap to a device map</text>
 
   <!-- trail -->
@@ -22,39 +22,40 @@ The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`
 
   <!-- start -->
   <circle cx="58" cy="120" r="7" class="d-forest" />
-  <text class="d-sub" x="58" y="150" text-anchor="middle">.pbf +</text>
+  <text class="d-sub" x="58" y="150" text-anchor="middle">.pbf(s) +</text>
   <text class="d-sub" x="58" y="162" text-anchor="middle">config</text>
 
-  <!-- 1 merge (above) -->
-  <circle cx="128" cy="120" r="15" class="d-forest" /><text class="d-num" x="128" y="124" text-anchor="middle">1</text>
-  <text class="d-label" x="128" y="74" text-anchor="middle">Merge</text>
-  <text class="d-sub" x="128" y="88" text-anchor="middle">if &gt; 1 input</text>
-  <!-- 2 ingest (below, HOT) -->
-  <circle cx="251" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="251" y="124" text-anchor="middle">2</text>
-  <text class="d-label" x="251" y="160" text-anchor="middle" style="fill:#a9501c">Ingest</text>
-  <text class="d-sub" x="251" y="174" text-anchor="middle">ways · relations</text>
-  <!-- 3 bbox (above) -->
-  <circle cx="374" cy="120" r="15" class="d-forest" /><text class="d-num" x="374" y="124" text-anchor="middle">3</text>
-  <text class="d-label" x="374" y="74" text-anchor="middle">BBox</text>
-  <text class="d-sub" x="374" y="88" text-anchor="middle">truncate µdeg</text>
-  <!-- 4 land (below) -->
-  <circle cx="497" cy="120" r="15" class="d-forest" /><text class="d-num" x="497" y="124" text-anchor="middle">4</text>
-  <text class="d-label" x="497" y="160" text-anchor="middle">Land</text>
-  <text class="d-sub" x="497" y="174" text-anchor="middle">clip to bbox</text>
-  <!-- 5 per-LOD (above, HOT) -->
-  <circle cx="620" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="620" y="124" text-anchor="middle">5</text>
-  <text class="d-label" x="620" y="74" text-anchor="middle" style="fill:#a9501c">Per-LOD</text>
-  <text class="d-sub" x="620" y="88" text-anchor="middle">simplify → quadtree</text>
-  <!-- 6 serialize (below) -->
-  <circle cx="720" cy="120" r="15" class="d-forest" /><text class="d-num" x="720" y="124" text-anchor="middle">6</text>
-  <text class="d-label" x="720" y="160" text-anchor="middle">Serialize</text>
-  <text class="d-sub" x="720" y="174" text-anchor="middle">stream out</text>
+  <!-- 1 ingest (below, HOT) — merge + crop happen inside it -->
+  <circle cx="150" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="150" y="124" text-anchor="middle">1</text>
+  <text class="d-label" x="150" y="160" text-anchor="middle" style="fill:#a9501c">Ingest</text>
+  <text class="d-sub" x="150" y="174" text-anchor="middle">ways · relations</text>
+  <text class="d-sub" x="150" y="188" text-anchor="middle">merge · crop</text>
+  <!-- 2 bbox (above) -->
+  <circle cx="254" cy="120" r="15" class="d-forest" /><text class="d-num" x="254" y="124" text-anchor="middle">2</text>
+  <text class="d-label" x="254" y="74" text-anchor="middle">BBox</text>
+  <text class="d-sub" x="254" y="88" text-anchor="middle">truncate µdeg</text>
+  <!-- 3 land (below) -->
+  <circle cx="358" cy="120" r="15" class="d-forest" /><text class="d-num" x="358" y="124" text-anchor="middle">3</text>
+  <text class="d-label" x="358" y="160" text-anchor="middle">Land</text>
+  <text class="d-sub" x="358" y="174" text-anchor="middle">clip to bbox</text>
+  <!-- 4 contours (above) — only with terrain + a config that asks -->
+  <circle cx="462" cy="120" r="15" class="d-forest" /><text class="d-num" x="462" y="124" text-anchor="middle">4</text>
+  <text class="d-label" x="462" y="74" text-anchor="middle">Contours</text>
+  <text class="d-sub" x="462" y="88" text-anchor="middle">trace · clamp 15 m</text>
+  <!-- 5 per-LOD (below, HOT) -->
+  <circle cx="566" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="566" y="124" text-anchor="middle">5</text>
+  <text class="d-label" x="566" y="160" text-anchor="middle" style="fill:#a9501c">Per-LOD</text>
+  <text class="d-sub" x="566" y="174" text-anchor="middle">simplify → quadtree</text>
+  <!-- 6 serialize (above) -->
+  <circle cx="670" cy="120" r="15" class="d-forest" /><text class="d-num" x="670" y="124" text-anchor="middle">6</text>
+  <text class="d-label" x="670" y="74" text-anchor="middle">Serialize</text>
+  <text class="d-sub" x="670" y="88" text-anchor="middle">stream out</text>
 
   <!-- end -->
   <rect class="d-panel" x="772" y="104" width="40" height="32" rx="5" style="fill:#e7ead8" />
   <text class="d-sub" x="792" y="124" text-anchor="middle" style="font-size:9px">.obcm</text>
 </svg>
-<figcaption>Inputs are merged (via <code>osmium</code>) only when there's more than one. Each LOD tier is built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
+<figcaption>There is no separate merge or crop stage: giving the packer several regions, or <a href="#cropping-to-a-box">a box</a> to cut them down to, changes what ingest reads rather than adding a step in front of it — which is why the whole pipeline needs no external tool at all. Stages 3 and 4 both <i>generate</i> features rather than read them, and both do it before any tier exists, so what they make is cut and simplified like everything else. Each LOD tier is then built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
 </figure>
 
 ### Styling: first match wins
@@ -123,7 +124,7 @@ Within a `tag_key`, the value `"*"` is a **catch-all**: an exact value match sti
 
 ### Ingest: two passes, then assemble
 
-OSM is nodes, ways and relations, stored in that order. The ingester reads the `.pbf` twice. **Pass 1** builds a `node id → coordinate` store and notes which *area relations* exist (lakes-with-islands, multi-part forests). **Pass 2** turns ways into lines and polygons — and captures the geometry of any way a relation needs. Then each relation's member ways are assembled into a polygon-with-holes.
+OSM is nodes, ways and relations, stored in that order. The ingester reads the `.pbf` twice. **Pass 1** builds a `node id → coordinate` store and notes which *area relations* exist (lakes-with-islands, multi-part forests). **Pass 2** turns ways into lines and polygons — and captures the geometry of any way a relation needs. Then each relation's member ways are assembled into a polygon-with-holes. (Cropping to a box adds a third pass in front of these — [below](#cropping-to-a-box); several regions are read by these same passes — [below](#merging-several-regions).)
 
 <figure class="fig">
 <svg viewBox="0 0 720 280" role="img" aria-label="Ingest in two passes. Pass 1 reads the pbf into a node store and collects area relations. Pass 2 turns ways into lines and closed-way polygons and coastlines, capturing member geometry. Then relation member ways are assembled via build_area into a polygon with a hole — a lake with an island.">
@@ -171,16 +172,42 @@ OSM is nodes, ways and relations, stored in that order. The ingester reads the `
 <figcaption>Relations are assembled with GEOS <code>build_area</code>, which sorts member rings into outers and holes by geometry — so a lake with an island comes out as a polygon with one interior ring, ready for the <a href="../formats/#features-an-anchor-then-deltas">holes encoding</a>. A closed way is a polygon only if its tags say it encloses an area; a closed <code>highway</code> loop stays a line, never also a filled blob.</figcaption>
 </figure>
 
+### Cropping to a box
+
+You rarely want a whole country. `--bbox W,S,E,N` crops the source **during ingest**, in a **pass 0** that reads only ids: the nodes inside the box, the ways touching one of them, the renderable area relations reached by those ways, and — the part that matters — every member way and node those selected objects still need *outside* the box.
+
+That last clause is the whole design. The naive filter is "drop everything outside the box", and it fails in a way you'd only notice on the road. A way that leaves the box would be missing node positions, and the ingester drops a way it cannot fully resolve rather than guess at half of it — so every road crossing the boundary would vanish back to its last node inside. The map would fray inwards from its own edge, and the [navigation graph](#building-the-navigation-graph) would lose real exits: not a road drawn short, an exit the router doesn't know exists.
+
+So a way is kept **whole** or not at all. An edge ends where the *way* ends, a little outside the box, rather than at an arbitrary vertex on the box edge — no phantom junction, no invented dead-end at the border. A renderable area relation touched by one of those ways is completed too: all of its member ways and their nodes are selected before assembly. This is crucial for OSM land cover, where one residential or forest multipolygon can be split across many ways. Dropping one out-of-box member would otherwise make the ingester reject the relation whole and leave an apparently random hole *inside* the requested map.
+
+Two consequences worth expecting. The finished map's header bounding box is always a little **wider** than the box you asked for, because it is measured from the packed content and complete ways or relation members stick out — which is why an extract box must never be re-derived from a packed map's header, or it ratchets outward on every re-pack. And peak memory tracks the *selection*, not the source file: relation ids are streamed and the coordinate store holds only the box plus the complete objects it reached, so cropping a 500 MB country remains close to the cost of packing the resulting small map.
+
+This begins with the strategy [`osmium extract`](https://osmcode.org/osmium-tool/) calls `complete_ways`, down to the integer grid used by its edge test, then applies the relation completion associated with osmium's `smart` strategy only to area relations the active schema can render. Route and administrative-boundary relations therefore cannot pull continent-scale geometry into a small map. A relation already missing members at the source extract's own edge is still rejected rather than guessed from an incomplete shape.
+
+### Merging several regions
+
+A tour that crosses a border needs two extracts, and the two genuinely overlap. Geofabrik cuts its regions along administrative boundaries and completes the ways that cross them, so every bridge, river and border road exists in *both* files under the *same* OSM ids. Merging is therefore not concatenation: it is deciding, object by object, which copy is the real one.
+
+That decision used to belong to `osmium merge` — the packer's second C++ dependency. It now happens inside the passes already described: **every pass reads every file**, and the results are folded together afterwards, under two rules.
+
+**On a duplicate id, the first file listed wins — the whole object, not a blend.** The tie-break is decided on the `(type, id)` alone. This matters because two extracts downloaded a week apart can hold two *versions* of the same object; `osmium merge` keeps both (it is built to handle history files), and the packer then drew both — one building rendered twice where somebody had retagged it between the two downloads. Picking a whole-object winner by id makes that impossible.
+
+**The survivors come out in ascending id order**, per type — the order a single merged, sorted file would have produced. Feature order decides which [quadtree chunk](#the-quadtree-packing-geometry-into-chunks) a feature lands in and therefore the packed bytes, and on overlapping regions with no version skew the native merge reproduces the external chain's output byte for byte.
+
+Memory tracks the box, not the source: nothing is re-written to disk and nothing holds a whole merged region resident, where the external chain's node-location index was sized by the largest node id in all of OSM — a two-region boxed build peaked around 2.3 GB there versus ~340 MB reading the regions in place, at about the same wall clock (the files are read in parallel).
+
 ### Land and sea
 
-OSM ways draw the *coast*, but not the sea or the land fill. Those come from a separate global dataset of land polygons, clipped to the map's bounding box and added as features styled `natural.land`. The sea needs no geometry at all: it's the **backdrop** the renderer clears to before drawing, and land is simply painted on top.
+OSM ways draw the *coast*, but not the sea or the land fill. Those come from a separate global dataset of land polygons, clipped to the map's bounding box. The packer keeps that land internally while it builds the coarse semantic coverage, then subtracts it from the bounding box and stores only the result as `natural.sea`. Land itself needs no geometry in the finished map: it is the **backdrop** the renderer clears to before drawing. An inland frame therefore spends zero vertices repainting its ordinary ground; only a frame near the coast pays for coastline geometry.
+
+That dataset is ~950 MB, downloaded and unpacked once into the packer's shared cache, so CLI and bakery runs reuse one copy. Both steps are the packer's own code rather than a `curl` and an `unzip` it hopes are installed, which keeps the operation portable, cancellable, and able to report progress. The first clip in a process scans the shapefile's record headers into a compact offset-and-bounds index; later planet leaves seek straight to intersecting polygon bodies instead of rescanning more than a gigabyte for every leaf.
 
 <figure class="fig">
-<svg viewBox="0 0 720 230" role="img" aria-label="The global land-polygons dataset, a world map of land shapes, is clipped to the map's bounding box, producing land faces. On the device these are drawn over a sea-coloured backdrop, so land sits on top of sea.">
+<svg viewBox="0 0 720 230" role="img" aria-label="The global land-polygons dataset is clipped to the map bounding box and subtracted from it, producing the sea complement. On the device sea is drawn over a land-coloured backdrop.">
   <defs>
     <marker id="aP4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Land is clipped in; sea is the backdrop</text>
+  <text class="d-tag" x="20" y="24">Sea is the clipped complement; land is the backdrop</text>
 
   <!-- world dataset -->
   <rect x="36" y="50" width="200" height="150" rx="8" style="fill:#bcd3da;stroke:#33575b;stroke-width:1.4" />
@@ -192,24 +219,46 @@ OSM ways draw the *coast*, but not the sea or the land fill. Those come from a s
   <text class="d-sub" x="136" y="105" text-anchor="middle" style="fill:#a9501c;font-size:9px">bbox</text>
 
   <line class="d-flow" x1="244" y1="125" x2="300" y2="125" marker-end="url(#aP4)" />
-  <text class="d-sub" x="272" y="115" text-anchor="middle" style="font-size:9px">clip</text>
+  <text class="d-sub" x="272" y="115" text-anchor="middle" style="font-size:9px">bbox − land</text>
 
-  <!-- result: land over sea -->
-  <rect x="312" y="50" width="200" height="150" rx="8" style="fill:#bcd3da;stroke:#33575b;stroke-width:1.4" />
-  <text class="d-tag" x="324" y="68" style="fill:#2c5230">sea backdrop</text>
-  <path d="M312 120 C 340 96, 380 104, 400 120 C 430 144, 470 120, 512 132 L512 200 L312 200 Z" fill="#cfe0c2" stroke="#3c6b39" stroke-width="1.4" />
-  <text class="d-sub" x="360" y="186" text-anchor="middle" style="font-size:9px">land faces, on top</text>
+  <!-- result: sea over land -->
+  <rect x="312" y="50" width="200" height="150" rx="8" style="fill:#cfe0c2;stroke:#3c6b39;stroke-width:1.4" />
+  <text class="d-tag" x="324" y="68" style="fill:#2c5230">land backdrop</text>
+  <path d="M312 120 C 340 96, 380 104, 400 120 C 430 144, 470 120, 512 132 L512 50 L312 50 Z" fill="#bcd3da" stroke="#33575b" stroke-width="1.4" />
+  <text class="d-sub" x="362" y="92" text-anchor="middle" style="font-size:9px">sea complement, on top</text>
 
   <!-- note -->
   <rect class="d-panel-2" x="540" y="74" width="160" height="100" rx="10" />
-  <text class="d-sub" x="556" y="98" style="font-size:10px">sea = the lowest-z</text>
+  <text class="d-sub" x="556" y="98" style="font-size:10px">land = the lowest-z</text>
   <text class="d-sub" x="556" y="114" style="font-size:10px">style; the screen is</text>
   <text class="d-sub" x="556" y="130" style="font-size:10px">cleared to it, then</text>
-  <text class="d-sub" x="556" y="146" style="font-size:10px">land + roads paint</text>
+  <text class="d-sub" x="556" y="146" style="font-size:10px">sea + roads paint</text>
   <text class="d-sub" x="556" y="162" style="font-size:10px">over it.</text>
 </svg>
-<figcaption>The packer reads the land shapefile directly and reprojects it from Web Mercator with closed-form math — no GIS stack — decoding only the records whose bounding box touches the query. The result flows through the same simplify-and-quadtree path as every other feature, so by the time the device sees it, land is just more geometry.</figcaption>
+<figcaption>The packer reads the land shapefile directly and reprojects it from Web Mercator with closed-form math — no GIS stack — decoding only the records whose bounding box touches the query. Land still participates in the bake-time coverage operations, but only the sea complement flows into the final simplify-and-quadtree path.</figcaption>
 </figure>
+
+### Contours, traced from the terrain
+
+A map packed with [terrain](../terrain/) can carry contour lines, and they are made the same way land is: generated **once**, over the whole extract, before any tier exists — and then they are ordinary features. Same styles, same simplify ladder, same densify, same quadtree. Nothing downstream, on the host or on the device, is told that a contour is anything other than a line.
+
+That is the entire design. The alternative — a raster band, or a dedicated section with its own renderer — was measured against it and lost on a single fact: contours are *styled vector features*, so the moment they exist as `Geom::Line` with a style id, every problem left is one the packer already solved. The [renderer](../rendering/) gained no contour code: the one thing it did learn is a **general** style property — that some marks are used at the width they were authored — which contours are simply the first shipped user of.
+
+The trace itself is **marching squares** over the terrain's own sample lattice, one elevation level at a time, read back through the same `no_std` sampler the device runs (at exact lattice coordinates, where the [bilinear interpolation](../terrain/#one-sampling-truth) collapses to the stored sample — so the packer cannot see a surface the firmware would not). A lattice cell any of whose four corners is unknown is skipped whole: a contour is never drawn across ground the DEM does not know, which is the raster's ["a hole is silence"](../terrain/#coverage-edges-honestly) rule showing up in vector form. The classic ambiguity — a cell with high ground on one diagonal and low on the other, where two contours could be joined two ways — is resolved by the cell's mean, which both neighbours compute identically from the same four numbers, so the segments meet.
+
+Two classes come out: a `major` contour at every level, and an `index` contour at every fifth one (100 m and 500 m by default). They are styled independently, like any two feature types, and a class the config gives no style to is not packed — nor even traced.
+
+**How they're styled is the whole of how they read**, and the shipped answer is deliberately spare: one grey, both classes at `weight 1`, `major` **dashed** and `index` **solid**. Emphasis by *continuity* rather than mass — the index line is the unbroken one among dashes — keeps the ladder to a single colour and a single weight, and nothing else dashed in the palette is rideable, so a contour can't be misread as a trail. Both classes also set the [fixed-width bit](../formats/#the-header), which takes them off the renderer's zoom width ramp: a contour has no width on the ground, and ramped it would draw thinnest at the zoom where the landform read matters most and thickest where it buries the streets. Every one of those choices lives in the **style table** — the same extract packs to byte-identical bytes dashed or solid, hairline or ramped — so what a contour costs is decided entirely by which tiers carry it.
+
+**One number is a rule rather than a setting.** Traced geometry is simplified to **15 m** before the ladder ever sees it. The finest tiers simplify at 3 m and 0.5 m — one to two orders finer than a ~40 m DEM posting can justify — so without that clamp the fine LODs faithfully store the interpolation ramp between samples, which is not terrain and is not visible. On an alpine test extract the clamp removed 905 KB and changed nothing on the glass.
+
+**Where the ladder stops carrying them is a decision, and it is one tier higher than you would guess.** Contours are on the map from **LOD 4** down — one tier above the planning tier (LOD 5, the tier the renderer selects out to 10 m/px). Above that, nothing: LODs 0–3 have no terrain in them at all. The reason for the extra tier is that LOD 4 is the band a rider pans across to read a valley, and the terrain layer used to disappear entirely on the step into it — seventeen zoom presses out from riding, the landform simply stopped existing.
+
+**Both classes reach that tier together**, and *that* is the part worth recording, because the obvious cheaper answer is wrong. Sending only the `index` contours up to that tier costs a fifth as much and was tried first — and it reads badly. Solid grey lines with nothing dashed around them stop looking like contours and start looking like paths: emphasis by continuity only says "this one is the important one" while there is something discontinuous next to it to be important *against*. Alone, the index line is just a thin grey line on a map full of thin grey lines. So the classes travel as a pair, and the terrain layer's fade is a fade in *density* down the ladder rather than a fade in class.
+
+The cost is real and worth stating plainly. On the corpus's worst case for contours — a 628 km² alpine extract, dense terrain and sparse OSM — 100 m contours from the planning tier down add about **a quarter** to the map. Carrying the full set one tier further up adds another **3.2 % of the contour-free map** (92 440 B against the quarter's 688 961): a seventh of what the tiers below already cost, because a single tier at the ladder's coarsest useful simplify is cheap even when it holds every level. Flat ground adds almost nothing either way, because flat ground crosses almost no levels.
+
+That cost is paid at pack time and cannot be taken back on the device. The rider's [contour toggle](../ui/#settings-a-second-level-of-focus) suppresses the ink, not the bytes: contours are ordinary features interleaved with everything else in the same cells, so a map that carries them is the same size on the card and reads the same chunks per frame whichever way the switch is left. Whether a given map carries contours at all is decided here, by the config.
 
 ### Extracting POIs
 
@@ -332,7 +381,7 @@ The parser is a deliberate **subset**, not a full `opening_hours` engine — the
 <figcaption>The stage runs per POI, after classification. Two cases need flattening. A <b>seasonal</b> rule (<code>Apr-Oct: …</code>) carries a date selector the weekly blob can't express, so the packer bakes a <b>representative in-season week</b> and sets the <i>seasonal</i> flag — the v1 device ignores it, but the bit is there for a future season-aware pass. A rule the subset genuinely can't model — a public-holiday <code>PH</code> clause, a <code>sunrise/sunset</code> time, or a third interval on a day — is <b>dropped</b> and the <i>truncated</i> flag set, so the device knows the schedule is partial rather than wrong. Finally every schedule is <b>deduplicated</b> into a shared pool: because a whole town's shops so often keep the same hours, the pool stays tiny, and a POI with no parseable hours (the common case) costs nothing but a <code>0xFFFF</code> sentinel in its record.</figcaption>
 </figure>
 
-The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:firmware/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
+The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:host/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:specs/OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
 
 ### Building the navigation graph
 
@@ -346,18 +395,18 @@ The map so far is geometry the device *draws*. To let the device *route* — com
   <text class="d-tag" x="20" y="24">Filter routable ways → find junctions → split + dedup into edges</text>
 
   <!-- 1 class/access filter -->
-  <rect class="d-panel" x="24" y="52" width="200" height="120" rx="10" />
+  <rect class="d-panel" x="24" y="52" width="216" height="120" rx="10" />
   <text class="d-tag" x="40" y="72">① routable? highway + access</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="40" y="92"  style="font-size:9px;fill:#2c5230">residential · track · path · cycleway ✓</text>
-    <text class="d-sub" x="40" y="107" style="font-size:9px;fill:#2c5230">footway · steps · service ✓ (walk a bike)</text>
-    <text class="d-sub" x="40" y="125" style="font-size:9px;fill:#a9501c">motorway ✗ · trunk ✗ unless bicycle=yes</text>
-    <text class="d-sub" x="40" y="140" style="font-size:9px;fill:#a9501c">access=no|private · bicycle=no ✗</text>
+    <text class="d-sub" x="40" y="92"  style="font-size:8px;fill:#2c5230">residential · track · path · cycleway ✓</text>
+    <text class="d-sub" x="40" y="107" style="font-size:8px;fill:#2c5230">footway · steps · service ✓ (walk a bike)</text>
+    <text class="d-sub" x="40" y="125" style="font-size:8px;fill:#a9501c">motorway ✗ · trunk ✗ unless bicycle=yes</text>
+    <text class="d-sub" x="40" y="140" style="font-size:8px;fill:#a9501c">access=no|private · bicycle=no ✗</text>
   </g>
   <text class="d-sub" x="40" y="162" style="font-size:8.5px">independent of render styling</text>
 
   <!-- 2 junction detection -->
-  <line class="d-flow" x1="228" y1="112" x2="264" y2="112" marker-end="url(#aNG)" />
+  <line class="d-flow" x1="246" y1="112" x2="276" y2="112" marker-end="url(#aNG)" />
   <text class="d-sub" x="270" y="52" style="font-size:9px;fill:#6b7758">② a shared node = a junction</text>
   <!-- two ways crossing at a node -->
   <line x1="288" y1="140" x2="392" y2="96" stroke="#9aa884" stroke-width="2.4" />
@@ -384,10 +433,10 @@ The map so far is geometry the device *draws*. To let the device *route* — com
   <!-- result graph -->
   <line class="d-flow" x1="360" y1="216" x2="360" y2="242" marker-end="url(#aNG)" />
   <rect class="d-panel-2" x="180" y="246" width="360" height="46" rx="10" />
-  <text class="d-sub" x="360" y="266" text-anchor="middle" style="font-size:10px">junction <b>nodes</b> (dense pack-run ids) joined by undirected <b>edges</b></text>
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="font-size:10px">junction <tspan style="font-weight:700">nodes</tspan> (dense pack-run ids) joined by undirected <tspan style="font-weight:700">edges</tspan></text>
   <text class="d-sub" x="360" y="282" text-anchor="middle" style="font-size:9px">→ serialized as the map's §8 navigation graph</text>
 </svg>
-<figcaption>The <b>routable predicate</b> reads only a way's routing tags (<code>highway</code>, <code>access</code>, <code>bicycle</code>, <code>motorroad</code>) — never the style config, so a road can be drawn but not routable, or the reverse. Most classes are in; <b>motorway</b> (and its <code>_link</code> ramps) is always out — a bike router must never route onto one — while <b>trunk</b> is out <i>unless</i> the way is explicitly tagged <code>bicycle=yes</code>. <code>access=no</code>/<code>private</code>, <code>bicycle=no</code>/<code>use_sidepath</code>, and <code>motorroad=yes</code> are hard excludes on any class; <code>footway</code> and <code>steps</code> stay in, because it is legal to <i>walk</i> a bike there (preference, not legality, is the router's job — see [profiles](#weighting-the-graph-bike-profiles) below). <b>Junction detection</b> is pure counting: a node touched by two-or-more routable ways is a junction, as is any way's first or last node; a shape point touched once stays inside an edge. Each way is then <b>split</b> at its junctions into edges whose interiors carry no junction, and duplicate or reversed-parallel ways <b>collapse</b> — the dedup key is the unordered endpoint pair <i>plus</i> the geometry <i>plus</i> the way-kind, so two genuinely different roads between the same pair (even a cycleway drawn over a road) both survive. Each edge's <b>cost</b> is its great-circle length in metres, summed with the very same helper the route format uses, so on-device costs can't drift from measured distance. A final hygiene pass <b>prunes islands</b> — tiny disconnected components (fewer than <code>min_component_edges</code>, default 50, edges) are dropped so the device can't snap a rider onto an unroutable islet — and long edges are split at synthetic junctions so every neighbour delta and cost fits the §8 record's <code>int16</code>/<code>uint16</code> fields.</figcaption>
+<figcaption>The <b>routable predicate</b> reads only a way's routing tags (<code>highway</code>, <code>access</code>, <code>bicycle</code>, <code>motorroad</code>) — never the style config, so a road can be drawn but not routable, or the reverse. <b>Motorway</b> is always out; <b>trunk</b> is out unless tagged <code>bicycle=yes</code>; <code>access=no|private</code>, <code>bicycle=no|use_sidepath</code>, and <code>motorroad=yes</code> are hard excludes; <code>footway</code> and <code>steps</code> stay in because it is legal to <i>walk</i> a bike there — preference is the <a href="#weighting-the-graph-bike-profiles">profiles'</a> job. <b>Junction detection</b> is pure counting: a node touched by two-or-more routable ways, or any way's endpoint, is a junction. Ways <b>split</b> at their junctions into edges with junction-free interiors, and duplicates collapse on (unordered endpoint pair + geometry + way-kind), so two genuinely different roads between the same pair both survive. Cost is great-circle length in metres, summed with the same helper the route format uses. A hygiene pass <b>prunes islands</b> (components under <code>min_component_edges</code>, default 50) so the device can't snap a rider onto an unroutable islet, and long edges split at synthetic junctions so every field fits the §8 record's <code>int16</code>/<code>uint16</code>.</figcaption>
 </figure>
 
 A way is routable exactly when it can be *classified* — the same pass that decides legality also computes the edge's **way-kind** byte (its highway + surface class, [below](#weighting-the-graph-bike-profiles)), so `is_routable` is just `classify(tags).is_some()`:
@@ -417,15 +466,15 @@ A real pack run logs the graph next to the POI counts, so a glance at the build 
 nav graph: 12874 nodes, 15903 edges, 8421.6 km
 ```
 
-The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, the sparse exact-snap anchors, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:specs/OBCM_Spec.md). What the device *does* with it — exact edge projection, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
 
 ### Weighting the graph: bike profiles
 
 The graph so far is bike-*legal* but undifferentiated: every edge costs its metres, so the device would route a road bike down a muddy singletrack if it were a few metres shorter. What makes an MTB route differ from a road route — *why your MTB route differs* — is two more things the packer bakes in. Each edge carries a **way-kind** byte, and the section opens with a small table of **bike profiles**; on the device, A\* multiplies each edge's raw metres by the chosen profile's weight for that edge's way-kind, so "shortest" becomes "cheapest *for this bike*."
 
-**Way-kind** is one byte per edge, `way_kind = (surface_class << 5) | highway_class` — a 5-bit **highway class** (0 `cycleway`, 1 `path`, 2 `track`, 3 `footway`, … 10 `tertiary`, 11 `secondary`, 12 `primary`, and 13 `trunk_cycl` for a bike-legal trunk) and a 3-bit **surface class** (`paved`, `compacted`, `gravel`, `dirt`, `rough`, `cobbles`, `grass`, plus `unknown`). Both tables are **locked** and config-free — the same OSM extract always yields the same bytes — and they are the *single vocabulary* profiles are written against. The full canonical table is [`OBCM_Spec.md` §8.6](src:OBCM_Spec.md) (mirrored from the one source of truth, `nav.rs`); the device never sees a raw OSM tag, only this byte.
+**Way-kind** is one byte per edge, `way_kind = (surface_class << 5) | highway_class` — a 5-bit **highway class** (0 `cycleway`, 1 `path`, 2 `track`, 3 `footway`, … 10 `tertiary`, 11 `secondary`, 12 `primary`, and 13 `trunk_cycl` for a bike-legal trunk) and a 3-bit **surface class** (`paved`, `compacted`, `gravel`, `dirt`, `rough`, `cobbles`, `grass`, plus `unknown`). Both tables are **locked** and config-free — the same OSM extract always yields the same bytes — and they are the *single vocabulary* profiles are written against. The full canonical table is [`OBCM_Spec.md` §8.6](src:specs/OBCM_Spec.md) (mirrored from the one source of truth, `nav.rs`); the device never sees a raw OSM tag, only this byte.
 
-A **profile** is a display name plus a multiplier for every highway class and every surface class, stored in `1/16` fixed-point (so `16` = 1.0×, and `0` means **forbidden** — that class is dropped from the profile's graph entirely). The map carries 1–8 of them (the default pack ships four); the device's effective weight for an edge is `(highway_mult × surface_mult) >> 4`. Here are the four default profiles' highway weights for a handful of classes (the [preset](src:packer/presets/default.json) has the rest, plus the surface axis):
+A **profile** is a display name plus a multiplier for every highway class and every surface class, stored in `1/16` fixed-point (so `16` = 1.0×, and `0` means **forbidden** — that class is dropped from the profile's graph entirely), plus a **climb weight** (below). The map carries 1–8 of them (the default pack ships four); the device's effective weight for an edge is `(highway_mult × surface_mult) >> 4`. Here are the four default profiles' highway weights for a handful of classes (the [shipped schema](src:builder/presets/schema.json) has the rest, plus the surface axis):
 
 | highway class | Road | Gravel | MTB | Touring |
 |---|---|---|---|---|
@@ -442,28 +491,107 @@ Read a column and you can predict the routing. **Worked example:** suppose a rid
 
 Same two roads, same start and finish, opposite choice — that difference is entirely the profile, and you could have called it from the table above.
 
-**One rule constrains every profile: no weight below 1.0×** (a non-zero multiplier is always ≥ `16`). The on-device A\* uses a great-circle heuristic, which is only admissible — only *safe to trust* — if no edge can cost less than its straight-line distance. A weight under 1.0× would make some edge cheaper than the crow flies and quietly break the ε bound. So the packer **rejects** a config with a non-zero weight below 1.0 (naming the A\* bound in the error), and the reader **clamps** one up to 1.0× defensively. Which is what keeps **ε** meaningful: the router's `f = g + ε·h` with ε = 1.3 returns a path at most 1.3× the *cheapest route under the profile* — not the geometrically shortest, the cheapest once your bike's weights are applied. (When even the tight 1.3× bound exhausts the device's fixed search table, ε **escalates** — 1.3 → 2.0 → 3.0 — to reach farther in the same memory; the bound is then the successful rung's ε. That range mechanism lives with [the router seam](../architecture/#on-device-routing-the-router-seam).)
+**One rule constrains every profile: no weight below 1.0×** (a non-zero multiplier is always ≥ `16`). The on-device A\* uses a great-circle heuristic, which is only admissible — only *safe to trust* — if no edge can cost less than its straight-line distance. A weight under 1.0× would make some edge cheaper than the crow flies and quietly break the ε bound. So the packer **rejects** a config with a non-zero weight below 1.0 (naming the A\* bound in the error), and the reader **clamps** one up to 1.0× defensively. Which is what keeps **ε** meaningful: the router's `f = g + ε·h` with ε = 1.3 returns a path at most 1.3× the *cheapest route under the profile* — not the geometrically shortest, the cheapest once your bike's weights are applied (and, once the map carries terrain, once its [climb weight](#weighting-the-climb) is applied too: the same bound, read against a cost that already counts the climbing). (When even the tight 1.3× bound exhausts the device's fixed search table, ε **escalates** — 1.3 → 2.0 → 3.0 — to reach farther in the same memory; the bound is then the successful rung's ε. That range mechanism lives with [the router seam](../architecture/#on-device-routing-the-router-seam).)
 
 Which profile the device uses is a single **Bike-type** setting — a bare index into the loaded map's profile table, persisted across reboots. Pick "MTB" and every plan re-weights accordingly; the created-route overview shows the profile it used. If the setting points past a particular map's profile count (a smaller map, a stale setting), the router falls back to profile 0 and the UI honestly shows *profile 0's* name rather than a profile the map doesn't have.
 
-Profiles are the one part of the routing graph that **is** configurable (the topology is not). The web builder's advanced editor has a **Bike-profiles panel**: one row per way-kind class, a multiplier cell per profile, and a **forbidden** toggle for the `0` case — schema-driven from the same class vocabulary above, and it enforces the ≥ 1.0× floor in the editor so a config that the packer would reject can't be exported in the first place. Like every other field, it round-trips to a plain CLI config.
+### Weighting the climb
+
+Way-kind says what an edge is *made of*; it says nothing about what it costs your legs. In the Alps that is not a rounding error: "the cheapest route under the profile" will happily buy 400 m of climbing to save 200 m of distance, which is the wrong answer for every rider on exactly the terrain this device is for. So a map packed against terrain stores, per **direction** of every edge, the **ascent** of riding it.
+
+**It is an integral, not an endpoint difference.** A pass road between two junctions at the same height has hundreds of metres of climbing in it and no net change at all; a difference of endpoints would price it as flat and send you over the col. So the packer walks the edge's *final* polyline — after every split the serializer performs, since an edge's climb cannot be divided among its pieces after the fact — sampling at every vertex plus interpolated points, so no gap exceeds about **50 m of ground**. That figure is chosen against the raster rather than the road: the shipped terrain posting is ≈ 57 m in latitude, so 50 m guarantees at least one sample per posting and a hill between two far-apart OSM shape nodes cannot be stepped over. Sampling finer would only re-read the same interpolated plane. A stretch with no elevation coverage contributes nothing — the integrator re-anchors across the hole rather than booking the climb over it.
+
+Because ascent is directional, it is the **one field the two sides of an edge disagree on**: the entry `a→b` carries `ascent(a→b)` and the entry `b→a` carries what is the first direction's descent. Everything else about an edge — its id, its ground length, its way-kind — still matches on both sides, and a verifier that checks "both sides agree" has to exclude exactly this field.
+
+**Where the heights come from — and what the packer deliberately cannot read.** The packer takes a `--terrain` input: an [OBCT](../formats/#obct-the-terrain-raster) container, or a directory of them, which it opens through the *same* `no_std` sampling crate the firmware runs. It has **no DEM decoder at all**. Turning Copernicus GLO-30 GeoTIFFs into terrain cells is a separate host tool, [`obc-dem`](src:host/obc-dem), run once per dataset release by the bakery — so the packer gains no GeoTIFF dependency (libGEOS stays the last native one in the tree), and, more importantly, the surface it costs a climb against is byte-for-byte the surface the device later draws your profile from. That is the whole point of baking terrain first: [one sampling truth](../terrain/#one-sampling-truth), not two pipelines that ought to agree.
+
+The integrator is shared end to end. The same **±3 m dead-band** that the GPX converter runs over an imported track, that the device's live barometric climb uses, and that the elevation profile is built with, is the one the packer folds each edge's samples through — deliberately not a packer-private threshold, because the epic's entire claim is that the ascent a route is *costed* by and the ascent you are *shown* are the same number, and two thresholds would make them incomparable by construction.
+
+Each profile then says what a metre of that climbing is worth in flat metres — the **climb weight**. The shipped four are Road 10, Gravel 8, MTB 6, Touring 8: a road rider will ride a kilometre out of their way to avoid a hundred metres of climb, a mountain biker rather less. The term is **added**, after the way-kind scaling and not inside it:
+
+```
+cost = (metres × way-kind weight) >> 4  +  ascent × climb weight
+```
+
+Adding rather than crediting descents is not a simplification but the thing that keeps the router honest. The great-circle heuristic is admissible only while no edge can cost *less* than its straight-line distance; a descent discount would let one, and the ε bound the plan's quality rests on would go with it. Which is also why the climb weight, unlike a way-kind multiplier, needs no `≥ 1.0×` floor: every value including `0` is admissible, because the term can only ever add. A weight of `0` means climb-blind, which is exactly how a map packed without terrain routes — its ascents are all `0`, so the term vanishes and the router reproduces its pre-elevation behaviour bit for bit.
+
+**What ε bounds now.** The ladder itself did not change — `f = g + ε·h`, starting at 1.3× and escalating 1.3 → 2.0 → 3.0 only when the fixed search table exhausts. What changed is what the guarantee *reads as*: the returned path is at most the successful rung's ε times the best **climb-aware** route under the profile. Not the shortest; not even the cheapest by way-kind alone; the cheapest once your bike's weights *and* its appetite for climbing are both applied.
+
+That is not free, and the honest version is worth stating: charging for climb makes `g` larger relative to `ε·h`, so the search is a little less goal-greedy and the frontier does more work. Measured over hundreds of endpoint pairs on an alpine extract, aggregate settles rose 4–31 % depending on profile, with the median pair settling the same nodes it did before — but 1–3 % of pairs that planned climb-blind now exhaust the table instead. Every one of those fails as the device's honest "too far to route here" after climbing the whole ε ladder, never as a wrong route.
+
+<figure class="fig">
+<svg viewBox="0 0 720 320" role="img" aria-label="A plan view of one measured pair of points above Innertkirchen, with a hill drawn as three nested contour rings peaking at 1380 metres. A solid orange line runs from the start straight over the hill: 8340 metres and 1008 metres of ascent, topping out at 1380 metres. A dashed green line curves around the hill instead: 10914 metres and 784 metres of ascent, never climbing above the goal's own 1066 metres. Notes below say the answer switches between climb weights 8 and 10, buying 2.6 kilometres of extra ground for 224 metres less climb and a crest 314 metres lower, and that the mountain-bike profile at weight 6 declines the same detour.">
+  <text class="d-tag" x="20" y="22">the same two points, two climb weights — measured on grimsel</text>
+
+  <!-- the hill, as nested contours -->
+  <ellipse cx="360" cy="180" rx="132" ry="68" fill="#eae4cb" fill-opacity="0.6" stroke="#9aa884" stroke-width="1.2" />
+  <ellipse cx="360" cy="178" rx="90" ry="46" fill="none" stroke="#9aa884" stroke-width="1.1" />
+  <ellipse cx="360" cy="176" rx="48" ry="25" fill="none" stroke="#9aa884" stroke-width="1.1" />
+  <text class="d-sub" x="360" y="192" text-anchor="middle" style="font-size:9px;fill:#a9501c">crest</text>
+  <text class="d-sub" x="360" y="205" text-anchor="middle" style="font-size:9px;fill:#a9501c">1 380 m</text>
+
+  <!-- over the top -->
+  <path d="M78 214 C 170 200, 262 176, 360 170 C 458 164, 566 186, 646 192"
+        fill="none" stroke="#cf6a2a" stroke-width="2.8" />
+  <!-- round the valley -->
+  <path d="M78 214 C 190 268, 320 280, 440 268 C 540 258, 606 218, 646 192"
+        fill="none" stroke="#3c6b39" stroke-width="2.6" stroke-dasharray="7 5" />
+  <circle cx="78" cy="214" r="4.5" class="d-hot-fill" />
+  <circle cx="646" cy="192" r="4.5" class="d-hot-fill" />
+  <text class="d-sub" x="78" y="234" text-anchor="middle" style="font-size:8.5px">start</text>
+  <text class="d-sub" x="654" y="212" style="font-size:8.5px">goal 1 066 m</text>
+
+  <!-- labels -->
+  <rect class="d-panel-2" x="24" y="34" width="316" height="38" rx="8" />
+  <text class="d-sub" x="38" y="50" style="font-size:9.5px;fill:#a9501c"><tspan style="font-weight:700">climb weight 0</tspan> &#8212; straight over the top</text>
+  <text class="d-sub" x="38" y="64" style="font-size:9.5px">8 340 m &#183; &#9650; 1 008 m &#183; high point 1 380 m</text>
+
+  <rect class="d-panel-2" x="380" y="34" width="316" height="38" rx="8" />
+  <text class="d-sub" x="394" y="50" style="font-size:9.5px;fill:#2c5230"><tspan style="font-weight:700">climb weight 10</tspan> &#8212; round the valley</text>
+  <text class="d-sub" x="394" y="64" style="font-size:9.5px">10 914 m &#183; &#9650; 784 m &#183; never above the goal</text>
+
+  <text class="d-sub" x="24" y="300" style="font-size:9px">the answer switches between <tspan font-family="var(--mono)">w = 8</tspan> and <tspan font-family="var(--mono)">w = 10</tspan>: +2.6 km of ground bought for &#8722;224 m of climb, and a crest 314 m lower</text>
+  <text class="d-sub" x="24" y="313" style="font-size:9px;fill:#6b7758">the MTB profile at <tspan font-family="var(--mono)">w = 6</tspan> declines the same detour and keeps its line — the product statement, not a bug</text>
+</svg>
+<figcaption>Weights are not a dial that makes routes "better"; they are a statement about what a given rider trades. Sweeping the weight on one real alpine pair moves the answer once, sharply, between 8 and 10 — and the two lines share only a quarter of their corridor, so it is a genuinely different route rather than emit jitter. Read down the shipped column and you can predict who diverts: Road and Gravel take the valley, MTB and Touring already had a cheaper way-kind line and keep it.</figcaption>
+</figure>
+
+Profiles are the one part of the routing graph that **is** configurable (the topology is not). The web builder's advanced editor has a **Bike-profiles panel**: one card per profile — its name, its climb weight, and a grid with one cell per way-kind and surface class, each with a **forbidden** toggle for the `0` case — schema-driven from the same class vocabulary above, and it enforces the ≥ 1.0× floor in the editor so a config that the packer would reject can't be exported in the first place. Like every other field, it round-trips to a plain CLI config.
+
+The **climb weight** is a per-profile `0..255` field of that same config — flat metres charged per metre of ascent, described and bounded in the [packer's JSON Schema](src:host/obc-pack/schema/config.schema.json) alongside the multipliers — and it sits in each card's header, beside the name. The panel is careful not to treat it as a multiplier, because it isn't one: whole numbers over the schema's full `0..255` rather than a `≥ 1.0` floor (the term is *added*, so no value of it can make an edge cheaper than the crow flies — there is no admissibility bound to defend), and no inheritance, because a climb weight falls back to nothing. A profile that states none simply *is* climb-blind, which is how the packer reads it — so a config written before v12 opens showing a plain `0`, not a blank. The shipped values are the ones in [`builder/presets/schema.json`](src:builder/presets/schema.json) — Road 10, Gravel 8, MTB 6, Touring 8 — and they are what every published map is baked with.
 
 ### Building the LOD pyramid
 
-Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything at (near-)full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling. The finest tier has no finer fallback, but still carries a small **sub-pixel** simplify (2 m in the presets) — enough to shed OSM's redundant, GPS-jitter vertices, which dominate the renderer's point budget at street zoom, with no visible change.
+The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything at (near-)full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling. The finest tier has no finer fallback, but still carries a small **sub-pixel** simplify (0.5–2 m in the presets) — enough to shed OSM's redundant, GPS-jitter vertices, which dominate the renderer's point budget at street zoom, with no visible change.
 
-An optional third knob, **`min_area_px`**, declutters the coarse tiers: after simplify, a **polygon** whose projected area falls below that many square pixels — measured at the tier's finest on-screen scale, again the next finer tier's `max_mpp` — is dropped, so a whole region's worth of sub-pixel forest and landuse slivers stop crowding the render's [point budget](../rendering/#4-decode-by-priority-the-clever-bit). It's off by default and never touches the finest tier (nothing coarser to fall back to). Lines are left alone: an OSM way is stored as many short segments, so an area test would drop a road's shortest links and leave it holed — zoomed-out line density stays purely a `min_lod` choice. The same threshold also trims **sub-pixel holes** out of the polygons it *keeps*: a hole smaller than a pixel is painted straight over, so dropping it is invisible yet frees a ring plus its vertices in the render scratch (a big farmland face pocked with tiny unmapped islands is the motivating case).
+An optional third knob, **`min_area_px`**, declutters the coarse tiers: after simplify, a **polygon** whose projected area falls below that many square pixels (measured at the tier's finest on-screen scale) is dropped, so a region's worth of sub-pixel forest and landuse slivers stops crowding the render's [point budget](../rendering/#4-decode-by-priority). It never touches the finest tier, and lines are left alone here — an OSM way is stored as many short segments, so an area test would drop a road's shortest links and leave it holed. (Once those segments have been stitched back together a length test *does* mean something; that is `min_line_km`, below.) The same threshold also trims **sub-pixel holes** out of the polygons it keeps: a hole smaller than a pixel is painted straight over anyway, so dropping it is invisible yet frees a ring plus its vertices.
 
-A fourth knob, **`merge_fills`**, attacks redundancy instead of size-per-feature. Rural OSM is wall-to-wall farmland and meadow parcels, each mapped as its own way, and on a 64-colour panel many distinct landuse types collapse onto the same green — so every shared parcel boundary is stored twice and drawn as two separate polygons even though the screen shows one flat fill. With the flag on, the packer unions every polygon whose style renders pixel-identically — same `z_index`, `color`, and `priority`, and **no `color2`** (a `color2` strokes the ring, so its walls are visible and must not be dissolved) — into one shape per tier, deleting every interior shared boundary. It's a pure size-and-render-cost win with no intended visual change: an un-outlined fill beside an identical un-outlined fill already reads as one blob. Crucially the union runs **before** simplify — adjacent parcels share boundary *nodes*, so unioning first dissolves them exactly, where simplifying first would nudge each copy independently and leave hairline cracks along every seam. Candidates are chosen by geometry kind (a closed *line* that happens to share a fill style is never touched), and it's off by default, so the packed bytes are unchanged unless you ask for it.
+A fourth knob, **`merge_fills`**, attacks redundancy. Rural OSM is wall-to-wall farmland and meadow parcels, each mapped as its own way, and on a 64-colour panel many landuse types collapse onto the same green — every shared parcel boundary stored twice and drawn as two polygons even though the screen shows one flat fill. With the flag on, the packer unions every polygon whose style renders pixel-identically (same `z_index`, `color`, `priority`, and no `color2` — an outline's walls must not be dissolved) into one shape per tier. The union runs **before** simplify: adjacent parcels share boundary *nodes*, so unioning first dissolves them exactly, where simplifying first would nudge each copy independently and leave hairline cracks along every seam.
 
-A fifth knob, **`merge_lines`**, is the same idea for lines — and it targets the budget the render actually runs out of first at riding zoom. OSM splits one continuous road, river, or railway into many `way`s (a new segment at every bridge, name change, or surface change), each packed as its own line feature; because a line record carries no per-feature payload — colour, weight, dash, and casing all live in the [style table](../formats/#the-header) keyed by style id — same-styled fragments that meet end-to-end draw identically to one polyline. With the flag on the packer stitches them into maximal polylines per tier via a GEOS line-merge, joining fragments that share an endpoint and stopping at genuine junctions (three ways meeting) so distinct roads never fuse. Each join reclaims one **[span](../rendering/#4-decode-by-priority-the-clever-bit) and one ring** — and a frame's span and ring budgets saturate long before its point budget once the map is dense, so this is where the coarse-zoom "features dropped" pressure actually lives. Two lines stitch only if their styles agree on the *full* render identity (`z_index`, `color`, `weight`, `priority`, `dashed`, and `color2` — all of which change a stroked line, unlike a fill), and stitching runs before simplify so a merged run's now-interior junction vertices simplify away too. Solid lines are pixel-identical; the one visible difference is that a dashed or cased line's pattern runs *continuously* across a former join instead of restarting — an improvement. Off by default, so the bytes are unchanged unless you ask for it.
+A fifth knob, **`merge_lines`**, is the same idea for lines — and it targets the budget a dense frame runs out of first. OSM splits one continuous road, river, or railway into many `way`s, each packed as its own line feature; since a line's whole look lives in the [style table](../formats/#the-header), same-styled fragments that meet end-to-end draw identically to one polyline. The packer stitches them into maximal polylines per tier, stopping at genuine junctions so distinct roads never fuse; each join reclaims one **[span](../rendering/#4-decode-by-priority) and one ring**, and span/ring budgets saturate long before the point budget on a dense map. Two lines stitch only if their styles agree on the full render identity (`z_index`, `color`, `weight`, `priority`, `dashed`, `color2`), and stitching runs before simplify so a merged run's now-interior junction vertices simplify away too. The one visible difference is an improvement: a dashed or cased line's pattern runs continuously across a former join instead of restarting.
+
+A sixth knob, **`min_line_km`**, is set per tier and only makes sense as `merge_lines`' sequel — the packer refuses the pair without it. Stitching turns a class into connected polylines, and *then* a record's length is a real measurement rather than an artefact of where OSM happened to split a way. What stitching cannot absorb is the leftovers: at a junction where three same-class ways meet there is no unambiguous through-line, so the run stops, and a region's road network comes out as a long-distance skeleton plus a confetti of junction stubs and roundabout arms. On the Freiburg region's far-zoom tier that is **1 629 `highway=primary` records, of which 80 % are under 500 m and together carry under 8 % of the network's length** — at 333 m/px a 40 m stub is an eighth of a pixel, invisible, and still costs the renderer a [span](../rendering/#4-decode-by-priority), a ring and its vertices. Culling below a threshold keeps the skeleton and deletes the confetti; the gaps it opens are shorter than a pixel, so the road it leaves behind reads as continuous. Polygons are never affected, `0` (the default) means no culling and packs byte-identically to a map made before the knob existed, and it is meant for the far-zoom tiers only — a threshold that is invisible at 400 m/px would be vandalism at 5 m/px.
+
+This is the trade that lets a coarse tier carry a road class at all. Vertices freed from the fills (below) and spans freed from the stubs are what pay for `highway=primary` on the two far-zoom tiers, and a zoomed-out frame you can actually orient on is the point of spending them there.
+
+A seventh knob, **`coverage_simplify`**, is set per tier and fixes what `merge_fills` cannot reach: the seam between two *different* classes. A farmland against a wood, a lake against its shoreline landuse — both carry the same OSM boundary, and simplifying each feature on its own moves the two copies apart by up to the tier's tolerance. What is left between them is a sliver of backdrop where the map was continuous: tearing. With the flag on, the tier's plain fills (the same candidates `merge_fills` takes: polygons with no `color2`) are treated as one **polygonal coverage** instead of a bag of features. Their boundaries are noded into a single planar arrangement and polygonized into faces; each face goes to the fill that would be *visible* there under the device's paint order, so an overlap resolves to the class on top and a face nobody covers stays an honest gap; the faces are dissolved per class; and then **every class's polygons go into one simplify call**, so an edge two classes share is cut exactly once and both sides come back with the identical vertex sequence. It subsumes `merge_fills` on that tier and replaces the per-feature simplify for those fills — everything else on the tier, lines included, takes the ordinary path. It costs bake time (a planar overlay, run per bbox-connected cluster and in parallel), which is why it is a per-tier knob: the coarse tiers, where the tolerance is metres wide and the tearing is visible, are the ones that want it.
+
+**On such a tier the area floor changes meaning, and it has to.** `min_area_px` normally *drops* a polygon too small to see. Do that to a coverage and you punch a hole in the tiling: the fills there tile the ground, so a deleted one shows the backdrop through — the same failure as tearing, only deliberate. Worse, the base fill underneath everything (`natural.land`) ends up owning every scrap of ground no landuse claims, and the tier renders as lace. So with `coverage_simplify` on, `min_area_px` becomes an **elimination** threshold, the cartographic operator of that name: a face under it is not deleted but handed to the neighbouring face it shares the longest boundary with, and the per-class dissolve then swallows it. It runs to a fixed point — absorbing grows the survivor, so a cluster of specks coalesces outward step by step until nothing under the threshold is left. Coverage stays complete; a class too small to see disappears into the one around it; and the vertex count falls hard, because an absorbed face's boundary stops existing rather than being simplified. On the shipped preset's far-zoom tier that is 237 000 fills entering the pass and **a handful of polygons** leaving it — which is what makes an 80 km-wide frame fit the renderer's 16 323-point budget at all. The one face elimination cannot place is an **island**: a sub-threshold face with no *covered* neighbour to be absorbed into, which is what a tier without a full-coverage base fill is made of (`natural.land` is that fill internally; a `--no-land` bake has none). There the ordinary drop is exactly right and the pass applies it itself, because an island is part of no tiling and removing it opens no hole — and because a coverage tier's output skips the cull downstream, so a speck left here would outlive the threshold on both sides.
+
+**The overlay is paid for in vertices, so the pass spends two steps buying them back.** First, each class's fills are dissolved into their union *before* anything is noded — the same operator `merge_fills` uses, here because a boundary between two same-class parcels is invisible in the output but the arrangement would still node it, polygonize a face on each side, index both and dissolve them back together at the end. Rural OSM is wall-to-wall parcels of a handful of classes, so most boundaries in an extract are exactly that kind: on Freiburg it takes 237 000 fills down to 90 000. It is also the step that makes the elimination threshold mean what it says. Undissolved, a plain of fragmented farmland is a plain of faces that are each below the threshold, and the fixed point walks them one at a time into whatever surrounds them — into the `natural.land` base, until the far-zoom tier shows bare ground where every finer tier shows farmland. Dissolved, contiguous farmland is one face of its true size and it stays. Dissolving is also the step that decides **paint order within a `z_index`**: after it a class is one block of records emitted at its first member's position, so where two *different* classes share a `z_index` — the only case the packer's input order ever decided — the tier paints them by class rather than parcel by parcel. It is deterministic and it is a change; a schema that relies on same-`z` classes interleaving needs distinct `z_index` values on such a tier. Second, what survives is pre-simplified feature by feature at an eighth of the tier's tolerance (floored at 10 m) — deeply sub-pixel at the scale the tier is drawn at, since the 2200 m tier decimates at 275 m and is never shown finer than 400 m/px, and about **eleven times** fewer vertices entering the overlay (measured on Freiburg: 6 229 408 ring positions down to 550 404 at the 2200 m tier, and nine times at the 700 m one). Decimating each fill on its own is the tearing this pass exists to prevent, in miniature: two neighbours' copies of a shared boundary walk apart by up to the decimation tolerance, and where they part a sub-pixel face appears that nobody covers. Those get **healed** — absorbed into a covered neighbour, never the reverse, so a gap can never swallow fill. What qualifies is *thinness*, not size: a face is healed only if its mean half-width (area over perimeter) is under **two** decimation tolerances, and only if it is under the tier's threshold as well. One tolerance is the derived worst case — two neighbours each moving a full tolerance in opposite directions open a crack `2 × dec_tol` wide, and a ribbon of width `w` has mean half-width `w/2` — so the gate is that number doubled, as margin for a sliver fatter at a junction than along its length. At the coarse tier's 275 m that admits an uncovered ribbon up to about a kilometre wide, which sounds enormous and is not: merely small is a different thing entirely — the coarse tier's threshold is 40 km², and a bay or a tarn below that is geography, so a *compact* gap stays a gap however little of it there is. The decimation and the healing are one lever, and the code says so: the pre-pass only runs on a tier that has a threshold to heal with.
+
+**What all that costs, stated against `develop` rather than against itself.** The 785 s → ~123 s figure this pass was first measured at is real but internal: it is the pass' own first cut against the same pass with a spatial index that is actually a tree — `GEOSSTRtree_create` takes a *node* capacity, and handing it the item count had been building a one-node tree that every query scanned end to end. Against the branch point the honest comparison is different. On the Freiburg-regbez extract, on one machine, the seven-tier preset packs in **99.6 s at 3.68 GB** peak RSS; the nine-tier preset with both coverage tiers on packs in **122.2 s at 4.60 GB**. So the two far-zoom tiers cost about **a fifth more wall time and +0.9 GB of peak**. That is a bake-host cost and nothing else: the packer is a native tool that runs on a workstation — the 4 GiB ceilings elsewhere in this project belong to the browser assembler's wasm32 address space and to the format's `uint32` offsets, and neither is on this path. The *artifact* is what the download path sees, and it is unchanged: the nine-tier map is 61 KB larger than the seven-tier one, because two tiers that collapse a Regierungsbezirk to twenty polygons cost almost nothing to store.
+
+What the number is worth watching for is scale. The arrangement is built over the whole extract at once, so its cost tracks extract size rather than tier count, and the largest baked regions are several times Freiburg's. If a region ever does strain a bake host, the levers are a coarser decimation, one coverage tier instead of two, or an arena for the face geometry — the packer is fragmentation-bound rather than retention-bound (at the hand-over 0.6 GB of its heap is live and 2.1 GB mapped, across nearly three million live blocks, and an allocator cannot give back a page with one surviving object on it), which is a property of how every stage stores geometry rather than of this one.
+
+All four knobs are off by default, so the packed bytes are unchanged unless you ask for them.
 
 <figure class="fig">
 <svg viewBox="0 0 720 270" role="img" aria-label="A pool of features each tagged with a min-LOD flows into three tiers. The country tier takes only features with min-LOD 0 and simplifies them at 120 metres. The region tier adds min-LOD 1 features at 18 metres. The street tier adds everything at full detail. Each tier becomes its own quadtree.">
   <defs>
     <marker id="aP5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Each tier: filter by min_lod, dissolve fills + stitch lines, simplify, cull tiny areas, then quadtree</text>
+  <text class="d-tag" x="20" y="24">Each tier: filter by min_lod, dissolve fills + stitch lines, cull short lines, simplify, cull tiny areas, then quadtree</text>
 
   <!-- feature pool -->
   <rect class="d-panel-2" x="30" y="70" width="140" height="130" rx="10" />
@@ -531,7 +659,7 @@ for i in 0..lods.len() {                              // coarse (0) → fine
 
 ### The quadtree: packing geometry into chunks
 
-Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — `12 + point_count·4` bytes each — fits the chunk size it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
+Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — budgeted at `12 + point_count·4` bytes each, a deliberate over-estimate of the [7-or-12-byte header](../formats/#features-an-anchor-then-deltas) and 16-bit-worst-case deltas — fits the chunk size **and** every feature fits the reader's per-feature ring cap (32 rings: exterior + 31 holes), it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. The ring test matters because bytes don't imply it: at a coarse tier a [merged](#building-the-lod-pyramid) forest can carry dozens of clearings on a handful of simplified vertices, and the device would drop such a feature whole rather than truncate it — splitting instead clips it, spreading the holes across the children. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
 
 <figure class="fig">
 <svg viewBox="0 0 720 290" role="img" aria-label="A region with features being bucketed into a quadtree. A dense corner has been subdivided into four smaller cells, one of them subdivided again. A line feature crossing a cell boundary is clipped into two pieces, one per cell.">
@@ -556,7 +684,7 @@ Within a tier, features are bucketed into a quadtree over the global bounding bo
   <!-- a line straddling the vertical boundary -->
   <line x1="120" y1="120" x2="220" y2="150" stroke="#cf6a2a" stroke-width="2.5" />
   <circle cx="168" cy="134" r="3.5" class="d-hot-fill" />
-  <text class="d-sub" x="120" y="110" style="fill:#a9501c;font-size:9px">clipped at the boundary →</text>
+  <text class="d-sub" x="120" y="106" style="fill:#a9501c;font-size:9px">clipped at the boundary →</text>
 
   <!-- right notes -->
   <text class="d-label" x="330" y="84">leaf fills:</text>
@@ -575,8 +703,9 @@ Within a tier, features are bucketed into a quadtree over the global bounding bo
 
 ```rust
 let total: usize = feats.iter().map(|f| 12 + pt_count(&f.geom) * 4).sum();
-if total <= chunk_size || !splittable {
-    return Node::Leaf { bbox, features: feats };   // fits the chunk → a leaf
+let fits = total <= chunk_size && feats.iter().all(|f| ring_count(&f.geom) <= MAX_FEAT_RINGS);
+if fits || !splittable {
+    return Node::Leaf { bbox, features: feats };   // fits the chunk + the reader's caps → a leaf
 }
 // too big → split NW/NE/SW/SE, clip straddlers into each child, recurse in parallel
 let (nw, ne, sw, se) = distribute_to_quadrants(feats, bbox);
@@ -585,17 +714,205 @@ rayon::join(|| (build(nw), build(ne)), || (build(sw), build(se)))
 
 That this is the *same* quadtree the device walks closes the loop with the other pages: the packer writes it, the [format](../formats/#the-quadtree-index) stores it as a flat `u32` array, and the [renderer](../rendering/#3-the-quadtree-cull-only-the-chunks-you-can-see) walks it to cull.
 
-### The web builder
+### The builder
 
-Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a drawn box the sources are cropped to), pick a style, build, download. Three ideas shape it:
+The builder no longer runs the packer as a product feature. The expensive,
+schema-dependent work happens once in the bakery; both shipping products consume
+the same published cell catalog. That removes a second map pipeline and makes
+"same coverage + same skin" mean identical assembled bytes on the web and
+desktop.
 
-- **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
-- **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
-- **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
+Coverage is composed from four kinds of parts:
 
+- named regions, whose exact per-band cell ids are stored in the catalog —
+  regions nest, and a click on ground covered by several offers the whole
+  ancestor chain, smallest first, so a state and its country are both one
+  click;
+- boxes, resolved directly against the global cell grid;
+- lassos — freehand rings drawn on the map, resolved against that same grid by
+  a polygon-overlap test rather than a bounding box, so a diagonal shape does
+  not pay for the rectangle around it;
+- corridors, formed by buffering dropped GPX routes and resolving the resulting
+  shape against that same grid.
+
+The parts are unioned before pricing, so overlaps never charge or download a
+cell twice. Partial cells remain visible as warnings. The selected cells are
+downloaded with byte-length and SHA-256 checks and written straight into
+origin-private storage under the digest the catalog already pins them with;
+[`obc-web-assemble`](src:apps/obc-web-assemble) reads them back inside its worker
+through a synchronous access handle behind a 1 MiB block cache, so the bytes never
+enter wasm memory and a reload resumes on what is already on disk instead of
+downloading it again. Cancelling terminates the worker; there is no verification
+bypass. The gate on a big selection is therefore **disk quota, checked before the
+download starts**, not the memory the run would have needed.
+
+**A dropped connection costs one cell, not the run.** A set is hundreds of
+objects and a CDN edge occasionally closes one part-way through, which arrives as
+a body that ends clean and short. Each object is therefore fetched up to four
+times with a widening backoff before its failure becomes the run's — and the
+pinning is what makes that safe, since a retry cannot slip past a check the first
+attempt failed. Only failures another attempt could mend are retried: a short
+body or a 5xx, never a 404 or a digest that simply disagrees. Without it a
+per-object drop rate as low as half a percent would end a 215-object set two runs
+in three.
+
+**Elevation rides along with the selection, and there is no switch for it.** The
+terrain squares a map needs are the ones its selection touches — the same intersect
+rule the bands use, run on the [terrain lattice](../terrain/) — so they are resolved,
+priced and downloaded exactly like cells, then handed to the assembler, which
+*places* them into one raster file rather than grafting anything. The summary card
+gains two lines and no controls: the raster's own size, stated separately from the
+map's because a rider may legitimately take one without the other, and the dataset's
+required credit — read **from the catalog**, never hard-coded, so a change of source
+carries its own notice instead of leaving a stale string behind. There is deliberately
+no toggle: elevation is roughly five per cent of a download, and a switch would ask a
+rider to decide something they have no way to decide well.
+
+An assembled map — even a one-shard one — names its raster in the manifest and writes
+it as `MS<id>.OBD`. A map that never went through the assembler, such as one packed
+straight from an extract for the simulator, gets the same file as a plain **sidecar**
+next to the `.obcm`, under the same stem. Those are deliberately the same convention
+seen from two sides: `MS<id>.OBD` *is* the sidecar of `MS<id>.OBS`, so a host that
+resolves terrain by looking beside the map and one that reads the manifest role open
+the same file. What the manifest adds is the two things a filename cannot say — that
+this set claims a raster, and how many bytes of one — which is what stops a leftover
+`.OBD` from a replaced set being read as this map's terrain.
+
+The same digest appears in each referenced object's published key. Cells,
+per-band indexes, region cell lists, and previews are therefore immutable below
+one root: a CDN can keep serving an older root and its objects while a new root
+propagates, and unchanged planet cells keep their existing keys instead of being
+uploaded into a duplicate generation directory.
+
+### Editing a skin
+
+Default and Dusk remain catalog objects with digest-pinned Teningen preview
+images. **Customize** clones either one into the product skin editor shared by
+the website and desktop app. It exposes only colours (including the optional
+second colour), line widths, dashes, drawing order, and the route-marker colour.
+Feature types, style ids, LODs, routing, and the inherited overflow priority are
+not editable there, so a product restyle cannot turn into a new cell schema.
+
+The editor lazy-loads one canonical Teningen `.obcm` and
+[`obc-skin-preview`](src:apps/obc-skin-preview) only while it is open. Every edit
+restamps the resident style table and renders a 240×240 scene through
+`obc-reader` and `obc-render`; the preview therefore uses the device palette and
+renderer rather than a browser approximation. It opens over Teningen at
+5 m/px, then supports pointer-drag panning, cursor-centred wheel zoom, keyboard
+camera controls, and a reset button. The camera stays inside the fixture while
+the production LOD selector moves across the complete published ladder; the
+caption reports its actual m/px and selected LOD. Closing the editor releases
+the map, renderer, and frame.
+
+Saving creates a browser-local custom skin. Its record is pinned to the current
+catalog schema id and revision and must still cover the exact schema-ordered
+feature list when reloaded; stale or malformed records are ignored. The custom
+skin is handed to the same assembler as a hosted skin, so it changes the stamped
+presentation bytes without changing which cells are fetched. Its picker card is
+also a real Teningen render: on load, one temporary preview instance restamps
+all saved skins in turn and keeps only their RGBA frames. PNG/base64 thumbnails
+are not persisted in browser storage, so they cannot consume the storage quota
+or outlive a renderer/schema update.
+
+### One source, three hosts
+
+One Svelte source is compiled for the static website, the Tauri desktop app, and
+the local maintainer server. Host modules provide only capabilities at the
+edges—catalog transport, file output, USB, ride storage—not alternate selection
+or assembly algorithms.
+
+| | Static website | Desktop app | Maintainer server |
+| :-- | :-- | :-- | :-- |
+| Catalog coverage UI | yes | yes | yes |
+| Regions, boxes, lassos, GPX corridors | yes | yes | yes |
+| Shared wasm assembly | yes | yes | yes |
+| Product skin editor | yes | yes | yes |
+| Output | picked folder, or one zip | grouped local folder | one zip download |
+| Advanced schema editor | no | no | yes |
+| Native fixed-crop schema preview | no | no | yes |
+| Product PBF build | no | no | no |
+| Managed ride library and device dashboard | no | yes | no |
+
+The website uses browser fetch. The desktop root, satellites, and cells use its
+native HTTP client and are restricted to the configured catalog origin; this is
+how the same catalog works without widening the webview's content-security
+policy. The desktop writes every file of one assembled volume set into a unique
+folder under `Documents/OpenBikeComputer`, using a temporary file and atomic
+rename for each part. It closes the folder only after the assembler emits and
+verifies the manifest; cancellation or failure discards the incomplete folder.
+A browser with the File System Access API does the equivalent through a
+directory the user picks when the run starts — ideally the card itself — with
+files streamed in as they are verified and removed again if the run fails. A
+browser without the picker is handed the finished set as **one** stored-zip
+download at the very end: one save prompt for a map of any size, and a failed or
+cancelled run has handed the download manager nothing at all. Saving changes
+where bytes land, never what the assembler emitted.
+
+The local Python server remains useful while developing the one hosted schema.
+Its Maps tab resolves `OBC_CATALOG_URL` at server runtime and proxies only the
+configured catalog tree, avoiding both a stale build-time `./data/catalog.json`
+fallback and a dependency on object-storage CORS. Its Advanced route reads the
+real packer JSON Schema, exports a complete config, and keeps working state in
+the browser. On a new browser profile, the route snapshots the sole buildable
+schema preset once; a restored or imported working config always wins, and a
+future shelf with multiple buildable schemas requires an explicit choice rather
+than silently picking one.
+
+That route also provides a deliberately **semi-live schema lab**. One setup
+command reuses or downloads Freiburg-regbez and has Osmium atomically prepare a
+small, reference-complete crop around Teningen. Schema edits are debounced and
+cancel the superseded request; the server gives only that fixed source, one
+temporary config, and one temporary output to the exact native `obc-pack`
+binary. There is no request-controlled path or command, only one pack process
+at a time, and a timeout terminates it. Packing the small crop typically takes
+5–15 seconds, so this is feedback after an edit rather than a frame-by-frame
+restyle.
+
+The resulting OBCM is opened without restamping and rendered through the same
+`obc-reader` + `obc-render` bridge on a 240×320 device map plane. Controls visit
+every authored LOD by its real m/px dispatch. The panel reports features tried,
+drawn and dropped; chunks and points; the 2,048-point/32-ring per-feature decode
+limits; and the production 3,072-span/16,323-point/3,328-ring frame limits and
+errors. It is therefore honest about the device's selection pressure, not a
+browser drawing of what the schema might mean.
+
+This remains a maintainer-only preview, not a fourth product build path. It
+never cuts published cells, bakes a region, or teaches the website or desktop
+app to accept a local PBF. An exported schema becomes published only through an
+explicit maintainer bake; riders never accidentally trigger a country-scale
+compile.
+
+### Device and ride surfaces
+
+The assembled multi-file set can either be saved or streamed directly to a
+connected device. Direct send keeps one verified shard in flight, waits for the
+device before releasing it, and commits the manifest last; cancellation abandons
+an incomplete set. Manual single-file upload remains for maps obtained elsewhere.
+There is no old whole-region catalog fallback hiding behind that button.
+
+Routes and firmware still use the shared object protocol. The cable also runs in
+the other direction: the desktop app maintains a durable ride library, writes a
+GPX plus the device's original ride object, and acknowledges a ride only after
+the files and index are fsynced. The browser offers one-shot export and does not
+acknowledge it as durable.
+
+With a connected device, the desktop Device page lists routes and trips, supports
+rename/delete/group operations, and keeps rides read-only so a ride that exists
+only on the card cannot be lost from a desk.
+
+### Where the hosted tier lives
+
+The website has no map-building backend. It is deployed as static assets, while
+the catalog and cells live on separately published object storage. The catalog
+root can therefore change without redeploying the site, and the bakery can keep
+its essential content-first, root-last publish order.
+
+All frontend asset URLs remain mount-relative, so the same site artifact works
+at a domain root or under a project-pages prefix. Catalog object URLs come from
+the catalog root and are digest-verified before use.
 ## Following a route
 
-You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device or in the simulator.
+You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device, in the simulator, or in a browser tab.
 
 <figure class="fig">
 <svg viewBox="0 0 760 322" role="img" aria-label="Converting a GPX track to an OBCR route in one streaming pass. Left panel, the shape: the stored line keeps only the corners (and one vertex at least every 1.2 km) — vertices within 1 metre of the line between their neighbours are dropped — yet distance and climb are summed over every original point, so the stats stay exact even though the stored geometry is sparse. Right panel, the climb: a raw elevation trace is integrated through a 3-metre dead-band; small wiggles inside the band book no ascent, and only once the trace leaves the band is the climb booked and the reference re-anchored. The same dead-band is shared by the elevation profile and the live barometric climb on the device.">
@@ -633,10 +950,10 @@ You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — dec
   <text class="d-sub" x="402" y="100" style="font-size:8.5px;fill:#6b7758">elev</text>
   <text class="d-sub" x="455" y="210" style="font-size:8.5px;fill:#6b7758">wiggle &lt; 3 m → ignored</text>
   <text x="592" y="120" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">past ±3 m → book + re-anchor</text>
-  <rect x="430" y="266" width="296" height="22" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
-  <text x="578" y="281" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#3c6b39">one dead-band, shared: converter · profile · live baro climb</text>
+  <rect x="410" y="266" width="316" height="22" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
+  <text x="568" y="281" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">one dead-band, shared: converter · profile · live baro climb</text>
 </svg>
-<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, and the device's live barometric climb — so the three numbers can't drift apart.</figcaption>
+<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, the device's live barometric climb, and the on-device router's own route emit (which fills a planned route's heights from the terrain carried beside the map) — so those numbers can't drift apart.</figcaption>
 </figure>
 
 What's left is the interesting part of *following*: snapping each GPS fix onto that route.
@@ -653,18 +970,18 @@ The matcher keeps a cursor — *which segment of the route you're on* — and fo
   <path d="M40 210 C 120 120, 200 120, 270 170 C 320 205, 380 150, 470 120" fill="none" stroke="#9aa884" stroke-width="3" />
   <!-- forward window (highlighted) -->
   <path d="M200 138 C 235 128, 255 150, 285 168" fill="none" stroke="#cf6a2a" stroke-width="5" stroke-opacity="0.3" />
-  <text class="d-sub" x="232" y="120" text-anchor="middle" style="fill:#a9501c;font-size:9px">forward window</text>
+  <text class="d-sub" x="262" y="114" text-anchor="middle" style="fill:#a9501c;font-size:9px">forward window</text>
   <!-- cursor -->
-  <circle cx="210" cy="135" r="5" class="d-hot-fill" /><text class="d-sub" x="186" y="128" style="font-size:9px">cursor</text>
+  <circle cx="210" cy="135" r="5" class="d-hot-fill" /><text class="d-sub" x="170" y="130" style="font-size:9px">cursor</text>
   <!-- a fix near the route -->
   <circle cx="262" cy="178" r="5" class="d-water" />
-  <text class="d-sub" x="262" y="200" text-anchor="middle" style="font-size:9px">fix</text>
+  <text class="d-sub" x="274" y="188" style="font-size:9px">fix</text>
   <!-- cross-track to nearest segment -->
   <line x1="262" y1="178" x2="259" y2="159" stroke="#33575b" stroke-width="1.5" stroke-dasharray="3 2" />
   <circle cx="259" cy="159" r="3" class="d-water" />
   <text class="d-sub" x="300" y="170" style="font-size:9px">cross-track dist</text>
   <!-- progress label -->
-  <text class="d-sub" x="120" y="200" style="font-size:9px">← progress along the route</text>
+  <text class="d-sub" x="90" y="205" style="font-size:9px">← progress along the route</text>
 
   <!-- off-route fix -->
   <circle cx="430" cy="210" r="5" class="d-muted" stroke="#c0492e" stroke-width="1.5" />
@@ -692,7 +1009,7 @@ pub struct Match {
 }
 ```
 
-Two rules keep it honest when you wander. **Off-route freezes progress**: a fix 200 m away can't drag your route position with it — but the search window *widens* so a rejoin further along is still found. And the off-route flag has **hysteresis** (off past 25 m, back under 15 m), so it doesn't flicker while you straddle the threshold. The live cross-track distance feeds the UI's [off-route readout](../ui/#the-whole-flow), and `progress_m` drives "distance to go." The projection it uses is shared with the GPX converter, so the matcher and the stored geometry measure the route the same way.
+Two rules keep it honest when you wander. **Off-route freezes progress**: a fix 200 m away can't drag your route position with it — but the search window *widens* so a rejoin further along is still found. And the off-route flag has **hysteresis** (off past 25 m, back under 15 m), so it doesn't flicker while you straddle the threshold. The window widens once more for a caller that knows fixes went *unmatched*: the [Recalculating freeze](../ui/#detouring-around-a-blocked-stretch) pauses matching for the length of a route search, and the tight window is sized for one fix's travel — so the first match after a freeze searches the rejoin window instead, and a rider who kept riding through the search re-locks where they actually are rather than being told they are off route. That widening is for the freeze that ends with the *same* route still underneath — a cancel, or a search that found nothing. A search that comes back with new geometry never needs it: adopting a route resets the matcher outright, and an unstarted matcher scans the whole line anyway. The live cross-track distance feeds the UI's [off-route readout](../ui/#the-whole-flow), and `progress_m` drives "distance to go." The projection it uses is shared with the GPX converter, so the matcher and the stored geometry measure the route the same way.
 
 ```rust
 let (back, fwd) = if !self.started {
@@ -706,19 +1023,50 @@ let (back, fwd) = if !self.started {
 
 ---
 
+## Attribution and share-alike
+
+Everything on this page starts with OpenStreetMap, and OSM data is licensed under the
+**Open Database Licence 1.0**. That licence attaches to two different artifacts the
+pipeline produces, and asks something different of each.
+
+**The rendered map is a Produced Work.** A frame drawn on the device screen is a picture
+*made from* the database, so § 4.3 wants a notice that the content came from OSM **and**
+that the database is available under the ODbL. The OSMF's attribution guidelines class
+GPS units as mobile devices, where attribution may sit one deliberate interaction deep —
+which is why the credit lives on the device's [About page](../ui/#about-the-credits-live-one-screen-deep)
+rather than on the map itself, where every pixel is already spoken for. The *offline*
+clause is the reason it is a string in the firmware and not a link: a device that may go
+weeks without a network cannot discharge the licence half by pointing at a URL.
+
+**A published `.obcm` is a Derivative Database.** A packed map is not a picture of OSM —
+it keeps geometry and tags, generalised and re-encoded, and the POI records keep names,
+categories and opening hours. So § 4.4 share-alike applies to what the bakery publishes:
+the store declares `ODbL-1.0` in its catalog manifest's `source` block and writes the
+licence text beside `catalog.json`, which
+[`OBCC_Spec.md`](src:specs/OBCC_Spec.md) makes a producer obligation rather than a
+courtesy. Anyone redistributing cells inherits the same terms.
+
+The credit is a single constant in the firmware today, deliberately: `obc-pack` ingests
+exactly one dataset, so a wire field for it would be speculative. The day a second source
+lands in the packer is the day the attribution moves onto the wire, the way terrain's
+[Copernicus credit](../terrain/#attribution) already travels in the catalog.
+
+---
+
 ## Where this lives
 
-- The packer pipeline driver: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
-- Config + first-match styling: [`obc-pack/src/config.rs`](src:firmware/obc-pack/src/config.rs)
-- The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
-- The web builder — FastAPI server + Svelte app: [`packer/web_builder/`](src:packer/web_builder)
-- OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
-- The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
-- Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
-- POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
-- The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs)
+- The packer pipeline, end to end and callable from either host: [`obc-pack/src/pipeline.rs`](src:host/obc-pack/src/pipeline.rs); the phase vocabulary and the cancel token it carries: [`obc-pack/src/progress.rs`](src:host/obc-pack/src/progress.rs); the CLI around it: [`obc-pack/src/main.rs`](src:host/obc-pack/src/main.rs)
+- Config + first-match styling: [`obc-pack/src/config.rs`](src:host/obc-pack/src/config.rs)
+- The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:host/obc-pack/schema/config.schema.json)
+- The shared catalog builder UI and maintainer FastAPI host: [`builder/`](src:builder); the desktop shell and native transport: [`obc-desktop`](src:apps/obc-desktop); browser-side GPX↔OBCR conversion and cell assembly: [`obc-web-convert`](src:apps/obc-web-convert) and [`obc-web-assemble`](src:apps/obc-web-assemble)
+- OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:host/obc-pack/src/ingest.rs)
+- The quadtree build: [`obc-pack/src/quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
+- Land generation: [`obc-pack/src/land.rs`](src:host/obc-pack/src/land.rs)
+- POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
+- The navigation-graph build (routable filter, junction detection, edge split + dedup) **and the per-edge ascent integration**: [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs)
+- The DEM stage that runs before the packer, never inside it — GLO-30 → terrain cells: [`obc-dem`](src:host/obc-dem); the sampler both it and the firmware use: [`obc-elevation`](src:firmware/obc-elevation)
 - The on-device router (snap + profile-weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
-- GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs)
+- GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs) — one routine, three hosts (device, simulator, browser)
 
-This is the offline bookend to the on-device story: the packer produces the [map format](../formats/) the [renderer](../rendering/) draws, and the matcher drives the navigation the [UI](../ui/) shows.
+This is the offline bookend to the on-device story: the packer produces the [map format](../formats/) the [renderer](../rendering/) draws, and the matcher drives the navigation the [UI](../ui/) shows. The raster the climb weights are measured against — where it comes from, what it costs, and what happens without it — is [terrain & elevation](../terrain/).

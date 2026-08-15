@@ -42,6 +42,28 @@ use super::state::publish;
 const OBC_SERVICE_UUID_LE: [u8; 16] =
     [0x10, 0x6B, 0x8F, 0xE0, 0x2F, 0x34, 0xC2, 0xAB, 0xBA, 0x4E, 0x16, 0x99, 0x00, 0x00, 0x92, 0x3C];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdvertisingIntent {
+    Control,
+    WeatherRequest,
+}
+
+impl AdvertisingIntent {
+    fn service_uuid_le(self) -> [u8; 16] {
+        match self {
+            Self::Control => OBC_SERVICE_UUID_LE,
+            Self::WeatherRequest => obc_ble::WEATHER_REQUEST_SERVICE_UUID_LE,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Control => "control",
+            Self::WeatherRequest => "weather-request",
+        }
+    }
+}
+
 // ============================ Link-parameter policy ============================
 
 /// How long the device advertises *fast* after boot and after every disconnect before dropping to the
@@ -180,6 +202,7 @@ pub(crate) async fn advertise_lifecycle<'values, 'server>(
     // Copied into the local scan-response buffer below — deliberately *not* `'values`, so the caller
     // can pass a per-cycle name (the rename) without pinning it for the server's life.
     name: &str,
+    intent: AdvertisingIntent,
     // Concrete controller (the [`super::sensors`] `SensorStack` convention): `advertise_ext`'s
     // command bounds are a zoo, and the SDC is the only controller this crate ever runs.
     peripheral: &mut Peripheral<'values, nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool>,
@@ -189,7 +212,7 @@ pub(crate) async fn advertise_lifecycle<'values, 'server>(
     let adv_len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteServiceUuids128(&[OBC_SERVICE_UUID_LE]),
+            AdStructure::CompleteServiceUuids128(&[intent.service_uuid_le()]),
         ],
         &mut adv_data[..],
     )?;
@@ -220,7 +243,7 @@ pub(crate) async fn advertise_lifecycle<'values, 'server>(
     let sets = adv_set(fast_adv_params());
     let mut handles = AdvertisementSet::handles(&sets);
     let advertiser = peripheral.advertise_ext(&sets, &mut handles).await?;
-    info!("ble: advertising as '{}' (fast, 40 ms for {} s)", name, FAST_ADV_WINDOW.as_secs());
+    info!("ble: advertising as '{}' intent={} (fast, 40 ms for {} s)", name, intent.label(), FAST_ADV_WINDOW.as_secs());
     if let Either::First(conn) = select(advertiser.accept(), Timer::after(FAST_ADV_WINDOW)).await {
         let conn = conn?.with_attribute_server(server)?;
         info!("ble: connection established (fast phase)");
@@ -232,7 +255,7 @@ pub(crate) async fn advertise_lifecycle<'values, 'server>(
     let sets = adv_set(slow_adv_params());
     let mut handles = AdvertisementSet::handles(&sets);
     let advertiser = peripheral.advertise_ext(&sets, &mut handles).await?;
-    info!("ble: advertising as '{}' (slow, 1000 ms)", name);
+    info!("ble: advertising as '{}' intent={} (slow, 1000 ms)", name, intent.label());
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     info!("ble: connection established (slow phase)");
     Ok(conn)

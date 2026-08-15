@@ -2,7 +2,7 @@
 //! its [`Span`], in strict global priority order.
 //!
 //! **Two-phase "stub-select" collect (issue #564).** The device streams map chunks off SPI SD
-//! through a tiny cache (one slot under `nrf-mem`), so the collect phase must touch each visible
+//! through a small cache, so the collect phase must touch each visible
 //! chunk as few times as possible. A single chunk-major walk that filled the frame buffers directly
 //! would break the priority-drop guarantee (an early chunk's low-priority features would take
 //! capacity a late chunk's high-priority feature needs), so selection is split from geometry
@@ -15,7 +15,8 @@
 //! - **Select** ([`FrameScratch::select`]) — RAM only, no I/O. Stubs are sorted into the old
 //!   level-major order and admitted greedily against the exact point / ring / span budgets, so drops
 //!   are strictly lowest-priority-first *globally* and the surviving order reproduces the old
-//!   collector's exactly (byte-identical output when nothing saturates).
+//!   collector's exactly. The only geometry change is the lossless off-panel polygon compaction
+//!   below, which is raster-identical inside the panel.
 //! - **Pass B** ([`FrameScratch::decode_winners`]) — a second chunk-major walk that re-decodes only
 //!   the winners, appending their geometry and rewriting each stub slot in place with its final
 //!   [`Span`]. Only chunks that own a winner are refetched.
@@ -26,22 +27,181 @@
 
 use heapless::Vec;
 
-use obc_map_scene::{
-    BBox, Candidate, Feature, FeatureError, FeatureToken, Kind, MapScene, ReadFailures, SelectedFeatures,
+use embedded_graphics::prelude::Point;
+
+use obc_map_scene::{Candidate, Feature, FeatureError, FeatureToken, Kind, MapScene, ReadFailures, SelectedFeatures};
+
+use crate::{
+    viewport::{point_in_rect, segment_intersects_rect},
+    RenderStats, Viewport, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_LINE_PX,
+    MAX_SPANS,
 };
 
-use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_SPANS};
+/// One retained frame vertex, already projected into integer screen space.
+///
+/// The panel is only a few hundred pixels across, and the collector has already rejected geometry
+/// that cannot affect it. Keeping the projection result instead of the source microdegrees avoids
+/// doing the same projection again in the draw pass and halves the resident frame-point buffer.
+/// Conversion is checked: a hostile/custom scene with a vertex outside the signed-16-bit screen
+/// envelope is rejected as malformed rather than wrapping into a visible but unrelated pixel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub(crate) struct ScreenPoint {
+    x: i16,
+    y: i16,
+}
+
+impl ScreenPoint {
+    #[inline]
+    fn checked((x, y): (i32, i32)) -> Result<Self, ()> {
+        Ok(Self { x: i16::try_from(x).map_err(|_| ())?, y: i16::try_from(y).map_err(|_| ())? })
+    }
+
+    #[inline]
+    pub(crate) fn point(self) -> Point {
+        Point::new(i32::from(self.x), i32::from(self.y))
+    }
+
+    #[inline]
+    fn tuple(self) -> (i32, i32) {
+        (i32::from(self.x), i32::from(self.y))
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<ScreenPoint>() == 4, "frame screen points must stay packed");
+
+#[inline]
+fn ray_toggle(a: (i32, i32), b: (i32, i32), point: (i32, i32)) -> bool {
+    let (px, py) = (point.0 as f64, point.1 as f64);
+    let (ax, ay, bx, by) = (a.0 as f64, a.1 as f64, b.0 as f64, b.1 as f64);
+    (ay > py) != (by > py) && px < (bx - ax) * (py - ay) / (by - ay) + ax
+}
+
+/// Whether `b` lies on the closed screen-space segment `a..c`. Removing such a vertex is exactly
+/// raster-lossless: the two projected edges cover the same segment as their replacement chord.
+/// Widen before subtracting so hostile off-panel coordinates cannot overflow the predicate.
+#[inline]
+fn point_on_screen_segment(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> bool {
+    let (ax, ay) = (i64::from(a.0), i64::from(a.1));
+    let (bx, by) = (i64::from(b.0), i64::from(b.1));
+    let (cx, cy) = (i64::from(c.0), i64::from(c.1));
+    (bx - ax) * (cy - ay) == (by - ay) * (cx - ax) && (bx - ax) * (bx - cx) + (by - ay) * (by - cy) <= 0
+}
+
+fn ring_affects_rect(viewport: &Viewport, ring: &[(i32, i32)], rect: (i32, i32, i32, i32), probe: (i32, i32)) -> bool {
+    let Some(&last) = ring.last() else { return false };
+    let mut previous = viewport.to_screen(last.0, last.1);
+    let mut contains_probe = false;
+    for &(lon, lat) in ring {
+        let current = viewport.to_screen(lon, lat);
+        if point_in_rect(current, rect) || segment_intersects_rect(previous, current, rect) {
+            return true;
+        }
+        contains_probe ^= ray_toggle(previous, current, probe);
+        previous = current;
+    }
+    // With no boundary entering the connected rectangle, containment is uniform across it.
+    contains_probe
+}
+
+/// Append a polygon after removing only vertex corners whose old two edges and replacement chord
+/// all stay wholly outside the panel. The ray-parity equality makes the local replacement
+/// fill-equivalent for the entire panel: with no boundary segment entering the rectangle, winding
+/// parity is constant over it, so one interior probe is sufficient. This is viewport clipping's
+/// useful cheap subset — no intersection vertices, topology reconstruction, or extra scratch.
+fn append_visible_polygon(
+    viewport: &Viewport,
+    points: &[(i32, i32)],
+    ring_lens: &[usize],
+    margin_px: i32,
+    out_points: &mut Vec<ScreenPoint, MAX_FRAME_POINTS>,
+    out_ring_lens: &mut Vec<u16, MAX_FRAME_RINGS>,
+) -> Result<(), ()> {
+    let rect = (-margin_px, -margin_px, viewport.w as i32 + margin_px, viewport.h as i32 + margin_px);
+    let probe = (viewport.w as i32 / 2, viewport.h as i32 / 2);
+    let mut offset = 0usize;
+    for (ring_index, &len) in ring_lens.iter().enumerate() {
+        let ring = points.get(offset..offset + len).ok_or(())?;
+        offset += len;
+        if ring_index > 0 && !ring_affects_rect(viewport, ring, rect, probe) {
+            continue;
+        }
+        if ring.len() <= 4 {
+            for &(lon, lat) in ring {
+                out_points.push(ScreenPoint::checked(viewport.to_screen(lon, lat))?).map_err(|_| ())?;
+            }
+            out_ring_lens.push(ring.len() as u16).map_err(|_| ())?;
+            continue;
+        }
+
+        let start = out_points.len();
+        out_points.push(ScreenPoint::checked(viewport.to_screen(ring[0].0, ring[0].1))?).map_err(|_| ())?;
+        for index in 1..ring.len() {
+            let a = out_points.last().ok_or(())?.tuple();
+            let b = viewport.to_screen(ring[index].0, ring[index].1);
+            let c = viewport.to_screen(ring[(index + 1) % ring.len()].0, ring[(index + 1) % ring.len()].1);
+            let remaining = ring.len() - index - 1;
+            let kept = out_points.len() - start;
+            let screen_redundant = point_on_screen_segment(a, b, c);
+            let outside_equivalent = !point_in_rect(b, rect)
+                && !segment_intersects_rect(a, b, rect)
+                && !segment_intersects_rect(b, c, rect)
+                && !segment_intersects_rect(a, c, rect)
+                && (ray_toggle(a, b, probe) ^ ray_toggle(b, c, probe)) == ray_toggle(a, c, probe);
+            if (!screen_redundant && !outside_equivalent) || kept + remaining < 4 {
+                out_points.push(ScreenPoint::checked(b)?).map_err(|_| ())?;
+            }
+        }
+        out_ring_lens.push((out_points.len() - start) as u16).map_err(|_| ())?;
+    }
+    (offset == points.len()).then_some(()).ok_or(())
+}
+
+/// Append line rings after removing vertices that project exactly onto the segment between their
+/// neighbours. Endpoints and every real projected corner remain, so solid strokes and dash length
+/// are unchanged while sub-pixel source detail consumes no frame points.
+fn append_visible_line(
+    viewport: &Viewport,
+    points: &[(i32, i32)],
+    ring_lens: &[usize],
+    out_points: &mut Vec<ScreenPoint, MAX_FRAME_POINTS>,
+    out_ring_lens: &mut Vec<u16, MAX_FRAME_RINGS>,
+) -> Result<(), ()> {
+    let mut offset = 0usize;
+    for &len in ring_lens {
+        let ring = points.get(offset..offset + len).ok_or(())?;
+        offset += len;
+        let start = out_points.len();
+        let Some((&first, rest)) = ring.split_first() else { return Err(()) };
+        out_points.push(ScreenPoint::checked(viewport.to_screen(first.0, first.1))?).map_err(|_| ())?;
+        for index in 0..rest.len().saturating_sub(1) {
+            let previous = out_points.last().ok_or(())?.tuple();
+            let current = viewport.to_screen(rest[index].0, rest[index].1);
+            let next = viewport.to_screen(rest[index + 1].0, rest[index + 1].1);
+            if !point_on_screen_segment(previous, current, next) {
+                out_points.push(ScreenPoint::checked(current)?).map_err(|_| ())?;
+            }
+        }
+        if let Some(&last) = rest.last() {
+            out_points.push(ScreenPoint::checked(viewport.to_screen(last.0, last.1))?).map_err(|_| ())?;
+        }
+        out_ring_lens.push((out_points.len() - start) as u16).map_err(|_| ())?;
+    }
+    (offset == points.len()).then_some(()).ok_or(())
+}
 
 /// The renderer's collection scratch: per-feature decode buffers plus the frame buffers that
 /// accumulate every visible feature's geometry (and its [`Span`]). Cleared (not freed) each frame.
 #[derive(Default)]
 pub(crate) struct FrameScratch {
-    // Per-feature decode scratch handed to the scene source's two streamed passes.
-    dec_points: Vec<(i32, i32), MAX_DECODE_POINTS>,
+    // Per-feature ring decode scratch handed to the scene source's two streamed passes. Point
+    // decode storage is phase-shared with the projected draw buffer by `DrawScratch`.
     dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
     // All drawn features' geometry, concatenated (filled in pass B).
-    pub(crate) frame_points: Vec<(i32, i32), MAX_FRAME_POINTS>,
-    pub(crate) frame_ring_lens: Vec<usize, MAX_FRAME_RINGS>,
+    pub(crate) frame_points: Vec<ScreenPoint, MAX_FRAME_POINTS>,
+    // `u16` is lossless because a decoded feature has at most `MAX_DECODE_POINTS` vertices, and
+    // halves this buffer's MCU footprint versus `usize`.
+    pub(crate) frame_ring_lens: Vec<u16, MAX_FRAME_RINGS>,
     // One record per candidate: a [`Stub`] during passes A / select, rewritten to the final [`Span`]
     // in pass B. After `collect`, its first `spans_len` entries are all the `span` variant.
     slots: Vec<Slot, MAX_SPANS>,
@@ -54,7 +214,19 @@ impl FrameScratch {
     /// two-phase stub-select collect (see the module docs). On return, [`FrameScratch::spans`] /
     /// [`FrameScratch::spans_mut`] expose the drawn features' [`Span`]s (unordered — the caller
     /// sorts them into painter order).
-    pub(crate) fn collect<S: MapScene>(&mut self, scene: &S, lod: usize, view: &BBox, stats: &mut RenderStats) {
+    ///
+    /// `suppress_terrain` drops the whole **terrain layer** — every style carrying
+    /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) — out of the visible
+    /// mask, so pass A never even asks the source to decode those features (see below).
+    pub(crate) fn collect<S: MapScene>(
+        &mut self,
+        scene: &S,
+        lod: usize,
+        viewport: &Viewport,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
+        suppress_terrain: bool,
+        stats: &mut RenderStats,
+    ) {
         self.frame_points.clear();
         self.frame_ring_lens.clear();
         self.slots.clear();
@@ -62,16 +234,25 @@ impl FrameScratch {
 
         // A single "is this style drawn at all?" mask (bit set ⇔ the id has a style), built once —
         // the old per-priority-level masks are gone: pass A decodes every drawn feature in one walk.
+        //
+        // The terrain-layer suppression (#1096) is applied **here**, by clearing those styles' mask
+        // bits, and nowhere else: the mask is what pass A hands the source as its `should_decode`
+        // filter, so a suppressed contour is skipped before its geometry is decoded, never drawn and
+        // painted over. It costs no span, no point, no ring — a hidden terrain layer therefore also
+        // frees frame budget for everything else, which drawing-then-overpainting would not.
         let mut vis_mask = [0u32; 8];
         for id in 0..=255u8 {
-            if scene.style(id).is_some() {
-                vis_mask[(id >> 5) as usize] |= 1 << (id & 31);
+            match scene.style(id) {
+                Some(style) if !(suppress_terrain && style.flags.terrain_layer()) => {
+                    vis_mask[(id >> 5) as usize] |= 1 << (id & 31)
+                }
+                _ => {}
             }
         }
 
-        let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats);
+        let candidates = self.collect_stubs(scene, lod, viewport, dec_points, &vis_mask, stats);
         let winners = self.select();
-        let drawn = self.decode_winners(scene, lod, view, winners, stats);
+        let drawn = self.decode_winners(scene, lod, viewport, dec_points, winners, stats);
 
         self.spans_len = drawn;
         stats.features_drawn = drawn;
@@ -82,27 +263,6 @@ impl FrameScratch {
         stats.span_utilization = drawn as f32 / self.slots.capacity() as f32;
         stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
         stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
-
-        // TEMP debug (scratch-budget investigation): split the drawn geometry by kind so the sim can
-        // show which render path — lines or polygons — eats the span/point/ring scratch at the zoom
-        // levels that saturate it. A span's point count is the sum of its ring lengths.
-        for span in self.spans() {
-            let start = span.ring_start as usize;
-            let rings = span.ring_count as usize;
-            let points: usize = self.frame_ring_lens[start..start + rings].iter().sum();
-            match span.kind {
-                Kind::Line => {
-                    stats.line_spans += 1;
-                    stats.line_rings += rings;
-                    stats.line_points += points;
-                }
-                Kind::Polygon => {
-                    stats.poly_spans += 1;
-                    stats.poly_rings += rings;
-                    stats.poly_points += points;
-                }
-            }
-        }
     }
 
     /// **Pass A.** One source-native walk over the viewport, decoding every visible feature once
@@ -115,18 +275,20 @@ impl FrameScratch {
         &mut self,
         scene: &S,
         lod: usize,
-        view: &BBox,
+        viewport: &Viewport,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
         vis_mask: &[u32; 8],
         stats: &mut RenderStats,
     ) -> usize {
         // Split the borrow so the decode callback can push stubs while `for_each_feature_filtered`
         // borrows the decode scratch.
-        let FrameScratch { dec_points, dec_ring_lens, slots, .. } = self;
+        let view = viewport.visible_bbox();
+        let FrameScratch { dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
         let mut candidates = 0usize;
         let mut arrival = 0u16;
         let report = scene.visit_candidates(
             lod,
-            view,
+            &view,
             dec_points,
             dec_ring_lens,
             |sid| vis_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0,
@@ -148,13 +310,33 @@ impl FrameScratch {
                 }
 
                 // Per-feature bbox cull (tighter than the leaf); bounds come free from decode.
-                if !f.bbox().intersects(view) {
+                if !f.bbox().intersects(&view) {
                     return;
                 }
+                let margin = if f.kind == Kind::Line || style.color2.is_some() { MAX_LINE_PX as i32 } else { 0 };
+                if !viewport.bbox_might_be_visible(&f.bbox(), margin) {
+                    return;
+                }
+                if !viewport.geometry_might_be_visible(pts, f.ring_lens(), f.kind == Kind::Polygon, margin) {
+                    return;
+                }
+                frame_points.clear();
+                frame_ring_lens.clear();
+                let compacted = match f.kind {
+                    Kind::Line => append_visible_line(viewport, pts, f.ring_lens(), frame_points, frame_ring_lens),
+                    Kind::Polygon => {
+                        append_visible_polygon(viewport, pts, f.ring_lens(), margin, frame_points, frame_ring_lens)
+                    }
+                };
+                if compacted.is_err() {
+                    stats.malformed_features = stats.malformed_features.saturating_add(1);
+                    return;
+                }
+                let (total_pts, ring_count) = (frame_points.len(), frame_ring_lens.len());
                 candidates += 1;
 
                 let level = style.priority; // 1..=4
-                let stub = Stub::new(token, pts.len(), f.ring_lens().len(), f.style_id, f.kind, level, arrival);
+                let stub = Stub::new(token, total_pts, ring_count, f.style_id, f.kind, level, arrival);
                 arrival = arrival.saturating_add(1);
 
                 // Streaming "keep the K lowest-keyed" selection, key = `(priority_level, arrival)`
@@ -181,6 +363,8 @@ impl FrameScratch {
         stats.malformed_features = stats.malformed_features.saturating_add(report.malformed_features);
         record_read_failures(stats, report.read_failures);
         stats.chunks_visited = report.chunks_visited;
+        frame_points.clear();
+        frame_ring_lens.clear();
         candidates
     }
 
@@ -204,8 +388,8 @@ impl FrameScratch {
         let mut m = 0usize;
         for i in 0..slots.len() {
             let mut s = slots[i].stub();
-            let pts = s.total_pts as usize;
-            let rings = s.ring_count as usize;
+            let pts = s.total_pts() as usize;
+            let rings = s.ring_count() as usize;
             if used_pts + pts <= MAX_FRAME_POINTS && used_rings + rings <= MAX_FRAME_RINGS {
                 used_pts += pts;
                 used_rings += rings;
@@ -228,20 +412,30 @@ impl FrameScratch {
         &mut self,
         scene: &S,
         lod: usize,
-        view: &BBox,
+        viewport: &Viewport,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
         winners: usize,
         stats: &mut RenderStats,
     ) -> usize {
         if winners == 0 {
             return 0;
         }
-        let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
+        let FrameScratch { dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
         // A winner slot, once rewritten to its `Span`, must not be re-read as a stub by a later
         // chunk's scan. `placed` marks the done slots so the scan skips them.
         let mut placed = [0u32; MAX_SPANS.div_ceil(32)];
-        let mut selected =
-            DecodeSink { scene, winners, frame_points, frame_ring_lens, slots, placed: &mut placed, stats, drawn: 0 };
-        let report = scene.decode_selected(lod, view, dec_points, dec_ring_lens, &mut selected);
+        let mut selected = DecodeSink {
+            scene,
+            viewport,
+            winners,
+            frame_points,
+            frame_ring_lens,
+            slots,
+            placed: &mut placed,
+            stats,
+            drawn: 0,
+        };
+        let report = scene.decode_selected(lod, &viewport.visible_bbox(), dec_points, dec_ring_lens, &mut selected);
         selected.stats.chunks_refetched = selected.stats.chunks_refetched.saturating_add(report.chunks_refetched);
         record_read_failures(selected.stats, report.read_failures);
         let drawn = selected.drawn;
@@ -287,9 +481,10 @@ impl FrameScratch {
 
 struct DecodeSink<'a, S: MapScene> {
     scene: &'a S,
+    viewport: &'a Viewport,
     winners: usize,
-    frame_points: &'a mut Vec<(i32, i32), MAX_FRAME_POINTS>,
-    frame_ring_lens: &'a mut Vec<usize, MAX_FRAME_RINGS>,
+    frame_points: &'a mut Vec<ScreenPoint, MAX_FRAME_POINTS>,
+    frame_ring_lens: &'a mut Vec<u16, MAX_FRAME_RINGS>,
     slots: &'a mut Vec<Slot, MAX_SPANS>,
     placed: &'a mut [u32; MAX_SPANS.div_ceil(32)],
     stats: &'a mut RenderStats,
@@ -317,48 +512,86 @@ impl<S: MapScene> SelectedFeatures for DecodeSink<'_, S> {
             return false;
         }
         let stub = self.slots[index].stub();
-        let Some(style) = self.scene.style(stub.style_id) else {
+        let Some(style) = self.scene.style(stub.style_id()) else {
             self.finish_error(index, FeatureError::Malformed);
             return false;
         };
-        if !feature.has_valid_rings()
-            || feature.style_id != stub.style_id
-            || feature.kind != stub.kind()
-            || feature.points().len() != stub.total_pts as usize
-            || feature.ring_lens().len() != stub.ring_count as usize
-        {
+        if !feature.has_valid_rings() || feature.style_id != stub.style_id() || feature.kind != stub.kind() {
             self.finish_error(index, FeatureError::Malformed);
             return false;
         }
-        if feature.points().len() > self.frame_points.capacity() - self.frame_points.len() {
+        if stub.total_pts() as usize > self.frame_points.capacity() - self.frame_points.len() {
             self.finish_error(index, FeatureError::Capacity(obc_map_scene::CapacityError::Points));
             return false;
         }
-        if feature.ring_lens().len() > self.frame_ring_lens.capacity() - self.frame_ring_lens.len() {
+        if stub.ring_count() as usize > self.frame_ring_lens.capacity() - self.frame_ring_lens.len() {
             self.finish_error(index, FeatureError::Capacity(obc_map_scene::CapacityError::Rings));
             return false;
         }
 
         let pt_start = self.frame_points.len() as u16;
         let ring_start = self.frame_ring_lens.len() as u16;
-        // The exact pass-A reservation plus the remaining-capacity checks above make these
-        // infallible and keep publication transactional: no partial geometry is ever visible.
-        if self.frame_points.extend_from_slice(feature.points()).is_err()
-            || self.frame_ring_lens.extend_from_slice(feature.ring_lens()).is_err()
-        {
-            unreachable!("prechecked frame capacity");
+        let published = match feature.kind {
+            Kind::Line => append_visible_line(
+                self.viewport,
+                feature.points(),
+                feature.ring_lens(),
+                self.frame_points,
+                self.frame_ring_lens,
+            )
+            .is_ok(),
+            Kind::Polygon => {
+                let margin = if style.color2.is_some() { MAX_LINE_PX as i32 } else { 0 };
+                append_visible_polygon(
+                    self.viewport,
+                    feature.points(),
+                    feature.ring_lens(),
+                    margin,
+                    self.frame_points,
+                    self.frame_ring_lens,
+                )
+                .is_ok()
+            }
         };
+        if !published
+            || self.frame_points.len() - pt_start as usize != stub.total_pts() as usize
+            || self.frame_ring_lens.len() - ring_start as usize != stub.ring_count() as usize
+        {
+            // Pass A and B run the same deterministic compaction. A changed/corrupt refetch must
+            // not publish a partial feature into the shared frame buffers.
+            self.frame_points.truncate(pt_start as usize);
+            self.frame_ring_lens.truncate(ring_start as usize);
+            self.finish_error(index, FeatureError::Malformed);
+            return false;
+        }
         self.drawn += 1;
-        self.stats.points_drawn += feature.points().len();
+        self.stats.points_drawn += stub.total_pts() as usize;
+        // The by-kind scratch split, counted where the geometry is published rather than by a second
+        // walk over the finished spans: which render path — lines or polygons — eats the
+        // span/point/ring budget is what the sim's scratch panel shows, and every span that survives
+        // to `spans()` is published exactly here (a failed refetch lands in `finish_error` with
+        // `ring_count == 0` and is compacted away), so counting here is free and identical.
+        // `has_valid_rings` above makes a feature's point count the sum of its ring lengths.
+        match feature.kind {
+            Kind::Line => {
+                self.stats.line_spans += 1;
+                self.stats.line_rings += stub.ring_count() as usize;
+                self.stats.line_points += stub.total_pts() as usize;
+            }
+            Kind::Polygon => {
+                self.stats.poly_spans += 1;
+                self.stats.poly_rings += stub.ring_count() as usize;
+                self.stats.poly_points += stub.total_pts() as usize;
+            }
+        }
         let span = Span {
             kind: feature.kind,
             z: style.z_index,
             weight: style.weight,
-            style_id: stub.style_id,
-            color: style.color,
+            style_id: stub.style_id(),
             pt_start,
             ring_start,
-            ring_count: feature.ring_lens().len() as u16,
+            ring_count: stub.ring_count(),
             seq: stub.seq,
         };
         self.slots[index] = Slot::of_span(span);
@@ -385,10 +618,8 @@ impl<S: MapScene> DecodeSink<'_, S> {
         debug_assert!(self.pending(index));
         record_feature_error(self.stats, error);
         let stub = self.slots[index].stub();
-        let (z, weight, color) =
-            self.scene.style(stub.style_id).map_or((0, 0, 0), |style| (style.z_index, style.weight, style.color));
-        let span =
-            empty_span(stub, z, weight, color, self.frame_points.len() as u16, self.frame_ring_lens.len() as u16);
+        let (z, weight) = self.scene.style(stub.style_id()).map_or((0, 0), |style| (style.z_index, style.weight));
+        let span = empty_span(stub, z, weight, self.frame_points.len() as u16, self.frame_ring_lens.len() as u16);
         self.slots[index] = Slot::of_span(span);
         self.placed[index >> 5] |= 1 << (index & 31);
     }
@@ -426,18 +657,8 @@ fn record_feature_error(stats: &mut RenderStats, error: FeatureError) {
 }
 
 #[inline]
-fn empty_span(stub: Stub, z: i8, weight: u8, color: u16, pt_start: u16, ring_start: u16) -> Span {
-    Span {
-        kind: Kind::Line,
-        z,
-        weight,
-        style_id: stub.style_id,
-        color,
-        pt_start,
-        ring_start,
-        ring_count: 0,
-        seq: stub.seq,
-    }
+fn empty_span(stub: Stub, z: i8, weight: u8, pt_start: u16, ring_start: u16) -> Span {
+    Span { kind: Kind::Line, z, weight, style_id: stub.style_id(), pt_start, ring_start, ring_count: 0, seq: stub.seq }
 }
 
 /// The max-heap ordering key of a stub slot: `(priority_level, arrival)`, read from the live `stub`
@@ -512,11 +733,11 @@ fn sift_down<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Stub {
+    /// All-rings point count (12 bits), ring count (6), priority (3), kind (1), and style id (8).
+    /// Their production maxima fit in 30 bits; packing them is what lets the candidate reservoir
+    /// grow without making the render arm larger.
+    meta: u32,
     token: FeatureToken,
-    /// All-rings vertex count, for the exact point-budget admission.
-    total_pts: u16,
-    /// Ring count, for the ring-budget admission.
-    ring_count: u16,
     /// Pass-A encounter index (level-major seq replication), overwritten with the admission `seq`
     /// during select — pass B reads it for the painter's-order tie-break. It is the low half of the
     /// pass-A max-heap key and is assigned with `saturating_add`, so the first 65,536 candidates
@@ -526,15 +747,9 @@ struct Stub {
     /// worst-level residents share a key; the heap then still makes the identical accept/reject
     /// decision and keeps the identical multiset of keys, but which of the tied-key features it
     /// evicts is fixed by heap order rather than by the old buffer's slot order. That regime is far
-    /// beyond `MAX_SPANS` (1152) and never reached by the OBCM source at its coarsest LOD; the
+    /// beyond `MAX_SPANS` (3,072) and never reached by the OBCM source at its coarsest LOD; the
     /// exactness claim and the reference-selector tests are scoped to it. See `collect_stubs`.
     seq: u16,
-    /// Style id. z / weight / color re-derive `O(1)` from the style table.
-    style_id: u8,
-    /// Pass-A priority (bits 1..=3) and geometry kind (bit 0). Keeping both identity fields in the
-    /// old padding byte makes selection independent of later style-table answers while the stub and
-    /// span remain exactly 14 bytes.
-    priority_kind: u8,
 }
 
 impl Stub {
@@ -552,28 +767,42 @@ impl Stub {
             Kind::Line => 0,
             Kind::Polygon => 1,
         };
-        Stub {
-            token,
-            total_pts: total_pts as u16,
-            ring_count: ring_count as u16,
-            seq: arrival,
-            style_id,
-            priority_kind: priority << 1 | kind_bit,
-        }
+        debug_assert!(total_pts <= 0x0fff && ring_count <= 0x3f && priority <= 0x7);
+        let meta = total_pts as u32
+            | (ring_count as u32) << 12
+            | (priority as u32) << 18
+            | kind_bit << 21
+            | (style_id as u32) << 22;
+        Stub { token, meta, seq: arrival }
+    }
+
+    #[inline]
+    fn total_pts(self) -> u16 {
+        (self.meta & 0x0fff) as u16
+    }
+
+    #[inline]
+    fn ring_count(self) -> u16 {
+        ((self.meta >> 12) & 0x3f) as u16
     }
 
     #[inline]
     fn priority(self) -> u8 {
-        self.priority_kind >> 1
+        ((self.meta >> 18) & 0x7) as u8
     }
 
     #[inline]
     fn kind(self) -> Kind {
-        if self.priority_kind & 1 == 0 {
+        if self.meta & (1 << 21) == 0 {
             Kind::Line
         } else {
             Kind::Polygon
         }
+    }
+
+    #[inline]
+    fn style_id(self) -> u8 {
+        (self.meta >> 22) as u8
     }
 }
 
@@ -612,7 +841,7 @@ impl Slot {
 }
 
 // The union reuses the span buffer for stubs, so a stub must fit a span slot, and the two must share
-// a size (or the `slots`-as-`[Span]` reinterpret in `spans()` / the `MCU_RENDERER_BYTES` accounting
+// a size (or the `slots`-as-`[Span]` reinterpret in `spans()` / the `MCU_SCRATCH_BYTES` accounting
 // would be wrong).
 const _: () = assert!(core::mem::size_of::<Stub>() <= core::mem::size_of::<Span>(), "Stub must fit a Span slot");
 const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Span>(), "Slot must be Span-sized");
@@ -620,18 +849,17 @@ const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Span>
 /// One visible feature's draw metadata plus the ranges locating its geometry in the frame buffers.
 /// Cheap to sort for the painter's algorithm.
 ///
-/// Offsets are `u16` (not `usize`) to keep the struct to 14 bytes — thousands are buffered at
+/// Offsets are `u16` (not `usize`) and the draw path resolves the primary color from `style_id`,
+/// keeping the struct to 12 bytes — thousands are buffered at
 /// coarse zoom. The frame buffers they index are asserted `<= u16::MAX` at the buffer constants.
-/// `style_id` fills what was a spare padding byte (the `u8` fields pack against the `u16`s), so the
-/// draw loop can re-resolve the full scene style — `dashed`/`color2` — via the source's hot `O(1)`
-/// style table without widening `Span`.
+/// The draw loop re-resolves the full scene style — primary color, `dashed`, and `color2` — via the
+/// source's hot `O(1)` style table.
 #[derive(Clone, Copy)]
 pub(crate) struct Span {
     pub(crate) kind: Kind,
     pub(crate) z: i8,
     pub(crate) weight: u8,
     pub(crate) style_id: u8,
-    pub(crate) color: u16,
     pub(crate) pt_start: u16,
     pub(crate) ring_start: u16,
     pub(crate) ring_count: u16,
@@ -639,8 +867,119 @@ pub(crate) struct Span {
 }
 
 // `style_id` must land in the spare byte, not grow the struct — thousands are buffered per frame and
-// `MCU_RENDERER_BYTES` budgets `MAX_SPANS * size_of::<Span>()`.
-const _: () = assert!(core::mem::size_of::<Span>() == 14, "Span must stay 14 bytes");
+// `MCU_SCRATCH_BYTES` budgets `MAX_SPANS * size_of::<Span>()`.
+const _: () = assert!(core::mem::size_of::<Span>() == 12, "Span must stay 12 bytes");
+
+#[cfg(test)]
+mod viewport_compaction_tests {
+    use super::*;
+    use crate::fill::{fill_polygon, fill_polygon_proj};
+    use crate::{MAX_CROSSINGS, MAX_SCREEN_POINTS};
+    use embedded_graphics::mock_display::MockDisplay;
+    use embedded_graphics::pixelcolor::BinaryColor;
+    use embedded_graphics::prelude::Point;
+
+    fn map_ring(viewport: &Viewport, screen: &[(i32, i32)]) -> std::vec::Vec<(i32, i32)> {
+        screen.iter().map(|&(x, y)| viewport.to_map(x as f32, y as f32)).collect()
+    }
+
+    fn draw_compacted(
+        target: &mut MockDisplay<BinaryColor>,
+        viewport: &Viewport,
+        points: &[ScreenPoint],
+        ring_lens: &[u16],
+        screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
+        xs: &mut Vec<f32, MAX_CROSSINGS>,
+    ) {
+        screen.clear();
+        for p in points {
+            screen.push(p.point()).unwrap();
+        }
+        fill_polygon(target, screen, ring_lens, BinaryColor::On, viewport.w as i32, viewport.h as i32, xs);
+    }
+
+    #[test]
+    fn offscreen_chains_and_holes_compact_without_changing_pixels() {
+        let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
+        let exterior = map_ring(
+            &viewport,
+            &[
+                (-80, -70),
+                (-50, -95),
+                (-10, -85),
+                (70, -90),
+                (130, -60),
+                (130, 40),
+                (70, 40),
+                (64, 80),
+                (0, 80),
+                (-40, 40),
+            ],
+        );
+        let visible_hole = map_ring(&viewport, &[(22, 22), (42, 22), (42, 42), (22, 42)]);
+        let irrelevant_hole = map_ring(&viewport, &[(100, 100), (120, 100), (120, 120), (100, 120)]);
+        let mut points = exterior.clone();
+        points.extend_from_slice(&visible_hole);
+        points.extend_from_slice(&irrelevant_hole);
+        let ring_lens = [exterior.len(), visible_hole.len(), irrelevant_hole.len()];
+
+        let mut compact_points: Vec<ScreenPoint, MAX_FRAME_POINTS> = Vec::new();
+        let mut compact_rings: Vec<u16, MAX_FRAME_RINGS> = Vec::new();
+        append_visible_polygon(&viewport, &points, &ring_lens, 0, &mut compact_points, &mut compact_rings).unwrap();
+        assert!(compact_points.len() < points.len());
+        assert_eq!(compact_rings.len(), 2, "the wholly offscreen hole consumes no frame ring");
+
+        let mut before = MockDisplay::<BinaryColor>::new();
+        let mut after = MockDisplay::<BinaryColor>::new();
+        let mut screen: Vec<Point, MAX_SCREEN_POINTS> = Vec::new();
+        let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
+        fill_polygon_proj(&mut before, &viewport, &points, &ring_lens, BinaryColor::On, &mut screen, &mut xs);
+        draw_compacted(&mut after, &viewport, &compact_points, &compact_rings, &mut screen, &mut xs);
+        assert_eq!(before, after, "viewport compaction must be framebuffer-identical");
+    }
+
+    #[test]
+    fn projected_collinear_vertices_compact_without_changing_pixels() {
+        let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
+        let points = map_ring(&viewport, &[(5, 5), (15, 5), (25, 5), (40, 5), (40, 40), (5, 40)]);
+        let ring_lens = [points.len()];
+        let mut compact_points: Vec<ScreenPoint, MAX_FRAME_POINTS> = Vec::new();
+        let mut compact_rings: Vec<u16, MAX_FRAME_RINGS> = Vec::new();
+        append_visible_polygon(&viewport, &points, &ring_lens, 0, &mut compact_points, &mut compact_rings).unwrap();
+        assert_eq!(compact_points.len(), 4, "the straight projected edge needs only its endpoints");
+
+        let mut before = MockDisplay::<BinaryColor>::new();
+        let mut after = MockDisplay::<BinaryColor>::new();
+        let mut screen: Vec<Point, MAX_SCREEN_POINTS> = Vec::new();
+        let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
+        fill_polygon_proj(&mut before, &viewport, &points, &ring_lens, BinaryColor::On, &mut screen, &mut xs);
+        draw_compacted(&mut after, &viewport, &compact_points, &compact_rings, &mut screen, &mut xs);
+        assert_eq!(before, after, "screen-collinear compaction must be framebuffer-identical");
+    }
+
+    #[test]
+    fn projected_collinear_line_vertices_keep_endpoints_and_corners() {
+        let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
+        let points = map_ring(&viewport, &[(5, 5), (15, 5), (25, 5), (40, 5), (40, 25), (40, 40)]);
+        let mut compact_points: Vec<ScreenPoint, MAX_FRAME_POINTS> = Vec::new();
+        let mut compact_rings: Vec<u16, MAX_FRAME_RINGS> = Vec::new();
+        append_visible_line(&viewport, &points, &[points.len()], &mut compact_points, &mut compact_rings).unwrap();
+        let projected: std::vec::Vec<_> = compact_points.iter().map(|p| p.tuple()).collect();
+        assert_eq!(projected, [(5, 5), (40, 5), (40, 40)]);
+        assert_eq!(compact_rings.as_slice(), &[3]);
+    }
+
+    #[test]
+    fn a_projection_outside_i16_is_rejected_instead_of_wrapping() {
+        let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
+        let points = [(40_000, 0), (0, 0)];
+        let mut compact_points: Vec<ScreenPoint, MAX_FRAME_POINTS> = Vec::new();
+        let mut compact_rings: Vec<u16, MAX_FRAME_RINGS> = Vec::new();
+        assert!(
+            append_visible_line(&viewport, &points, &[points.len()], &mut compact_points, &mut compact_rings,).is_err()
+        );
+    }
+}
 
 #[cfg(test)]
 mod heap_tests {

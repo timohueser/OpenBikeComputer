@@ -2,7 +2,11 @@
 //! adds the highlighted field to the end of the selection and returns; `back` returns without adding.
 //! When every field is already shown it's a quiet empty state.
 
-use obc_render::Surface;
+use embedded_graphics::prelude::Point;
+use obc_render::{
+    text::{Font, TextAlign},
+    Surface,
+};
 
 use crate::input::Gesture;
 use crate::screen::list::{self, ListGeometry, Separators};
@@ -32,7 +36,7 @@ impl AddFieldScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let avail = hidden(&cx.settings.stat_fields);
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, avail.len()),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, avail.len()),
             // Add the highlighted field to the end of the grid and return to the manage screen.
             Gesture::Press if !avail.is_empty() => {
                 let f = avail[self.selected.min(avail.len() - 1)];
@@ -63,9 +67,42 @@ impl AddFieldScreen {
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let f = avail[row.index];
-            super::row_label(cv, row.area, f.name(lang), None);
             let badge_color = if row.selected { INK } else { SUBTEXT };
-            super::span_badge(cv, row.area, f.span(), badge_color);
+            match f.category() {
+                // A `Next: <category>` field (epic #946, U5) wears the category's own row icon in a
+                // left gutter — the same glyph the tile, the Up-ahead rows and the POI menu use. The
+                // icon *is* the "Next:" of the name: six icon rows in a block, directly under
+                // `Next waypoint`, are unmistakably one group, and the name stays the plain
+                // (already-translated) category word instead of a composed label that no longer fits
+                // a row in German or French. It replaces the span badge on these rows — all six are
+                // full-width by construction, so the badge would carry no information the block
+                // doesn't already state, and the freed pixels are what let every language's longest
+                // category name draw whole.
+                Some(cat) => {
+                    let a = row.area;
+                    let mid = a.top_left.y + a.size.height as i32 / 2;
+                    let bg = if row.selected { AMBER } else { PARCHMENT };
+                    crate::screen::poi_menu::draw_category_icon(
+                        cv,
+                        cat,
+                        Point::new(a.top_left.x + 22, mid),
+                        badge_color,
+                        bg,
+                    );
+                    cv.text_vcentered(
+                        f.name(lang),
+                        a.top_left.x + 40,
+                        (a.top_left.y, a.size.height as i32),
+                        Font::Body,
+                        TextAlign::Left,
+                        INK,
+                    );
+                }
+                None => {
+                    super::row_label(cv, row.area, f.name(lang), None);
+                    super::span_badge(cv, row.area, f.span(), badge_color);
+                }
+            }
         });
     }
 }

@@ -8,9 +8,13 @@
 //! "Actually-ridden": `done`/`climbed` reflect what the rider did, not the route-relative position
 //! — so they keep counting off-route, while `to go`/`to climb` stay route-relative. Distance comes
 //! from the GPS [`Fix`] stream and climb from the **separate** barometric
-//! [`AltimeterSource`](crate::AltimeterSource); the two integrate independently.
+//! [`AltimeterSource`](obc_ports::AltimeterSource); the two integrate independently.
 
-use obc_route::{ground_dist_m, DeadBand, Match};
+use obc_elevation::DeadBand;
+
+use crate::altitude::AltitudeFusion;
+use obc_map_scene::ground_dist_m;
+use obc_route::Match;
 
 use obc_ports::Fix;
 
@@ -28,7 +32,7 @@ const MOVING_MIN_MPS: f32 = 0.8;
 /// and record *absent* into the log, never freeze its last value.
 const SENSOR_STALE_MS: u32 = 5_000;
 
-/// The device's operating mode (`docs/ui_framework_brief.md` §"Operating modes").
+/// The device's operating mode (`docs/content/software/ui.md` §"The whole flow").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// No route active — the Home screensaver.
@@ -49,6 +53,38 @@ pub enum TrackAction {
     Save,
     /// Throw the open log away (Discard).
     Discard,
+}
+
+/// A **seam re-anchor** waiting for the next route-aware tick: after a detour commit re-adopts
+/// the spliced route (#882), the matcher's progress + forward-only floor are installed at the
+/// splice seam (`anchor_m` — the rider's frozen along-route position, which the splice
+/// guarantees is exactly the head/detour boundary). Queued by the commit handler, never by a
+/// screen: the tick owns the `RouteReader` the install needs. Keyed to the catalog slot so a
+/// racing route swap cannot apply the anchor to unrelated geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SeamRequest {
+    pub route: usize,
+    pub anchor_m: u32,
+}
+
+/// A one-shot **detour-plan request** (#882): the Detour chooser's Press asks the host to plan
+/// an A* detour from the rider's fix to the rejoin point at `target_m`, blacklisting the
+/// corridor around the skipped span `[progress_m, target_m]`. The host resolves the rejoin
+/// *coordinate* itself (`position_at(target_m)`) — it owns the active `RouteReader`; the screen
+/// deliberately carries only distances, keeping the request tiny and `Copy`. Drained as
+/// [`HostCommand::PlanDetour`](crate::host::HostCommand::PlanDetour); answered through
+/// [`App::apply_event`](crate::App::apply_event) as `DetourPlanned`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetourRequest {
+    /// The active catalog slot the request is keyed to (durable-remapped across rescans).
+    pub route: usize,
+    /// The rider's fix at Press, `(lon, lat)` µdeg — the detour's start.
+    pub from: (i32, i32),
+    /// The rider's along-route projection at Press — the corridor's (frozen) start anchor and
+    /// the splice's head/detour seam.
+    pub progress_m: u32,
+    /// The chosen rejoin distance along the route — the corridor's end and the splice point.
+    pub target_m: u32,
 }
 
 /// Which phase of the SD-sideload firmware update (epic #615 S5, #620) a [`DfuAction`] one-shot
@@ -182,6 +218,20 @@ pub struct Activity {
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
     /// [`App::apply_event`](crate::App::apply_event).
     nav_request: Option<NavRequest>,
+    /// A seam re-anchor queued by the detour commit handler (#882);
+    /// [`RideEngine`](crate::ride_engine::RideEngine) consumes it on the next tick that has the
+    /// matching active geometry, installing matcher progress + floor at the splice seam.
+    seam_request: Option<SeamRequest>,
+    /// A one-shot detour-plan request (#882), set by the Detour chooser's Press and drained via
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) as `PlanDetour`.
+    detour_request: Option<DetourRequest>,
+    /// A one-shot detour **commit** (#882): the preview screen's Press asks the host to splice
+    /// the planned detour into the active route (Phase B) and re-adopt the result.
+    detour_commit: bool,
+    /// A one-shot detour **cancel** (#882): Back on the planning or preview screen drops the
+    /// in-flight plan / the held detour bytes host-side. Same annihilation semantics as
+    /// [`nav_cancel`](Activity::nav_cancel).
+    detour_cancel: bool,
     /// A one-shot **DFU request** (epic #615 S5, #620): the SD-sideload firmware-update flow. The
     /// System settings screen posts [`DfuAction::Scan`] (validate `UPDATE.BIN`, answer through
     /// [`App::apply_event`](crate::App::apply_event)); the confirm screen
@@ -238,6 +288,10 @@ pub struct Activity {
     /// table. The riding views (the map chip / stat fields, later in the epic) read it for the "next
     /// waypoint" readouts. Cleared on every route swap / unload / replace, alongside `active_climb`.
     pub(crate) next_waypoint: Option<usize>,
+    /// Number of entries in the App-owned resident waypoint table. Mirrored with the cache so a
+    /// waypoint-list gesture can wrap its cursor without putting draw-only row data in `Ctx`.
+    /// Normally this is the complete plan (≤32); on an oversized route it is the current window.
+    pub(crate) waypoint_count: usize,
 
     // actually-ridden accumulators
     /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix, including
@@ -259,6 +313,14 @@ pub struct Activity {
     climb: DeadBand<f32>,
     /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`](obc_ports::TrackPoint)'s elevation.
     last_alt: Option<f32>,
+    /// The map-referenced altimeter (EL8, epic #1068): the slow estimate of the barometer's
+    /// absolute offset, fed one terrain sample per GPS fix. Corrects **what the Elevation tile
+    /// shows** and nothing else — `last_alt` above (and therefore the recorded track and the climb
+    /// dead-band below it) stays raw barometry on purpose; see [`crate::altitude`].
+    ///
+    /// Deliberately **not** cleared by [`reset_ride`](Activity::reset_ride): it is a calibration of
+    /// the atmosphere, not a tally of the ride.
+    altitude: AltitudeFusion,
     /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point starts a
     /// fresh track segment.
     segment_break: bool,
@@ -327,17 +389,49 @@ impl Activity {
         (self.moving_m / self.moving_s * 100.0) as u16 // float→int casts saturate
     }
 
-    /// The current barometric elevation (m): the latest altimeter sample, or `None` before the
-    /// first. Unlike [`climb_m`](Activity::climb_m) (dead-banded *ascent*) this is the raw present
-    /// height and follows the altimeter in any [`Mode`]. Read by the
-    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile.
-    pub fn current_elevation_m(&self) -> Option<f32> {
+    /// The **raw barometric** elevation (m): the latest altimeter sample, or `None` before the
+    /// first. Unlike [`climb_m`](Activity::climb_m) (dead-banded *ascent*) this is the present
+    /// height and follows the altimeter in any [`Mode`]. Absolute value is uncalibrated — this is
+    /// the number `obc_sensors::bmp581` is honest about — so display goes through
+    /// [`current_elevation_m`](Activity::current_elevation_m) instead.
+    pub fn baro_elevation_m(&self) -> Option<f32> {
         self.last_alt
+    }
+
+    /// The current elevation (m) **to show**: the map-referenced fused value once the estimator has
+    /// settled (EL8), otherwise the raw barometric reading exactly as before the epic. `None`
+    /// before the first altimeter sample. Read by the
+    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile.
+    ///
+    /// On a map with no terrain beside it the estimator never settles, so this is
+    /// [`baro_elevation_m`](Activity::baro_elevation_m) forever — the "removing terrain changes
+    /// nothing else" contract, at the UI end.
+    pub fn current_elevation_m(&self) -> Option<f32> {
+        let baro = self.last_alt?;
+        Some(self.altitude.fused_m(baro).unwrap_or(baro))
+    }
+
+    /// The map-referenced altimeter's state (EL8) — the offset estimate, its settle/gate counters
+    /// and the #529 reference-pressure signal. The inspection surface the board's RTT line and the
+    /// simulator's readout both print; no UI reads it.
+    pub fn altitude(&self) -> &AltitudeFusion {
+        &self.altitude
+    }
+
+    /// Feed one terrain sample taken at the current GPS fix into the map-referenced altimeter
+    /// (EL8). Pairs it with the barometric reading from the **same tick** (the altimeter is polled
+    /// before the fix in [`App::tick`](crate::App::tick), and the host samples terrain immediately
+    /// after that tick), so the residual is a like-for-like difference. A no-op before the first
+    /// altimeter sample — with no barometer there is nothing to reference.
+    pub(crate) fn record_map_elevation(&mut self, map_m: i16) {
+        if let Some(baro) = self.last_alt {
+            self.altitude.observe(f32::from(map_m), baro);
+        }
     }
 
     /// Live heart rate (bpm) for the tile, or `None` when none has arrived or the last sample is
     /// older than [`SENSOR_STALE_MS`] — a dropped strap reads `--`, never its frozen last value.
-    /// `now_ms` is the current [`RideClock`](crate::RideClock) already threaded through `tick`.
+    /// `now_ms` is the current [`RideClock`](obc_ports::RideClock) already threaded through `tick`.
     pub fn live_hr(&self, now_ms: u32) -> Option<u16> {
         self.hr_last.filter(|_| now_ms.saturating_sub(self.hr_at_ms) <= SENSOR_STALE_MS)
     }
@@ -406,7 +500,7 @@ impl Activity {
     }
 
     /// Store a fresh heart-rate sample, timestamped for the staleness gate. Called from `App::tick`
-    /// when [`HeartRateSource::poll`](crate::HeartRateSource::poll) yields `Some`.
+    /// when [`HeartRateSource::poll`](obc_ports::HeartRateSource::poll) yields `Some`.
     pub(crate) fn record_hr(&mut self, bpm: u16, now_ms: u32) {
         self.hr_last = Some(bpm);
         self.hr_at_ms = now_ms;
@@ -449,6 +543,101 @@ impl Activity {
     /// [`end_session`](Activity::end_session) pair.
     pub fn session(&self) -> Option<u32> {
         self.session
+    }
+
+    /// The rider's matched along-route progress, meters (frozen while off-route) — the read the
+    /// hosts' flow tests pin the detour seam re-anchor by; in-crate readers use the field.
+    pub fn progress_m(&self) -> u32 {
+        self.progress_m
+    }
+
+    /// Queue a seam re-anchor at `anchor_m` on `route` (#882): the route-aware tick atomically
+    /// installs matcher progress + the forward-only floor at the splice seam before processing
+    /// its next fresh fix. Stored verbatim — the tick's `locate_progress` clamps against the
+    /// (just-adopted) route's real length, which this `Activity` may not mirror yet.
+    pub(crate) fn request_seam(&mut self, route: usize, anchor_m: u32) {
+        self.seam_request = Some(SeamRequest { route, anchor_m });
+    }
+
+    pub(crate) fn pending_seam(&self) -> Option<SeamRequest> {
+        self.seam_request
+    }
+
+    pub(crate) fn clear_seam(&mut self) {
+        self.seam_request = None;
+    }
+
+    /// Follow a queued seam re-anchor through a route-catalog rescan by durable identity. If
+    /// its route vanished, drop the one-tick request rather than letting its old index alias a
+    /// surviving neighbour.
+    pub(crate) fn remap_seam_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.seam_request = self
+            .seam_request
+            .and_then(|req| remap(req.route).map(|route| SeamRequest { route, anchor_m: req.anchor_m }));
+    }
+
+    /// Record a one-shot detour-plan request (#882) — set by the Detour chooser's Press, drained
+    /// by [`App::drain_host_commands`](crate::App::drain_host_commands) as `PlanDetour`.
+    pub(crate) fn request_detour(&mut self, req: DetourRequest) {
+        self.detour_request = Some(req);
+    }
+
+    /// Take (and clear) the pending detour-plan request, if any.
+    pub(crate) fn take_detour_request(&mut self) -> Option<DetourRequest> {
+        self.detour_request.take()
+    }
+
+    /// Non-consuming peek at whether a detour-plan request is pending.
+    pub(crate) fn has_detour_request(&self) -> bool {
+        self.detour_request.is_some()
+    }
+
+    /// Non-consuming peek at the pending detour-plan request itself — the durable-identity tests
+    /// pin the remap through it without draining the one-shot.
+    #[cfg(test)]
+    pub(crate) fn pending_detour_request(&self) -> Option<DetourRequest> {
+        self.detour_request
+    }
+
+    /// Follow a queued detour-plan request through a route-catalog rescan by durable identity;
+    /// a vanished route drops the request (the host-side gate would refuse it anyway).
+    pub(crate) fn remap_detour_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.detour_request =
+            self.detour_request.and_then(|req| remap(req.route).map(|route| DetourRequest { route, ..req }));
+    }
+
+    /// Record a one-shot detour commit (#882) — the preview screen's Press.
+    pub(crate) fn request_detour_commit(&mut self) {
+        self.detour_commit = true;
+    }
+
+    /// Take (and clear) the pending detour commit, if any.
+    pub(crate) fn take_detour_commit(&mut self) -> bool {
+        core::mem::take(&mut self.detour_commit)
+    }
+
+    /// Non-consuming peek at whether a detour commit is pending.
+    pub(crate) fn detour_commit_pending(&self) -> bool {
+        self.detour_commit
+    }
+
+    /// Record a one-shot detour cancel (#882) — Back on the detour planning or preview screen.
+    /// **Post-time annihilation** (the `request_nav_cancel` rule): an undrained plan request or
+    /// commit is cleared here, so the host never receives work the rider already dismissed.
+    pub(crate) fn request_detour_cancel(&mut self) {
+        self.detour_request = None;
+        self.detour_commit = false;
+        self.detour_cancel = true;
+    }
+
+    /// Take (and clear) the pending detour cancel, if any.
+    pub(crate) fn take_detour_cancel(&mut self) -> bool {
+        core::mem::take(&mut self.detour_cancel)
+    }
+
+    /// Non-consuming peek at whether a detour cancel is pending.
+    pub(crate) fn detour_cancel_pending(&self) -> bool {
+        self.detour_cancel
     }
 
     /// Record a one-shot disposition for the open ride log, drained by the host.
@@ -598,7 +787,7 @@ impl Activity {
     /// from the planning screen of the *latest* request, so a request still latched at
     /// cancel-post time was confirmed and cancelled inside one input batch — the net intent is
     /// "no plan", and executing it anyway would commit a ghost route whose answer nobody is
-    /// showing (both legacy host drain orders net no plan here). The cancel itself still
+    /// showing. The cancel itself still
     /// latches: with nothing in flight it is a harmless host-side no-op, and a plan the host
     /// already drained is still aborted.
     pub(crate) fn request_nav_cancel(&mut self) {
@@ -623,6 +812,9 @@ impl Activity {
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_ports::TrackPoint): the
     /// latest barometric altitude, or 0 before any sample.
+    ///
+    /// **Raw, never fused** (EL8): the recorded track is the rider's own measurement, and folding
+    /// the map into it would double-count the map — see [`crate::altitude`]'s module header.
     pub(crate) fn track_ele(&self) -> i16 {
         self.last_alt.map_or(0, |a| a as i16)
     }
@@ -630,6 +822,17 @@ impl Activity {
     /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/`session`).
     /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
+        self.seam_request = None;
+        // Dropping the detour pair here cannot strand the Recalculating freeze's `Detour` level,
+        // even though no `note_plan_ended` runs with it (#1150 review). Both halves are covered
+        // without one: an **undrained request** never engaged the freeze (the drain is the engaging
+        // edge), and a dropped **cancel** only forfeits one of two release edges — the host is
+        // still running the plan that cancel would have aborted, and it answers every plan it was
+        // given, so `on_detour_planned`'s unconditional release lands anyway (idempotent, and it
+        // fires before its own late-answer early-return for exactly this kind of reason).
+        self.detour_request = None;
+        self.detour_commit = false;
+        self.detour_cancel = false;
         self.progress_m = 0;
         self.off_route = false;
         self.dist_to_route_m = 0;
@@ -665,7 +868,7 @@ impl Activity {
     }
 
     /// Integrate one position fix into the ridden distance + moving time. By the
-    /// [`LocationSource`](crate::LocationSource) contract this is called once per fresh GPS sample,
+    /// [`LocationSource`](obc_ports::LocationSource) contract this is called once per fresh GPS sample,
     /// so consecutive calls are a GPS period apart — the interval the gate below is sized for. Only
     /// accumulates while [`Riding`](Mode::Riding); a sane-interval gate drops dropouts and
     /// teleports. Pausing drops the anchor so resuming doesn't book the gap.
@@ -1031,6 +1234,29 @@ mod tests {
         a.record_altitude(500.0); // far from ride one's last altitude
         a.record_altitude(505.0); // a clean +5 m on ride two
         assert_eq!(a.climb_m(), 5.0, "ride two measures from its own anchor, got {}", a.climb_m());
+    }
+
+    /// …but the map-referenced altimeter (EL8) is **not** a ride accumulator, so `reset_ride` must
+    /// leave it alone: starting a new ride does not change the weather, and re-settling the offset
+    /// from scratch would drop the Elevation tile back to the raw reading for no reason.
+    #[test]
+    fn reset_ride_keeps_the_altimeter_calibration() {
+        let mut a = Activity::new(Mode::Riding);
+        for _ in 0..crate::altitude::SETTLE_SAMPLES {
+            a.record_altitude(1062.0); // the barometer reads 62 m high
+            a.record_map_elevation(1000);
+        }
+        let offset = a.altitude().offset_m().expect("settled during ride one");
+        assert!(a.altitude().settled());
+
+        a.reset_ride();
+        assert!(a.altitude().settled(), "the calibration survives a new session");
+        assert_eq!(a.altitude().offset_m(), Some(offset), "…unchanged");
+        // The tile is `--` only until ride two's first altimeter sample (the pre-existing rule),
+        // then immediately map-referenced again — no second settling wait.
+        assert_eq!(a.current_elevation_m(), None, "no altitude sample yet on ride two");
+        a.record_altitude(1062.0);
+        assert_eq!(a.current_elevation_m(), Some(1000.0), "fused from the retained offset at once");
     }
 
     // `record_motion` numeric edges: the gate thresholds and `ground_dist_m` extremes the mid-band

@@ -14,6 +14,7 @@
         { "path": "software/rendering", "title": "Rendering pipeline" },
         { "path": "software/ui", "title": "The UI system" },
         { "path": "software/packer-routing", "title": "Packer & routing" },
+        { "path": "software/terrain", "title": "Terrain & elevation" },
         { "path": "software/companion-link", "title": "The companion link" },
         { "path": "software/firmware-updates", "title": "Firmware updates" }
       ]
@@ -21,14 +22,15 @@
     {
       "title": "Hardware",
       "pages": [
-        { "path": "hardware/index", "title": "Hardware", "soon": true },
+        { "path": "hardware/index", "title": "Hardware" },
         { "path": "hardware/display-protocol", "title": "The display protocol" }
       ]
     },
     {
-      "title": "Building one",
+      "title": "Rechtliches",
       "pages": [
-        { "path": "build/index", "title": "Build guide", "soon": true }
+        { "path": "impressum", "title": "Impressum" },
+        { "path": "datenschutz", "title": "Datenschutzerklärung" }
       ]
     }
   ]

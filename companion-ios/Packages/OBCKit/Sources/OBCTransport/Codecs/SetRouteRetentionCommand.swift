@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// The `setRouteRetention` command encoder (spec §4.4, cmd `6` — mirrored in
+/// The `setRouteRetention` command encoder (spec §4.4, cmd `6`; see
 /// `OBCProtocol.md`): `cmd u8 = 6 · object_id u16 LE · retention u8`, the phone
 /// setting a stored route's expiry policy **without re-uploading** it (epic #638).
 ///
@@ -12,7 +12,7 @@ import OBCDomain
 /// change. Replies: `ok` (applied), `notFound` (unknown id), `unknownCommand` (a
 /// device predating expiry → `unsupported`).
 ///
-/// Pinned byte-for-byte against `protocol-vectors/command-set-route-retention.bin`
+/// Pinned byte-for-byte against `specs/vectors/command-set-route-retention.bin`
 /// (`SetRouteRetentionCommandTests`), so the app and firmware can't drift from
 /// spec §4.4.
 public enum SetRouteRetentionCommand {
@@ -21,11 +21,8 @@ public enum SetRouteRetentionCommand {
 
     /// Encode the 4-byte `setRouteRetention` write, all little-endian.
     public static func encode(objectID: DeviceObjectID, retention: Retention) -> Data {
-        Data([
-            commandByte,
-            UInt8(objectID.raw & 0xFF),
-            UInt8(objectID.raw >> 8),
-            retention.rawValue,
-        ])
+        var data = Data([commandByte, 0, 0, retention.rawValue])
+        data.writeUInt16LE(objectID.raw, at: 1)
+        return data
     }
 }

@@ -74,6 +74,17 @@ a:hover { color: var(--forest-deep); }
 .head-links .gh svg { width: 17px; height: 17px; }
 .nav-toggle { display: none; background: none; border: 0; color: var(--ink); cursor: pointer; padding: 6px; }
 .nav-toggle svg { width: 24px; height: 24px; }
+/* Narrow screens: shed header weight instead of overflowing (an overflowing header
+   widens the layout viewport and the whole page renders zoomed out). The OBC mark
+   stays and is itself the home link, so the Home text link can go too. */
+@media (max-width: 640px) {
+  .head-inner { gap: 12px; padding: 0 16px; }
+  .brand .name { display: none; }
+  .head-links { gap: 13px; font-size: 13.5px; }
+}
+@media (max-width: 420px) {
+  .head-links .home { display: none; }
+}
 
 /* ----------------------------------------------------------------- layout */
 .layout {
@@ -258,13 +269,28 @@ figure.fig figcaption b, figure.fig figcaption strong { font-style: normal; colo
 /* ----------------------------------------------------------------- doc footer */
 .doc-foot {
   max-width: var(--content-max); margin: 0 auto; padding: 30px 0 60px;
-  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px 16px;
   border-top: 1px solid var(--line); margin-top: 40px;
   font-size: 14px;
 }
 .doc-foot .edit { color: var(--forest); text-decoration: none; font-weight: 600; }
 .doc-foot .edit:hover { color: var(--forest-deep); }
+.doc-foot .foot-legal { display: flex; gap: 18px; }
+.doc-foot .foot-legal a { color: var(--ink-soft); text-decoration: none; }
+.doc-foot .foot-legal a:hover { color: var(--ink); text-decoration: underline; }
 .doc-foot .foot-trail { font-family: var(--serif); font-style: italic; color: var(--ink-faint); }
+/* The OSM credit takes its own line under the three-item row — it is a licence notice, not
+   navigation, and it must not compete with the Impressum pair for the same horizontal space. */
+.doc-foot .foot-credit { flex-basis: 100%; font-size: 13px; color: var(--ink-faint); }
+.doc-foot .foot-credit a { color: var(--ink-soft); text-decoration: none; }
+.doc-foot .foot-credit a:hover { color: var(--ink); text-decoration: underline; }
+
+/* Postal addresses on the legal pages. A browser italicises <address> by default, but a
+   ladungsfähige Anschrift is not emphasis — it's a block that has to read as an address. */
+.prose address {
+  font-style: normal; line-height: 1.75; margin: 20px 0;
+  padding: 2px 0 2px 16px; border-left: 2px solid var(--line-strong);
+}
 
 /* a couple of reusable prose helpers the markdown can opt into via raw HTML */
 .lede { font-size: 19px !important; color: var(--ink-soft); line-height: 1.55; }

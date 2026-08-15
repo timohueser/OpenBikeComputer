@@ -1,4 +1,4 @@
-# Trunk configuration for the site (firmware/obc-web-demo — the thin wasm host around
+# Trunk configuration for the site (apps/obc-web-demo — the thin wasm host around
 # the shared firmware crates — is built to wasm as the live device demo; index.html
 # references its Cargo.toml via the data-trunk rust link). Paths are resolved relative
 # to this file's directory, so `trunk` can be invoked from anywhere via
@@ -18,9 +18,9 @@ command = "python3"
 command_arguments = ["build_docs.py"]
 
 [watch]
-# build_docs.py regenerates docs/ (rendered HTML) on every pre_build hook run;
-# without ignoring it, trunk watches its own hook's output and rebuilds forever.
-ignore = ["docs"]
+# build_docs.py regenerates docs/ and blog/ (rendered HTML) on every pre_build hook
+# run; without ignoring them, trunk watches its own hook's output and rebuilds forever.
+ignore = ["docs", "blog"]
 
 [serve]
 addresses = ["127.0.0.1"]

@@ -1,0 +1,49 @@
+[package]
+name = "obc-wx-bake"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host service — never on the device or the phone
+description = "The OBC weather bakery: upstream radar/model products -> OBCG frames + manifest on R2 (WX5, specs/OBCG_Spec.md). The only place upstream weather formats are parsed."
+
+[features]
+external-fixtures = []
+
+[dependencies]
+# The OBCG byte authority and the shared WX2 intensity/tile codec. The baker never re-derives a
+# byte layout or a quantization threshold: it hands cell grids to `obc_formats::obcg` and reads
+# its own output back through the same validator the vectors pin.
+obc-formats = { path = "../../firmware/obc-formats", features = ["obcg-deflate"] } # OBCG codec 2 (host side only)
+obc-crc = { path = "../../firmware/obc-crc" }
+# Upstream decode, exactly the WX1-pinned stack: GRIB2 with CCSDS/AEC for ICON-EU (the MRMS PNG
+# and complex-packing templates ride along for WX6), HDF5 for the DWD RV ODIM members, plus the
+# outer tar/bzip2 containers. These crates appear here and in the disposable WX1 spike only —
+# provider formats never reach firmware or the phone.
+grib = { version = "0.17", default-features = false, features = ["ccsds-unpack-with-rust-aec", "png-unpack-with-png-crate", "time-calculation"] }
+hdf5-pure = "0.34"
+bzip2-rs = "0.1.2"
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+chrono = "0.4.34"
+# Manifest model + the schemars-derived JSON Schema, pinned the same way obc-pack pins its config
+# schema: the checked-in `schema/manifest-v2.schema.json` must equal the generated document.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = { version = "1", features = ["preserve_order"] }
+# The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack. It is
+# also what publishes since #1279: R2 is spoken to over its S3 API from this process, one pooled
+# connection set for the whole cycle, instead of one `rclone` spawn per object.
+ureq = "3"
+# HMAC-SHA256 for the SigV4 signature (`src/s3.rs`). `ring` is already linked into this binary —
+# rustls, and therefore ureq, is built on it — so this is a direct name for code that was already
+# here, not a new dependency in the graph or a line in THIRD-PARTY.md.
+ring = "0.17"
+# Event-pack provenance: every captured upstream member records the sha256 of its exact bytes,
+# the same digest discipline `tests/fixtures/README.md` already holds checked-in fixtures to.
+sha2 = "0.11"
+# WXR1 spike only (`src/spike.rs`, subcommand `spike`): a 4-thread pool to match the production
+# VPS shape, and `getrusage` for a true peak-RSS high-water mark. Both are already in the
+# workspace lock; the spike adds no new third-party code to the bakery.
+rayon = "1"
+
+[dev-dependencies]
+obc-fixtures = { path = "../obc-fixtures" }

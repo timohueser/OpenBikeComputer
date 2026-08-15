@@ -7,10 +7,13 @@
 //! - [`StatusMessage`]: the device → app `status` notification envelope — a `u8` discriminator +
 //!   fixed body. In v2 it is the **sole** device → app control channel, so the download announce
 //!   (`msg = 4`) shares its one subscription / one ordering domain.
-//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32` (§1).
+//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32 ·
+//!   obcm_version u8` (§1), a **length-driven** read served at 7, 6 or 2 bytes.
 //! - [`Config`]: the whole-blob Config object that crosses GATT (not the CoC).
 //!
 //! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
+
+use crate::weather_request::WeatherRefresh;
 
 /// Why a control-plane descriptor failed to decode. Mirrors the app's `DescriptorError` so a
 /// firmware reject and an app reject classify the same wire byte the same way.
@@ -24,6 +27,14 @@ pub enum DescriptorError {
     UnknownType(u8),
     /// A status/discriminator byte is not a known value.
     UnknownStatus(u8),
+    /// A `weather_refresh` byte names an interval this build does not know (§11.8). Its own variant
+    /// rather than a `UnknownStatus`, because it is the one decode failure whose *correct handling
+    /// depends on the direction of travel*: fatal on a phone → device Config write, ignorable on
+    /// either device → phone read. A caller that cannot tell the two apart cannot implement §11.8,
+    /// and sharing a discriminant with every other unknown byte is exactly what would hide that.
+    UnknownRefresh(u8),
+    /// A fixed-width field decoded correctly but names a value outside the command's contract.
+    Bounds,
 }
 
 /// The kind of object a bulk transfer carries.
@@ -49,6 +60,68 @@ pub enum ObjectType {
     Trip = 9,
     /// The trip catalog list object (device → app), spec §7.4 — 76-byte entries mirroring `routeList`.
     TripList = 10,
+    /// An `.obcm` map (host → device, upload only), introduced by the USB transport (#889).
+    ///
+    /// **Why this type exists only now:** a map is hundreds of megabytes, so it was never uploadable
+    /// over BLE and the type would have been dead weight. A USB bulk endpoint makes it possible, so
+    /// USB is what introduces it.
+    ///
+    /// **Why 16 and not 11:** `11`–`15` are reserved in the spec for the sensor work (M4), and
+    /// stepping into a reserved band to save five discriminants would trade a real future collision
+    /// for nothing — the byte is a `u8` with 240 values still free. `16` opens the band for
+    /// transport-introduced types that BLE could never have carried.
+    ///
+    /// The transfer layer stays format-blind, as it is for `FwImage`: the payload is opaque bytes.
+    Map = 16,
+    /// One OBCM **shard** of a volume set (`OBCA_Spec.md` §5.1), host → device, upload only —
+    /// **USB only**, for the same reason `Map` is: a set is strictly *larger* than the single map
+    /// BLE could never carry.
+    ///
+    /// A shard is an ordinary OBCM file, so the streaming, the whole-object CRC and the held-back
+    /// magic are `Map`'s unchanged. What differs is the one thing the descriptor has to say and
+    /// `Map` never needed: **which** file of the set this is. That rides `object_id` as a
+    /// [`SetPart`] — not an object id, because a shard has none (§5.2 derives every filename from
+    /// the set id and the index, and a set is *one map* in every interface, §5.4).
+    MapShard = 17,
+    /// The OBCS **set manifest** (`OBCA_Spec.md` §5.2), host → device, upload only — **USB only**.
+    ///
+    /// New-only like `Map`, so `object_id` is `0xFFFF`. It is the set's atomicity token: §5.4 makes
+    /// it the file that must be written **last**, and the device *enforces* that rather than
+    /// trusting the order it arrives in — a manifest announced before every shard it will name has
+    /// committed is refused before a byte streams.
+    MapSet = 18,
+    /// The set's **terrain shard** (`OBCA_Spec.md` §5.1's `terrain` role, an
+    /// [OBCT](../../../specs/OBCT_Spec.md) container), host → device, upload only — **USB only**.
+    ///
+    /// **Why terrain is its own type and not a `MapShard`** (#1044): a shard's `object_id` is a
+    /// [`SetPart`], i.e. a `(shard_count, index)` pair naming one of the OBCM files the manifest's
+    /// leading records describe. A raster is not one of those — it has no index, it is not an OBCM
+    /// file, and it lands on the card as `MS{id}.OBD` rather than `MS{id}S{kk}.OBM`. Sending it as
+    /// a shard would consume an index the manifest does not name and desynchronise the whole set.
+    ///
+    /// New-only like `MapSet`, so `object_id` is `0xFFFF`: there is at most one terrain shard per
+    /// set, so there is nothing for an id to select. It MUST arrive **after** the set is in flight
+    /// (i.e. after at least one `MapShard`) and **before** the `MapSet` manifest, because the
+    /// manifest's `Shard Count` covers every record — terrain included — and the device's
+    /// announce-time length check `72 + 56 × (shards + terrain)` can only be right if it has
+    /// already seen the raster.
+    TerrainShard = 19,
+    /// The singleton **weather bundle** — one OBCW v1 file (`OBCW_Spec.md`), app → device, upload
+    /// only, over the ordinary reliable CoC (WX3, #1188).
+    ///
+    /// **Why 20 and not 11:** `11`–`15` remain reserved for the sensor work (M4) and `16`–`19` are
+    /// the USB-introduced map types, so `20` is simply the next free value. (The WX3 issue text
+    /// said `11`; the epic's handover comment on #1185 supersedes it for exactly this reason.)
+    ///
+    /// **Singleton.** `object_id` MUST be `0`: there is one weather bundle and an upload always
+    /// targets it. Any other id is answered `notFound`. It is not `0xFFFF`/new-only like a map —
+    /// "new-only" exists because a map cannot be replaced in place, whereas a bundle is *always* a
+    /// replacement, landing in the inactive one of the two slots (`WEATHER.A`/`WEATHER.B`) so an
+    /// interrupted upload leaves the old one intact.
+    ///
+    /// Unlike the map types this one is **BLE-first**: ~46 KiB is a couple of seconds on the CoC,
+    /// which is the whole reason the intermittent lifecycle is affordable.
+    WeatherBundle = 20,
 }
 
 impl ObjectType {
@@ -69,8 +142,73 @@ impl ObjectType {
             8 => Self::Echo,
             9 => Self::Trip,
             10 => Self::TripList,
+            // 11–15 stay reserved (sensors, M4) and keep rejecting.
+            16 => Self::Map,
+            17 => Self::MapShard,
+            18 => Self::MapSet,
+            19 => Self::TerrainShard,
+            20 => Self::WeatherBundle,
             other => return Err(DescriptorError::UnknownType(other)),
         })
+    }
+
+    /// Whether this type is part of a map upload — the four types the reference firmware streams
+    /// straight into their final file with the format magic held back, rather than through the
+    /// invisible `UPLOAD.TMP` every small object uses. Also the four types that are **USB only**
+    /// (spec §10).
+    pub const fn is_map_payload(self) -> bool {
+        matches!(self, Self::Map | Self::MapShard | Self::MapSet | Self::TerrainShard)
+    }
+}
+
+/// What a [`ObjectType::MapShard`] descriptor's `object_id` field carries: **which file of the set
+/// this is**, as `shard_count` in the high byte and `index` in the low one.
+///
+/// The field is repurposed rather than added to because the descriptor is a fixed 12 bytes shared
+/// by every transport and every object type (§4.2), and a shard has no object id to put there
+/// anyway: `OBCA_Spec.md` §5.2 *derives* every filename from the set id and the index, and §5.4
+/// makes the whole set one map with one identity. Widening the descriptor for one type would repin
+/// every codec, every fixture and both companion apps for a field the other ten types would write
+/// zero into.
+///
+/// Carrying `shard_count` in **every** shard announce, not just the first, buys two things the
+/// index alone could not:
+///
+/// - The device can refuse a set past its own shard ceiling at the **first** announce, before the
+///   rider spends minutes uploading shards it will never mount. The alternative — discovering the
+///   count when the manifest arrives — refuses after the whole set has moved.
+/// - Every announce re-states the set's **shape**, so a host that switches to a set with a
+///   different shard count mid-transfer is a mismatch the device names, not a set silently
+///   assembled out of two. A switch between two sets of the *same* count is not visible here — the
+///   pair names a file, not a set — and is caught at the manifest's commit instead, when every
+///   shard is checked against the manifest's record of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetPart {
+    /// How many shards the set has in total (`1..=32`, `OBCA_Spec.md` §5.2).
+    pub shard_count: u8,
+    /// This shard's index within the set, `< shard_count`.
+    pub index: u8,
+}
+
+impl SetPart {
+    /// The `object_id` bytes for this part.
+    pub const fn encode(&self) -> u16 {
+        ((self.shard_count as u16) << 8) | self.index as u16
+    }
+
+    /// Decode a `mapShard` descriptor's `object_id`, rejecting every pair that cannot name a file
+    /// of a set: a zero shard count, and an index at or past it.
+    ///
+    /// Deliberately does **not** apply the `1..=32` spec cap or a device's own (smaller) shard
+    /// ceiling — those are a policy the caller owns and answers with a typed status, exactly as
+    /// `fwimage_announce_reject` takes its ceiling rather than linking the DFU crate.
+    pub const fn decode(object_id: u16) -> Option<SetPart> {
+        let shard_count = (object_id >> 8) as u8;
+        let index = (object_id & 0xFF) as u8;
+        if shard_count == 0 || index >= shard_count {
+            return None;
+        }
+        Some(SetPart { shard_count, index })
     }
 }
 
@@ -233,15 +371,60 @@ impl TransferStatus {
     /// write with [`Error`](Self::Error), **before any bytes stream** — a ~900 KB update would
     /// otherwise transfer only to fail at commit. `None` = accept (the caller arms the
     /// [`Receiver`](crate::Receiver)). `total_len` is the whole OBCU container (64-byte header +
-    /// raw image), so the board passes the **container-sized** ceiling
-    /// `obc_dfu::MAX_IMAGE_LEN + HEADER_LEN` — the raw-image cap plus the header (DR5, #733); the
-    /// constants stay out of this crate so the wire codec never links the DFU crate.
+    /// raw image + the v2 signature trailer), so the board passes the **container-sized** ceiling
+    /// `obc_dfu::MAX_CONTAINER_LEN` (DR5, #733; widened by the trailer in #997); the constants stay
+    /// out of this crate so the wire codec never links the DFU crate.
     pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
         if total_len > max_len {
             Some(Self::Error)
         } else {
             None
         }
+    }
+
+    /// The announce-time reject for a **map** upload (spec §4.2 / §10; issue #927) — the rule that
+    /// keeps a several-hundred-megabyte transfer from starting when it cannot possibly land.
+    ///
+    /// Three refusals, all **before any byte streams**, because a map that fails at byte
+    /// 300,000,000 has cost the rider minutes and the card a wasted write:
+    ///
+    /// - **Not new** (`object_id != 0xFFFF`) → [`NotFound`](Self::NotFound). A map upload is
+    ///   *new-only*: the device never replaces a stored map in place. A replace would have to
+    ///   destroy the old map's bytes as the new ones stream (the file is far too large to stage a
+    ///   second copy and swap), which breaks §4.2's "a failed CRC never touches the old copy"
+    ///   guarantee on the one object the device cannot re-derive. So every named id is, for a map,
+    ///   an id this device will not write to — which is exactly `notFound`. Replacing a map is
+    ///   "upload the new one, then delete the old one".
+    /// - **Too short** (`total_len < min_len`) → [`Error`](Self::Error). `min_len` is the OBCM
+    ///   header length; the constant stays out of this crate so the wire codec never links the
+    ///   format crate (the `fwimage_announce_reject` convention).
+    /// - **Won't fit** → [`StorageFull`](Self::StorageFull), when `free_bytes` is known and
+    ///   `total_len + headroom` exceeds it. `headroom` is the device's reserve so a map can never
+    ///   fill the card to the last cluster and strand the ride log. `free_bytes = None` means the
+    ///   device could not measure free space (a non-FAT32 card, an FSInfo with no cached count):
+    ///   the transfer is **allowed**, because refusing every upload on a card whose free count is
+    ///   merely unreadable would be worse than failing late on the rare card that is genuinely full.
+    ///
+    /// `None` = accept (the caller arms the [`Receiver`](crate::Receiver)).
+    pub const fn map_announce_reject(
+        object_id: u16,
+        total_len: u32,
+        min_len: u32,
+        free_bytes: Option<u64>,
+        headroom: u64,
+    ) -> Option<Self> {
+        if object_id != TransferControl::NEW_OBJECT_ID {
+            return Some(Self::NotFound);
+        }
+        if total_len < min_len {
+            return Some(Self::Error);
+        }
+        if let Some(free) = free_bytes {
+            if total_len as u64 + headroom > free {
+                return Some(Self::StorageFull);
+            }
+        }
+        None
     }
 }
 
@@ -347,6 +530,13 @@ pub const CMD_SET_CLOCK: u8 = 5;
 /// carries the assigned id) and on any user retention edit. The epic's draft table numbered it `4`;
 /// that predates `forgetBond`/`setClock` taking `4`/`5`, so it lands at `6` (the next-free command).
 pub const CMD_SET_ROUTE_RETENTION: u8 = 6;
+/// `command` byte: `weatherUnchanged` (§4.4, cmd 7) — `request_id u32 LE · retry_after_s u16 LE`.
+/// The bonded phone has conditionally checked both providers and proved that the selected bundle is
+/// still current, so the device can finish the request without receiving the bundle again.
+pub const CMD_WEATHER_UNCHANGED: u8 = 7;
+/// Bound a peer-provided manual-probe deferral. The ordinary configured refresh cadence remains the
+/// scheduled ceiling; this only prevents repeated dashboard opens during publication lag.
+pub const WEATHER_UNCHANGED_MAX_RETRY_S: u16 = 60 * 60;
 
 /// The largest valid `setRouteRetention` retention byte: `5` (2 months). A write above it is an
 /// out-of-range level (§4.4), rejected `error` — decoded here, mirrored by the iOS codec, and pinned
@@ -360,6 +550,38 @@ pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
 /// The magnitude bound on a `setClock` UTC offset: ±14 h (±840 min), the real-world offset span
 /// (−12:00 Baker Island … +14:00 Kiribati). A write outside it is rejected `error` (§4.4).
 pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
+
+/// The compact acknowledgement that replaces an unchanged OBCW upload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeatherUnchanged {
+    pub request_id: u32,
+    pub retry_after_s: u16,
+}
+
+impl WeatherUnchanged {
+    pub const ENCODED_LEN: usize = 7;
+
+    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
+        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
+        if bytes[0] != CMD_WEATHER_UNCHANGED {
+            return Err(DescriptorError::UnknownOp(bytes[0]));
+        }
+        let request_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+        let retry_after_s = u16::from_le_bytes([bytes[5], bytes[6]]);
+        if request_id == 0 || retry_after_s > WEATHER_UNCHANGED_MAX_RETRY_S {
+            return Err(DescriptorError::Bounds);
+        }
+        Ok(Self { request_id, retry_after_s })
+    }
+
+    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0; Self::ENCODED_LEN];
+        out[0] = CMD_WEATHER_UNCHANGED;
+        out[1..5].copy_from_slice(&self.request_id.to_le_bytes());
+        out[5..7].copy_from_slice(&self.retry_after_s.to_le_bytes());
+        out
+    }
+}
 
 /// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
 /// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status
@@ -598,6 +820,9 @@ pub enum StatusMessage {
     /// announce off `transferControl` and onto this envelope so all device → app control traffic is
     /// one notify characteristic.
     DownloadAnnounce(TransferControl),
+    /// `msg = 5`, 1 byte: a request is ready on the authenticated Weather Request context.
+    /// The app acknowledges by reading that characteristic; this status message is only a hint.
+    WeatherRequest,
 }
 
 impl StatusMessage {
@@ -633,6 +858,10 @@ impl StatusMessage {
                 b[0] = 4;
                 b[1..1 + TransferControl::ENCODED_LEN].copy_from_slice(&d.encode());
                 1 + TransferControl::ENCODED_LEN
+            }
+            Self::WeatherRequest => {
+                b[0] = 5;
+                1
             }
         };
         (b, len)
@@ -680,6 +909,7 @@ impl StatusMessage {
                 }
                 Self::DownloadAnnounce(TransferControl::decode(&data[1..])?)
             }
+            5 => Self::WeatherRequest,
             _ => return Ok(None),
         }))
     }
@@ -699,33 +929,143 @@ impl StatusMessage {
 /// mint rule lives on the device (V3); a random nonce leaks nothing beyond open DIS. Readable
 /// **without** encryption.
 ///
+/// **`obcm_version`** (E1, #911) is the third field: the **OBCM map-format version this firmware's
+/// reader reads** — whatever `obc_formats::obcm::VERSION` is (`12` at the time of writing; the
+/// encoder reads the const, so this prose is the only thing that can go stale). It exists because
+/// nothing
+/// else the device says carries it: [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) is the *wire*
+/// contract (a different number in a different sequence) and the DIS firmware-revision string maps
+/// to a format version only through a table that exists nowhere. A host that offers map artifacts
+/// (`OBCC_Spec.md` §6(c)) must not offer one this device cannot read, and this byte is the whole of
+/// that decision. The reader supports exactly **one** version at a time (`OBCM_Spec.md` — earlier
+/// maps get repacked), so it is a single `u8`, not a range. This crate deliberately does **not**
+/// link `obc-formats` to source it — the wire codec stays dependency-free, exactly as it does for
+/// the `fwImage` size ceiling — so the *caller* supplies the number from the reader's own constant.
+///
 /// ```text
 ///   version      u16   the protocol version (currently 2)
-///   store_epoch  u32   the device's current store-epoch nonce
+///   store_epoch  u32   the device's current store-epoch nonce      — absent on a store-less device
+///   obcm_version u8    the OBCM map-format version the reader reads — absent before E1
 /// ```
+///
+/// **The read is length-driven, and has been since #776** — the 2-byte no-store form is not a
+/// degenerate case bolted on, it is how this attribute has always been decoded. E1 adds a third
+/// length to the same mechanism:
+///
+/// | Bytes | Means |
+/// | --: | :-- |
+/// | 7 | the full read |
+/// | 6 | a firmware that predates `obcm_version` → [`obcm_version`](Self::obcm_version) `None` |
+/// | 2 | no mounted store → no epoch to name, and therefore no room for the byte after it |
+///
+/// A trailing field the read did not carry decodes to `None`, **never** to a fabricated default:
+/// `obcm_version: Some(0)` would read as "supports OBCM v0" and refuse every real map, exactly the
+/// way `store_epoch: 0` would name a legal-but-wrong id era. `None` means *unknown*, and a host
+/// that cannot tell takes §6(c)'s no-known-target-firmware branch (offer, stating the version)
+/// rather than guessing.
+///
+/// A store-less device serves 2 bytes even though it knows its OBCM version: the fields are
+/// positional and `store_epoch` has no absent encoding, so byte 6 cannot be reached without
+/// fabricating bytes 2..6. Serving a 3-byte `version · obcm` form instead would make byte 2 mean
+/// two different things depending on total length — decodable, but the kind of positional
+/// special-case that outlives the reason for it. A device with no card has nowhere to put a map
+/// anyway, so nothing is lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VersionRead {
     pub version: u16,
     pub store_epoch: u32,
+    /// The OBCM map-format version the device's reader reads; `None` when the read carried no such
+    /// byte (a firmware predating E1). Never `Some(0)` from a decode of a short read.
+    pub obcm_version: Option<u8>,
+    /// The optional capability word (WX3, #1188) — `None` when the read carried no such field, i.e.
+    /// any firmware predating it. Never `Some(0)` from a decode of a short read: absent means *this
+    /// device never told us*, and while both absent and `Some(0)` currently lead to the same
+    /// behaviour (no weather), fabricating a zero would make a diagnostic lie about which firmware
+    /// generation answered.
+    pub feature_bits: Option<u32>,
 }
 
-impl VersionRead {
-    pub const ENCODED_LEN: usize = 6;
+/// The device implements the Weather Request contract (§11): the secondary service, the request
+/// context, object type 20 and the Config refresh field.
+///
+/// One bit covers all four because they are useless apart — a phone that can read a request but
+/// cannot upload the answer has nothing to offer. Later, genuinely separable capabilities take
+/// their own bits; this word is append-only in the same sense the read is, and **unknown bits are
+/// ignored**.
+pub const FEATURE_WEATHER: u32 = 1 << 0;
 
-    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+impl VersionRead {
+    /// The full read: `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32`. Also
+    /// the buffer size a caller reserves — [`encode`](Self::encode) reports how much of it is live.
+    pub const ENCODED_LEN: usize = 11;
+    /// The pre-WX3 read: everything but the trailing `feature_bits`.
+    pub const ENCODED_LEN_NO_FEATURES: usize = 7;
+    /// The pre-E1 read: everything but `obcm_version` and `feature_bits`. Still decoded (both
+    /// `None`), and still the shortest length a full [`decode`](Self::decode) accepts.
+    pub const ENCODED_LEN_NO_OBCM: usize = 6;
+
+    /// Encode into a fixed buffer; the returned length is the slice to serve (`&buf[..len]`) — 11
+    /// bytes with a `feature_bits`, 7 with only an `obcm_version`, 6 with neither. The 2-byte
+    /// no-store form is **not** produced here: it carries no `store_epoch`, so it is not a
+    /// `VersionRead` at all (the board writes the bare `PROTOCOL_VERSION` bytes for it).
+    ///
+    /// The fields are positional, so `feature_bits` can only be served when `obcm_version` is: a
+    /// value with features but no map version encodes as the 6-byte form rather than fabricating a
+    /// byte 6 that would read as "this device supports OBCM v0" and refuse every real map. A device
+    /// that has features to announce always has a reader version to announce with them, so this
+    /// combination does not arise in the firmware — it is defined here so it cannot become a
+    /// silent corruption if it ever does.
+    pub fn encode(&self) -> ([u8; Self::ENCODED_LEN], usize) {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0..2].copy_from_slice(&self.version.to_le_bytes());
         b[2..6].copy_from_slice(&self.store_epoch.to_le_bytes());
-        b
+        let Some(obcm) = self.obcm_version else {
+            return (b, Self::ENCODED_LEN_NO_OBCM);
+        };
+        b[6] = obcm;
+        match self.feature_bits {
+            Some(features) => {
+                b[7..11].copy_from_slice(&features.to_le_bytes());
+                (b, Self::ENCODED_LEN)
+            }
+            None => (b, Self::ENCODED_LEN_NO_FEATURES),
+        }
     }
 
+    /// Whether the peer announced the Weather Request contract. An absent capability word is a
+    /// firmware that predates it, which is exactly a device without weather — so this is `false`,
+    /// and the old-client path is preserved without a special case at every call site.
+    pub const fn has_weather(&self) -> bool {
+        match self.feature_bits {
+            Some(bits) => bits & FEATURE_WEATHER != 0,
+            None => false,
+        }
+    }
+
+    /// Decode an identity read. Accepts 6 bytes (`obcm_version` and `feature_bits` both `None`) and
+    /// any longer read, taking each trailing field on "did at least this many bytes arrive" and
+    /// ignoring anything past the fields it knows — the append-only rule that lets both trailing
+    /// fields land without a `PROTOCOL_VERSION` bump. A read shorter than 6 bytes — including the
+    /// 2-byte no-store form — is [`Truncated`](DescriptorError::Truncated): there is no epoch in
+    /// it, and inventing one is precisely what the ack fail-closed contract forbids.
+    ///
+    /// A **partial** capability word (7 < len < 11) decodes as absent rather than as the bytes that
+    /// did arrive: three bytes of a `u32` are not a small capability set, they are a broken read,
+    /// and treating them as data could claim a feature the device never announced.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        if data.len() < Self::ENCODED_LEN {
+        if data.len() < Self::ENCODED_LEN_NO_OBCM {
             return Err(DescriptorError::Truncated);
         }
+        let feature_bits = if data.len() >= Self::ENCODED_LEN {
+            Some(u32::from_le_bytes([data[7], data[8], data[9], data[10]]))
+        } else {
+            None
+        };
         Ok(Self {
             version: u16::from_le_bytes([data[0], data[1]]),
             store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
+            obcm_version: data.get(6).copied(),
+            feature_bits,
         })
     }
 }
@@ -740,6 +1080,22 @@ pub struct Config<'a> {
     pub name: &'a [u8],
     /// `0 = metric · 1 = imperial`.
     pub units: u8,
+    /// How often the device raises a scheduled weather request (WX3, #1188) — the trailing,
+    /// optional field, held **as the raw byte** so an unrecognised value survives a round-trip and
+    /// each direction can apply its own rule (§11.8). `None` means the blob carried no such byte.
+    ///
+    /// **Absent is not `Off`, and what absent *means* depends on the direction:**
+    ///
+    /// - **Reading** a device's Config, absent means the device is on its **default**
+    ///   ([`WeatherRefresh::DEFAULT`], 30 minutes).
+    /// - **Writing** a device's Config, absent means **leave the stored value untouched** — it is
+    ///   not a request to reset anything. This is the load-bearing one: an old app that renames the
+    ///   device writes a 3-byte blob, and a device that took that as "the rider chose the default"
+    ///   would reset a rider who had deliberately chosen `Off` back to 30-minute wakeups.
+    ///
+    /// Use [`known_refresh`](Self::known_refresh) to read it and
+    /// [`refresh_to_apply`](Self::refresh_to_apply) to apply a write.
+    pub weather_refresh: Option<u8>,
 }
 
 impl<'a> Config<'a> {
@@ -749,22 +1105,35 @@ impl<'a> Config<'a> {
     /// The smallest well-formed blob: `name_len` (2) + empty name + `units` (1).
     pub const MIN_ENCODED: usize = 3;
 
-    /// Encode into `out` (must be ≥ `2 + name.len() + 1`), returning the written length. `None` if
-    /// the name is over-long or the buffer is too small.
+    /// Encode into `out`, returning the written length. `None` if the name is over-long or the
+    /// buffer is too small. A `weather_refresh` of `None` encodes as the 3-byte-plus-name v1 blob —
+    /// byte-identical to what a pre-WX3 build produced, which is what keeps the vector for it
+    /// meaningful.
     pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
-        let len = 2 + self.name.len() + 1;
+        let len = 2 + self.name.len() + 1 + usize::from(self.weather_refresh.is_some());
         if self.name.len() > Self::MAX_NAME || len > Self::MAX_ENCODED || out.len() < len {
             return None;
         }
         out[0..2].copy_from_slice(&(self.name.len() as u16).to_le_bytes());
         out[2..2 + self.name.len()].copy_from_slice(self.name);
         out[2 + self.name.len()] = self.units;
+        if let Some(refresh) = self.weather_refresh {
+            out[3 + self.name.len()] = refresh;
+        }
         Some(len)
     }
 
     /// Decode + validate a written Config blob: a `name_len` ≤ 48 that fits, whole blob in
-    /// `[MIN_ENCODED, MAX_ENCODED]`. A trailing byte after `units` is tolerated (append-only rule).
-    /// `None` = malformed (the board rejects it with an ATT error rather than silently storing it).
+    /// `[MIN_ENCODED, MAX_ENCODED]`. Trailing bytes after the fields this build knows are tolerated
+    /// (append-only rule). `None` = malformed (the board rejects it with an ATT error rather than
+    /// silently storing it).
+    ///
+    /// The `weather_refresh` byte is **never** validated here, whichever value it carries: decoding
+    /// is direction-blind, and §11.8 makes an unknown interval fatal in exactly one direction. A
+    /// device applying a write calls [`refresh_to_apply`](Self::refresh_to_apply) and refuses; a
+    /// peer reading a device calls [`known_refresh`](Self::known_refresh) and sees `None`. Rejecting
+    /// the whole blob here would take the strict rule to both, which is how appending a fifth
+    /// interval would one day stop a shipped app from so much as renaming its device.
     pub fn decode(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::MIN_ENCODED || data.len() > Self::MAX_ENCODED {
             return None;
@@ -773,6 +1142,30 @@ impl<'a> Config<'a> {
         if name_len > Self::MAX_NAME || 2 + name_len + 1 > data.len() {
             return None;
         }
-        Some(Self { name: &data[2..2 + name_len], units: data[2 + name_len] })
+        Some(Self {
+            name: &data[2..2 + name_len],
+            units: data[2 + name_len],
+            weather_refresh: data.get(3 + name_len).copied(),
+        })
+    }
+
+    /// The refresh interval **as a reader sees it**: `None` when the field was absent *or* names an
+    /// interval this build does not know (§11.8). Both collapse to "nothing this build can show",
+    /// and neither is `Off`.
+    pub fn known_refresh(&self) -> Option<WeatherRefresh> {
+        self.weather_refresh.and_then(|byte| WeatherRefresh::from_u8(byte).ok())
+    }
+
+    /// The refresh interval **a device must store for this write**, or a refusal.
+    ///
+    /// `Ok(None)` means the writer said nothing about refresh, and the device MUST leave whatever
+    /// it has stored alone rather than reset it to the default. `Err` means the writer named an
+    /// interval this device cannot honour — the one place §11.8 is strict, because silently
+    /// substituting anything would report a setting the rider never chose.
+    pub fn refresh_to_apply(&self) -> Result<Option<WeatherRefresh>, DescriptorError> {
+        match self.weather_refresh {
+            None => Ok(None),
+            Some(byte) => WeatherRefresh::from_u8(byte).map(Some),
+        }
     }
 }

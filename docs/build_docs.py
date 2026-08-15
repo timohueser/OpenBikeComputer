@@ -9,20 +9,33 @@ Author docs in `content/*.md`; the nav/order lives in `content/nav.json`; the sh
 shell is `templates/page.html` and the theme is `assets/docs.css`. Output goes to
 `docs/` (the dir Trunk copy-dirs into `dist/docs/`).
 
-Supported markdown (a small, predictable CommonMark-ish subset — see DOCS_PLAN.md):
+The blog ("expedition log") rides the same renderer: one folder per post under
+`content/blog/<slug>/` holding an `index.md` (front matter: `title`, `date`,
+`description`) plus its images/models, which are copied verbatim next to the rendered
+page. Output goes to `blog/` (a second Trunk copy-dir), with a timeline index and an
+Atom feed at `blog/feed.xml`. Two extra fenced directives are available (blog or docs):
+```` ```compare ```` (before/after image slider) and ```` ```model ```` (interactive
+GLB viewer + optional STEP download) — each takes `key: value` lines; see BLOG.md.
+
+Supported markdown (a small, predictable CommonMark-ish subset — see README.md):
 headings (auto-slugged), paragraphs, `**bold**`, `*italic*`, `` `code` ``,
 `[text](href)`, `-`/`1.` lists (incl. one level of nesting), ``` fenced code,
 pipe tables, `>` blockquote callouts, `---` rules, and **raw block HTML/SVG
 passthrough** (a line starting with a block tag at column 0 is emitted verbatim — this
 is how the inline SVG figures embed). A `src:` link scheme expands to a repo file link.
+HTML comment blocks (a line starting with `<!--`, through the line carrying `-->`) are
+authoring notes: stripped from the output. The shared topo/header shell lives in
+`templates/_sitehead.html` and is injected into every page as `{{site_head}}`.
 
 Run directly (`python3 docs/build_docs.py`) or let the Trunk hook run it. Pass
 `--check-links` to additionally verify every internal anchor link resolves to a real
 page and heading id (the cross-page `#anchor` audit CI runs) and exit non-zero if not.
 """
 
+import datetime
 import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -32,17 +45,38 @@ from urllib.parse import urljoin
 ROOT = Path(__file__).resolve().parent          # docs/
 CONTENT = ROOT / "content"
 TEMPLATE = ROOT / "templates" / "page.html"
+SITEHEAD_TEMPLATE = ROOT / "templates" / "_sitehead.html"   # shared topo + header
 ASSETS = ROOT / "assets"
 OUT = ROOT / "docs"                              # generated; Trunk copy-dirs this
 
+# The docs pages have a slide-out sidebar on mobile; the toggle only ships there
+# (blog pages have no sidebar, so the partial gets an empty {{nav_toggle}}).
+NAV_TOGGLE = (
+    '<button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">'
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+    'stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>'
+)
+
+BLOG_CONTENT = CONTENT / "blog"                  # one folder per post
+BLOG_OUT = ROOT / "blog"                         # generated; second Trunk copy-dir
+BLOG_POST_TEMPLATE = ROOT / "templates" / "blog_post.html"
+BLOG_INDEX_TEMPLATE = ROOT / "templates" / "blog_index.html"
+
 REPO = "https://github.com/timohueser/OpenBikeComputer"
 BRANCH = "main"
+SITE = "https://openbikecomputer.com/"   # absolute base for the feed
+
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 # Tags whose appearance at column 0 begins a raw HTML/SVG block we pass through verbatim.
 RAW_BLOCK_TAGS = {
     "svg", "div", "figure", "figcaption", "table", "thead", "tbody", "tr", "td", "th",
     "details", "summary", "section", "aside", "nav", "header", "footer", "style",
     "script", "pre", "blockquote", "ul", "ol", "canvas", "video", "iframe", "picture",
+    # <address> is how the legal pages set a postal address: a paragraph would have its
+    # lines joined with spaces, and the whole point of an Impressum address is the shape.
+    "address",
 }
 VOID_TAGS = {"img", "hr", "br", "input", "meta", "link", "col", "area", "base",
              "embed", "source", "track", "wbr"}
@@ -83,7 +117,8 @@ def inline(text):
         return "\x00%d\x00" % (len(store) - 1)
 
     text = IMG_RE.sub(
-        lambda m: stash('<img src="%s" alt="%s">' % (esc(m.group(2)), esc(m.group(1)))),
+        lambda m: stash('<img src="%s" alt="%s" loading="lazy">'
+                        % (esc(m.group(2)), esc(m.group(1)))),
         text,
     )
     text = CODE_RE.sub(lambda m: stash("<code>%s</code>" % esc(m.group(1))), text)
@@ -105,6 +140,54 @@ def inline(text):
             break
         text = re.sub(r"\x00(\d+)\x00", lambda m: store[int(m.group(1))], text)
     return text
+
+
+# ----------------------------------------------------------------- fenced directives
+
+def attr(s):
+    """Escape for use inside a double-quoted HTML attribute."""
+    return html.escape(s, quote=True)
+
+
+def parse_kv(buf):
+    """`key: value` lines (the body of a ```compare / ```model fence) -> dict."""
+    kv = {}
+    for ln in buf:
+        if ":" in ln:
+            k, v = ln.split(":", 1)
+            kv[k.strip().lower()] = v.strip()
+    return kv
+
+
+def render_directive(lang, buf):
+    """Expand a ```compare or ```model fence into its figure markup.
+
+    The markup is deliberately minimal + functional without JS (compare: the two images
+    stacked; model: the download link). assets/blog.js and assets/glb-viewer.js enhance
+    them into the draggable slider and the orbit viewer.
+    """
+    kv = parse_kv(buf)
+    cap = "<figcaption>%s</figcaption>" % inline(kv["caption"]) if kv.get("caption") else ""
+    if lang == "compare":
+        before, after = kv.get("before", ""), kv.get("after", "")
+        lb = kv.get("label-before", "Before")
+        la = kv.get("label-after", "After")
+        return (
+            '<figure class="fig cmp" data-label-before="%s" data-label-after="%s">'
+            '<div class="cmp-stage"><img src="%s" alt="%s" loading="lazy">'
+            '<img src="%s" alt="%s" loading="lazy"></div>%s</figure>'
+            % (attr(lb), attr(la), attr(before), attr(lb), attr(after), attr(la), cap)
+        )
+    dl = ""
+    if kv.get("step"):
+        dl = '<a class="model-dl" href="%s" download>Download STEP</a>' % attr(kv["step"])
+    return (
+        '<figure class="fig model" data-glb="%s">'
+        '<div class="model-stage" tabindex="0" role="img" aria-label="%s"></div>'
+        '<div class="model-bar"><span class="model-hint">drag to orbit &#183; click + scroll to zoom'
+        " &#183; double-click to reset</span>%s</div>%s</figure>"
+        % (attr(kv.get("glb", "")), attr(kv.get("caption", "Interactive 3D model")), dl, cap)
+    )
 
 
 # --------------------------------------------------------------------------- blocks
@@ -231,6 +314,13 @@ def render_blocks(md):
         if not line.strip():
             i += 1
             continue
+        if line.lstrip().startswith("<!--"):
+            # HTML comments are authoring notes — dropped from the output entirely
+            # (the blog_new.py scaffold leans on this to keep its examples unpublished).
+            while i < n and "-->" not in lines[i]:
+                i += 1
+            i += 1
+            continue
         if raw_tag(line):
             frag, i = consume_raw(lines, i)
             out.append(frag)
@@ -260,6 +350,9 @@ def render_blocks(md):
                 buf.append(lines[i])
                 i += 1
             i += 1
+            if lang in ("compare", "model"):
+                out.append(render_directive(lang, buf))
+                continue
             cls = ' class="lang-%s"' % lang if lang else ""
             out.append('<pre class="code"><code%s>%s</code></pre>' % (cls, esc("\n".join(buf))))
             continue
@@ -353,6 +446,222 @@ def nav_title_for(nav, path):
     return path
 
 
+# ------------------------------------------------------------------------------ blog
+
+def human_date(d):
+    """date -> '12 Jul 2026' (locale-independent)."""
+    return "%d %s %d" % (d.day, MONTHS[d.month - 1], d.year)
+
+
+def read_minutes(md):
+    """Word count / 220 wpm, floor 1 — shown as 'n min read' on the post."""
+    return max(1, round(len(re.findall(r"\w+", md)) / 220))
+
+
+def load_posts():
+    """Read every content/blog/<slug>/index.md, newest first. Front matter must carry
+    `title:` and an ISO `date:`; `description:` feeds the timeline teaser + the feed."""
+    posts = []
+    if not BLOG_CONTENT.exists():
+        return posts
+    for src in sorted(BLOG_CONTENT.glob("*/index.md")):
+        fm, body = split_front_matter(src.read_text())
+        slug = src.parent.name
+        if not fm.get("title") or not fm.get("date"):
+            sys.exit("blog: %s needs 'title:' and 'date:' front matter" % src)
+        try:
+            date = datetime.date.fromisoformat(fm["date"])
+        except ValueError:
+            sys.exit("blog: %s has a bad date %r (want YYYY-MM-DD)" % (src, fm["date"]))
+        posts.append({
+            "slug": slug, "dir": src.parent, "title": fm["title"], "date": date,
+            "description": fm.get("description", ""), "body": body,
+            "minutes": read_minutes(body),
+        })
+    posts.sort(key=lambda p: (p["date"].isoformat(), p["slug"]), reverse=True)
+    return posts
+
+
+def render_timeline(posts):
+    """The expedition-log index: month-grouped entries hanging off a waypoint rail."""
+    parts = []
+    group = None
+    for p in posts:
+        key = (p["date"].year, p["date"].month)
+        if key != group:
+            if group is not None:
+                parts.append("</ol></section>")
+            parts.append('<section class="tl-group"><div class="tl-label">%s %d</div>'
+                         '<ol class="tl-entries">' % (MONTHS[key[1] - 1], key[0]))
+            group = key
+        teaser = "<p class='tl-teaser'>%s</p>" % inline(p["description"]) if p["description"] else ""
+        parts.append(
+            '<li class="tl-entry"><a class="tl-link" href="%s/">'
+            '<span class="tl-meta"><time datetime="%s">%s</time> &#183; %d min</span>'
+            "<h2>%s</h2>%s</a></li>"
+            % (attr(p["slug"]), p["date"].isoformat(), human_date(p["date"]),
+               p["minutes"], esc(p["title"]), teaser)
+        )
+    if group is not None:
+        parts.append("</ol></section>")
+    if not parts:
+        return '<p class="tl-empty">No entries yet — the trail starts here.</p>'
+    return '<div class="timeline">%s</div>' % "\n".join(parts)
+
+
+def absolutize(content, base):
+    """Rewrite src/href attributes to absolute URLs for feed readers. urljoin both
+    normalizes relative paths ('../feed.xml' loses its dot-segments) and anchors bare
+    `#fragment` links to the post URL — a feed reader has no page to resolve them
+    against. The `#` heading anchors themselves are stripped first: they'd render as
+    stray '#' glyphs outside our CSS."""
+    content = re.sub(r'<a class="anchor"[^>]*>#</a>', "", content)
+    return re.sub(
+        r'(src|href)="([^"]+)"',
+        lambda m: '%s="%s"' % (m.group(1), urljoin(base, m.group(2))),
+        content,
+    )
+
+
+def write_feed(posts, rendered_posts):
+    """Atom feed at blog/feed.xml — full content inline, URLs absolutized."""
+    def x(s):
+        return html.escape(s, quote=True)
+
+    updated = max(p["date"] for p in posts).isoformat() if posts else "1970-01-01"
+    entries = []
+    for p in posts:
+        url = SITE + "blog/" + p["slug"] + "/"
+        content = absolutize(rendered_posts[p["slug"]], url)
+        entries.append(
+            "<entry><title>%s</title><link href=\"%s\"/><id>%s</id>"
+            "<updated>%sT00:00:00Z</updated><summary>%s</summary>"
+            '<content type="html">%s</content></entry>'
+            % (x(p["title"]), x(url), x(url), p["date"].isoformat(),
+               x(p["description"]), x(content))
+        )
+    feed = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<feed xmlns="http://www.w3.org/2005/Atom">\n'
+        "<title>OpenBikeComputer — expedition log</title>\n"
+        '<link href="%sblog/"/><link rel="self" href="%sblog/feed.xml"/>\n'
+        "<id>%sblog/</id><updated>%sT00:00:00Z</updated>\n"
+        "<author><name>Timo Hüser</name></author>\n%s\n</feed>\n"
+        % (SITE, SITE, SITE, updated, "\n".join(entries))
+    )
+    (BLOG_OUT / "feed.xml").write_text(feed)
+
+
+def prevnext_html(posts, idx):
+    """Older/newer links under a post (list is newest-first: idx+1 is older).
+    Returns the whole <nav>, or '' for a lone post — no point shipping an empty grid."""
+    cells = []
+    if idx + 1 < len(posts):
+        o = posts[idx + 1]
+        cells.append('<a class="pn older" href="../%s/"><span>&#8592; Older</span>%s</a>'
+                     % (attr(o["slug"]), esc(o["title"])))
+    else:
+        cells.append("<span></span>")
+    if idx > 0:
+        nw = posts[idx - 1]
+        cells.append('<a class="pn newer" href="../%s/"><span>Newer &#8594;</span>%s</a>'
+                     % (attr(nw["slug"]), esc(nw["title"])))
+    if len(posts) < 2:
+        return ""
+    return '<nav class="post-pn" aria-label="Adjacent entries">%s</nav>' % "".join(cells)
+
+
+def fill(template, repl):
+    for k, v in repl.items():
+        template = template.replace("{{%s}}" % k, v)
+    return template
+
+
+def builder_link(site_root):
+    """The header's link to the map app, or '' when there isn't one.
+
+    The builder is a sibling app in the same published artifact (`/builder/`), not a
+    rendered page — the site deploy sets OBC_BUILDER_PATH to its site-root-relative
+    path *only* when that deployment has a map catalog configured. Until the bakery
+    publishes one, the builder opens on "couldn't load the map catalog", and a nav
+    link straight into that is a broken front door. So the deploy decides, and a local
+    `python3 build_docs.py` (no variable set) simply renders the header without it."""
+    path = os.environ.get("OBC_BUILDER_PATH", "").strip()
+    if not path:
+        return ""
+    return '<a href="%s%s">Maps</a>' % (esc(site_root), esc(path))
+
+
+def site_head(site_root, crumb, nav_toggle=""):
+    """Expand the shared topo + header partial (templates/_sitehead.html) — one copy
+    of the markup, so a nav change can't drift between the docs and blog shells."""
+    return fill(SITEHEAD_TEMPLATE.read_text(),
+                {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
+                 "builder_link": builder_link(site_root)})
+
+
+def build_blog(rendered):
+    """Render blog/ (posts + timeline index + feed) and register pages for the link
+    check under site-root-relative 'blog/…' keys."""
+    posts = load_posts()
+    post_tpl = BLOG_POST_TEMPLATE.read_text()
+    index_tpl = BLOG_INDEX_TEMPLATE.read_text()
+
+    if BLOG_OUT.exists():
+        shutil.rmtree(BLOG_OUT)
+    BLOG_OUT.mkdir(parents=True)
+    (BLOG_OUT / ".gitkeep").touch()   # same trunk-watch reason as docs/ (see main())
+    shutil.copytree(ASSETS, BLOG_OUT / "assets")
+
+    rendered_posts = {}
+    for idx, p in enumerate(posts):
+        content, _toc = render_blocks(p["body"])
+        dest = BLOG_OUT / p["slug"]
+        dest.mkdir(parents=True)
+        for f in p["dir"].iterdir():          # images / .glb / .step live next to the md
+            if f.name == "index.md" or f.name.startswith("."):
+                continue
+            if f.is_dir():
+                shutil.copytree(f, dest / f.name)
+            else:
+                shutil.copy2(f, dest / f.name)
+        page = fill(post_tpl, {
+            "title": esc(p["title"]),
+            # attr(): these land in content="…" attributes — esc() leaves `"` alone.
+            "description": attr(p["description"] or "OpenBikeComputer expedition log."),
+            "site_head": site_head("../../", "/ log"),
+            "base": "../",
+            "site_root": "../../",
+            "css": "../assets/docs.css",
+            "blog_css": "../assets/blog.css",
+            "date_iso": p["date"].isoformat(),
+            "date_human": human_date(p["date"]),
+            "minutes": str(p["minutes"]),
+            "content": content,
+            "prevnext": prevnext_html(posts, idx),
+        })
+        (dest / "index.html").write_text(page)
+        rendered_posts[p["slug"]] = content
+        rendered["blog/%s/" % p["slug"]] = content
+        print("  blog/%s/index.md -> blog/%s/index.html" % (p["slug"], p["slug"]))
+
+    timeline = render_timeline(posts)
+    index_page = fill(index_tpl, {
+        "title": "Expedition log",
+        "description": "Build notes and field reports from the OpenBikeComputer workbench.",
+        "site_head": site_head("../", "/ log"),
+        "base": "",
+        "site_root": "../",
+        "css": "assets/docs.css",
+        "blog_css": "assets/blog.css",
+        "content": timeline,
+    })
+    (BLOG_OUT / "index.html").write_text(index_page)
+    rendered["blog/"] = timeline
+    write_feed(posts, rendered_posts)
+    print("blog: rendered %d post(s) + index + feed into %s" % (len(posts), BLOG_OUT.relative_to(ROOT)))
+
+
 # ----------------------------------------------------------------------- link check
 
 # Heading ids and anchor hrefs straight out of the *rendered* HTML — so the check
@@ -363,9 +672,11 @@ ANCHOR_HREF_RE = re.compile(r'<a\b[^>]*\bhref="([^"]+)"')
 
 def check_links(rendered):
     """Verify every internal anchor link resolves to a real page and (if it carries a
-    `#fragment`) a real heading id on that page. `rendered` maps each page's root-relative
-    URL ('' for the index) to its content HTML. Returns the number of broken links — the
-    cross-page `../page/#anchor` check CLAUDE.md otherwise asks me to do by hand."""
+    `#fragment`) a real heading id on that page. `rendered` maps each page's
+    site-root-relative URL ('docs/' for the docs index, 'blog/…' for posts) to its
+    content HTML, so cross-tree links (docs <-> blog) validate too. Returns the number
+    of broken links — the cross-page `../page/#anchor` check CLAUDE.md otherwise asks
+    me to do by hand."""
     pages = set(rendered)
     slugs = {url: set(HEADING_ID_RE.findall(content)) for url, content in rendered.items()}
 
@@ -374,11 +685,16 @@ def check_links(rendered):
         for href in ANCHOR_HREF_RE.findall(content):
             # Only internal links: external (http/mailto, incl. expanded `src:` links) and
             # protocol-relative URLs resolve elsewhere and aren't ours to validate.
-            if re.match(r"[a-z]+:", href) or href.startswith("//"):
+            # feed.xml isn't a page; skip it.
+            if re.match(r"[a-z]+:", href) or href.startswith("//") or href.endswith("feed.xml"):
                 continue
             path, _, frag = href.partition("#")
             target = urljoin(url, path).lstrip("/") if path else url
-            label = "/" + (url or "(index)")
+            # The map builder is a sibling *app* in the published artifact, not a page
+            # this renderer produces — there is no HTML here to validate it against.
+            if target.startswith("builder/"):
+                continue
+            label = "/" + url
             if target not in pages:
                 broken.append("%s: '%s' -> no such page '%s'" % (label, href, target or "(index)"))
             elif frag and frag not in slugs[target]:
@@ -423,10 +739,10 @@ def main():
         title = fm.get("title") or nav_title_for(nav, path)
         desc = fm.get("description", "Documentation for OpenBikeComputer.")
 
-        out_html = template
-        repl = {
+        out_html = fill(template, {
             "title": esc(title),
-            "description": esc(desc),
+            "description": attr(desc),   # lands in content="…"; esc() leaves `"` alone
+            "site_head": site_head(base + "../", "/ docs", NAV_TOGGLE),
             "base": base,
             "site_root": base + "../",
             "css": base + "assets/docs.css",
@@ -434,17 +750,17 @@ def main():
             "toc": render_toc(toc),
             "content": content,
             "has_toc": "has-toc" if render_toc(toc) else "",
-        }
-        for k, v in repl.items():
-            out_html = out_html.replace("{{%s}}" % k, v)
+        })
 
         dest = OUT / "index.html" if url == "" else OUT / url / "index.html"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(out_html)
-        rendered[url] = content
+        rendered["docs/" + url] = content
         print("  %s -> %s" % (path + ".md", dest.relative_to(ROOT)))
 
     print("docs: rendered %d pages into %s" % (len(pages), OUT.relative_to(ROOT)))
+
+    build_blog(rendered)
 
     if check and check_links(rendered):
         sys.exit(1)

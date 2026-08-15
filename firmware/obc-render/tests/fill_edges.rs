@@ -11,11 +11,9 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
-use obc_render::{MapRenderer, Viewport};
-// Only the (full-profile-only) frame-points saturation test reads this cap.
-#[cfg(not(feature = "nrf-mem"))]
-use obc_render::MAX_SPANS;
-use obcm_testkit::{build_file, pack_poly, pack_poly16, pack_poly_decl, LodSpec, Style};
+use obc_render::{RenderConfig, RenderScratch, Viewport};
+use obc_render::{MAX_FRAME_POINTS, MAX_SPANS};
+use obcm_testkit::{build_file, pack_poly, pack_poly16, pack_poly_decl, pack_poly_hole, LodSpec, Style};
 
 mod common;
 use common::Buf;
@@ -42,7 +40,7 @@ fn render_into(buf: &mut Buf, bytes: &[u8], vp: &Viewport) -> obc_render::Render
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid v5 file");
     let reader = Reader::new(&src, &tables, &cache);
-    MapRenderer::new().render(buf, &reader, vp, Rgb888::BLACK, green565)
+    RenderScratch::new().render(buf, &reader, vp, Rgb888::BLACK, RenderConfig::default(), green565)
 }
 
 /// A polygon straddling the **top** edge of the screen: its upper half projects above y=0. The fill
@@ -114,6 +112,30 @@ fn single_point_polygon_fills_nothing() {
     assert_eq!(buf.count(GREEN), 0, "a single-point polygon fills no pixels");
 }
 
+/// A correctly encoded hole affects only its own ring. This closes the PR #1299 pipeline trace at
+/// the renderer: if the reader receives no serializer-invented anchor bridge, scanline filling does
+/// not create a triangular ground gap between the exterior anchor and a distant clearing.
+#[test]
+fn polygon_hole_does_not_cut_an_anchor_to_hole_wedge() {
+    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
+    // Exterior: (100,100)..(200,200). Hole: (130,130)..(170,170). Hole deltas start
+    // at the feature anchor as the wire format requires, but contain no bridge vertices.
+    let polygon =
+        pack_poly_hole(1, 100, 100, &[(100, 0), (0, 100), (-100, 0)], &[(30, 30), (40, 0), (0, 40), (-40, 0)]);
+    let bytes = one_chunk_map((0, 0, 300, 300), styles, polygon, 4096);
+    let vp = Viewport::new(200.0, 200.0, 150, 150, 1.0);
+    let mut buf = Buf::new(200, 200);
+    render_into(&mut buf, &bytes, &vp);
+
+    // North-up, unit zoom: the camera (150,150) is screen (100,100), longitude grows right and
+    // latitude grows up.
+    let pixel_at = |lon, lat| buf.get(100 + lon - 150, 100 - (lat - 150));
+    assert_eq!(pixel_at(150, 150), Rgb888::BLACK, "the actual hole stays transparent");
+    assert_eq!(pixel_at(115, 115), GREEN, "coverage near the exterior anchor remains filled");
+    assert_eq!(pixel_at(125, 125), GREEN, "no diagonal anchor-to-hole wedge is invented");
+    assert_eq!(pixel_at(185, 185), GREEN, "coverage beyond the hole remains filled");
+}
+
 /// A zero-area (collinear) polygon — three vertices all on one horizontal line — encloses no
 /// region, so every scanline finds <2 crossings and the row is skipped. It must paint nothing.
 #[test]
@@ -135,35 +157,45 @@ fn zero_area_collinear_polygon_fills_nothing() {
 /// has room. A high-priority feature must still survive while low-priority big ones are dropped for
 /// lack of point room.
 ///
-/// Full-profile only: the premise is `MAX_FRAME_POINTS` (4768) holds three of the test's ~1580-pt
-/// blobs, so a few pack in before saturation and `point_utilization` exceeds 0.9. The `nrf-mem`
-/// profile sizes `MAX_FRAME_POINTS` (768) below one blob, so this setup doesn't apply; its
-/// panic-safety is instead pinned by the compile-time `MAX_SCREEN_POINTS >= MAX_DECODE_POINTS`
-/// invariant.
-#[cfg(not(feature = "nrf-mem"))]
+/// The premise is **derived from the cap, not restated beside it**: the blob is sized so that
+/// exactly `BLOBS` of them plus the 4-point high-priority square consume the point budget, one more
+/// blob cannot, and `point_utilization` lands on 1.0 — far past anything the span or ring buffers
+/// could explain. `const` asserts hold that shape, so moving `MAX_FRAME_POINTS` (as this PR's review
+/// round did, 6,400 → 6,208 → 9,440 → 16,323) re-sizes the blob instead of quietly demoting the test to a
+/// non-saturating one. Eight blobs keep each one below the independent per-feature decode cap while
+/// still filling the larger frame budget.
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
-    // ~1580 points per feature. MAX_FRAME_POINTS = 4768, so ~3 fit; the 4th+ are dropped on the
-    // point check, long before MAX_SPANS (1152) could fill. Two styles: low priority (4) blue and
-    // high priority (1) red, both big.
+    /// How many blobs the budget must admit — several, so "a few pack in before saturation" is a
+    /// real claim and not a single-feature edge case.
+    const BLOBS: usize = 8;
+    /// The high-priority square's vertex count. Priority 1, so `select()` charges it first.
+    const HI_PTS: usize = 4;
+    /// Points per blob: divide the budget evenly. The fixture below makes each an alternating sharp
+    /// corner, so the renderer's lossless projected-collinear compaction cannot erase the pressure
+    /// this test is meant to exercise.
+    const BLOB_PTS: usize = (MAX_FRAME_POINTS - HI_PTS) / BLOBS;
+    // The premise, asserted: `BLOBS` fit beside the square and one more does not, so the point
+    // check — not the span or ring check — is provably what drops the rest.
+    const _: () = assert!(HI_PTS + BLOBS * BLOB_PTS <= MAX_FRAME_POINTS, "the premised blobs must fit");
+    const _: () = assert!(HI_PTS + (BLOBS + 1) * BLOB_PTS > MAX_FRAME_POINTS, "one more blob must not fit");
+    // A blob must also survive per-feature decode to reach the frame buffer at all.
+    const _: () = assert!(BLOB_PTS <= obc_render::MAX_DECODE_POINTS, "a blob must decode whole");
+
     const LOW_565: u16 = 0x001F; // blue, priority 4
     const HIGH_565: u16 = 0xF800; // red, priority 1
     let styles: &[Style] = &[(1, 0, LOW_565, 1, 4, false, None), (2, 1, HIGH_565, 1, 1, false, None)];
 
-    // A low-priority "blob": a ~1580-vertex thin filled rectangle (densified edges). Its vertex
-    // count is what matters — every vertex lands in `frame_points`, the buffer under test. Anchored
-    // at its leaf-local (10,10); 8-bit deltas keep each step ≤127 µdeg, well inside a quadrant.
+    // A low-priority "blob": a `BLOB_PTS`-vertex sawtooth. Alternating 30-screen-pixel turns make
+    // every vertex a real projected corner; using a densely sampled straight rectangle here would
+    // test the compactor instead, which deliberately folds those redundant points away before the
+    // frame budget. The 16-bit deltas and slowly increasing y remain inside the leaf quadrant.
     let big_blob = |style: u8| -> Vec<u8> {
-        let mut deltas: Vec<(i8, i8)> = Vec::new();
-        for _ in 0..790 {
-            deltas.push((1, 0)); // densified east edge
+        let mut deltas: Vec<(i16, i16)> = Vec::with_capacity(BLOB_PTS - 1);
+        for index in 0..BLOB_PTS - 1 {
+            deltas.push((if index % 2 == 0 { 10_000 } else { -10_000 }, 1));
         }
-        deltas.push((0, 40)); // up
-        for _ in 0..790 {
-            deltas.push((-1, 0)); // densified west edge back
-        }
-        deltas.push((0, -40)); // close
-        pack_poly(style, 10, 10, &deltas) // 1582 exterior points
+        pack_poly16(style, 10, 10, &deltas)
     };
     // The high-priority feature: a solid 10000-µdeg red square (16-bit deltas) so it unmistakably
     // fills pixels (≈30 px across at the test zoom) yet fits inside its 25000-µdeg quadrant. Far
@@ -174,10 +206,10 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // A complete depth-2 quadtree: root branch (node 0, children 1..4), four sub-branches
     // (nodes 1..4) whose children are the 16 leaves (nodes 5..20). One feature per leaf, each
     // anchored at its own quadrant's (10,10) so it sits inside that quadrant and (at a whole-map
-    // zoom) on-screen. Leaves 0..6 carry low-priority blobs (7 × 1582 = 11074 points, already past
-    // MAX_FRAME_POINTS = 4768 → the point buffer overflows); leaf 7 carries the high-priority
-    // square; leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned
-    // full so the saturation is unambiguous.
+    // zoom) on-screen. Leaves 0..6 carry low-priority blobs — 7 × `BLOB_PTS`, already well past
+    // `MAX_FRAME_POINTS`, so the point buffer overflows; leaf 7 carries the high-priority square;
+    // leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned full so
+    // the saturation is unambiguous.
     const BRANCH: u32 = 0x8000_0000;
     let mut index = vec![BRANCH | 1, BRANCH | 5, BRANCH | 9, BRANCH | 13, BRANCH | 17];
     for leaf in 0..16u32 {
@@ -206,20 +238,26 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     );
 
     // Whole-map view: a low zoom so all 16 quadrant-leaves (and their features) are on-screen.
-    let vp = Viewport::new(200.0, 200.0, 50_000, 50_000, 0.003);
+    let vp = Viewport::new(200.0, 200.0, 50_000, 50_000, 0.0019);
     let mut buf = Buf::new(200, 200);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).expect("valid v5 file");
     let reader = Reader::new(&src, &tables, &cache);
-    let stats = MapRenderer::new().render(&mut buf, &reader, &vp, Rgb888::BLACK, green565);
+    let stats = RenderScratch::new().render(&mut buf, &reader, &vp, Rgb888::BLACK, RenderConfig::default(), green565);
 
     // The point buffer saturated and dropped features…
     assert!(stats.features_dropped > 0, "the point buffer must saturate and drop features");
     // …but the *span* buffer was nowhere near full (proving the point check, not the span check,
     // was the drop trigger — the distinct path from priority.rs).
     assert!(stats.features_drawn < MAX_SPANS, "spans were not the limiting buffer");
-    assert!(stats.point_utilization > 0.9, "frame_points is the saturated buffer (util {})", stats.point_utilization);
+    // Nor the ring buffer: a handful of single-ring features cannot approach the ring cap, which on
+    // busy real frames is the ceiling — here it is not, and that is the point.
+    assert!(stats.ring_utilization < 0.1, "rings were not the limiting buffer (util {})", stats.ring_utilization);
+    // `BLOBS` blobs plus the square consume the budget to within a few points, so utilization lands
+    // just under 1.0 — the point buffer is unambiguously what filled.
+    assert_eq!(stats.features_drawn, BLOBS + 1, "exactly the premised blobs plus the square are admitted");
+    assert!(stats.point_utilization > 0.75, "frame_points is the saturated buffer (util {})", stats.point_utilization);
 
     // The high-priority red square (priority 1, collected first) survived the saturation and
     // painted, even though enough low-priority points to overflow the buffer were packed around it.
@@ -237,12 +275,12 @@ fn marker_within_margin_draws_past_margin_culls() {
     let vp = Viewport::new(200.0, 200.0, 0, 0, 1.0);
 
     let mut inside = Buf::new(200, 200);
-    MapRenderer::new().draw_marker(&mut inside, &vp, 106, 0, None, RED);
+    RenderScratch::new().draw_marker(&mut inside, &vp, 106, 0, None, RED);
     assert!(inside.count(RED) > 0, "an anchor just past the edge but within MARGIN still draws (clipped)");
 
     // Push the anchor to +120 µdeg = 20 px past the edge, beyond the 16-px margin → culled.
     let mut outside = Buf::new(200, 200);
-    MapRenderer::new().draw_marker(&mut outside, &vp, 120, 0, None, RED);
+    RenderScratch::new().draw_marker(&mut outside, &vp, 120, 0, None, RED);
     assert_eq!(outside.count(RED), 0, "an anchor past MARGIN is culled");
 }
 

@@ -2,7 +2,7 @@
 //! [`FbDevice64`] map plane (the real target) and the [`Framebuffer565`] RGB565 plane (the per-band
 //! scratch the [`Band`](crate::Band) view wraps).
 //!
-//! The shared [`obc_render::MapRenderer`](../../obc_render) runs the same rendering code on host and
+//! The shared [`obc_render`](../../obc_render) render path runs the same code on host and
 //! MCU. On the nRF (no external RAM, no scan-out engine) the buffer is a resident `.bss` frame the
 //! banded display push streams to the panel a band at a time over SPI/DMA.
 //!
@@ -58,7 +58,7 @@ impl Pack for PackDevice64 {
     type Pixel = u8;
     #[inline]
     fn pack(c: Rgb565) -> u8 {
-        rgb565_to_device64_byte(c)
+        rgb565_to_device64_byte(c.into_storage())
     }
 }
 
@@ -219,14 +219,20 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
     }
 }
 
-/// Pack an [`Rgb565`] colour into a **device-64 (RGB222)** byte: the top 2 bits of each channel in
-/// `0b00_RR_GG_BB`. Keeping the top 2 bits is the same quantization `obc_reader::rgb565_to_device64`
+/// Pack an RGB565 storage word into a **device-64 (RGB222)** byte: the top 2 bits of each channel
+/// in `0b00_RR_GG_BB`. Keeping the top 2 bits is the same quantization `obc_reader::rgb565_to_device64`
 /// applies (the top 2 bits of an RGB565 channel *are* the top 2 of its RGB888 expansion), so this
 /// stores the same 64-colour gamut the style table is tuned to. The inverse is
-/// [`device64_to_rgb565`].
+/// [`device64_to_rgb565`], which takes the same storage-word form.
+///
+/// Public because it is the *one* place this formula lives: the overlay engine
+/// ([`composite_into_resident`](crate::ls021::composite_into_resident)) re-quantizes each composited
+/// pixel through it, and every re-derivation of it (three integer divisions per pixel through the
+/// reader's expanded triple) is a chance for on-glass colour to fork from the simulator preview —
+/// which `device64_matches_reader_quantization_exhaustively` exists to prevent.
 #[inline]
-fn rgb565_to_device64_byte(c: Rgb565) -> u8 {
-    let rgb = c.into_storage(); // RRRRR GGGGGG BBBBB
+pub fn rgb565_to_device64_byte(rgb: u16) -> u8 {
+    // rgb is RRRRR GGGGGG BBBBB.
     let r = ((rgb >> 14) & 0x3) as u8; // top 2 of the 5-bit red
     let g = ((rgb >> 9) & 0x3) as u8; // top 2 of the 6-bit green
     let b = ((rgb >> 3) & 0x3) as u8; // top 2 of the 5-bit blue
@@ -347,8 +353,8 @@ mod tests {
     /// The byte value is the device-64 palette index `0..64` — white is the max (0x3F), black 0.
     #[test]
     fn device64_byte_is_the_palette_index() {
-        assert_eq!(rgb565_to_device64_byte(Rgb565::from(RawU16::new(0xFFFF))), 0x3F); // white
-        assert_eq!(rgb565_to_device64_byte(Rgb565::from(RawU16::new(0x0000))), 0x00);
+        assert_eq!(rgb565_to_device64_byte(0xFFFF), 0x3F); // white
+        assert_eq!(rgb565_to_device64_byte(0x0000), 0x00);
         // black
     }
 
@@ -365,7 +371,7 @@ mod tests {
             ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
         };
         for raw in [0x0000u16, 0xFFFF, 0xF800, 0x07E0, 0x001F, 0x1234, 0xABCD, 0x8410, 0x5555] {
-            let byte = rgb565_to_device64_byte(Rgb565::from(RawU16::new(raw)));
+            let byte = rgb565_to_device64_byte(raw);
             let (r8, g8, b8) = to888(raw);
             let want = ((r8 >> 6) << 4) | ((g8 >> 6) << 2) | (b8 >> 6); // rgb565_to_device64's indices
             assert_eq!(byte, want, "raw {raw:#06x}");
@@ -385,7 +391,7 @@ mod tests {
     #[test]
     fn device64_matches_reader_quantization_exhaustively() {
         for raw in 0u16..=u16::MAX {
-            let byte = rgb565_to_device64_byte(Rgb565::from(RawU16::new(raw)));
+            let byte = rgb565_to_device64_byte(raw);
             // The reader returns the kept colour expanded on the `level * 85` ramp; `/ 85` recovers
             // the 2-bit index it quantized each channel to (0/85/170/255 → 0/1/2/3).
             let (r, g, b) = obc_reader::rgb565_to_device64(raw);
@@ -400,8 +406,7 @@ mod tests {
     #[test]
     fn device64_expand_roundtrips_every_byte() {
         for byte in 0u8..64 {
-            let rgb = Rgb565::from(RawU16::new(device64_to_rgb565(byte)));
-            assert_eq!(rgb565_to_device64_byte(rgb), byte, "byte {byte:#04x}");
+            assert_eq!(rgb565_to_device64_byte(device64_to_rgb565(byte)), byte, "byte {byte:#04x}");
         }
     }
 

@@ -73,10 +73,21 @@ targets:
         # callbacks stop, and a multi-minute L2CAP transfer (a ~900 KB firmware
         # image, a route upload, a ride sync) dies when the phone locks. L2CAP
         # CoC streaming continues under bluetooth-central, so those transfers
-        # genuinely keep running. This is background *continuation* only — no
-        # state restoration (relaunch-after-termination is a separate concern).
+        # genuinely keep running. The same mode also permits the transport-only
+        # Weather Request state-restoration spike (WX3 / #1188) to resume one bounded,
+        # service-filtered context read for the previously authenticated peripheral.
         UIBackgroundModes:
           - bluetooth-central
+          # The periodic "has firmware been published?" check (#773 U5). BGAppRefreshTask needs
+          # this mode declared or the scheduler refuses the request; the wake itself does one
+          # anonymous GET and, at most, posts a local notification — no BLE, no device read.
+          - fetch
+        # The identifiers BGTaskScheduler is allowed to register. iOS traps at launch on a
+        # registration this list doesn't contain, so this must stay in step with
+        # `BackgroundUpdateRefresh.identifier` (which SwiftUI's `.backgroundTask(.appRefresh:)`
+        # registers for us).
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.openbikecomputer.companion.updatecheck
         # Route-file registration (B6): puts OBC in the share sheet's app row
         # for .gpx/.tcx files (Komoot/Strava/Garmin exports) and lets Files
         # "open in" the app — delivery lands in RootView's onOpenURL. This IS

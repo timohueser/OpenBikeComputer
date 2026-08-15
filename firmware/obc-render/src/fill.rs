@@ -4,21 +4,28 @@ use heapless::Vec;
 
 use embedded_graphics::{prelude::*, primitives::Rectangle};
 
+use crate::{MAX_CROSSINGS, MAX_DECODE_RINGS};
+
+#[cfg(test)]
 use crate::viewport::Viewport;
-use crate::{MAX_CROSSINGS, MAX_DECODE_RINGS, MAX_SCREEN_POINTS};
+#[cfg(test)]
+use crate::MAX_SCREEN_POINTS;
 
 /// Project a feature's microdegree rings into `screen` and scanline-fill them. The draw phase's
-/// `Kind::Polygon` arm; also the marker diamond's path.
-pub(crate) fn fill_polygon_proj<D>(
+/// former `Kind::Polygon` path, retained as the framebuffer-equivalence oracle for the collector's
+/// screen-space compaction tests.
+#[cfg(test)]
+pub(crate) fn fill_polygon_proj<D, L>(
     target: &mut D,
     vp: &Viewport,
     pts: &[(i32, i32)],
-    ring_lens: &[usize],
+    ring_lens: &[L],
     color: D::Color,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
     xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
+    L: Copy + Into<usize>,
 {
     screen.clear();
     for &(lon, lat) in pts {
@@ -31,16 +38,17 @@ pub(crate) fn fill_polygon_proj<D>(
 /// `ring_lens` partitions them (exterior first, then holes — holes fall out of the even-odd rule
 /// for free). A row overflowing `xs` is skipped to keep even-odd parity intact rather than pairing
 /// spans from a truncated crossing list.
-pub(crate) fn fill_polygon<D>(
+pub(crate) fn fill_polygon<D, L>(
     target: &mut D,
     screen: &[Point],
-    ring_lens: &[usize],
+    ring_lens: &[L],
     color: D::Color,
     w: i32,
     h: i32,
     xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
+    L: Copy + Into<usize>,
 {
     let mut ymin = i32::MAX;
     let mut ymax = i32::MIN;
@@ -62,6 +70,7 @@ pub(crate) fn fill_polygon<D>(
     {
         let mut base = 0usize;
         for &len in ring_lens {
+            let len = len.into();
             let mut ry_min = i32::MAX;
             let mut ry_max = i32::MIN;
             for p in &screen[base..base + len] {
@@ -80,6 +89,7 @@ pub(crate) fn fill_polygon<D>(
         let mut base = 0usize;
         let mut saturated = false;
         'rings: for (r, &len) in ring_lens.iter().enumerate() {
+            let len = len.into();
             let ring = &screen[base..base + len];
             base += len;
             if len < 2 {
@@ -101,7 +111,7 @@ pub(crate) fn fill_polygon<D>(
                     // whole; pairing a truncated list would break even-odd parity and paint
                     // background-colored gaps. Skip the row instead — an unfilled 1px seam on the
                     // densest features beats a mis-filled span, and the buffer can't grow without
-                    // busting the MCU_RENDERER_BYTES budget.
+                    // busting the MCU_SCRATCH_BYTES budget.
                     if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
                         saturated = true;
                         break 'rings;
@@ -116,18 +126,12 @@ pub(crate) fn fill_polygon<D>(
         xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let mut k = 0;
         while k + 1 < xs.len() {
-            // Round spans *outward* (floor left, ceil right) to close hairline gaps between
-            // adjacent fills. A feature clipped across a chunk boundary becomes two polygons whose
-            // shared edge is clipped independently, so their pixel staircases can disagree by ≤1px
-            // (most visible along a rotated diagonal seam). `to_screen`'s round-to-nearest collapses
-            // nearly all of it; this ≤1px overlap is cheap insurance (invisible for same-colored
-            // fills).
-            let x0 = (libm::floorf(xs[k]) as i32).max(0);
-            let x1 = (libm::ceilf(xs[k + 1]) as i32).min(w - 1);
-            if x1 >= x0 {
-                let _ =
-                    target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
-            }
+            // Spans round *outward* — see [`fill_span`], which owns that rule for both fillers.
+            // A feature clipped across a chunk boundary becomes two polygons whose shared edge is
+            // clipped independently, so their pixel staircases can disagree by ≤1px (most visible
+            // along a rotated diagonal seam). `to_screen`'s round-to-nearest collapses nearly all of
+            // it; the ≤1px overlap is cheap insurance (invisible for same-colored fills).
+            fill_span(target, xs[k], xs[k + 1], y, w, color);
             k += 2;
         }
     }
@@ -274,11 +278,16 @@ mod tests {
         // the same polygon still fill correctly.
         use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
 
-        const P: usize = 200; // prongs → 2·P scanline crossings in the prong band
+        // Prongs → 2·P scanline crossings in the prong band. Derived from the cap rather than
+        // hand-picked, so growing `MAX_CROSSINGS` (as #1146 P3 did, 256 → 640) re-sizes the comb
+        // instead of quietly turning the saturation case into a non-saturating one.
+        const P: usize = MAX_CROSSINGS / 2 + 40;
         const W: i32 = 2 * P as i32; // one column per prong + its gap
         const H: i32 = 8;
         const HBASE: i32 = 4; // prongs span y ∈ [0, HBASE); a solid base sits below
         const HBOTTOM: i32 = 6;
+        /// Outline capacity: the comb pushes `4·P + 1` points (see the walk below).
+        const POLY_CAP: usize = 4 * P + 8;
         // The comb only proves anything if it actually overflows the buffer.
         const { assert!(2 * P > MAX_CROSSINGS, "comb must exceed MAX_CROSSINGS to exercise saturation") };
 
@@ -318,7 +327,7 @@ mod tests {
         // A comb: P vertical 1px prongs (1px gaps) standing on a solid base. A
         // scanline through the prongs crosses both walls of every prong (2·P);
         // one through the base crosses only the two outer walls.
-        let mut poly: Vec<Point, 1024> = Vec::new();
+        let mut poly: Vec<Point, POLY_CAP> = Vec::new();
         poly.push(Point::new(0, 0)).unwrap();
         for i in 0..P as i32 {
             let x1 = 2 * i + 1;

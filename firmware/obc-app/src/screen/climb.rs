@@ -18,7 +18,7 @@
 //! [`tick_timers`](super::Screen::tick_timers) arm.
 //!
 //! Bindings reuse [`riding_common`](super::riding_common): `press` = pause → Ride control,
-//! `back-hold` = Menu. `back` is the **last hop** of the conditional Back-cycle
+//! `back-hold` = Ride menu. `back` is the **last hop** of the conditional Back-cycle
 //! (Map → Statistics → Climb → Map, C5) — a sibling move back to the Map. The Statistics screen
 //! only routes here when a climb is active and [`ClimbMode`](crate::settings::ClimbMode) is on, so
 //! this hop always closes the ring at the Map.
@@ -92,10 +92,10 @@ impl ClimbScreen {
             // routes here when a climb is active and ClimbMode is on, so closing back to the Map is
             // always correct (a crest that ends the climb auto-returns to the Map anyway, C5).
             Gesture::Back => Transition::Replace(Screen::Map(MapScreen::new())),
-            // The two riding views' shared bindings (press → Ride control, back-hold → Menu).
+            // The riding views' shared bindings (press → Ride control, back-hold → Ride menu).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
-            // No turn/hold behaviour — the climb view is a fixed readout, nothing to scrub.
-            Gesture::Turn(_) | Gesture::Hold => Transition::None,
+            // No step/hold behaviour — the climb view is a fixed readout, nothing to scrub.
+            Gesture::Step(_) | Gesture::Hold => Transition::None,
         }
     }
 
@@ -324,6 +324,7 @@ fn summit_glyph(cv: &mut impl Surface, right_x: i32, cy: i32, color: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen::test_ctx;
     use obc_route::{ClimbProfile, ClimbSeg};
 
     /// Back closes the ring: the Climb screen's Back always returns to the Map (the last hop of the
@@ -335,19 +336,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Riding);
         let mut s = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, &mut s);
         assert!(matches!(ClimbScreen::new().handle(Gesture::Back, &mut cx), Transition::Replace(Screen::Map(_))));
     }
 
@@ -362,7 +351,6 @@ mod tests {
             top_ele_m: 1_400,
             gain_m: 400,
             avg_grade_pct: 10,
-            category: 0,
         };
         // A linear ramp base→summit across the columns, matching the seg. `at(f)` then reads
         // `1000 + 400·f` (to a column), `grade_at` a steady ~10 %.

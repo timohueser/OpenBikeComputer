@@ -4,7 +4,7 @@
 //! where the state is drawn (Home / the menu title bar / the Bluetooth screen), never on a riding
 //! view or a static screen whose status is unchanged.
 
-use obc_app::{App, AppState, BleLink, BleStatus, Dirty, HostCommand, HostMailbox};
+use obc_app::{App, AppState, BleLink, BleStatus, DeviceStatus, Dirty, HostCommand, HostMailbox};
 
 mod common;
 
@@ -24,23 +24,29 @@ fn took_forget(app: &mut App) -> bool {
 #[test]
 fn set_ble_status_records_link_paired_and_passkey() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    assert_eq!(app.state.ble_link, BleLink::Advertising, "boots unlinked (radio on, nobody connected)");
-    assert!(!app.state.ble_connected(), "…which reads as not connected for the indicator");
-    assert!(!app.state.ble_paired, "no bond at boot");
+    assert_eq!(app.state.device.ble_link, BleLink::Advertising, "boots unlinked (radio on, nobody connected)");
+    assert!(!app.state.device.ble_connected(), "…which reads as not connected for the indicator");
+    assert!(!app.state.device.ble_paired, "no bond at boot");
     assert_eq!(app.ble_passkey(), None, "no passkey at boot");
 
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: true });
-    assert!(app.state.ble_connected(), "connection is recorded on AppState (the indicator reads it)");
-    assert!(app.state.ble_paired, "the stored-bond flag rides the seam (the Paired row reads it)");
+    assert_eq!(
+        app.state.device,
+        DeviceStatus { battery_pct: 75, ble_link: BleLink::Connected, ble_paired: true },
+        "the focused status owns only the small platform facts",
+    );
+    assert!(core::mem::size_of::<DeviceStatus>() <= 4, "the stored status stays register-sized");
+    assert!(app.state.device.ble_connected(), "connection is recorded on DeviceStatus (the indicator reads it)");
+    assert!(app.state.device.ble_paired, "the stored-bond flag rides the seam (the Paired row reads it)");
     assert_eq!(app.ble_passkey(), Some(123_456), "passkey rides the seam (P2 consumes it)");
 
     app.set_ble_status(BleStatus { link: BleLink::Off, ..BleStatus::DISCONNECTED });
-    assert_eq!(app.state.ble_link, BleLink::Off, "the radio-off state crosses the seam (P8 status line)");
-    assert!(!app.state.ble_connected(), "Off is not connected");
+    assert_eq!(app.state.device.ble_link, BleLink::Off, "the radio-off state crosses the seam (P8 status line)");
+    assert!(!app.state.device.ble_connected(), "Off is not connected");
     assert_eq!(app.ble_passkey(), None);
 
     app.set_ble_status(BleStatus::DISCONNECTED);
-    assert_eq!(app.state.ble_link, BleLink::Advertising, "back to the powered-and-unlinked default");
+    assert_eq!(app.state.device.ble_link, BleLink::Advertising, "back to the powered-and-unlinked default");
 }
 
 /// The Forget-phone one-shot: the `ForgetBond` command drains the screen's pending request once.
@@ -99,13 +105,11 @@ fn a_link_change_repaints_the_menu_title_bar() {
 fn a_link_change_repaints_the_bluetooth_screen() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
-    app.apply_gesture(obc_app::Gesture::Turn(-1)); // compass: one ccw detent to Settings
+    app.apply_gesture(obc_app::Gesture::Step(-1)); // compass: one ccw step to Settings
     app.apply_gesture(obc_app::Gesture::Press); // → Settings list
-    for _ in 0..7 {
-        // → the Bluetooth row (Date/Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth)
-        app.apply_gesture(obc_app::Gesture::Turn(1));
-    }
-    app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen
+    app.apply_gesture(obc_app::Gesture::Step(3)); // → Connections row (Ride, Display, Weather, Connections)
+    app.apply_gesture(obc_app::Gesture::Press); // → Connections menu (Phone is the first row)
+    app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen (opened via the Phone row)
     assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");
     let _ = app.take_dirty();
 
@@ -180,8 +184,8 @@ fn the_card_is_not_dismissible_by_input() {
     assert!(app.passkey_card_up(), "Back does not dismiss the card");
     app.apply_gesture(obc_app::Gesture::Press);
     assert!(app.passkey_card_up(), "press does not dismiss the card");
-    app.apply_gesture(obc_app::Gesture::Turn(1));
-    assert!(app.passkey_card_up(), "a turn does not dismiss the card");
+    app.apply_gesture(obc_app::Gesture::Step(1));
+    assert!(app.passkey_card_up(), "a step does not dismiss the card");
 
     // Only the seam clearing the passkey closes it.
     app.set_ble_status(BleStatus::DISCONNECTED);
@@ -191,7 +195,7 @@ fn the_card_is_not_dismissible_by_input() {
 #[test]
 fn a_hold_charging_defers_the_card_until_the_hold_settles() {
     // A host-pushed screen must never land mid-hold — it would yank the hold target out from under
-    // the rider. The board feeds the live encoder hold-progress via `set_hold_progress`.
+    // the rider. The board feeds the live Select hold-progress via `set_hold_progress`.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
 
     app.set_hold_progress(0.5); // a hold is charging

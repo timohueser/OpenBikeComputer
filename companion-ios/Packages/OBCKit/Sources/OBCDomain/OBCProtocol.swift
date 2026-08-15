@@ -1,7 +1,8 @@
 import Foundation
 
-/// The frozen wire-protocol surface, in code form. This is the Swift companion to
-/// `companion-ios/OBCProtocol.md`, which is the human-readable reference.
+/// The frozen wire-protocol surface, in code form. The canonical reference is
+/// `specs/obc-ble-interface-spec.md`; `companion-ios/OBCProtocol.md` contains
+/// implementation notes for this package.
 ///
 /// **Divergence policy:** the firmware `S0` freeze + `obc-ble-interface-spec.md`
 /// are canonical. If this and firmware `S0` disagree, firmware `S0` wins and this
@@ -20,4 +21,14 @@ public enum OBCProtocol {
     public static func versionMismatch(reportedBy deviceVersion: UInt16) -> DeviceError? {
         deviceVersion == version ? nil : .protocolMismatch(expected: version, found: deviceVersion)
     }
+
+    /// The device implements the **Weather Request** contract (spec §11): the secondary service,
+    /// the request context, object type 20 and the Config refresh field — bit 0 of the identity
+    /// read's trailing capability word (WX3 / #1188).
+    ///
+    /// One bit covers all four because they are useless apart: a phone that can read a request but
+    /// cannot upload the answer has nothing to offer. The word is append-only in the same sense the
+    /// read is, and **unknown bits are ignored** — a future firmware announcing a feature this
+    /// build never heard of must not mask the one beside it.
+    public static let featureWeather: UInt32 = 1 << 0
 }

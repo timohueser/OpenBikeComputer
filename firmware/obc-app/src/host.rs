@@ -2,22 +2,13 @@
 //!
 //! `App` asks its host to do exactly one kind of thing — run a bounded piece of I/O it cannot do
 //! itself (store scans, file deletes, the router, the DFU armer, settings persistence) — and the
-//! host answers with facts. Historically that conversation grew as one independent `take_*` /
-//! `has_*` / `notify_*` latch per feature; this module names the whole vocabulary in two bounded
-//! enums so every host speaks the same protocol instead of re-deriving it latch by latch:
+//! host answers with facts. Two bounded enums define that shared vocabulary:
 //!
 //! - [`HostCommand`] — everything the app can ask of a host, drained through
 //!   [`App::drain_host_commands`](crate::App::drain_host_commands) into a caller-owned
 //!   [`HostMailbox`].
 //! - [`HostEvent`] — every host answer/fact, applied through
 //!   [`App::apply_event`](crate::App::apply_event).
-//!
-//! The legacy per-feature `take_*` / `has_*` / `notify_*` latch methods that this protocol
-//! superseded have been **removed** (FAR-19, #812): every host — the board ride loop, the sim, the
-//! `obc-host-core` dispatcher, and the tests — drains [`HostCommand`]s through
-//! [`App::drain_host_commands`](crate::App::drain_host_commands) and applies [`HostEvent`]s through
-//! [`App::apply_event`](crate::App::apply_event). The per-class pending state lives once inside
-//! `App` (a typed slot, a counter, or a derived predicate — no second copy anywhere).
 //!
 //! ## What is deliberately *not* in the protocol
 //!
@@ -56,7 +47,7 @@
 
 use obc_ports::SettingsSaveError;
 
-use crate::activity::{DfuAction, NavRequest, TrackAction};
+use crate::activity::{DetourRequest, DfuAction, NavRequest, TrackAction};
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Version};
 use crate::screen::WarningFlags;
 
@@ -85,6 +76,13 @@ pub enum HostCommand {
     ///
     /// [`PlanRoute`]: HostCommand::PlanRoute
     CancelRoutePlan,
+    /// Abort the in-flight detour plan **and** drop any planned-but-uncommitted detour bytes the
+    /// host still holds (#882) — Back on the detour planning or preview screen. Answers nothing.
+    /// One-shot with the same **post-time annihilation** as
+    /// [`CancelRoutePlan`](HostCommand::CancelRoutePlan): posting a cancel clears a still-undrained
+    /// [`PlanDetour`](HostCommand::PlanDetour) request, so a drained cancel always refers to work
+    /// the host actually holds.
+    CancelDetour,
     /// Delete the route with durable object id `id` (epic #447, P6); the store-changed edge then
     /// re-feeds the catalog. The pending state is the menu's catalog *index*, resolved to the id
     /// at drain against the live catalog — a request whose route vanished drains to nothing.
@@ -123,6 +121,18 @@ pub enum HostCommand {
     /// undrained **annihilates it** (see that variant) — a request the host receives was never
     /// cancelled before it left the app.
     PlanRoute(NavRequest),
+    /// Plan a routed detour (#882): resolve the rejoin coordinate at `target_m` on the active
+    /// route, build the corridor blacklist over `[progress_m, target_m]`, and run the detour A*
+    /// from `from` into a host-held detour OBCR; answer with [`HostEvent::DetourPlanned`] (and
+    /// feed the preview polyline via [`set_detour_preview`](crate::App::set_detour_preview)).
+    /// One-shot; a [`CancelDetour`](HostCommand::CancelDetour) posted while this is undrained
+    /// annihilates it, exactly like the [`PlanRoute`](HostCommand::PlanRoute) pair.
+    PlanDetour(DetourRequest),
+    /// Commit the planned detour (#882): splice the held detour bytes into the active route
+    /// (Phase B), write the derived OBCR to the reserved computed-route slot, rescan, and answer
+    /// with [`HostEvent::DetourCommitted`]. Persistence-critical one-shot, modal-flow-guarded
+    /// (only the preview screen's Press posts it, once).
+    CommitDetour,
     /// Run a DFU phase (epic #615): validate `UPDATE.BIN` ([`DfuAction::Scan`], answered by
     /// [`HostEvent::DfuScanned`]) or arm-and-reboot ([`DfuAction::Install`], which either never
     /// returns or answers [`HostEvent::DfuInstallFailed`]). Single slot, **most-recent-wins by
@@ -135,7 +145,7 @@ pub enum HostCommand {
     ForgetBond,
     /// Persist the live [`settings`](crate::App::settings) at revision `revision` (#810). Emitted
     /// once when an edited settings value leaves the settings subtree (the save is debounced to
-    /// screen exit, not fired per detent) and **not re-emitted while its ack is outstanding**, so a
+    /// screen exit, not fired per step) and **not re-emitted while its ack is outstanding**, so a
     /// slow host is never spammed with RRAM writes. The command carries the app's current settings
     /// revision; under the **snapshot-at-drain rule** the host reads [`settings`](crate::App::settings)
     /// in the same pass it drains this command (no `Settings` copy ever rides in the queue) and later
@@ -169,6 +179,7 @@ pub enum HostCommand {
 pub(crate) enum HostCommandClass {
     RescanStore,
     CancelRoutePlan,
+    CancelDetour,
     DeleteRoute,
     DeleteTrip,
     DeleteRide,
@@ -176,6 +187,8 @@ pub(crate) enum HostCommandClass {
     StampRideSynced,
     FinishTrack,
     PlanRoute,
+    PlanDetour,
+    CommitDetour,
     Dfu,
     ForgetBond,
     PersistSettings,
@@ -194,15 +207,15 @@ impl HostCommand {
     /// cancellations before new work (`CancelRoutePlan` strictly before `PlanRoute`), then
     /// destructive/persistence one-shots, then new work, then idempotent refreshes, then the
     /// derived fill cues. Within one input batch this order — not gesture arrival — is what a
-    /// typed host observes; the per-class latches never encoded a cross-class arrival order to
-    /// begin with (every legacy host imposed its own). The one arrival-order fact that *does*
-    /// matter — a plan confirmed and cancelled inside the same batch must net "no plan" — is
+    /// typed host observes. The one arrival-order fact that matters — a plan confirmed and
+    /// cancelled inside the same batch must net "no plan" — is
     /// enforced at **post time**, not here: the cancel annihilates the undrained request (see
     /// [`HostCommand::CancelRoutePlan`]), so this order alone never hands the host a
     /// dead-on-arrival plan.
-    pub(crate) const DRAIN_ORDER: [HostCommandClass; 15] = [
+    pub(crate) const DRAIN_ORDER: [HostCommandClass; 18] = [
         HostCommandClass::RescanStore,
         HostCommandClass::CancelRoutePlan,
+        HostCommandClass::CancelDetour,
         HostCommandClass::DeleteRoute,
         HostCommandClass::DeleteTrip,
         HostCommandClass::DeleteRide,
@@ -210,6 +223,8 @@ impl HostCommand {
         HostCommandClass::StampRideSynced,
         HostCommandClass::FinishTrack,
         HostCommandClass::PlanRoute,
+        HostCommandClass::PlanDetour,
+        HostCommandClass::CommitDetour,
         HostCommandClass::Dfu,
         HostCommandClass::ForgetBond,
         HostCommandClass::PersistSettings,
@@ -223,6 +238,7 @@ impl HostCommand {
         match self {
             HostCommand::RescanStore { .. } => HostCommandClass::RescanStore,
             HostCommand::CancelRoutePlan => HostCommandClass::CancelRoutePlan,
+            HostCommand::CancelDetour => HostCommandClass::CancelDetour,
             HostCommand::DeleteRoute { .. } => HostCommandClass::DeleteRoute,
             HostCommand::DeleteTrip { .. } => HostCommandClass::DeleteTrip,
             HostCommand::DeleteRide { .. } => HostCommandClass::DeleteRide,
@@ -230,6 +246,8 @@ impl HostCommand {
             HostCommand::StampRideSynced { .. } => HostCommandClass::StampRideSynced,
             HostCommand::FinishTrack(_) => HostCommandClass::FinishTrack,
             HostCommand::PlanRoute(_) => HostCommandClass::PlanRoute,
+            HostCommand::PlanDetour(_) => HostCommandClass::PlanDetour,
+            HostCommand::CommitDetour => HostCommandClass::CommitDetour,
             HostCommand::Dfu(_) => HostCommandClass::Dfu,
             HostCommand::ForgetBond => HostCommandClass::ForgetBond,
             HostCommand::PersistSettings { .. } => HostCommandClass::PersistSettings,
@@ -257,12 +275,30 @@ pub enum HostEvent {
     /// commit-time mini sparkline for the idle prompt. The advisory prompt keeps its documented
     /// single-slot **most-recent-wins** delivery.
     RouteUploaded { id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]> },
+    /// A **trip** upload committed to the store (epic #526): `id` is the trip's durable object id,
+    /// resolved against the **already re-fed** trip catalog (the same rescan-then-resolve ordering
+    /// contract as [`RouteUploaded`](HostEvent::RouteUploaded)). A **fresh** trip (`replaced ==
+    /// false`) raises the "TRIP RECEIVED" popup — and, because a trip object always arrives *after*
+    /// its member routes, replaces the last per-route popup of the upload burst (the single-slot
+    /// most-recent-wins delivery). A **replace** (`replaced == true`) is silent: hosts edit a trip
+    /// exclusively by replace-at-same-id (the desktop's rename / add / remove / reorder is one
+    /// upload *per click*), so announcing each would be a popup parade — the user just made the
+    /// change and needs no card. Deliberately not the route family's behavior: a route replace can
+    /// force adoption mid-ride, a trip replace changes no navigation state at all.
+    TripUploaded { id: u16, replaced: bool },
     /// One or more device warnings were discovered (issue #504); flags accumulate onto the single
     /// dismissable card, each surfaced once per boot.
     Warning(WarningFlags),
     /// The answer to [`HostCommand::PlanRoute`]: the committed nav route's durable id, or the
     /// typed failure. Lands in the planning screen; dropped if the rider already cancelled.
     NavPlanned(Result<u16, obc_route::nav::NavError>),
+    /// The answer to [`HostCommand::PlanDetour`] (#882): the preview figures, or the typed
+    /// failure (mapped to the "try a farther rejoin" presentation). The preview *polyline* rides
+    /// its own [`set_detour_preview`](crate::App::set_detour_preview) feeder, never the event.
+    DetourPlanned(Result<DetourPreview, obc_route::nav::NavError>),
+    /// The answer to [`HostCommand::CommitDetour`] (#882): the spliced route's durable id (the
+    /// re-adoption key), or the typed failure (the old route stays untouched).
+    DetourCommitted(Result<u16, obc_route::nav::NavError>),
     /// The answer to [`HostCommand::ScanCardFree`]: free bytes, or `None` when the scan
     /// failed/is unavailable.
     CardScanned { free_bytes: Option<u64> },
@@ -281,13 +317,34 @@ pub enum HostEvent {
     UpdateFailed { why: DfuFailure, staged: Option<Version> },
     /// The answer to a drained [`HostCommand::PersistSettings`]: the host wrote `revision` to durable
     /// storage (#810). Clears the app's dirty state **iff `revision` is still the latest** — a stale
-    /// ack (a newer edit already bumped the revision) leaves the newer content pending. No compat
-    /// adapter: settings persistence moved straight to the typed protocol.
+    /// ack (a newer edit already bumped the revision) leaves the newer content pending.
     SettingsPersisted { revision: u16 },
     /// The answer to a drained [`HostCommand::PersistSettings`] whose write failed (#810): the app
     /// keeps `revision` dirty and re-arms a bounded backoff retry, and surfaces the failure on the
-    /// shared advisory warning card. `error` is the bounded reason. No compat adapter.
+    /// shared advisory warning card. `error` is the bounded reason.
     SettingsPersistFailed { revision: u16, error: SettingsSaveError },
+}
+
+/// A planned detour's preview figures (#882), carried on [`HostEvent::DetourPlanned`]: the cost
+/// delta the HUD line shows (`detour length − skipped span length`, signed — a detour around a
+/// wandering span *can* be shorter), the detour's own length, and — since #1091 — its own climb,
+/// which the preview turns into the second signed figure beside the distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetourPreview {
+    /// `detour_total − (rejoin_m − progress_m)`, meters.
+    pub cost_delta_m: i32,
+    /// The planned detour's honest length (summed raw edge meters).
+    pub total_distance_m: u32,
+    /// Where the plan actually rejoins the route — the chooser's `target_m`, or farther when the
+    /// approach was trimmed to its first sustained tail contact. The replaced span the climb
+    /// figure subtracts is `[anchor_m, rejoin_m]`, so it describes the same swap
+    /// [`cost_delta_m`](Self::cost_delta_m) already prices.
+    pub rejoin_m: u32,
+    /// The planned detour's own dead-banded ascent (m), or `None` when **no terrain sample
+    /// resolved** for it — the producer's explicit
+    /// [`RouteStats::has_elevation`](obc_route::RouteStats), never a guess at the values, because a
+    /// genuinely flat detour is `Some(0)` and must still show a figure.
+    pub ascent_m: Option<u32>,
 }
 
 /// What [`App::drain_host_commands`](crate::App::drain_host_commands) reports about a drain pass.

@@ -216,8 +216,8 @@ impl RouteMenuScreen {
         }
         self.pin(&rows, cx.trips);
         match g {
-            Gesture::Turn(n) => {
-                let t = list::on_turn(&mut self.selected, n, len);
+            Gesture::Step(n) => {
+                let t = list::on_step(&mut self.selected, n, len);
                 self.pin(&rows, cx.trips);
                 t
             }
@@ -401,9 +401,10 @@ pub(crate) fn fit_name(name: &str, max_chars: usize) -> heapless::String<64> {
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::trip::TripInput;
     use crate::{AppState, Settings};
-    use obc_route::BBox;
+    use obc_map_scene::BBox;
 
     /// A minimal named route summary — the Route menu only reads `name` in `handle`.
     fn summary(name: &str) -> RouteSummary {
@@ -433,19 +434,7 @@ mod tests {
     ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes,
-            rides: &[],
-            trips,
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { routes, trips, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -480,7 +469,7 @@ mod tests {
         );
         // Row 1 = the one unfiled route (index 2) → its overview, active_route = 2.
         let mut scr = RouteMenuScreen::new();
-        run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Turn(1)); // → row 1
+        run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Step(1)); // → row 1
         let mut act = Activity::new(Mode::Idle);
         let t = run(&mut scr, &mut act, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "the loose route opens its overview");

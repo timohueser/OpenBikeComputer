@@ -28,7 +28,25 @@ _run() {
 obc_init() {
   [[ -n "${OBC_ROOT:-}" ]] || { echo "obc: OBC_ROOT unset (run via the obc wrapper)" >&2; return 1; }
   local local_file="${OBC_TOOLS:-$OBC_ROOT}/obc.local"
-  [[ -f "$local_file" ]] && source "$local_file"
+  # Linked worktrees share operator credentials with the main checkout. Keep the
+  # secret file in one gitignored place instead of copying it into every worktree.
+  if [[ ! -f "$local_file" ]]; then
+    local common_dir common_root
+    common_dir="$(git -C "$OBC_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$common_dir" ]]; then
+      [[ "$common_dir" = /* ]] || common_dir="$OBC_ROOT/$common_dir"
+      common_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd || true)"
+      [[ -n "$common_root" && -f "$common_root/tools/obc.local" ]] && local_file="$common_root/tools/obc.local"
+    fi
+  fi
+  # `obc.local` is the operator-facing environment file. Auto-export it so values
+  # such as OBC_CATALOG_URL and the R2 credentials reach the Rust binaries and the
+  # desktop process without making every local line repeat `export`.
+  if [[ -f "$local_file" ]]; then
+    set -a
+    source "$local_file"
+    set +a
+  fi
   # remember where the user invoked us, before recipes cd around
   OBC_PWD="${OBC_PWD:-$PWD}"
   return 0
@@ -96,29 +114,25 @@ _all_maps() {
   done < <(_maps_search) | sort -rn | cut -f2- | awk '!seen[$0]++'
 }
 
-# Resolve a map: explicit arg > $OBC_MAP > newest built map > friendly error.
+# Resolve an explicit map: arg > $OBC_MAP > newest locally built map > friendly error.
+# Registry scenarios are resolved by the `sim` recipe before this fallback runs.
 resolve_map() {
   local m="${1:-}"
   [[ -n "$m" ]] && { _abspath "$m"; return 0; }
   [[ -n "${OBC_MAP:-}" ]] && { _abspath "$OBC_MAP"; return 0; }
   local newest; newest="$(_all_maps | head -n1)"
   if [[ -n "$newest" ]]; then _warn "no map given — using newest: ${newest##*/}"; printf '%s\n' "$newest"; return 0; fi
-  # last resort: the committed sample fixture, so a fresh clone's `obc sim` just works
-  local fx="$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm"
-  [[ -f "$fx" ]] && { _warn "no map found — using the bundled sample: ${fx##*/}"; printf '%s\n' "$fx"; return 0; }
   _err "no map file. Pass one:  obc sim <map.obcm>"
-  _hint "or set OBC_MAP in obc.local, or build one:  obc pack <region.osm.pbf>   /   obc web"
+  _hint "run a fixture scenario with 'obc sim grimsel', set OBC_MAP, or build one with 'obc pack'"
   return 1
 }
 
-# Resolve a GPX: explicit arg > $OBC_GPX > bundled default. 'none'/'-' means skip.
+# Resolve a GPX: explicit arg > $OBC_GPX. 'none'/'-' means skip.
 resolve_gpx() {
   local g="${1:-}"
   [[ "$g" == none || "$g" == "-" ]] && { printf 'none\n'; return 0; }
   [[ -n "$g" ]] && { _abspath "$g"; return 0; }
   [[ -n "${OBC_GPX:-}" ]] && { _abspath "$OBC_GPX"; return 0; }
-  local def="$OBC_ROOT/firmware/obc-sim/assets/grimsel-climb.gpx"
-  [[ -f "$def" ]] && { printf '%s\n' "$def"; return 0; }
   printf '\n'   # nothing — caller decides whether that is fatal
 }
 

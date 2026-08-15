@@ -1,6 +1,6 @@
 ---
 title: The companion link
-description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the device-side upload prompts, the single-channel change-signal sync loop with synced-ride reconciliation, card-borne store epochs that name each id era, proof-only route badges, on-device deletes flowing back, and passkey pairing with reject-when-bonded and silent reconnect.
+description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, transfers, the change-signal sync loop, store epochs, and passkey pairing.
 ---
 
 # The companion link
@@ -13,9 +13,9 @@ you've paired, powered, and are in range, it just works — no accounts, no clou
 nothing leaves the two devices.
 
 This page is the *shape* of that link. The normative, byte-level reference is the
-[BLE interface spec](src:obc-ble-interface-spec.md) (the same tier as the
-[`OBCM`](src:OBCM_Spec.md) / [`OBCR`](src:OBCR_Spec.md) format specs); here we
-cover the design and the *why*. Four ideas run through all of it:
+[BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as the
+[`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); here we
+cover the design and the *why*. Five ideas run through all of it:
 
 - **Two planes.** Small typed control state rides GATT; bulk bytes ride a single
   L2CAP channel. Nothing large ever crosses GATT.
@@ -62,7 +62,7 @@ went*; the CoC carries *the bytes*.
   <rect class="d-panel-2" x="150" y="88" width="420" height="86" rx="10" style="fill:#eef2df" />
   <text class="d-label" x="360" y="112" text-anchor="middle" style="fill:#3c6b39">Control plane · GATT</text>
   <text class="d-sub" x="360" y="132" text-anchor="middle">small, typed state — identity · config · orchestration</text>
-  <text class="d-sub" x="360" y="150" text-anchor="middle">command · status · config · transferControl · psm · protocolVersion</text>
+  <text class="d-sub" x="360" y="150" text-anchor="middle" style="font-size:9.5px">command · status · config · transferControl · psm · protocolVersion</text>
   <text class="d-sub" x="360" y="168" text-anchor="middle" style="fill:#a9501c">≤ 512 bytes per attribute — a hard wall</text>
 
   <!-- data lane -->
@@ -88,6 +88,57 @@ bytes, and the device sinks them straight to storage while updating a running
 checksum. There is **no reassembly buffer** — which is the whole point on a
 RAM-limited microcontroller.
 
+It also buys something the design didn't set out to get. A channel with no
+framing of its own makes **no demands on what carries it** beyond "reliable and
+ordered" — and a USB bulk endpoint is exactly that. So the object model above,
+the 12-byte descriptor, the status envelope and the whole-object CRC-32 all
+transplant onto a cable without a byte changing: USB is a second *transport*, not
+a second protocol, and it reads the same
+[`specs/vectors/`](src:specs/vectors) fixtures. The host half lives in the
+web builder's [USB client](src:builder/app/src/lib/usb), which
+drives the whole contract over an in-memory device; the device half — the LM20's
+USB peripheral, and the small matter of which control characteristic a frame
+belongs to when there is no GATT to say so — is
+[`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb), and it ships in
+**every** firmware build rather than behind a flag. The plane now comes up on
+hardware, and the fix that got it there is worth knowing about: it must be built
+*when a cable appears*, never at boot — see below.
+
+That host client has **two** transports under it, and only one of them is a
+browser. WebUSB is Chromium-only, so the desktop app drives the cable itself
+through [`nusb`](src:apps/obc-desktop/src/usb) and is the universal path,
+including for Safari and Firefox. Everything above the byte pipe is the same
+code: the same object model, the same descriptors, the same CRC, the same
+fixtures. The native side moves bytes and nothing else — it does not know what an
+object id is — which is the property that keeps one protocol implementation
+rather than two drifting ones.
+
+There is one place the two hosts genuinely differ, and it is about size. A
+browser holds a map in a scratch file and streams it through the tab; the desktop
+app hands the *file path* to the transport and the bytes go disk → endpoint
+without ever entering the webview — no reason to copy a few hundred megabytes
+through JavaScript just to hand them straight back.
+
+The browser side already **writes** over it: a map, a dropped GPX and a firmware
+image, from the [map builder](https://openbikecomputer.com/)'s
+device step. The cable changes exactly one thing about the object set, and it is
+the interesting one. A **map** was never an object, because a 200 MB file was
+never going over BLE — so USB adds a `map` type carrying an
+[OBCM](../formats/) file, uploaded and committed by the same six steps as
+everything else. Two consequences follow from the size rather than from the
+format: the browser cannot hold the artifact (it streams the download into a
+scratch file, checksums it against the [catalog
+manifest](src:specs/OBCC_Spec.md) and only then opens the transfer, because the
+descriptor has to announce a whole-object CRC before the first byte moves), and
+the transfer is still measured in *tens of seconds* — a few hundred megabytes is
+a few hundred megabytes whichever end is slower. Which end that is has actually
+changed: the card was the obvious ceiling while it was reached over SPI, and
+since the storage transport moved to native 4-bit sEMMC it writes at 8.2 MB/s raw,
+which is no longer obviously below what the cable delivers. What sits between the
+two is filesystem bookkeeping and how much of the pipeline can overlap — see the
+pipeline notes further down. How maps are named and enumerated on the card is the
+device side's answer to the same size, and it is worth its own section below.
+
 ## Objects are files the device already speaks
 
 Every bulk payload is a typed **object**. The set is small and closed:
@@ -100,8 +151,139 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed-size entries (`routeList` **84 B**, `rideList` **72 B**) |
 | `9` | `trip` | app → device (upload) · device → app (detail read) | a **trip** — tiny metadata that *references* member routes by object id in ride order (spec §7.7); routes stay standalone OBCR files |
 | `10` | `tripList` | device → app | the trip catalog — fixed-size **76 B** entries, mirroring `routeList`'s core (no auto-expiry tail) |
-| `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
+| `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:specs/OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
+| `16` | `map` | host → device (upload) | an [OBCM](../formats/) map — **the cable only**, see below |
+
+`map` is the one type Bluetooth could never have carried, and it is the clearest
+illustration of what a second transport buys: a map is hundreds of megabytes, so
+the type would have been dead weight until [a wire existed](#the-same-link-down-a-cable)
+that could move one.
+
+### A map is the one object that does not fit the pattern
+
+Every other upload gets its atomicity the same way: the bytes stream into a temp
+file the catalog scans never match, and the commit *copies* that temp to its
+final name, holding the 4-byte format magic back until the body is durable. A
+power cut leaves either an invisible temp or a magic-less file every reader
+rejects. Nothing half-written is ever visible.
+
+A map cannot pay for that copy. At a few hundred megabytes it would double both
+the write time — already minutes — and the free space the card must have, to buy
+a guarantee for the one object that can always be built again. So a map streams
+**straight into its final file**, and earns the same commit point a different
+way: the file opens with four zero bytes where the magic goes, the stream's own
+first four bytes are held aside, and they are written last, after the
+whole-object checksum *and* the header have both checked out. The interrupted
+state is byte-for-byte the one the copy leaves — a magic-less file the map
+catalog refuses and a boot sweep reclaims.
+
+Four more rules fall out of the same size:
+
+- **A map upload is new-only.** Writing into a stored map's file would destroy it
+  as the replacement arrives, and "a failed checksum never touches the old copy"
+  is not a promise to break on the one file the rider needs to see where they
+  are. Replacing a map is *send the new one and let the device retire the old
+  one*; there is no delete for a map on the wire at all.
+- **The device keeps one uploaded map.** It loads a single map and never switches
+  between them — the choice is made once at startup and the file stays open for
+  the session — so a second copy is a few hundred megabytes no reader will ever
+  open. The retirement happens at the boot that adopts the new map, and only once
+  that map has opened: the upload lands while its predecessor is still being
+  streamed from, so the instant of the commit is exactly when the old file cannot
+  be touched. Between the two, the card carries both. A map the rider copied on
+  themselves is never retired — it has no device-assigned id, and the rule is one
+  *uploaded* map, not one file.
+- **Free space is checked before the first byte**, not discovered at the last.
+  A card that cannot fit the announced map is told so at the announce, with a
+  reserve left over so a map can never take the last cluster and strand the ride
+  log.
+- **The device knows the map arrived, but not what it is.** The descriptor has no
+  name field, the payload is opaque bytes, and the [OBCM header](../formats/)
+  carries no name and no build date. A device can list the maps it holds — id,
+  filename, size, format version, bounding box, all read off the card — and
+  cannot say where any of them came from. That is a gap in the protocol, not in
+  the filesystem, and closing it means a new command rather than a new object.
+
+### A big map arrives in pieces, and the last one is the one that counts
+
+Past roughly Germany scale a map stops being a file. FAT32 caps one file at 4 GiB
+and the map format's own offsets are 32-bit, so a logical map becomes a **volume
+set**: a small manifest plus up to thirty-two other files — ordinary map files,
+and at most one [terrain raster](../terrain/) carrying the whole map's elevation
+([more on the shape](../formats/#one-map-several-files)). Every interface still
+shows one map — that part is a rule, not a convention.
+
+Sending one is therefore several transfers instead of one, and the order matters
+in a way nothing else on this link does. The manifest is what says those files
+are one map, so it goes **last**: until it lands there is no map, only some large
+files no reader will open. That is the whole atomicity story, and it is the same
+held-back-magic trick a single map uses, one level up — a file whose first four
+bytes are missing is not a map, and a *set* whose manifest is missing is not one
+either.
+
+The interesting part is what the device does with that rule, because a rule
+addressed to the sender is not a guarantee. So the device enforces it:
+
+- **A manifest sent early is refused, not stored.** If any shard the manifest
+  will name has not arrived and checked out, the device says no at the announce —
+  before a single byte of it streams. A host that gets the order wrong finds out
+  in milliseconds rather than after several gigabytes.
+- **Each piece says which piece it is, and how many there are.** The count rides
+  every one of them, not just the first, and that buys the refusal that matters
+  most: a device that cannot hold enough files open for a set that large says so
+  at *shard zero*. Learning it at the manifest would mean learning it after the
+  whole upload.
+- **The terrain raster is a piece too, and it is not a shard.** A map file's
+  announcement is "piece *k* of *n*", which is a sentence about the map files the
+  manifest lists first; the raster has no *k*, is not a map file, and lands under
+  a different name. So it travels as its own kind of object, after every map file
+  and before the manifest. That ordering is not tidiness: the manifest describes
+  every piece, raster included, so its length depends on whether the raster
+  arrived — and the device checks that length at the announce, against what this
+  upload actually delivered. Send the manifest for a set with elevation and skip
+  the elevation, and the two ends disagree by one 56-byte record, which is enough
+  to lose the whole upload at its final transfer.
+- **An interrupted set leaves nothing to explain.** The device writes the
+  manifest's name as a four-zero-byte placeholder before the first shard and fills
+  it in only at the very end, so a manifest whose first four bytes are *not* a
+  finished signature — all zeros, half-written, or not there yet — is proof the
+  device was the one writing it. A card reader never leaves that, because it
+  copies a manifest that is already complete, front to back. A pulled cable
+  deletes the set immediately; a power cut is cleaned up at the next start-up. A
+  rider half-way through copying a set by hand is left strictly alone — right
+  down to the id the next upload picks, which skips any name their copy has
+  already used. That is the direction to be wrong in: the alternative is deleting
+  a map that was minutes from working.
+- **Cancelling really cancels.** Because a set is several transfers, "stop" nearly
+  always arrives in the gap between two of them, where there is nothing in flight
+  to interrupt. The device takes it as abandoning the set: the staged pieces go
+  immediately, and the next set can start on the same connection.
+
+Because each piece is its own file, re-sending one that failed costs that one
+piece rather than the set — the only kind of resume this link offers, and the one
+that matches what actually goes wrong. Resuming after the cable is pulled is a
+different thing and is not pretended at: the device would have to be able to say
+which pieces of which set it already holds, and that is a question the protocol
+does not yet have.
+
+One limit is worth stating rather than leaving to be discovered. Each piece
+announces how many pieces there are, which is what catches a sender that changes
+its mind mid-upload — but only when the new set is a *different* size. Two sets
+of the same size look identical piece by piece, because nothing in a piece's
+announcement says which set it belongs to. What catches that is the manifest at
+the end, which is checked against the files actually on the card and refused if it
+does not describe them; the set is then deleted whole. Later than an announcement,
+but still before anything becomes a map.
+
+Because the FAT layer the firmware uses creates 8.3 filenames only, a received
+map lands as `MP7.OBM` — the same trick the [reserved computed-route
+file](../architecture/#on-device-routing-the-router-seam) plays with `.OBR`, and the
+same convention that puts a stored object's durable id in its filename. Which map
+the renderer streams from
+is recorded in a small file beside them, and a map that has just arrived becomes
+that choice; it takes effect at the next start-up, because the map's tables are
+parsed once at boot and held for the whole session.
 
 The key move is that **a route on the wire is the same bytes as a route on the
 card.** The phone converts an imported GPX or TCX to an OBCR file and streams
@@ -112,14 +294,17 @@ is the mirror in the other direction: the device stores each finished ride as
 the exact bytes it will later stream, so a ride download is a verbatim file copy.
 
 One object is not a stored file but a **firmware update**: a `fwImage` upload
-carries an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, which the device
+carries an [`OBCU`](src:specs/OBCU_Spec.md) `UPDATE.BIN` container, which the device
 writes to the card root verbatim — the transfer layer stays format-blind, exactly
-as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
+as with a route's OBCR bytes. That container is **signed**, and the *device* checks the
+signature before it will install anything, so a peer can only ever stage an image it
+obtained from a real release. **Staging is not installing.** A committed `fwImage`
 only *places* the file; the app then sends a separate `installFw` command to
 *request* an install, and the device runs its own scan and shows a **confirm card**
-that the rider must approve with a physical encoder press. The phone can never arm
+that the rider must approve with a physical Select press. The phone can never arm
 or reboot the device on its own — the same on-glass gate the pairing passkey uses.
-The whole trust model, the two delivery paths, and the RRAM layout are on the
+The whole trust model, the three delivery paths, how a tagged release is published and
+served so the phone can find it at all, and the RRAM layout are on the
 [firmware updates](../firmware-updates/) page.
 
 **Object ids are durable.** Each stored object has a `u16` id the device assigns
@@ -183,7 +368,7 @@ over the CoC, confirm over GATT.** Here is an upload — a route leaving the pho
 The checksum is a **whole-object CRC-32/IEEE**, verified once at commit — the
 same variant as gzip/PNG. It is deliberately *not* a per-packet CRC (the link
 already covers the air); it catches what the link can't — an encode bug, a
-storage error — **end to end**, from the phone's encoder to the device's flash
+storage error — **end to end**, from the phone's request to the device's flash
 and back.
 
 > **Restart, not resume.** An object is tens of kilobytes — a couple of seconds
@@ -221,25 +406,84 @@ and back.
 > catalogs right before planning, so a retry sees what actually landed.
 
 > **Answers are bounded — a lost notify never wedges.** Every solicited answer
-> the app waits on — a transfer verdict, a download announce, a command ack —
-> rides the `status` notify, and the device deliberately **abandons** a notify
-> it can't deliver in time rather than stall a plane (a lost notification is the
-> app's to recover by re-reading, never a reason to wedge the link). The app
-> holds the same posture: each of those waits is time-bounded, because they hold
-> the app's single transfer slot — an unbounded wait on one lost verdict would
-> silently wedge every later list read, sync, and upload behind it until the app
-> restarts. The CoC is deliberately unframed, so the slot does not simply free:
-> the app first closes and reopens the channel on a timeout, cancellation,
-> crossed result, or descriptor-open reject. That reset discards raw upload
-> bytes that may already have queued before an asynchronous reject arrived; the
-> device treats the channel drop as an implicit abort and sends no late result.
-> A committed close is correlated by object id **and byte count**, so the 310-byte
-> close of a preceding catalog read can never complete a 9,360-byte upload. A
-> timed-out exchange fails like a drop: the slot then frees, a retry
-> re-sends the whole object, and the convergence rules above absorb the
-> "committed but unheard" case. The same rule covers a data-plane stall under a
-> live link: a CoC that moves no bytes is failed by a watchdog and surfaces as a
-> plain retryable failure, never a progress bar parked at 99 %.
+> the app waits on rides the `status` notify, and the device deliberately
+> **abandons** a notify it can't deliver in time rather than stall a plane — a
+> lost notification is the app's to recover by re-reading. The app holds the
+> same posture: each wait is time-bounded, because it holds the app's single
+> transfer slot, and an unbounded wait on one lost verdict would wedge every
+> later list read, sync, and upload behind it. On a timeout, cancellation, or
+> reject the app closes and reopens the CoC (the channel is unframed, so a
+> reset is what discards queued bytes), and the device treats the drop as an
+> implicit abort. A committed close is correlated by object id **and byte
+> count**, so the close of a preceding catalog read can never complete an
+> upload; a data-plane stall under a live link is failed by a watchdog and
+> surfaces as a plain retryable failure, never a progress bar parked at 99 %.
+
+### Abort means two things, and the descriptor says which
+
+Cancelling is the obvious use of `abort`, and not the common one. The other is
+**quiescing**: after a transfer the device has already refused — a rejected
+descriptor, a shard whose checksum did not match — the host sends an abort not to
+stop anything but to get the channel *empty* before it retries. On an unframed
+pipe the sender does not wait between chunks, so bytes it queued for the refused
+transfer are still arriving, and neither end can recall them; land them in front
+of the retry and the retry fails a checksum for reasons nothing in the exchange
+explains. The abort handshake is the one moment both ends are synchronised — the
+host has stopped and is waiting for an answer — so it is the one moment the
+device can read the channel dry.
+
+Which makes the descriptor's **type** load-bearing when a volume set is staged.
+Giving up on a set deletes every file of it; quiescing after one refused shard
+must delete nothing at all, because the caller is about to re-send that shard and
+the rest of the set has to still be there. So abandonment names the *set*, and
+everything else is a quiesce. Getting that wrong is not a slow retry, it is a map
+that seals a manifest over no files.
+
+### What actually limits an upload
+
+The protocol is not the limit and never has been: the bulk channel carries the
+object's bytes with **no per-chunk framing and no per-chunk acknowledgement**, so
+nothing in the exchange makes the host wait for the device between chunks. What
+makes a map take minutes is the pipeline underneath, and it has four distinct
+stages:
+
+- **How much the host keeps queued.** A browser hands each write to the USB
+  service and back, so with a single transfer outstanding the wire is idle for
+  that round trip between every chunk. The host keeps a small bounded window of
+  transfers queued instead — bounded, because the promise settling *is* the
+  backpressure that stops a 300 MB map being read into the tab faster than the
+  device can take it.
+- **How the device receives.** A USB controller only accepts what the firmware
+  has told it to expect, and the obvious instruction — *expect one packet* — is
+  the expensive one: the endpoint then refuses everything after that packet until
+  the firmware has been scheduled, copied it out and asked for the next. That
+  refusal is not free, it is a round trip through an interrupt, a wake-up and the
+  task scheduler, per 512 bytes, and it was the largest single term in the budget
+  when this was first measured. The device now arms the endpoint for a **burst**
+  of packets instead, so the controller keeps taking the wire into its own
+  buffers while the processor is busy with the card, and the firmware collects
+  the whole burst in one go. Buffer DMA also moves that burst between USB SRAM
+  and memory without an interrupt and CPU copy per packet. The dial is a single
+  constant; what it buys is that the stage below can run without stopping the
+  wire.
+- **How much reaches the card per command.** Handing the filesystem 512 bytes
+  makes it issue one single-block write — one whole internal program cycle of the
+  card — per packet. The firmware therefore stages arriving bytes in two **64 KiB
+  halves**, coalesces their adjacent FAT clusters, and hands the card one
+  128-block multi-write. One half fills from the cable while FLPR DMA writes the
+  other; ownership does not return to USB until that DMA has completed.
+- **Filesystem bookkeeping.** Extending a file by one cluster costs several
+  single-block writes of the allocation table — and they land *between* the bulk
+  bursts, which is exactly where they hurt. An upload announces its length before
+  the first byte, so the whole chain can be reserved up front. A one-sector FAT
+  cache then absorbs the residual updates, and the card gets a best-effort
+  pre-erase hint before each long run.
+
+The result measured on the LM20-DK is roughly **7.3–7.9 MB/s** for real map-set
+files, versus about 2.0 MB/s for the original synchronous path with a software
+CRC pass. A final 73.4 MB builder set measured 7.50, 7.27 and 7.85 MB/s for its
+three map shards and 7.65 MB/s for terrain. At that point the card and filesystem
+are again the visible ceiling, not USB framing or checksum work.
 
 ### When a route lands — the device's side
 
@@ -265,6 +509,13 @@ what the rider is doing:
   it reopens the geometry handle, re-runs map-matching from the current fix, and
   recomputes progress — and the card just tells the rider it happened. The
   recording session is untouched.
+- **A whole trip** → one *"Trip received — View trip / Dismiss"* card. The member
+  routes commit first (each raising the prompt above, the newest replacing the
+  last), then the trip object lands and its card takes the prompt's place — so
+  the transfer ends on a single card showing the trip's name, summed
+  distance/climb, and stage count; *View trip* opens the trip's folder in the
+  Route menu. Same card whether idle or riding (a trip is a folder, not a
+  navigable route — there is nothing to swap onto).
 
 Two rules keep the prompt from ever doing harm. It **never lands while a hold
 gesture is charging** — a popup appearing under a half-completed *Finish &amp; new*
@@ -302,9 +553,9 @@ something changed.
   <text class="d-sub" x="91" y="116" text-anchor="middle">upload · ride</text>
   <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
 
-  <rect class="d-panel-2" x="198" y="70" width="150" height="72" rx="10" style="fill:#eef2df" />
+  <rect class="d-panel-2" x="192" y="70" width="162" height="72" rx="10" style="fill:#eef2df" />
   <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">storeChanged</text>
-  <text class="d-sub" x="273" y="118" text-anchor="middle">names the store · rev ++</text>
+  <text class="d-sub" x="273" y="118" text-anchor="middle" style="font-size:9.5px">names the store · rev ++</text>
   <text class="d-sub" x="273" y="134" text-anchor="middle">notify (status)</text>
 
   <rect class="d-panel" x="380" y="70" width="150" height="72" rx="10" />
@@ -324,7 +575,7 @@ something changed.
 
   <!-- loop back -->
   <path d="M633 142 C 633 190, 91 190, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
-  <text class="d-sub" x="360" y="182" text-anchor="middle" style="fill:#6b7758">on the next change</text>
+  <text class="d-sub" x="360" y="202" text-anchor="middle" style="fill:#6b7758">on the next change</text>
 
   <!-- ackRides reverse lane -->
   <line x1="20" y1="216" x2="700" y2="216" style="stroke:#d6cda8;stroke-width:1" />
@@ -336,7 +587,7 @@ something changed.
   <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
   <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device marks synced</text>
 </svg>
-<figcaption><code>storeChanged</code> is the cheap immediate "did anything change?" signal — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object — a compact catalog of fixed-size entries — then downloads only the objects new to it. Changes that arrive during a list transfer coalesce behind it instead of cancelling the open exchange. Because BLE notifications are best-effort edges, the app also runs a low-cadence 60-second catalog audit; a lost edge can delay a checkmark update, never leave it stale until restart. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store, so both fire the same signal. It shares the <code>status</code> characteristic with every other device → app message, so there is one subscription and one ordering domain. <em>(v1 also carried a separate 10-byte <code>objectStore</code> digest characteristic; v2 drops it as a redundant second signal whose per-boot <code>revision</code> tripped clients that persisted it.)</em> The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
+<figcaption><code>storeChanged</code> is the cheap "did anything change?" signal — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object, then downloads only the objects new to it; changes arriving during a list transfer coalesce behind it. Because BLE notifications are best-effort, the app also runs a low-cadence 60-second catalog audit — a lost edge can delay a checkmark, never leave it stale until restart. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store and fire the same signal. The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
 </figure>
 
 The device is the other half of this loop. A change doesn't only come *from* the
@@ -362,7 +613,7 @@ a trip pointing at a route that isn't there, and re-running skips whatever alrea
 landed. A device-side "delete this whole folder" is a cascade the device composes
 from ordinary object deletes (the member routes, then the trip), each flowing back
 as its own `storeChanged`; the wire trip delete itself is non-cascading. The
-byte layout is the [BLE interface spec §7.4 / §7.7](src:obc-ble-interface-spec.md).
+byte layout is the [BLE interface spec §7.4 / §7.7](src:specs/obc-ble-interface-spec.md).
 
 **Ids are never reused — which is what keeps the bookkeeping honest.** The phone
 persists *"I uploaded route 7"* and *"I've synced ride 12"* by durable object id.
@@ -378,11 +629,11 @@ for the old object (next section).
 ### Synced rides — reconciled state, not event inference
 
 A tracked ride is precious (unlike a route, the phone can't re-upload it), so the
-device keeps a **"synced" flag** per ride — has the phone downloaded this one at
-least once? It drives the small check mark on a synced Rides-list row (an
-unsynced ride shows nothing there) and the *"synced" / "not synced"* slot in the
-Ride detail's title bar, so a rider deleting an un-downloaded ride is told what
-they're about to lose.
+device keeps a **"synced" flag** per ride — does a durable copy of this one exist
+somewhere off the device? It drives the small check mark on a synced Rides-list
+row (an unsynced ride shows nothing there) and the *"synced" / "not synced"* slot
+in the Ride detail's title bar, so a rider deleting an un-downloaded ride is told
+what they're about to lose.
 
 The naïve way to set that flag is to flip it when a ride download completes. But
 that makes it an *event inference* — and events are lossy. A ride synced before
@@ -393,9 +644,58 @@ correct it. So the flag is instead **reconciled state**. The phone's library is
 the ground truth for "I have this ride", and on every connect it sends the device
 the list of ride ids it holds — a small `ackRides` command. The device sets
 (never clears) the synced flag for each; a change bumps the ride revision so the
-Rides screen's cue updates live. The flag becomes *"the phone has confirmed it
-holds this"*, self-healing on every reconnect rather than riding on a single
-download event landing.
+Rides screen's cue updates live. The flag becomes *"a peer has confirmed it holds
+this"*, self-healing on every reconnect rather than riding on a single download
+event landing.
+
+**Who is allowed to say it.** Read the flag by what it *does* — guard a delete,
+colour a cue, and anchor the auto-expiry countdown
+([#638](https://github.com/timohueser/OpenBikeComputer/issues/638), whose
+`synced_at` stamp is written beside it) — and it is a **durability predicate**,
+not a statement about iPhones. Which makes "who may set it" a real question,
+because the answer decides whether a ride can be auto-deleted while it exists
+nowhere else. Three peers can pull a ride; only two of them may say anything
+about it:
+
+| Peer | Acks? | Why |
+| :-- | :-- | :-- |
+| The phone, over BLE | yes — and re-sends its whole set on every connect | it keeps a library, so it can heal the flag as well as set it |
+| The desktop app, over USB | yes, **after `fsync`** | it writes into a folder the rider chose and can back up |
+| The hosted site, over WebUSB | **never** | a browser download is a file the rider may cancel at the save dialog, and the site keeps no record of what it handed over |
+
+The desktop app acking is what keeps auto-expiry alive for a rider with no
+iPhone; it costs no protocol change, because `ackRides` lives in the object store
+rather than the BLE plane and is monotonic, so a phone's heal and a desktop ack
+merge in either order. The browser deliberately gives that up: its ride export
+([#904](https://github.com/timohueser/OpenBikeComputer/issues/904)) is a pure
+read that leaves the flag, the sidecar and the countdown exactly as it found
+them, and says so on screen — an export is not a backup.
+
+The invariant underneath all three is **ack after the copy is durable, never on
+transfer completion**. Acking when the last byte arrives starts a countdown
+against a ride that is not yet on anyone's disk, which is the single way this
+feature can lose data.
+
+"Durable" is a syscall, not a hope. On the desktop side a pulled ride is written
+to a temporary sibling, `fsync`ed, renamed over its destination, and the
+*directory* is `fsync`ed too — that last step is what makes the rename survive a
+power cut, and skipping it is the classic failure where the bytes are on the disk
+and the name pointing at them is not. Only then does the index that lists the ride
+commit, by the same four steps; only then does the ack go out. A crash anywhere in
+the middle leaves an index that does not mention the ride, so the next pull
+fetches it again and the device was never told anything — the direction that costs
+a re-download rather than a ride. And because the ack list is computed by asking
+the *filesystem* which rides are there, rather than by remembering which ones were
+just written, a file the rider deleted in Finder drops out of it on its own.
+
+Two more rules fall out of the same reasoning, and both are about *fetching*
+rather than acking. The peer always pulls the **whole** ride list and dedupes
+against its own library: the device's `synced` flag is a statement about
+durability somewhere else, so using it to decide what to download would skip
+exactly the rides a second peer has never seen. And a ride is keyed by
+`(serial, epoch, id)` — the [id era](#store-epochs-which-id-era-youre-talking-to)
+below — never by the bare id, because a bare-id library silently discards a new
+ride that reused a recycled one.
 
 ### The trusted clock and route retention
 
@@ -421,7 +721,19 @@ SD sidecar (route id → level + last-used), travels as a command, and the devic
 reports each route's computed `expires_at` back in its `routeList` entry — which
 grew a small tail to carry it. Formats stay pinned; the mutable state routes
 *around* them. The command layouts, the connect-ordering rules, and the 84-byte
-list entry are the [BLE interface spec §4.4 / §7.4](src:obc-ble-interface-spec.md).
+list entry are the [BLE interface spec §4.4 / §7.4](src:specs/obc-ble-interface-spec.md).
+
+**A whole trip is one retention choice.** When you upload a *trip*, the confirm
+sheet shows a single **Auto-delete** picker, and that one choice is the
+postcondition for **every** member route — a trip is one unit, so the trip-level
+pick overrides whatever level a member route carried on its own. The subtlety is
+that a whole-trip upload skips the *bytes* of any stage the device already holds
+(same content, nothing to re-send) — but a skipped stage is skipped only for
+transfer, **never** for policy: the retention command still lands on it, so the
+one trip choice reaches the already-current stages exactly as it reaches the
+freshly-uploaded ones. A re-run at the level a stage already holds sends nothing
+(idempotent), and an old device with no expiry support shows no picker and
+receives no retention command at all.
 
 ## Store epochs — which id era you're talking to
 
@@ -438,13 +750,14 @@ synced"* while the app insisted everything was up to date.)
 The fix names each id era with something the phone can watch change: a **store
 epoch** — a `u32` random nonce. The device serves it in the same **open,
 pre-pairing** `protocolVersion` read the app already performs first on every
-connect, widened from a bare version to `version u16 · store_epoch u32`. So before
-`ackRides` or any reconcile write fires, the app knows both the protocol version
-*and* which era it is looking at.
+connect, widened from a bare version to `version u16 · store_epoch u32 ·
+obcm_version u8 · feature_bits u32`. So before `ackRides` or any reconcile write
+fires, the app knows the protocol version, which era it is looking at, which map
+format the device reads, and which optional contracts it speaks (below).
 
 **The epoch lives on the card.** It is persisted as a tiny **`EPOCH.OBE`** file in
 the card root — the record layout and its torn-file → fresh-era conventions are in
-the [BLE interface spec §1](src:obc-ble-interface-spec.md) — so the store carries
+the [BLE interface spec §1](src:specs/obc-ble-interface-spec.md) — so the store carries
 its *own* era name. Swap the card and you transplant the
 store: the epoch travels with it, so the same device never conflates two cards' id
 spaces — and a card written by a *different* device presents *its own* epoch, a
@@ -468,10 +781,45 @@ unaffected). The same gate catches a read that genuinely failed, so a device who
 era can't be established can never stamp a checkmark under an unknown id space.
 
 The widened read's bytes, the exact mint rule, and the full list of era events live
-in the [BLE interface spec §1](src:obc-ble-interface-spec.md); the design rationale
+in the [BLE interface spec §1](src:specs/obc-ble-interface-spec.md); the design rationale
 is epic [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 5,
 with the card-resident decision in
 [#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
+
+**Two more fields, and why neither is a version bump.** The read carries a third value:
+`obcm_version`, the [OBCM map-format version](../formats/#the-catalog-the-map-builders-source-of-truth)
+this firmware's reader reads. It is a *different number in a different sequence* from
+the protocol version beside it — one is this wire contract, the other is the file
+format on the card — and neither can be derived from the other, nor from the firmware
+revision string, which maps to a format version only through a table nobody keeps. A
+catalog builder needs it before offering assembled map bytes, and had nothing to read it from.
+
+And a fourth: `feature_bits`, a `u32` of **optional contracts this build actually
+implements**. The first bit is Weather ([§11](src:specs/obc-ble-interface-spec.md)) — the
+request service, the request context, the weather object type and the refresh setting, one
+bit for all four because a phone that can read a weather request but cannot upload the
+answer has nothing to offer. It is deliberately not inferred from the firmware revision:
+that string maps to a feature set through the same table nobody keeps. A device announces
+what is *there*, so a build carrying the layouts but not yet raising requests announces
+nothing — a phone that saw the bit set would sit waiting for an advertisement that never comes.
+
+Appending it changed the read's length, and a read whose length changed sounds like a
+protocol break. It isn't, because **the length has always been the version mechanism
+here**: a device with no card already served a short read, so the decode was never "expect
+exactly *n* bytes" — it is "take each field if that many bytes arrived, ignore anything
+past the ones you know". Four lengths now exist: **11** with a mounted store, **7** from a
+firmware predating the capability word, **6** from one predating the map version too, and
+**2** with no card. A field that didn't arrive reads as *unknown*, never as a fabricated `0`
+— `0` is a legal store epoch, OBCM `0` would read as "supports map format v0" and refuse
+every real map, and a fabricated capability word of `0` would make a diagnostic lie about
+which firmware generation answered. (Both *absent* and a genuine `0` mean no weather, so the
+behaviour is the same; it is the provenance that would be lost.) A **partial** capability
+word — 8, 9 or 10 bytes — reads as absent rather than as the bytes that turned up: three
+bytes of a `u32` are a broken read, not a small feature set, and treating them as data could
+claim a contract the device never announced. So an old app against a new device
+loses nothing it had, and a new site against an old device gets *unknown* and falls back to
+offering the download with its version stated. Bumping the protocol version would instead
+stop both — a hard mutual "we can't talk" for a field that is allowed to be missing.
 
 ## Verified badges — presence you can prove
 
@@ -501,7 +849,7 @@ was truncated, and the app surfaces a one-line *"some items couldn't be listed"*
 warning instead of quietly reporting everything is synced.
 
 The `routeList` entry's `crc32`, the 6-byte list header with `total`, and their
-exact byte layout are the [BLE interface spec §7.4](src:obc-ble-interface-spec.md);
+exact byte layout are the [BLE interface spec §7.4](src:specs/obc-ble-interface-spec.md);
 the proof-only badge and adopt-by-content behaviour are epic
 [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 6.
 
@@ -577,9 +925,9 @@ for when the radio comes back.
   <text class="d-sub" x="297" y="206" text-anchor="middle">phone knows</text>
   <text class="d-sub" x="297" y="224" text-anchor="middle">this identity</text>
 
-  <rect class="d-panel-2" x="428" y="180" width="150" height="66" rx="10" style="fill:#eef2df" />
-  <text class="d-sub" x="503" y="202" text-anchor="middle">re-encrypt · stored LTK</text>
-  <text class="d-sub" x="503" y="220" text-anchor="middle">resolve RPA · stored IRK</text>
+  <rect class="d-panel-2" x="424" y="180" width="158" height="66" rx="10" style="fill:#eef2df" />
+  <text class="d-sub" x="503" y="202" text-anchor="middle" style="font-size:9.5px">re-encrypt · stored LTK</text>
+  <text class="d-sub" x="503" y="220" text-anchor="middle" style="font-size:9.5px">resolve RPA · stored IRK</text>
 
   <rect class="d-hot" x="622" y="180" width="82" height="66" rx="10" style="fill:#f8efe4" />
   <text class="d-sub" x="663" y="204" text-anchor="middle">connected</text>
@@ -687,7 +1035,7 @@ switch. The whole feature is **BLE-only**; there is no ANT+.
   <line class="d-flow" x1="462" y1="150" x2="564" y2="96" style="stroke:#33575b" marker-end="url(#se-c)" />
   <line class="d-flow" x1="462" y1="170" x2="564" y2="170" style="stroke:#33575b" marker-end="url(#se-c)" />
   <line class="d-flow" x1="462" y1="192" x2="564" y2="244" style="stroke:#33575b" marker-end="url(#se-c)" />
-  <text class="d-sub" x="520" y="143" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
+  <text class="d-sub" x="524" y="160" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
 
   <!-- bottom band -->
   <rect class="d-panel-2" x="24" y="292" width="680" height="40" rx="9" />
@@ -749,19 +1097,109 @@ phone**; like everything else, the phone gets the numbers *after* the ride, insi
 the ride object it syncs. Those recording formats — the track log and the v1/v2
 ride object — are the [recorded-rides section](../formats/#recorded-rides-the-track-log-and-the-ride-object)
 of the data-formats page (normative bytes in the
-[BLE interface spec §7.2](src:obc-ble-interface-spec.md)).
+[BLE interface spec §7.2](src:specs/obc-ble-interface-spec.md)).
 
 ---
 
+## The same link, down a cable
+
+The nRF54LM20 has a real USB device peripheral, and pointing it at this protocol
+turns out to cost almost nothing — because of a decision made long before USB was
+on the table.
+
+Look again at what a transfer actually needs from its transport. The bulk plane
+needs a channel that is **reliable, ordered, and unframed**; that is exactly what
+principle two asks of the CoC, and exactly what a **USB bulk endpoint** is. So
+the object stream — descriptors, payload bytes, terminal result — crosses a
+cable with *no translation whatsoever*. The descriptor still carries the same
+whole-object CRC, but verification is policy rather than framing: routes, trips,
+firmware and BLE traffic keep the end-to-end pass; USB map files avoid doing the
+same serial work twice and lean on USB packet CRC/retry, the card's block CRC/ECC,
+the exact announced length, format validation and the magic-last commit. Same
+state machine, same fixtures, same bytes on the wire.
+
+Only the control plane needs anything at all, and it needs one byte. GATT gives
+each control message its own addressed characteristic, so "which message is
+this?" is answered by the transport rather than by any byte of ours. USB has one
+endpoint pair, so that routing becomes a leading **selector byte** — and the rest
+of the frame is the *exact* payload the matching characteristic would have
+carried. That is the whole delta. USB is a second **transport**, not a second
+protocol.
+
+Five consequences are worth naming, because they are what makes the wired path a
+real product rather than a demo:
+
+- **The cable is what brings the plane into existence.** A bike computer spends
+  almost all of its life with nothing plugged into it, so the wired plane is
+  built *when a cable appears* and parked again when it goes — not armed at boot
+  and left waiting. That ordering is not tidiness: the USB core is unpowered
+  until the hardware reports bus voltage, and a device that reached into it
+  anyway would trade the common case (riding) for the rare one (a transfer). The
+  device says which state it is in on every boot, because "no cable" and "USB
+  broken" must never look the same from the outside. And the *waiting* is free:
+  the parked plane is asleep on the bus-voltage interrupt rather than asking a
+  timer how things are, so a bike ridden all day with nothing plugged in spends
+  no energy at all on the possibility of a cable. On a device running off a
+  battery, "poll for the rare case" is a cost paid by every ride.
+- **The device keeps working while a map lands.** Storage is arbitrated behind
+  one async mutex, and each store call takes it only for its own duration — so
+  the ride loop's redraws interleave between chunks. This is why USB **Mass
+  Storage** was rejected outright: handing a host raw block access would force
+  the firmware to release the card entirely (two filesystem writers is
+  corruption), and you would be back to a device that becomes a disk instead of
+  remaining a bike computer.
+- **A broken map cannot lock out its replacement.** If no map mounts at boot, the
+  fault screen stays visible but the device still brings up the USB plane and
+  grants it the upload arena. The builder can replace the unreadable map at full
+  speed; a successful reboot then returns to the normal ride application.
+- **One transfer at a time means one across *both* wires.** The gate is shared
+  rather than per-transport, because what it protects is the device's single
+  upload temp and open download source — not the wire. Start a transfer over the
+  cable while the phone is mid-upload and you get the same typed `busy` the phone
+  would get from another phone.
+- **A cancel has to reach the wire, not just the caller.** A browser cannot
+  cancel a USB transfer it has already submitted, so it releases the *caller* and
+  lets the transfer settle into nothing — which is survivable only because an
+  interrupted exchange is always followed by a channel reset. A native host can
+  cancel for real, and must: after an abort the device stops sending by design,
+  so a read left waiting on it would hold the endpoint forever and the link would
+  be dead while still looking alive.
+
+The map builder uses one small USB-only read beside those shared objects: the
+device reports the mounted card's free-byte count from FAT32's cached FSInfo
+sector. Step 4 compares that number with the selected assembly plus its safety
+allowance before enabling Send; no guessed card capacity and no stale desktop
+setting stands in for the card that is actually connected.
+
+A cell-built map then crosses as the volume set it really is. The assembler
+hands the page **one file at a time**, the page verifies each shard's SHA-256,
+and the worker does not release the next buffer until the device has committed
+the current one. Shards go in index order and the manifest goes last, so an
+interrupted set is never visible as a map; Cancel sends the set-abandon edge
+even when it lands between two whole-file transfers. The progress line stays
+set-wide (`shard 3 of 8 · 62%`) rather than jumping back to zero per file.
+
+Everything else about the link is unchanged by the choice of wire: the same
+objects, the same restart-don't-resume rule, the same change signal, the same
+`status` ordering domain. Pairing is the one genuine exception — encryption and
+bonding are BLE mechanisms, and the cable's authentication is that someone is
+holding it.
+
 ## Where this lives
 
-- The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md)
+- The wire contract, normative: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (§10 is the USB binding)
 - The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
+- On the device, shared by every transport — the command handler, descriptor classification, the identity blobs, the one object store, and the cross-transport transfer gate: [`obc-fw-nrf54l/src/link/`](src:firmware/obc-fw-nrf54l/src/link)
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
+- On the device — the USB vendor interface, the selector envelope, and the bulk object stream: [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb)
 - The central-role **sensor manager** — scan / connect / subscribe / decode / dispatch, the `SENSOR_LINKS` cap and its budget: [`obc-fw-nrf54l/src/ble/sensors.rs`](src:firmware/obc-fw-nrf54l/src/ble/sensors.rs)
 - The radio-free sensor profile codecs, the advertisement classifier, and the crank→rpm accumulator: [`obc-ble`](src:firmware/obc-ble) (`sensors.rs`)
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
-- Shared fixtures pinning the byte layouts on both sides: [`protocol-vectors/`](src:protocol-vectors)
+- The host side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:builder/app/src/lib/usb)
+- The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:apps/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:builder/app/src/lib/desktop/usb.ts)
+- The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
+- The desktop app's ride library — the visible GPX folder, the internal archive with its index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:apps/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:builder/app/src/lib/device/library.ts)
+- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`specs/vectors/`](src:specs/vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

@@ -23,7 +23,7 @@ public enum PairingFail: Sendable, Equatable {
 /// A mid-session push the device (or radio) can originate. `emit(_:)` routes each
 /// onto the live streams / fixture set so the UI updates without a re-fetch where a
 /// stream exists (connection, battery); `rideAdded` mutates the enumerable set so
-/// the next `listRides()` reflects it (there is no rides stream in `DeviceTransport`).
+/// the next `listRides()` reflects it (there is no rides stream in `DeviceObjects`).
 public enum DeviceEvent: Sendable {
     case connected
     case disconnected
@@ -45,7 +45,7 @@ public final class MockControl: @unchecked Sendable {
     let stateMulticast: AsyncMulticast<ConnectionState>
     let batteryMulticast: AsyncMulticast<Int>
     /// `nil` seed = no replay, matching the real transport: a `storeChanged` is
-    /// an edge, not a state (see `DeviceTransport.storeChanges`).
+    /// an edge, not a state (see `DeviceObjects.storeChanges`).
     let storeChangedMulticast = AsyncMulticast<StoreChanged?>(nil)
 
     private let lock = NSLock()
@@ -85,6 +85,10 @@ public final class MockControl: @unchecked Sendable {
     /// How many `forgetBond` commands (#756) the transport sent — the forget
     /// tests assert a connected forget reaches the device before clearing.
     private var _forgetBondCount = 0
+    /// The standing weather watch's armed state as the app last set it (WX13). The mock has no
+    /// radio to scan with, so the recorded flag *is* the observable effect — it is what pins that
+    /// the Background weather switch reaches the transport rather than only the preference store.
+    private var _weatherWatchArmed = false
     /// Test-only evidence that a catalog read was abandoned by its caller. A
     /// store-change burst must coalesce behind a live read instead of cancelling
     /// it halfway through the real transport's CoC exchange.
@@ -105,6 +109,11 @@ public final class MockControl: @unchecked Sendable {
     /// the phone last pushed. An override layered over each fixture route's
     /// declared `deviceRetention`; absent → `.never`.
     private var _routeRetention: [UInt16: Retention] = [:]
+    /// How many `setRouteRetention` commands the app has sent this session (test
+    /// hook) — every call, regardless of outcome. Lets a test assert a redundant
+    /// push was *not* made (idempotence) or that a skipped trip stage still got its
+    /// retention command (finding #876-4).
+    private var _routeRetentionWriteCount = 0
     /// The device-side `last_used` sidecar: device object id → the anchor the
     /// expiry countdown runs from. Stamped `now` at **upload commit** (the device's
     /// rule) and seeded from a fixture's `lastUsedDaysAgo`; **never** moved by a
@@ -472,11 +481,19 @@ public final class MockControl: @unchecked Sendable {
     /// `last_used`** (spec §4.4 — a retention change never resets the usage clock).
     func applyRouteRetention(_ id: DeviceObjectID, _ retention: Retention) -> RetentionWriteOutcome {
         lock.withLocked {
+            _routeRetentionWriteCount += 1 // the command was sent — record it regardless of outcome
             guard _supportsExpiry else { return .unsupported }
             guard _fixtures.routes.contains(where: { $0.deviceObjectID == id }) else { return .notFound }
             _routeRetention[id.raw] = retention
             return .applied
         }
+    }
+
+    /// How many `setRouteRetention` commands the app has sent this session (test
+    /// hook — finding #876-4). A skipped trip stage must still send one; a re-run at
+    /// the already-current level must send none.
+    public var routeRetentionWriteCount: Int {
+        lock.withLocked { _routeRetentionWriteCount }
     }
 
     /// Lock-held: the retention the (mock) device serves for `id` — the pushed
@@ -497,6 +514,16 @@ public final class MockControl: @unchecked Sendable {
     /// the connected forget reached the device before clearing the local record.
     public var forgetBondCount: Int {
         lock.withLocked { _forgetBondCount }
+    }
+
+    /// Record the standing weather watch's armed state (WX13).
+    func recordWeatherWatch(_ armed: Bool) {
+        lock.withLocked { _weatherWatchArmed = armed }
+    }
+
+    /// Whether the app currently wants the standing weather watch armed (test hook).
+    public var weatherWatchArmed: Bool {
+        lock.withLocked { _weatherWatchArmed }
     }
 
     public var cancelledRouteListReadCount: Int {
@@ -809,8 +836,12 @@ public final class MockControl: @unchecked Sendable {
                 hardwareVersion: current.hardwareVersion, serial: current.serial,
                 protocolVersion: current.protocolVersion,
                 // A DFU install is NOT an era event (RRAM survives): the
-                // epoch rides through, like on the real device.
-                storeEpoch: current.storeEpoch
+                // epoch rides through, like on the real device. The OBCM
+                // version the reader reads *could* legitimately change across
+                // an install — this mock doesn't model a format bump, so it
+                // carries through too rather than silently dropping to nil.
+                storeEpoch: current.storeEpoch,
+                obcmVersion: current.obcmVersion
             )
             connection = .connecting
             try? await Task.sleep(for: .seconds(1))
@@ -916,7 +947,8 @@ extension DeviceInfo {
     /// A copy with a new name — the last-read `Config` name (Delta 1) surfacing in DIS.
     fileprivate func renamed(_ name: String) -> DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion,
-                   serial: serial, protocolVersion: protocolVersion, storeEpoch: storeEpoch)
+                   serial: serial, protocolVersion: protocolVersion, storeEpoch: storeEpoch,
+                   obcmVersion: obcmVersion)
     }
 }
 #endif

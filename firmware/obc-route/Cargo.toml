@@ -6,19 +6,18 @@ publish = false  # internal firmware crate — not published to crates.io
 description = "OBCR route format reader + GPX converter (no_std) — shared by the desktop simulator and nRF firmware"
 
 [features]
-# Constrained on-device memory profile (issue #124) — shrinks the resident `RouteCache`.
-# Forwards to `obc-reader` so a single board-crate switch trims every shared crate's caps.
-# See `obc-reader`'s `nrf-mem` for the rationale. Off by default (full sizes on host/sim/tests).
-nrf-mem = ["obc-reader/nrf-mem"]
 # Pull in `alloc` for the heap-boxed nav constructors (`NavScratch::new_boxed`). A std host — the
 # simulator — enables this to build a zeroed `NavScratch` straight on the heap; the device never
 # does (its scratch is a `.bss` static), so `alloc` stays off by default.
 alloc = []
+external-fixtures = []
 
 [dependencies]
 heapless = "0.8"
 libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+obc-elevation = { path = "../obc-elevation" } # the shared elevation dead-band + (from EL7) the OBCT sampler
 obc-formats = { path = "../obc-formats" }
+obc-map-scene = { path = "../obc-map-scene" }
 obc-ports = { path = "../obc-ports" }
 obc-reader = { path = "../obc-reader" }
 
@@ -26,5 +25,7 @@ obc-reader = { path = "../obc-reader" }
 # The nav-router tests build real §8 maps with the actual packer serializer (the same
 # writer↔reader loop obc-pack's nav_round_trip pins) and parse them with the real
 # obc-reader. Host-only: dev-dependencies never touch the crate's no_std build.
-obc-pack = { path = "../obc-pack" }
-obc-reader = { path = "../obc-reader" }
+obc-pack = { path = "../../host/obc-pack" }
+# Shared OBCM byte builder — the corridor tests need a real packed POI quadtree to query.
+obcm-testkit = { path = "../../host/obcm-testkit" }
+obc-fixtures = { path = "../../host/obc-fixtures" }

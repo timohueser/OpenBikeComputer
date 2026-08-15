@@ -1,0 +1,164 @@
+// The static hosted host: files on a CDN and nothing else — no backend at all,
+// which is the whole point of the hosted tier (#894). Everything it serves is
+// either a baked artifact or something wasm computes in the tab.
+//
+// The host fetches `catalog.json`, the OBCC manifest the bakery publishes. It
+//     may live on the same origin or on the object storage the artifacts do,
+//     hence its own override: the artifact `url`s inside it are absolute.
+//
+// Both are relative to the document by default, so the site works mounted at
+// "/" or under a sub-path without a rebuild.
+
+import { LINKS } from "../constants";
+import type { MapOutputSession, Platform } from "./types";
+
+// WICG File System Access — Chromium's picker, absent from lib.dom and from
+// Firefox/Safari. Feature-detected below; never called where it does not exist.
+declare global {
+    interface Window {
+        showDirectoryPicker?(options?: {
+            id?: string;
+            mode?: "read" | "readwrite";
+            startIn?: string;
+        }): Promise<FileSystemDirectoryHandle>;
+    }
+}
+
+// `||`, not `??`: a deployment that has no catalog to point at yet (the site deploy
+// passes the repository variable straight through, and an unset variable arrives as
+// an empty string) must fall back to the default rather than treat "" as a URL —
+// which resolves to the page itself and reports a JSON parse error for an HTML body.
+const DATA_BASE: string = import.meta.env.VITE_DATA_BASE || "./data";
+const CATALOG_URL: string = import.meta.env.VITE_CATALOG_URL || `${DATA_BASE}/catalog.json`;
+
+// Every seam this host declares is implemented now — C1 (#900) filled in the
+// three data calls and C3 (#902) the device one — so the `pending()` helper the
+// other two hosts still use has nothing left to name here.
+
+/** Absolute URL of a static document, so a relative default resolves against
+ *  the page rather than the module. */
+function resolve(url: string): string {
+    return new URL(url, document.baseURI).toString();
+}
+
+async function get(url: string): Promise<Response> {
+    const res = await fetch(resolve(url));
+    if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
+    return res;
+}
+
+/**
+ * Static documents are immutable for the life of a page load, so each request
+ * is made once. Only a *fulfilled* promise is kept: a failed fetch
+ * that pinned itself would make the failure permanent until a reload.
+ */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+    let inflight: Promise<T> | null = null;
+    return () => {
+        inflight ??= load().catch((e: unknown) => {
+            inflight = null;
+            throw e;
+        });
+        return inflight;
+    };
+}
+
+/**
+ * The root document as fetched. Validation belongs to `CatalogClient`, not the
+ * host seam, so there is one request surface and one parser.
+ */
+let rootInflight: Promise<{ url: string; body: string }> | null = null;
+
+function fetchCatalog(): Promise<{ url: string; body: string }> {
+    rootInflight ??= (async () => {
+        const url = resolve(CATALOG_URL);
+        return { url, body: await (await get(CATALOG_URL)).text() };
+    })().catch((e: unknown) => {
+        rootInflight = null;
+        throw e;
+    });
+    return rootInflight;
+}
+
+const catalogOnce = once(fetchCatalog);
+
+/**
+ * The assembled set, written straight into a directory the user picks — the SD
+ * card itself, when it is mounted. One permission prompt when the run starts,
+ * zero download prompts when it ends; the browsers without the picker (Firefox,
+ * Safari) export `null` here and get the single-archive download instead.
+ *
+ * Files land at the picked directory's top level, because that is where the
+ * device reads a set from — a wrapping folder would only add a step the done
+ * message would then have to explain away.
+ */
+async function openMapOutput(_name: string): Promise<MapOutputSession> {
+    // `id` keys the browser's remembered location per purpose, so the second
+    // map defaults to where the first one went (ideally: the card).
+    const dir = await window.showDirectoryPicker!({ id: "obc-map-output", mode: "readwrite" });
+    const written: string[] = [];
+    return {
+        path: dir.name,
+        async write(filename, body) {
+            const file = await dir.getFileHandle(filename, { create: true });
+            const stream = await file.createWritable(); // truncates an old copy
+            // The cast mirrors cells/store.ts: lib.dom's write chunk type is
+            // pickier than a Uint8Array over an unshared buffer actually is.
+            await stream.write(body as unknown as FileSystemWriteChunkType);
+            await stream.close();
+            written.push(filename);
+            return `${dir.name}/${filename}`;
+        },
+        async finish() {},
+        async discard() {
+            // A failed or cancelled run takes its partial files with it. Every
+            // removal is attempted even if one refuses (a lock, a pulled card).
+            const results = await Promise.allSettled(written.map((f) => dir.removeEntry(f)));
+            written.length = 0;
+            const failed = results.find((r) => r.status === "rejected");
+            if (failed) throw (failed as PromiseRejectedResult).reason;
+        },
+    };
+}
+
+export const platform: Platform = {
+    name: "web",
+    caps: {
+        // A browser ride library would be OPFS/IndexedDB: invisible, evictable
+        // and unbackupable. Web exports one GPX and keeps no record.
+        rideLibrary: false,
+        // WebUSB is this tier's design (Chromium-only, hence the desktop app);
+        // C3 #902 is what makes the call below work.
+        deviceUsb: true,
+        deviceDashboard: false,
+    },
+
+    // Chromium-only, and this tier has no other way to reach a cable — so on
+    // Safari and Firefox the USB features gate on the *browser*, with their own
+    // reason and their own remedy. The download-and-copy-to-the-card path is
+    // unaffected and stays open (#901).
+    usbViaWebUsb: true,
+
+    catalog: catalogOnce,
+    catalogFetch: globalThis.fetch,
+    // Gated on the API, not the browser name: exactly the Chromiums that can
+    // show a directory picker offer the write-straight-to-card path.
+    openMapOutput: typeof window !== "undefined" && window.showDirectoryPicker ? openMapOutput : null,
+
+    // WebUSB, loaded on demand. The import is dynamic so the transport, the
+    // protocol codecs and the client land in their own chunk: a visitor who only
+    // downloads a map never pays for the device stack, and a browser without
+    // WebUSB never fetches it at all. The session it returns is `unsupported`
+    // there rather than absent — the tier *has* the capability, this browser
+    // doesn't, and those are different sentences for the UI to say.
+    device: async () => {
+        const { openWebUsbSession } = await import("../usb/session.svelte");
+        return openWebUsbSession();
+    },
+    rides: null,
+
+    styleEditor: null,
+
+    // This host *is* the site, so its header links back out to the rest of it.
+    siteNav: LINKS,
+};

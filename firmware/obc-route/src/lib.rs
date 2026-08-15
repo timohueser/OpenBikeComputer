@@ -14,11 +14,21 @@
 //!   [`Climbs`] (a hysteresis state machine over the same chunk sweep as the profile).
 //! - [`climb_profile`] — one detected climb re-bucketed into a small [`ClimbProfile`] detail
 //!   buffer (reading only the chunks overlapping the climb) for the ClimbPro-style Climb screen.
+//! - [`eta`] — the gradient-aware time model (`t = dist / v_flat + ascent × k_climb`, per bike
+//!   profile) behind the route summary's EST TIME and the ride's ETA / TIME TO GO tiles; its
+//!   ascent-to-go comes from [`Profile`]'s cumulative-ascent curve.
 //! - [`nav`] — the on-device A* router over the map's §8 nav graph ([`plan_route`]),
 //!   emitting its result as a normal OBCR through the shared converter internals.
+//! - [`symbol`] — the canonical GPX `<sym>`/`<type>` → [`PoiCategory`](obc_reader::PoiCategory)
+//!   table the converter categorises imported waypoints with.
+//!
+//! The elevation dead-band every one of these integrates through is **not** here: it lives in
+//! [`obc_elevation`], with the OBCT terrain sampler that will feed it (epic #1068 / #1069). One
+//! home for the hysteresis, so the packer's ascent, the profile's climb and the ridden barometric
+//! total cannot drift apart.
 //!
 //! Coordinates are integer microdegrees (1e-6 degrees) like the map; distances and
-//! elevations are whole meters. [`obc_reader::BBox`] is reused for bounding boxes so
+//! elevations are whole meters. [`obc_map_scene::BBox`] is reused for bounding boxes so
 //! the renderer can compare a route chunk against the map [`Viewport`]'s bbox without
 //! conversion.
 //!
@@ -35,7 +45,8 @@ extern crate alloc;
 pub mod climb;
 pub mod climb_profile;
 pub mod convert;
-pub mod deadband;
+pub mod corridor;
+pub mod eta;
 mod geo;
 pub mod gpx;
 pub mod matcher;
@@ -43,6 +54,8 @@ pub mod nav;
 pub mod profile;
 pub mod reader;
 pub mod ride;
+pub mod splice;
+pub mod symbol;
 pub mod track;
 pub mod trip;
 
@@ -51,27 +64,24 @@ pub use climb::{
 };
 pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats};
-pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
-pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
-pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
+pub use corridor::{Corridor, MIN_DETOUR_SPAN_M};
+pub use eta::{ride_time_s, route_time_s, time_to_go_s, v_flat_mps, K_CLIMB_S_PER_M, V_FLAT_KMH};
+pub use geo::tri_area_m2_cl;
+pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};
-pub use nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
-// `obc-formats` owns the byte-I/O seam. `Error` is re-exported here **solely** so obc-route's own
-// public GPX/OBCR writer signatures (`track_to_gpx` and the `ByteSink::{write, patch_at}` helpers)
-// can name it as `obc_route::Error` — it is not a downstream byte-I/O path. Every consumer, obc-route
-// included, imports the seam (`ByteSource` / `ByteSink` / `SliceSource` / `Error`) from
-// `obc_formats::io` directly.
-pub use obc_formats::io::Error;
+// The emit-time elevation seam (EL7): re-exported so a caller of `plan_route` / `NavPlanner::step`
+// names the source it must hand in without also depending on `obc-elevation` directly.
+pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
+pub use obc_elevation::{ElevationSource, NullElevation};
 pub use profile::{
     elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
     SPARKLINE_BUCKETS,
 };
 pub use reader::{
-    for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
-    Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
+    for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RoutePosition, RouteReader,
+    RouteSummary, Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
 pub use ride::{track_to_ride, RideInfo, RideStats};
-pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint};
+pub use splice::{splice_detour, trim_detour_to_tail, TrimOutcome};
+pub use track::track_to_gpx;
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
-
-pub use obc_reader::BBox;

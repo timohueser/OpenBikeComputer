@@ -13,7 +13,36 @@ routes = "Routen"
 rides = "Fahrten"
 pois = "POIs"
 map = "Karte"
+weather = "Wetter"
 settings = "Einstellungen"
+
+# --- Das Kompassmenü während der Fahrt, die Voraus-Liste und die Vorspringen-Auswahl ---
+[ride_menu]
+title = "FAHRTMENÜ"
+up_ahead = "Voraus"
+detour = "Umleitung"
+inspect_rejoin = "Wiedereinstieg"
+main_menu = "Hauptmenü"
+no_route = "Keine Route geladen"
+off_route = "Erst zur Route"
+route_end = "Route endet hier"
+no_nav = "Keine Routing-Daten"
+
+# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+[up_ahead]
+everything = "Alles"
+filter_title = "ANZEIGEN"
+none = "Nichts voraus"
+none_sub = "Keine Stopps"
+none_category_sub = "Nichts dieser Art"
+none_waypoints_sub = "Nur Wegpunkte"
+none_pois_sub = "Nur Karten-POIs"
+no_route_sub = "Erst Route laden"
+
+[up_ahead_source]
+both = "Beides"
+waypoints = "Wegpunkte"
+map_pois = "POIs"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -94,6 +123,8 @@ to_climb = "Restanstieg"
 grade = "Steigung"
 elevation = "Höhe"
 ride_time = "Fahrzeit"
+time_to_go = "Restzeit"
+eta = "Ankunftszeit"
 clock = "Uhrzeit"
 next_waypoint = "Nächster WP"
 waypoint_list = "WP-Liste"
@@ -111,6 +142,7 @@ to_climb = "HM REST"
 grade = "STEIGUNG"
 elev = "HÖHE "
 ride = "FAHRZEIT"
+eta = "ANKUNFT"
 time = "UHRZEIT"
 next_wpt = "NÄ. WP"
 waypoints = "WEGPUNKTE"
@@ -133,6 +165,7 @@ avg_grad = "Ø STEIG."
 no_gps_fix = "Kein GPS-Fix"
 off_route = "abseits "
 press_to_start = "Drücken zum Starten"
+recalculating = "Neuberechnung..."
 
 # --- The Statistics riding screen ---
 [stats]
@@ -145,18 +178,12 @@ grade = "Steig. "
 # --- The Settings list ---
 [settings]
 title = "OPTIONEN"
-datetime = "Datum & Zeit"
-autodelete = "Auto-Löschen"
-units = "Einheiten"
-bike_type = "Fahrradtyp"
-stats = "Statistik"
+ride = "Fahrt"
 display = "Anzeige"
+connections = "Verbindungen"
 power = "Energie"
-bluetooth = "Bluetooth"
-sensors = "Sensoren"
-language = "Sprache"
+weather = "Wetter"
 system = "System"
-reset = "Zurücksetzen"
 
 # --- Date & Time settings screen ---
 [datetime]
@@ -167,26 +194,29 @@ local_time = "Ortszeit"
 offset = "Offset"
 utc = "UTC "
 
-# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
 [autodelete]
-title = "AUTO-LÖSCHEN"
-synced_rides = "SYNC. FAHRTEN"
 never = "Nie"
 day1 = "1 Tag"
 week1 = "1 Woche"
 month1 = "1 Monat"
 
-# --- Stats settings screen ---
-[set_stats]
-title = "STATISTIK"
+# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+[ride]
+title = "FAHRT"
+bike_type = "Fahrradtyp"
+fields = "Datenfelder"
+fields_sub = "Anordnung"
 pages = "Seiten"
 pages_sub = "autom."
-fields = "Felder"
-fields_sub = "Anordnung"
 climb = "Anstieg"
 climb_sub = "Panel"
 waypoints = "Wegpunkte"
 waypoints_sub = "Chip"
+up_ahead = "Voraus"
+up_ahead_sub = "zeigt"
+autodelete = "Auto-Löschen"
+autodelete_sub = "Fahrten"
 
 # --- Display settings screen ---
 [display]
@@ -195,6 +225,12 @@ clock = "Uhr"
 clock_sub = "auf Karte"
 scale_bar = "Maßstab"
 scale_bar_sub = "auf Karte"
+# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
+# review decides the feature's fate — drop these two keys from all four catalogs with the row.
+# "Höhenlinien" is the term, but at 11 Body glyphs (154 px) it runs under the row's toggle slider,
+# which starts 148 px into the label column — "Konturen" is the reading that fits.
+contours = "Konturen"
+contours_sub = "auf Karte"
 idle = "Ruhe"
 idle_sub = "Timeout"
 
@@ -205,6 +241,12 @@ gps_fix = "GPS-Fix"
 gps_fix_sub = "Intervall"
 power_save = "Sparmodus"
 power_save_sub = "wenig Strom"
+
+# --- Connections settings menu (Phone / Sensors) ---
+[connections]
+title = "VERBINDUNG"
+phone = "Telefon"
+sensors = "Sensoren"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
@@ -267,6 +309,16 @@ routing_uses = "Routing nutzt dieses Profil"
 no_profiles = "Keine Profile"
 no_profiles_sub = "Karte laden für Radtyp"
 
+# --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
+# "Up ahead" category picker all draw these ---
+[poi_cat]
+water = "Wasser"
+campsite = "Campingplatz"
+accommodation = "Unterkunft"
+resupply = "Einkauf"
+pharmacy = "Apotheke"
+bike_shop = "Fahrradladen"
+
 # --- POI category menu ---
 [poi_menu]
 title = "POIS"
@@ -287,6 +339,8 @@ today = "Heute"
 open = "OFFEN"
 closed = "GESCHL."
 route_here = "Route hierher"
+side_left = "links"
+side_right = "rechts"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -326,6 +380,7 @@ title = "ROUTE"
 no_route = "Keine Route"
 no_route_sub = "Zurück zur Liste"
 distance = "DISTANZ"
+est_time = "DAUER"
 climb = "ANSTIEG"
 descent = "ABSTIEG"
 bike_type = "FAHRRADTYP"
@@ -346,6 +401,15 @@ active_route = "Aktive Route"
 nav_follows = "Navigation folgt"
 new_version = "der neuen Version"
 
+# --- Trip-received popup (the trip twin of the route-received card) ---
+[trip_received]
+title = "TOUR ERHALTEN"
+view_trip = "Tour ansehen"
+dismiss = "Verwerfen"
+route_one = "Route"
+routes = "Routen"
+trip_removed = "Tour entfernt"
+
 # --- Route swap / active-route prompt ---
 [route_swap]
 received_title = "ROUTE ERHALTEN"
@@ -357,6 +421,13 @@ route_removed = "Route entfernt"
 recording = "Fahrt läuft"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
+# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+[detour]
+title = "UMLEITUNG"
+planning = "Umleitung wird geplant..."
+commit_failed = "Umleitung fehlgeschlagen."
+rejoin_hint = "Späteren Wiedereinstieg wählen."
+
 [nav_route]
 create_route = "Route erstellen"
 cancel = "Abbrechen"
@@ -391,9 +462,27 @@ battery = "Akku"
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
 title = "SYSTEM"
+units = "Einheiten"
+datetime = "Datum & Zeit"
+language = "Sprache"
+update = "Firmware"
+about = "Info"
+reset = "Zurücksetzen"
+
+# --- About page (issue #1149): the credits + licences surface. Only the section
+# captions are translated; the attribution texts are legal formulas and stay canonical. ---
+[about]
+title = "INFO"
+map_data = "Kartendaten"
+elevation = "Höhendaten"
+firmware = "Firmware"
+
+# --- Firmware page (device info ledger + the SD-sideload install action) ---
+[firmware]
+title = "FIRMWARE"
 install_update = "Update von Karte installieren"
 recording = "Aufnahme"
-firmware = "Firmware"
+version = "Firmware"
 map = "Karte"
 card_free = "Karte frei"
 
@@ -422,11 +511,25 @@ unreadable = "Update-Datei nicht lesbar."
 damaged = "Die Update-Datei ist beschädigt."
 too_large = "Die Update-Datei ist zu groß für dieses Gerät."
 fragmented = "Die Update-Datei ist zu fragmentiert. Lösche UPDATE.BIN und kopiere sie erneut auf die Karte."
+untrusted = "Diese Update-Datei ist nicht für dieses Gerät signiert."
 install_recording = "Beende und speichere deine Fahrt, bevor du ein Update installierst."
 install_pending_save = "Eine Fahrt wird noch gespeichert. Versuche es gleich erneut."
 install_no_card = "Keine Karte gefunden. Lege die Karte ein und versuche es erneut."
 install_snapshot_failed = "Sicherungskopie konnte nicht auf die Karte geschrieben werden. Update nicht installiert."
 install_state_write = "Update konnte nicht vorbereitet werden. Es wurde nichts geändert."
+
+[map_transfer]
+title = "KARTE"
+receiving = "Karte wird empfangen"
+keep_cable = "Kabel angesteckt lassen."
+installed = "Karte gespeichert"
+restart = "Zum Nutzen Gerät neu starten."
+failed = "Karte nicht gespeichert"
+failed_storage = "Die Karte konnte nicht gespeichert werden."
+failed_damaged = "Die Karte kam beschädigt an. Bitte erneut senden."
+failed_format = "Diese Datei ist keine Karte für dieses Gerät."
+failed_refused = "Die Karte kam unvollständig an. Bitte erneut senden."
+
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]
 nocard_what = "Keine SD-Karte"
@@ -435,3 +538,63 @@ nomap_what = "SD ohne Karte"
 nomap_fix = "Kartendatei hinzufügen"
 badmap_what = "Datei defekt"
 badmap_fix = "Neu auf die Karte kopieren"
+cardtype_what = "Karte zu klein"
+cardtype_fix = "SDHC- oder SDXC-Karte verwenden"
+storagefault_what = "Leser gestört"
+storagefault_fix = "Gerät neu starten"
+
+# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
+[weather]
+title = "WETTER"
+hourly = "STÜNDLICH"
+rain_map = "REGENKARTE"
+updated = "Stand"
+updating = "UPDATE"
+dry_1 = "TROCKEN"
+dry_2 = "2 STUNDEN"
+rain = "REGEN"
+storm = "STURM"
+rain_in = "REGEN IN"
+storm_in = "STURM IN"
+now = "JETZT"
+min = "MIN"
+in = "IN"
+update_needed = "WETTER-UPDATE NÖTIG"
+hourly_only = "KEINE REGENDATEN"
+hourly_only_sub = "Nur stündlich"
+no_data = "KEINE WETTERDATEN"
+no_data_sub = "Telefon koppeln"
+zoom_for_rain = "ZOOM FÜR REGEN"
+alert_rain = "REGEN VORAUS"
+alert_storm = "STURM VORAUS"
+alert_rain_body = "Starker Regen auf der Route."
+alert_storm_body = "Gewitter auf der Route."
+alert_gust = "STARKER WIND"
+alert_gust_body = "Gefährliche Böen voraus."
+view_rain_map = "REGENKARTE"
+dismiss = "SCHLIESSEN"
+
+# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+[weather_refresh]
+off = "Aus"
+m15 = "15 min"
+m30 = "30 min"
+m60 = "60 min"
+m120 = "120 min"
+
+# --- The Weather settings screen ---
+[weather_settings]
+title = "WETTER"
+refresh = "Abruf"
+refresh_sub = "per Telefon"
+
+# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
+[compass]
+n = "N"
+ne = "NO"
+e = "O"
+se = "SO"
+s = "S"
+sw = "SW"
+w = "W"
+nw = "NW"

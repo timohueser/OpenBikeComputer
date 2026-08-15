@@ -2,12 +2,15 @@
 //! elevation profile as a filled band under an amber top line, with a movable inspection cursor
 //! (carrying a current-elevation readout), an amber progress bar, and a grid of ride stats.
 //!
-//! Bindings:
-//! - **Cursor mode (default):** `turn` scrubs the cursor along the full profile; it springs back to
-//!   the live position after a few seconds idle. `hold` enters Zoom mode.
-//! - **Zoom mode:** `turn` zooms centred on the frozen cursor (a magnifying-glass icon marks the
-//!   mode). It does not spring back while zooming. `hold` or `back` exits, springing back.
-//! - Shared: `press` = pause → Ride control, `back` (cursor mode) = the sibling Map, `back-hold` = Menu.
+//! Bindings mirror the Map's Inspect flow:
+//! - **Follow (default):** the cursor tracks the live position; `press` pauses and `back` opens the
+//!   next riding view. The first Up/Down step enters Inspect + pans, while `hold` enters without a
+//!   move.
+//! - **Inspect / Pan:** up/down scrubs the cursor through the current window; `press` selects Zoom.
+//! - **Inspect / Zoom:** up/down zooms about the frozen cursor; `press` returns to Pan without
+//!   discarding the magnification, so the rider can move around the zoomed profile.
+//! - Inspect `back` exits, returning to the live cursor and whole route. `back-hold` keeps its shared
+//!   riding-view job: open the Ride menu. Select-hold is inert once Inspect is active.
 //!
 //! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a step is just
 //! [`Profile::window`] picking a level + sub-range — no route re-read. Going off-route freezes the
@@ -22,6 +25,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::app::step_zoom;
 use crate::input::Gesture;
 use crate::settings::Settings;
 use crate::stat_fields;
@@ -29,17 +33,11 @@ use crate::Msg;
 
 use super::{palette, title_frame, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
-/// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to end.
+/// Cursor scrub per Up/Down step, as a fraction of the whole route — ~42 steps end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
-/// Zoom multiplier per encoder detent (matches the Map's zoom feel).
-const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps: `1.0` = whole route; the max is a touch under where the base stops adding detail.
 const MIN_ZOOM: f32 = 1.0;
 const MAX_ZOOM: f32 = 8.0;
-/// After this many millis with no input the cursor springs back to the live position. (Zoom mode
-/// is exempt: it never springs back.)
-const IDLE_MS: u32 = 4000;
-
 // Chart geometry (px), tuned for the 240×320 panel; the band fills the top, the stat grid the rest.
 const CHART_TOP: i32 = 42;
 const CHART_BOT: i32 = 110;
@@ -58,29 +56,33 @@ const WP_TICK_W: i32 = 2;
 const WP_TICK_H: i32 = 6;
 const WP_TICK_INSET_Y: i32 = 1;
 
-/// What `turn` does: scrub the cursor, or zoom the view about it.
+/// Statistics interaction state: live Follow, or one of the two persistent Inspect tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    Cursor,
+    Follow,
+    Pan,
     Zoom,
 }
 
-/// The Statistics / elevation-profile view. The cursor defaults to (and springs back to) the live
-/// matched position; Zoom is an explicit long-press sub-mode.
+impl Mode {
+    fn inspecting(self) -> bool {
+        self != Mode::Follow
+    }
+}
+
+/// The Statistics / elevation-profile view. Follow tracks the live matched position; Inspect owns
+/// a persistent cursor and zoom so Pan ↔ Zoom tool changes never throw away the chosen window.
 #[derive(Debug)]
 pub struct StatisticsScreen {
     mode: Mode,
     /// Inspection cursor as a route fraction; `None` = track the live position.
     cursor: Option<f32>,
-    /// Zoom factor (`1.0` = full route); only ever `> 1` while in [`Mode::Zoom`].
+    /// Zoom factor (`1.0` = full route); retained in both Inspect tools.
     zoom: f32,
-    /// Instant of the last cursor scrub (not a deadline, so the `wrapping_sub` elapsed check stays
-    /// correct across the `u32` millis wrap). The cursor springs back once `IDLE_MS` elapse.
-    last_scrub_ms: u32,
     /// Which page of the stat grid is showing; [`tick_timers`](Self::tick_timers) auto-cycles it on
     /// a timer.
     page: usize,
-    /// Instant of the last page flip (wrap-safe like `last_scrub_ms`). `None` until the first frame
+    /// Instant of the last page flip (wrap-safe elapsed arithmetic). `None` until the first frame
     /// anchors it, so the first page gets a full dwell on entry.
     last_flip_ms: Option<u32>,
 }
@@ -93,39 +95,40 @@ impl Default for StatisticsScreen {
 
 impl StatisticsScreen {
     pub fn new() -> Self {
-        StatisticsScreen { mode: Mode::Cursor, cursor: None, zoom: 1.0, last_scrub_ms: 0, page: 0, last_flip_ms: None }
+        StatisticsScreen { mode: Mode::Follow, cursor: None, zoom: MIN_ZOOM, page: 0, last_flip_ms: None }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let live = stat_fields::live_frac(cx.activity);
+        let has_route = cx.activity.active_route.is_some();
         match g {
-            Gesture::Turn(n) => {
-                self.on_turn(n, live, cx.now_ms);
+            Gesture::Step(n) => {
+                if has_route {
+                    if self.mode == Mode::Follow {
+                        self.begin_inspect(live);
+                    }
+                    self.on_step(n, live);
+                }
                 Transition::None
             }
-            // hold = enter/exit Zoom mode.
+            // Like the Map, Select-hold enters Inspect; once inside it is deliberately inert so it
+            // can't undo a carefully chosen cursor/window. Select tap owns the tool toggle.
             Gesture::Hold => {
-                match self.mode {
-                    Mode::Cursor => {
-                        // Freeze the cursor at its current spot; zoom starts at full.
-                        self.cursor = Some(self.effective_cursor(cx.now_ms, live));
-                        self.zoom = 1.0;
-                        self.mode = Mode::Zoom;
-                    }
-                    Mode::Zoom => self.reset(),
+                if has_route && self.mode == Mode::Follow {
+                    self.begin_inspect(live);
                 }
                 Transition::None
             }
             Gesture::Back => match self.mode {
-                // Zoom: quick exit (springs back).
-                Mode::Zoom => {
+                // One Back tap leaves either Inspect tool, restores Follow, and recentres on live.
+                Mode::Pan | Mode::Zoom => {
                     self.reset();
                     Transition::None
                 }
-                // Cursor: the middle hop of the Back-cycle — on to the Climb screen when a climb is
+                // Follow: the middle hop of the Back-cycle — on to the Climb screen when a climb is
                 // active and the Climb screen is enabled (Manual/Auto), else straight back to the
                 // Map (the collapsed Map↔Statistics 2-cycle when off-climb or Off).
-                Mode::Cursor => {
+                Mode::Follow => {
                     if cx.settings.climb_mode.is_on() && cx.activity.active_climb.is_some() {
                         Transition::Replace(Screen::Climb(ClimbScreen::new()))
                     } else {
@@ -133,47 +136,43 @@ impl StatisticsScreen {
                     }
                 }
             },
-            Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
+            Gesture::Press => match self.mode {
+                Mode::Follow => super::riding_common(g, cx),
+                Mode::Pan => {
+                    self.mode = Mode::Zoom;
+                    Transition::None
+                }
+                Mode::Zoom => {
+                    self.mode = Mode::Pan;
+                    Transition::None
+                }
+            },
+            Gesture::BackHold => super::riding_common(g, cx),
         }
     }
 
-    /// Spring back to the default view: cursor tracking the live position, full route.
-    fn reset(&mut self) {
-        self.mode = Mode::Cursor;
-        self.cursor = None;
-        self.zoom = 1.0;
-        self.last_scrub_ms = 0;
+    /// Freeze the live point and open the Pan tool at the whole-route scale.
+    fn begin_inspect(&mut self, live: f32) {
+        self.mode = Mode::Pan;
+        self.cursor = Some(live);
+        self.zoom = MIN_ZOOM;
     }
 
-    /// Poll the view's two timers in one body — the cursor's idle spring-back and the stat grid's
-    /// page auto-cycle — firing whichever is due and reporting the soonest residual deadline from
-    /// the same elapsed-time locals, so what fired and when to wake next can never disagree. Both
-    /// elapsed checks are `wrapping_sub`, so they stay correct across the `u32` millis wrap.
-    ///
-    /// Spring-back: once [`IDLE_MS`] elapse since the last scrub (Cursor mode only — Zoom never
-    /// springs back), the cursor drops back to tracking live — making observable the transition
-    /// [`effective_cursor`] already does lazily, so the dirty-tracking host (issue #47) redraws at
-    /// the right moment. Idempotent: once sprung back, nothing fires and nothing is pending.
-    ///
-    /// Page cycle: with more than one page, the view dwells [`stat_cycle_s`](Settings::stat_cycle_s)
+    /// Return to the default view: cursor tracking the live position, full route.
+    fn reset(&mut self) {
+        self.mode = Mode::Follow;
+        self.cursor = None;
+        self.zoom = MIN_ZOOM;
+    }
+
+    /// Poll the stat grid's page auto-cycle. With more than one page, the view dwells
+    /// [`stat_cycle_s`](Settings::stat_cycle_s)
     /// on each; with one page it pins page 0 and re-anchors the timer so a later expansion starts a
     /// fresh dwell. The anchor is lazily set on the first poll, so entering the screen gives page 0
-    /// a full dwell.
+    /// a full dwell. The elapsed check is `wrapping_sub`, so it stays correct across the `u32`
+    /// millis wrap.
     pub fn tick_timers(&mut self, now_ms: u32, settings: &Settings) -> ScreenTick {
         let mut changed = false;
-
-        // Cursor spring-back: armed only while a scrub is live in Cursor mode. Due → fire (drop
-        // back to live); not yet → the remainder is the deadline, strictly positive by the gate.
-        let mut spring = None;
-        if self.mode == Mode::Cursor && self.cursor.is_some() {
-            let elapsed = now_ms.wrapping_sub(self.last_scrub_ms);
-            if elapsed >= IDLE_MS {
-                self.cursor = None;
-                changed = true;
-            } else {
-                spring = Some(IDLE_MS - elapsed);
-            }
-        }
 
         // Page auto-cycle: always pending with more than one page (a flip re-arms a full dwell).
         let pages = stat_fields::page_count(&settings.stat_fields);
@@ -196,39 +195,31 @@ impl StatisticsScreen {
             }
         };
 
-        let next_wake_ms = match (spring, page) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        ScreenTick { changed, next_wake_ms, region: None }
+        ScreenTick { changed, next_wake_ms: page, region: None }
     }
 
-    /// The cursor fraction in effect now: the scrub position while it's still live,
-    /// otherwise the live position it has sprung back to.
-    fn effective_cursor(&self, now_ms: u32, live: f32) -> f32 {
-        match self.cursor {
-            Some(c) if self.mode == Mode::Zoom || now_ms.wrapping_sub(self.last_scrub_ms) < IDLE_MS => c,
-            _ => live,
+    /// The cursor fraction in effect now: Inspect's frozen point, otherwise the live position.
+    fn effective_cursor(&self, live: f32) -> f32 {
+        if self.mode.inspecting() {
+            self.cursor.unwrap_or(live)
+        } else {
+            live
         }
     }
 
-    fn on_turn(&mut self, n: i32, live: f32, now_ms: u32) {
+    fn on_step(&mut self, n: i32, live: f32) {
         match self.mode {
-            Mode::Cursor => {
-                let c = self.effective_cursor(now_ms, live);
-                self.cursor = Some((c + n as f32 * CURSOR_STEP_FRAC).clamp(0.0, 1.0));
-                self.zoom = 1.0;
-                self.last_scrub_ms = now_ms;
+            Mode::Pan => {
+                let c = self.effective_cursor(live);
+                // Keep roughly the same on-glass travel at every zoom. At 8×, one step is 1/8 of
+                // the whole-route step instead of lurching across a fifth of the visible window.
+                let step = CURSOR_STEP_FRAC / self.zoom.max(MIN_ZOOM);
+                self.cursor = Some((c + n as f32 * step).clamp(0.0, 1.0));
             }
             Mode::Zoom => {
-                // Multiply per detent (no_std: no powf).
-                let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-                let mut z = self.zoom;
-                for _ in 0..n.unsigned_abs() {
-                    z *= step;
-                }
-                self.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
+                self.zoom = step_zoom(self.zoom, n, MIN_ZOOM, MAX_ZOOM);
             }
+            Mode::Follow => {}
         }
     }
 
@@ -258,6 +249,7 @@ impl StatisticsScreen {
             let prog_y = CHART_BOT + 10;
             cv.round(rect(SIDE_MARGIN, prog_y, w - 2 * SIDE_MARGIN, 8), 4, palette::PARCHMENT_SHADE);
             self.draw_stat_grid(cv, rx, prog_y + 16);
+            self.draw_profile_tool(cv);
             return;
         };
 
@@ -269,12 +261,11 @@ impl StatisticsScreen {
         // Live position (matched progress) drives the traveled shading + progress bar; the cursor
         // may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
         let live_frac = if total > 0 { (rx.activity.progress_m as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
-        let cursor_frac = self.effective_cursor(rx.now_ms, live_frac);
-        let in_zoom = self.mode == Mode::Zoom;
-        let zoom = if in_zoom { self.zoom } else { 1.0 };
+        let cursor_frac = self.effective_cursor(live_frac);
+        let zoom = if self.mode.inspecting() { self.zoom } else { MIN_ZOOM };
         let scrubbing = (cursor_frac - live_frac).abs() > 1e-4;
 
-        // Zoom mode centres the window on the frozen cursor; cursor mode is the whole route.
+        // Inspect centres its retained window on the frozen cursor; Follow shows the whole route.
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
         let win = profile.window(cursor_frac, zoom, chart_w.max(1) as u32);
@@ -342,10 +333,6 @@ impl StatisticsScreen {
             cv.text(&ele_s, Point::new(cursor_x - 8, label_y), Font::Label, TextAlign::Right, INK);
         }
 
-        if in_zoom {
-            draw_zoom_icon(cv, chart_x + 2, CHART_TOP + 2);
-        }
-
         // Progress bar at the live fraction
         let prog_y = CHART_BOT + 10;
         cv.round(rect(chart_x, prog_y, chart_w, 8), 4, PARCHMENT_SHADE);
@@ -368,6 +355,7 @@ impl StatisticsScreen {
 
         // Customizable stat grid below the progress bar.
         self.draw_stat_grid(cv, rx, prog_y + 16);
+        self.draw_profile_tool(cv);
     }
 
     /// Draw the customizable stat grid — the rider's fields, paginated (3×2) and auto-cycled by
@@ -400,17 +388,37 @@ impl StatisticsScreen {
             }
             let cell = placed.field.cell(&cx);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
-            super::tile(
-                cv,
-                rect(x, y, tile_w, row_h),
-                &cell.caption,
-                &cell.value,
-                cell.arrow,
-                cell.value_align,
-                PARCHMENT_SHADE,
-                INK,
-            );
+            let area = rect(x, y, tile_w, row_h);
+            // A `Next: <category>` tile carries the category's icon in front of its caption, which
+            // moves the caption — so it has its own drawer (epic #946, U5).
+            match placed.field.category() {
+                Some(cat) => {
+                    super::category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, INK);
+                }
+                None => super::tile(
+                    cv,
+                    area,
+                    &cell.caption,
+                    &cell.value,
+                    cell.arrow,
+                    cell.value_align,
+                    PARCHMENT_SHADE,
+                    INK,
+                ),
+            }
         }
+    }
+
+    /// Zoom's only extra chrome: the Map's bare amber −/+ strokes in a compact vertical pair at the
+    /// chart's left. Pan needs no marker because moving the cursor is the page's only interaction.
+    fn draw_profile_tool(&self, cv: &mut impl Surface) {
+        if self.mode != Mode::Zoom {
+            return;
+        }
+
+        let cx = (SIDE_MARGIN + 12) as f32;
+        super::map::draw_zoom_cue(cv, (cx, (CHART_TOP + 10) as f32), false);
+        super::map::draw_zoom_cue(cv, (cx, (CHART_TOP + 36) as f32), true);
     }
 }
 
@@ -429,27 +437,12 @@ fn waypoint_tick_x(dist_along_m: u32, total: u32, chart_x: i32, chart_w: i32) ->
     Some(x.clamp(chart_x, chart_x + chart_w - WP_TICK_W))
 }
 
-/// Draw a magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on" marker. A
-/// lens (ink ring) with a short diagonal handle.
-fn draw_zoom_icon(cv: &mut impl Surface, x: i32, y: i32) {
-    use palette::*;
-    let s = 22;
-    cv.round(rect(x, y, s, s), 5, PARCHMENT);
-    cv.round_outline(rect(x, y, s, s), 5, WOOD_LIGHT);
-    // Lens: an ink ring (filled disc with a parchment disc punched out).
-    let (lx, ly) = (x + 8, y + 8);
-    cv.disc(Point::new(lx, ly), 5, INK);
-    cv.disc(Point::new(lx, ly), 3, PARCHMENT);
-    // Handle: ink discs stepping out from the lower-right of the lens.
-    for k in 0..3 {
-        cv.disc(Point::new(lx + 4 + k, ly + 4 + k), 2, INK);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::app::ZOOM_STEP;
+    use crate::screen::test_ctx;
     use crate::settings::ClimbMode;
     use crate::AppState;
 
@@ -461,19 +454,7 @@ mod tests {
         let mut act = Activity::new(crate::activity::Mode::Riding);
         act.active_climb = active_climb;
         let mut s = Settings { climb_mode: mode, ..Settings::default() };
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, &mut s);
         StatisticsScreen::new().handle(Gesture::Back, &mut cx)
     }
 
@@ -508,51 +489,75 @@ mod tests {
         );
     }
 
-    /// A live position to scrub away from; one detent right lands at `scrubbed`.
+    /// A live position to scrub away from; one step right lands at `scrubbed`.
     const LIVE: f32 = 0.5;
     fn scrubbed() -> f32 {
         (LIVE + CURSOR_STEP_FRAC).clamp(0.0, 1.0)
     }
 
-    /// Spring-back: after a scrub the cursor holds for `IDLE_MS`, then tracks live again.
-    #[test]
-    fn cursor_springs_back_after_idle() {
-        let mut s = StatisticsScreen::new();
-        s.on_turn(1, LIVE, 1_000);
-        // Held while fresh and right up to (but not at) the threshold…
-        assert_eq!(s.effective_cursor(1_000, LIVE), scrubbed());
-        assert_eq!(s.effective_cursor(1_000 + IDLE_MS - 1, LIVE), scrubbed());
-        // …then springs back to live once IDLE_MS have elapsed.
-        assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE);
+    /// Drive one gesture with a loaded route and a 50%-along live point.
+    fn profile_gesture(s: &mut StatisticsScreen, g: Gesture) -> Transition {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut act = Activity::new(crate::activity::Mode::Riding);
+        act.active_route = Some(0);
+        act.route_total_m = 1_000;
+        act.progress_m = 500;
+        let mut settings = Settings::default();
+        let mut cx = test_ctx(&mut st, &mut act, &mut settings);
+        s.handle(g, &mut cx)
     }
 
-    /// `tick_timers` fires `changed` exactly once, at the deadline, and agrees with the lazy
-    /// spring-back `effective_cursor` does. Between the scrub and the deadline it's `false`.
+    /// The first profile step enters Inspect/Pan and moves from the live point. Unlike the old
+    /// transient cursor it stays put until an explicit Back, however long the page timer runs.
     #[test]
-    fn tick_timers_reports_the_spring_back_once_at_the_deadline() {
-        // Default = six tiles = one page, so the page auto-cycle never fires — isolates the spring-back.
-        let cfg = Settings::default();
+    fn step_enters_persistent_pan_from_live() {
         let mut s = StatisticsScreen::new();
-        // Untouched: tracking the live position already, nothing to settle.
-        assert!(!s.tick_timers(1_000, &cfg).changed, "an untouched view never self-dirties");
+        assert!(matches!(profile_gesture(&mut s, Gesture::Step(1)), Transition::None));
+        assert_eq!(s.mode, Mode::Pan);
+        assert_eq!(s.effective_cursor(LIVE), scrubbed());
+        assert_eq!(s.zoom, MIN_ZOOM);
 
-        s.on_turn(1, LIVE, 1_000); // scrub the cursor away from live
-        assert!(!s.tick_timers(1_000, &cfg).changed, "the scrub frame itself isn't a spring-back");
-        assert!(!s.tick_timers(1_000 + IDLE_MS - 1, &cfg).changed, "still frozen inside the idle window");
-        assert!(s.tick_timers(1_000 + IDLE_MS, &cfg).changed, "springs back exactly at the deadline → dirty once");
-        assert_eq!(s.effective_cursor(1_000 + IDLE_MS, LIVE), LIVE, "and it really is back at live");
-        assert!(!s.tick_timers(1_000 + IDLE_MS + 5_000, &cfg).changed, "and only once — it stays put afterwards");
+        let cfg = Settings::default();
+        assert!(!s.tick_timers(1_000_000, &cfg).changed);
+        assert_eq!(s.effective_cursor(LIVE), scrubbed(), "Inspect never auto-snaps away from the chosen point");
     }
 
-    /// Zoom mode is exempt from the spring-back (the frozen cursor is the zoom centre), so
-    /// `tick_timers` must never fire there.
+    /// Select-hold enters Pan without moving. Once inside, Select tap toggles tools while retaining
+    /// both cursor and zoom, and another hold is inert rather than unexpectedly resetting the view.
     #[test]
-    fn tick_timers_never_springs_back_in_zoom_mode() {
-        let cfg = Settings::default();
+    fn inspect_toggles_pan_zoom_without_losing_the_window() {
         let mut s = StatisticsScreen::new();
-        s.on_turn(1, LIVE, 0); // a scrub…
-        s.mode = Mode::Zoom; // …then into zoom (as `Hold` would)
-        assert!(!s.tick_timers(IDLE_MS * 3, &cfg).changed, "zoom mode holds the cursor — no spring-back");
+        profile_gesture(&mut s, Gesture::Hold);
+        assert_eq!(s.mode, Mode::Pan);
+        assert_eq!(s.cursor, Some(LIVE));
+
+        profile_gesture(&mut s, Gesture::Press);
+        assert_eq!(s.mode, Mode::Zoom);
+        profile_gesture(&mut s, Gesture::Step(3));
+        let (cursor, zoom) = (s.cursor, s.zoom);
+        assert!(zoom > MIN_ZOOM);
+
+        profile_gesture(&mut s, Gesture::Press);
+        assert_eq!(s.mode, Mode::Pan);
+        assert_eq!((s.cursor, s.zoom), (cursor, zoom), "Zoom → Pan retains the chosen window");
+        profile_gesture(&mut s, Gesture::Hold);
+        assert_eq!((s.mode, s.cursor, s.zoom), (Mode::Pan, cursor, zoom), "hold is inert inside Inspect");
+
+        profile_gesture(&mut s, Gesture::Press);
+        assert_eq!((s.mode, s.cursor, s.zoom), (Mode::Zoom, cursor, zoom), "Pan → Zoom retains it too");
+    }
+
+    /// One Back exits either Inspect tool instead of navigating away; Follow's next Back still owns
+    /// the ordinary riding-view ring.
+    #[test]
+    fn back_exits_inspect_and_recentres_before_navigating() {
+        let mut s = StatisticsScreen::new();
+        profile_gesture(&mut s, Gesture::Step(2));
+        profile_gesture(&mut s, Gesture::Press); // Zoom
+        profile_gesture(&mut s, Gesture::Step(2));
+        assert!(matches!(profile_gesture(&mut s, Gesture::Back), Transition::None));
+        assert_eq!((s.mode, s.cursor, s.zoom), (Mode::Follow, None, MIN_ZOOM));
+        assert!(matches!(profile_gesture(&mut s, Gesture::Back), Transition::Replace(Screen::Map(_))));
     }
 
     /// A seven-field selection (two pages) auto-cycles: the first frame anchors a full dwell, the
@@ -585,30 +590,10 @@ mod tests {
         assert_eq!(s.page, 0);
     }
 
-    /// `next_wake_ms` reports the time left until the same timer would fire `changed`. A live scrub
-    /// counts down to its `IDLE_MS` spring-back; an untouched single-page view has no timed redraw.
-    #[test]
-    fn next_wake_counts_down_to_the_spring_back() {
-        let cfg = Settings::default(); // single page → only the cursor spring-back can be pending
-        let mut s = StatisticsScreen::new();
-        assert_eq!(s.tick_timers(1_000, &cfg).next_wake_ms, None, "an untouched view needs no timed wake");
-        s.on_turn(1, LIVE, 1_000); // scrub → the spring-back timer is now armed
-        assert_eq!(s.tick_timers(1_000, &cfg).next_wake_ms, Some(IDLE_MS), "the full idle window remains at the scrub");
-        assert_eq!(
-            s.tick_timers(1_000 + 1_000, &cfg).next_wake_ms,
-            Some(IDLE_MS - 1_000),
-            "counts down as time passes"
-        );
-        // The poll that springs back reports the change and, in the same result, nothing left to wake for.
-        let tick = s.tick_timers(1_000 + IDLE_MS, &cfg);
-        assert!(tick.changed);
-        assert_eq!(tick.next_wake_ms, None, "sprung back → no further timed wake");
-    }
-
     /// With more than one page the auto-cycle is always pending, so `next_wake_ms` tracks the dwell
-    /// remaining (and, when both timers are live, the spring-back wins if it's sooner).
+    /// remaining. Inspect adds no cursor deadline: it stays put until Back.
     #[test]
-    fn next_wake_tracks_the_page_dwell_and_takes_the_soonest() {
+    fn next_wake_tracks_only_the_page_dwell() {
         let mut cfg = Settings::default();
         assert!(cfg.stat_fields.push(crate::stat_fields::StatField::Grade), "7 fields → two pages");
         cfg.stat_cycle_s = 5;
@@ -617,17 +602,17 @@ mod tests {
         // The first poll anchors the dwell at t = 10 s — the whole period remains.
         assert_eq!(s.tick_timers(10_000, &cfg).next_wake_ms, Some(period), "the anchoring poll = the full period");
         assert_eq!(s.tick_timers(10_000 + 2_000, &cfg).next_wake_ms, Some(period - 2_000), "2 s into the dwell");
-        // A fresh scrub arms the spring-back too; IDLE_MS (4 s) < the 3 s left? no — 3 s page wins.
-        s.on_turn(1, LIVE, 10_000 + 2_000);
+        s.begin_inspect(LIVE);
+        s.on_step(1, LIVE);
         assert_eq!(
             s.tick_timers(10_000 + 2_000, &cfg).next_wake_ms,
             Some(period - 2_000),
-            "the sooner of the two deadlines"
+            "Inspect does not add an auto-return wake"
         );
     }
 
-    /// The page timer is wrap-safe like the cursor spring-back: anchored just before the `u32` millis
-    /// wrap, it still flips exactly one period later (the `wrapping_sub` elapsed check), not instantly.
+    /// The page timer is wrap-safe: anchored just before the `u32` millis wrap, it still flips
+    /// exactly one period later (the `wrapping_sub` elapsed check), not instantly.
     #[test]
     fn page_cycle_is_wrap_safe() {
         let mut cfg = Settings::default();
@@ -642,25 +627,11 @@ mod tests {
         assert_eq!(s.page, 1);
     }
 
-    /// Near the `u32` millis wrap, an `now + IDLE_MS` deadline would overflow. The `wrapping_sub`
-    /// elapsed check must behave identically straddling the wrap.
-    #[test]
-    fn idle_timer_is_wrap_safe() {
-        let mut s = StatisticsScreen::new();
-        let t0 = u32::MAX - 1_000; // 1 s before the wrap; t0 + IDLE_MS would overflow
-        s.on_turn(1, LIVE, t0); // panicked here in debug before the fix
-                                // Held across the wrap while still inside the window…
-        assert_eq!(s.effective_cursor(t0, LIVE), scrubbed());
-        assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS - 1), LIVE), scrubbed());
-        // …and springs back to live once IDLE_MS have elapsed past the wrap.
-        assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS), LIVE), LIVE);
-    }
-
-    // Zoom-mode math + clamps: `on_turn` in Zoom multiplies by `ZOOM_STEP` per detent and clamps to
+    // Zoom-mode math + clamps: `on_step` in Zoom multiplies by `ZOOM_STEP` per step and clamps to
     // [MIN_ZOOM, MAX_ZOOM]. A dropped clamp would zoom to a degenerate/inverted window; a `+`/`pow`
-    // instead of the per-detent multiply would mis-scale.
+    // instead of the per-step multiply would mis-scale.
 
-    /// A helper screen frozen in Zoom mode at full zoom — the state `Hold` lands in.
+    /// A helper screen frozen in Zoom mode at full zoom.
     fn zoom_screen() -> StatisticsScreen {
         let mut s = StatisticsScreen::new();
         s.cursor = Some(0.5); // a frozen centre (Hold sets this)
@@ -669,51 +640,55 @@ mod tests {
         s
     }
 
-    /// Two detents in Zoom mode compound to `ZOOM_STEP²`, not `2·ZOOM_STEP` — the per-detent
+    /// Two steps in Zoom mode compound to `ZOOM_STEP²`, not `2·ZOOM_STEP` — the per-step
     /// geometric step.
     #[test]
-    fn zoom_in_multiplies_per_detent() {
+    fn zoom_in_multiplies_per_step() {
         let mut s = zoom_screen();
-        s.on_turn(1, LIVE, 0);
-        assert!((s.zoom - ZOOM_STEP).abs() < 1e-5, "one detent is ×ZOOM_STEP, got {}", s.zoom);
-        s.on_turn(1, LIVE, 0);
-        assert!((s.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-4, "two detents compound, got {}", s.zoom);
+        s.on_step(1, LIVE);
+        assert!((s.zoom - ZOOM_STEP).abs() < 1e-5, "one step is ×ZOOM_STEP, got {}", s.zoom);
+        s.on_step(1, LIVE);
+        assert!((s.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-4, "two steps compound, got {}", s.zoom);
     }
 
-    /// A `Turn(3)` compounds to `ZOOM_STEP³` in one call, matching three separate detents.
+    /// A `Step(3)` compounds to `ZOOM_STEP³` in one call, matching three separate steps.
     #[test]
-    fn zoom_multi_detent_turn_compounds_in_one_call() {
+    fn zoom_multi_step_turn_compounds_in_one_call() {
         let mut s = zoom_screen();
-        s.on_turn(3, LIVE, 0);
+        s.on_step(3, LIVE);
         let expect = ZOOM_STEP * ZOOM_STEP * ZOOM_STEP;
-        assert!((s.zoom - expect).abs() < 1e-4, "Turn(3) compounds three steps, got {}", s.zoom);
+        assert!((s.zoom - expect).abs() < 1e-4, "Step(3) compounds three steps, got {}", s.zoom);
     }
 
-    /// A backward turn at full zoom can't drive the zoom under 1× and invert the span (lower clamp).
+    /// A backward step at full zoom can't drive the zoom under 1× and invert the span (lower clamp).
     #[test]
     fn zoom_out_at_full_is_clamped_at_min() {
         let mut s = zoom_screen(); // already at MIN_ZOOM
-        s.on_turn(-1, LIVE, 0);
+        s.on_step(-1, LIVE);
         assert_eq!(s.zoom, MIN_ZOOM, "can't zoom out past the whole route");
-        s.on_turn(-5, LIVE, 0);
+        s.on_step(-5, LIVE);
         assert_eq!(s.zoom, MIN_ZOOM, "a long backward flick saturates at full, not below");
     }
 
-    /// A huge forward turn saturates at `MAX_ZOOM` instead of running away.
+    /// A huge forward step saturates at `MAX_ZOOM` instead of running away.
     #[test]
     fn zoom_in_saturates_at_max() {
         let mut s = zoom_screen();
-        s.on_turn(100, LIVE, 0);
+        s.on_step(100, LIVE);
         assert_eq!(s.zoom, MAX_ZOOM, "an enormous forward flick saturates at MAX_ZOOM, not beyond");
     }
 
-    /// A turn in Cursor mode scrubs and forces the zoom back to 1.0, so zoom state can't leak in
-    /// from a scrub.
+    /// Pan deliberately keeps the zoom and scales its route-fraction step by that zoom, producing
+    /// the same approximate on-glass travel in a magnified window.
     #[test]
-    fn cursor_mode_turn_keeps_zoom_at_full() {
-        let mut s = StatisticsScreen::new(); // Cursor mode, zoom 1.0
-        s.on_turn(3, LIVE, 0);
-        assert_eq!(s.zoom, 1.0, "a scrub leaves the zoom at full");
+    fn pan_keeps_zoom_and_scales_its_step() {
+        let mut s = StatisticsScreen::new();
+        s.mode = Mode::Pan;
+        s.cursor = Some(LIVE);
+        s.zoom = 4.0;
+        s.on_step(1, LIVE);
+        assert_eq!(s.zoom, 4.0, "panning retains the zoomed window");
+        assert!((s.cursor.unwrap() - (LIVE + CURSOR_STEP_FRAC / 4.0)).abs() < 1e-6);
     }
 
     /// The waypoint tick x-map (issue #572): a zero-length route (`total == 0`) yields `None` — no

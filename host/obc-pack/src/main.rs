@@ -1,0 +1,252 @@
+//! `obc-pack` CLI — flags in, [`obc_pack::pipeline::pack`] out.
+//!
+//! The pipeline itself (`.osm.pbf` → `.obcm`: ingest → bbox → land → per-LOD
+//! simplify + quadtree → serialize) lives in the library, because the desktop app
+//! (#906) links the packer rather than spawning it and the two must not be able to
+//! diverge. This file owns the command line and nothing else.
+//!
+//! Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N`
+//! (crop the sources to a box during ingest — see [`obc_pack::ingest`]),
+//! `--chunk-size`, `--no-land`, `--terrain <path>` (baked OBCT tiles — a `.obcd`
+//! container or a directory of them — to integrate the OBCM §8.3 per-direction
+//! ascent from; omit it and every adjacency entry gets `0`), `--dump-pois` (print
+//! the classified POI list for eyeballing), and `--dump-hours` (print each POI's
+//! parsed weekly schedule). It
+//! prints one stage string per phase ("Merging", "Pass 0/1/2", "Calculating BBox",
+//! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
+//! builder UI can show progress — it matches these prefixes, and their order here
+//! is the order it expects. `obc-pack schema` prints the config's JSON Schema
+//! envelope — the web builder serves it so the editor's capability always matches
+//! the binary that packs. `schema --catalog` prints the cell-catalog schema, and
+//! `obc-pack catalog <cell-tree>` writes the root plus digest-pinned satellites.
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use obc_pack::config::Config;
+use obc_pack::cut::CutOptions;
+use obc_pack::ingest::Bbox;
+use obc_pack::pipeline::{pack, PackOptions};
+use obc_pack::progress::{PackError, Progress};
+
+struct Args {
+    pbfs: Vec<String>,
+    config: String,
+    output: String,
+    opts: PackOptions,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut positional = Vec::new();
+    let mut opts = PackOptions::default();
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            // Validated here, before any file is opened: a malformed or inside-out
+            // box must fail with a sentence, not with an empty map an hour later.
+            "--bbox" => opts.bbox = Some(Bbox::parse(&it.next().ok_or("--bbox needs W,S,E,N in degrees")?)?),
+            "--chunk-size" => {
+                opts.chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
+            }
+            "--no-land" => opts.no_land = true,
+            "--terrain" => {
+                opts.terrain = Some(PathBuf::from(it.next().ok_or("--terrain needs a .obcd file or a directory")?));
+            }
+            "--dump-pois" => opts.dump_pois = true,
+            "--dump-hours" => opts.dump_hours = true,
+            _ => positional.push(a),
+        }
+    }
+    // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
+    if positional.len() < 3 {
+        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
+                    [--terrain <path>] [--dump-pois] [--dump-hours]\n       \
+                    obc-pack schema                                 (print the config JSON Schema envelope)\n       \
+                    obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)\n       \
+                    obc-pack cells <pbf...> <config.json> <out-dir> (cut the extract into OBCA grid cells)"
+            .into());
+    }
+    let output = positional.pop().unwrap();
+    let config = positional.pop().unwrap();
+    Ok(Args { pbfs: positional, config, output, opts })
+}
+
+fn run() -> Result<(), String> {
+    let args = parse_args()?;
+    let config = Config::load(&args.config)?;
+    // `Progress::stdout()` carries no cancel token, so the CLI's only way out is
+    // the one it always had: Ctrl-C, which takes the process with it.
+    match pack(&args.pbfs, &config, Path::new(&args.output), &args.opts, &Progress::stdout()) {
+        Ok(_) => Ok(()),
+        Err(PackError::Failed(e)) => Err(e),
+        // Unreachable without a token, but the CLI must not claim success either.
+        Err(PackError::Cancelled) => Err("cancelled".into()),
+    }
+}
+
+/// `obc-pack catalog <cell-tree> --base-url <url> [--out -] [--generated-at <ts>]`
+fn run_catalog(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: obc-pack catalog <cell-tree> --base-url <url> [--out -] \
+                         [--generated-at <ts>]";
+    let mut tree: Option<PathBuf> = None;
+    let mut base_url: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut generated_at: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--base-url" => base_url = Some(it.next().ok_or("--base-url needs a URL")?.clone()),
+            "--out" => out = Some(it.next().ok_or("--out needs a path (or `-` for stdout)")?.clone()),
+            "--generated-at" => {
+                generated_at = Some(it.next().ok_or("--generated-at needs an RFC 3339 UTC instant")?.clone());
+            }
+            other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
+            other if tree.replace(PathBuf::from(other)).is_some() => {
+                return Err(format!("only one bake tree can be walked\n{USAGE}"));
+            }
+            _ => {}
+        }
+    }
+    let tree = tree.ok_or_else(|| USAGE.to_string())?;
+    let base_url =
+        base_url.ok_or_else(|| format!("--base-url is required — it is where this tree gets published\n{USAGE}"))?;
+
+    // The catalog is several documents: the root plus a cell index per band and a
+    // cell list per region, each pinned in the root by size and digest. They are
+    // written into the tree (satellites first, root last) rather than to one output;
+    // written yet would be a half-published state. `--out -` prints the root for
+    // inspection.
+    let opts =
+        obc_pack::catalog::CatalogOptions::new(base_url, generated_at.unwrap_or_else(obc_pack::catalog::now_timestamp));
+    let generated = obc_pack::catalog::generate(&tree, &opts)?;
+    for w in &generated.warnings {
+        eprintln!("obc-pack catalog: warning: {w}");
+    }
+    match out.as_deref() {
+        Some("-") => print!("{}", obc_pack::catalog::root_json(&generated.root)),
+        Some(other) => {
+            return Err(format!(
+                "--out {other}: a catalog is a root plus {} satellite document(s) and is written into the tree; \
+                 only `--out -` (inspect the root on stdout) is available",
+                generated.satellites.len()
+            ))
+        }
+        None => {
+            obc_pack::catalog::write_all_atomic(&tree, &generated)?;
+            let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
+            println!(
+                "{}: {cells} cells across {} bands, {} region(s), {} skin(s), {} satellite document(s)",
+                tree.join(obc_pack::catalog::DEFAULT_MANIFEST_NAME).display(),
+                generated.root.cell_index.len(),
+                generated.root.regions.len(),
+                generated.root.skins.len(),
+                generated.satellites.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `obc-pack cells <pbf...> <config.json> <out-dir> [flags]`
+///
+/// Ingests the sources **once** and cuts the cell artifacts of every band that the extract touches
+/// (`OBCA_Spec.md` §3), plus the provenance sidecar the bakery turns into a catalog. Cell sizes come
+/// from the schema's band table — `--bands` to supply the catalog's own, the OBCA §1.5 recommended table
+/// otherwise.
+fn run_cells(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: obc-pack cells <pbf...> <config.json> <out-dir> [--bands <bands.json>] \
+                         [--band <id>]... [--cell <log2/i/j>]... \
+                         [--source <id>[@<snapshot>][=W,S,E,N]]... \
+                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>]";
+    let mut positional: Vec<String> = Vec::new();
+    let mut opts = CutOptions::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut next = |flag: &str| it.next().cloned().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
+        match a.as_str() {
+            "--bands" => opts.bands = obc_pack::grid::BandTable::load(&next("--bands")?)?,
+            "--band" => opts.only_bands.push(next("--band")?),
+            "--cell" => opts.select.push(obc_pack::grid::CellId::parse(&next("--cell")?)?),
+            "--source" => opts.sources.push(obc_pack::cut::SourceExtent::parse(&next("--source")?)?),
+            "--bbox" => opts.bbox = Some(Bbox::parse(&next("--bbox")?)?),
+            "--chunk-size" => {
+                opts.chunk_size = Some(next("--chunk-size")?.parse().map_err(|_| "--chunk-size needs a number")?);
+            }
+            "--no-land" => opts.no_land = true,
+            "--terrain" => opts.terrain = Some(PathBuf::from(next("--terrain")?)),
+            other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
+            other => positional.push(other.to_string()),
+        }
+    }
+    if positional.len() < 3 {
+        return Err(USAGE.into());
+    }
+    let out_dir = positional.pop().unwrap();
+    let config = Config::load(&positional.pop().unwrap())?;
+    let summary = match obc_pack::cut::cut(&positional, &config, Path::new(&out_dir), &opts, &Progress::stdout()) {
+        Ok(s) => s,
+        Err(PackError::Failed(e)) => return Err(e),
+        Err(PackError::Cancelled) => return Err("cancelled".into()),
+    };
+    println!(
+        "{out_dir}: {} cell(s), {} bytes, {} partial ({})",
+        summary.cells.len(),
+        summary.bytes,
+        summary.partial,
+        obc_pack::cut::MANIFEST_NAME
+    );
+    if summary.partial > 0 && opts.sources.iter().all(|s| s.coverage.is_none()) {
+        // A bakery that forgets `--source …=W,S,E,N` gets every cell marked partial, which is correct
+        // (nothing was shown to be covered) and useless. Say so rather than let it publish that.
+        eprintln!(
+            "obc-pack cells: no source coverage was declared, so every cell is marked `partial` — pass \
+             `--source <id>[@<snapshot>]=W,S,E,N` for the extract(s) this run baked from"
+        );
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version") {
+        println!(
+            "obc-pack {} (merge + ingest + relations + land + contours + quadtree + serialize + POIs & hours + nav \
+             graph + cell cutter + catalog)",
+            env!("CARGO_PKG_VERSION")
+        );
+        return ExitCode::SUCCESS;
+    }
+    if args.first().map(String::as_str) == Some("schema") {
+        match args.get(1).map(String::as_str) {
+            Some("--config") => print!("{}", obc_pack::config::config_schema_json()),
+            Some("--catalog") => print!("{}", obc_pack::catalog::catalog_schema_json()),
+            _ => println!("{}", obc_pack::config::schema_envelope()),
+        }
+        return ExitCode::SUCCESS;
+    }
+    if args.first().map(String::as_str) == Some("cells") {
+        return match run_cells(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("obc-pack cells: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().map(String::as_str) == Some("catalog") {
+        return match run_catalog(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("obc-pack catalog: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("obc-pack: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}

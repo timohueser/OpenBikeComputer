@@ -3,7 +3,7 @@
 //!
 //! **Why a separate profile from [`Profile`](crate::profile).** The whole-route
 //! [`Profile`] is decimated to [`PROFILE_COLS`](crate::profile::PROFILE_COLS) columns for the
-//! *entire* route — 256 on `nrf-mem`. A single 5 km climb on a 100 km route lands in ~12 of
+//! *entire* route. A single 5 km climb on a 100 km route lands in a handful of
 //! those columns: far too coarse for the ClimbPro-style striped panel the Climb screen (C4)
 //! draws. This module re-buckets **one climb** into [`COLS`] columns, so a climb of any length
 //! gets the same detail (~climb_len / 200 m per column), without growing `PROFILE_COLS` (the
@@ -27,9 +27,10 @@
 //! pick its own smoothing window (locked in the epic's open questions).
 
 use crate::climb::ClimbSeg;
-use crate::geo::seg_dist_m;
+use crate::profile::fill_gaps;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 use heapless::Vec;
+use obc_map_scene::ground_dist_m;
 
 /// Columns in one climb's detail buffer. One elevation sample per column; the local grade is
 /// derived from a small window ([`grade_at`](ClimbProfile::grade_at)). At `i16` per column this
@@ -42,10 +43,10 @@ pub const COLS: usize = 200;
 
 /// Sentinel elevation for an as-yet-unfilled column, distinct from any real height (heights are
 /// whole meters, well inside `i16`). [`fill`](ClimbProfile::fill) seeds every column with this,
-/// buckets points over it, then gap-fills the ones no point reached — the same "empty column
-/// inherits its neighbour" trick as [`profile::fill_gaps`](crate::profile), adapted to a scalar
-/// column.
-const EMPTY: i16 = i16::MIN;
+/// buckets points over it, then gap-fills the ones no point reached through the shared
+/// [`fill_gaps`](crate::profile) carry — the same "empty column inherits its neighbour" trick the
+/// route band uses, here over a scalar column.
+pub(crate) const EMPTY: i16 = i16::MIN;
 
 /// A single detected climb's elevation profile: [`COLS`] height samples spanning the climb's
 /// `[start_m, end_m]` interval, bucketed by **within-climb** distance. Column `0` is the base
@@ -151,7 +152,7 @@ impl ClimbProfile {
             let mut prev: Option<(i32, i32)> = None;
             for p in &buf {
                 if let Some(pr) = prev {
-                    dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
                 }
                 prev = Some((p.lon, p.lat));
                 // Only points inside the climb's interval bucket into a column; points in the
@@ -173,7 +174,9 @@ impl ClimbProfile {
         // read exactly the seg's values even if no point landed in column 0 / the last column.
         self.cols[0] = seg.base_ele_m;
         self.cols[last_col] = seg.top_ele_m;
-        fill_gaps(&mut self.cols, seg.base_ele_m);
+        // (Both endpoints are pinned above, so the shared carry's final fallback pass is a no-op
+        // in practice — it only bites for a climb with no decodable geometry at all.)
+        fill_gaps(&mut self.cols, seg.base_ele_m, |c| *c != EMPTY);
     }
 
     /// Convenience constructor: a fresh profile filled for `seg`. Prefer [`new`](Self::new) +
@@ -302,38 +305,3 @@ impl ClimbProfile {
 /// without blurring where the grade actually changes; the screen reads through `grade_at`, so a
 /// retune here is invisible to callers.
 const GRADE_WIN: usize = 3;
-
-/// Make `cols` gap-free in place: each still-[`EMPTY`] column inherits the nearest filled column
-/// — forward carry first, then a backward carry for any leading run of empties. Any column still
-/// empty after both (only when the climb had no decodable geometry at all) falls back to
-/// `fallback` (the seg's base), so the buffer is never left with a sentinel.
-///
-/// This is the scalar analogue of [`profile::fill_gaps`](crate::profile) (which fills a `(min,
-/// max)` band); a climb profile keeps one sample per column, so the carry is a single `i16`.
-fn fill_gaps(cols: &mut [i16; COLS], fallback: i16) {
-    // Forward: carry the last seen height into the empties that follow it.
-    let mut last: Option<i16> = None;
-    for c in cols.iter_mut() {
-        if *c != EMPTY {
-            last = Some(*c);
-        } else if let Some(v) = last {
-            *c = v;
-        }
-    }
-    // Backward: fill any leading empties the forward pass couldn't reach.
-    let mut next: Option<i16> = None;
-    for c in cols.iter_mut().rev() {
-        if *c != EMPTY {
-            next = Some(*c);
-        } else if let Some(v) = next {
-            *c = v;
-        }
-    }
-    // Only reachable when the whole climb had no points (both endpoints are pinned before this,
-    // so in practice at least columns 0 and last are set and this loop is a no-op).
-    for c in cols.iter_mut() {
-        if *c == EMPTY {
-            *c = fallback;
-        }
-    }
-}

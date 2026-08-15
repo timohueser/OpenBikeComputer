@@ -18,6 +18,7 @@ public struct RouteDetailView: View {
     private let onUpload: () -> Void
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    private let onReverse: (() -> Void)?
     private let onSaveToPlanned: (() -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
@@ -40,6 +41,7 @@ public struct RouteDetailView: View {
         onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onReverse: (() -> Void)? = nil,
         onSaveToPlanned: (() -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
@@ -50,6 +52,7 @@ public struct RouteDetailView: View {
         self.onUpload = onUpload
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onReverse = onReverse
         self.onSaveToPlanned = onSaveToPlanned
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
@@ -275,6 +278,13 @@ public struct RouteDetailView: View {
             switch model.dressing {
             case .planned:
                 uploadButton
+                if let onReverse {
+                    // #503 — a whole-route flip lands a reversed copy alongside
+                    // the original; the rider keeps both directions.
+                    Button("Reverse", action: onReverse)
+                        .buttonStyle(.obcGhost)
+                        .accessibilityIdentifier("detail.reverse")
+                }
                 Button("Delete route") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
@@ -476,15 +486,11 @@ public struct ImportLandingView: View {
 }
 
 /// Inert transport for `#Preview` construction only.
-private struct PreviewNoopTransport: DeviceTransport {
+private struct PreviewNoopTransport: DeviceLink, DeviceObjects {
     var state: AsyncStream<ConnectionState> { AsyncStream { $0.finish() } }
-    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Preview", firmwareVersion: "0") }
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Preview") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
@@ -492,6 +498,5 @@ private struct PreviewNoopTransport: DeviceTransport {
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 }
 #endif

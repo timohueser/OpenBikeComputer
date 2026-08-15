@@ -1,17 +1,24 @@
 name: Release
 
-# Field-update release pipeline (epic #615 S8, #623). Separate from ci.yml on purpose:
-# releases must NOT ride the PR path filters — a tag push builds the *shipping* firmware and
-# publishes an installable UPDATE.BIN, regardless of which paths changed.
+# Field-update release pipeline (epic #615 S8, #623; signing #997, distribution #998). Separate
+# from ci.yml on purpose: releases must NOT ride the PR path filters — a tag push builds the
+# *shipping* firmware and publishes an installable UPDATE.BIN, regardless of which paths changed.
 #
-# On a pushed `v*` tag it builds the two flashed images (the BLE board firmware — the shipping
-# shape — and the 32 KB obc-boot bootloader), wraps the app into an OBCU UPDATE.BIN tagged with
-# the tag, gates on `obc-mkimage inspect`, and attaches UPDATE.BIN + both ELFs + a SHA-256
-# manifest to the GitHub release.
+# On a pushed `v*` tag it builds the two flashed images (the board firmware in its shipping shape —
+# the flag-less default build — and the 32 KB obc-boot bootloader), wraps + **signs** the app into
+# an OBCU v2 UPDATE.BIN tagged with the tag (Ed25519, #997 — an unsigned container is not
+# installable), gates on `obc-mkimage inspect`, then:
+#   * attaches UPDATE.BIN + both ELFs + a `manifest.json` + a SHA-256 manifest to the GitHub release;
+#   * mirrors `manifest.json` + `UPDATE.BIN` to the R2 update bucket under `fw/`, which is the URL
+#     all three apps poll (GitHub release-asset downloads 302 to a CORS-less host, so a browser
+#     `fetch` can't read them — #773 planning 2026-07-29). GitHub Releases stays the source of
+#     truth and the immutable archive; R2 is only where the bytes are *served* from.
 #
 # `workflow_dispatch` is the dry-run path: it runs the whole build + wrap + inspect gate for a
 # hand-typed version and uploads the same artifacts as a workflow artifact bundle — no tag, no
-# published release — so the pipeline (and a candidate UPDATE.BIN) can be validated off a branch.
+# published release, no R2 mirror — so the pipeline (and a candidate UPDATE.BIN + manifest) can be
+# validated off a branch. The dry run is allowed to sign with the committed TEST key; a real tag
+# push is not (see the wrap step and the key-rotation gate below).
 #
 # Toolchain + caching mirror ci.yml: the channel/targets come from //rust-toolchain.toml, the
 # board crate's FLPR `build.rs` needs the RISC-V gcc, and llvm-tools is found the same way the
@@ -39,6 +46,9 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The signing seed and the R2 credentials are `release`-environment secrets, not plain repo
+    # secrets, so a run must be approved before it can read them (firmware/obc-dfu/keys/README.md).
+    environment: release
     steps:
       # fetch-depth 0 (full history + tags), deliberately — don't "optimize" this back to a
       # shallow fetch. The app build embeds its git identity at build time
@@ -59,11 +69,11 @@ jobs:
           cache: false
 
       # Cache each cargo root separately — the board crate and the bootloader are standalone
-      # (own target dir + Cargo.lock), the host workspace builds obc-mkimage.
+      # (own target dir + Cargo.lock), while the host workspace now lives at the repository root.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            firmware
+            .
             firmware/obc-fw-nrf54l
             firmware/obc-boot
           key: release
@@ -74,40 +84,131 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
 
       # Tag push → the tag name; manual run → the typed input. Everything downstream reads $VERSION.
+      # IS_REAL_RELEASE separates the publishing tag path from the dry run; IS_PRERELEASE routes a
+      # hyphenated tag (`v1.2.0-beta.1`) to the pre-release channel — never the 'latest' pointer.
       - name: Resolve the version string
+        env:
+          # Keep workflow input out of the generated shell source. The tag path uses the runner's
+          # GITHUB_REF_NAME for the same reason: both values are data, never shell syntax.
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+            VERSION="$DISPATCH_VERSION"
+            echo "IS_REAL_RELEASE=false" >> "$GITHUB_ENV"
             echo "This is a DRY RUN — no release will be published."
           else
-            VERSION="${{ github.ref_name }}"
+            VERSION="$GITHUB_REF_NAME"
+            echo "IS_REAL_RELEASE=true" >> "$GITHUB_ENV"
+          fi
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::version must be vMAJOR.MINOR.PATCH with optional SemVer pre-release/build metadata; got '$VERSION'"
+            exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          # A hyphen in build metadata does not make a release a pre-release. Strip `+...` before
+          # routing the channel, then look for SemVer's pre-release separator.
+          VERSION_WITHOUT_BUILD="${VERSION%%+*}"
+          case "$VERSION_WITHOUT_BUILD" in
+            *-*) echo "IS_PRERELEASE=true"  >> "$GITHUB_ENV"; echo "pre-release tag: $VERSION" ;;
+            *)   echo "IS_PRERELEASE=false" >> "$GITHUB_ENV" ;;
+          esac
           echo "Release version: $VERSION"
 
-      # The shipping firmware shape: BLE build, release, --locked. From inside the crate dir so
-      # .cargo/config.toml selects the thumbv8m target (a --manifest-path build would target the host).
-      - name: Build obc-fw-nrf54l (release, ble)
+      # Tag ↔ crate version guard. The git tag and the board crate's manifest must agree on what
+      # version this release is: the OBCU header's `fw_version` is the tag (what `wrap --version`
+      # stamps), and the board crate carries its own CARGO_PKG_VERSION — this guard keeps the two
+      # from silently diverging. (It is NOT about "keeping the DIS fallback string honest": U1
+      # changed the DIS fallback so it no longer contains CARGO_PKG_VERSION, so that justification
+      # is gone.) Real tag only — a hand-typed dry-run version is not held to the crate.
+      - name: Tag ↔ crate version guard
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          tag_core="${VERSION#v}"; tag_core="${tag_core%%-*}"; tag_core="${tag_core%%+*}"
+          crate_ver=$(grep -m1 '^version = ' firmware/obc-fw-nrf54l/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$tag_core" != "$crate_ver" ]; then
+            echo "::error::tag $VERSION (core $tag_core) != board crate version $crate_ver in firmware/obc-fw-nrf54l/Cargo.toml"
+            echo "::error::bump the crate version to match the tag (or tag the version the crate already declares)"
+            exit 1
+          fi
+          echo "tag core $tag_core matches the board crate version $crate_ver"
+
+      # Key-rotation gate (firmware/obc-dfu/keys/README.md). While obcu-release.pub — the key
+      # compiled into every firmware image and the only one the armer trusts — still equals the
+      # committed *test* public key, anyone can sign an image this firmware would install, because
+      # the matching test seed sits in the repo. Publishing a real release in that state ships a
+      # device-installable image trusting a public key, so refuse it. Equality IS the gate: it
+      # goes green the moment the key is rotated (README's rotation recipe), which is also when
+      # OBCU_SIGNING_SEED becomes mandatory below.
+      - name: Refuse a real release that still trusts the committed TEST key
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # The key parser accepts LF and CRLF. Compare the parsed hex content too, so changing only
+          # line endings cannot make the same public key appear "rotated" to this gate.
+          RELEASE_KEY=$(tr -d '\r\n' < firmware/obc-dfu/keys/obcu-release.pub)
+          TEST_KEY=$(tr -d '\r\n' < firmware/obc-dfu/keys/test/obcu-test.pub)
+          if [ "$RELEASE_KEY" = "$TEST_KEY" ]; then
+            echo "::error::obcu-release.pub still holds the committed TEST key — anyone can sign an image this firmware installs."
+            echo "::error::Rotate it and set OBCU_SIGNING_SEED before publishing a real release (firmware/obc-dfu/keys/README.md)."
+            exit 1
+          fi
+          echo "obcu-release.pub is not the committed test key — OK to publish a signed release"
+
+      # The shipping firmware shape: the flag-less default build (`default = ["ble"]` since the
+      # LM20 retarget — the default IS the all-features shipping image), release,
+      # --locked. From inside the crate dir so .cargo/config.toml selects the thumbv8m target (a
+      # --manifest-path build would target the host).
+      - name: Build obc-fw-nrf54l (release)
         working-directory: firmware/obc-fw-nrf54l
-        run: cargo build --release --locked --no-default-features --features ble
+        run: cargo build --release --locked
 
       - name: Build obc-boot (release)
         working-directory: firmware/obc-boot
         run: cargo build --release --locked
 
-      # objcopy the app ELF → raw vector-table-first binary, wrap it into an OBCU container tagged
-      # with $VERSION, then INSPECT as the gate (non-zero exit on any header/CRC problem fails here).
-      - name: Wrap UPDATE.BIN (objcopy → obc-mkimage wrap → inspect gate)
+      # objcopy the app ELF → raw vector-table-first binary, wrap + SIGN it into an OBCU v2
+      # container tagged with $VERSION, then INSPECT as the gate (non-zero exit on any
+      # header/CRC/signature problem fails here).
+      #
+      # The signing seed comes from the `release` environment secret OBCU_SIGNING_SEED (64 hex
+      # chars). The asymmetry is deliberate and load-bearing: **a dry run (`workflow_dispatch`) may
+      # sign with the committed test key because it publishes nothing; a real tag push may NEVER.**
+      # U3 replaced U2's silent test-key fallback with a hard refusal on the publish path, so a
+      # missing secret on a `v*` tag fails the job instead of shipping a release anyone holding the
+      # in-repo test seed could forge. (This, together with the key-rotation guard above, closes the
+      # forgeable-trust-chain window the #1010 security review proved: today obcu-release.pub still
+      # equals the test key, so a test-seed signature would pass `inspect` — the two guards are what
+      # stop a premature real publish.) inspect then verifies the signature against the release key
+      # compiled into this build's firmware, and once the key is rotated a test-seed signature stops
+      # verifying there too.
+      - name: Wrap + sign UPDATE.BIN (objcopy → obc-mkimage wrap --sign-seed → inspect gate)
+        env:
+          OBCU_SIGNING_SEED: ${{ secrets.OBCU_SIGNING_SEED }}
         run: |
           set -euo pipefail
           rustup component add llvm-tools
           OBJCOPY=$(find "$(rustc --print sysroot)" -name llvm-objcopy | head -1)
           APP_ELF=firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
           "$OBJCOPY" -O binary "$APP_ELF" app.bin
-          cargo run --manifest-path firmware/Cargo.toml -p obc-mkimage --release --locked -- \
-            wrap --bin app.bin --version "$VERSION" --out UPDATE.BIN
+          if [ -n "${OBCU_SIGNING_SEED:-}" ]; then
+            echo "signing with the OBCU_SIGNING_SEED environment secret"
+            SIGN_ARGS=(--sign-seed-env OBCU_SIGNING_SEED)
+          elif [ "$IS_REAL_RELEASE" != "true" ]; then
+            echo "::warning::OBCU_SIGNING_SEED is not set — dry run, signing with the committed TEST key."
+            SIGN_ARGS=(--sign-seed firmware/obc-dfu/keys/test/obcu-test.seed)
+          else
+            echo "::error::OBCU_SIGNING_SEED is not set — refusing to publish a real release signed by the committed TEST key."
+            echo "::error::Set the secret in the 'release' environment (firmware/obc-dfu/keys/README.md)."
+            exit 1
+          fi
+          cargo run -p obc-mkimage --release --locked -- \
+            wrap --bin app.bin --version "$VERSION" --out UPDATE.BIN "${SIGN_ARGS[@]}"
+          # The gate: verifies both CRCs AND the signature against the key compiled into this
+          # build's firmware. A container this firmware would not install cannot be published.
           echo "::group::obc-mkimage inspect UPDATE.BIN"
-          cargo run --manifest-path firmware/Cargo.toml -p obc-mkimage --release --locked -- \
+          cargo run -p obc-mkimage --release --locked -- \
             inspect UPDATE.BIN
           echo "::endgroup::"
 
@@ -119,10 +220,36 @@ jobs:
           mkdir -p dist
           cp UPDATE.BIN dist/UPDATE.BIN
           cp firmware/obc-boot/target/thumbv8m.main-none-eabihf/release/obc-boot dist/obc-boot.elf
-          cp firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l dist/obc-fw-nrf54l-ble.elf
-          ( cd dist && sha256sum UPDATE.BIN obc-boot.elf obc-fw-nrf54l-ble.elf > SHA256SUMS.txt )
+          cp firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l dist/obc-fw-nrf54l.elf
+          ( cd dist && sha256sum UPDATE.BIN obc-boot.elf obc-fw-nrf54l.elf > SHA256SUMS.txt )
           echo "::group::SHA256SUMS.txt"
           cat dist/SHA256SUMS.txt
+          echo "::endgroup::"
+
+      # The manifest the apps read (builder/app/src/lib/firmware/release.ts `parseFirmwareManifest`,
+      # and the iOS mirror): version (the tag), bytes + sha256 of UPDATE.BIN, url (the R2 copy of
+      # this version's image), notes (the GitHub release page). It ships both as a release asset and
+      # as the R2 'latest'/pre-release pointer. The url points at R2 because that is the CORS-clean,
+      # rate-limit-free surface all three hosts fetch from (#773 planning).
+      - name: Generate manifest.json
+        env:
+          FW_BASE_URL: ${{ vars.OBC_FW_BASE_URL || 'https://updates.openbikecomputer.com' }}
+        run: |
+          set -euo pipefail
+          BYTES=$(stat -c %s dist/UPDATE.BIN)
+          SHA=$(sha256sum dist/UPDATE.BIN | cut -d' ' -f1)
+          URL="${FW_BASE_URL%/}/fw/${VERSION}/UPDATE.BIN"
+          NOTES="${{ github.server_url }}/${{ github.repository }}/releases/tag/${VERSION}"
+          jq -n \
+            --arg version "$VERSION" \
+            --argjson bytes "$BYTES" \
+            --arg sha256 "$SHA" \
+            --arg url "$URL" \
+            --arg notes "$NOTES" \
+            '{version: $version, bytes: $bytes, sha256: $sha256, url: $url, notes: $notes}' \
+            > dist/manifest.json
+          echo "::group::manifest.json"
+          cat dist/manifest.json
           echo "::endgroup::"
 
       # Dry run (manual): keep the artifacts for download + inspection, publish nothing.
@@ -134,18 +261,88 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      # Tag push: create the release (or top up an existing one) and attach every asset.
+      # Tag push: create the release (or top up an existing one) and attach every asset. A
+      # hyphenated tag is a pre-release, so it is marked as one and (below) never moves the
+      # 'latest' pointer.
       - name: Publish the GitHub release
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
+          ASSETS=(dist/UPDATE.BIN dist/manifest.json dist/obc-boot.elf dist/obc-fw-nrf54l.elf dist/SHA256SUMS.txt)
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release upload "$VERSION" dist/UPDATE.BIN dist/obc-boot.elf dist/obc-fw-nrf54l-ble.elf dist/SHA256SUMS.txt --clobber
+            gh release upload "$VERSION" "${ASSETS[@]}" --clobber
+            if [ "$IS_PRERELEASE" = "true" ]; then gh release edit "$VERSION" --prerelease; fi
           else
+            PRERELEASE_FLAG=""
+            if [ "$IS_PRERELEASE" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
+            # The GPL-3 § 6 source offer (#1149). Serving UPDATE.BIN from this page and from
+            # updates.openbikecomputer.com is distribution of an object-code work, so the
+            # corresponding source has to be offered with it. A public repository covers it in
+            # practice; naming the tag makes "corresponding" exact rather than implied, because
+            # only that commit built this image. `gh` puts --notes-file first and appends the
+            # generated changelog after it, so this rides above the commit list.
+            #
+            # The create path only: a re-run tops up assets on an existing release and must not
+            # rewrite notes a human may have edited (the create path is where every tag lands).
+            printf '%s\n' \
+              "**Source and licences.** This firmware is free software under the [GPL-3.0](${REPO_URL}/blob/${VERSION}/LICENSE)." \
+              "The complete corresponding source for this image is the tagged commit — [${VERSION}](${REPO_URL}/tree/${VERSION}) —" \
+              "which is the source offer for every copy distributed from this page and from \`updates.openbikecomputer.com\`." \
+              "Third-party components and their licence texts: [THIRD-PARTY.md](${REPO_URL}/blob/${VERSION}/THIRD-PARTY.md)." \
+              > dist/notes-head.md
             gh release create "$VERSION" \
               --title "$VERSION" \
+              --notes-file dist/notes-head.md \
               --generate-notes \
-              dist/UPDATE.BIN dist/obc-boot.elf dist/obc-fw-nrf54l-ble.elf dist/SHA256SUMS.txt
+              $PRERELEASE_FLAG \
+              "${ASSETS[@]}"
+          fi
+
+      # Mirror to R2 — the surface the apps actually poll. Same ephemeral rclone remote the bakery's
+      # publisher builds (host/obc-bake/src/publish.rs `RcloneStore`): the S3-compatible endpoint is
+      # derived from the account id and every credential rides the environment, never argv. Reuses
+      # the bake/deploy R2 secret family (OBC_R2_ACCOUNT_ID / _BUCKET / _ACCESS_KEY_ID /
+      # _SECRET_ACCESS_KEY) — no new secret names. Objects live under a per-channel `fw/` prefix:
+      #   fw/<tag>/UPDATE.BIN      the immutable, versioned image (always written)
+      #   fw/manifest.json         the 'latest' pointer the apps poll (STABLE releases only)
+      #   fw/prerelease/manifest.json  the opt-in channel (PRE-RELEASES only)
+      # A pre-release never touches fw/manifest.json — that is the staged-rollout lever.
+      - name: Mirror manifest.json + UPDATE.BIN to R2
+        if: github.event_name == 'push'
+        env:
+          OBC_R2_ACCOUNT_ID: ${{ secrets.OBC_R2_ACCOUNT_ID }}
+          OBC_R2_BUCKET: ${{ secrets.OBC_R2_BUCKET }}
+          OBC_R2_ACCESS_KEY_ID: ${{ secrets.OBC_R2_ACCESS_KEY_ID }}
+          OBC_R2_SECRET_ACCESS_KEY: ${{ secrets.OBC_R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # `update` first: a runner image whose package index has aged out 404s on the install
+          # otherwise, and it would do so at the last step of a long job.
+          sudo apt-get update
+          sudo apt-get install -y rclone
+          : "${OBC_R2_ACCOUNT_ID:?set the R2 secrets in the release environment}"
+          : "${OBC_R2_BUCKET:?set the R2 secrets in the release environment}"
+          : "${OBC_R2_ACCESS_KEY_ID:?set the R2 secrets in the release environment}"
+          : "${OBC_R2_SECRET_ACCESS_KEY:?set the R2 secrets in the release environment}"
+          # The ephemeral `obcr2` remote — RCLONE_CONFIG_<REMOTE>_* env, endpoint derived from the
+          # account id, secret only in the environment. Mirrors host/obc-bake/src/publish.rs.
+          export RCLONE_CONFIG_OBCR2_TYPE=s3
+          export RCLONE_CONFIG_OBCR2_PROVIDER=Cloudflare
+          export RCLONE_CONFIG_OBCR2_REGION=auto
+          export RCLONE_CONFIG_OBCR2_ENDPOINT="https://${OBC_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          export RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID="$OBC_R2_ACCESS_KEY_ID"
+          export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
+          export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
+          # Immutable versioned image — a retry may confirm the same checksum, but a force-moved
+          # tag can never replace bytes already served under this versioned URL.
+          rclone copyto --checksum --immutable dist/UPDATE.BIN "obcr2:${OBC_R2_BUCKET}/fw/${VERSION}/UPDATE.BIN"
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            rclone copyto dist/manifest.json "obcr2:${OBC_R2_BUCKET}/fw/prerelease/manifest.json"
+            echo "pre-release: wrote fw/prerelease/manifest.json; left the 'latest' fw/manifest.json untouched"
+          else
+            rclone copyto dist/manifest.json "obcr2:${OBC_R2_BUCKET}/fw/manifest.json"
+            echo "stable: updated the 'latest' pointer fw/manifest.json"
           fi

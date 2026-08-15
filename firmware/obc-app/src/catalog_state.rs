@@ -21,8 +21,8 @@
 use obc_route::Profile;
 
 use crate::app::NAV_PREVIEW_MAX;
-use crate::retention::RouteRetentionMeta;
-use crate::ride::{RideCatalog, RideSummary, UI_RIDES_CAP};
+use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
+use crate::ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 
@@ -76,6 +76,14 @@ pub(crate) struct CatalogState {
     rides: RideCatalog,
     /// Each ride's durable object id, pairwise with [`rides`](CatalogState::rides).
     ride_ids: heapless::Vec<u16, UI_RIDES_CAP>,
+    /// The **full** compact ride-retention inventory (finding #876-2): every stored ride's
+    /// `id + synced + synced_at`, up to [`MAX_RIDES`], independent of the newest-[`UI_RIDES_CAP`]
+    /// display catalog above. The retention sweep + eager `synced_at` stamp read this — so an older
+    /// synced+expired ride the menu never shows is still reachable by expiry. Fed by the host
+    /// ([`set_ride_retention_inventory`](CatalogState::set_ride_retention_inventory)); a plain
+    /// [`replace_rides`](CatalogState::replace_rides) also seeds it from the visible summaries so a
+    /// host that never streams the full view still expires the rides it does surface.
+    ride_inventory: heapless::Vec<RideRetentionRecord, MAX_RIDES>,
     /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
     /// detail's band source, host-filled once per detail entry. `None` while unanswered.
     ride_profile: Option<Profile>,
@@ -96,6 +104,14 @@ pub(crate) struct CatalogState {
     /// staleness key (the render gates on it so an old plan's shape can never draw under a
     /// different route). Cleared when a plan commits so every plan starts preview-less.
     nav_preview_route: Option<usize>,
+    /// The **detour preview** polyline (#882): the planned-but-uncommitted detour's decimated
+    /// shape, drawn by the Detour preview screen *over* the still-active original route.
+    /// Host-filled when the detour plan completes; cleared on commit, cancel, or route change.
+    detour_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
+    /// The route index the [`detour_preview`](CatalogState::detour_preview) was planned against —
+    /// its staleness key (a route swap or rescan mid-preview blanks the overlay rather than
+    /// drawing a stale detour over different geometry).
+    detour_preview_route: Option<usize>,
 }
 
 impl CatalogState {
@@ -108,12 +124,15 @@ impl CatalogState {
             trips: Trips::new(),
             rides: RideCatalog::new(),
             ride_ids: heapless::Vec::new(),
+            ride_inventory: heapless::Vec::new(),
             ride_profile: None,
             ride_profile_for: None,
             ride_preview: heapless::Vec::new(),
             ride_preview_for: None,
             nav_preview: heapless::Vec::new(),
             nav_preview_route: None,
+            detour_preview: heapless::Vec::new(),
+            detour_preview_route: None,
         }
     }
 
@@ -134,12 +153,15 @@ impl CatalogState {
             addr_of_mut!((*slot).trips).write(Trips::new());
             addr_of_mut!((*slot).rides).write(RideCatalog::new());
             addr_of_mut!((*slot).ride_ids).write(heapless::Vec::new());
+            addr_of_mut!((*slot).ride_inventory).write(heapless::Vec::new());
             addr_of_mut!((*slot).ride_profile).write(None);
             addr_of_mut!((*slot).ride_profile_for).write(None);
             addr_of_mut!((*slot).ride_preview).write(heapless::Vec::new());
             addr_of_mut!((*slot).ride_preview_for).write(None);
             addr_of_mut!((*slot).nav_preview).write(heapless::Vec::new());
             addr_of_mut!((*slot).nav_preview_route).write(None);
+            addr_of_mut!((*slot).detour_preview).write(heapless::Vec::new());
+            addr_of_mut!((*slot).detour_preview_route).write(None);
             // Exhaustiveness guard: a field added to `CatalogState` fails to compile here until
             // its `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
             let CatalogState {
@@ -149,12 +171,15 @@ impl CatalogState {
                 trips: _,
                 rides: _,
                 ride_ids: _,
+                ride_inventory: _,
                 ride_profile: _,
                 ride_profile_for: _,
                 ride_preview: _,
                 ride_preview_for: _,
                 nav_preview: _,
                 nav_preview_route: _,
+                detour_preview: _,
+                detour_preview_route: _,
             } = &*slot;
         }
     }
@@ -297,6 +322,34 @@ impl CatalogState {
         &self.ride_ids
     }
 
+    /// The full compact ride-retention inventory the sweep reads (finding #876-2) — every stored
+    /// ride's `id + synced + synced_at`, not just the newest-[`UI_RIDES_CAP`] the menu shows.
+    pub(crate) fn ride_records(&self) -> &[RideRetentionRecord] {
+        &self.ride_inventory
+    }
+
+    /// Overwrite the compact ride-retention inventory from the host's full store scan (finding
+    /// #876-2). Independent of [`replace_rides`](CatalogState::replace_rides): the host streams
+    /// **every** stored ride (up to [`MAX_RIDES`]) here so retention sees rides beyond the display
+    /// catalog; entries past the cap are ignored.
+    pub(crate) fn set_ride_retention_inventory(&mut self, records: &[RideRetentionRecord]) {
+        self.ride_inventory.clear();
+        for r in records.iter().take(MAX_RIDES) {
+            let _ = self.ride_inventory.push(*r);
+        }
+    }
+
+    /// Optimistically stamp ride `id`'s `synced_at` in the **inventory** (the sweep's mirror of the
+    /// host's sidecar write, the full-inventory twin of
+    /// [`stamp_ride_synced_at`](CatalogState::stamp_ride_synced_at)) so a re-derivation before the
+    /// host's rescan lands doesn't re-enqueue the same stamp for a ride outside the display catalog.
+    /// Only ever fills a `0` stamp. A no-op if the id isn't in the inventory.
+    pub(crate) fn stamp_inventory_synced_at(&mut self, id: u16, utc: u32) {
+        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == id && r.synced_at_utc == 0) {
+            r.synced_at_utc = utc;
+        }
+    }
+
     /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
     /// [`route_entry`](CatalogState::route_entry).
     pub(crate) fn ride_entry(&self, idx: usize) -> Option<RideEntry<'_>> {
@@ -316,9 +369,17 @@ impl CatalogState {
         let old_ids = self.ride_ids.clone();
         self.rides.clear();
         self.ride_ids.clear();
+        // Seed the compact retention inventory from the visible summaries as a fallback (finding
+        // #876-2): a host that never streams the full store view still expires the rides it does
+        // surface. A retention-aware host (the board) overwrites this with the full up-to-MAX_RIDES
+        // view via `set_ride_retention_inventory` right after, so the sweep sees rides beyond the
+        // newest UI_RIDES_CAP too.
+        self.ride_inventory.clear();
         for (s, &id) in summaries.iter().zip(ids).take(UI_RIDES_CAP) {
             let _ = self.rides.push(s.clone());
             let _ = self.ride_ids.push(id);
+            let _ =
+                self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
         }
         // The view caches follow their subject's identity (identity survives → the resident
         // profile moves with it, no re-stream; vanished → the buffer drops).
@@ -441,5 +502,30 @@ impl CatalogState {
     pub(crate) fn clear_nav_preview(&mut self) {
         self.nav_preview.clear();
         self.nav_preview_route = None;
+    }
+
+    /// Hand in a planned detour's decimated polyline (#882), keyed to the route it was planned
+    /// against ([`detour_preview_for`](CatalogState::detour_preview_for) gates on the same key).
+    pub(crate) fn set_detour_preview(&mut self, pts: &[(i32, i32)], active_route: Option<usize>) {
+        self.detour_preview.clear();
+        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
+            let _ = self.detour_preview.push(p);
+        }
+        self.detour_preview_route = active_route;
+    }
+
+    /// The detour-preview polyline for `active_route`, or the empty slice when missing/stale.
+    pub(crate) fn detour_preview_for(&self, active_route: Option<usize>) -> &[(i32, i32)] {
+        if self.detour_preview_route.is_some() && self.detour_preview_route == active_route {
+            &self.detour_preview
+        } else {
+            &[]
+        }
+    }
+
+    /// Clear the detour preview and its key — a commit, cancel, or failure ends the preview.
+    pub(crate) fn clear_detour_preview(&mut self) {
+        self.detour_preview.clear();
+        self.detour_preview_route = None;
     }
 }

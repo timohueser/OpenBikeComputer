@@ -10,8 +10,9 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::Screen;
-use obc_app::{App, AppState, Fix, Gesture};
+use obc_app::{App, AppState, Gesture};
 use obc_formats::obcm::POI_HOURS_BLOB_LEN;
+use obc_ports::Fix;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obcm_testkit::{build_poi_map, build_poi_map_with_hours, PoiSpec};
 
@@ -46,7 +47,8 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
-    app.render_frame(&mut buf, &reader, None, 240.0, 320.0, |c| {
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    app.render_frame(Some(&mut scratch), &mut buf, &reader, None, 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
@@ -54,15 +56,15 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
 }
 
 /// Walk an idle `App` from Home into the POI list for `category`, leaving the list on top. Uses the
-/// real gesture flow: Home `back-hold` → Menu, two clockwise detents to the POIs station (the menu
-/// order is Routes · Rides · POIs · Map · Settings), press → category list, `steps` clockwise detents
+/// real gesture flow: Home `back-hold` → Menu, two clockwise steps to the POIs station (the menu
+/// order is Routes · Rides · POIs · Map · Settings), press → category list, `steps` clockwise steps
 /// to the category, press → POI list.
 fn open_poi_list(app: &mut App, steps: i32) {
     app.apply_gesture(Gesture::BackHold); // Home → Menu (compass)
-    app.apply_gesture(Gesture::Turn(2)); // Routes → Rides → POIs
+    app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
     app.apply_gesture(Gesture::Press); // → category list
     if steps != 0 {
-        app.apply_gesture(Gesture::Turn(steps));
+        app.apply_gesture(Gesture::Step(steps));
     }
     app.apply_gesture(Gesture::Press); // → POI list
 }
@@ -71,9 +73,9 @@ fn open_poi_list(app: &mut App, steps: i32) {
 #[test]
 fn menu_to_category_to_list_navigation() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
-    // Home → Menu → POIs station (two detents past Routes) → category list.
+    // Home → Menu → POIs station (two steps past Routes) → category list.
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(2));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiMenu(_)), "POIs opens the category list");
 
@@ -138,7 +140,7 @@ fn reentering_requeries() {
 
     app.apply_gesture(Gesture::Back); // back to category list
                                       // Opening the *next* category must re-query (a different set), proving the scratch invalidates.
-    app.apply_gesture(Gesture::Turn(1)); // Water → Campsite
+    app.apply_gesture(Gesture::Step(1)); // Water → Campsite
     app.apply_gesture(Gesture::Press);
     assert!(app.base_needs_reader(), "re-entering a category needs the Reader again (scratch invalidated)");
     let _ = render(&mut app, &bytes);
@@ -253,8 +255,8 @@ fn detail_no_hours_still_resolves_once() {
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
 
     open_poi_list(&mut app, 0);
-    let _ = render(&mut app, &bytes); // snapshot (nearest is Shop North; turn to the no-hours one)
-    app.apply_gesture(Gesture::Turn(1)); // highlight Well South (ref 0xFFFF)
+    let _ = render(&mut app, &bytes); // snapshot (nearest is Shop North; step to the no-hours one)
+    app.apply_gesture(Gesture::Step(1)); // highlight Well South (ref 0xFFFF)
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
 

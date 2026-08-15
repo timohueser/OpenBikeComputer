@@ -4,11 +4,22 @@
 //! `SimulatorDisplay`) and the device (LS021B7DD02) share the same projection,
 //! LOD selection, painter ordering, polygon fill and line drawing.
 //!
-//! [`MapRenderer`] owns every scratch buffer and clears (not frees) them each
+//! [`RenderScratch`] owns every scratch buffer and clears (not frees) them each
 //! frame, so steady-state rendering does no heap allocation. Geometry math uses
 //! `libm` for `no_std`.
+//!
+//! **Config and scratch are two things (#1146).** [`RenderScratch`] is *only* per-frame working
+//! memory — buffers written before they are read, meaningless between frames. Everything that
+//! decides what a frame looks like travels as a per-call [`RenderConfig`] argument, and **no sticky
+//! setting is ever a field of the scratch**. That rule is structural, not stylistic: the scratch is
+//! headed for an arena the caller lends the render path one frame at a time, so a setting parked in
+//! it would quietly reset when the arena is re-lent (or, worse, arrive carrying another owner's
+//! choice). A caller that wants a switch to persist keeps it in its own state and re-states it each
+//! frame — which is exactly what the Map screen does with the rider's contour switch.
 
 #![no_std]
+
+use core::mem::ManuallyDrop;
 
 use heapless::Vec;
 
@@ -21,123 +32,128 @@ mod collect;
 mod fill;
 mod font_data;
 mod overlay;
+mod rain;
 mod stroke;
 pub mod surface;
 pub mod text;
 mod viewport;
 pub use canvas::{rect, Canvas};
 pub use overlay::{OverlayChunk, RouteOverlaySource};
+pub use rain::{
+    rain_in_regime, rain_min_zoom, rain_style, RainGrid, RainOverlaySource, RainSampling, RAIN_BELOW_Z,
+    RAIN_MAX_CELL_STEP, RAIN_SAMPLING, RAIN_STYLE, RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
+};
 pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
 pub use viewport::{mpp_for_zoom, round_coord, zoom_for_mpp, Viewport};
 
-use collect::{FrameScratch, Span};
-use fill::fill_polygon_proj;
+use collect::{FrameScratch, ScreenPoint, Span};
+use fill::fill_polygon;
 use stroke::{draw_line, Stroker};
 
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
-// RAM, not per-frame. Two memory profiles select the caps:
-//   - default (512 KB nRF54LM20 / sim / tests): the shipping-part profile. The renderer scratch
-//     (`MCU_RENDERER_BYTES` below, ~90 KB) is sized to the LM20's 512 KB budget alongside the
-//     75 KB RGB222 framebuffer, the map/route caches, the on-device router, the BLE stack (issue
-//     #270 — map + BLE share one image), and a larger stack reserve than the 256 KB DK can spare
-//     (the DK's ~36 KB residual stack has overflowed the deep render path more than once). The
-//     **simulator builds this profile**, so it renders exactly what the LM20 will — features start
-//     dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so
-//     the sim shows that limit rather than an unattainable host-fidelity map).
-//   - `nrf-mem`: constrained 256 KB nRF54L15-DK profile — culled hard (~8.5 KB scratch after
-//     #677: the caps were quartered again so the freed `.bss` becomes MSP stack — the BLE
-//     pairing path (trouble-host's synchronous software-P256 SMP) needs the headroom, and
-//     on-glass pairing was the binding constraint, not map fidelity). The board crate's budget
-//     assert is the binding check. The cost: features drop at busier coarse zooms than on the
-//     LM20 (see [`render`]); the shipping 512 KB LM20 profile is untouched.
-// On `nrf-mem` even the single-feature decode buffers (`MAX_DECODE_*`) are trimmed below the
-// format's per-feature bound; such a feature is dropped whole and counted explicitly.
+// RAM, not per-frame. One profile for everything: the shipping 512 KB nRF54LM20 budget, which the
+// simulator and tests build too, so they render exactly what the device will — features start
+// dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so the
+// sim shows that limit rather than an unattainable host-fidelity map). The renderer scratch
+// (`MCU_SCRATCH_BYTES` below, under 128 KiB) is sized alongside the 75 KB RGB222 framebuffer, the
+// map/route caches, the on-device router, the BLE stack (issue #270 — map + BLE share one image),
+// and a ~75 KB stack reserve. The board crate's budget assert is the binding fit check.
+//
+// **Where the current numbers came from (#1146 P3).** The board's scratch arena made these caps one
+// arm of a three-way union (render ⊥ nav ⊥ usb), and max-of-arms accounting freed ~76 KB of
+// resident RAM; P3 spent ~25 KB of that back here, where it buys visible map. The USB arm later grew
+// to 128 KiB and became the maximum. This coarse-LOD work phase-shares the two per-feature point
+// buffers and spends the resulting headroom on frame points without moving that 128 KiB ceiling
+// (`firmware/obc-fw-nrf54l/src/arena.rs` explains the cliff).
+// (The old `nrf-mem` feature — the culled 256 KB nRF54L15-DK profile — was deleted when the LM20
+// hardware arrived; its history lives in git and the #677/#270 discussions.)
 
-/// Maximum visible features per frame (each is a [`Span`] — 14 bytes). Saturates first at coarse
-/// zoom (many small features).
-#[cfg(not(feature = "nrf-mem"))]
-pub const MAX_SPANS: usize = 1152;
-// Trimmed hard on nrf-mem: the ride loop's deep per-frame render path (per-frame source adapter +
-// streamed-chunk decode over embedded-sdmmc) needs a large MSP stack that must coexist with the
-// resident `RouteCache`/`RouteIndex` — and, on the combined image, the BLE stack — on the 256 KB
-// part; freeing scratch buys that headroom.
-#[cfg(feature = "nrf-mem")]
-pub const MAX_SPANS: usize = 96;
+/// Capacity of pass-A's candidate reservoir — every stub the collector may hold before `select()`
+/// picks the winners (a slot is `Span`-sized, 12 bytes). It is the frame's candidate/feature
+/// ceiling, while its surplus over a typical selected frame buys *backfill* — lower-priority
+/// candidates remain available to take a slot after a large feature is skipped on the point or ring
+/// budget. A frame draws at most `min(MAX_SPANS, MAX_FRAME_RINGS)` features.
+/// This PR packs the candidate metadata and removes the span's redundant resolved color. The
+/// packed screen-space frame vertices below free enough bytes to hold 3,072 candidates while
+/// staying inside the same arena arm.
+pub const MAX_SPANS: usize = 3072;
 
-/// Maximum total vertices across all visible features per frame (8 bytes each).
-///
-/// Known `nrf-mem` oddity, kept deliberately: there the frame cap (768) sits *below* the
-/// single-feature decode cap [`MAX_DECODE_POINTS`] (1024), so a decoded max-size feature can
-/// never be admitted to the frame buffers — the capacity check drops it every frame, and it
-/// counts into `features_dropped`. It's undroppable-by-design: a 256 KB-DK artifact (the shipping
-/// LM20 relaxes the trim), and real map features rarely approach these sizes. Do not "fix" it by
-/// raising this cap.
-#[cfg(not(feature = "nrf-mem"))]
-pub const MAX_FRAME_POINTS: usize = 4768;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_POINTS: usize = 192;
+/// Maximum total retained vertices across all visible features per frame — one of the two budgets
+/// `select()` actually enforces. These are already-projected signed-16-bit screen coordinates
+/// ([`ScreenPoint`]), four bytes per vertex instead of the former eight-byte map coordinates. The
+/// recovered bytes are reinvested here and in the span/ring reservoirs; 16,323 is deliberately the
+/// exact capacity that fills the board's 128 KiB arena arm after alignment rather than leaving a
+/// second, smaller render limit inside it.
+pub const MAX_FRAME_POINTS: usize = 16323;
 
-/// Maximum total ring entries across all visible features per frame.
-#[cfg(not(feature = "nrf-mem"))]
-pub const MAX_FRAME_RINGS: usize = 1024;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_RINGS: usize = 48;
+/// Maximum total ring entries across all visible features per frame. Every admitted feature costs
+/// at least one ring, `Kind::Line` included:
+/// `select()` charges `ring_count`, a candidate with empty `ring_lens` is rejected outright
+/// (`Feature::has_valid_rings`), and `ring_count == 0` is reserved as pass-B's failure sentinel.
+/// So no frame draws more features than `min(MAX_SPANS, MAX_FRAME_RINGS)`, however much point room
+/// is left over. Ring lengths are `u16`, which halves their MCU storage; the crossing-buffer
+/// packed-coordinate rebalance raises this cap to 3,328, above the candidate reservoir because
+/// polygons may contribute more than one ring.
+pub const MAX_FRAME_RINGS: usize = 3328;
 
-/// Maximum vertices for a single feature during decode (reused per feature). On the host this
-/// equals the OBCM production source's maximum feature size — full format fidelity. On `nrf-mem` it is
-/// trimmed **below the format's per-feature bound**: a feature past the cap is consumed but dropped
-/// whole and reported in [`RenderStats::feature_decode_capacity_drops`]. A deliberate 256 KB-DK compromise (issue #270 —
-/// the map path must coexist with the BLE stack); the 512 KB LM20 restores the format bound.
-#[cfg(not(feature = "nrf-mem"))]
+/// Maximum vertices for a single feature during decode (reused per feature). Equals the OBCM
+/// production source's maximum feature size — full format fidelity.
 pub const MAX_DECODE_POINTS: usize = 2048;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_DECODE_POINTS: usize = 256;
 
 /// Maximum rings for a single feature during decode. Matches the production source bound.
 pub const MAX_DECODE_RINGS: usize = 32;
 
-/// Maximum projected screen points for drawing one feature. The fill/polyline path projects
-/// **every** vertex of a decoded feature into this buffer before walking it, so it must hold a
-/// whole decode buffer (invariant asserted below; dropping under it makes `fill_polygon` index
-/// past the projected points).
-#[cfg(not(feature = "nrf-mem"))]
+/// Maximum screen points buffered while drawing one feature. Polygon fills unpack every retained
+/// [`ScreenPoint`] into this buffer; the stroker reuses it for its current clipped run, so it must
+/// hold a whole decode buffer (invariant asserted below).
 pub const MAX_SCREEN_POINTS: usize = 2048;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_SCREEN_POINTS: usize = 256;
 
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
-/// [`fill_polygon`]) — sized to fit the MCU RAM budget asserted below, not the
-/// worst-case comb (which could approach [`MAX_SCREEN_POINTS`]).
-pub const MAX_CROSSINGS: usize = 256;
+/// [`fill_polygon`]) — sized to fit the MCU RAM budget asserted below, not the worst-case comb
+/// (which could approach [`MAX_SCREEN_POINTS`]). No scene in the pinned corpus or A/B fixtures has
+/// exceeded 256 crossings on one row. Keeping 384 retains 50% measured headroom; the 1,024 bytes
+/// recovered from the former 640-entry insurance cap fund 96 frame points and 128 ring entries,
+/// where coarse-volume stress frames demonstrably use them.
+pub const MAX_CROSSINGS: usize = 384;
 
 // `Span` packs its buffer offsets into `u16` to stay small, so the frame buffers
 // it indexes must fit in a `u16`. These guard that invariant at compile time.
 const _: () = assert!(MAX_FRAME_POINTS <= u16::MAX as usize, "Span::pt_start is u16");
 const _: () = assert!(MAX_FRAME_RINGS <= u16::MAX as usize, "Span::ring_start is u16");
 const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
-// The draw path projects a whole decoded feature into `screen` before walking its rings
-// (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
-// past the points and panics.
-const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
-// These values are pinned by the production-source integration tests. On `nrf-mem`, the deliberate
-// trim below that source bound remains an explicit whole-feature drop.
+// The two caps must not invert: `select()` never counts spans, so the ring cap is the real
+// feature ceiling and a reservoir larger than it is the only shape that pays.
+const _: () = assert!(
+    MAX_FRAME_RINGS >= MAX_SPANS,
+    "every feature costs one span and >=1 ring; a ring cap below the span cap makes MAX_SPANS unreachable dead weight"
+);
 
-/// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
+// The draw path unpacks a whole decoded feature into `screen` before walking its rings, so it must
+// hold at least a full decode buffer or it indexes past the points and panics.
+const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
+// These values are pinned by the production-source integration tests.
+
+/// Static RAM a [`RenderScratch`]'s buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
-/// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
-/// the MCU.) ~90 KB on the default (512 KB LM20 / sim) profile, 8,352 bytes on `nrf-mem`.
-pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
+/// without re-deriving the formula. (`ScreenPoint` is 4 bytes, `(i32, i32)` / `Point` are 8,
+/// frame ring lengths are `u16`, and `usize`/`f32` are 4 on the MCU.) Exactly fills the 128 KiB
+/// board arena arm after `RenderScratch`'s alignment, including [`rain::RainScratch`].
+pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
-    + MAX_FRAME_POINTS * 8
-    + MAX_FRAME_RINGS * 4
+    + MAX_FRAME_POINTS * core::mem::size_of::<ScreenPoint>()
+    + MAX_FRAME_RINGS * 2
     + MAX_SPANS * core::mem::size_of::<Span>()
-    + MAX_SCREEN_POINTS * 8
-    + MAX_CROSSINGS * 4;
+    + MAX_CROSSINGS * 4
+    // WX10: the rain overlay's per-frame decoded-tile cache (16 slots, ~4.1 KB; the slots over the
+    // original twelve keep a smoothing kernel's wider reach inside one decode per visible tile —
+    // see `RAIN_TILE_SLOTS`). It shares the render arm with the buffers above; the board assertion
+    // is the byte-accurate authority that the complete arm remains under USB's 128 KiB ceiling.
+    + core::mem::size_of::<rain::RainScratch>();
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
-const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
+const _: () = assert!(MCU_SCRATCH_BYTES <= 200 * 1024, "RenderScratch exceeds the 200 KB MCU budget");
 
 /// Ground scale (metres per pixel) at which a style's configured `weight` renders at its **nominal**
 /// pixel width — i.e. the width ramp is the identity here. Chosen at mid-riding zoom so the presets
@@ -163,32 +179,92 @@ pub(crate) fn width_scale(mpp: f32) -> f32 {
 
 /// A style's nominal `weight` scaled to on-screen px at the frame's [`width_scale`], rounded to a
 /// whole pixel and clamped to `1..=MAX_LINE_PX`. Rounding to an integer px + the map's ×1.2 zoom
-/// detents keep the width stepping cleanly frame to frame (no sub-pixel shimmer while zooming).
+/// steps keep the width stepping cleanly frame to frame (no sub-pixel shimmer while zooming).
 #[inline]
 pub(crate) fn scale_weight(weight: u8, scale: f32) -> u32 {
     (libm::roundf(weight as f32 * scale) as i32).clamp(1, MAX_LINE_PX as i32) as u32
 }
 
-/// The renderer's draw scratch: projected screen points (also the polyline run
-/// buffer) and the scanline-fill crossing buffer. Cleared per use.
+/// A line span's stroke width in device px: [`scale_weight`] for an ordinary style, the authored
+/// `weight` **verbatim** for a *fixed-width* one (OBCM §2 style-record flag bit 4, #1095).
+///
+/// The ramp models a thing that is genuinely wider on the ground — a motorway is wider than a
+/// footpath, and both are wider seen from 1 m/px than from 100. A **mark on the map** has no ground
+/// width at all, so for it the ramp is not merely wrong but backwards: authored `weight 1` contours
+/// draw 4 px at street zoom (where they do the most damage) and 1 px at planning zoom (where the
+/// landform read wants them). Bit 4 is that opt-out, and it is a general style property, not a
+/// contour special case — any future mark-like style (a hairline boundary hatch, a grid) takes it.
+/// Contours are simply the first shipped style that is one.
+///
+/// Still clamped to `1..=MAX_LINE_PX`: `weight` is a `u8`, and neither a vanishing 0-px stroke nor a
+/// 200-px one that eats the panel is something a style table should be able to ask for.
+#[inline]
+pub(crate) fn line_px(weight: u8, scale: f32, fixed_width: bool) -> u32 {
+    if fixed_width {
+        (weight as u32).clamp(1, MAX_LINE_PX)
+    } else {
+        scale_weight(weight, scale)
+    }
+}
+
+/// Decode and projected-point storage are phase-exclusive: collection finishes before drawing.
+/// Both element types are two `i32`s, so one union-backed `heapless::Vec` serves both phases and
+/// lets the frame buffer grow without keeping two redundant 16 KiB per-feature buffers resident.
+#[repr(C)]
+union SharedPoints {
+    decode: ManuallyDrop<Vec<(i32, i32), MAX_DECODE_POINTS>>,
+    screen: ManuallyDrop<Vec<Point, MAX_SCREEN_POINTS>>,
+}
+
+impl Default for SharedPoints {
+    fn default() -> Self {
+        Self { decode: ManuallyDrop::new(Vec::new()) }
+    }
+}
+
+impl SharedPoints {
+    fn decode(&mut self) -> &mut Vec<(i32, i32), MAX_DECODE_POINTS> {
+        // Writing a union member is safe and makes this the active member. `Vec::new()` initializes
+        // only its empty metadata; the inline MaybeUninit backing is deliberately left untouched.
+        self.decode = ManuallyDrop::new(Vec::new());
+        // SAFETY: `decode` was initialized as the active member immediately above.
+        unsafe { &mut self.decode }
+    }
+
+    fn screen(&mut self) -> &mut Vec<Point, MAX_SCREEN_POINTS> {
+        self.screen = ManuallyDrop::new(Vec::new());
+        // SAFETY: `screen` was initialized as the active member immediately above.
+        unsafe { &mut self.screen }
+    }
+}
+
+const _: () = assert!(
+    core::mem::size_of::<Vec<(i32, i32), MAX_DECODE_POINTS>>() == core::mem::size_of::<Vec<Point, MAX_SCREEN_POINTS>>()
+);
+const _: () = assert!(
+    core::mem::align_of::<Vec<(i32, i32), MAX_DECODE_POINTS>>()
+        == core::mem::align_of::<Vec<Point, MAX_SCREEN_POINTS>>()
+);
+
+/// The renderer's draw scratch: phase-shared decoded/projected points and the scanline crossings.
 #[derive(Default)]
 pub(crate) struct DrawScratch {
-    pub(crate) screen: Vec<Point, MAX_SCREEN_POINTS>,
+    points: SharedPoints,
     pub(crate) xs: Vec<f32, MAX_CROSSINGS>,
 }
 
-/// A monotonic microsecond clock for **stage timing** inside [`MapRenderer::render_timed`].
+/// A monotonic microsecond clock for **stage timing** inside [`RenderScratch::render_timed`].
 ///
 /// `obc-render` is `no_std` and carries no clock, so a caller wanting the per-stage breakdown
 /// (collect / sort / draw) passes one in (the device an embassy-`Instant` clock, a host
-/// `std::time::Instant`). The plain [`MapRenderer::render`] path passes the zero-cost
+/// `std::time::Instant`). The plain [`RenderScratch::render`] path passes the zero-cost
 /// [`NoopClock`], leaving the stage fields at `0`.
 pub trait Clock {
     /// Microseconds since some fixed, monotonic epoch. Only differences are taken.
     fn now_us(&self) -> u64;
 }
 
-/// The zero-cost [`Clock`] for the untimed [`MapRenderer::render`] path: always `0`, so every stage
+/// The zero-cost [`Clock`] for the untimed [`RenderScratch::render`] path: always `0`, so every stage
 /// delta is `0` and the optimizer folds the timing away.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopClock;
@@ -245,9 +321,8 @@ pub struct RenderStats {
     pub points_drawn: usize,
     /// Stub-select accounting (issue #564). `stub_evictions`: pass-A stub-buffer overflows where a
     /// higher-priority candidate displaced the lowest-priority resident stub (only under span
-    /// saturation). `chunks_refetched`: chunks pass B re-read because they owned an admitted winner
-    /// — so `map_chunk_misses ≈ chunks_visited + chunks_refetched`, versus `4 × chunks_visited` for
-    /// the old level-major collector.
+    /// saturation). `chunks_refetched`: distinct chunks that owned an admitted pass-B winner,
+    /// whether decoded from a resident cache slot or re-read after eviction.
     pub stub_evictions: u32,
     pub chunks_refetched: u32,
     /// Active-route overlay this frame: chunks decoded (bbox met the viewport), total points across
@@ -261,21 +336,20 @@ pub struct RenderStats {
     pub span_utilization: f32,
     pub point_utilization: f32,
     pub ring_utilization: f32,
-    // TEMP debug (scratch-budget investigation): how the drawn frame's span / point / ring scratch
-    // splits between the line and polygon render paths. Summed over the final drawn spans in
-    // [`collect`](crate::collect) by [`Kind`]. `line_* + poly_*` equals the totals behind
-    // `*_utilization`. Remove once the zoom-levels-that-saturate question is answered.
+    // How the drawn frame's span / point / ring scratch splits between the line and polygon render
+    // paths — which render path is eating the budget at the zoom levels that saturate it. Counted
+    // for free as [`collect`](crate::collect) publishes each drawn feature's geometry, so
+    // `line_* + poly_*` equals the totals behind `*_utilization`.
     pub line_spans: usize,
     pub line_points: usize,
     pub line_rings: usize,
     pub poly_spans: usize,
     pub poly_points: usize,
     pub poly_rings: usize,
-    /// Streamed-map cache accounting for this frame. Stub-select touches each visible chunk once in
-    /// pass A and once more in pass B only if it owns a winner (`chunks_refetched`), so
-    /// `map_chunk_misses ≈ chunks_visited + chunks_refetched`. `map_chunk_hits` are fetches served
-    /// from a resident cache slot (e.g. a chunk's later winners in pass B), `map_chunk_misses` the
-    /// ones that read from SD. `map_sd_reads` / `map_bytes_read` are the raw source overhead (index
+    /// Streamed-map cache accounting for this frame. Stub-select reads each visible chunk once in
+    /// pass A; pass B decodes winners directly from resident slots and only re-reads chunks that
+    /// were evicted. `map_chunk_hits` are requests served from RAM and `map_chunk_misses` the ones
+    /// that read from SD. `map_sd_reads` / `map_bytes_read` are the raw source overhead (index
     /// blocks + chunk fills). Hit rate is `hits / (hits + misses)`.
     pub map_chunk_hits: u32,
     pub map_chunk_misses: u32,
@@ -285,7 +359,7 @@ pub struct RenderStats {
     /// Filled by the host after timing the draw (sim uses `Instant`, device the DWT cycle counter).
     pub render_us: u32,
     /// Per-stage wall time of the **map** render, µs — filled by
-    /// [`render_timed`](MapRenderer::render_timed) from the caller's [`Clock`]; `0` on the untimed
+    /// [`render_timed`](RenderScratch::render_timed) from the caller's [`Clock`]; `0` on the untimed
     /// path. `collect_us` = visible-feature collection (walk + read + decode + cull + span build),
     /// `sort_us` = painter's-order span sort, `draw_us` = full-screen clear + rasterization. Base
     /// map only; overlays run after `render` returns, so overlay time is
@@ -293,55 +367,116 @@ pub struct RenderStats {
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
+    /// Rain overlay accounting (WX10): tiles decoded through the per-frame cache (== the source's
+    /// own fetch count; each visible tile at most once per frame), pixels actually painted, and the
+    /// overlay's wall time in µs (inside `draw_us`, timed only on the rain-lending path).
+    pub rain_tiles: u32,
+    pub rain_px: u32,
+    pub rain_us: u32,
+    /// The rain overlay was lent but declined to draw: outside its zoom regime
+    /// ([`RAIN_MAX_CELL_STEP`]) or degenerate/overflowing grid geometry. The owning screen must
+    /// surface this as its explicit out-of-regime state — a frame with this flag set must never
+    /// be presented as a dry map ([`rain_in_regime`] is the same predicate, queryable up front).
+    pub rain_out_of_regime: bool,
 }
 
-/// Reusable renderer holding every scratch buffer. Construct once, call
-/// [`MapRenderer::render`] per frame; buffers are cleared and reused, so no per-frame allocation.
+/// What a render call should draw — the presentation switches, stated **per frame** by the caller.
+///
+/// The Config half of #1146's Config/Scratch split (see the crate docs): every knob that changes
+/// what a frame looks like lives here and travels as an argument, so [`RenderScratch`] stays pure
+/// working memory and no setting can be smuggled between frames inside it. A caller that wants a
+/// switch to stick owns that state itself and re-states it each frame.
+///
+/// [`Default`] is "draw everything" — the config a caller with no opinion passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderConfig {
+    /// Draw the **terrain layer** — every style carrying
+    /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) (today: the E3
+    /// contour styles, #1095). `true` (the [`Default`]) draws it.
+    ///
+    /// A hidden layer's features are dropped in the collect pass's visible-style mask, so their
+    /// geometry is never decoded — they cost no frame budget rather than being drawn and painted
+    /// over. What this does *not* do is skip any I/O: the map's cells interleave terrain with
+    /// everything else, so the same chunks are read either way (#1096).
+    ///
+    /// **Provisional (#1096).** This exists so the #1097 ride review can A/B contours on the same
+    /// ride; it is expected to be removed either way that review lands — this field and the mask
+    /// branch in `collect` are the whole of it.
+    pub terrain_layer: bool,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        // Shown, not hidden: a caller that has never heard of the toggle gets the whole map.
+        RenderConfig { terrain_layer: true }
+    }
+}
+
+/// The reusable **per-frame scratch** of the render path: every decode / collect / draw buffer.
+/// Construct once, hand `&mut` to [`render`](RenderScratch::render) per frame; buffers are cleared
+/// and reused, so steady-state rendering allocates nothing.
+///
+/// Pure working memory, and only that — see the crate docs' Config/Scratch rule. Nothing here
+/// decides what a frame looks like ([`RenderConfig`] does), and nothing here means anything between
+/// frames: every buffer is written before it is read.
+///
+/// **Never construct one by value on a device stack.** It is 128 KiB of `heapless::Vec`s
+/// ([`MCU_SCRATCH_BYTES`]); a by-value constructor only stays off the stack via return-value
+/// optimization, a guarantee a debug build or a different toolchain can decline — the way
+/// `RouteIndex::read_into` earned its own in-place constructor after a STKOF HardFault. The device
+/// places it with [`init_zeroed`](RenderScratch::init_zeroed); [`new`](RenderScratch::new) /
+/// [`Default`] are for hosts and tests, whose stacks are not 36 KB.
 #[derive(Default)]
-pub struct MapRenderer {
+pub struct RenderScratch {
     /// Collection scratch + the frame buffers (decode → cull → spans).
     frame: FrameScratch,
     /// Draw scratch (projected points / polyline runs + scanline crossings), shared by the map
     /// draw phase and the marker/route/breadcrumb overlays.
     pub(crate) draw: DrawScratch,
+    /// The rain overlay's per-frame decoded-tile cache (WX10) — reset at overlay start, so like
+    /// every other buffer here it is written before it is read and carries nothing between frames.
+    rain: rain::RainScratch,
 }
 
-impl MapRenderer {
+impl RenderScratch {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Initialize a renderer **in place** at `slot` as the empty, ready-to-render state — the MCU
-    /// placement path, building the resident renderer straight into a fixed RAM region without ever
-    /// materializing the ~200 KB of scratch on the stack.
+    /// Initialize a scratch **in place** at `slot` as the empty, ready-to-render state — the MCU
+    /// placement path, building the resident scratch straight into a fixed RAM region without ever
+    /// materializing its 128 KiB of buffers on the stack.
     ///
-    /// Every scratch buffer is a [`heapless::Vec`], whose empty state (`len = 0` over an
-    /// uninitialized backing array) is exactly the all-zero bit pattern, so `write_bytes(0, 1)`
-    /// lowers to a `memset` with no temporary and no reliance on return-value optimization.
+    /// Every buffer is a [`heapless::Vec`], whose empty state (`len = 0` over an uninitialized
+    /// backing array) is exactly the all-zero bit pattern, so `write_bytes(0, 1)` lowers to a
+    /// `memset` with no temporary and no reliance on return-value optimization.
     ///
     /// # Safety
     /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
-    /// On return the slot holds a fully initialized, empty [`MapRenderer`].
+    /// On return the slot holds a fully initialized, empty [`RenderScratch`].
     pub unsafe fn init_zeroed(slot: *mut Self) {
-        // SAFETY: a renderer is only `heapless::Vec`s — no references, no non-zero-discriminant
-        // enum, no `bool` — so the all-zero bit pattern is the empty renderer (`len = 0`,
-        // write-before-read buffers). The caller guarantees a valid, owned, aligned slot.
+        // SAFETY: a scratch is only `heapless::Vec`s plus the rain tile cache's plain arrays — no
+        // references, no non-zero-discriminant enum, and (since #1146 moved the terrain switch into
+        // `RenderConfig`) no settings at all — so the all-zero bit pattern is the empty scratch:
+        // `len = 0` over write-before-read buffers, and an all-empty (`key = 0`) rain cache. The
+        // caller guarantees a valid, owned, aligned slot.
         unsafe { slot.write_bytes(0u8, 1) }
     }
 
-    /// Render the visible map into `target`.
+    /// Render the visible map into `target`, as `cfg` asks.
     ///
     /// Selects the LOD for the viewport's meters-per-pixel, clears to `bg`, collects visible
     /// features in global priority order ([`FrameScratch::collect`]), orders them by style z-index
     /// (painter's algorithm) and draws polygons (even-odd scanline fill) and lines. `color_fn` maps
     /// a style's RGB565 to the target's pixel color (host chooses true-color vs. device
-    /// quantization).
+    /// quantization). A caller with no presentation opinion passes [`RenderConfig::default`].
     pub fn render<D, F, S>(
         &mut self,
         target: &mut D,
         scene: &S,
         vp: &Viewport,
         bg: D::Color,
+        cfg: RenderConfig,
         color_fn: F,
     ) -> RenderStats
     where
@@ -349,17 +484,75 @@ impl MapRenderer {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_timed(target, scene, vp, bg, color_fn, &NoopClock)
+        self.render_timed(target, scene, vp, bg, cfg, color_fn, &NoopClock)
     }
 
-    /// Like [`render`](MapRenderer::render) but fills the per-stage timings on the returned
+    /// Like [`render`](RenderScratch::render) but fills the per-stage timings on the returned
     /// [`RenderStats`] from `clock`. Base map only; see the [`RenderStats`] stage-field docs.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_timed<D, F, S>(
         &mut self,
         target: &mut D,
         scene: &S,
         vp: &Viewport,
         bg: D::Color,
+        cfg: RenderConfig,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        self.render_rain_timed(target, scene, vp, bg, cfg, None, color_fn, clock)
+    }
+
+    /// Like [`render_timed`](RenderScratch::render_timed), with the optional **rain overlay**
+    /// (WX10): when `rain` is `Some`, the precipitation raster is drawn inside the base-map paint
+    /// order — after every span below [`RAIN_BELOW_Z`] (the ground fills) and before the road band
+    /// and everything above it — through the format-agnostic [`RainOverlaySource`] seam. `None` is
+    /// **byte-identical** to [`render_timed`](RenderScratch::render_timed): the rain path is not
+    /// entered at all.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_rain_timed<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        vp: &Viewport,
+        bg: D::Color,
+        cfg: RenderConfig,
+        rain: Option<&mut dyn RainOverlaySource>,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        self.render_rain_sampled_timed(target, scene, vp, bg, cfg, rain, RAIN_SAMPLING, color_fn, clock)
+    }
+
+    /// [`render_rain_timed`](RenderScratch::render_rain_timed) with the overlay's spatial sampling
+    /// mode passed in rather than taken from [`RAIN_SAMPLING`].
+    ///
+    /// Every shipped caller goes through `render_rain_timed`, so [`RAIN_SAMPLING`] stays the one
+    /// switch that decides what a rider sees. This exists for the two callers that must span the
+    /// modes rather than obey the const: the host binary that renders one frame in all four for a
+    /// side-by-side look round, and `obc-app`'s
+    /// `the_decision_path_is_identical_in_every_sampling_mode`, which proves no display mode can
+    /// move a claim (OBCW §5, OBCG §6).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_rain_sampled_timed<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        vp: &Viewport,
+        bg: D::Color,
+        cfg: RenderConfig,
+        rain: Option<&mut dyn RainOverlaySource>,
+        rain_sampling: RainSampling,
         color_fn: F,
         clock: &dyn Clock,
     ) -> RenderStats
@@ -381,7 +574,6 @@ impl MapRenderer {
         let requested_lod = scene.select_lod_for_mpp(vp.meters_per_pixel());
         let lod = requested_lod.min(lod_count - 1);
         let is_finest = lod == lod_count - 1;
-        let view = vp.visible_bbox();
         let mut stats = RenderStats { lod, ..Default::default() };
         if requested_lod >= lod_count {
             stats.map_structure_failures = 1;
@@ -392,7 +584,12 @@ impl MapRenderer {
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
         // a fresh source adapter each frame or a reused one.
         let before = diagnostics(scene, &mut stats, Diagnostics::default());
-        self.frame.collect(scene, lod, &view, &mut stats);
+        {
+            // Collection and drawing are disjoint phases. Decode through the shared point backing
+            // now; `draw_map` reinterprets the same empty backing as projected screen points later.
+            let Self { frame, draw, .. } = self;
+            frame.collect(scene, lod, vp, draw.points.decode(), !cfg.terrain_layer, &mut stats);
+        }
         let after = diagnostics(scene, &mut stats, before);
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
@@ -403,7 +600,7 @@ impl MapRenderer {
         self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
         let t_sorted = clock.now_us();
 
-        self.draw_map(target, scene, is_finest, vp, &color_fn);
+        self.draw_map(target, scene, is_finest, vp, &color_fn, rain, rain_sampling, clock, &mut stats);
         let t_drawn = clock.now_us();
 
         // The clear is a framebuffer write, so it counts toward `draw` even though it ran first.
@@ -441,14 +638,25 @@ impl MapRenderer {
     /// When no style is cased `split == spans.len()`: step 2 is empty and steps 1 + 3 collapse to
     /// today's single pass → **byte-identical** output at zero extra per-span cost. Coarser LODs skip
     /// step 2 outright (`is_finest` gate). Polygons are never cased (that's #560).
-    fn draw_map<D, F, S>(&mut self, target: &mut D, scene: &S, is_finest: bool, vp: &Viewport, color_fn: &F)
-    where
+    #[allow(clippy::too_many_arguments)]
+    fn draw_map<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        is_finest: bool,
+        vp: &Viewport,
+        color_fn: &F,
+        rain: Option<&mut dyn RainOverlaySource>,
+        rain_sampling: RainSampling,
+        clock: &dyn Clock,
+        stats: &mut RenderStats,
+    ) where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
         // Disjoint borrows: spans/geometry read from `frame`, draw scratch written to `draw`.
-        let Self { frame, draw } = self;
+        let Self { frame, draw, rain: rain_scratch } = self;
         let spans = frame.spans();
 
         // One zoom→width multiplier for the whole frame (#579, `width_scale`): a style's nominal
@@ -456,31 +664,61 @@ impl MapRenderer {
         // thin zoomed out. The casing pass derives its width from this same ramped value.
         let wscale = width_scale(vp.meters_per_pixel());
 
-        // The 256-bit "cased" style mask, built once per frame (mirrors `collect`'s `vis_mask`): a
-        // style is cased ⇔ it's a **solid** line (`!dashed`) carrying a `color2`. Dashed + color2 is
-        // the railway stripe (#558), which never cases.
-        let mut cased_mask = [0u32; 8];
+        // Two 256-bit style masks, built once per frame in **one** walk of the id space (both mirror
+        // `collect`'s `vis_mask` shape) and threaded into both `draw_spans` calls so neither
+        // rebuilds them. They nest: a `color2` is what makes a style interesting at all.
+        //
+        // - **cased** (#557) — a style is cased ⇔ it's a **solid** line (`!dashed`) carrying a
+        //   `color2`. Dashed + color2 is the railway stripe (#558), which never cases.
+        // - **outlined** (#560) — a style is polygon-outline-eligible ⇔ it carries a `color2` at
+        //   all (`line_style`/`dashed` are irrelevant for polygons: `draw_spans`'s outline pass
+        //   filters to `Kind::Polygon`, so a cased *line* sharing this bit never triggers an
+        //   outline). An empty mask makes each `draw_spans` take today's exact single-loop path
+        //   (byte-identical, zero cost).
+        let (mut cased_mask, mut outlined_mask) = ([0u32; 8], [0u32; 8]);
         for id in 0..=255u8 {
             if let Some(s) = scene.style(id) {
-                if !s.dashed && s.color2.is_some() {
-                    cased_mask[(id >> 5) as usize] |= 1 << (id & 31);
+                if s.color2.is_some() {
+                    let (word, bit) = ((id >> 5) as usize, 1u32 << (id & 31));
+                    outlined_mask[word] |= bit;
+                    if !s.flags.dashed() {
+                        cased_mask[word] |= bit;
+                    }
                 }
             }
         }
         let any_cased = cased_mask.iter().any(|&w| w != 0);
         let is_cased = |sid: u8| cased_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
 
-        // The 256-bit "outlined" style mask (#560): a style is polygon-outline-eligible ⇔ it carries a
-        // `color2` (`line_style`/`dashed` are irrelevant for polygons — `draw_spans`'s outline pass
-        // filters to `Kind::Polygon`, so a cased *line* sharing this bit never triggers an outline).
-        // Built **once per frame** and threaded into both `draw_spans` calls so neither rebuilds it; an
-        // empty mask makes each call take today's exact single-loop path (byte-identical, zero cost).
-        let mut outlined_mask = [0u32; 8];
-        for id in 0..=255u8 {
-            if scene.style(id).is_some_and(|s| s.color2.is_some()) {
-                outlined_mask[(id >> 5) as usize] |= 1 << (id & 31);
-            }
+        // **Rain overlay insertion (WX10).** With a rain source lent, everything strictly below
+        // [`RAIN_BELOW_Z`] — the ground fills, water, buildings, terrain — paints first, then the
+        // dithered precipitation raster, then the rest of the frame (the road band upward) on top
+        // of it. `None` keeps `rain_at == 0`: the scan is skipped, the slice below is empty, and
+        // the frame draws exactly today's path, byte for byte. (A skin that cased a line *below*
+        // the rain boundary would lose that casing's under-stroke on rain frames only — no shipped
+        // or plausible skin does; the road band starts at z 24 and every cased style sits in it.)
+        let rain_at = match rain {
+            Some(_) => spans.iter().position(|s| s.z >= rain::RAIN_BELOW_Z).unwrap_or(spans.len()),
+            None => 0,
+        };
+        if let Some(source) = rain {
+            Self::draw_spans(
+                frame,
+                draw,
+                target,
+                scene,
+                is_finest,
+                vp,
+                color_fn,
+                wscale,
+                &outlined_mask,
+                &spans[..rain_at],
+            );
+            let t_rain = clock.now_us();
+            rain::draw_rain(target, vp, rain_scratch, source, color_fn, stats, rain_sampling);
+            stats.rain_us = clock.now_us().saturating_sub(t_rain) as u32;
         }
+        let spans = &spans[rain_at..];
 
         // The z boundary: the first cased road **line** span. Everything before it is the low-z band
         // (land / water / landuse / buildings / low-z lines). No cased style ⇒ `split == spans.len()`,
@@ -496,28 +734,36 @@ impl MapRenderer {
 
         // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
         // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
-        // fills step 3 paints on top. Re-projects each cased line (accepted; reuses `DrawScratch`).
+        // fills step 3 paints on top. Reuses the collected screen points and `DrawScratch`.
         if is_finest {
             for span in &spans[split..] {
                 if span.kind != Kind::Line || !is_cased(span.style_id) {
                     continue;
                 }
                 // A line uses only its exterior (first) ring — the leading `n` frame points.
-                let n = frame.frame_ring_lens[span.ring_start as usize];
+                let n = frame.frame_ring_lens[span.ring_start as usize] as usize;
                 let pt_start = span.pt_start as usize;
                 let pts = &frame.frame_points[pt_start..pt_start + n];
                 // `is_cased` guarantees `color2.is_some()`; quantize it like the fill color. The
                 // `unwrap_or` is a defensive no-op (falls back to an invisible same-color casing).
-                let casing_color = color_fn(scene.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+                let style = scene.style(span.style_id);
+                let casing_color =
+                    color_fn(style.and_then(|s| s.color2).unwrap_or_else(|| style.map_or(0, |s| s.color)));
+                // Casing is defined *relative to the fill* — "the fill's width plus one px a side" —
+                // so it composes with #1095's fixed width rather than being special-cased against
+                // it: a fixed-width cased style would case its verbatim `weight`. No shipped style
+                // is both (a contour carries no `color2`, and `is_cased` requires one), so this is
+                // dormant today; leaving `scale_weight` here would make it silently incoherent.
+                let fixed_width = style.is_some_and(|s| s.flags.fixed_width());
                 draw_line(
                     target,
                     vp,
                     pts,
                     casing_color,
-                    scale_weight(span.weight, wscale) + 2 * Self::CASING_PX,
+                    line_px(span.weight, wscale, fixed_width) + 2 * Self::CASING_PX,
                     false,
                     None,
-                    &mut draw.screen,
+                    draw.points.screen(),
                 );
             }
         }
@@ -627,29 +873,42 @@ impl MapRenderer {
         let ring_start = span.ring_start as usize;
         let pt_start = span.pt_start as usize;
         let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
-        let total: usize = ring_lens.iter().sum();
+        let total: usize = ring_lens.iter().map(|&len| len as usize).sum();
         let pts = &frame.frame_points[pt_start..pt_start + total];
-        let color = color_fn(span.color);
+        let color = color_fn(scene.style(span.style_id).map_or(0, |style| style.color));
 
+        let DrawScratch { points, xs } = draw;
         match span.kind {
-            Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
+            Kind::Polygon => {
+                let screen = points.screen();
+                // A retained feature can never exceed the per-feature decode cap, which is equal
+                // to this buffer's cap (asserted above). Unpacking is infallible and replaces the
+                // old second projection of every frame vertex.
+                for p in pts {
+                    assert!(screen.push(p.point()).is_ok(), "screen buffer matches decode cap");
+                }
+                fill_polygon(target, screen, ring_lens, color, vp.w as i32, vp.h as i32, xs);
+            }
             Kind::Line => {
                 // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
                 // `color2` quantizes through `color_fn` exactly like the primary. A missing
                 // style (never collected) falls back to today's solid stroke.
-                let n = ring_lens.first().copied().unwrap_or(0);
+                let n = ring_lens.first().copied().unwrap_or(0) as usize;
                 let style = scene.style(span.style_id);
-                let dashed = style.is_some_and(|s| s.dashed);
+                let dashed = style.is_some_and(|s| s.flags.dashed());
                 let color2 = style.and_then(|s| s.color2).map(color_fn);
+                // #1095: a fixed-width style strokes its authored `weight` verbatim (`line_px`); a
+                // missing style falls back to the ramp, exactly as it falls back to a solid stroke.
+                let fixed_width = style.is_some_and(|s| s.flags.fixed_width());
                 draw_line(
                     target,
                     vp,
                     &pts[..n],
                     color,
-                    scale_weight(span.weight, wscale),
+                    line_px(span.weight, wscale, fixed_width),
                     dashed,
                     color2,
-                    &mut draw.screen,
+                    points.screen(),
                 );
             }
         }
@@ -659,7 +918,7 @@ impl MapRenderer {
     /// point repeated) in its style's `color2`, at a **fixed hairline** width `weight.max(1)`. The #560
     /// finest-LOD outline: called from [`draw_spans`](Self::draw_spans)'s pass 2 for a span the
     /// `outlined_mask` already vetted (`color2.is_some()`). Reuses `DrawScratch` — no new buffers; each
-    /// ring projects exactly like a line's exterior. At the preset `weight 1` this is the thin Bresenham
+    /// ring reuses its collected screen coordinates. At the preset `weight 1` this is the thin Bresenham
     /// polyline path.
     ///
     /// **Fixed, not ramped.** A line's *stroke* ramps with zoom ([`scale_weight`], #579), but a
@@ -684,7 +943,8 @@ impl MapRenderer {
     {
         // `outlined_mask` guarantees `color2.is_some()`; the `unwrap_or` is a defensive no-op that
         // falls back to an invisible same-color outline rather than panicking.
-        let color2 = color_fn(scene.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+        let style = scene.style(span.style_id);
+        let color2 = color_fn(style.and_then(|s| s.color2).unwrap_or_else(|| style.map_or(0, |s| s.color)));
         let weight = span.weight.max(1) as u32;
         let (w, h) = (vp.w as i32, vp.h as i32);
 
@@ -692,22 +952,41 @@ impl MapRenderer {
         let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
         let mut off = span.pt_start as usize;
         for &rl in ring_lens {
+            let rl = rl as usize;
             let ring = &frame.frame_points[off..off + rl];
             off += rl;
             if rl < 2 {
                 continue;
             }
-            // Stroke the ring **closed**: chain the first vertex again so the wall between the last and
-            // first point is drawn. Projects lazily, exactly like a line's exterior ring.
-            let closed = ring.iter().chain(ring.first()).map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, &mut draw.screen, color2, weight, w, h).stroke(closed);
+            // Stroke the ring **closed**: chain the first vertex again so the wall between the last
+            // and first point is drawn. The collector already projected each retained vertex.
+            let closed = ring.iter().chain(ring.first()).map(|p| p.point());
+            Stroker::new(target, draw.points.screen(), color2, weight, w, h).stroke(closed);
         }
     }
 }
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod shared_points_tests {
+    use super::SharedPoints;
+    use embedded_graphics::prelude::Point;
+
+    #[test]
+    fn switching_phases_reinitializes_the_active_vector() {
+        let mut points = SharedPoints::default();
+        points.decode().push((1, 2)).unwrap();
+        assert!(points.screen().is_empty());
+        points.screen().push(Point::new(3, 4)).unwrap();
+        assert!(points.decode().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod width_ramp_tests {
-    use super::{scale_weight, width_scale, MAX_LINE_PX, REF_MPP};
+    use super::{line_px, scale_weight, width_scale, MAX_LINE_PX, REF_MPP};
 
     #[test]
     fn identity_at_reference_scale() {
@@ -738,5 +1017,35 @@ mod width_ramp_tests {
         assert_eq!(scale_weight(6, width_scale(0.05)), MAX_LINE_PX);
         // Degenerate mpp (0) must not divide-by-zero into NaN and defeat the clamp.
         assert_eq!(scale_weight(3, width_scale(0.0)), MAX_LINE_PX);
+    }
+
+    /// #1095, flag bit 4: a fixed-width style renders its authored `weight` verbatim at **every**
+    /// zoom, while the same weight on an ordinary style rides the ramp. These are the three zooms
+    /// the E3 contour frames are made at (planning / riding / street, ~9 / 4 / 1 m/px).
+    #[test]
+    fn fixed_width_ignores_the_zoom_ramp() {
+        for mpp in [1000.0, 9.0, 4.0, 1.0, 0.05] {
+            let s = width_scale(mpp);
+            assert_eq!(line_px(1, s, true), 1, "a weight-1 contour is a hairline at {mpp} mpp");
+            assert_eq!(line_px(3, s, true), 3, "a weight-3 fixed style is 3 px at {mpp} mpp");
+        }
+        // ...and the ramp is still the ramp for everything that does not opt out: the same authored
+        // weight 1 is 2 px at riding zoom and 4 px at street zoom, which is what bit 4 opts out of.
+        assert_eq!(line_px(1, width_scale(4.0), false), 2);
+        assert_eq!(line_px(1, width_scale(1.0), false), 4);
+    }
+
+    /// A fixed width is still a *width*: `weight` is a `u8` and the framebuffer is 240 px, so the
+    /// same `1..=MAX_LINE_PX` clamp the ramp carries applies verbatim — bit 4 opts out of the zoom
+    /// ramp, not out of the panel.
+    #[test]
+    fn fixed_width_is_clamped_like_the_ramp() {
+        let s = width_scale(REF_MPP);
+        assert_eq!(line_px(0, s, true), 1, "weight 0 never vanishes");
+        assert_eq!(line_px(255, s, true), MAX_LINE_PX, "a fixed width cannot eat the panel");
+        // At the reference scale the ramp is the identity, so both paths agree there by definition.
+        for w in 1..=5u8 {
+            assert_eq!(line_px(w, s, true), line_px(w, s, false), "identical at REF_MPP, weight {w}");
+        }
     }
 }

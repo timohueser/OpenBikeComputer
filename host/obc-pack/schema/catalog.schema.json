@@ -1,0 +1,1149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenBikeComputer map catalog (schema_version 2)",
+  "description": "The schema_version 2 map catalog: one schema, a set of skins, named cell-set regions with drawable boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional `terrain` block is a second artifact class on its own revision track (§13). Normative contract: OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "Envelope version, `2`. Checked before any other field.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "const": 2
+    },
+    "generated_at": {
+      "description": "When this root was generated, RFC 3339 UTC — the only wall clock on the generation path (`OBCC_Spec.md` §3).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "source": {
+      "description": "The cell store's data provenance and licence (§3.1). The store is a derivative database of OpenStreetMap, and the ODbL's share-alike terms require the published store to say so — this block is that statement, in the one document every consumer reads first. The generator always writes it; `Option` only so documents published before the field existed still deserialize (the bake guard reads the live root).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SourceEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema": {
+      "description": "The catalog's **single** schema. Not an array: the hosted store carries the 14-LOD bikepacking ladder and nothing else, because a second schema would make the whole planet-shaped cell store exist twice (§3, epic #1016 D2).",
+      "$ref": "#/$defs/SchemaEntry"
+    },
+    "skins": {
+      "description": "Every skin offered, sorted by `id`. Inlined rather than referenced: one is ≈ 2 KB and a builder needs all of them at once to draw a picker.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SkinEntry"
+      }
+    },
+    "regions": {
+      "description": "Named selections, sorted by `id`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RegionEntry"
+      }
+    },
+    "cell_index": {
+      "description": "One entry per band, sorted by `cell_log2` descending (§8).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CellIndexRef"
+      }
+    },
+    "terrain": {
+      "description": "The terrain artifact class, when the catalog publishes one (§13). Absent is a complete, valid catalog: every consumer degrades to \"no elevation here\", which is exactly what a map with no terrain has always done.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TerrainEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "network_terrain_revision": {
+      "description": "**The one coupling between the two revision tracks** (§13.4). Network-band cells are baked sampling OBCT, so their `Ascent M` values are a function of a particular terrain revision; this records which one. `None` for a terrain-less bake, whose ascents are all zero and depend on nothing. It is at the root rather than in [`SchemaEntry`] on purpose: the schema is the identity of the OBCM store and must not acquire a terrain field, or a terrain re-bake would look like a schema change to every consumer that compares schemas.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "schema",
+    "skins",
+    "regions",
+    "cell_index"
+  ],
+  "$defs": {
+    "SourceEntry": {
+      "description": "§3.1's source declaration: what the cells derive from and what that obliges. The values are [`OSM_SOURCE`]'s constants rather than tree inputs, because the packer ingests exactly one dataset — the day a second source exists is the day this becomes data, not before (the OBCM v13 lesson). Consumers that describe the map data take these strings from the catalog rather than hard-coding them (§3.1).",
+      "type": "object",
+      "properties": {
+        "dataset_id": {
+          "description": "Kebab-case id of the source dataset.",
+          "type": "string"
+        },
+        "attribution": {
+          "description": "The dataset's required credit, verbatim.",
+          "type": "string"
+        },
+        "license": {
+          "description": "SPDX-style identifier of the licence the published store is offered under.",
+          "type": "string"
+        },
+        "license_url": {
+          "description": "Where that licence's text lives.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_id",
+        "attribution",
+        "license",
+        "license_url"
+      ]
+    },
+    "SchemaEntry": {
+      "description": "The schema: the identity of the cell store. Everything a consumer needs to price a selection and an assembler needs to stamp a skin, with no out-of-band constant (§4).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable id, e.g. `bikepacking`.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "revision": {
+          "description": "Monotone content revision. Every cell states the revision it was baked at, and a bump invalidates the whole store — assembly copies chunk bytes between files, which is only meaningful within one revision (`OBCA_Spec.md` §6.3).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "obcm_version": {
+          "description": "OBCM format version, read from the **cells' own headers**; every cell agrees or generation fails (§10).",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "grid": {
+          "description": "The grid's constants, restated so no consumer hard-codes them.",
+          "$ref": "#/$defs/GridEntry"
+        },
+        "lods": {
+          "description": "The LOD ladder, coarsest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LodEntry"
+          },
+          "minItems": 1
+        },
+        "bands": {
+          "description": "The band table: which LODs and which non-geometry sections live in which cell size, and which file of a volume set they assemble into.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BandEntry"
+          },
+          "minItems": 1
+        },
+        "styles": {
+          "description": "The canonical style-id assignment. `obc-pack` numbers feature types 1-based in config document order and every feature header in every chunk references those ids, so the assignment is part of the cells' bytes — schema data, never skin data (§4).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StyleAssignment"
+          },
+          "minItems": 1
+        },
+        "routing": {
+          "description": "Routing facts baked into the cells. The island-prune threshold is schema data: two cells pruned at different thresholds do not assemble into a graph with consistent semantics (`OBCA_Spec.md` §3.5).",
+          "$ref": "#/$defs/RoutingEntry"
+        },
+        "chunk_size": {
+          "description": "The per-LOD chunk capacity bound the cells were written with (`OBCM_Spec.md` §3). An assembler re-checks every copied offset pair against it.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "name",
+        "description",
+        "obcm_version",
+        "grid",
+        "lods",
+        "bands",
+        "styles",
+        "routing",
+        "chunk_size"
+      ]
+    },
+    "GridEntry": {
+      "description": "`OBCA_Spec.md` §1.1's constants. Published so a consumer computing a cell's square or an assembly bbox never hard-codes a power of two.",
+      "type": "object",
+      "properties": {
+        "origin_udeg": {
+          "description": "`−2^28` µdeg, on both axes.",
+          "type": "integer",
+          "format": "int32",
+          "const": -268435456
+        },
+        "world_side_udeg": {
+          "description": "`2^29` µdeg: the world box's side.",
+          "type": "integer",
+          "format": "int32",
+          "const": 536870912
+        }
+      },
+      "required": [
+        "origin_udeg",
+        "world_side_udeg"
+      ]
+    },
+    "LodEntry": {
+      "description": "One rung of the LOD ladder.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "description": "Ladder index, `0` = coarsest.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_mpp": {
+          "description": "Meters-per-pixel upper bound; `null` for the `+inf` coarsest level (`OBCM_Spec.md` §3).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "band": {
+          "description": "The band whose cells carry this LOD.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        }
+      },
+      "required": [
+        "index",
+        "band"
+      ]
+    },
+    "BandEntry": {
+      "description": "One band: a cell size plus the content its cells carry.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable band id, e.g. `fine`. Also the band's segment in a cell URL.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "cell_log2": {
+          "description": "`log2(S)` in µdeg.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "lods": {
+          "description": "Ladder LODs this band's cells carry, ascending. Empty for the `core` band.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "sections": {
+          "description": "Non-geometry sections this band's cells carry. Only the `core` band has any.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BandSection"
+          }
+        },
+        "role": {
+          "description": "Which file of a volume set this band becomes.",
+          "$ref": "#/$defs/BandRole"
+        }
+      },
+      "required": [
+        "id",
+        "cell_log2",
+        "lods",
+        "sections",
+        "role"
+      ]
+    },
+    "BandSection": {
+      "description": "A non-geometry OBCM section a band may carry.",
+      "oneOf": [
+        {
+          "description": "The navigation graph (`OBCM_Spec.md` §8).",
+          "type": "string",
+          "const": "nav"
+        },
+        {
+          "description": "POIs and the hours pool (`OBCM_Spec.md` §7).",
+          "type": "string",
+          "const": "poi"
+        }
+      ]
+    },
+    "BandRole": {
+      "description": "Which file of a volume set a band's content assembles into (`OBCA_Spec.md` §5.1).",
+      "oneOf": [
+        {
+          "description": "The one unsplittable file: nav graph, POIs, style table. Carries no LOD, because its headroom under `4 GiB − 1` is the design's hard limit.",
+          "type": "string",
+          "const": "core"
+        },
+        {
+          "description": "The single whole-assembly coarse shard that keeps a zoomed-out viewport a one-file read.",
+          "type": "string",
+          "const": "coarse"
+        },
+        {
+          "description": "An ordinary geometry shard's content; splits by bbox as needed.",
+          "type": "string",
+          "const": "geometry"
+        }
+      ]
+    },
+    "StyleAssignment": {
+      "description": "One feature type's canonical style id — the assignment baked into every chunk.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "1-based style id, as referenced by feature headers (`OBCM_Spec.md` §2, §5.2).",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "feature_type": {
+          "description": "`<tag_key>.<tag_value>`, e.g. `highway.primary`.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "feature_type"
+      ]
+    },
+    "RoutingEntry": {
+      "description": "The routing facts a cell's nav bytes were produced under.",
+      "type": "object",
+      "properties": {
+        "min_component_edges": {
+          "description": "Island-prune threshold, applied at **assembly** over the merged graph (`OBCA_Spec.md` §3.5/§4.6) — a cell bake prunes only strictly interior components.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "profiles": {
+          "description": "Profile names in `OBCM_Spec.md` §8.6 table order.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "min_component_edges",
+        "profiles"
+      ]
+    },
+    "SkinEntry": {
+      "description": "A skin is stamped onto ~2 KB of an assembly at assembly time, so it is baked into nothing and invalidates nothing.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "description": "The skin's content version. No cell carries a skin.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "marker_color": {
+          "description": "RGB565 user-position marker color (`OBCM_Spec.md` §1).",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "styles": {
+          "description": "One entry per `schema.styles` feature type, in schema id order. A skin that misses one would ship a map with an invisible layer; one that names a feature type the schema lacks is stale (§5).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkinStyle"
+          },
+          "minItems": 1
+        },
+        "preview": {
+          "description": "Optional digest-pinned rendered sample. It is presentation only and never participates in cell selection or assembly.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkinPreview"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "version",
+        "marker_color",
+        "styles"
+      ]
+    },
+    "SkinStyle": {
+      "description": "One feature type's presentation values — the bytes of a style record a skin owns (colors, weight, z, priority and the `Flags` bits). The **id** is not here: it belongs to the schema, and a skin may not renumber it (`OBCA_Spec.md` §4.7).",
+      "type": "object",
+      "properties": {
+        "feature_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "color": {
+          "description": "RGB565.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "weight": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "z_index": {
+          "type": "integer",
+          "format": "int8",
+          "minimum": -128,
+          "maximum": 127
+        },
+        "priority": {
+          "description": "1..=4.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "dashed": {
+          "type": "boolean"
+        },
+        "fixed_width": {
+          "description": "Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp. Defaulted so a catalog written before the bit existed still parses.",
+          "type": "boolean",
+          "default": false
+        },
+        "terrain_layer": {
+          "description": "Style-record flag bit 5 (#1095): part of the suppressible terrain layer.",
+          "type": "boolean",
+          "default": false
+        },
+        "color2": {
+          "description": "Optional RGB565 secondary color; `null` when the style has none.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "required": [
+        "feature_type",
+        "color",
+        "weight",
+        "z_index",
+        "priority",
+        "dashed"
+      ]
+    },
+    "SkinPreview": {
+      "description": "One skin rendered over the bakery's canonical map scene.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "url",
+        "bytes",
+        "sha256"
+      ]
+    },
+    "RegionEntry": {
+      "description": "A named region: a boundary to draw and a cell set to fetch (§6).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Slash-separated id, matching the extract hierarchy.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent": {
+          "description": "The enclosing region's id, when the curation nests.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "boundary": {
+          "description": "Simplified outline for drawing (§7). Presentation only.",
+          "$ref": "#/$defs/Boundary"
+        },
+        "bytes": {
+          "description": "Total bytes of every cell in this region's set, across all bands.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "bytes_by_band": {
+          "description": "Those bytes per band, summing to `bytes`. This is what makes the §5.7 pre-download projection *per file* rather than merely per set: a volume set's roles partition by band, so the `core` band's bytes are the core file's bytes.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        },
+        "cell_count": {
+          "description": "Cells per band.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        },
+        "partial_cell_count_by_band": {
+          "description": "Partial cells per band, including zeroes for fully covered bands.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        },
+        "terrain": {
+          "description": "This region's terrain footprint (§13.3), when the catalog publishes terrain.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RegionTerrain"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cells_url": {
+          "description": "Where the region's cell-id list lives (§6).",
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        },
+        "cells_bytes": {
+          "description": "Size of that document, in bytes.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cells_sha256": {
+          "description": "Its digest — the pin that keeps the satellite all-or-nothing.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "boundary",
+        "bytes",
+        "bytes_by_band",
+        "cell_count",
+        "partial_cell_count_by_band",
+        "cells_url",
+        "cells_bytes",
+        "cells_sha256"
+      ]
+    },
+    "Boundary": {
+      "description": "A region's simplified outline, in integer microdegrees, `[lat, lon]` per point. Presentation only: it MUST NOT be used to compute a cell set (that is stored, §6), to price a selection, or as a packer input bbox. The coverage outline a builder draws for a live selection is a different object — the union of the selected cells' squares, computed client-side — and is deliberately not in the catalog.",
+      "type": "object",
+      "properties": {
+        "tolerance_udeg": {
+          "description": "The tolerance the outline was reduced at.",
+          "type": "integer",
+          "format": "int32"
+        },
+        "rings": {
+          "description": "One or more closed rings; the first is an exterior and any ring nested in it is a hole. A region that is several disjoint pieces repeats that pattern.",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 4
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "tolerance_udeg",
+        "rings"
+      ]
+    },
+    "RegionTerrain": {
+      "description": "A region's terrain footprint, when the catalog publishes terrain. Kept out of `bytes`/`bytes_by_band`, which are the OBCM volume set's per-file projection: a rider may take the map without the raster, so the two prices are separate numbers.",
+      "type": "object",
+      "properties": {
+        "cell_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "known_empty_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "description": "Sum of the real bytes of this region's downloadable terrain cells.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "cell_count",
+        "known_empty_count",
+        "bytes"
+      ]
+    },
+    "CellIndexRef": {
+      "description": "The root's pin on one band's cell index (§8).",
+      "type": "object",
+      "properties": {
+        "band": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "cell_log2": {
+          "description": "`log2(S)`; matches the band's entry in `schema.bands`.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "cell_count": {
+          "description": "Downloadable OBCM artifact entries in the referenced document.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "known_empty_count": {
+          "description": "Canonical cells represented as verified-empty ranges rather than OBCM artifacts.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "description": "Size of the referenced document.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "description": "Its digest. A satellite that does not match MUST be rejected and the root kept.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        }
+      },
+      "required": [
+        "band",
+        "cell_log2",
+        "cell_count",
+        "known_empty_count",
+        "bytes",
+        "sha256",
+        "url"
+      ]
+    },
+    "TerrainEntry": {
+      "description": "The terrain artifact class (OBCC_Spec.md §13): an OBCT raster on the same OBCA grid, published with its OWN revision track. `dataset_version`, `posting_log2`, `cell_log2` and `terrain_revision` are terrain's entire lockstep rule — no OBCM version or schema revision appears here, and an OBCM or schema bump invalidates none of these objects. The single reverse coupling is the root's `network_terrain_revision`, which records the terrain revision the nav graph's ascents were integrated from.",
+      "type": "object",
+      "properties": {
+        "dataset_id": {
+          "description": "Stable kebab-case id of the source dataset, e.g. `copernicus-glo-30`.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "dataset_version": {
+          "description": "That dataset's release identity, e.g. `2021-1`. Opaque to a consumer: it is compared for equality, never parsed.",
+          "type": "string",
+          "minLength": 1
+        },
+        "posting_log2": {
+          "description": "`log2(P)` of the sample lattice, µdeg (`OBCT_Spec.md` §1.1).",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 4,
+          "maximum": 16
+        },
+        "cell_log2": {
+          "description": "`log2(S)` of the terrain cell, µdeg. Independent of any band's `cell_log2`.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "terrain_revision": {
+          "description": "Monotone content revision of the terrain store, bumped by a re-bake. Unrelated to `schema.revision`: neither invalidates the other (§13.2).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "attribution": {
+          "description": "The source licence's required credit, verbatim, so a consumer displays it from the catalog rather than hard-coding a string that can go stale (§13.5).",
+          "type": "string",
+          "minLength": 1
+        },
+        "cell_index": {
+          "description": "The single pinned terrain cell index.",
+          "$ref": "#/$defs/TerrainIndexRef"
+        }
+      },
+      "required": [
+        "dataset_id",
+        "dataset_version",
+        "posting_log2",
+        "cell_log2",
+        "terrain_revision",
+        "attribution",
+        "cell_index"
+      ]
+    },
+    "TerrainIndexRef": {
+      "description": "The root's pin on the terrain cell index — the §8 machinery, one document instead of one per band, because terrain has no bands.",
+      "type": "object",
+      "properties": {
+        "cell_count": {
+          "description": "Downloadable OBCT artifact entries in the referenced document.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "known_empty_count": {
+          "description": "Canonical cells represented as all-`NODATA` runs rather than OBCT artifacts.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        }
+      },
+      "required": [
+        "cell_count",
+        "known_empty_count",
+        "bytes",
+        "sha256",
+        "url"
+      ]
+    },
+    "CellEntry": {
+      "description": "One published cell. There is deliberately no bbox: a cell's coverage is exactly its grid square, which the `id` determines to the microdegree (OBCA_Spec.md §1.3), and the generator verifies the artifact's own OBCM header bbox against it at bake time. A stored copy could only agree (redundant) or disagree (a lie).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Canonical cell id, `<log2>/<i>/<j>` (`OBCA_Spec.md` §1.3).",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        },
+        "built_at": {
+          "description": "RFC 3339 UTC, recorded by the bake job.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "sources": {
+          "description": "Every source extract this cell was baked from, sorted by `extract_id`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CellSource"
+          },
+          "minItems": 1
+        },
+        "partial": {
+          "description": "`true` iff those sources do not fully cover the cell's square (`OBCA_Spec.md` §3.7). A consumer MUST NOT present a partial cell as canonical coverage.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "bytes",
+        "sha256",
+        "url",
+        "built_at",
+        "sources",
+        "partial"
+      ]
+    },
+    "CellSource": {
+      "description": "One source extract behind a cell.",
+      "type": "object",
+      "properties": {
+        "extract_id": {
+          "description": "The extract's identifier, e.g. `europe/switzerland`.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$"
+        },
+        "snapshot": {
+          "description": "That extract's snapshot date, `YYYY-MM-DD`.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        }
+      },
+      "required": [
+        "extract_id",
+        "snapshot"
+      ]
+    },
+    "KnownEmptyRun": {
+      "description": "An inclusive row run of cells proven to carry no content for one band. Empty coverage is explicit because absence means a coverage hole. Runs avoid publishing both an OBCM object and one JSON entry for every empty ocean or network cell in a planet catalog.",
+      "type": "object",
+      "properties": {
+        "start": {
+          "description": "First canonical cell id in the run.",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "end": {
+          "description": "Last canonical cell id in the run (inclusive, same row as `start`).",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "built_at": {
+          "description": "RFC 3339 UTC, recorded by the bake job.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "sources": {
+          "description": "Every source extract against which emptiness was established.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CellSource"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "built_at",
+        "sources"
+      ]
+    },
+    "CellIndexDocument": {
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "const": 2
+        },
+        "schema_revision": {
+          "description": "The revision every cell in this document was baked at.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "band": {
+          "type": "string"
+        },
+        "cells": {
+          "description": "Sorted by `(i, j)`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CellEntry"
+          }
+        },
+        "known_empty": {
+          "description": "Canonical, non-overlapping row runs that carry no bytes for this band.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/KnownEmptyRun"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "schema_revision",
+        "band",
+        "cells",
+        "known_empty"
+      ],
+      "description": "A band's cell index: the satellite the root pins (§8).",
+      "type": "object"
+    },
+    "RegionCellsDocument": {
+      "required": [
+        "schema_version",
+        "schema_revision",
+        "region_id",
+        "cells"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "const": 2
+        },
+        "schema_revision": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "region_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$"
+        },
+        "cells": {
+          "description": "Band id → sorted cell ids.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        },
+        "terrain": {
+          "description": "Sorted terrain cell ids on the terrain grid (§13.3). A separate field rather than a `cells` key: `cells` is keyed by *schema band*, and terrain is not a band — it has no LOD, no section, no assembly role and no schema revision.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+          }
+        }
+      },
+      "description": "A region's cell list: the satellite `RegionEntry::cells_url` points at (§6). Cell ids only — every other fact is in the band's index, keyed by the same id.",
+      "type": "object"
+    },
+    "TerrainCellEntry": {
+      "description": "One published terrain cell. No bbox and no source list: the `id` is the square (§13.1), and the provenance is one dataset stated once in the root block rather than repeated on every one of thousands of entries.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Canonical cell id, `<cell_log2>/<i>/<j>`, on the terrain grid.",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        },
+        "built_at": {
+          "description": "RFC 3339 UTC, recorded by the bake job.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      },
+      "required": [
+        "id",
+        "bytes",
+        "sha256",
+        "url",
+        "built_at"
+      ]
+    },
+    "TerrainEmptyRun": {
+      "description": "An inclusive row run of terrain cells that are all `NODATA` — open ocean, which [`obc-dem`](https://github.com/timohueser/OpenBikeComputer) does not write an object for at all (`OBCT_Spec.md` §4.3 makes an absent cell and an all-void one answer identically). The catalog says so instead, so a hole is still distinguishable from a coverage gap.",
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "built_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "built_at"
+      ]
+    },
+    "TerrainIndexDocument": {
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "const": 2
+        },
+        "terrain_revision": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "dataset_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "dataset_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "posting_log2": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 4,
+          "maximum": 16
+        },
+        "cell_log2": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "cells": {
+          "description": "Sorted by cell id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TerrainCellEntry"
+          }
+        },
+        "known_empty": {
+          "description": "Canonical, non-overlapping row runs whose every sample is `NODATA` — ocean.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TerrainEmptyRun"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "terrain_revision",
+        "dataset_id",
+        "dataset_version",
+        "posting_log2",
+        "cell_log2",
+        "cells",
+        "known_empty"
+      ],
+      "description": "The terrain cell index: the satellite the root's terrain block pins (§13.1). It restates the four lockstep fields so the document is self-describing when it is fetched on its own, and it deliberately carries **no** `schema_revision`: a terrain cell does not know which OBCM schema it is being used beside, and adding the field would make an OBCM bump rewrite this document.",
+      "type": "object"
+    }
+  }
+}

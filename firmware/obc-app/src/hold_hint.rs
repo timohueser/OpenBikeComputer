@@ -1,5 +1,5 @@
 //! The global long-press hint — an on-screen "frame bulge" surfacing the device's central hold
-//! gesture. [`App`](crate::app::App) folds each frame's encoder/Back hold-progress into
+//! gesture. [`App`](crate::app::App) folds each frame's Select/Back hold-progress into
 //! [`HoldHints`] and draws it on top of the screen stack.
 //!
 //! Per control a black hump swells inward from the screen edge nearest its physical button (both on
@@ -10,7 +10,7 @@
 //! **pops** (a quick deeper lunge that eases back out); an early release retracts it.
 //!
 //! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no alpha and renders on the
-//! real 8-color panel. Encoder vs. Back is told apart by *position*, not colour; relocating a bulge
+//! real 8-color panel. Select vs. Back is told apart by *position*, not colour; relocating a bulge
 //! is a one-line edit to its [`Style::anchor`].
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
@@ -31,22 +31,9 @@ const CANCEL_MS: u32 = 150;
 /// and reaches full depth at the threshold. `0.30` ≈ 150 ms of the 500 ms hold.
 const DEAD: f32 = 0.30;
 
-/// Which screen edge a bulge erupts from. Both controls live on [`Right`](Edge::Right)
-/// today; the other three are supported relocations (change a [`Style::anchor`]).
-#[allow(dead_code)] // Left / Top / Bottom are the relocation options, not dead.
-#[derive(Clone, Copy)]
-enum Edge {
-    Right,
-    Left,
-    Top,
-    Bottom,
-}
-
-/// Where a bulge sits: an [`Edge`] plus a `0.0..=1.0` position along it (0 = top/left
-/// end, 1 = bottom/right end).
+/// A bulge's `0.0..=1.0` position down the screen's right edge.
 #[derive(Clone, Copy)]
 struct Anchor {
-    edge: Edge,
     pos: f32,
 }
 
@@ -54,26 +41,16 @@ impl Anchor {
     /// Resolve to a concrete [`Place`] for a `w`×`h` screen, clamping the centre so
     /// the `base_half`-wide base stays on-panel along the edge.
     fn place(self, w: i32, h: i32, base_half: i32) -> Place {
-        let vertical = matches!(self.edge, Edge::Right | Edge::Left);
-        let along = if vertical { h } else { w };
         let lo = base_half + 1;
-        let hi = (along - base_half - 1).max(lo);
-        let cc = ((self.pos * along as f32) as i32).clamp(lo, hi);
-        match self.edge {
-            Edge::Right => Place { vertical, outer: w, inward: -1, cc },
-            Edge::Left => Place { vertical, outer: 0, inward: 1, cc },
-            Edge::Bottom => Place { vertical, outer: h, inward: -1, cc },
-            Edge::Top => Place { vertical, outer: 0, inward: 1, cc },
-        }
+        let hi = (h - base_half - 1).max(lo);
+        let cc = ((self.pos * h as f32) as i32).clamp(lo, hi);
+        Place { outer: w, cc }
     }
 }
 
-/// A resolved placement: orientation, the edge coordinate (`outer`), the inward
-/// growth direction (`±1`), and the centre along the edge.
+/// A resolved placement: the right-edge coordinate and the centre along it.
 struct Place {
-    vertical: bool,
     outer: i32,
-    inward: i32,
     cc: i32,
 }
 
@@ -82,13 +59,7 @@ impl Place {
     /// `depth` px inward from the edge. The bulge is the union of these across the
     /// fixed base width.
     fn strip(&self, along_off: i32, depth: i32) -> Rectangle {
-        let a = self.cc + along_off;
-        let near = if self.inward < 0 { self.outer - depth } else { self.outer };
-        if self.vertical {
-            rect(near, a, depth, 1)
-        } else {
-            rect(a, near, 1, depth)
-        }
+        rect(self.outer - depth, self.cc + along_off, depth, 1)
     }
 }
 
@@ -222,7 +193,7 @@ fn bulge(cv: &mut impl Surface, place: &Place, depth: f32, base_half: i32, flat_
 }
 
 /// Per-control look: where the bulge sits and its size along the edge. Relocating or
-/// resizing a bulge is a one-line change to one of the [`ENCODER`] / [`BACK`]
+/// resizing a bulge is a one-line change to one of the [`SELECT`] / [`BACK`]
 /// constants below.
 struct Style {
     anchor: Anchor,
@@ -239,25 +210,13 @@ struct Style {
     pop_depth: f32,
 }
 
-/// Encoder hint — upper-right edge (the encoder wheel sits near the top right); the
-/// taller of the two, echoing the encoder's longer pill.
-const ENCODER: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.36 },
-    base_half: 56,
-    flat_half: 20,
-    depth: 7.0,
-    pop_depth: 12.0,
-};
+/// Select hint — upper-right edge, under the Select button; the taller of the two, echoing
+/// Select's role as the primary control.
+const SELECT: Style = Style { anchor: Anchor { pos: 0.36 }, base_half: 56, flat_half: 20, depth: 7.0, pop_depth: 12.0 };
 
-/// Back hint — lower-right edge (the Back button sits below the encoder); shorter than
-/// the encoder bulge, echoing the Back button's smaller pill.
-const BACK: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.67 },
-    base_half: 32,
-    flat_half: 10,
-    depth: 7.0,
-    pop_depth: 12.0,
-};
+/// Back hint — lower-right edge, under the Back button (which sits below Select); shorter
+/// than the Select bulge.
+const BACK: Style = Style { anchor: Anchor { pos: 0.67 }, base_half: 32, flat_half: 10, depth: 7.0, pop_depth: 12.0 };
 
 /// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
 ///
@@ -265,20 +224,20 @@ const BACK: Style = Style {
 /// through [`update`](HoldHints::update), then [`draw`](HoldHints::draw)s this on top
 /// of the screen stack.
 pub struct HoldHints {
-    encoder: Hint,
+    select: Hint,
     back: Hint,
 }
 
 impl HoldHints {
     pub const fn new() -> Self {
-        HoldHints { encoder: Hint::new(), back: Hint::new() }
+        HoldHints { select: Hint::new(), back: Hint::new() }
     }
 
-    /// Advance both hints one frame. `enc`/`back` are the live hold fractions
-    /// (`0.0..=1.0`); `enc_fired`/`back_fired` mark the frame each long-press crossed
+    /// Advance both hints one frame. `sel`/`back` are the live hold fractions
+    /// (`0.0..=1.0`); `sel_fired`/`back_fired` mark the frame each long-press crossed
     /// its threshold (so the bulge pops the instant the action commits).
-    pub fn update(&mut self, now: u32, enc: f32, back: f32, enc_fired: bool, back_fired: bool) {
-        self.encoder.update(now, enc, enc_fired);
+    pub fn update(&mut self, now: u32, sel: f32, back: f32, sel_fired: bool, back_fired: bool) {
+        self.select.update(now, sel, sel_fired);
         self.back.update(now, back, back_fired);
     }
 
@@ -286,29 +245,21 @@ impl HoldHints {
     /// retracting. `false` exactly when [`draw`](HoldHints::draw) would paint nothing,
     /// so a host can leave the overlay layer untouched while it's quiet.
     pub fn active(&self, now: u32) -> bool {
-        self.encoder.active(now) || self.back.active(now)
+        self.select.active(now) || self.back.active(now)
     }
 
     /// The bounding **rows** `[y0, y0 + rows)` of every hint live at `now` — the dirty region a
     /// partial-overlay host re-presents, so it re-pushes only the active bulge's rows instead of the
-    /// whole hint band. `None` exactly when [`active`](HoldHints::active) is `false`. Right-edge
-    /// (vertical) bulges span `cc ± base_half` rows; a horizontal relocation maps to `pop_depth`
-    /// rows instead, kept correct here so the region tracks the bulge if an anchor moves.
+    /// whole hint band. `None` exactly when [`active`](HoldHints::active) is `false`.
     pub fn active_rows(&self, now: u32, w: i32, h: i32) -> Option<(u16, u16)> {
         let span = |hint: &Hint, style: &Style| -> Option<(i32, i32)> {
             if !hint.active(now) {
                 return None;
             }
             let place = style.anchor.place(w, h, style.base_half);
-            Some(if place.vertical {
-                (place.cc - style.base_half, place.cc + style.base_half)
-            } else {
-                let depth = style.pop_depth as i32;
-                let near = if place.inward < 0 { place.outer - depth } else { place.outer };
-                (near, near + depth)
-            })
+            Some((place.cc - style.base_half, place.cc + style.base_half))
         };
-        let merged = match (span(&self.encoder, &ENCODER), span(&self.back, &BACK)) {
+        let merged = match (span(&self.select, &SELECT), span(&self.back, &BACK)) {
             (Some((a0, a1)), Some((b0, b1))) => Some((a0.min(b0), a1.max(b1))),
             (Some(s), None) | (None, Some(s)) => Some(s),
             (None, None) => None,
@@ -327,7 +278,7 @@ impl HoldHints {
         F: Fn(u16) -> D::Color,
     {
         let mut cv = Canvas::new(target, color_fn);
-        self.encoder.draw(&mut cv, &ENCODER, now, w, h);
+        self.select.draw(&mut cv, &SELECT, now, w, h);
         self.back.draw(&mut cv, &BACK, now, w, h);
     }
 }

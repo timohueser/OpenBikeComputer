@@ -39,6 +39,62 @@ pub enum Kind {
     Polygon,
 }
 
+/// A style's boolean draw properties, **packed into one byte**.
+///
+/// Packed rather than a field each because a source keeps the whole table resident — the OBCM
+/// reader holds `[Option<Style>; 256]` — so a `bool` field costs 256 bytes of the device's RAM
+/// budget (plus alignment) to carry one bit per style. The values here are the seam's own; a source
+/// translates its file's representation into them, exactly as it does for every other field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StyleFlags(u8);
+
+impl StyleFlags {
+    const DASHED: u8 = 1 << 0;
+    const FIXED_WIDTH: u8 = 1 << 1;
+    const TERRAIN_LAYER: u8 = 1 << 2;
+
+    /// No property set: a solid, ramped, non-terrain style.
+    pub const NONE: Self = Self(0);
+
+    #[inline]
+    pub const fn new(dashed: bool, fixed_width: bool, terrain_layer: bool) -> Self {
+        let mut bits = 0;
+        if dashed {
+            bits |= Self::DASHED;
+        }
+        if fixed_width {
+            bits |= Self::FIXED_WIDTH;
+        }
+        if terrain_layer {
+            bits |= Self::TERRAIN_LAYER;
+        }
+        Self(bits)
+    }
+
+    /// Stroke this line dashed instead of solid. Ignored for polygons.
+    #[inline]
+    pub const fn dashed(self) -> bool {
+        self.0 & Self::DASHED != 0
+    }
+
+    /// Use `weight` as the on-screen stroke in **device pixels**, verbatim: the renderer's
+    /// zoom→width ramp does not apply. For a *mark on the map* — something with no width on the
+    /// ground, like a contour — where the ramp is not merely wrong but backwards.
+    #[inline]
+    pub const fn fixed_width(self) -> bool {
+        self.0 & Self::FIXED_WIDTH != 0
+    }
+
+    /// This style belongs to the **terrain layer**, the group a device setting may suppress
+    /// wholesale. The renderer's collect pass reads it: with the terrain layer hidden
+    /// (`RenderConfig { terrain_layer: false }`) a style carrying this bit is never admitted to the
+    /// visible-style mask, so its features are not decoded at all.
+    #[inline]
+    pub const fn terrain_layer(self) -> bool {
+        self.0 & Self::TERRAIN_LAYER != 0
+    }
+}
+
 /// Complete draw metadata for one style. Sources keep the table; renderers borrow entries by id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
@@ -47,9 +103,15 @@ pub struct Style {
     pub color: u16,
     pub weight: u8,
     pub priority: u8,
-    pub dashed: bool,
+    pub flags: StyleFlags,
     pub color2: Option<u16>,
 }
+
+// A source holds 256 of these resident (`[Option<Style>; 256]` in the OBCM reader), so this struct
+// is multiplied by 256 in the board's RAM budget — which is why the boolean properties live packed
+// in [`StyleFlags`] and not one `bool` field each. Twelve bytes is what the fields need with no
+// padding to spare; growing it is a budget decision, not a detail.
+const _: () = assert!(core::mem::size_of::<Style>() <= 12, "Style is resident ×256 — see StyleFlags");
 
 /// A source-defined identity for a candidate within one render.
 ///
@@ -228,6 +290,18 @@ pub trait MapScene {
     fn select_lod_for_mpp(&self, mpp: f32) -> usize;
     fn style(&self, id: u8) -> Option<&Style>;
 
+    /// RGB565 marker colour stored with the map presentation metadata.
+    fn marker_color(&self) -> u16 {
+        0
+    }
+
+    /// The style at the bottom of the paint order, used to clear the map plane before geometry.
+    /// Sources with a pre-resolved backdrop override this; the allocation-free fallback scans the
+    /// bounded 256-entry style id space.
+    fn backdrop_style(&self) -> Option<&Style> {
+        (0..=u8::MAX).filter_map(|id| self.style(id)).min_by_key(|style| (style.z_index, style.id))
+    }
+
     /// Snapshot optional cumulative source/cache counters. `Ok(None)` means the source has none.
     fn diagnostics(&self) -> Result<Option<Diagnostics>, ReadError> {
         Ok(None)
@@ -256,6 +330,30 @@ pub trait MapScene {
         selected: &mut impl SelectedFeatures,
     ) -> DecodeReport;
 }
+
+/// The **rain band boundary** (WX10, epic #1185): styles with `z_index >= RAIN_BELOW_Z` (the road
+/// band and everything above it) paint **over** the precipitation raster; styles below it (the
+/// ground fills) paint under. The renderer inserts rain at this z split; roads above rain is
+/// locked UX.
+///
+/// Skins **do** carry `z_index` (`obcm-assemble` stamps it), so this boundary is a *contract on
+/// the z ladder*, not a fact about skins: the packer schema and every skin keep the band gap
+/// `(16, 24)` empty — ground/water/buildings at `z <= 16`, the road band at `z >= 24` — and no
+/// style may sit inside the gap or cross the boundary when a skin is stamped. Enforced at the
+/// stamp/resolve path (`obcm-assemble`: a resolved skin may not place a style inside the gap, and
+/// a restamp may not move a style across the boundary relative to the image it stamps onto) and
+/// pinned by the presets test over `builder/presets/schema.json` + both shipped skins. Lives here
+/// — the style/z contract crate — so the renderer and the assembler share one authority.
+pub const RAIN_BELOW_Z: i8 = 20;
+
+/// The rain **band gap**: the open z interval `(RAIN_BAND_GAP_LOW, RAIN_BAND_GAP_HIGH)` no style
+/// may occupy — ground fills top out at `RAIN_BAND_GAP_LOW`, the road band starts at
+/// `RAIN_BAND_GAP_HIGH`, and [`RAIN_BELOW_Z`] sits inside the gap. Keeping the gap empty is what
+/// makes the boundary unambiguous for every stamped skin; `obcm-assemble` refuses a skin that
+/// places a style inside it.
+pub const RAIN_BAND_GAP_LOW: i8 = 16;
+pub const RAIN_BAND_GAP_HIGH: i8 = 24;
+const _: () = assert!(RAIN_BAND_GAP_LOW < RAIN_BELOW_Z && RAIN_BELOW_Z <= RAIN_BAND_GAP_HIGH);
 
 /// Meters of ground per degree in the shared local-equirectangular Earth model.
 pub const M_PER_DEG: f64 = 111_320.0;

@@ -62,7 +62,7 @@ impl RideStartScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 // Begin a route-less tracking session and root the stack to [Home, Map] — the same
                 // clean landing the Route overview's START RIDE does, minus the route.
@@ -96,7 +96,7 @@ impl RideStartScreen {
         // Battery the same `NN%` Home shows. (The static Card `OK` row was dropped in owner review
         // round 1 — the screen is unreachable without a mounted card, so it informed nothing.)
         let mut batt: heapless::String<8> = heapless::String::new();
-        let _ = write!(batt, "{}%", rx.state.battery_pct);
+        let _ = write!(batt, "{}%", rx.state.device.battery_pct);
         let gps = if rx.no_fix { rx.t(Msg::RideStartSearching) } else { rx.t(Msg::RideStartFix) };
         let rows = [(rx.t(Msg::RideStartGps), gps), (rx.t(Msg::RideStartBattery), batt.as_str())];
         for (i, (label, value)) in rows.into_iter().enumerate() {
@@ -127,24 +127,13 @@ impl RideStartScreen {
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::screen::Screen;
     use crate::{AppState, Settings};
 
     fn run(scr: &mut RideStartScreen, st: &mut AppState, act: &mut Activity, g: Gesture) -> Transition {
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(st, act, &mut settings);
         scr.handle(g, &mut cx)
     }
 
@@ -168,7 +157,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RideStartScreen::new();
-        run(&mut scr, &mut st, &mut act, Gesture::Turn(1)); // highlight "Back"
+        run(&mut scr, &mut st, &mut act, Gesture::Step(1)); // highlight "Back"
         let t = run(&mut scr, &mut st, &mut act, Gesture::Press);
         assert!(matches!(t, Transition::Pop), "Back pops");
         assert!(!act.is_tracking(), "nothing started");

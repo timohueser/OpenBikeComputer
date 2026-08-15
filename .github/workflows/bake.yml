@@ -1,0 +1,242 @@
+name: Bake
+
+# Build catalog cells once, centrally, so the website and desktop app can select,
+# download, and assemble the same verified inputs.
+#
+# ── READ THIS BEFORE ADDING A COUNTRY TO THE MATRIX ────────────────────────────────
+#
+# **A country-scale bake does not fit a GitHub runner, and this workflow is not where
+# the real bakes happen.** A `ubuntu-latest` runner has 4 vCPU, 16 GB of RAM and
+# ~14 GB of usable disk. The German extract alone is 4.8 GB *before* the packer
+# allocates its node table, and the artifacts it produces are hundreds of megabytes
+# each. There is no flag that fixes that.
+#
+# So this workflow is **one caller** of `obc-bake`, deliberately sized for the small
+# end of the curated list: city-states and small Bundesländer (Bremen, Hamburg, Berlin,
+# Saarland), refreshes of already-cached regions, and — the job that runs on every
+# schedule regardless — the published-catalog version guard. The CLI is the product;
+# it runs the same way on a workstation, which is where Germany, Bayern, NRW,
+# Austria and Switzerland are baked:
+#
+#     cargo run --release -p obc-bake -- bake --out ~/bake --summary-json ~/bake/run.json
+#     OBC_MAPS_BASE_URL=https://maps.openbikecomputer.org/cell-catalog \
+#       cargo run --release -p obc-bake -- publish ~/bake --target r2
+#
+# Nothing in `obc-bake` assumes CI: no runner-only paths, no GitHub-specific output,
+# and its self-contained tree can be retained across runs: cells, sidecars, regions,
+# schema, skins, satellites, and the root all live below one directory.
+#
+# ── Publishing ────────────────────────────────────────────────────────────────────
+#
+# Publishing needs R2 credentials, which live in repository secrets and are only
+# passed on an explicit `workflow_dispatch` with `publish: true`. A scheduled run
+# bakes and reports; it never uploads. Content first, root last, is the publisher's
+# own invariant (`OBCC_Spec.md` §11) and is enforced in `obc-bake`, not
+# here — this file only decides *whether* to publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Regions to bake (comma-separated ids from host/obc-bake/regions.toml; blank = the small-region set)"
+        required: false
+        default: ""
+      force:
+        description: "Re-bake even when nothing changed"
+        type: boolean
+        default: false
+      publish:
+        description: "Publish the result to R2 (needs the repository secrets)"
+        type: boolean
+        default: false
+  schedule:
+    # Weekly, Monday 04:00 UTC — after Geofabrik's nightly extracts have settled.
+    # Refreshes the small regions and, whatever happens to those, runs the guard.
+    - cron: "0 4 * * 1"
+  pull_request:
+    paths:
+      # The guard's whole job is to notice an OBCM bump before the catalog rots, so
+      # it runs on the PRs that could cause one.
+      - "firmware/obc-formats/**"
+      - "host/obc-pack/src/catalog.rs"
+      - "host/obc-bake/**"
+      - ".github/workflows/bake.yml"
+
+concurrency:
+  # Never two bakes into one bucket. Not cancel-in-progress: killing a bake halfway
+  # wastes hours and (unlike a test run) leaves a cache half-warmed.
+  group: bake-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The regions small enough to bake on a hosted runner. Everything else in
+  # regions.toml is a workstation job — see the header.
+  SMALL_REGIONS: >-
+    europe/germany/bremen,
+    europe/germany/hamburg,
+    europe/germany/berlin,
+    europe/germany/saarland
+
+jobs:
+  # ── The mandatory re-bake guard (OBCC_Spec.md §10) ────────────────────────────────
+  #
+  # Three mechanisms enforce "an OBCM bump invalidates every baked artifact". Two are
+  # in the repository and already exist: the generator refuses a mixed tree, and
+  # `catalog.rs`'s PINNED_OBCM_VERSION breaks the packer's tests when the format
+  # constant moves. Neither can see what is actually being served — a bump can be
+  # merged, released, and the pin honestly moved while the CDN still hands v10 files
+  # to a v11 firmware until somebody remembers to re-bake.
+  #
+  # That is this job. It needs the live manifest URL, so it is configured, not
+  # hardcoded: set the `OBC_CATALOG_URL` repository *variable* (the same one
+  # deploy-site.yml passes to the builder) and it starts checking; leave it unset and
+  # it says "skipped" and passes, because a project that has not published a catalog
+  # yet must not carry a red check about it.
+  #
+  # It lives here rather than in ci.yml on purpose: it is a fact about a deployment,
+  # not about the tree, and it needs the network. Making it a *required* check once a
+  # catalog exists is a branch-protection toggle, not a code change.
+  obcm-version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: host
+      - uses: ./.github/actions/setup-host-deps
+      - name: Is the published catalog still this build's OBCM version?
+        env:
+          OBC_CATALOG_URL: ${{ vars.OBC_CATALOG_URL }}
+        run: cargo run --release --locked -p obc-bake -- check-obcm-version
+
+  bake:
+    # Not on pull_request: a PR must not spend twenty minutes packing maps.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: host
+      - uses: ./.github/actions/setup-host-deps
+
+      - name: Disk and memory before the bake
+        # Printed because the first thing to check when a bake dies is whether it was
+        # the runner's 14 GB of disk rather than the packer.
+        run: |
+          df -h /
+          free -h
+
+      # Extracts are cached across runs: a refresh that re-downloads 4 GB every week
+      # is not a refresh. The key rolls weekly so the cache follows Geofabrik's own
+      # cadence; `restore-keys` lets a new week start from last week's files, which the
+      # runner then revalidates by HEAD (Last-Modified + Content-Length) per region.
+      - name: Cache Geofabrik extracts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/obcm/geofabrik
+          key: geofabrik-${{ github.run_id }}
+          restore-keys: geofabrik-
+
+      # The bake tree survives across runs so an unchanged region can be *skipped*
+      # rather than re-packed; the skip is keyed on content hashes, so a restored tree
+      # that disagrees with the extracts re-bakes rather than lying.
+      - name: Cache the bake tree
+        uses: actions/cache@v4
+        with:
+          path: ~/bake
+          key: bake-tree-${{ github.run_id }}
+          restore-keys: bake-tree-
+
+      - name: Bake
+        # Dispatch inputs arrive as environment variables, never interpolated into the
+        # script text: `${{ }}` inside `run:` is textual substitution, and a region id
+        # is a string a human typed.
+        env:
+          INPUT_REGIONS: ${{ inputs.regions }}
+          INPUT_FORCE: ${{ inputs.force }}
+          OBC_MAPS_BASE_URL: ${{ vars.OBC_MAPS_BASE_URL }}
+        run: |
+          regions=()
+          if [ -n "$INPUT_REGIONS" ]; then
+            IFS=',' read -ra ids <<< "$INPUT_REGIONS"
+            for id in "${ids[@]}"; do regions+=("${id// /}"); done
+          else
+            IFS=',' read -ra ids <<< "$SMALL_REGIONS"
+            for id in "${ids[@]}"; do regions+=("${id// /}"); done
+          fi
+          force=()
+          if [ "$INPUT_FORCE" = "true" ]; then force+=("--force"); fi
+          # No `set -e` games: obc-bake exits non-zero if any job failed or any region
+          # ended with no artifact, and that is exactly the signal this step wants.
+          cargo run --release --locked -p obc-bake -- bake \
+            --out ~/bake \
+            --summary-json ~/bake-summary.json \
+            "${regions[@]}" "${force[@]}"
+
+      # `if: always()` — the summary is most valuable exactly when the step above
+      # failed, because it names which regions did not bake and why.
+      - name: Run summary
+        if: always()
+        run: |
+          if [ -f ~/bake-summary.json ]; then
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          data = json.loads(pathlib.Path.home().joinpath("bake-summary.json").read_text())
+          print(f"### Bake — OBCM v{data['obcm_version']}, recipe v{data['recipe_version']}\n")
+          print("| band | cells | partial | bytes |")
+          print("| --- | --- | --- | --- |")
+          for band in data["bands"]:
+              print(f"| {band['band']} | {band['cells']} | {band['partial_cells']} | {band['bytes']} |")
+          failures = [plan for plan in data["plans"] if plan.get("error")]
+          if failures:
+              print("\n**Failed source sets:**")
+              for plan in failures:
+                  print(f"- {', '.join(plan['sources'])}: {plan['error']}")
+          if data["uncovered_regions"]:
+              print("\n**Regions with no artifact:** " + ", ".join(data["uncovered_regions"]))
+          PY
+          fi
+
+      - name: Upload the run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bake-summary
+          path: ~/bake-summary.json
+          if-no-files-found: warn
+
+      # Only on an explicit dispatch. The credentials are never present on a
+      # scheduled run, so a schedule cannot publish even by accident.
+      #
+      # Note what this job's tree is: the cached tree plus any regions refreshed in
+      # this run. The generated root offers exactly what is complete in that tree.
+      - name: Publish to R2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          OBC_R2_ACCOUNT_ID: ${{ secrets.OBC_R2_ACCOUNT_ID }}
+          OBC_R2_BUCKET: ${{ secrets.OBC_R2_BUCKET }}
+          OBC_R2_PREFIX: ${{ vars.OBC_R2_PREFIX }}
+          OBC_R2_ACCESS_KEY_ID: ${{ secrets.OBC_R2_ACCESS_KEY_ID }}
+          OBC_R2_SECRET_ACCESS_KEY: ${{ secrets.OBC_R2_SECRET_ACCESS_KEY }}
+          OBC_MAPS_BASE_URL: ${{ vars.OBC_MAPS_BASE_URL }}
+        run: |
+          # `update` first: a runner image whose package index has aged out 404s on
+          # the install otherwise, and it would do so at the last step of a long job.
+          sudo apt-get update
+          sudo apt-get install -y rclone
+          test -n "$OBC_MAPS_BASE_URL" || { echo "set the OBC_MAPS_BASE_URL variable first"; exit 1; }
+          cargo run --release --locked -p obc-bake -- publish ~/bake \
+            --base-url "$OBC_MAPS_BASE_URL" --target r2

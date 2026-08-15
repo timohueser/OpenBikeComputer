@@ -1,0 +1,28 @@
+[package]
+name = "obc-vectors"
+version = "0.1.0"
+edition = "2021"
+publish = false # test-only: builds + verifies the shared specs/vectors/ fixtures
+description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md): builders and contract tests for the binary fixtures in specs/vectors/, consumed by both cargo test and the companion app's swift test"
+
+[dependencies]
+obc-crc = { path = "../../firmware/obc-crc" }
+obc-formats = { path = "../../firmware/obc-formats", features = ["obcg-deflate"] } # OBCG codec 2 (host side only)
+obc-weather = { path = "../../firmware/obc-weather" }
+# The OBCT terrain fixture is *built* here from the spec's field tables like every other one; this
+# is only so `tests/vectors.rs` can read it back through the production sampler, the same way the
+# route fixtures are ridden through `obc-route`.
+obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-route = { path = "../../firmware/obc-route" }
+# Only for the OBCU v2 fixture's Ed25519 signature (#997). The container's *header* is still
+# hand-built from the spec's field table like every other fixture here — a signature is the one
+# thing a builder cannot transcribe from prose.
+obc-dfu = { path = "../../firmware/obc-dfu" }
+# Only for the OBCG codec-2 negatives: a *malformed* deflate stream (truncated, over-inflating,
+# under-inflating) cannot be produced by the byte authority, which only ever emits valid ones.
+# Positives still go through `obc_formats::obcg::encode_format` like every other fixture.
+# Pinned exactly for the same reason obc-formats pins it: these fixtures' bytes are the contract.
+miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
+
+[dev-dependencies]
+heapless = "0.8"

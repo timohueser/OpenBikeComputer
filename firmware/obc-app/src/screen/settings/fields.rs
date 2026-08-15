@@ -3,11 +3,11 @@
 //! draws (same [`page_fields`](stat_fields::page_fields) placement, same [`tile`](crate::screen)
 //! renderer, live values), so what you arrange here is exactly what the ride shows. The cursor is
 //! the amber tile; walking past a page's last tile flips to the next page (`page / pages` in the
-//! title bar). Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row. Two idioms on
-//! top of the shared two-level encoder model:
+//! title bar). Reached from the [`Ride`](super::RideScreen) screen's *Data fields* row. Two idioms on
+//! top of the shared two-level Select model:
 //!
 //! - **Reordering.** *Press* grabs the highlighted tile (move arrows appear); rotating moves it,
-//!   *press*/*back* drops it. The grid reflows live per detent, so a two-span field's row-aligned
+//!   *press*/*back* drops it. The grid reflows live per step, so a two-span field's row-aligned
 //!   hops ([`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item)) are visible
 //!   rather than inferred.
 //! - **Removing.** A hold-to-delete footer (trash can + progress bar) erases the highlighted field —
@@ -69,16 +69,16 @@ impl StatFieldsScreen {
         let add_row = len; // rows: 0..len are the fields, `len` is the Add row
         let rows = len + 1;
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 if self.grabbed && self.selected < len {
-                    // Move the grabbed field one valid step per detent, following it with the cursor.
+                    // Move the grabbed field one valid step per step, following it with the cursor.
                     let mut idx = self.selected;
                     for _ in 0..n.unsigned_abs() {
                         idx = cx.settings.stat_fields.move_item(idx, n.signum());
                     }
                     self.selected = idx;
                 } else {
-                    return list::on_turn(&mut self.selected, n, rows);
+                    return list::on_step(&mut self.selected, n, rows);
                 }
                 Transition::None
             }
@@ -167,17 +167,22 @@ impl StatFieldsScreen {
                     crate::screen::waypoint_panel_ghost(cv, area, rdt.language, bg);
                 } else {
                     let mut cell = f.cell(&rdt);
-                    ghost_value(*f, &mut cell);
-                    crate::screen::tile(
-                        cv,
-                        area,
-                        &cell.caption,
-                        &cell.value,
-                        cell.arrow,
-                        cell.value_align,
-                        bg,
-                        SUBTEXT,
-                    );
+                    ghost_value(*f, &mut cell, rdt.language);
+                    match f.category() {
+                        Some(cat) => {
+                            crate::screen::category_tile(cv, area, cat, &cell.caption, &cell.value, bg, SUBTEXT)
+                        }
+                        None => crate::screen::tile(
+                            cv,
+                            area,
+                            &cell.caption,
+                            &cell.value,
+                            cell.arrow,
+                            cell.value_align,
+                            bg,
+                            SUBTEXT,
+                        ),
+                    }
                 }
                 if is_sel && self.grabbed {
                     move_arrows(cv, area);
@@ -213,7 +218,7 @@ impl StatFieldsScreen {
 }
 
 /// Draw the hold-to-delete footer: a trash can + a warning-red progress bar filled by the live
-/// encoder hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
+/// Select hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
 /// blank. The delete itself fires from `handle`'s `Hold` arm.
 fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, on_field: bool, hold: f32) {
     use crate::screen::palette::*;
@@ -262,17 +267,47 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
 /// | Grade         | `4%`                    |
 /// | Elevation     | `1240`                  |
 /// | RideTime      | `2:14:30`               |
+/// | TimeToGo      | `1:05`                  |
+/// | Eta           | `15:37`                 |
 /// | Clock         | `14:32`                 |
 /// | NextWaypoint  | `Pass Summit` + `8.7km` |
 /// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::waypoint_panel_ghost)) |
 /// | HeartRate     | `152`                   |
 /// | Power         | `210`                   |
 /// | Cadence       | `88`                    |
+/// | Next: \<cat\> | the category's own name + a per-category sample distance |
 ///
 /// The captions (unit labels) stay whatever `cell()` produced, so metric/imperial re-captioning still
 /// shows; only the value is a placeholder. The tile drawer paints it in olive `SUBTEXT`.
-fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fields::StatCell) {
+///
+/// The six `Next: <category>` tiles are pinned to their **empty-state** caption (the localized
+/// category name) plus a sample distance, rather than a made-up place name: the editor has no route
+/// and no corridor snapshot, and inventing "Fontaine du port" there would be one more untranslated
+/// English string on-glass for the sake of a preview. The icon is what identifies the tile anyway,
+/// and each category gets a different distance so a page of them doesn't read as copy-paste.
+fn ghost_value(
+    field: crate::stat_fields::StatField,
+    cell: &mut crate::stat_fields::StatCell,
+    lang: crate::settings::Language,
+) {
     use crate::stat_fields::StatField as F;
+    use obc_reader::PoiCategory;
+    if let Some(cat) = field.category() {
+        // Whatever a live App had cached must not leak into the editor's preview: re-pin the caption
+        // to the category name so the tile is the same picture on every device.
+        cell.caption.clear();
+        let _ = cell.caption.push_str(field.name(lang));
+        cell.value.clear();
+        let _ = cell.value.push_str(match cat {
+            PoiCategory::Water => "1.2km",
+            PoiCategory::Campsite => "24km",
+            PoiCategory::Accommodation => "18km",
+            PoiCategory::Resupply => "2.4km",
+            PoiCategory::Pharmacy => "6.8km",
+            PoiCategory::BikeShop => "12km",
+        });
+        return;
+    }
     let sample: &str = match field {
         F::Speed => "23.4",
         F::AvgSpeed => "19.2",
@@ -283,6 +318,10 @@ fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fiel
         F::Grade => "4%",
         F::Elevation => "1240",
         F::RideTime => "2:14:30",
+        // The EL9 pair (#1077) is one estimate shown two ways, so the samples agree: 1 h 05 left
+        // from the 14:32 the Clock ghost shows lands at 15:37.
+        F::TimeToGo => "1:05",
+        F::Eta => "15:37",
         F::Clock => "14:32",
         F::NextWaypoint => {
             // The wide waypoint tile is a name caption + a right-aligned distance value.
@@ -295,6 +334,9 @@ fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fiel
         F::HeartRate => "152",
         F::Power => "210",
         F::Cadence => "88",
+        // Handled above (they need the category, not just the variant) — spelled out so the match
+        // stays exhaustive and a new field can't slip through without a ghost.
+        F::NextWater | F::NextCampsite | F::NextLodging | F::NextResupply | F::NextPharmacy | F::NextBikeShop => return,
     };
     cell.value.clear();
     let _ = cell.value.push_str(sample);
@@ -313,28 +355,17 @@ fn move_arrows(cv: &mut impl Surface, area: Rectangle) {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
     fn run(scr: &mut StatFieldsScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, s);
         scr.handle(g, &mut cx)
     }
 
-    /// Grab the first field, move it down with a turn, and drop it — the order changes and the cursor
+    /// Grab the first field, move it down with a step, and drop it — the order changes and the cursor
     /// follows the grabbed field.
     #[test]
     fn grab_move_drop_reorders() {
@@ -343,7 +374,7 @@ mod tests {
         run(&mut scr, &mut s, Gesture::Press); // grab field 0
         assert!(scr.grabbed);
         let first_before = s.stat_fields.as_slice()[0];
-        run(&mut scr, &mut s, Gesture::Turn(1)); // move it down one
+        run(&mut scr, &mut s, Gesture::Step(1)); // move it down one
         assert_eq!(scr.selected, 1, "the cursor follows the grabbed field");
         assert_eq!(s.stat_fields.as_slice()[1], first_before, "the field moved down a slot");
         run(&mut scr, &mut s, Gesture::Press); // drop
@@ -371,7 +402,7 @@ mod tests {
         let len = s.stat_fields.len();
         // Walk to the last field (index len-1).
         for _ in 0..len - 1 {
-            run(&mut scr, &mut s, Gesture::Turn(1));
+            run(&mut scr, &mut s, Gesture::Step(1));
         }
         assert_eq!(scr.selected, len - 1);
         run(&mut scr, &mut s, Gesture::Hold); // delete it
@@ -384,7 +415,7 @@ mod tests {
         let mut s = Settings::default();
         let len = s.stat_fields.len();
         let mut scr = StatFieldsScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(len as i32)); // cursor → Add row (index len)
+        run(&mut scr, &mut s, Gesture::Step(len as i32)); // cursor → Add row (index len)
         assert_eq!(scr.selected, len);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::AddField(_))));
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
@@ -401,7 +432,7 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "a second back pops");
     }
 
-    /// Grabbing the page-sized waypoint panel and turning moves it a whole page per detent, the
+    /// Grabbing the page-sized waypoint panel and turning moves it a whole page per step, the
     /// cursor following it across pages — the editor path over the new multi-row machinery.
     #[test]
     fn grabbing_the_panel_moves_it_page_to_page() {
@@ -412,21 +443,65 @@ mod tests {
         let mut scr = StatFieldsScreen::new();
         // Walk the cursor onto the panel, confirm it starts on page 1, then grab it.
         for _ in 0..panel_idx {
-            run(&mut scr, &mut s, Gesture::Turn(1));
+            run(&mut scr, &mut s, Gesture::Step(1));
         }
         assert_eq!(scr.selected, panel_idx);
         assert_eq!(stat_fields::slot_of(&s.stat_fields, panel_idx).unwrap() / SLOTS_PER_PAGE, 1, "panel on page 1");
         run(&mut scr, &mut s, Gesture::Press); // grab
         assert!(scr.grabbed);
         // Up: hops the whole page to the front; the cursor follows.
-        run(&mut scr, &mut s, Gesture::Turn(-1));
+        run(&mut scr, &mut s, Gesture::Step(-1));
         assert_eq!(scr.selected, 0, "the cursor follows the panel to page 0");
         assert_eq!(s.stat_fields.as_slice()[0], StatField::WaypointList);
         assert_eq!(stat_fields::slot_of(&s.stat_fields, 0).unwrap() / SLOTS_PER_PAGE, 0, "now on page 0");
         // Down: hops a whole page back, cursor still following.
-        run(&mut scr, &mut s, Gesture::Turn(1));
+        run(&mut scr, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, panel_idx, "and back down a page");
         assert_eq!(s.stat_fields.as_slice()[panel_idx], StatField::WaypointList);
+    }
+
+    /// The `Next: <category>` tiles' editor **ghost** (epic #946, U5): a fixed, localized preview —
+    /// the category's own word plus a per-category sample distance — never whatever a live App had
+    /// cached, so the editor is the same picture on every device (the `waypoint_panel_ghost` rule).
+    #[test]
+    fn category_tiles_ghost_a_localized_name_and_a_sample_distance() {
+        use crate::next_ahead::NextAhead;
+        use crate::settings::Language;
+        use crate::stat_fields::{Readout, StatField};
+        let mut act = Activity::new(Mode::Riding);
+        // A live-looking readout: a route is loaded and the cache holds a real POI name.
+        act.active_route = Some(0);
+        let cache = NextAhead::new();
+        let wpts = obc_route::Waypoints::new();
+        let cx = Readout {
+            fix: None,
+            activity: &act,
+            units: crate::Units::Metric,
+            route: None,
+            profile: None,
+            climb: None,
+            waypoints: &wpts,
+            next_waypoint: None,
+            now: crate::settings::DateTime::default(),
+            now_ms: 0,
+            bike_profile_idx: 0,
+            language: Language::De,
+            next_ahead: &cache,
+        };
+        let mut seen: std::vec::Vec<(std::string::String, std::string::String)> = std::vec::Vec::new();
+        for f in StatField::ALL.into_iter().filter(|f| f.category().is_some()) {
+            let mut cell = f.cell(&cx);
+            ghost_value(f, &mut cell, Language::De);
+            assert_eq!(cell.caption.as_str(), f.name(Language::De), "the ghost caption is the localized category");
+            assert!(cell.value.as_str().ends_with("km"), "and the sample is a plausible distance");
+            seen.push((cell.caption.as_str().into(), cell.value.as_str().into()));
+        }
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen[0].0, "Wasser", "German, not an English placeholder");
+        let mut distances: std::vec::Vec<&str> = seen.iter().map(|(_, v)| v.as_str()).collect();
+        distances.sort_unstable();
+        distances.dedup();
+        assert_eq!(distances.len(), 6, "each category gets its own sample, so a page of them isn't copy-paste");
     }
 
     /// The editor's cursor→page mapping: with seven fields (two pages), walking the cursor past

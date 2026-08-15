@@ -4,14 +4,28 @@
     {
       "name": "web-builder",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "packer.web_builder", "--no-browser", "--port", "8000"],
+      "runtimeArgs": ["-m", "builder.server", "--no-browser", "--port", "8000"],
       "port": 8000
     },
     {
       "name": "web-builder-frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "5173"],
-      "cwd": "packer/web_builder/frontend",
+      "cwd": "builder/app",
+      "port": 5173
+    },
+    {
+      "name": "web-builder-static",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
+      "cwd": "builder/app",
+      "port": 5173
+    },
+    {
+      "name": "web-builder-desktop",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "desktop", "--port", "5173"],
+      "cwd": "builder/app",
       "port": 5173
     },
     {
@@ -19,6 +33,12 @@
       "runtimeExecutable": "trunk",
       "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],
       "port": 8080
+    },
+    {
+      "name": "docs-site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8081", "--directory", "docs"],
+      "port": 8081
     }
   ]
 }

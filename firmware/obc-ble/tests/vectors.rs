@@ -1,4 +1,4 @@
-//! `obc-ble`'s **production** codecs against the shared `protocol-vectors/` fixtures — the same
+//! `obc-ble`'s **production** codecs against the shared `specs/vectors/` fixtures — the same
 //! files the app's `swift test` pins and `obc-vectors` builds from the spec. `obc-vectors` proves
 //! the *bytes* match spec-derived builders; this proves the shipped codecs decode and re-encode
 //! those bytes exactly. A drift fails here, there, and on the Swift side.
@@ -32,6 +32,11 @@ fn transfer_control_vectors_round_trip() {
         ("transfer-upload-start.bin", Op::Upload, ObjectType::Route, 0xFFFF),
         ("transfer-download-request.bin", Op::Download, ObjectType::RideList, 0),
         ("transfer-abort.bin", Op::Abort, ObjectType::Route, 0xFFFF),
+        // The volume-set pair (#1039). The shard's id is a packed part, not an id; the manifest's
+        // is `new`, because a set's identity is the id the *device* mints for it.
+        ("transfer-set-shard.bin", Op::Upload, ObjectType::MapShard, 0x0802),
+        ("transfer-set-terrain.bin", Op::Upload, ObjectType::TerrainShard, 0xFFFF),
+        ("transfer-set-manifest.bin", Op::Upload, ObjectType::MapSet, 0xFFFF),
     ] {
         let bytes = fixture(name);
         assert_eq!(bytes.len(), TransferControl::ENCODED_LEN, "{name} is a 12-byte v2 descriptor");
@@ -44,28 +49,70 @@ fn transfer_control_vectors_round_trip() {
     }
 }
 
-/// The widened `protocolVersion` read (spec §1): `version u16 · store_epoch u32`. The production
-/// codec decodes the fixture, sees protocol version 2, and re-encodes it byte-for-byte.
+/// The `protocolVersion` read of a device **without** the weather contract (spec §1): `version u16 ·
+/// store_epoch u32 · obcm_version u8`. The production codec decodes the fixture, sees protocol
+/// version 2 and the OBCM version this build's reader actually reads, and re-encodes it
+/// byte-for-byte. WX3 (#1188) appended a capability word after this; the fixture deliberately stays
+/// seven bytes, because that is still what a device without weather serves —
+/// `version-read-features.bin` is the widened read.
 #[test]
 fn version_read_vector() {
     let bytes = fixture("version-read.bin");
-    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN);
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN_NO_FEATURES);
     let vr = VersionRead::decode(&bytes).unwrap();
     assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "the fixture pins protocol version 2");
     assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
-    assert_eq!(&vr.encode()[..], &bytes[..], "re-encode");
+    assert_eq!(
+        vr.obcm_version,
+        Some(obc_formats::obcm::VERSION),
+        "the fixture is what a current device serves — the map version its reader reads, not a literal"
+    );
+    assert_eq!(vr.feature_bits, None, "no capability word in a 7-byte read — absent, never Some(0)");
+    assert!(!vr.has_weather(), "…so this device is not offered weather");
+    let (enc, len) = vr.encode();
+    assert_eq!(&enc[..len], &bytes[..], "re-encode");
+}
+
+/// The **pre-E1** read (spec §1): `version u16 · store_epoch u32`, no `obcm_version` — an older
+/// firmware talking to a newer host. It decodes cleanly (the epoch is there, so the ack gate is
+/// open) with `obcm_version = None`, and re-encodes to the same 6 bytes. `None`, not `Some(0)`: a
+/// fabricated `0` would read as "this device supports OBCM v0" and refuse every real map, the same
+/// class of mistake as fabricating store epoch `0`.
+#[test]
+fn version_read_noobcm_vector() {
+    let bytes = fixture("version-read-noobcm.bin");
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN_NO_OBCM);
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION);
+    assert_eq!(vr.store_epoch, 0xA1B2_C3D4, "the epoch is present — this read is not a failed one");
+    assert_eq!(vr.obcm_version, None, "an absent trailing field is unknown, never a fabricated default");
+    let (enc, len) = vr.encode();
+    assert_eq!(&enc[..len], &bytes[..], "re-encode stays 6 bytes — the encoder does not invent the byte either");
 }
 
 /// The version-only `protocolVersion` read (spec §1, card-resident epoch #776): a device with no
 /// mounted store serves just the 2-byte version. It carries the protocol version, but the full
 /// [`VersionRead`] decode **rejects** it as truncated — exactly the app's "short read ⇒ storeEpoch
-/// nil ⇒ ack fail-closed" gate. The 6-byte shape is unchanged when a store is mounted.
+/// nil ⇒ ack fail-closed" gate. Unchanged by E1: the no-store read never grew a byte.
 #[test]
 fn version_read_nostore_vector() {
     let bytes = fixture("version-read-nostore.bin");
     assert_eq!(bytes.len(), 2, "version-only: just the u16 version, no epoch");
     assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), obc_ble::PROTOCOL_VERSION, "pins protocol version 2");
     assert!(VersionRead::decode(&bytes).is_err(), "a short read is not a full VersionRead — the app fail-closes");
+}
+
+/// The append-only rule this field rode in on (§1): a decoder takes the fields it knows and
+/// **ignores** bytes past them, so a future firmware appending another trailing field does not
+/// break this build — which is exactly why `obcm_version` needs no `PROTOCOL_VERSION` bump.
+#[test]
+fn version_read_ignores_unknown_trailing_bytes() {
+    let mut bytes = fixture("version-read.bin");
+    bytes.extend_from_slice(&[0xEE, 0xEE, 0xEE]);
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION);
+    assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
+    assert_eq!(vr.obcm_version, Some(obc_formats::obcm::VERSION));
 }
 
 /// The download announce (status `msg = 4`): the `msg` byte + the 12-byte descriptor. The
@@ -351,10 +398,272 @@ fn config_vector() {
     let config = Config::decode(&bytes).expect("valid config");
     assert_eq!(config.name, b"OBC Tourer");
     assert_eq!(config.units, 0);
+    assert_eq!(config.weather_refresh, None, "a v1 blob says nothing about refresh — device default");
 
     let mut out = [0u8; Config::MAX_ENCODED];
     let len = Config::encode(&config, &mut out).unwrap();
     assert_eq!(&out[..len], &bytes[..]);
+}
+
+/// The Config blob **with** the WX3 (#1188) refresh byte. The production codec reads it at the
+/// offset after `units` and re-encodes the file byte-for-byte; the v1 fixture beside it is the same
+/// object without that byte, and decodes to `None`.
+///
+/// The pair is the test. An implementation that got the offset wrong — or that filled an absent
+/// field with a default — passes one of these two files and fails the other, and the failure mode
+/// it is guarding against is a rename silently switching a rider's weather off.
+#[test]
+fn config_weather_refresh_vector() {
+    use obc_ble::weather_request::WeatherRefresh;
+
+    let bytes = fixture("config-weather-refresh.bin");
+    let config = Config::decode(&bytes).expect("valid config");
+    assert_eq!(config.name, b"OBC Alpine");
+    assert_eq!(config.units, 1, "imperial — the refresh byte follows a *nonzero* units byte");
+    assert_eq!(config.known_refresh(), Some(WeatherRefresh::Every60));
+    assert_eq!(config.weather_refresh, Some(WeatherRefresh::Every60.as_u8()), "the raw byte");
+    assert_eq!(bytes.len(), 2 + config.name.len() + 2, "name_len · name · units · weather_refresh");
+
+    let mut out = [0u8; Config::MAX_ENCODED];
+    let len = Config::encode(&config, &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+
+    // The same value with the field dropped is exactly the v1 blob's shape — one byte shorter, and
+    // read back as "unspecified" rather than as `Off`.
+    let dropped = Config { weather_refresh: None, ..config };
+    let dropped_len = Config::encode(&dropped, &mut out).unwrap();
+    assert_eq!(dropped_len, len - 1);
+    assert_eq!(Config::decode(&out[..dropped_len]).unwrap().weather_refresh, None);
+}
+
+/// The **widened** `protocolVersion` read (spec §1, WX3 #1188): the seven bytes of
+/// `version-read.bin`'s layout plus `feature_bits u32`. This is the only read that entitles a phone
+/// to look for the Weather Request service, so the fixture pins both that the bit decodes and that
+/// the protocol version underneath it did **not** move — the capability rode in as an append.
+#[test]
+fn version_read_features_vector() {
+    use obc_ble::descriptor::FEATURE_WEATHER;
+
+    let bytes = fixture("version-read-features.bin");
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN, "11 bytes: the full read");
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "a new capability is not a new protocol");
+    assert_eq!(vr.store_epoch, 0xC0DE_F00D);
+    assert_eq!(vr.obcm_version, Some(obc_formats::obcm::VERSION), "self-sourced, like the shorter reads");
+    assert_eq!(vr.feature_bits, Some(FEATURE_WEATHER));
+    assert!(vr.has_weather());
+
+    let (enc, len) = vr.encode();
+    assert_eq!(&enc[..len], &bytes[..], "re-encode");
+
+    // A truncated read of this very file must not claim the feature: three bytes of a u32 are a
+    // broken read, not a smaller capability set.
+    for cut in VersionRead::ENCODED_LEN_NO_FEATURES..VersionRead::ENCODED_LEN {
+        assert!(!VersionRead::decode(&bytes[..cut]).unwrap().has_weather(), "{cut} bytes must claim nothing");
+    }
+}
+
+/// The three `weatherRequestContext` fixtures (spec §11, WX3 #1188) through the **production**
+/// codec: each decodes to the documented value and re-encodes to the file byte-for-byte.
+///
+/// `obc-vectors` builds these from the spec's offset table by hand and `tests/weather_request.rs`
+/// pins the codec's behaviour; this is the join between the two, and the only place that can catch
+/// the hand-built table and the shipped encoder having drifted apart in the same direction.
+#[test]
+fn weather_request_context_vectors_round_trip() {
+    use obc_ble::weather_request::{
+        WeatherRefresh, WeatherRequestContext, REASON_NO_BUNDLE, REASON_SCHEDULED, REASON_URGENT, VALID_BEARING,
+        VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_REQUEST_CONTEXT_VERSION,
+    };
+
+    for name in [
+        "weather-request-context-full.bin",
+        "weather-request-context-empty.bin",
+        "weather-request-context-no-fix.bin",
+        // Both #1214 additions belong in this loop too: whatever else they pin, they are ordinary
+        // v1 values, and a codec that decoded them into something it could not re-encode verbatim
+        // would fail here before any of their own assertions ran.
+        "weather-request-context-unknown-refresh.bin",
+        "weather-request-context-southern.bin",
+    ] {
+        let bytes = fixture(name);
+        assert_eq!(bytes.len(), WeatherRequestContext::ENCODED_LEN, "{name} is a 52-byte v1 value");
+        let ctx = WeatherRequestContext::decode(&bytes).unwrap_or_else(|e| panic!("{name} rejected: {e:?}"));
+        assert_eq!(ctx.version, WEATHER_REQUEST_CONTEXT_VERSION, "{name} version");
+        assert_eq!(&ctx.encode()[..], &bytes[..], "{name} re-encode");
+    }
+
+    // The full request: a rider on route 7 near Freiburg, holding the DWD-shaped bundle fixture and
+    // due for its scheduled successor. The bundle identity is checked against the file it names —
+    // the same whole-object CRC-32 an upload of it would have announced.
+    let full = WeatherRequestContext::decode(&fixture("weather-request-context-full.bin")).unwrap();
+    assert_eq!(full.validity, VALID_POSITION | VALID_BEARING | VALID_SPEED | VALID_BUNDLE | VALID_ROUTE);
+    assert!(full.because(REASON_SCHEDULED));
+    assert_eq!(full.refresh(), Some(WeatherRefresh::Every30));
+    assert_eq!(full.request_id, 0x1188_0001);
+    assert_eq!((full.lat_udeg, full.lon_udeg), (47_999_008, 7_842_104), "Freiburg, in OBCW microdegrees");
+    assert_eq!((full.bearing_deg, full.speed_deci_ms), (342, 71));
+    assert_eq!(full.route_id, 7, "the waypoint route route-list.bin catalogs");
+    let held = fixture("weather-dwd-96x96-9f.obcw");
+    assert_eq!(full.bundle_crc32, Crc32::checksum(&held), "the bundle group names a bundle that exists");
+    assert_eq!(full.fix_utc, full.bundle_generated_at + 30 * 60, "one refresh interval past what it holds");
+
+    // The resting value: structurally valid, claiming nothing, and still stating the default
+    // interval — which is what keeps an out-of-turn read from looking like a device with weather off.
+    let empty = WeatherRequestContext::decode(&fixture("weather-request-context-empty.bin")).unwrap();
+    assert_eq!(empty, WeatherRequestContext::EMPTY);
+    assert!(!empty.has(VALID_POSITION) && !empty.has(VALID_BUNDLE));
+    assert_eq!(empty.refresh(), Some(WeatherRefresh::DEFAULT));
+
+    // The urgent request with nothing behind it — and a *scheduled* refresh of Off, which must not
+    // read as a device that never asks.
+    let no_fix = WeatherRequestContext::decode(&fixture("weather-request-context-no-fix.bin")).unwrap();
+    assert_eq!(no_fix.validity, 0, "absence is a cleared flag, not a sentinel coordinate");
+    assert!(no_fix.because(REASON_URGENT) && no_fix.because(REASON_NO_BUNDLE));
+    assert_eq!(no_fix.refresh(), Some(WeatherRefresh::Off));
+    assert_eq!(no_fix.request_id, 0x1188_0002, "a different request from the full one");
+    assert_ne!(no_fix.request_id, full.request_id);
+}
+
+/// The context read whose `refresh` names an interval this build does not know (#1214, §11.8) —
+/// the **read** direction, where an unrecognised value is never fatal.
+///
+/// Three things have to hold at once, and the production codec is the only place they can be checked
+/// together: the read decodes, `refresh()` reports *unknown* rather than guessing, and the raw byte
+/// survives a re-encode **verbatim**. That last one is what makes the tolerance honest rather than
+/// merely quiet — a codec that normalised the byte to the default on the way back out would agree
+/// with every other assertion here and still misreport the rider's setting the moment the value was
+/// forwarded anywhere.
+///
+/// The failure this guards against is the one an adversarial review of #1214 found: a direction-blind
+/// reject. Under it, appending a fifth interval — an ordinary enum append — would have taken weather
+/// permanently dead on every shipped app the day the firmware shipped it.
+#[test]
+fn an_unknown_refresh_byte_is_tolerated_on_a_context_read() {
+    use obc_ble::weather_request::{WeatherRefresh, WeatherRequestContext, REASON_SCHEDULED, VALID_BUNDLE};
+
+    let bytes = fixture("weather-request-context-unknown-refresh.bin");
+    let ctx = WeatherRequestContext::decode(&bytes).expect("an unknown interval is not a malformed read");
+
+    assert_eq!(ctx.refresh_raw, 9, "carried as it arrived");
+    assert!(WeatherRefresh::from_u8(ctx.refresh_raw).is_err(), "…and this build genuinely cannot name it");
+    assert_eq!(ctx.refresh(), None, "unknown — not Off, not the default, which would misreport the rider");
+    assert_ne!(ctx.refresh(), Some(WeatherRefresh::Off));
+    assert_ne!(ctx.refresh(), Some(WeatherRefresh::DEFAULT));
+    assert_eq!(&ctx.encode()[..], &bytes[..], "the raw byte round-trips verbatim");
+
+    // The rest of the request is untouched by the byte the phone could not name: this is still a
+    // rider on route 7 holding a real bundle and due for its successor. An implementation that
+    // treated the value as malformed would have thrown all of that away.
+    let full = WeatherRequestContext::decode(&fixture("weather-request-context-full.bin")).unwrap();
+    assert!(ctx.because(REASON_SCHEDULED) && ctx.has(VALID_BUNDLE));
+    assert_eq!(
+        ctx,
+        WeatherRequestContext { refresh_raw: ctx.refresh_raw, request_id: ctx.request_id, ..full },
+        "identical to the full context but for the refresh byte and the nonce"
+    );
+    assert_eq!(full.refresh(), Some(WeatherRefresh::Every30), "…and the sibling still names its interval");
+}
+
+/// The southern context (#1214): the signed fields, through the production codec.
+///
+/// `obc-vectors` checks the bytes; this checks that `decode` sign-extends them. Every value below is
+/// one a wrong-signedness read gets visibly wrong — a latitude of 4245°, a clock 585 billion years
+/// ahead — and the two `u32`s at the end run the trap the other way, so a codec that "fixed" the
+/// signedness by flipping every field fails just as loudly.
+#[test]
+fn the_southern_context_decodes_its_signed_fields() {
+    use obc_ble::weather_request::{
+        WeatherRefresh, WeatherRequestContext, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED,
+    };
+
+    let bytes = fixture("weather-request-context-southern.bin");
+    let ctx = WeatherRequestContext::decode(&bytes).unwrap();
+
+    assert_eq!((ctx.lat_udeg, ctx.lon_udeg), (-49_330_889, -72_886_121), "Patagonia — south and west");
+    assert!(ctx.lat_udeg < 0 && ctx.lon_udeg < 0, "read unsigned these are ≈ 4245°N / 4222°E");
+    assert_eq!(ctx.fix_utc, -1_000_000_000, "a pre-1970 fix");
+    assert_eq!(ctx.bundle_generated_at, -1_000_003_600, "…and an older bundle, at its own offset");
+    assert!(ctx.fix_utc < 0 && ctx.bundle_generated_at < 0);
+    assert_eq!(ctx.fix_utc - ctx.bundle_generated_at, 60 * 60, "one 60-minute interval, on the far side of zero");
+    assert_eq!(ctx.refresh(), Some(WeatherRefresh::Every60), "…which is the interval it says it is on");
+
+    // The unsigned pair: a codec reading these as i32 gets -2 and -2147483647.
+    assert_eq!(ctx.bundle_generation, 0xFFFF_FFFE);
+    assert_eq!(ctx.bundle_crc32, 0x8000_0001);
+
+    assert!(ctx.has(VALID_POSITION) && ctx.has(VALID_BEARING) && ctx.has(VALID_SPEED) && ctx.has(VALID_BUNDLE));
+    assert!(!ctx.has(VALID_ROUTE), "the one cleared group — no route is active");
+    assert_eq!(&ctx.encode()[..], &bytes[..], "re-encode");
+}
+
+/// Config's copy of the same byte (#1214, §11.8) — and the one place the rule is **not** tolerant.
+///
+/// One blob, read twice, two answers. `known_refresh()` is the read direction: `None`, meaning
+/// *unknown*, indistinguishable in type from an absent field because neither is something this build
+/// can show a rider — and, critically, not an error, or a phone facing a newer device could no longer
+/// read Config even to rename it. `refresh_to_apply()` is the write direction: a device asked to
+/// adopt an interval it cannot honour refuses the write whole, because storing the default, `Off`, or
+/// the previous value would all tell the rider their choice was applied when it was discarded.
+#[test]
+fn an_unknown_config_refresh_is_read_tolerantly_and_written_strictly() {
+    use obc_ble::descriptor::DescriptorError;
+    use obc_ble::weather_request::WeatherRefresh;
+
+    let bytes = fixture("config-weather-refresh-unknown.bin");
+    let config = Config::decode(&bytes).expect("decode is direction-blind — the blob itself is well-formed");
+    assert_eq!(config.name, b"OBC Horizon");
+    assert_eq!(config.units, 0, "metric — so an off-by-one reader decodes a *known* `Off` and is caught");
+    assert_eq!(config.weather_refresh, Some(200), "the raw byte, carried as it arrived");
+
+    // Read: unknown, never a substitute.
+    assert_eq!(config.known_refresh(), None, "unknown — not Off, not the default");
+    // Write: refused, and the refusal names the byte so a log says which interval was asked for.
+    assert!(
+        matches!(config.refresh_to_apply(), Err(DescriptorError::UnknownRefresh(200))),
+        "a device cannot store an interval it cannot honour"
+    );
+
+    // `known_refresh()` collapses unknown and absent, but the *raw* field does not — and the write
+    // direction depends on that difference: absent means "leave the stored value alone" (`Ok(None)`),
+    // unknown means "refuse". A codec that lost the distinction would reset a rider who had chosen
+    // `Off` back to 30-minute wakeups on the next rename.
+    let absent = Config { weather_refresh: None, ..config };
+    assert_eq!(absent.known_refresh(), None, "same answer to a reader…");
+    assert!(matches!(absent.refresh_to_apply(), Ok(None)), "…and a different one to a writer");
+    assert_ne!(absent.weather_refresh, config.weather_refresh);
+
+    // The byte survives a re-encode verbatim, which is what keeps the tolerance honest: a host that
+    // read this Config and wrote it back must not silently swap the interval for one it happens to
+    // know. And a *known* value still decodes as itself — tolerance is not blanket indifference.
+    let mut out = [0u8; Config::MAX_ENCODED];
+    let len = Config::encode(&config, &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+    let known_bytes = fixture("config-weather-refresh.bin");
+    let known = Config::decode(&known_bytes).unwrap();
+    assert_eq!(known.known_refresh(), Some(WeatherRefresh::Every60));
+    assert_eq!(known.refresh_to_apply().unwrap(), Some(WeatherRefresh::Every60), "…and it applies as a write");
+}
+
+/// The weather bundle's upload identity (§4.1 / §11): type `20`, singleton object id `0`. Pinned
+/// through the descriptor codec because the type byte and the id rule are what a companion has to
+/// get right before a single byte of a bundle moves — a wrong id is answered `notFound`.
+#[test]
+fn weather_bundle_upload_descriptor_round_trips() {
+    use obc_ble::weather_request::WEATHER_BUNDLE_OBJECT_ID;
+
+    let bundle = fixture("weather-dwd-96x96-9f.obcw");
+    let desc = TransferControl {
+        op: Op::Upload,
+        ty: ObjectType::WeatherBundle,
+        object_id: WEATHER_BUNDLE_OBJECT_ID,
+        total_len: bundle.len() as u32,
+        crc32: Crc32::checksum(&bundle),
+    };
+    assert_eq!(desc.encode()[1], 20, "the type byte on the wire");
+    assert_eq!(desc.object_id, 0, "there is one weather bundle, so the id selects nothing");
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+    assert!(!ObjectType::WeatherBundle.is_map_payload(), "it stages through UPLOAD.TMP like a route");
 }
 
 /// Every `TransferStatus` variant round-trips through `as_u8`/`from_u8` and survives a full
@@ -432,11 +741,97 @@ fn upload_open_reject_rule() {
     assert_eq!(TransferStatus::upload_open_reject(known, true, true), None, "replace trip at the cap still commits");
 }
 
+/// The **map** announce-time reject rule (issue #927), as a truth table — the exact classifier the
+/// board's `ObjectStore::map_upload_open` calls before a single byte of a several-hundred-megabyte
+/// transfer moves. Pinned here for the same reason as `upload_open_reject_rule`: the board crate's
+/// own tests never run in CI.
+#[test]
+fn map_announce_reject_rule() {
+    use obc_ble::TransferControl;
+    const HEADER: u32 = 40; // obc_formats::obcm::HEADER_LEN — the board passes it in
+    const HEADROOM: u64 = 8 << 20;
+    let new = TransferControl::NEW_OBJECT_ID;
+    let map = |id, len, free| TransferStatus::map_announce_reject(id, len, HEADER, free, HEADROOM);
+
+    // The happy path: a new map that fits, on a card whose free count we can read.
+    assert_eq!(map(new, 300_000_000, Some(600 << 20)), None, "new map with room → arm");
+
+    // New-only. Every named id is refused — the device never rewrites a stored map in place, so
+    // there is no id an upload may target. (Contrast `upload_open_reject`, where a known id is the
+    // *exempt* case.)
+    assert_eq!(map(0, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "id 0 → notFound");
+    assert_eq!(map(7, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "a named id → notFound");
+    assert_eq!(map(0xFF00, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "even a session-band id → notFound");
+
+    // Too short to be an OBCM at all — rejected before the free-space arithmetic.
+    assert_eq!(map(new, 0, Some(u64::MAX)), Some(TransferStatus::Error), "an empty map → error");
+    assert_eq!(map(new, HEADER - 1, Some(u64::MAX)), Some(TransferStatus::Error), "shorter than a header → error");
+    assert_eq!(map(new, HEADER, Some(u64::MAX)), None, "exactly a header is structurally acceptable");
+
+    // The free-space guard, including the reserve that keeps a map from taking the last cluster.
+    let len = 100u32 << 20;
+    assert_eq!(map(new, len, Some(len as u64 + HEADROOM)), None, "exactly len + headroom free → arm");
+    assert_eq!(
+        map(new, len, Some(len as u64 + HEADROOM - 1)),
+        Some(TransferStatus::StorageFull),
+        "one byte short of the reserve → storageFull"
+    );
+    assert_eq!(map(new, len, Some(len as u64)), Some(TransferStatus::StorageFull), "fits but eats the reserve");
+    assert_eq!(map(new, len, Some(0)), Some(TransferStatus::StorageFull), "a full card → storageFull");
+
+    // An unmeasurable free count must not become a blanket refusal.
+    assert_eq!(map(new, u32::MAX, None), None, "unknown free space → arm (fail late, not never)");
+}
+
+/// The held-back magic of a direct-to-final streamed upload (issue #927): the first four payload
+/// bytes are withheld from the write and replayed at commit, whatever the host's segmentation.
+#[test]
+fn held_magic_withholds_the_first_four_bytes() {
+    use obc_ble::{HeldMagic, MAGIC_LEN};
+
+    // One fat chunk: the magic is held, the rest is written.
+    let mut h = HeldMagic::new();
+    assert_eq!(h.feed(b"OBCM\x0a\x01\x02\x03"), b"\x0a\x01\x02\x03", "the tail of the first chunk is written");
+    assert_eq!(h.take(), Some(*b"OBCM"));
+    assert_eq!(h.feed(b"more"), b"more", "later chunks pass straight through");
+
+    // Byte-at-a-time: the same magic, nothing written until it is complete.
+    let mut h = HeldMagic::new();
+    for (i, byte) in b"OBCM".iter().enumerate() {
+        assert_eq!(h.feed(&[*byte]), b"", "byte {i} is held, not written");
+        assert_eq!(h.take().is_some(), i + 1 == MAGIC_LEN, "complete only on the {MAGIC_LEN}th byte");
+    }
+    assert_eq!(h.take(), Some(*b"OBCM"));
+    assert_eq!(h.feed(b"body"), b"body");
+
+    // A split across an awkward boundary, and the total written length is always `len - MAGIC_LEN`.
+    let payload = b"OBCMxxxxxxxxxxxxxxxxxxxx";
+    for split in 0..payload.len() {
+        let mut h = HeldMagic::new();
+        let a = h.feed(&payload[..split]).len();
+        let b = h.feed(&payload[split..]).len();
+        assert_eq!(a + b, payload.len() - MAGIC_LEN, "split at {split}: exactly the magic is withheld");
+        assert_eq!(h.take(), Some(*b"OBCM"), "split at {split}: the magic still reassembles");
+    }
+
+    // An object shorter than a magic never yields one (the announce guard rejects those first).
+    let mut h = HeldMagic::new();
+    assert_eq!(h.feed(b"OB"), b"");
+    assert_eq!(h.take(), None, "a 2-byte object has no magic to replay");
+}
+
 /// An unknown `status` discriminator decodes to `None` (ignored), never an error — forward
 /// compatibility.
 #[test]
 fn unknown_status_discriminator_is_ignored() {
     assert_eq!(StatusMessage::decode(&[0xEE, 0, 0, 0]), Ok(None));
+}
+
+#[test]
+fn weather_request_status_is_a_one_byte_hint() {
+    let (buf, len) = StatusMessage::WeatherRequest.encode();
+    assert_eq!(&buf[..len], &[5]);
+    assert_eq!(StatusMessage::decode(&buf[..len]), Ok(Some(StatusMessage::WeatherRequest)));
 }
 
 /// The `tripList` fixture (spec §7.4) decodes through the production list codec: a 6-byte v2 header
@@ -483,6 +878,128 @@ fn trip_object_types_and_descriptor() {
     // A tripList download request (op=2, type=10, id 0) round-trips through the production codec.
     let desc = TransferControl { op: Op::Download, ty: ObjectType::TripList, object_id: 0, total_len: 0, crc32: 0 };
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+}
+
+/// The `map` object type (#889): the USB transport introduces it, because a map is far too large to
+/// have ever crossed BLE. Pins **16**, pins that the `11`–`15` sensor-reserved band still rejects —
+/// the reason 16 was chosen over the next free number — and that an upload descriptor for it
+/// round-trips through the production codec, so host and device agree on the byte before the device
+/// side can accept one.
+#[test]
+fn map_object_type_and_reserved_band() {
+    assert_eq!(ObjectType::from_u8(16).unwrap(), ObjectType::Map);
+    assert_eq!(ObjectType::Map.as_u8(), 16);
+    for reserved in 11..=15 {
+        assert!(ObjectType::from_u8(reserved).is_err(), "type {reserved} is reserved (sensors, M4)");
+    }
+
+    let desc = TransferControl {
+        op: Op::Upload,
+        ty: ObjectType::Map,
+        object_id: 0,
+        total_len: 300_000_000,
+        crc32: 0x1234_5678,
+    };
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+}
+
+/// The volume-set upload types (#1039, #1044, `OBCA_Spec.md` §5): `mapShard` 17, `mapSet` 18 and
+/// `terrainShard` 19, the three types that join `map` in the USB-only band. Pins the bytes, that the
+/// reserved sensor band still rejects, and that all four classify as map payload — the property the
+/// board's held-back-magic streaming path keys on.
+#[test]
+fn volume_set_object_types() {
+    assert_eq!(ObjectType::from_u8(17).unwrap(), ObjectType::MapShard);
+    assert_eq!(ObjectType::MapShard.as_u8(), 17);
+    assert_eq!(ObjectType::from_u8(18).unwrap(), ObjectType::MapSet);
+    assert_eq!(ObjectType::MapSet.as_u8(), 18);
+    assert_eq!(ObjectType::from_u8(19).unwrap(), ObjectType::TerrainShard);
+    assert_eq!(ObjectType::TerrainShard.as_u8(), 19);
+    // 20 is the weather bundle (WX3, #1188) — the one type since #889 that is *not* USB-only, so it
+    // is named here rather than left as "not a type yet"; 21 is the next unallocated value.
+    assert_eq!(ObjectType::from_u8(20).unwrap(), ObjectType::WeatherBundle);
+    assert!(ObjectType::from_u8(21).is_err(), "21 is not a type yet");
+    for reserved in 11..=15u8 {
+        assert!(ObjectType::from_u8(reserved).is_err(), "{reserved} stays reserved for the sensor work");
+    }
+
+    for ty in [ObjectType::Map, ObjectType::MapShard, ObjectType::MapSet, ObjectType::TerrainShard] {
+        assert!(ty.is_map_payload(), "{ty:?} streams into its final file with the magic held back");
+    }
+    for ty in [ObjectType::Route, ObjectType::Trip, ObjectType::FwImage, ObjectType::Echo] {
+        assert!(!ty.is_map_payload(), "{ty:?} stages through UPLOAD.TMP");
+    }
+}
+
+/// The `mapShard` descriptor's repurposed `object_id`: `shard_count` high, `index` low. Pins the
+/// packing on the wire (the host and the device must agree on the byte order without a spec
+/// re-read) and the two structural refusals — a set of zero shards, and an index at or past the
+/// count.
+#[test]
+fn set_part_packs_the_shard_count_and_index() {
+    use obc_ble::SetPart;
+
+    // The DACH-shaped case from `OBCA_Spec.md` §5.1: eight shards, this one the third.
+    let part = SetPart { shard_count: 8, index: 2 };
+    assert_eq!(part.encode(), 0x0802, "count in the high byte, index in the low one");
+    assert_eq!(SetPart::decode(0x0802), Some(part));
+
+    // Both ends of the spec's range, and the single-file fast path (§5.5).
+    for (count, index) in [(1u8, 0u8), (32, 0), (32, 31), (11, 10)] {
+        let part = SetPart { shard_count: count, index };
+        assert_eq!(SetPart::decode(part.encode()), Some(part), "{count}/{index}");
+    }
+
+    assert_eq!(SetPart::decode(0x0000), None, "a set of zero shards names no file");
+    assert_eq!(SetPart::decode(0x0303), None, "index == count is off the end");
+    assert_eq!(SetPart::decode(0x03FF), None);
+    // …and the value a plain map upload sends is not accidentally a legal part.
+    assert_eq!(SetPart::decode(TransferControl::NEW_OBJECT_ID), None, "0xFFFF is index 255 of 255");
+
+    // A shard descriptor round-trips whole through the production codec.
+    let desc = TransferControl {
+        op: Op::Upload,
+        ty: ObjectType::MapShard,
+        object_id: SetPart { shard_count: 8, index: 7 }.encode(),
+        total_len: 1_073_741_824,
+        crc32: 0xDEAD_BEEF,
+    };
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+
+    // …and the shared fixture decodes to the same part through the same codec, which is what makes
+    // the packing a contract the Swift and TypeScript sides can be held to rather than prose each
+    // of them re-derives.
+    let shard = TransferControl::decode(&fixture("transfer-set-shard.bin")).unwrap();
+    assert_eq!(SetPart::decode(shard.object_id), Some(SetPart { shard_count: 8, index: 2 }));
+    let manifest = TransferControl::decode(&fixture("transfer-set-manifest.bin")).unwrap();
+    assert_eq!(manifest.object_id, TransferControl::NEW_OBJECT_ID, "a manifest is new-only");
+    // **Nine records, not eight** (#1044): the eight OBCM shards plus the terrain shard the
+    // `transfer-set-terrain.bin` descriptor announces. `OBCA_Spec.md` §5.2's `Shard Count` counts
+    // every record, and a device that derived the expected length from the shard count alone
+    // refused every terrain-bearing set at its very last transfer.
+    assert_eq!(manifest.total_len, obc_formats::obcs::manifest_len(9) as u32);
+    assert_eq!(
+        manifest.total_len,
+        obc_formats::obcs::manifest_len(8) as u32 + obc_formats::obcs::SHARD_RECORD_LEN as u32,
+        "exactly one 56-byte record more than the same set without a raster"
+    );
+}
+
+/// The set's **terrain shard** descriptor (#1044): new-only, and announcing the OBCT fixture beside
+/// it byte-for-byte. The pairing is the point — a host that sends the raster as an ordinary
+/// `mapShard` consumes an index the manifest never names, so the type and the file it carries are
+/// checked together rather than as two independent literals.
+#[test]
+fn the_terrain_shard_descriptor_announces_the_terrain_fixture() {
+    let desc = TransferControl::decode(&fixture("transfer-set-terrain.bin")).unwrap();
+    assert_eq!(desc.ty, ObjectType::TerrainShard);
+    assert_eq!(desc.object_id, TransferControl::NEW_OBJECT_ID, "at most one raster per set — nothing to select");
+    let raster = fixture("terrain-shard.obcd");
+    assert_eq!(desc.total_len as usize, raster.len());
+    assert_eq!(desc.crc32, Crc32::checksum(&raster));
+    assert!(obc_formats::obct::validate_header_prefix(&raster).is_ok(), "…and it really is an OBCT container");
+    // A raster is not a shard: the part codec must not read this descriptor's id as one.
+    assert_eq!(obc_ble::SetPart::decode(desc.object_id), None);
 }
 
 /// The `routeList` fixture decodes through the production list codec, its first two entries agree

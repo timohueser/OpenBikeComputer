@@ -14,12 +14,7 @@
 //! - [`data_plane`] — the L2CAP CoC bulk-transfer plane (echo, route upload, download, ride).
 //! - [`state`] — the shared link-status snapshot, BAS cell, and the one-transfer arming channel.
 //!
-//! ## Interrupts / priorities
-//!
-//! MPSL claims `RADIO_0` / `TIMER10` / `GRTC_3` at **P0** (timing-critical), `CLOCK_POWER` and its
-//! low-prio scheduling on **`SWI00`** at default priority. `SWI00` is why `main.rs`'s high-priority
-//! `InterruptExecutor` lives on **`SWI01`** (every build). The full ladder is documented in `main.rs`'s
-//! module doc.
+//! Radio peripheral/interrupt selection lives in [`crate::board`]; this module owns MPSL/SDC runtime policy.
 //!
 //! ## RAM
 //!
@@ -32,8 +27,8 @@
 //! MPSL requires the HF **crystal**; LFCLK runs the internal **RC** with MPSL calibration, *not* the
 //! 32 k crystal: the nRF54L's XO internal load caps are never programmed by embassy-nrf 0.11 or
 //! nrf-mpsl, so the LFXO runs off-frequency and every connection dies at establishment with HCI 0x3E
-//! (advertising works — the failure needs a sync anchor). `main.rs` sets both knobs in its `ble`-build
-//! boot config.
+//! (advertising works — the failure needs a sync anchor). [`crate::board::init!`] sets both knobs in
+//! its `ble`-build boot config.
 
 mod control;
 mod data_plane;
@@ -41,11 +36,7 @@ mod gatt;
 mod lifecycle;
 mod sensors;
 mod state;
-
-// The ride loop publishes its stack high-water mark here (#277/A9) so the diagnostics blob can post it
-// over the link; the map plane owns the stackmeter, this is the one value that crosses into the BLE
-// module tree.
-pub use state::publish_stack_high_water;
+mod weather;
 
 // The app-facing link snapshot (epic #447): the ride loop feeds it into `App::set_ble_status` each
 // pass. The only BLE state that crosses into the app seam, already distilled to `obc_app` vocabulary.
@@ -58,66 +49,64 @@ pub use state::wait_status_change;
 
 // The settings→radio controls (#455): the ride loop pushes the persisted Bluetooth switch each pass
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
+pub(crate) use state::set_usb_radio_inhibited;
 pub use state::{request_forget_bond, set_radio_enabled};
 
-// The ride-recording mirror (S6, #621): the ride loop pushes `is_tracking()` each pass; the
-// `installFw` command handler reads it as the `busy` gate's "a ride is recording" input.
-pub use state::set_recording;
+// The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
+// each pass and raises the urgent request when WX11's dashboard opens; the store's commit/config
+// paths poke the two crate-internal edges.
+pub use weather::refresh_in_flight as weather_refresh_in_flight;
+pub use weather::request_weather_now;
+pub use weather::set_weather_inputs;
+pub(crate) use weather::{
+    note_commit as weather_committed, note_settings_changed as weather_settings_changed,
+    note_unchanged as weather_unchanged,
+};
+
+// The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
+pub(crate) use state::link_counters;
 
 // The BLE sensor manager's app-facing seam (SE6, epic #707): the per-quantity status snapshot the
 // ride loop feeds the Sensors screen, and the scan/save/forget one-shot requests flowing back — the
 // central-role analogue of the phone link's `app_ble_status` + `request_forget_bond`. SE7 (the
-// Sensors screen + saved-sensor persistence, #714) consumes these; SE6 provides the plumbing + a
-// hardcoded-address seed hook so the on-glass HR bring-up runs before SE7 exists — so they are
-// re-exported but not yet referenced.
-#[allow(unused_imports)]
+// Sensors screen + saved-sensor persistence, #714) consumes these.
 pub use sensors::{
     cancel_scan, request_forget_sensor, request_save_sensor, request_scan, sensor_scan_hits, sensor_slot_status,
-    SensorScanHit, SensorSlotState, SensorSlotStatus,
+    SensorSlotState,
 };
 
 use core::mem::MaybeUninit;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join4, join5};
+use embassy_futures::join::{join, join3, join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
-use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
-use embassy_time::Timer;
+use embassy_nrf::{cracen, peripherals, Peri};
+use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
 use trouble_host::prelude::*;
 
 use crate::init_static;
+use crate::link::{identity, TRANSFER_ACTIVE};
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
 use control::serve_connection;
 use data_plane::{battery_task, serve_coc};
 use gatt::{
-    advertised_name, config_blob, device_address, firmware_revision, gatt_str, serial_string, Server,
-    HARDWARE_REVISION, OBC_PSM,
+    advertised_name, config_blob, device_address, dis_firmware_revision, dis_hardware_revision, dis_serial_number,
+    Server, OBC_PSM,
 };
-use lifecycle::{advertise_lifecycle, negotiate_link};
-use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
-
-bind_interrupts!(struct Irqs {
-    SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
-    CLOCK_POWER => nrf_sdc::mpsl::ClockInterruptHandler;
-    RADIO_0 => nrf_sdc::mpsl::HighPrioInterruptHandler;
-    TIMER10 => nrf_sdc::mpsl::HighPrioInterruptHandler;
-    GRTC_3 => nrf_sdc::mpsl::HighPrioInterruptHandler;
-});
+use lifecycle::{advertise_lifecycle, negotiate_link, AdvertisingIntent};
+use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ARM};
 
 /// Concurrent **sensor** links the central role holds (SE6, epic #707) — the HR/power/cadence
-/// straps the manager connects to beside the phone link. **Locked at 1 on the 256 KB DK**: phone +
-/// one sensor is enough for the Garmin-watch HR bring-up, and every extra central link costs
-/// ~2.3 KB of SDC memory (see [`SDC_MEM_SIZE`]) plus host arena. The 512 KB **LM20 profile raises
-/// this to 3** (all three quantities live at once), keyed the same way the `nrf-mem` trims are keyed
-/// — one const here, arbitrated by the `main.rs` budget assert.
-const SENSOR_LINKS: usize = 1;
+/// straps the manager connects to beside the phone link. 3 on the LM20 — HR, power, and cadence
+/// all live at once. Every central link costs ~2.3 KB of SDC memory (see [`SDC_MEM_SIZE`]) plus
+/// host arena; one const here, arbitrated by the `main.rs` budget assert.
+const SENSOR_LINKS: usize = 3;
 /// Total ACL links the host tracks: the one phone (peripheral role) + [`SENSOR_LINKS`] sensors
 /// (central role). One `Stack` runs both roles concurrently (trouble-host 0.7).
 const CONNECTIONS_MAX: usize = 1 + SENSOR_LINKS;
@@ -143,13 +132,11 @@ const L2CAP_RXQ: u8 = 3;
 /// Peripheral-only was 4704 B (measured on glass 2026-07-02). Adding the central role + scan (SE6,
 /// epic #707) grows it by the SDC header math — `SDC_MEM_PER_CENTRAL_LINK(251,251,3,3)` ≈ 2310 B ×
 /// [`SENSOR_LINKS`], plus `SDC_MEM_SCAN(3)` ≈ 720 B, plus ~21 B shared → 4704 + 2310 + 720 + 21 ≈
-/// **7755 B** at 1 sensor link. Pinned at 8704 with ~950 B of margin over that estimate, because
-/// this build **cannot boot here** (no radio) to read the exact figure.
-///
-/// **CONFIRM on glass**: the boot RTT logs `ble: sdc required_memory = N bytes (SDC_MEM_SIZE =
-/// 8704)` — set this to that `N` (rounded up a little). If `build()` ever logs "Memory buffer too
-/// small. N bytes needed", raise it to `N`.
-pub(crate) const SDC_MEM_SIZE: usize = 8704;
+/// **MEASURED ON GLASS 2026-07-24** (LM20-DK, 3 sensor links): the boot RTT's
+/// `ble: sdc required_memory = 11336 bytes` — pinned exactly, so the SDC neither errors ("Memory
+/// buffer too small") nor warns ("Memory buffer too big", which the earlier 13 312 estimate did).
+/// Re-read that line and re-pin after any Builder/buffer_cfg/[`SENSOR_LINKS`] change.
+pub(crate) const SDC_MEM_SIZE: usize = 11336;
 
 /// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251 + the
 /// single-peer bond storage the `security` feature adds).
@@ -182,7 +169,10 @@ pub(crate) const MPSL_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLa
 pub(crate) const HOST_RESOURCES_BYTES: usize = core::mem::size_of::<Resources>();
 pub(crate) const PACKET_POOL_BYTES: usize = core::mem::size_of::<DefaultPacketPool>();
 pub(crate) const CRACEN_BYTES: usize = core::mem::size_of::<cracen::Cracen<'static, Blocking>>();
-pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<core::cell::RefCell<ObjectStore>>();
+/// The one shared [`ObjectStore`] now lives in [`crate::link`] (every transport drives the same
+/// card), but it is still reported under the historical `ble_object_store` name so the pinned
+/// resource baseline keeps its meaning.
+pub(crate) const OBJECT_STORE_BYTES: usize = crate::link::OBJECT_STORE_BYTES;
 pub(crate) const SERVER_BYTES: usize = core::mem::size_of::<Server<'static>>();
 pub(crate) const GAP_NAME_BYTES: usize = core::mem::size_of::<heapless::String<48>>();
 pub(crate) const SENSOR_MANAGER_BYTES: usize = sensors::RESIDENT_BYTES;
@@ -202,34 +192,27 @@ static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::
 static mut RNG: MaybeUninit<cracen::Cracen<'static, Blocking>> = MaybeUninit::uninit();
 static mut SDC_MEM: MaybeUninit<sdc::Mem<SDC_MEM_SIZE>> = MaybeUninit::uninit();
 static mut RESOURCES: MaybeUninit<Resources> = MaybeUninit::uninit();
-// The #677 evictions (see [`run`]'s doc): the object store, the GATT server, and the GAP name the
-// server's attribute table borrows for its (now `'static`) life. Formerly `run` locals — their
-// construction temporaries lived in the task's steady-state poll frame.
-static mut STORE: MaybeUninit<core::cell::RefCell<ObjectStore>> = MaybeUninit::uninit();
+// The #677 evictions (see [`run`]'s doc): the GATT server and the GAP name the server's attribute
+// table borrows for its (now `'static`) life. Formerly `run` locals — their construction temporaries
+// lived in the task's steady-state poll frame. (The object store was the third; it now lives in
+// `crate::link` because every transport shares one.)
 static mut GAP_NAME: MaybeUninit<heapless::String<48>> = MaybeUninit::uninit();
 static mut SERVER: MaybeUninit<Server<'static>> = MaybeUninit::uninit();
 static mut STACK: MaybeUninit<Stack<'static, nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool>> =
     MaybeUninit::uninit();
 
-/// Build the object store into its `.bss` slot ([`STORE`]). `#[inline(never)]` is load-bearing on
-/// this and the three init fns below: the ~12.8 KB construction temporary must land in **this**
-/// transient frame (popped before steady state, at boot's shallow depth), not in `run`'s poll
-/// frame — inlined (or via the `#[inline(always)]` `init_static` directly), LLVM reserves the
-/// temporary's slot in the poll frame **at entry, on every poll**, which is exactly the #677
-/// overflow. SAFETY: sole writer of `STORE`, called once from [`run`].
-#[inline(never)]
-fn init_store(shared: &mut crate::SharedStore) -> &'static core::cell::RefCell<ObjectStore> {
-    unsafe { init_static(core::ptr::addr_of_mut!(STORE), core::cell::RefCell::new(ObjectStore::new(shared))) }
-}
-
-/// Build the SDC memory block into `.bss` ([`SDC_MEM`]) off the poll frame (see [`init_store`]).
+/// Build the SDC memory block into `.bss` ([`SDC_MEM`]) off the poll frame — `#[inline(never)]` is
+/// load-bearing on this and the two init fns below: the construction temporary must land in **this**
+/// transient frame (popped before steady state, at boot's shallow depth), not in `run`'s poll frame.
+/// Inlined (or via the `#[inline(always)]` `init_static` directly), LLVM reserves the temporary's
+/// slot in the poll frame **at entry, on every poll**, which is exactly the #677 overflow.
 /// SAFETY: sole writer of `SDC_MEM`, called once from [`run`].
 #[inline(never)]
 fn init_sdc_mem() -> &'static mut sdc::Mem<SDC_MEM_SIZE> {
     unsafe { init_static(core::ptr::addr_of_mut!(SDC_MEM), sdc::Mem::new()) }
 }
 
-/// Build TrouBLE's host arena into `.bss` ([`RESOURCES`]) off the poll frame (see [`init_store`]).
+/// Build TrouBLE's host arena into `.bss` ([`RESOURCES`]) off the poll frame (see [`init_sdc_mem`]).
 /// SAFETY: sole writer of `RESOURCES`, called once from [`run`].
 #[inline(never)]
 fn init_resources() -> &'static mut Resources {
@@ -237,7 +220,7 @@ fn init_resources() -> &'static mut Resources {
 }
 
 /// Pin the boot-time GAP name ([`GAP_NAME`]) and build the GATT server into `.bss` ([`SERVER`]) off
-/// the poll frame (see [`init_store`]). The server's attribute table borrows the name for its
+/// the poll frame (see [`init_sdc_mem`]). The server's attribute table borrows the name for its
 /// `'static` life; the *advertised* name is still re-read each advertise cycle, so a rename lands
 /// without a reboot (the GAP characteristic keeps the boot value — Config, not GAP, is
 /// authoritative). SAFETY: sole writer of `GAP_NAME`/`SERVER`, called once from [`run`].
@@ -305,8 +288,8 @@ fn build_sdc<'d, const N: usize>(
 /// Bring the whole stack up and run it forever: MPSL (spawned — it must outlive everything),
 /// SDC, the TrouBLE host, then the S0 advertise → connect → re-advertise loop, publishing every
 /// link edge for the status UI. Joined against `run_status` on the thread-mode executor in
-/// `main.rs`. The MPSL/SDC peripheral sets are built in `main` (where the `Peripherals` struct
-/// is split) and handed in whole.
+/// `main.rs`. The board-owned MPSL/SDC peripheral sets are expanded at the composition point and
+/// handed in whole.
 /// An **embassy task**, not a plain future: its state machine must live in this task's
 /// `.bss` pool static, built **in place** by the spawn. As a `join`-ed local future in `main` it
 /// was a giant stack temporary inside `main`'s poll frame — which overflowed the combined build's
@@ -330,25 +313,18 @@ pub async fn run(
     mpsl_p: mpsl::Peripherals<'static>,
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
-    shared: &'static SharedStoreMutex,
-    store_epoch: Option<u32>,
+    // The SD/settings mutex, the one shared object store, and the boot store-epoch. The store used
+    // to be built here; with USB as a second transport (#889) two independently-constructed stores
+    // would each keep their own catalog and upload temp over the *same* SD card, so `main` builds
+    // it once and every plane is composed with the same handle.
+    stores: crate::link::LinkStores,
     // The sensor hub's HR/power/cadence injector (#808), threaded from `main`'s `static SensorHub`
     // through `spawn_ble_stack`: the central manager (SE6) decodes notifications and publishes
     // through it into the same mailboxes the debug-uart path feeds (last-writer-wins). Ownership is
     // visible at composition rather than reached through a global.
     sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) -> ! {
-    // The object store: the catalog/upload/revision semantics behind a RefCell — both BLE planes (GATT
-    // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
-    // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
-    // plane locks per call and passes into the store method (#270). Built in `.bss` by
-    // `init_store`, not inline here: the ~12.8 KB construction temporary must not become a
-    // permanent slot in this poll frame (#677 — see the fn doc), and not in `main`'s either
-    // (see `spawn_ble_stack`).
-    let store: &'static core::cell::RefCell<ObjectStore> = {
-        let mut guard = shared.lock().await;
-        init_store(&mut guard)
-    };
+    let crate::link::LinkStores { shared, objects: store, epoch: store_epoch } = stores;
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
     // field claims. NOT the 32 k crystal — see the module doc (unprogrammed XO INTCAPs → HCI 0x3E).
@@ -364,7 +340,7 @@ pub async fn run(
     let mpsl: &'static MultiprotocolServiceLayer = unsafe {
         init_static(
             core::ptr::addr_of_mut!(MPSL),
-            unwrap!(mpsl::MultiprotocolServiceLayer::new(mpsl_p, Irqs, lfclk_cfg)),
+            unwrap!(mpsl::MultiprotocolServiceLayer::new(mpsl_p, crate::board::BleIrqs, lfclk_cfg)),
         )
     };
     spawner.spawn(unwrap!(mpsl_task(mpsl)));
@@ -439,6 +415,11 @@ pub async fn run(
     // Seed the radio switch from the persisted settings (#455): a device toggled off stays off
     // across a reboot, before the first advertise. The ride loop re-pushes the live value each pass.
     state::seed_radio_enabled(store.borrow().settings().ble_enabled);
+    #[cfg(feature = "ble-weather-request")]
+    {
+        state::arm_weather_request(embassy_time::Duration::from_secs(obc_ble::WEATHER_REQUEST_WINDOW_S));
+        info!("ble: Weather Request harness armed (60 s maximum advertising window)");
+    }
 
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
@@ -452,24 +433,35 @@ pub async fn run(
     // Seed the runtime attribute values the macro `value =` can't hold (DIS strings, the Config
     // blob from the persisted settings, the widened `protocolVersion` read). `server.set` writes the
     // shared attribute table once — no connection needed.
-    let _ = server.set(&server.dis.firmware_revision, &firmware_revision());
-    let _ = server.set(&server.dis.hardware_revision, &gatt_str::<16>(format_args!("{HARDWARE_REVISION}")));
-    let _ = server.set(&server.dis.serial_number, &serial_string());
+    let _ = server.set(&server.dis.firmware_revision, &dis_firmware_revision());
+    let _ = server.set(&server.dis.hardware_revision, &dis_hardware_revision());
+    let _ = server.set(&server.dis.serial_number, &dis_serial_number());
     let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
     // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
     // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
     // now, and a card swap must not silently change what this task serves. `Some(epoch)` → the full
-    // 6-byte `version u16 · store_epoch u32` [`VersionRead`]; `None` (no mounted store) → the 2-byte
-    // **version-only** form (`PROTOCOL_VERSION` LE), which the app decodes as `storeEpoch = nil` and
-    // fail-closes the ack — never a fabricated epoch (0 is a legal value). The attribute is a
-    // variable-length `Vec` so a 2- or 6-byte read is served verbatim. The value never changes for
-    // the connection's life.
+    // 11-byte `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` [`VersionRead`]
+    // (E1 / #911; the capability word WX3 / #1188); `None`
+    // (no mounted store) → the 2-byte **version-only** form (`PROTOCOL_VERSION` LE), which the app
+    // decodes as `storeEpoch = nil` and fail-closes the ack — never a fabricated epoch (0 is a legal
+    // value). The attribute is a variable-length `Vec` so a 2- or 11-byte read is served verbatim.
+    // The value never changes for the connection's life.
     let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
+    // The resting value: a structurally valid "nothing is due" rather than a zeroed buffer, so a
+    // peer that reads the characteristic out of turn cannot mistake it for a request at 0°N 0°E.
+    // Seeded with the **stored** refresh byte, not `EMPTY`'s compile-time default (#1221 F2):
+    // §11.8's byte reports the rider's own setting, and a rider who persisted Off/15/60/120 must
+    // not read back "30 min" between boot and the first raise. The weather plane re-asserts the
+    // resting value whenever the stored setting moves.
+    let _ = server.set(
+        &server.weather_request.context,
+        &obc_ble::WeatherRequestContext::resting(store.borrow().settings().weather_refresh as u8).encode(),
+    );
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
-        firmware_revision().as_str(),
-        HARDWARE_REVISION,
-        serial_string().as_str()
+        identity::firmware_revision().as_str(),
+        identity::HARDWARE_REVISION,
+        identity::serial_string().as_str()
     );
 
     // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state — and,
@@ -484,9 +476,14 @@ pub async fn run(
         sensors::run(stack, server, sensor_injector),
         join5(
             host_task(runner),
-            // The trip cascade rides the route-delete slot (`join5` is embassy's ceiling): both are
-            // rare, signal-driven arms, so sharing a slot costs nothing.
-            join(route_delete_task(stack, server, store, shared), trip_cascade_task(stack, server, store, shared)),
+            // The trip cascade + the weather due plane ride the route-delete slot (`join5` is
+            // embassy's ceiling): all three are rare, edge/deadline-driven arms, so sharing a slot
+            // costs nothing.
+            join3(
+                route_delete_task(stack, server, store, shared),
+                trip_cascade_task(stack, server, store, shared),
+                weather::run(server, store, shared),
+            ),
             ride_delete_task(stack, server, store, shared),
             ride_saved_task(stack, server, store, shared),
             async {
@@ -535,13 +532,18 @@ pub async fn run(
                         store.borrow_mut().refresh_settings_if_changed(&mut guard);
                     }
                     let adv_name = advertised_name(&store.borrow());
+                    let advertising_intent = if state::weather_request_pending() {
+                        AdvertisingIntent::WeatherRequest
+                    } else {
+                        AdvertisingIntent::Control
+                    };
                     // Advertise until a central connects — or the radio switch flips off (dropping the
                     // advertiser future stops advertising), or a Forget request lands (handled, then this
                     // phase restarts — a moment of re-advertising is harmless).
                     let conn = match select3(
-                        advertise_lifecycle(adv_name.as_str(), &mut peripheral, server),
+                        advertise_lifecycle(adv_name.as_str(), advertising_intent, &mut peripheral, server),
                         state::radio_disabled(),
-                        FORGET_BOND.wait(),
+                        select(FORGET_BOND.wait(), weather_request_policy_change()),
                     )
                     .await
                     {
@@ -554,10 +556,11 @@ pub async fn run(
                             continue;
                         }
                         Either3::Second(()) => continue, // radio off — park at the loop top
-                        Either3::Third(()) => {
+                        Either3::Third(Either::First(())) => {
                             forget_bond(stack, store, shared).await;
                             continue;
                         }
+                        Either3::Third(Either::Second(())) => continue,
                     };
 
                     let peer = conn.raw().peer_address();
@@ -587,7 +590,9 @@ pub async fn run(
                     // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
                     // are answered) and owns the exit — it returns the disconnect reason. The background set
                     // (parameter negotiation, the CoC accept-and-drain, the BAS battery notify, and the
-                    // #455 link control — radio-off / Forget both end in a local disconnect) runs
+                    // link control — radio-off / Forget end in a local disconnect; a Weather
+                    // Request first takes the live notify/read fast path and disconnects only for
+                    // the advertisement fallback) runs
                     // concurrently and never returns before the teardown, so `select` tears it all down the
                     // moment the link drops (any disconnect drops straight back to the loop top).
                     let reason = match select(
@@ -596,7 +601,7 @@ pub async fn run(
                             negotiate_link(stack, &conn),
                             serve_coc(stack, server, &conn, store, shared),
                             battery_task(stack, server, &conn),
-                            link_control(stack, &conn, store, shared),
+                            link_control(stack, server, &conn, store, shared, advertising_intent),
                         ),
                     )
                     .await
@@ -607,11 +612,23 @@ pub async fn run(
                     // The drop may have cancelled the data plane mid-transfer (at an await): discard any
                     // in-flight upload + release the store's open handles, clear the one-transfer gate, and
                     // drain any latched arm/abort so the next connection starts clean (uploads restart).
+                    //
+                    // Everything here is scoped to **this** wire, and none of it is incidental
+                    // (issue #1039): the cable can be uploading while the phone drops off. The gate
+                    // is released only if the radio was the one holding it, `TRANSFER_ARM` /
+                    // `TRANSFER_ABORT` are this plane's own signals (USB has its own pair), and
+                    // `link_reset` closes the temp handle only if the temp is what is open.
                     {
                         let mut guard = shared.lock().await;
                         store.borrow_mut().link_reset(&mut guard);
+                        // The weather transaction is the radio's own (§11.5 binds it to the CoC),
+                        // so *this* teardown releases a cancelled one — deliberately not inside
+                        // `link_reset`, which also runs on the cable's teardown (#1039's rule:
+                        // only the wire that owns a handle may drop it). A no-op when none is
+                        // in flight; the inactive slot keeps its zero magic and is never eligible.
+                        store.borrow_mut().weather_abort(&mut guard);
                     }
-                    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+                    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
                     TRANSFER_ARM.reset();
                     TRANSFER_ABORT.reset();
                     publish(|s| {
@@ -624,6 +641,33 @@ pub async fn run(
     )
     .await;
     unreachable!()
+}
+
+/// Wake the advertiser when the secondary intent changes. While it is pending, the same future
+/// also enforces the exact bounded window; the timeout lowers the intent before returning so the
+/// loop's next advertisement is OBC Control. A latched edge may cause one harmless immediate
+/// restart before the timer begins (the level remains authoritative).
+async fn weather_request_policy_change() {
+    if state::weather_request_pending() {
+        let Some(remaining) = state::weather_request_remaining() else {
+            state::clear_weather_request();
+            return;
+        };
+        if remaining.as_ticks() == 0 {
+            state::clear_weather_request();
+            info!("ble: Weather Request total budget already elapsed — returning to Control");
+            return;
+        }
+        match select(state::weather_request_changed(), Timer::after(remaining)).await {
+            Either::First(()) => {}
+            Either::Second(()) => {
+                state::clear_weather_request();
+                info!("ble: Weather Request advertising budget elapsed — returning to Control");
+            }
+        }
+    } else {
+        state::weather_request_changed().await;
+    }
 }
 
 /// Forget the bonded phone (#455): zero the RRAM bond slot (a reboot lands in open pairing), drop
@@ -650,28 +694,118 @@ async fn forget_bond(
 }
 
 /// The per-connection control watcher (#455): rides the background `join4` beside the serve loop
-/// and waits for either the radio switch flipping **off** or a **Forget phone** request. Both end
-/// in a local disconnect; the `Disconnected` event then unwinds `serve_connection` and the outer
-/// loop lands back at its top (parked Off, or re-advertising with pairing open). Returns after the
-/// disconnect request — the enclosing `join4` keeps waiting on its never-returning siblings, so the
-/// teardown still comes from the one `select` exit path.
+/// and waits for the radio switch flipping **off**, a **Forget phone** request, or a newly raised
+/// **Weather Request**. Radio/Forget end in a local disconnect. A request on an authenticated
+/// Control link is notified and acknowledged by its read without churn; disconnect + secondary
+/// advertising remains the fallback when the live delivery cannot be proven.
+///
+/// The advertisement path remains load-bearing for a disconnected/background phone. The live-link
+/// fast path is intentionally only an optimisation of that same read receipt, not another protocol.
 async fn link_control(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     store: &core::cell::RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
+    advertised_as: AdvertisingIntent,
 ) {
-    match select(state::radio_disabled(), FORGET_BOND.wait()).await {
-        Either::First(()) => info!("ble: radio switched off — dropping the live connection"),
-        Either::Second(()) => {
-            // Forget with a live link: clear the bond first, then drop the connection (locked
-            // decision). The single-peer model means the peer is the bonded phone in every real
-            // flow; an unbonded peer that happens to hold the link just reconnects.
-            forget_bond(stack, store, shared).await;
-            info!("ble: forget phone — dropping the live connection");
+    loop {
+        match select3(state::radio_disabled(), FORGET_BOND.wait(), weather_request_raised(advertised_as)).await {
+            Either3::First(()) => {
+                info!("ble: radio switched off — dropping the live connection");
+                break;
+            }
+            Either3::Second(()) => {
+                // Forget with a live link: clear the bond first, then drop the connection (locked
+                // decision). The single-peer model means the peer is the bonded phone in every real
+                // flow; an unbonded peer that happens to hold the link just reconnects.
+                forget_bond(stack, store, shared).await;
+                info!("ble: forget phone — dropping the live connection");
+                break;
+            }
+            Either3::Third(()) => {
+                // A link accepted from the secondary advertisement lives only for the request it
+                // advertised. Either the authenticated read consumed it or its original radio
+                // budget expired; in both cases return to Control rather than letting an
+                // unauthenticated/buggy central monopolise the sole phone link indefinitely.
+                if advertised_as == AdvertisingIntent::WeatherRequest && !state::weather_request_pending() {
+                    info!("ble: Weather Request connection finished — returning to Control");
+                    break;
+                }
+                // A foreground companion already has the authenticated Control link and subscribes
+                // to the status characteristic. Hand it the request directly: tearing down a healthy link
+                // merely to rediscover the same GATT database made Fetch now depend on iOS seeing a
+                // short-lived secondary advertisement. If the subscription is absent (old app,
+                // background/suspended peer, or an ATT failure), retain the original advertisement
+                // path as the lossless fallback.
+                let notified = if state::status().secured {
+                    let (bytes, len) = obc_ble::StatusMessage::WeatherRequest.encode();
+                    data_plane::notify_bounded(
+                        stack,
+                        server,
+                        server.obc.status.handle,
+                        &bytes[..len],
+                        "weather request",
+                    )
+                    .await
+                } else {
+                    false
+                };
+                if notified {
+                    // The notify is only a wake-up/hint. The authenticated read remains the receipt:
+                    // it is the one place `serve_connection` clears the request, so merely queueing a
+                    // notification cannot lose work if iOS suspends before consuming it.
+                    let consumed = with_timeout(Duration::from_secs(3), async {
+                        // The arm edge may still be latched because the level-aware waiter returned
+                        // immediately above. Ignore such stale edges until the read lowers the level.
+                        while state::weather_request_pending() {
+                            state::weather_request_changed().await;
+                        }
+                    })
+                    .await
+                    .is_ok();
+                    if consumed {
+                        info!("ble: Weather Request consumed on live Control link — keeping connection");
+                        continue;
+                    }
+                }
+                info!("ble: Weather Request live notify unavailable — reconnecting through weather advertisement");
+                break;
+            }
         }
     }
     conn.raw().disconnect();
+}
+
+/// Wait for the *raised* level. A link accepted from a Weather Request advertisement already owns
+/// the current request and must be allowed to read it; first wait for that level to clear. A link
+/// accepted from OBC Control must drop immediately even if the raise raced the connect boundary.
+/// `WEATHER_REQUEST_EDGE` signals both directions, so the level is always the authority.
+async fn weather_request_raised(advertised_as: AdvertisingIntent) {
+    if advertised_as == AdvertisingIntent::WeatherRequest {
+        while state::weather_request_pending() {
+            let Some(remaining) = state::weather_request_remaining() else {
+                state::clear_weather_request();
+                return;
+            };
+            match select(state::weather_request_changed(), Timer::after(remaining)).await {
+                Either::First(()) => {}
+                Either::Second(()) => {
+                    state::clear_weather_request();
+                    info!("ble: Weather Request budget expired while connected — returning to Control");
+                    return;
+                }
+            }
+        }
+    } else if state::weather_request_pending() {
+        return;
+    }
+    loop {
+        state::weather_request_changed().await;
+        if state::weather_request_pending() {
+            return;
+        }
+    }
 }
 
 /// The host's transport pump — must run forever alongside the advertise loop. Runs **with the

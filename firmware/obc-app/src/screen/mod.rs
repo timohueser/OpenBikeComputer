@@ -5,17 +5,20 @@
 //!
 //! The shared context is split by role: [`Ctx`] is the logic half handed to `handle`
 //! (mutable camera/mode + clock), [`Render`] is the draw half (read-only state plus the
-//! `Reader`, the reusable `MapRenderer`, and the in-flight hold-progress for the confirm ring).
+//! `Reader`, the host's borrowed `RenderScratch`, and the in-flight hold-progress for the confirm
+//! ring).
 
 use core::fmt::Write;
+use core::ops::{Deref, DerefMut};
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
+use obc_map_scene::MapScene;
 use obc_ports::Fix;
 use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, Clock, MapRenderer, RenderStats, Surface,
+    Canvas, Clock, RenderScratch, RenderStats, Surface,
 };
 use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader, Waypoints};
 
@@ -29,18 +32,21 @@ use crate::settings::{DateTime, Settings, Units};
 use crate::{t, Msg};
 
 mod climb;
+mod detour;
 mod dfu;
 mod home;
 mod list;
 mod map;
+mod map_transfer;
 mod menu;
 mod nav_route;
 mod passkey;
 mod poi_detail;
 mod poi_list;
-mod poi_menu;
+pub(crate) mod poi_menu;
 mod ride_control;
 mod ride_detail;
+mod ride_menu;
 mod ride_start;
 mod rides;
 mod route_menu;
@@ -50,9 +56,16 @@ mod route_swap;
 mod settings;
 mod statistics;
 mod trip_delete;
+pub(crate) mod up_ahead;
 mod warning;
+mod weather_alert;
+mod weather_dash;
+mod weather_hourly;
+pub mod weather_icons;
+mod weather_map;
 
 pub use climb::ClimbScreen;
+pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
     DfuProgressScreen, DfuUpdatedScreen,
@@ -60,31 +73,41 @@ pub use dfu::{
 pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
+pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
-pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen};
+pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
+pub use ride_menu::RideMenuScreen;
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
-pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
+pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, AutoDeleteScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, LanguageScreen,
-    PowerScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsScreen, StatFieldsScreen, StatsScreen,
-    SystemScreen, UnitsScreen,
+    AboutScreen, AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen,
+    FirmwareScreen, LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen,
+    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen, WeatherSettingsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
+pub(crate) use up_ahead::poi_row_name;
+pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
 pub use warning::{WarningFlags, WarningScreen};
+pub use weather_alert::{WeatherAlertKind, WeatherAlertScreen};
+pub use weather_dash::WeatherScreen;
+pub use weather_hourly::WeatherHourlyScreen;
+pub use weather_map::WeatherRainMapScreen;
 
-/// Maximum overlay depth. Sized with headroom; the real flow never nests more than a few deep.
-pub const MAX_DEPTH: usize = 8;
+/// Maximum overlay depth. The deepest normal path is eight screens
+/// (`Home → Map → Ride menu → Menu → Settings → Ride → Fields → Add field`); keep two more slots
+/// for host-pushed cards such as a warning arriving while that path is open.
+pub const MAX_DEPTH: usize = 10;
 
 /// The screen stack: the bottom is the always-present root (Home), the top is the
 /// screen currently receiving input.
@@ -163,11 +186,46 @@ pub struct Ctx<'a> {
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
     /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
     pub poi_scratch: &'a PoiScratch,
+    /// The active route's resident waypoint table, **read-only** here — the Up-ahead timeline walks
+    /// it (with [`corridor`](Ctx::corridor)) to resolve its cursor and the pressed row. Empty
+    /// without a route; every other screen leaves it untouched.
+    pub waypoints: &'a [obc_route::WptEntry],
+    /// The App-owned **route-corridor POI snapshot** (epic #946, U2), **read-only** here — the
+    /// other half of the Up-ahead merge, so `handle` sees exactly the rows `draw` drew. Empty until
+    /// a snapshot lands; every other screen leaves it untouched.
+    pub corridor: &'a [obc_reader::CorridorPoi],
     /// The live BLE **sensor scan hits** (epic #707, SE7), read-only here — the scan-list screen's
     /// `Gesture::Press` reads the highlighted hit's address out of it to save + connect. Empty outside
     /// a scan; every other screen leaves it untouched.
     pub sensor_scan_hits: &'a [crate::sensors::SensorScanHit],
     pub now_ms: u32,
+}
+
+/// A [`Ctx`] over borrowed state/activity/settings with every catalog empty and the clock at zero —
+/// the shape essentially every screen test wants. The handful that need one field populated say so
+/// with struct-update syntax, so the other eleven stay out of the way:
+/// `Ctx { routes, ..test_ctx(&mut st, &mut act, &mut s) }`.
+#[cfg(test)]
+pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, settings: &'a mut Settings) -> Ctx<'a> {
+    // Shared empty borrows: the screens under test read these but never fill them, so one immutable
+    // `'static` each serves every caller (and spares each test a local it has to keep alive — a
+    // temporary can't outlive this call).
+    static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
+    static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
+    Ctx {
+        state,
+        activity,
+        settings,
+        routes: &[],
+        rides: &[],
+        trips: &[],
+        nav_profiles: &EMPTY_PROFILES,
+        poi_scratch: &EMPTY_SCRATCH,
+        waypoints: &[],
+        corridor: &[],
+        sensor_scan_hits: &[],
+        now_ms: 0,
+    }
 }
 
 /// The currently-tracked climb, surfaced to the riding views (C3). Bundles the active
@@ -186,16 +244,30 @@ pub struct ActiveClimb<'a> {
 }
 
 /// Render context handed to [`Screen::draw`]: the read-only state plus the map
-/// `Reader`, the reusable `MapRenderer`, and the in-flight encoder hold-progress
+/// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
-pub struct Render<'a, 'd> {
-    /// The streamed-map `Reader` — `None` when the base screen doesn't draw the map (a menu, the
-    /// Statistics view, Home). Only the [`Map`](crate::screen::map) screen reads it, so a host can
-    /// skip building the `Reader` (its SD style-table parse + stack spike) on a non-map frame and
-    /// pass `None`. [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame)
-    /// always pass `Some`.
-    pub reader: Option<&'a Reader<'d>>,
-    pub renderer: &'a mut MapRenderer,
+pub struct Render<'a> {
+    /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
+    /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
+    /// wants a presentation switch to stick states it per frame in an
+    /// [`obc_render::RenderConfig`].
+    ///
+    /// `None` when the host lent no scratch (#1146 P2) — legitimate for a chrome-only frame, which
+    /// is exactly the set of frames that never reach the map scene's draw, the one place this is
+    /// unwrapped.
+    pub scratch: Option<&'a mut RenderScratch>,
+    /// The frame's **rain overlay lease** (WX10) — the host-constructed adapter over the active
+    /// weather bundle's *current* frame, or `None` when nothing may render (no store, no current
+    /// frame, expired bundle) **or when the base screen did not declare
+    /// [`Caps::rain_overlay`]**. Like the scratch it is per-frame: the map-drawing base screen
+    /// `take`s it and threads it into [`RenderScratch::render_rain_timed`], where the
+    /// precipitation raster draws below the road band; `None` renders a byte-identical rain-free
+    /// map. The freshness decision lives with the adapter (`obc-weather`'s `current_frame`), never
+    /// in a screen; *which screen may see rain at all* is the declared capability, resolved once in
+    /// [`App::render_scene_map_rain_timed`](crate::App::render_scene_map_rain_timed) — so a map
+    /// base that never asked for rain (the Map, the Detour pair) is handed `None` and cannot leak
+    /// the rain map's raster onto its own frame.
+    pub rain: Option<&'a mut dyn obc_render::RainOverlaySource>,
     pub state: &'a AppState,
     pub activity: &'a Activity,
     /// The persisted device settings (read-only here) — the riding views read
@@ -256,12 +328,29 @@ pub struct Render<'a, 'd> {
     /// hands an empty slice when it's missing or stale). Only the Ride detail's track pager page
     /// draws it.
     pub ride_preview: &'a [(i32, i32)],
+    /// The planned-but-uncommitted detour's decimated polyline (#882) — host-filled when the
+    /// detour plan completes, keyed to the active route (empty when missing or stale). Only the
+    /// Detour preview screen draws it, over the still-active original route.
+    pub detour_preview: &'a [(i32, i32)],
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer, **read-only** here (#803).
     /// Only the [`PoiList`](crate::screen::poi_list) screen reads it, drawing the frozen snapshot its
     /// [`prepare`](Screen::prepare) pass already took (see [`PoiScratch`] / [`Prepare`]); every other
     /// screen leaves it untouched. Draw is side-effect-free — the acquisition moved out of the draw
     /// path to the pre-draw prepare phase, so `Render` no longer carries mutable POI scratch.
     pub poi_scratch: &'a PoiScratch,
+    /// The frozen **route-corridor POI snapshot** (epic #946, U2) the Up-ahead timeline merges with
+    /// [`waypoints`](Render::waypoints) — ascending by along-route distance, empty until one lands.
+    pub corridor: &'a [obc_reader::CorridorPoi],
+    /// Whether that snapshot has **settled**: taken, or settled empty on a query error (U2). `false`
+    /// only while the query still waits for its inputs (no `Reader` / no route geometry this frame),
+    /// which is what keeps the Up-ahead empty state from flashing an answer the next frame
+    /// contradicts.
+    pub corridor_settled: bool,
+    /// The App-owned per-category **"next ahead" cache** (epic #946, U5) — the distilled map-POI
+    /// half of the six `Next: <category>` stat tiles, refreshed on the progress-keyed policy in
+    /// [`NextAhead`](crate::next_ahead::NextAhead) rather than per frame. Read-only; only
+    /// [`Readout`](crate::stat_fields::Readout) consumers touch it.
+    pub next_ahead: &'a crate::next_ahead::NextAhead,
     /// The per-slot BLE **sensor status** (epic #707, SE7) — the Sensors settings screen draws the
     /// HR / power / cadence rows' status lines from it. Fed each pass by the host; empty defaults
     /// elsewhere, so the screen indexes it by slot unconditionally.
@@ -294,13 +383,13 @@ pub struct Render<'a, 'd> {
     /// (the match is stale). Computed by [`App::has_live_fix`](crate::App::has_live_fix).
     pub no_fix: bool,
     /// Microsecond clock for the map render's per-stage timing, passed to
-    /// [`MapRenderer::render_timed`]. Hosts that don't profile pass
+    /// [`RenderScratch::render_timed`]. Hosts that don't profile pass
     /// [`NoopClock`](obc_render::NoopClock); the device passes its `Instant`-based clock. Part of the
     /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
     /// What the base screen's map render drew this frame, for the host's stats panel / frame log.
-    /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen writes
-    /// it — every other screen leaves it untouched.
+    /// Reset to default by the host each frame; map-base screens write it and every other screen
+    /// leaves it untouched.
     pub stats: RenderStats,
     /// The running firmware version string (T8 item 6) — the System settings screen's `Firmware`
     /// ledger row. Empty until the host feeds it via [`App::set_fw_version`](crate::App::set_fw_version).
@@ -313,12 +402,28 @@ pub struct Render<'a, 'd> {
     /// Free space on the SD card in bytes (T8 item 6), or `None` until the host answers the System
     /// screen's on-entry scan ([`App::apply_event`](crate::App::apply_event)).
     pub card_free_bytes: Option<u64>,
+    /// The host-fed resident **weather snapshot** (WX11, epic #1185) — the 24 hourly records +
+    /// sampled rain-frame table the weather screens derive every claim from
+    /// ([`rain_outlook`](crate::weather::rain_outlook) against this frame's [`now_utc`](Render::now_utc)),
+    /// or `None` when no store is mounted / nothing was ever fetched (the explicit no-data state).
+    /// Host-owned like the rain lease: the sim samples its loaded bundle, the board's WX8 mount
+    /// will feed the same shape.
+    pub weather: Option<&'a crate::weather::WeatherSnapshot>,
+    /// A weather refresh is in flight (WX8's request/upload cycle; the sim's injection flag).
+    /// The dashboard shows its one non-blocking cue off this — cached content stays visible
+    /// (locked UX), so this is a title-slot caption, never a blocking spinner.
+    pub weather_refreshing: bool,
+    /// The rider's travel direction (degrees CW from north) for the route-relative wind arrows
+    /// (WX12, epic #1185): active-route tangent at the matched progress, else the moving GPS
+    /// course, else `None` — the hourly rows then draw neutral arrows, never a fabricated
+    /// head/tail ([`wind_class`](crate::weather::wind_class)'s locked fallback).
+    pub travel_deg: Option<f32>,
 }
 
-impl Render<'_, '_> {
+impl Render<'_> {
     /// The narrow live-data view the stat-field catalogue formats from — the one constructor of
     /// [`Readout`](crate::stat_fields::Readout), so `stat_fields` stays decoupled from the full
-    /// draw context (and its `MapRenderer`).
+    /// draw context (and its `RenderScratch`).
     pub fn readout(&self) -> crate::stat_fields::Readout<'_> {
         crate::stat_fields::Readout {
             fix: self.state.user_fix,
@@ -331,8 +436,36 @@ impl Render<'_, '_> {
             next_waypoint: self.activity.next_waypoint,
             now: self.now,
             now_ms: self.now_ms,
+            bike_profile_idx: self.settings.bike_profile_idx,
             language: self.settings.language,
+            next_ahead: self.next_ahead,
         }
+    }
+}
+
+/// One frame's draw context plus the base-map scene it streams.
+///
+/// Keeping the scene in this thin wrapper is what lets only the map-bearing screens be generic
+/// over [`MapScene`]. Every chrome screen still receives `&mut Render` through `Deref`, so the
+/// generic source does not infect the whole screen catalogue. A volume set supplies its
+/// [`MountedSet`](obc_reader::MountedSet) here while POI, hours and routing keep using the core
+/// [`Reader`] in [`Prepare`].
+pub struct RenderFrame<'a, S: MapScene> {
+    pub scene: Option<&'a S>,
+    pub render: Render<'a>,
+}
+
+impl<'a, S: MapScene> Deref for RenderFrame<'a, S> {
+    type Target = Render<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.render
+    }
+}
+
+impl<S: MapScene> DerefMut for RenderFrame<'_, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.render
     }
 }
 
@@ -341,17 +474,29 @@ impl Render<'_, '_> {
 /// needs to resolve its reader-backed one-shot state **before** drawing. Handed to
 /// [`Screen::prepare`], which runs on the base screen once per frame ahead of the draw loop, so the
 /// side-effectful POI snapshot / hours read happens here and [`draw`](Screen::draw) then consumes
-/// immutable prepared state (the narrowed, mutable-scratch-free [`Render`]). Only the two POI
-/// screens read it; every other screen's `prepare` is a no-op.
+/// immutable prepared state (the narrowed, mutable-scratch-free [`Render`]). The POI screens use
+/// the map `Reader`; the Skip-ahead chooser uses the streamed route and live route progress.
 pub struct Prepare<'a, 'd> {
     /// The streamed-map `Reader`, or `None` when the host didn't build it this frame — the POI
     /// acquisitions retry next frame until [`base_needs_reader`](crate::App::base_needs_reader)
     /// (which reads the same [`ReaderNeed`] declaration) stops asking the board to build it.
     pub reader: Option<&'a Reader<'d>>,
+    /// The active streamed route geometry, if the host opened it this frame. The Skip-ahead chooser
+    /// resolves its exact rejoin coordinate and selected-stretch bounds from this; POI screens
+    /// ignore it.
+    pub route: Option<&'a RouteReader<'a>>,
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer — the POI list fills it here.
     pub poi_scratch: &'a mut PoiScratch,
     /// The rider's current fix, `(lon, lat)` µdeg — the POI list's nearest-16 query origin.
     pub user_fix: Option<Fix>,
+    /// Copy of the active route slot and live matched progress at this frame's prepare boundary.
+    /// The Detour chooser advances its selection anchor with the rider before resolving geometry.
+    pub active_route: Option<usize>,
+    pub progress_m: u32,
+    pub route_total_m: u32,
+    /// The planned detour's decimated polyline (#882) — the Detour preview folds it into its
+    /// fitted camera bounds; empty for every other screen (and while nothing is planned).
+    pub detour_preview: &'a [(i32, i32)],
 }
 
 /// A screen's classification, declared **in its `screens!` table row** so it can never drift from
@@ -363,7 +508,7 @@ pub struct Prepare<'a, 'd> {
 /// states what its screen *is*.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenKind {
-    /// A live riding view (Map, Statistics) — full-screen, fed by the fix.
+    /// A live riding view (Map, Skip ahead, Statistics) — full-screen, fed by the fix.
     Riding,
     /// Navigation chrome: the Home root, the menus, and the full-screen prompts.
     Nav,
@@ -391,7 +536,7 @@ impl ScreenKind {
 /// it), and showing the BLE connected indicator all read the base screen's [`BaseContent`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BaseContent {
-    /// Draws the streamed base map — the only screen that reads the [`Reader`] for the map itself.
+    /// Draws the streamed base map and therefore reads the [`Reader`] for the map itself.
     Map,
     /// A live riding view fed by the fix but not the map (Statistics, Climb): a fresh fix redraws
     /// it, but it draws no map I/O and shows no BLE indicator.
@@ -412,7 +557,7 @@ pub enum BaseContent {
 pub enum ReaderNeed {
     /// Never needs the `Reader` (all chrome and live-riding non-map screens).
     Never,
-    /// Always needs it — the [`Map`](BaseContent::Map) screen.
+    /// Always needs it — any [`Map`](BaseContent::Map) base screen.
     Always,
     /// Needs it until the POI list's category snapshot has been taken (issue #425).
     PoiSnapshot,
@@ -428,7 +573,7 @@ pub enum ReaderNeed {
 pub enum RemapKind {
     /// Holds no catalog index — nothing to remap.
     None,
-    /// Holds a **route** catalog index (the Route menu / overview / swap / upload cards).
+    /// Holds a **route** catalog index (the Skip chooser / Route menu / overview / swap / upload cards).
     Route,
     /// Holds a **ride** catalog index (the Rides list / ride detail).
     Ride,
@@ -469,6 +614,14 @@ pub struct Caps {
     /// Declares the screen can draw a live **hold fill** for a guarded selection — it has a
     /// [`wants_hold_fill`](Screen::wants_hold_fill) arm.
     pub hold_fill: bool,
+    /// Declares the screen **wants the rain overlay** (WX10/WX11): the frame's rain lease is
+    /// handed to it and the precipitation raster draws inside its map scene. Off for every other
+    /// screen — including the ordinary Map and the Detour pair, which draw the same scene through
+    /// the same helper — so the overlay is a property of the screen the rider is on, not of the
+    /// frame the host happened to lease weather for. That makes leaving the rain map clean by
+    /// construction: there is no exit hook to forget, and a future map screen is rain-free until
+    /// its row says otherwise.
+    pub rain_overlay: bool,
     /// Which catalog the screen's held indices remap against after a rescan (#450).
     pub remap: RemapKind,
 }
@@ -486,12 +639,13 @@ impl Caps {
             reader: ReaderNeed::Never,
             timed: false,
             hold_fill: false,
+            rain_overlay: false,
             remap: RemapKind::None,
         }
     }
 
-    /// The base **Map** screen: reads the `Reader` every frame, and is both a tracking ride view and
-    /// a deliberate browse view when not tracking.
+    /// A map-base screen: reads the `Reader` every frame, and is both a tracking ride view and a
+    /// deliberate browse view when not tracking.
     pub const fn map() -> Self {
         Caps {
             kind: ScreenKind::Riding,
@@ -546,6 +700,13 @@ impl Caps {
         self
     }
 
+    /// Declare the screen wants the frame's **rain overlay** lease (see
+    /// [`rain_overlay`](Caps::rain_overlay)) — the rain map's row, and nothing else's.
+    pub const fn rain_overlay(mut self) -> Self {
+        self.rain_overlay = true;
+        self
+    }
+
     /// Set the screen's [`ReaderNeed`].
     pub const fn reader(mut self, need: ReaderNeed) -> Self {
         self.reader = need;
@@ -586,11 +747,12 @@ macro_rules! screens {
 
             /// Draw the screen into the frame's [`Canvas`]. The two host generics stop here: every
             /// screen below draws through `&mut impl Surface`, except the Map, which reaches the raw
-            /// target via [`Canvas::split`] for its `MapRenderer` calls (and writes [`Render::stats`]).
-            pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+            /// target via [`Canvas::split`] for its `RenderScratch` calls (and writes [`Render::stats`]).
+            pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
             where
                 D: DrawTarget,
                 F: Fn(u16) -> D::Color,
+                S: MapScene,
             {
                 match self {
                     $( Screen::$variant(s) => s.draw(cv, rx), )+
@@ -652,6 +814,16 @@ screens! {
     /// tracking session with no route via [`start_ride_routeless`].
     RideStart(RideStartScreen) => Caps::nav(),
     Menu(MenuScreen) => Caps::nav().timed(),
+    /// The five-station mid-ride compass: Up ahead / Detour / POIs / Routes / Main menu.
+    RideMenu(RideMenuScreen) => Caps::nav().timed(),
+    /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
+    /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen
+    /// mode. Reads the snapshot the App arms from its `corridor_key`; holds no rows itself.
+    UpAhead(UpAheadScreen) => Caps::nav(),
+    /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
+    Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
+    /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.
+    DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
@@ -692,27 +864,50 @@ screens! {
     /// opens (the app dropped the stale matcher/profile; the host reopened the geometry) — this
     /// only *tells* the rider. Dismiss on any press/Back, or the same auto-close.
     RouteUpdated(RouteUpdatedScreen) => Caps::modal().timed().remap(RemapKind::Route),
+    /// The trip-received popup: a committed trip upload — which always lands *after* its member
+    /// routes — replaces the last per-route popup of the burst with one "TRIP RECEIVED" card.
+    /// Same family rules (advisory, 30 s auto-close, passkey outranks). Holds the trip's durable
+    /// id, not a catalog index, so no rescan remap is needed.
+    TripReceived(TripReceivedScreen) => Caps::modal().timed(),
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal(),
+    /// The map-transfer card (issue #927). **Host-pushed** by [`App::set_map_transfer`] when a map
+    /// upload starts and popped when the state clears — the one screen a multi-minute SD write is
+    /// visible on. Non-dismissible while bytes land, dismissable once terminal.
+    MapTransfer(MapTransferScreen) => Caps::modal(),
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
     /// **Host-pushed** by [`App::apply_event`], coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
+    /// The Weather dashboard (WX11, epic #1185): the concept-C decision card, the two-hour strip,
+    /// and the HOURLY / RAIN MAP actions. Timed: the countdown/freshness copy moves once a minute.
+    Weather(WeatherScreen) => Caps::nav().timed(),
+    /// The hourly forecast list (WX11): 24 evenly-spaced rows, no separators — time, WX17 icon,
+    /// temperature, precipitation, wind.
+    WeatherHourly(WeatherHourlyScreen) => Caps::nav(),
+    /// The rain map (WX11): the normal map scene with the WX10 precipitation raster below the
+    /// road band, 15-minute time-step navigation, and the honest out-of-regime/stale banners. The
+    /// **one** screen that declares [`rain_overlay`](Caps::rain_overlay) — the raster is its
+    /// content, so it cannot survive the screen.
+    WeatherRainMap(WeatherRainMapScreen) => Caps::map().timed().rain_overlay(),
+    /// The weather alert card (WX11): RAIN AHEAD / STORM AHEAD with VIEW RAIN MAP + DISMISS.
+    /// **Host-pushed** by [`App::show_weather_alert`]; alert *generation* is WX12's.
+    WeatherAlert(WeatherAlertScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
+    /// The Ride settings screen: routing profile + the riding stats grid (page cycle, fields, climb,
+    /// waypoints) + the synced-ride retention ring. The one settings screen that scrolls (6 rows).
+    Ride(RideScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),
-    /// The Auto-delete screen (route auto-expiry + ride auto-delete, epic #638 S5): one stepper for
-    /// synced-ride retention (Never / 1 day / 1 week / 1 month). Route retention is app-controlled
-    /// and has no device editor.
-    AutoDelete(AutoDeleteScreen) => Caps::settings(),
     Units(UnitsScreen) => Caps::settings(),
     /// The Bike type screen: cycles the routing profile (§8.6) the planner weights edges by, by name
     /// from the loaded map (routing-v2 N5, epic #533).
     BikeType(BikeTypeScreen) => Caps::settings(),
-    Stats(StatsScreen) => Caps::settings(),
     StatFields(StatFieldsScreen) => Caps::settings().hold_fill(),
     AddField(AddFieldScreen) => Caps::settings(),
     /// The Display screen: the Map's clock + scale-bar overlay toggles and the idle-return timeout.
     Display(DisplayScreen) => Caps::settings(),
+    /// The Connections settings menu: Phone (Bluetooth pairing) + Sensors (BLE sensors scan).
+    Connections(ConnectionsScreen) => Caps::settings(),
     Power(PowerScreen) => Caps::settings(),
     /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
     Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
@@ -724,9 +919,18 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),
-    /// The System settings screen (epic #615 S5): the "Install update from card" door into the
-    /// SD-sideload firmware-update flow.
+    /// The Weather settings screen (WX11): the scheduled refresh interval picker
+    /// (Off / 15 / 30 / 60 / 120 min, default 30) the WX8 due scheduler consumes.
+    WeatherSettings(WeatherSettingsScreen) => Caps::settings(),
+    /// The System settings menu: Units / Date & Time / Language / Firmware update / About / Reset —
+    /// a thin nav list whose rows open those pages.
     System(SystemScreen) => Caps::settings(),
+    /// The Firmware page (epic #615 S5): the device-info ledger + the "Install update from card"
+    /// door into the SD-sideload firmware-update flow.
+    Firmware(FirmwareScreen) => Caps::settings(),
+    /// The About page (issue #1149): the device's credits surface — OpenStreetMap + ODbL,
+    /// Copernicus, and the firmware's GPL-3.0 + source pointer. A line-scrolling read-only page.
+    About(AboutScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings().hold_fill(),
     /// The "Checking card..." scan wait (epic #615 S5): a spinner up while the board validates
     /// `UPDATE.BIN`; the board's answer replaces it with the confirm screen or an error card.
@@ -763,15 +967,32 @@ impl Screen {
     /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
     /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
     /// ([`base_needs_reader`](crate::App::base_needs_reader) reads the same [`ReaderNeed`]
-    /// declaration). Only the two POI screens act — the list takes its category snapshot into the
-    /// shared scratch, the detail resolves its opening-hours cache; every other screen is a no-op.
+    /// declaration). The POI list takes its category snapshot into shared scratch, the detail
+    /// resolves its opening-hours cache, and Skip ahead resolves route geometry + its live anchor;
+    /// every other screen is a no-op.
     /// Intentionally partial, like [`tick_timers`](Screen::tick_timers) and
     /// [`wants_hold_fill`](Screen::wants_hold_fill): a row that declares no reader need never lands
     /// here.
+    /// The **route-corridor snapshot** this screen wants, if any (epic #946, U3) — the Up-ahead
+    /// timeline's `(filter, anchor)` key, declared rather than queried. Read by
+    /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
+    /// settles, which is the whole arm/re-arm/disarm lifecycle. Intentionally partial: no other
+    /// screen asks for one, so the App-owned scratch stays disarmed (and the query free) everywhere
+    /// else — as does an Up-ahead list the rider scoped to **waypoints only** (U4), which declares
+    /// no key at all.
+    pub(crate) fn corridor_request(&self) -> Option<crate::corridor::CorridorKey> {
+        match self {
+            Screen::UpAhead(s) => s.corridor_key(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn prepare(&mut self, px: &mut Prepare) {
         match self {
             Screen::PoiList(s) => s.prepare(px),
             Screen::PoiDetail(s) => s.prepare(px),
+            Screen::Detour(s) => s.prepare(px),
+            Screen::DetourPreview(s) => s.prepare(px),
             _ => {}
         }
     }
@@ -796,7 +1017,7 @@ impl Screen {
             Screen::RouteSwap(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
-            Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
+            Screen::Bluetooth(s) => s.selection_is_guarded(state.device.ble_paired),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
@@ -813,7 +1034,7 @@ impl Screen {
     /// deadline so the M33 sleeps rather than free-running the loop.
     ///
     /// Most screens change only on input or a fresh fix and return [`ScreenTick::idle`]. The
-    /// Statistics view runs its cursor spring-back + page auto-cycle off `now_ms`; the Home clock
+    /// Statistics view runs its stat-grid page auto-cycle off `now_ms`; the Home clock
     /// ticks over each minute off the wall-clock `now`, adopting `ms_to_next_minute` — the minute
     /// boundary the host pre-computes (it owns the clock); the Menu sweeps its compass needle
     /// toward the selection at frame cadence until it lands.
@@ -837,17 +1058,20 @@ impl Screen {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only
-            // when the pill is visible — the setting on and not panning (the pan chevron owns the slot);
+            // when the pill is visible — the setting on and not panning (Inspect keeps the map free
+            // of unrelated clock chrome);
             // it also runs the route-less browse map's one-shot start-hint timer (T6, gated on `tracking`).
             Screen::Map(s) => {
                 s.tick_timers(now_ms, now, ms_to_next_minute, w, pan_active, settings.map_clock, tracking)
             }
             Screen::Menu(s) => s.tick_timers(now_ms),
+            Screen::RideMenu(s) => s.tick_timers(now_ms),
             // The route-upload popups' 30 s auto-close deadline (epic #447, P4): the residual
             // wake keeps the event-driven host armed so the timeout-dismiss fires from warm
             // sleep; the removal itself runs in `App::advance_animations`' popup sweep.
             Screen::RouteReceived(s) => s.tick_timers(now_ms),
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
+            Screen::TripReceived(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             // The Route overview's content-paired pager (T3, re-paired in #678 rework 3): flips
             // track shape + DISTANCE ↔ elevation band + CLIMB + DESCENT every 5 s.
@@ -865,6 +1089,10 @@ impl Screen {
             // reboot replaces them.
             Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),
             Screen::DfuProgress(s) => s.tick_timers(now_ms, w, h),
+            // The Weather dashboard's countdown + the rain map's frame-currency labels move with
+            // the wall clock — one region-free repaint per minute while up.
+            Screen::Weather(s) => s.tick_timers(now, ms_to_next_minute),
+            Screen::WeatherRainMap(s) => s.tick_timers(now, ms_to_next_minute),
             _ => ScreenTick::idle(),
         }
     }
@@ -1017,8 +1245,8 @@ fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
     Transition::Root(Screen::Map(MapScreen::new()))
 }
 
-/// The gestures the two riding views (Map and Statistics) bind identically: `press` pauses
-/// tracking and opens the Ride-control overlay, `back-hold` opens the Menu. Each riding screen
+/// The gestures the riding views bind identically: `press` pauses tracking and opens the
+/// Ride-control page, `back-hold` opens the ride-scoped compass Menu. Each riding screen
 /// calls this from its `Press | BackHold` arm.
 pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
@@ -1026,7 +1254,7 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
             cx.activity.mode = Mode::Paused;
             Transition::Push(Screen::RideControl(RideControl::new()))
         }
-        Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
+        Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
         _ => Transition::None,
     }
 }
@@ -1094,6 +1322,46 @@ pub(crate) fn tile(
             cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, value_color);
         }
     }
+}
+
+/// Left inset of the category icon's centre inside a `Next: <category>` tile — half the ~22 px icon
+/// box plus the tile's own 5 px caption inset, so the glyph sits on the same left margin the plain
+/// tiles' captions do.
+const CATEGORY_TILE_ICON_CX: i32 = 16;
+/// Where a `Next: <category>` tile's caption starts: clear of the icon box, with a hair of air.
+const CATEGORY_TILE_NAME_X: i32 = 31;
+
+/// Draw a **`Next: <category>` tile** (epic #946, U5) — [`tile`]'s wide anatomy with the category's
+/// row icon in front of the caption: `[icon] name` over a right-aligned Display distance. The name
+/// is the nearest entry of that category ahead (a map POI or the rider's own categorized waypoint —
+/// the tile can't tell, and deliberately doesn't say: on a stat page the answer is *how far*, and
+/// provenance is the Up-ahead list's job); `--` when nothing of the kind is ahead, with the caption
+/// falling back to the category's own name so the tile still reads as an answer rather than a blank.
+///
+/// Split out from [`tile`] rather than folded into it as a ninth argument: the icon changes the
+/// caption's *geometry* (its inset and therefore its ellipsis budget), which every other tile would
+/// have to opt out of. Same rounded pane, same caption/value fonts, same vertical centring, so the
+/// two read as one system on the grid.
+pub(crate) fn category_tile(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    cat: obc_reader::PoiCategory,
+    name: &str,
+    value: &str,
+    bg: u16,
+    value_color: u16,
+) {
+    use palette::*;
+    let (x, y) = (area.top_left.x, area.top_left.y);
+    let w = area.size.width as i32;
+    cv.round(area, 5, bg);
+    // The caption/value block, centred in the pane exactly as `tile` centres its own.
+    let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
+    poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), SUBTEXT, bg);
+    let mut buf: heapless::String<24> = heapless::String::new();
+    let name = fit_caption(name, w - CATEGORY_TILE_NAME_X - 5, &mut buf, Font::Label);
+    cv.text(name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(value, Point::new(x + w - 8, cy + 18), Font::Display, TextAlign::Right, value_color);
 }
 
 /// Number of waypoint rows the 2×3 panel lists — the next this-many ahead of the rider.
@@ -1190,6 +1458,12 @@ fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24
         if buf.push(ch).is_err() {
             break;
         }
+    }
+    // A cut that lands on a word gap would read as `Fontaine du ...` — the space between the last
+    // word and the ellipsis makes the truncation look like a typo. Drop trailing blanks first (the
+    // budget only ever shrinks, so this can't overflow).
+    while buf.ends_with(' ') {
+        buf.pop();
     }
     let _ = buf.push_str(ELL);
     buf.as_str()
@@ -1383,6 +1657,22 @@ pub(crate) struct GuardedRowsGeometry {
     pub label_dy: i32,
 }
 
+impl GuardedRowsGeometry {
+    /// The **card** family — the option rows of a full-bleed confirm card (Route received /
+    /// updated, Trip received, Route swap, Trip delete, Nav route): a 12 px side inset, 46 px rows
+    /// 8 apart, the label 16 in and 11 down. Only where the block starts differs between them.
+    pub(crate) fn card(w: i32, top: i32) -> Self {
+        GuardedRowsGeometry { x: 12, w: w - 24, top, row_h: 46, gap: 8, label_dx: 16, label_dy: 11 }
+    }
+
+    /// The **panel** family — action rows inside a framed panel (Pause menu, Route overview, Ride
+    /// detail): the wider 14 px inset the frame wants, and a tighter label at 12 in / 5 down. Row
+    /// height and gap stay the caller's, since each panel sizes its block to the space it has.
+    pub(crate) fn panel(w: i32, top: i32, row_h: i32, gap: i32) -> Self {
+        GuardedRowsGeometry { x: 14, w: w - 28, top, row_h, gap, label_dx: 12, label_dy: 5 }
+    }
+}
+
 /// Draw a guarded-action menu's option rows (Ride control, Route swap): each [`MenuItem`] gets its
 /// [`confirm_row`] background — the amber cursor, or the hold-progress fill in `fill` on a guarded
 /// row — and its Body label. The caller draws its chrome (the PAUSED panel / the full-frame prompt)
@@ -1456,6 +1746,14 @@ pub mod palette {
     /// Magenta — the planned route line on the Map. The classic GPS route hue: it lands on no
     /// base-map feature, so it always reads as "the line to follow".
     pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
+    /// Blue — the planned detour's polyline on the Detour preview (#882): the replanned portion
+    /// reads apart from the magenta route it will replace, the warning-orange skipped span, and
+    /// the (recessive navy) breadcrumb behind it.
+    pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
+    /// Rain blue — the precipitation *amount* on the Hourly rows, so a wet hour's millimetres read
+    /// as water at a glance rather than as another ink number. The WX17 icons' own rain-streak
+    /// blue (`weather_icons::SKY`), so the row's icon and its number carry one hue.
+    pub const RAIN: u16 = rgb565(0, 110, 230); // → (0,85,255) blue
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
@@ -1464,6 +1762,7 @@ pub mod palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::support::wpts;
     use obc_render::text::text_width;
 
     /// A draw target that records only its text draws — the panel-content tests observe which strings
@@ -1488,20 +1787,11 @@ mod tests {
         }
     }
 
-    /// A `Waypoints` table from `(dist_along_m, name)` pairs, route order — the panel-drawer mirror
-    /// of `stat_fields`' `wpts` helper.
-    fn wpts(items: &[(u32, &str)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for &(dist_along_m, name) in items {
-            let mut n = heapless::String::new();
-            n.push_str(name).unwrap();
-            w.entries.push(obc_route::WptEntry { dist_along_m, lon: 0, lat: 0, name: n }).unwrap();
-        }
-        w
-    }
-
     /// A bare metric readout over `activity` + `waypoints`, resolving `next` as the first waypoint
     /// ahead — enough for the panel drawer (which reads only those three).
+    /// An empty per-category cache (U5): the panel drawer never reads it, but `Readout` carries it.
+    static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
+
     fn readout<'a>(
         activity: &'a Activity,
         waypoints: &'a Waypoints,
@@ -1518,7 +1808,9 @@ mod tests {
             next_waypoint: next,
             now: DateTime::default(),
             now_ms: 0,
+            bike_profile_idx: 0,
             language: crate::settings::Language::En,
+            next_ahead: EMPTY_CACHE,
         }
     }
 
@@ -1617,6 +1909,89 @@ mod tests {
         assert!(Screen::NAMES.contains(&"Home") && Screen::NAMES.contains(&"Map"));
     }
 
+    /// A draw target that records text **with its anchor** — the `Next: <category>` tile's whole
+    /// point is *where* the two strings land (the caption clear of the icon, the value on the far
+    /// edge), which the font/align-only recorder above can't see. Primitives are counted, since the
+    /// category icon is drawn, not typed.
+    #[derive(Default)]
+    struct PosRec {
+        calls: heapless::Vec<(heapless::String<24>, Point, Font, TextAlign), 8>,
+        primitives: usize,
+    }
+    impl Surface for PosRec {
+        fn clear(&mut self, _: u16) {}
+        fn fill(&mut self, _: Rectangle, _: u16) {
+            self.primitives += 1;
+        }
+        fn round(&mut self, _: Rectangle, _: u32, _: u16) {}
+        fn round_outline(&mut self, _: Rectangle, _: u32, _: u16) {}
+        fn line(&mut self, _: Point, _: Point, _: u16) {
+            self.primitives += 1;
+        }
+        fn triangle(&mut self, _: Point, _: Point, _: Point, _: u16) {
+            self.primitives += 1;
+        }
+        fn disc(&mut self, _: Point, _: u32, _: u16) {
+            self.primitives += 1;
+        }
+        fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, _: u16) -> Point {
+            let mut buf = heapless::String::new();
+            let _ = buf.push_str(s);
+            let _ = self.calls.push((buf, at, font, align));
+            at
+        }
+    }
+
+    /// The `Next: <category>` tile's anatomy (epic #946, U5): the category icon is drawn (not
+    /// typed), the name sits clear of it in `Label`, and the distance hugs the far edge in the big
+    /// `Display` face — the wide next-waypoint tile's shape, plus the glyph.
+    #[test]
+    fn category_tile_draws_icon_name_and_a_right_aligned_distance() {
+        let area = rect(10, 40, 220, 60);
+        let mut cv = PosRec::default();
+        category_tile(
+            &mut cv,
+            area,
+            obc_reader::PoiCategory::Water,
+            "Fontaine",
+            "2.4km",
+            palette::PARCHMENT_SHADE,
+            palette::INK,
+        );
+        assert!(cv.primitives > 0, "the category glyph draws as primitives, not a font char");
+        let (name, name_at, name_font, _) = &cv.calls[0];
+        assert_eq!(name.as_str(), "Fontaine");
+        assert_eq!(*name_font, Font::Label, "the name is a caption, like every other tile's");
+        assert!(name_at.x >= area.top_left.x + CATEGORY_TILE_NAME_X, "…and starts clear of the icon box");
+        let (value, value_at, value_font, value_align) = &cv.calls[1];
+        assert_eq!(value.as_str(), "2.4km");
+        assert_eq!(*value_font, Font::Display, "the distance is the glanceable number");
+        assert_eq!(*value_align, TextAlign::Right);
+        assert_eq!(value_at.x, area.top_left.x + area.size.width as i32 - 8, "anchored on the tile's far edge");
+        assert!(value_at.y > name_at.y, "and below the name, never beside it");
+    }
+
+    /// A name too long for the tile is ellipsized against the **icon-narrowed** budget, and the cut
+    /// never leaves a dangling space before the ellipsis.
+    #[test]
+    fn category_tile_ellipsizes_against_the_icon_narrowed_budget() {
+        let mut cv = PosRec::default();
+        category_tile(
+            &mut cv,
+            rect(10, 40, 220, 60),
+            obc_reader::PoiCategory::Resupply,
+            "Boulangerie du Port Hercule",
+            "1.6km",
+            palette::PARCHMENT_SHADE,
+            palette::INK,
+        );
+        let name = cv.calls[0].0.as_str();
+        assert!(name.ends_with("..."), "an over-long name is cut with the house ellipsis, got {name:?}");
+        assert!(!name.ends_with(" ..."), "…and never with a dangling space before it");
+        let budget = 220 - CATEGORY_TILE_NAME_X - 5;
+        assert!(text_width(name, Font::Label) as i32 <= budget, "the cut stays inside the icon-narrowed budget");
+    }
+
     /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,
     /// a long waypoint name is cut to leading chars + an ASCII ellipsis that stays within budget — so
     /// the wide `NextWaypoint` tile's name can never run into its right-aligned value.
@@ -1670,8 +2045,8 @@ mod tests {
     #[test]
     fn every_screen_capability_combination_is_valid() {
         for (name, c) in Screen::NAMES.iter().zip(Screen::CAPS) {
-            // Reader need is pinned to base content: the Map is the one always-reader screen, and the
-            // two POI one-shot readers are chrome-kind list/detail screens; no other screen reads it.
+            // Reader need is pinned to base content: map bases are always-reader screens, and the
+            // two POI one-shot readers are chrome-kind list/detail screens.
             match c.reader {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
@@ -1686,9 +2061,22 @@ mod tests {
                 assert!(c.ride_view, "{name}: a live-data base must be a ride view");
                 assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
-            // The browse-exempt "deliberate view when not tracking" is the Map alone.
+            // A rain-overlay screen must be a map base: the raster draws inside the map scene's
+            // paint order, so there is nowhere for it to go on a chrome or live-riding screen. And
+            // it must not be an *overlay* kind: the lease is resolved against the base (lowest
+            // non-overlay) screen, so a rain screen declared `Overlay` would carry a capability
+            // that never fires — a silently dead declaration, exactly the drift this table exists
+            // to catch.
+            if c.rain_overlay {
+                assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base can carry the rain overlay");
+                assert!(
+                    !c.kind.is_overlay(),
+                    "{name}: an overlay-kind screen is never the base the lease resolves against"
+                );
+            }
+            // A browse-exempt "deliberate view when not tracking" must be map-based.
             if c.browse_exempt {
-                assert_eq!(c.base, BaseContent::Map, "{name}: only the Map is browse-exempt");
+                assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base is browse-exempt");
             }
             // Modal exemptions are chrome cards/waits, never ride views.
             if c.idle_exempt {
@@ -1702,9 +2090,10 @@ mod tests {
                 assert_eq!(c.remap, RemapKind::None, "{name}: a settings screen holds no catalog index");
                 assert!(!c.ride_view && !c.idle_exempt && !c.browse_exempt, "{name}: settings carry no view policy");
             }
-            // A screen that remaps catalog indices is a chrome list/card, not a live view.
-            if c.remap != RemapKind::None {
-                assert_eq!(c.base, BaseContent::Chrome, "{name}: a remap-participating screen is chrome-based");
+            // Ride-catalog holders are chrome list/detail screens. Route holders also include the
+            // live map-backed Skip chooser, so route remapping deliberately has no base restriction.
+            if c.remap == RemapKind::Ride {
+                assert_eq!(c.base, BaseContent::Chrome, "{name}: a ride-remap screen is chrome-based");
             }
         }
     }
@@ -1729,7 +2118,15 @@ mod tests {
         assert!(named("Passkey").idle_exempt, "the passkey card is idle-exempt");
         assert!(named("RouteSwap").idle_exempt, "the route-swap prompt is idle-exempt");
         assert_eq!(named("RouteMenu").remap, RemapKind::Route);
+        assert_eq!(named("Detour").remap, RemapKind::Route);
+        assert_eq!(named("DetourPreview").remap, RemapKind::Route);
         assert_eq!(named("Rides").remap, RemapKind::Ride);
+        // The rain overlay belongs to the rain map and to nothing else — the Map and the Detour
+        // pair draw the very same scene through `draw_map_scene`, so a stray `.rain_overlay()` on
+        // one of them is exactly how the raster would start outliving its screen again.
+        assert!(named("WeatherRainMap").rain_overlay, "the rain map is the screen rain belongs to");
+        assert!(!named("Map").rain_overlay, "the ordinary Map never draws rain");
+        assert_eq!(caps.iter().filter(|c| c.rain_overlay).count(), 1, "exactly one screen wants rain");
         // Each capability value is used by at least one screen (nothing dead-declared).
         assert!(caps.iter().any(|c| c.reader == ReaderNeed::Always));
         assert!(caps.iter().any(|c| c.reader == ReaderNeed::PoiSnapshot));

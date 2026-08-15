@@ -16,6 +16,21 @@ public enum ObjectType: UInt8, Equatable, Sendable, CaseIterable {
     case echo = 8  // dev/test loopback (A5)
     case trip = 9  // TR1 (#650): the trip metadata object (spec §7.7)
     case tripList = 10  // TR1 (#650): the device's trip catalog (spec §7.4)
+    /// The singleton **weather bundle** — one OBCW v1 file, app → device, **upload only**, over the
+    /// ordinary reliable CoC with the normal whole-object CRC + `transferResult` flow (WX3 / #1188).
+    ///
+    /// **Why 20 and not 11:** `11`–`15` stay reserved for the sensor work (M4) and `16`–`19` are the
+    /// USB-introduced map types (host-side only, which is why they are absent from this enum), so
+    /// `20` is simply the next free value. The WX3 issue text said `11`; the epic's handover comment
+    /// on #1185 supersedes it for exactly this reason.
+    ///
+    /// **Singleton:** `objectID` MUST be `0`. There is one weather bundle and an upload always
+    /// targets it, so the id selects nothing — any other value is answered `notFound` rather than
+    /// quietly treated as this one. It is *not* `0xFFFF`/new-only like a map: new-only exists
+    /// because a map cannot be replaced in place, whereas a bundle is **always** a replacement,
+    /// landing in the inactive one of the device's two slots so an interrupted upload leaves the
+    /// old one intact.
+    case weatherBundle = 20
 }
 
 /// **Control-plane** descriptor written to the `transferControl` characteristic —
@@ -66,9 +81,9 @@ public struct TransferControl: Equatable, Sendable {
         var data = Data(capacity: Self.encodedLength)
         data.append(op.rawValue)
         data.append(type.rawValue)
-        data.appendLE(objectID)
-        data.appendLE(totalLen)
-        data.appendLE(crc32)
+        data.appendUInt16LE(objectID)
+        data.appendUInt32LE(totalLen)
+        data.appendUInt32LE(crc32)
         return data
     }
 
@@ -80,9 +95,9 @@ public struct TransferControl: Equatable, Sendable {
         self.init(
             op: op,
             type: type,
-            objectID: data.readLE(at: b + 2),
-            totalLen: data.readLE(at: b + 4),
-            crc32: data.readLE(at: b + 8)
+            objectID: data.readUInt16LE(at: b + 2),
+            totalLen: data.readUInt32LE(at: b + 4),
+            crc32: data.readUInt32LE(at: b + 8)
         )
     }
 }
@@ -190,6 +205,7 @@ public enum StatusMessage: Equatable, Sendable {
     case storeChanged(StoreChanged)      // msg = 2, 6 bytes total
     case commandResult(CommandResult)    // msg = 3, 4 bytes total
     case downloadAnnounce(TransferControl)  // msg = 4, 13 bytes total (msg + 12-byte descriptor)
+    case weatherRequest                     // msg = 5, 1-byte hint; read context to acknowledge
     case unknown(UInt8)                  // forward-compatible: ignore
 
     public func encode() -> Data {
@@ -197,13 +213,13 @@ public enum StatusMessage: Equatable, Sendable {
         switch self {
         case .transferResult(let r):
             data.append(1)
-            data.appendLE(r.objectID?.raw ?? TransferControl.newObjectID)
+            data.appendUInt16LE(r.objectID?.raw ?? TransferControl.newObjectID)
             data.append(r.status.rawValue)
-            data.appendLE(r.committedOffset)
+            data.appendUInt32LE(r.committedOffset)
         case .storeChanged(let s):
             data.append(2)
             data.append(s.type.rawValue)
-            data.appendLE(s.revision)
+            data.appendUInt32LE(s.revision)
         case .commandResult(let c):
             data.append(3)
             data.append(c.command)
@@ -212,6 +228,8 @@ public enum StatusMessage: Equatable, Sendable {
         case .downloadAnnounce(let descriptor):
             data.append(4)
             data.append(descriptor.encode())
+        case .weatherRequest:
+            data.append(5)
         case .unknown(let msg):
             data.append(msg)
         }
@@ -230,15 +248,15 @@ public enum StatusMessage: Equatable, Sendable {
             // rather than throwing (which would silently drop the message and wedge
             // the transfer, since the notification handler decodes with `try?`).
             let status = TransferResult.Status(rawValue: data[b + 3]) ?? .error
-            let rawID: UInt16 = data.readLE(at: b + 1)
+            let rawID = data.readUInt16LE(at: b + 1)
             self = .transferResult(TransferResult(
                 objectID: rawID == TransferControl.newObjectID ? nil : DeviceObjectID(rawID),
-                status: status, committedOffset: data.readLE(at: b + 4)
+                status: status, committedOffset: data.readUInt32LE(at: b + 4)
             ))
         case 2:
             guard data.count >= 6 else { throw DescriptorError.truncated }
             guard let type = ObjectType(rawValue: data[b + 1]) else { throw DescriptorError.unknownType(data[b + 1]) }
-            self = .storeChanged(StoreChanged(type: type, revision: data.readLE(at: b + 2)))
+            self = .storeChanged(StoreChanged(type: type, revision: data.readUInt32LE(at: b + 2)))
         case 3:
             guard data.count >= 4 else { throw DescriptorError.truncated }
             guard let status = CommandResult.Status(rawValue: data[b + 2]) else {
@@ -253,6 +271,8 @@ public enum StatusMessage: Equatable, Sendable {
             // slice is under 12 bytes, and `.unknownOp` / `.unknownType` for a
             // malformed descriptor.
             self = .downloadAnnounce(try TransferControl(decoding: data[(b + 1)...]))
+        case 5:
+            self = .weatherRequest
         default:
             self = .unknown(msg)
         }
@@ -265,26 +285,4 @@ public enum DescriptorError: Error, Equatable, Sendable {
     case unknownOp(UInt8)
     case unknownType(UInt8)
     case unknownStatus(UInt8)
-}
-
-// MARK: - Little-endian (de)serialization
-
-extension Data {
-    fileprivate mutating func appendLE(_ value: UInt16) {
-        append(UInt8(value & 0xFF)); append(UInt8((value >> 8) & 0xFF))
-    }
-
-    fileprivate mutating func appendLE(_ value: UInt32) {
-        append(UInt8(value & 0xFF)); append(UInt8((value >> 8) & 0xFF))
-        append(UInt8((value >> 16) & 0xFF)); append(UInt8((value >> 24) & 0xFF))
-    }
-
-    fileprivate func readLE(at index: Index) -> UInt16 {
-        UInt16(self[index]) | (UInt16(self[index + 1]) << 8)
-    }
-
-    fileprivate func readLE(at index: Index) -> UInt32 {
-        UInt32(self[index]) | (UInt32(self[index + 1]) << 8)
-            | (UInt32(self[index + 2]) << 16) | (UInt32(self[index + 3]) << 24)
-    }
 }

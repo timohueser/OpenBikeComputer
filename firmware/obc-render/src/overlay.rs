@@ -8,7 +8,7 @@ use embedded_graphics::prelude::*;
 use crate::fill::fill_polygon;
 use crate::stroke::Stroker;
 use crate::viewport::round_pt;
-use crate::{DrawScratch, MapRenderer, Viewport, MAX_CROSSINGS};
+use crate::{DrawScratch, RenderScratch, Viewport, MAX_CROSSINGS};
 
 // Route direction chevrons. Anchored to route distance (not screen) so each stays pinned to a
 // ground spot, drawn only in a window around the rider. Spacing + window are screen-relative (a
@@ -55,10 +55,10 @@ pub trait RouteOverlaySource {
     fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)]));
 }
 
-impl MapRenderer {
+impl RenderScratch {
     /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along `course` (degrees CW
     /// from north), or a non-directional diamond when `course` is `None`. Fixed screen-space size.
-    /// Call **after** [`render`](MapRenderer::render). Skips drawing when the anchor projects outside
+    /// Call **after** [`render`](RenderScratch::render). Skips drawing when the anchor projects outside
     /// the view (with a small margin). `color` is the already-resolved device color.
     pub fn draw_marker<D>(
         &mut self,
@@ -107,13 +107,13 @@ impl MapRenderer {
             None => {
                 const R: f32 = 7.0;
                 let diamond = [round_pt(cx, cy - R), round_pt(cx + R, cy), round_pt(cx, cy + R), round_pt(cx - R, cy)];
-                fill_polygon(target, &diamond, &[4], color, w, h, &mut self.draw.xs);
+                fill_polygon(target, &diamond, &[4usize], color, w, h, &mut self.draw.xs);
             }
         }
     }
 
     /// Stroke an active route as a polyline overlay, with optional travel-direction chevrons. Call
-    /// **after** [`render`](MapRenderer::render).
+    /// **after** [`render`](RenderScratch::render).
     ///
     /// The route arrives through the [`RouteOverlaySource`] seam — chunked `(lon, lat)`
     /// microdegree polylines with per-chunk bbox + cumulative distance — so the renderer never
@@ -144,8 +144,10 @@ impl MapRenderer {
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let view = vp.visible_bbox();
-        // Split the borrow so the fills can take `xs` while we build the polyline in `screen`.
-        let DrawScratch { screen, xs } = &mut self.draw;
+        // Split the borrow so the fills can take `xs` while we build the polyline in the
+        // phase-shared projected-point buffer.
+        let DrawScratch { points, xs } = &mut self.draw;
+        let screen = points.screen();
         let (mut route_chunks, mut route_points, mut route_drawn) = (0usize, 0usize, 0usize);
 
         // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
@@ -189,6 +191,12 @@ impl MapRenderer {
                     let (bx, by) = vp.to_screen(b.0, b.1);
                     let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
                     let (dx, dy) = (bx - ax, by - ay);
+                    // Segment length by alpha-max-plus-beta-min (α=1, β=0.41) — a `sqrtf`-free
+                    // magnitude estimate. It is *not* exact: `m/|d|` spans [0.997, 1.081] over the
+                    // angle, so the direction below is only approximately normalized (|fwd| in
+                    // [0.925, 1.003]) and a ~22°-diagonal chevron draws up to 7.5% smaller than an
+                    // axis-aligned one. Accepted: the chevron is a direction glyph, not a measure,
+                    // and switching to `sqrtf` would shift every route-arrow render golden.
                     let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
                     if m < 1e-3 {
                         return;
@@ -204,7 +212,7 @@ impl MapRenderer {
 
     /// Stroke a single polyline of `(lon, lat)` microdegree points as a view-clipped overlay — the
     /// recorded **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
-    /// [`render`](MapRenderer::render).
+    /// [`render`](RenderScratch::render).
     pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
     where
         D: DrawTarget,
@@ -213,8 +221,9 @@ impl MapRenderer {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let projected = pts.into_iter().map(|(lon, lat)| vp.project(lon, lat));
         // The thick-segment fill scan-converts from a stack edge record, so the stroker needs only
-        // `screen`; `xs` stays reserved for the general polygon/chevron fills elsewhere.
-        let DrawScratch { screen, .. } = &mut self.draw;
+        // projected points; `xs` stays reserved for the general polygon/chevron fills elsewhere.
+        let DrawScratch { points, .. } = &mut self.draw;
+        let screen = points.screen();
         Stroker::new(target, screen, color, weight, w, h).stroke(projected);
     }
 }
@@ -248,9 +257,12 @@ where
     }
 }
 
-/// Fill a 3-point direction chevron centred at `c`, pointing along the unit vector `fwd`: a tip
-/// `tip` px ahead and two base corners swept `back` px behind and `half` px out each side. Shared by
-/// the user-position marker and the route arrows; the caller supplies `fwd` already normalized.
+/// Fill a 3-point direction chevron centred at `c`, pointing along `fwd`: a tip `tip` px ahead and
+/// two base corners swept `back` px behind and `half` px out each side. Shared by the user-position
+/// marker and the route arrows. `fwd` sets both the heading *and* the glyph's scale, so the caller
+/// normalizes it: the marker exactly (`sqrtf`), the route arrows only approximately (an
+/// alpha-max-plus-beta-min magnitude, |fwd| in [0.925, 1.003] — see [`draw_route`](RenderScratch::draw_route)), which is why a
+/// diagonal route chevron is drawn slightly smaller than an axis-aligned one.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fill_chevron<D>(
     target: &mut D,
@@ -273,7 +285,7 @@ pub(crate) fn fill_chevron<D>(
         round_pt(c.0 - fx * back + rx * half, c.1 - fy * back + ry * half),
         round_pt(c.0 - fx * back - rx * half, c.1 - fy * back - ry * half),
     ];
-    fill_polygon(target, &tri, &[3], color, w, h, xs);
+    fill_polygon(target, &tri, &[3usize], color, w, h, xs);
 }
 
 #[cfg(test)]

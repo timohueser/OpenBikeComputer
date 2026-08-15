@@ -1,0 +1,1050 @@
+//! The USB **bulk data plane**: the object stream the control plane ([`super::control`]) arms
+//! through [`TRANSFER_ARM`].
+//!
+//! This shares the host-tested descriptor/receiver codecs and transfer skeleton with
+//! [`crate::ble::data_plane`], but USB also owns endpoint drain/re-enumeration, map-set staging and
+//! link-checked map policy. The bulk endpoints carry **only the object's payload bytes** (no
+//! per-chunk framing); the shared wire state machines remain in [`obc_ble`]:
+//!
+//! - **Echo loopback** ([`run_echo`]): stream each packet straight back through an
+//!   [`obc_ble::Receiver`] (a running CRC, no reassembly buffer), verify **one** whole-object
+//!   CRC — the data plane proven end to end with zero storage.
+//! - **Uploads** ([`run_upload`]): bytes sink through the [`Receiver`] into storage. Routes, trips
+//!   and firmware images verify the descriptor's whole-object CRC. Map-shaped USB uploads instead
+//!   trust USB packet CRC/retry plus sEMMC block CRC/ECC, then validate byte length and format
+//!   header before atomically exposing the held magic. Uploads don't resume: an unplug, a stall or
+//!   an `op=3` abort discards the partial and the host re-sends from the start.
+//! - **Downloads** ([`run_download`]): the announce rides the control plane's `status` envelope
+//!   (`downloadAnnounce`) first, then raw chunks, one whole-object CRC.
+//!
+//! **The app keeps running underneath.** Each store call locks the shared SD + settings mutex for
+//! its own duration only and releases before the next endpoint `await`, so the ride loop's map
+//! render interleaves between chunks. This is the property Mass Storage could not have offered.
+
+use core::cell::RefCell;
+
+use defmt::{info, warn};
+use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
+use embassy_time::{Instant, Timer};
+use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
+use obc_ble::{ObjectType, Receiver, StatusMessage, TransferControl, TransferStatus};
+
+use crate::link::identity;
+use crate::link::stage::Stage;
+use crate::link::{transfer_result, transfer_result_at, Armed, TRANSFER_ACTIVE};
+use crate::object_store::ObjectStore;
+use crate::SharedStoreMutex;
+
+use super::control::ControlTx;
+use super::{EpIn, EpOut, MAX_PACKET};
+
+/// The control plane → data plane hand-off, the USB twin of [`crate::ble::state::TRANSFER_ARM`]:
+/// per-transport, because each data plane waits on its own. The *gate* it coordinates with
+/// ([`TRANSFER_ACTIVE`]) is shared across transports.
+pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal::new();
+
+/// An abort aimed at the in-flight USB transfer. Latched — an abort that races the transfer's own
+/// completion is drained at the same boundary that clears [`TRANSFER_ACTIVE`], before the terminal
+/// result goes out, so it can't leak into the next transfer.
+pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// One chunk of the object stream **device → host** — a download's `ep.write`, and the echo
+/// loopback's write-back. A full max packet, which for an IN endpoint is also the ceiling: the
+/// driver's `write` refuses anything longer, because one call is one packet.
+///
+/// The **OUT** direction has no such constant any more (#1173): a bulk read now returns whatever
+/// the core absorbed while the CPU was busy, up to [`BULK_BURST_LEN`](super::BULK_BURST_LEN), and
+/// the loops below take `n` as it comes. That asymmetry is the point of the change — the IN path is
+/// untouched by it.
+const CHUNK_LEN: usize = MAX_PACKET as usize;
+
+/// How long the bulk OUT endpoint must stay silent before [`drain_bulk_out`] calls it empty.
+///
+/// Generous next to a high-speed microframe (125 µs): once the endpoint stops NAKing, a host's
+/// queued transfers are delivered back to back, so a gap this long means there is nothing left
+/// rather than that the next one is slow. Still true with burst arming (#1173) — a burst that the
+/// host stops part-way through is not held back, because the driver publishes every packet as it
+/// lands and only the *re-arm* waits for the burst to close.
+const DRAIN_QUIET_MS: u64 = 20;
+
+/// Ceiling on one drain.
+///
+/// **The budget has to fit inside the peer's abort-ack wait, and it is not the only thing in
+/// there.** The host gives an abort 2 s (`ABORT_ACK_TIMEOUT_MS`, `builder/app/src/lib/usb/
+/// client.ts`) and this drain is one term; the other is whatever the abort's own cleanup costs,
+/// which for a **volume set** is deleting up to 32 shard files. Both run before the answer goes
+/// out. The drain is therefore sequenced *first* (see the abort arm in [`run_upload`]), so the
+/// endpoint goes quiet while the deletes are still running rather than after them, and the two do
+/// not stack in front of the same deadline.
+///
+/// Overrunning is survivable rather than harmless: the host's `sendAbort` swallows the timeout and
+/// its busy latch still holds the slot, so the answer arriving late costs a retry some seconds
+/// rather than correctness. What makes that true is on the host side and is worth naming, because
+/// it is not what it looks like: `statuses.drain()` runs when a transfer slot is *taken*, so a
+/// result landing after this one was given up on is still queued when the next upload starts. Both
+/// of the host's readers therefore **consume and discard** a stale `aborted` rather than merely
+/// declining to match it (`checkUploadOpen` and `awaitTransferResult`) — a mailbox that is a plain
+/// FIFO hands an unmatched message straight to the next taker.
+const DRAIN_BUDGET_MS: u64 = 750;
+
+/// Control plane → data plane: "drain the bulk pipe before I answer this idle abort."
+///
+/// The bulk OUT endpoint belongs to this task, so the control plane cannot read it; it asks, waits
+/// for [`DRAIN_DONE`], and answers. See
+/// [`TransferDisposition::AnswerIdleAbort`](crate::link::transfer::TransferDisposition) for why that
+/// moment and no other.
+static DRAIN_REQ: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Data plane → control plane: the pipe is quiet (or the drain gave up), answer now.
+///
+/// Carries the [`DRAIN_GEN`] value it answers, so a *late* completion cannot satisfy a later
+/// request's wait. Without that, a request that timed out and then completed would leave a `DONE`
+/// standing, and the next abort's `wait()` would return before its drain had run at all — an answer
+/// racing ahead of the emptying it is supposed to follow.
+static DRAIN_DONE: Signal<CriticalSectionRawMutex, u32> = Signal::new();
+
+/// Which drain request is current. Bumped by every request, echoed by the completion.
+static DRAIN_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Control plane → data plane: "the endpoints went away — tear the link down."
+///
+/// The idle loop used to learn this from its own `ep_out.read` failing, and that read is gone (see
+/// the `select` in [`run`]: reading while nothing is armed is what ate a pipelined manifest). The
+/// control plane reads *its* OUT endpoint continuously and cannot stop, so it observes the same edge
+/// on the same poll — and it genuinely is the same edge, because a configuration change enables and
+/// disables every endpoint of the interface together, never one half of the pair.
+///
+/// It matters that something still observes it while idle: the teardown this triggers is what
+/// abandons a half-uploaded volume set when the cable goes between two of its shards (spec §1
+/// principle 4 — transfers restart, never resume, and a set with no manifest is not a map).
+///
+/// Latched, and deliberately so: a disable landing *during* a transfer is answered by that
+/// transfer's own read failing, and the teardown that follows clears this. The teardown therefore
+/// resets it on every path out of the inner loop — which **narrows** the window rather than closing
+/// it: the control plane may observe the same disable just after that reset, and then the next
+/// enumeration's idle loop takes this arm immediately. That costs one no-op teardown (there is
+/// nothing in flight and the set it would abandon is already gone) and a second pass through
+/// `wait_enabled`, which is why the race is left rather than interlocked.
+pub(crate) static LINK_DOWN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// How long the control plane waits for the data plane to finish draining before answering anyway.
+/// A little over [`DRAIN_BUDGET_MS`], since that is what it is waiting on.
+const DRAIN_ACK_TIMEOUT_MS: u64 = DRAIN_BUDGET_MS + 250;
+
+/// Ask the data plane to empty the bulk pipe, and wait for it. Called from the control plane when it
+/// is about to answer an abort that found nothing in flight.
+///
+/// Bounded, and a timeout is not a control-plane error: the host still receives its abort answer
+/// and can reset the link. A CRC-checked object rejects any stray prefix; a link-checked map is
+/// expected to fail its held-magic/header checks, but must not rely on a whole-file digest here.
+/// **A timeout must withdraw the request**, though — a
+/// `DRAIN_REQ` left standing is the first arm of the data plane's idle `select`, so it would fire
+/// against the *next* transfer and eat up to a full drain window of its opening payload.
+pub(crate) async fn drain_before_idle_abort() {
+    request_drain().await
+}
+
+/// Ask the data plane to empty the bulk pipe **after** an announce was refused on the control plane
+/// with its payload already in flight.
+///
+/// The same handshake as [`drain_before_idle_abort`], at the other end of the same problem. The host
+/// pipelines an upload's bytes behind its announce, so a descriptor-open reject (storage full, a
+/// size ceiling, a set rule) is answered with a window of `transferOut`s already submitted — and
+/// with nothing armed to read them the endpoint NAKs, which means those transfers never settle and
+/// the host's own send loop blocks in front of the abort it would otherwise send. Emptying the pipe
+/// is what lets it unwind.
+///
+/// **After the answer, never before.** Draining first would spend the whole budget with the host
+/// still pumping, because the thing that makes it stop is the very status sitting behind the drain —
+/// the mistake `drain_bulk_out`'s own note records. Answer, then empty.
+pub(crate) async fn drain_after_refused_announce() {
+    request_drain().await
+}
+
+async fn request_drain() {
+    let generation = DRAIN_GEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed).wrapping_add(1);
+    DRAIN_DONE.reset();
+    DRAIN_REQ.signal(());
+    let deadline = embassy_time::Duration::from_millis(DRAIN_ACK_TIMEOUT_MS);
+    match embassy_time::with_timeout(deadline, DRAIN_DONE.wait()).await {
+        Ok(answered) if answered == generation => {}
+        Ok(_) => warn!("usb: [bulk] discarded a stale idle-abort drain completion"),
+        Err(_) => {
+            // Withdraw the request. The data plane may still be about to observe it — that is
+            // harmless (it drains an already-quiet pipe and its completion is discarded by the
+            // generation check above), whereas leaving it latched is not.
+            DRAIN_REQ.reset();
+            warn!("usb: [bulk] idle-abort drain did not answer in time — answering the abort anyway");
+        }
+    }
+}
+
+/// **Read and discard whatever the peer still had queued, before this exchange's answer goes out.**
+///
+/// The host does not wait for the device between chunks — the bulk channel is unframed and
+/// unacknowledged, which is what lets an upload keep several `transferOut`s on the wire at once
+/// (`UPLOAD_WINDOW` × `DEFAULT_CHUNK_SIZE`, 256 KiB today) — and WebUSB cannot cancel a submitted
+/// transfer. So a transfer that ends early leaves bytes still arriving, and nothing else in this
+/// module will take them: with no descriptor armed the endpoint is un-armed and simply NAKs, which
+/// holds the leftovers on the wire indefinitely rather than clearing them.
+///
+/// # Where this is allowed to run, and why every call site is a termination the host knows about
+///
+/// **Draining only works where the peer has stopped pumping**, and what makes it stop is being told
+/// the exchange is over. So every call site is either side of that message:
+///
+/// - The **abort handshake**, before the answer: the host has thrown out of its send loop, it is
+///   holding an `op = 3` open, and the spec has it wait for `transferResult(aborted)` before it does
+///   anything else. That is an abort against a live upload (the arm in [`run_upload`]), against a
+///   live echo (the arm in [`run_echo`]), or against nothing at all (the control plane, through
+///   [`drain_before_idle_abort`]).
+/// - A **device-originated termination**, *after* the answer: a refused announce, a card that
+///   refused an append. The host had a window in flight and no way to recall it; those transfers
+///   settle only when something reads them, and until they settle the host cannot even reach the
+///   abort that would ask us to. So the terminal `transferResult` goes out first — that is what
+///   makes the host stop generating chunks — and the pipe is emptied immediately behind it.
+///
+/// **The order is the whole lesson.** An earlier cut drained *before* answering on those paths and
+/// bought nothing but [`DRAIN_BUDGET_MS`] of delay and a warn, because the host cannot stop until it
+/// has been told and the telling was queued behind the drain. It was then deleted outright, which
+/// was correct only while the idle loop was reading unclaimed bytes the whole time; it no longer is
+/// (that read is what ate a pipelined manifest — see [`run`]), so the drain is back, on the far side
+/// of the answer.
+///
+/// A **completed** transfer needs none of this: the receiver consumed exactly the announced length,
+/// so a commit refusal or a failed final flush leaves nothing behind.
+#[inline(never)]
+async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
+    let deadline = Instant::now() + embassy_time::Duration::from_millis(DRAIN_BUDGET_MS);
+    let mut dropped = 0usize;
+    loop {
+        // **A drain yields to an armed transfer**, and it is worth being exact about where that can
+        // actually happen rather than claiming it closes the whole bug class.
+        //
+        // `TRANSFER_ARM` has exactly one signaller, the control task. So at the two drains that task
+        // *awaits* — the idle-abort handshake and the post-refusal one, both through
+        // [`request_drain`] — no arm can appear while the drain runs, because the only thing that
+        // could raise one is parked on it. This test is dead there in the ordinary case, and live in
+        // one: [`drain_before_idle_abort`] gives up after [`DRAIN_ACK_TIMEOUT_MS`] and withdraws its
+        // request, which frees the control task to classify the next descriptor while this drain is
+        // still running.
+        //
+        // Where it is plainly live is the drains this task reaches on its own: [`run_upload`]'s two
+        // post-answer drains (`close_transfer` has already released the gate, so the control task is
+        // free to arm the retry) and the re-enumeration sweep in [`run`].
+        //
+        // The residual, stated rather than waved away: a device can serialise a post-answer drain,
+        // an idle-abort drain and a set's worth of file deletes against the host's 2 s abort budget,
+        // and `sendAbort` swallows that timeout — so a retry's pipelined payload *can* reach a drain
+        // that is still running. This test is what keeps that from starving the retry; the retry
+        // still pays a poisoned first chunk, which fails the target's validation and is retried,
+        // and that converges where starvation does not. In practice each drain ends one
+        // [`DRAIN_QUIET_MS`] window (20 ms) after the peer stops, so the window is small — small,
+        // not absent.
+        //
+        // Burst arming (#1173) moves that residual in both directions, and neither is large. Each
+        // `read` here now discards up to a whole burst instead of one packet, so a given backlog is
+        // emptied in an eighth of the turns — the drain converges sooner and the yield above is
+        // reached sooner. Against that, whatever the host sends *after* the drain gives up stages a
+        // burst deep rather than a packet deep before the endpoint NAKs, so the poisoned first
+        // chunk the paragraph above accepts can be 4 KiB rather than 512 B. It is the same one
+        // failed object either way: the retry is per object, not per byte.
+        if TRANSFER_ARM.signaled() {
+            warn!("usb: [bulk] a transfer armed mid-drain — stopping rather than eating its payload");
+            break;
+        }
+        match select(ep.read(buf), Timer::after_millis(DRAIN_QUIET_MS)).await {
+            Either::First(Ok(n)) => dropped += n,
+            // The endpoint went away — an unplug drains it far more thoroughly than we can.
+            Either::First(Err(_)) => break,
+            // Quiet for a whole window: the peer has nothing more queued.
+            Either::Second(()) => break,
+        }
+        if Instant::now() >= deadline {
+            warn!("usb: [bulk] still receiving {} ms into an abort drain — answering anyway", DRAIN_BUDGET_MS);
+            break;
+        }
+    }
+    if dropped > 0 {
+        info!("usb: [bulk] drained {} stray bytes the host had already queued", dropped);
+    }
+}
+
+/// Whether a transfer runner answered, or the endpoint went away under it.
+enum TransferOutcome {
+    Answered,
+    LinkDropped,
+}
+
+/// Close the current descriptor's ownership before publishing its terminal answer. Receipt of
+/// `transferResult` is the host's permission to send the next descriptor, so keeping the gate set
+/// until after the send returned would create a real `busy` race. Drain only the *old* transfer's
+/// latched abort first; an abort arriving after the clear belongs to the next descriptor.
+fn close_transfer() {
+    let _ = TRANSFER_ABORT.try_take();
+    // Hand the scratch arena's staging arm back before the gate opens (#1146 P2): the ride loop
+    // reclaims off this level, and every terminal path in this module funnels through here, so
+    // "which way did the transfer end" is not a fact the arena has to know.
+    super::release_stage();
+    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
+}
+
+/// Serve the armed transfers forever. Parks on `wait_enabled` before configuration and after an
+/// unplug; on any endpoint failure it resets the link state — discarding an in-flight upload and
+/// releasing the store's open handles — exactly as `ble::run` does after a disconnect.
+pub(crate) async fn run(
+    tx: &ControlTx,
+    mut ep_in: EpIn,
+    mut ep_out: EpOut,
+    buf: &'static mut [u8],
+    store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+) -> ! {
+    loop {
+        ep_out.wait_enabled().await;
+        info!("usb: [bulk] endpoint enabled — data plane ready");
+        // **The re-enumeration stray sweep.** It was written against a driver fact — the OTG core
+        // stages received packets per endpoint, and that staging was cleared at construction and
+        // inside `read()` and *nowhere else*, so `endpoint_set_enabled` re-primed `pktcnt`/`EPENA`
+        // over the top of a packet latched by a cable pulled mid-flush, and the next session's
+        // first `read` opened with up to 512 B of a dead upload. That poisoned the next object's
+        // opening validation and cost a whole retry.
+        //
+        // **That fact no longer holds, and this stays anyway.** The vendored driver (#1173,
+        // `vendor/embassy-usb-synopsys-otg`) resets the staging cursors on the enable/disable edge
+        // and on a bus reset's `configure_endpoints`, so nothing of the old session survives into
+        // this one by construction — the sweep can no longer find the packet it was written for.
+        // What it can still find is anything a host queued between the endpoint coming up and this
+        // task reaching the idle loop, which is cheap to look for and impossible to reason away
+        // from here; and being the same shape as the fix in the driver, it is what would keep the
+        // failure survivable if that driver is ever swapped back or bumped.
+        //
+        // This is the one place a drain needs no handshake to be safe: the endpoint has only just
+        // been configured, so the host cannot yet have opened anything, and there is by
+        // construction nothing armed to claim what it finds.
+        drain_bulk_out(&mut ep_out, buf).await;
+        loop {
+            // **Nothing reads the bulk pipe while nothing is armed**, so nothing is discarded: the
+            // bytes a pipelining host already put on the wire wait until a transfer arms and reads
+            // them — hardware flow control, which is the only buffer that cannot lose a race.
+            //
+            // Being exact about where they wait, because it is not all on the wire and the number
+            // moved with #1173. The driver keeps the endpoint armed one *transfer* ahead of the
+            // reader, so the core absorbs up to one armed transfer into the driver's per-endpoint
+            // staging buffer before it starts NAKing — 512 B when that transfer was one packet,
+            // `BULK_BURST_LEN` (4 KiB) now that the bulk OUT endpoint arms a burst. Those bytes are
+            // **delivered, not discarded**: the next armed `read` drains everything staged in one
+            // call, in order, which is precisely what this arm's deletion is for. Past that the
+            // endpoint NAKs and the rest genuinely does wait on the wire. So the burst widens the
+            // soft buffer in front of the hard one and changes nothing about who gets the bytes —
+            // it is the 296-byte manifest below fitting with three and a half kilobytes to spare.
+            //
+            // This arm used to be `ep_out.read(buf)`, discarding whatever it found on the reasoning
+            // that a valid sender waits for its control-frame reply. It does not, by design: the
+            // host pipelines an object's payload behind its announce because a descriptor reject is
+            // asynchronous (`builder/app/src/lib/usb/client.ts`). So the discard was racing the
+            // control plane's `classify` — which awaits the shared store lock and can therefore sit
+            // behind a map render for tens of milliseconds — for the same bytes, and a small enough
+            // object lost outright: the field log has a whole 296-byte set manifest discarded 18 ms
+            // *before* the announce that claimed it was answered, leaving `run_upload` armed for
+            // bytes that no longer existed and the upload wedged at 0% forever.
+            //
+            // What still cleans up genuinely unclaimed bytes is the **explicit** drain handshake
+            // (the first arm below): the host follows every failed exchange with an `op = 3` and
+            // waits, which is the one moment it is provably not pumping. That protocol postdates
+            // this discard and subsumes it.
+            //
+            // The first arm is the control plane asking for that drain before it answers an abort
+            // that found nothing in flight (see `drain_before_idle_abort`). It lives here rather
+            // than in the control plane because this task owns the endpoint, and it sits ahead of
+            // the arm branch because the whole point is to finish before the peer's next descriptor.
+            // The third is the endpoint-lost edge the idle read used to carry (see [`LINK_DOWN`]).
+            let armed = match select3(DRAIN_REQ.wait(), TRANSFER_ARM.wait(), LINK_DOWN.wait()).await {
+                Either3::First(()) => {
+                    let generation = DRAIN_GEN.load(core::sync::atomic::Ordering::Relaxed);
+                    drain_bulk_out(&mut ep_out, buf).await;
+                    DRAIN_DONE.signal(generation);
+                    continue;
+                }
+                Either3::Second(armed) => armed,
+                Either3::Third(()) => {
+                    info!("usb: [bulk] endpoints disabled while idle — re-arming");
+                    break;
+                }
+            };
+            let outcome = match armed {
+                Armed::Echo(desc) => run_echo(tx, &mut ep_in, &mut ep_out, &desc, buf).await,
+                Armed::Upload(desc, rx) => {
+                    let target = if desc.ty == ObjectType::Map { MapTarget::Map } else { MapTarget::Object };
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
+                }
+                Armed::SetShard(desc, rx, part) => {
+                    let target = MapTarget::Shard(part);
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
+                }
+                Armed::SetTerrain(desc, rx) => {
+                    let target = MapTarget::Terrain;
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
+                }
+                Armed::SetManifest(desc, rx) => {
+                    let target = MapTarget::Manifest;
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
+                }
+                Armed::Download(desc) => run_download(tx, &mut ep_in, store, shared, &desc, buf).await,
+            };
+            if let TransferOutcome::LinkDropped = outcome {
+                warn!("usb: [bulk] link dropped mid-transfer — re-arming (uploads restart)");
+                break;
+            }
+        }
+        // The endpoint went away (an unplug, or the host re-configured). Discard any in-flight
+        // upload, release the store's open handles, clear the one-transfer gate, and drain any
+        // latched arm/abort so the next enumeration starts clean.
+        //
+        // The set teardown is **here** rather than inside `link_reset`, because this is the one
+        // place that knows the *cable* is what went away: `link_reset` also runs on a BLE
+        // disconnect, and a phone walking out of range must not delete gigabytes the cable is
+        // mid-way through writing. Nothing survives an unplug — the set has no manifest, so it is
+        // not a map, and there is no way to resume it on the next enumeration (spec §1 principle 4).
+        {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().link_reset(&mut guard);
+            store.borrow_mut().set_upload_abort(&mut guard);
+        }
+        super::release_stage(); // the arena's staging arm, if this teardown interrupted a transfer
+        TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
+        TRANSFER_ARM.reset();
+        TRANSFER_ABORT.reset();
+        // The drain handshake too, and for a sharper reason than tidiness: `DRAIN_REQ` is the
+        // **first** arm of the idle `select` above, so one left standing across an unplug — signalled
+        // by a control plane whose wait then died with the cable — fires against the next
+        // enumeration's first transfer and eats up to a drain window of its opening payload.
+        DRAIN_REQ.reset();
+        DRAIN_DONE.reset();
+        // And the endpoint-lost edge, for the sharper half of the same reason: this teardown *is*
+        // the answer to it, so carrying it into the next enumeration would abandon the next set
+        // between two of its shards. The reset narrows that window without closing it — the control
+        // plane can observe the same disable a moment later — and the leftover costs one no-op
+        // teardown, which is why it is not interlocked. See [`LINK_DOWN`].
+        LINK_DOWN.reset();
+        // `wait_enabled` returns immediately while the endpoint is still up, so a *persistent*
+        // driver-level error would hot-spin this loop — and on a cooperative executor that starves
+        // the ride loop, freezing the map. Back off a beat, like the BLE CoC accept loop.
+        Timer::after_millis(200).await;
+    }
+}
+
+/// Which final file a map-shaped upload streams into. All three of these hold their format magic
+/// back and stream straight into the file they will commit as; everything else stages through
+/// `/routes/UPLOAD.TMP` and is copied.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MapTarget {
+    /// Not a map at all: the ordinary temp-then-promote path.
+    Object,
+    /// A single map — `MP{id}.OBM`, id minted at the first byte (#927).
+    Map,
+    /// One shard of the volume set in flight — `MS{id}S{kk}.OBM` (#1039). The part says which.
+    Shard(obc_ble::SetPart),
+    /// The set's terrain shard — `MS{id}.OBD`, an OBCT raster (#1044). There is at most one per
+    /// set, so unlike a shard it needs nothing to say *which* file it is.
+    Terrain,
+    /// The set manifest — `MS{id}.OBS`, and the commit point of the whole set (`OBCA_Spec.md` §5.4).
+    Manifest,
+}
+
+impl MapTarget {
+    /// Whether this target withholds its leading four magic bytes (and therefore whether the
+    /// stream's file offset starts at [`obc_ble::MAGIC_LEN`] rather than 0).
+    fn holds_magic(self) -> bool {
+        !matches!(self, MapTarget::Object)
+    }
+}
+
+/// An upload: sink bulk bytes through the [`Receiver`] into storage, validate according to object
+/// policy, atomically commit, and answer with the assigned id.
+#[allow(clippy::too_many_arguments)]
+async fn run_upload(
+    tx: &ControlTx,
+    ep: &mut EpOut,
+    store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+    desc: &TransferControl,
+    mut rx: Receiver,
+    target: MapTarget,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    info!("usb: [bulk] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
+    // A **map** (#927) is the one type that does not stream into `/routes/UPLOAD.TMP`: at hundreds
+    // of megabytes the temp-then-copy promote would double both the write time and the free
+    // space required, so a map streams straight into its final `MP{id}.OBM` with its first four bytes
+    // — the OBCM magic — withheld here and patched in at commit. `map_id` is the assigned object id,
+    // carried in this frame because a map holds no slot in the store to remember it in.
+    //
+    // A volume set (#1039) is the same shape N+1 times over: every shard and the manifest stream
+    // into their own final name with their own magic held back, and `map_id` carries the **set** id
+    // the store minted at the first shard. The one difference that matters is *between* the
+    // transfers, and it lives in the store's session, not here.
+    let holds_magic = target.holds_magic();
+    if holds_magic {
+        // Maps use the USB/sEMMC path's packet/block integrity instead of spending ~20 CPU
+        // cycles/byte on a second serial CRC pass. The descriptor CRC remains on the wire (and in
+        // the set metadata the host built); only this device-side fold is skipped. Atomicity still
+        // comes from the held magic below, and every commit validates the stored length/header
+        // before that magic is exposed. Routes, trips, firmware images and echo keep the full
+        // whole-object check because they use the shared object protocol's fingerprint/DFU rules.
+        rx = Receiver::new_link_checked(desc).expect("an armed upload descriptor is an upload");
+    }
+    let mut held = obc_ble::HeldMagic::new();
+    let mut map_id = 0u16;
+    // Open the SD file here — at the first real byte — rather than when the control plane armed it:
+    // a host that sends `transferControl` and then never writes holds no storage handle (it only
+    // wedges its own one-transfer gate until it unplugs).
+    let began = {
+        let mut guard = shared.lock().await;
+        let opened: Option<u16> = match target {
+            // The temp path has no id to hand back; `0` stands in and is never reported (the
+            // commit's own `upload_finish` returns the assigned one).
+            MapTarget::Object => store.borrow_mut().upload_begin(&mut guard).then_some(0),
+            MapTarget::Map => store.borrow_mut().map_upload_begin(&mut guard),
+            MapTarget::Shard(part) => store.borrow_mut().set_shard_begin(&mut guard, part),
+            MapTarget::Terrain => store.borrow_mut().set_terrain_begin(&mut guard),
+            MapTarget::Manifest => store.borrow_mut().set_manifest_begin(&mut guard),
+        };
+        match opened {
+            Some(id) => {
+                map_id = id;
+                // Reserve the whole chain now that the length is known and the file is open, under
+                // the lock that opened it. Advisory — a refusal costs throughput, never correctness
+                // — and the point is *when* it runs: every cluster it books here is four
+                // single-block FAT writes that would otherwise land between the staged bursts.
+                store.borrow_mut().upload_reserve(&mut guard, rx.total_len());
+                true
+            }
+            None => false,
+        }
+    };
+    if !began {
+        warn!("usb: [bulk] cannot open the upload target — rejecting");
+        if holds_magic {
+            crate::link::map_transfer_storage_failed();
+        }
+        // Answer first, *then* empty the pipe — see `drain_bulk_out`. The host announced this
+        // object's whole length and has a window of it already submitted; the status is what stops
+        // it generating more, and the drain is what lets the transfers it already handed to the
+        // controller settle, since with nothing armed the endpoint only NAKs them.
+        close_transfer();
+        tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        drain_bulk_out(ep, buf).await;
+        return TransferOutcome::Answered;
+    }
+    if holds_magic {
+        // Raise the on-glass card now: from here the SD bus is saturated for the transfer and the map
+        // plane's own reads queue behind this transfer. Unexplained, that reads as a wedged device.
+        // A set raises it once per file rather than once per set — the card tracks the transfer in
+        // flight, and per-set aggregation needs a UI that knows a set is one map (P4d).
+        crate::link::map_transfer_started(rx.total_len());
+    }
+    // Ask the ride loop for the scratch arena's staging arm (#1146 P2), **after** the card above has
+    // been published: the loop's precondition is that the transfer screen is up, and the card is
+    // what puts it there, so asking in this order makes the answer available on the loop's very next
+    // pass. A refusal is not a failure — the stage degrades to unstaged appends (see [`Stage`]).
+    //
+    // Only a map-shaped payload asks. Everything else (a route, a trip, a firmware image) is
+    // megabytes at most, raises no card, and therefore could never satisfy the `render ⊥ usb`
+    // precondition — the staging dial was always about the map upload that saturates the bus for
+    // sustained bulk traffic (see [`STAGE_LEN`](crate::usb::STAGE_LEN)'s own note), and asking for the arm while
+    // the rider may still be browsing the map would be asking for the wrong thing.
+    let staged = holds_magic && crate::usb::request_stage().await;
+    if staged {
+        let armed = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().upload_fast_begin(&mut guard)
+        };
+        if !armed {
+            // Staging still preserves correctness and batching; only the overlap/coalescing layer
+            // degrades. This should be unreachable unless an earlier upload failed to tear down.
+            warn!("usb: [bulk] deferred map writer unavailable — keeping synchronous staged writes");
+        }
+    }
+    // A map's placeholder magic is already on the card (`map_upload_begin` and its set twins), so
+    // its payload starts at file offset 4 — the stage needs that or every flush lands misaligned.
+    let mut stage = Stage::new(staged, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
+    let started = Instant::now();
+    // Retain the investigation's three-bucket accounting in the shipping path. `receive_time`
+    // makes the CRC-policy change visible: it contains Receiver::push (including CRC when enabled),
+    // while `store_time` contains Stage::push/flush and therefore the FAT, mux and deferred FLPR
+    // joins. Printed on completion and abort so a partial hardware run is still evidence.
+    let mut usb_wait = embassy_time::Duration::from_ticks(0);
+    let mut receive_time = embassy_time::Duration::from_ticks(0);
+    let mut store_time = embassy_time::Duration::from_ticks(0);
+    while !rx.is_complete() {
+        // One read is a **burst**, not a packet (#1173): up to
+        // [`BULK_BURST_LEN`](crate::usb::BULK_BURST_LEN) of whatever the core absorbed while the
+        // previous pass was advancing the receiver and writing the card. Everything below is length-agnostic
+        // and was already — `Receiver::push`, `HeldMagic::feed` and `Stage::push` all take a slice
+        // of any size — so the burst changes how *often* this loop turns, not what it does.
+        //
+        // A saturating host is bounded by Stage's explicit cooperative cadence: every four 64 KiB
+        // halves it gives the ride loop a guaranteed turn (and therefore a watchdog feed).
+        let read_began = Instant::now();
+        let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(n)) if n > 0 => {
+                usb_wait += read_began.elapsed();
+                n
+            }
+            Either::First(Ok(_)) => {
+                usb_wait += read_began.elapsed();
+                continue; // a zero-length packet advances nothing
+            }
+            Either::First(Err(e)) => {
+                // The endpoint failed or was disabled with bytes still expected. Discard the
+                // partial; the host re-uploads from the start. There is no live exchange left to
+                // answer, and a late `aborted` could be consumed as the next descriptor's result.
+                {
+                    let mut guard = shared.lock().await;
+                    discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+                }
+                info!("usb: [bulk] upload interrupted ({:?}) — discarded", defmt::Debug2Format(&e));
+                close_transfer();
+                return TransferOutcome::LinkDropped;
+            }
+            Either::Second(()) => {
+                // The host aborted (op 3). **Drain before anything else**: this is the one moment
+                // the host is provably quiet (see `drain_bulk_out`), and the discard below can be a
+                // whole set's worth of shard deletes — running those first would spend the host's
+                // abort-ack budget before the endpoint had even started emptying. (The arena's
+                // staging arm is given back by `close_transfer` either way, so the order does not
+                // change how long it is held.)
+                drain_bulk_out(ep, buf).await;
+                {
+                    let mut guard = shared.lock().await;
+                    discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+                }
+                info!(
+                    "usb: [bulk] split over {} B: usb-wait {} ms, receive {} ms, store {} ms, total {} ms",
+                    rx.committed_offset(),
+                    usb_wait.as_millis(),
+                    receive_time.as_millis(),
+                    store_time.as_millis(),
+                    started.elapsed().as_millis()
+                );
+                info!("usb: [bulk] upload aborted by the host");
+                close_transfer();
+                tx.send_status(transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
+                return TransferOutcome::Answered;
+            }
+        };
+        let receive_began = Instant::now();
+        let consumed = rx.push(&buf[..n]);
+        receive_time += receive_began.elapsed();
+        // `push` clamps at the announced length, and a peer that overruns it is a protocol error
+        // its own docs say the caller must treat as one — so say so rather than dropping the
+        // surplus in silence. Structurally unreachable while the endpoint armed one packet at a
+        // time (the announce guard rejects an over-long object before a byte lands); with bursts
+        // it is a real diagnostic, and it is the line that distinguishes "the host sent too much"
+        // from the reject probe's "the bytes were not the ones announced".
+        if consumed < n {
+            warn!(
+                "usb: [bulk] host overran the announced length by {} B (read {}, {} of {} taken) — surplus dropped",
+                n - consumed,
+                n,
+                rx.committed_offset(),
+                rx.total_len()
+            );
+        }
+        // The receiver always counts every payload byte and, when policy requires it, also folds
+        // the CRC. Only the *write* skips a map-shaped object's held magic.
+        let write = if holds_magic { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
+        // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one
+        // multi-block burst instead of a CMD24 per 512 B. It is what makes the fork worth having.
+        let store_began = Instant::now();
+        let appended = stage.push(write, store, shared).await;
+        store_time += store_began.elapsed();
+        if !appended {
+            {
+                let mut guard = shared.lock().await;
+                discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+            }
+            warn!("usb: [bulk] SD append failed — upload rejected");
+            if holds_magic {
+                crate::link::map_transfer_storage_failed();
+            }
+            close_transfer();
+            tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+            // The rest of the announced object is still coming and nothing will be armed to read
+            // it. Same order as the open failure above: answer, then empty.
+            drain_bulk_out(ep, buf).await;
+            return TransferOutcome::Answered;
+        }
+        if holds_magic {
+            // Received, not durable: up to one staging half (64 KiB) is still in RAM, and the host
+            // may be another `UPLOAD_WINDOW` of chunks ahead of that. The card the rider sees is a
+            // liveness indicator, not a commit count — the commit is the terminal result.
+            crate::link::map_transfer_progress(rx.committed_offset());
+        }
+    }
+    // The tail. An object almost never ends on a batch boundary, so the last flush is short by
+    // definition — and until it lands, those bytes exist only in RAM.
+    let store_began = Instant::now();
+    let flushed = stage.flush(store, shared).await;
+    store_time += store_began.elapsed();
+    if !flushed {
+        {
+            let mut guard = shared.lock().await;
+            discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+        }
+        warn!("usb: [bulk] SD append failed on the final flush — upload rejected");
+        if holds_magic {
+            crate::link::map_transfer_storage_failed();
+        }
+        close_transfer();
+        tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        return TransferOutcome::Answered;
+    }
+    // The commit target is the object type: a `fwImage` promotes to /UPDATE.BIN in the card root
+    // (staging, no catalog id, no store-revision bump — spec §7.6); a `trip` commits into the trip
+    // catalog as `TP{id}.OBT` (bumping the *trip* store, §4.3); a `map` patches the held magic into
+    // `MP{id}.OBM` and becomes the selected map (#927); a set's shard and manifest patch theirs into
+    // `MS{id}S{kk}.OBM` / `MS{id}.OBS`, the manifest last and only after every shard has landed
+    // (#1039); everything else is a route.
+    let is_fwimage = desc.ty == ObjectType::FwImage;
+    let is_trip = desc.ty == ObjectType::Trip;
+    let (id, status) = {
+        let mut guard = shared.lock().await;
+        let mut st = store.borrow_mut();
+        match target {
+            // A map shorter than a magic can't reach here — the announce guard rejects anything
+            // below a full OBCM header — but the codec is total, so answer `error` rather than
+            // fabricate one.
+            MapTarget::Map => {
+                let status = match held.take() {
+                    Some(magic) => st.map_upload_finish(&mut guard, &rx, map_id, magic),
+                    None => TransferStatus::Error,
+                };
+                (map_id, status)
+            }
+            // A shard's result echoes its **part**, not the set id: that is what the host correlates
+            // its slot against (§4.1's "a correlated close"), and it is what says *which* file of
+            // the set just committed.
+            MapTarget::Shard(part) => {
+                let status = match held.take() {
+                    Some(magic) => st.set_shard_finish(&mut guard, &rx, map_id, part, magic),
+                    None => TransferStatus::Error,
+                };
+                (part.encode(), status)
+            }
+            // The terrain shard's result echoes the **set id**, like the manifest's: a raster has
+            // no part to correlate against, and the set id is the only identity it has. The host
+            // sends it as `new`, so it correlates on the transfer slot rather than the id.
+            MapTarget::Terrain => {
+                let status = match held.take() {
+                    Some(magic) => st.set_terrain_finish(&mut guard, &rx, map_id, magic),
+                    None => TransferStatus::Error,
+                };
+                (map_id, status)
+            }
+            // The manifest's result carries the **assigned set id** — the one moment the set's
+            // identity crosses the wire, and the answer to "what did my upload become".
+            MapTarget::Manifest => {
+                let status = match held.take() {
+                    Some(magic) => st.set_manifest_finish(&mut guard, &rx, map_id, magic),
+                    None => TransferStatus::Error,
+                };
+                (map_id, status)
+            }
+            MapTarget::Object if is_fwimage => (rx.object_id(), st.fwimage_finish(&mut guard, &rx)),
+            MapTarget::Object if is_trip => st.upload_finish_trip(&mut guard, &rx, desc.crc32),
+            MapTarget::Object => st.upload_finish(&mut guard, &rx, desc.crc32),
+        }
+    };
+    if holds_magic {
+        crate::link::map_transfer_ended(Some(status));
+    }
+    let committed = status == TransferStatus::Committed;
+    if !committed {
+        // Reject forensics (#1169 follow-up): the held magic is the object's first four payload
+        // bytes exactly as received — anything but the format magic proves the stream arrived
+        // offset (stray leading bytes), while a clean magic with a CRC delta points past the
+        // front. `take` is non-consuming, so reading it here costs the commit path nothing.
+        let magic = held.take().unwrap_or([0; obc_ble::MAGIC_LEN]);
+        if rx.verifies_crc() {
+            let (got, want) = rx.crc_probe();
+            warn!(
+                "usb: [bulk] reject probe: first payload bytes {=[u8]:#04x}, crc got {=u32:#010x} want {=u32:#010x}",
+                &magic[..],
+                got,
+                want
+            );
+        } else {
+            warn!(
+                "usb: [bulk] link-checked map rejected by length/format commit; first payload bytes {=[u8]:#04x}",
+                &magic[..]
+            );
+        }
+    }
+    let elapsed_ms = started.elapsed().as_millis().max(1);
+    info!(
+        "usb: [bulk] split over {} B: usb-wait {} ms, receive {} ms, store {} ms, total {} ms",
+        rx.committed_offset(),
+        usb_wait.as_millis(),
+        receive_time.as_millis(),
+        store_time.as_millis(),
+        elapsed_ms
+    );
+    if committed && target == MapTarget::Map {
+        info!("usb: [bulk] map {} is now the selected map — it loads on the next boot", id);
+    }
+    if committed && target == MapTarget::Manifest {
+        info!("usb: [bulk] volume set MS{} committed — it loads on the next boot", id);
+    }
+    info!(
+        "usb: [bulk] upload finished: id {} -> {} ({} bytes in {} ms, ~{} kB/s)",
+        id,
+        if committed { "committed" } else { "rejected" },
+        rx.total_len(),
+        elapsed_ms,
+        (rx.total_len() as u64) * 1000 / (elapsed_ms * 1024)
+    );
+    let offset = if committed { rx.total_len() } else { 0 };
+    close_transfer();
+    tx.send_status(transfer_result_at(id, status, offset)).await;
+    // A `fwImage` is a staging slot and a `map` is not a listed object (there is no `mapList`), so
+    // neither has a catalog for a peer to re-read — only routes and trips raise `storeChanged`.
+    if committed && !is_fwimage && target == MapTarget::Object {
+        let ty = if is_trip { ObjectType::Trip } else { ObjectType::Route };
+        tx.publish_store_change(store, ty).await;
+    }
+    TransferOutcome::Answered
+}
+
+/// Drop an in-flight upload's partial. Every type but a map drops its `UPLOAD.TMP`; a map's partial
+/// **is** its final file with the magic still zeroed, so it is deleted by name — see
+/// [`Storage::map_upload_abort`](crate::sd::Storage::map_upload_abort) for why waiting for the boot
+/// sweep is not good enough. Clearing the published transfer state closes the on-glass card without
+/// a red outcome: an abort or an unplug is something the rider did.
+///
+/// A **volume set** takes the same argument one level up, and further: an interrupted set is
+/// gigabytes, and `OBCA_Spec.md` §5.4 makes a half-set unmountable anyway, so the whole set goes —
+/// shards already committed included. The alternative would be a mountable-looking pile of files
+/// the next upload could not reuse and no surface could explain. What that costs is resume across a
+/// disconnect, and the protocol never offered that (§1 principle 4: transfers restart, never
+/// resume); what it does *not* cost is resume within a session, because a failed shard drops only
+/// itself (`ObjectStore::set_shard_finish`).
+fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, target: MapTarget, map_id: u16) {
+    match target {
+        MapTarget::Object => store.upload_discard(shared),
+        MapTarget::Map => {
+            crate::link::map_transfer_ended(None);
+            if let Some(storage) = &mut shared.storage {
+                storage.map_upload_abort(map_id);
+            }
+        }
+        MapTarget::Shard(_) | MapTarget::Terrain | MapTarget::Manifest => {
+            crate::link::map_transfer_ended(None);
+            store.set_upload_abort(shared);
+        }
+    }
+}
+
+/// A download: open the source, send the filled announce descriptor on the control plane, then
+/// stream the object in max-packet chunks. An abort between (or during) chunks stops cleanly.
+async fn run_download(
+    tx: &ControlTx,
+    ep: &mut EpIn,
+    store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+    desc: &TransferControl,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    // Bind the open's result before matching — a `match store.borrow_mut().…` scrutinee temporary
+    // would keep the borrow alive through the error arm's await.
+    let fw = identity::firmware_revision();
+    let serial = identity::serial_string();
+    let diag = crate::link::diag_input(fw.as_str(), serial.as_str(), Instant::now().as_secs() as u32);
+    let opened = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().download_open(&mut guard, desc, &diag)
+    };
+    let (mut sender, source) = match opened {
+        Ok(open) => open,
+        Err(status) => {
+            close_transfer();
+            tx.send_status(transfer_result(desc.object_id, status)).await;
+            return TransferOutcome::Answered;
+        }
+    };
+    // Announce on the control plane as a `downloadAnnounce` status message (protocol v2): the
+    // 12-byte descriptor with `total_len` + `crc32` filled in, wrapped in the status envelope, then
+    // the bytes flow on the bulk endpoint. Same split as BLE's status-CCCD-then-CoC.
+    let announce = sender.announce();
+    let total_len = announce.total_len;
+    info!("usb: [bulk] download start: {} bytes", total_len);
+    tx.send_status(StatusMessage::DownloadAnnounce(announce).encode()).await;
+
+    while !sender.is_complete() {
+        if TRANSFER_ABORT.try_take().is_some() {
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().download_close(&mut guard);
+            }
+            info!("usb: [bulk] download aborted by the host");
+            close_transfer();
+            tx.send_status(transfer_result_at(desc.object_id, TransferStatus::Aborted, sender.position())).await;
+            return TransferOutcome::Answered;
+        }
+        let n = sender.next_chunk_len(CHUNK_LEN.min(buf.len()));
+        let read_ok = {
+            let guard = shared.lock().await;
+            store.borrow().download_read(&guard, source, sender.position(), &mut buf[..n])
+        };
+        if !read_ok {
+            {
+                let mut guard = shared.lock().await;
+                store.borrow_mut().download_close(&mut guard);
+            }
+            warn!("usb: [bulk] SD read failed — download abandoned");
+            close_transfer();
+            tx.send_status(transfer_result(desc.object_id, TransferStatus::Error)).await;
+            return TransferOutcome::Answered;
+        }
+        // Race the send against an abort so a host that stops draining the endpoint can still be
+        // cancelled promptly. Cancel-safe: the driver's `write` only awaits *before* it pushes into
+        // the TX FIFO, so a dropped future has written nothing.
+        match select(ep.write(&buf[..n]), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(())) => {}
+            Either::First(Err(e)) => {
+                info!("usb: [bulk] download send ended: {:?}", defmt::Debug2Format(&e));
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().download_close(&mut guard);
+                }
+                close_transfer();
+                return TransferOutcome::LinkDropped;
+            }
+            Either::Second(()) => {
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().download_close(&mut guard);
+                }
+                info!("usb: [bulk] download aborted by the host (mid-send)");
+                close_transfer();
+                tx.send_status(transfer_result_at(desc.object_id, TransferStatus::Aborted, sender.position())).await;
+                return TransferOutcome::Answered;
+            }
+        }
+        sender.advance(n);
+    }
+    // A USB IN transfer ends on a **short packet**, so an object whose length is an exact multiple
+    // of the max packet needs an explicit zero-length packet to mark its end. Today's host reads
+    // exactly one max packet per transfer and so never depends on this — but sending it costs one
+    // empty transfer and is what lets the host raise its read size later (the throughput lever
+    // C3 flagged) without a firmware change. A host that doesn't need it absorbs a ZLP as
+    // "not data" and reads on.
+    if total_len > 0 && total_len % CHUNK_LEN as u32 == 0 {
+        if let Err(e) = ep.write(&[]).await {
+            info!("usb: [bulk] terminating ZLP failed: {:?}", defmt::Debug2Format(&e));
+        }
+    }
+    {
+        let mut guard = shared.lock().await;
+        let mut st = store.borrow_mut();
+        st.download_close(&mut guard);
+        // A **ride** download that reached completion is the unsynced-guard's commit point (epic
+        // #447 P7 / #454). Note this only clears the device's "not synced" delete cue; the durable
+        // `synced` **ack** is a separate `ackRides` command the host issues *after* its own fsync,
+        // and the browser deliberately never issues it (#894).
+        if desc.ty == ObjectType::Ride {
+            st.mark_ride_synced(&mut guard, desc.object_id);
+        }
+    }
+    let result = sender.outcome().unwrap(); // complete ⇒ Some
+    info!("usb: [bulk] download done: {} bytes", result.committed_offset);
+    close_transfer();
+    tx.send_status(StatusMessage::TransferResult(result).encode()).await;
+    TransferOutcome::Answered
+}
+
+/// The echo loopback: receive the announced object and stream it straight back, byte for byte,
+/// verifying **one** whole-object CRC-32 at the end — the data plane proven with zero storage. The
+/// same harness the BLE side uses for bring-up, which makes it the first thing to run on glass.
+async fn run_echo(
+    tx: &ControlTx,
+    ep_in: &mut EpIn,
+    ep_out: &mut EpOut,
+    desc: &TransferControl,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    let mut rx = match Receiver::new(desc) {
+        Ok(rx) => rx,
+        Err(_) => {
+            // A nonsensical echo descriptor (the wrong op) — answer error, leave the pipe untouched
+            // (no bytes were promised).
+            close_transfer();
+            tx.send_status(transfer_result(desc.object_id, TransferStatus::Error)).await;
+            return TransferOutcome::Answered;
+        }
+    };
+    info!("usb: [bulk] echo start: {} bytes", rx.total_len());
+    let started = Instant::now();
+    while !rx.is_complete() {
+        // Racing the abort matters more than it looks: the host now follows *every* failed exchange
+        // with an `op = 3` and waits for the answer, so an echo with no abort arm would make the
+        // host sit out its whole abort budget before it could retry anything.
+        //
+        // Only the OUT read is raced, not the echo-back below it. A host that has stopped reading
+        // could still park this loop in `ep_in.write` past the abort — accepted, because echo is a
+        // bring-up harness driven by a host that is always draining, and the endpoint teardown is
+        // the backstop. The upload path, which is the one a rider hits, races at every await.
+        let n = match select(ep_out.read(buf), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(0)) => continue, // a zero-length packet is not data
+            Either::First(Ok(n)) => n,
+            Either::First(Err(e)) => {
+                info!("usb: [bulk] echo receive ended: {:?}", defmt::Debug2Format(&e));
+                close_transfer();
+                return TransferOutcome::LinkDropped;
+            }
+            Either::Second(()) => {
+                info!("usb: [bulk] echo aborted by the host");
+                drain_bulk_out(ep_out, buf).await;
+                close_transfer();
+                tx.send_status(transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
+                return TransferOutcome::Answered;
+            }
+        };
+        let consumed = rx.push(&buf[..n]);
+        // The read is a burst now (#1173), the write is not: `EndpointIn::write` is one packet per
+        // call and refuses anything longer, so the echo-back is re-cut into max packets. Only the
+        // *last* one may be short, which keeps the loopback's framing identical to a download's
+        // (and is why the terminating-ZLP rule below still reads the same).
+        for packet in buf[..consumed].chunks(CHUNK_LEN) {
+            if let Err(e) = ep_in.write(packet).await {
+                info!("usb: [bulk] echo send failed: {:?}", defmt::Debug2Format(&e));
+                close_transfer();
+                return TransferOutcome::LinkDropped;
+            }
+        }
+    }
+    // Same end-of-object rule as a download (see `run_download`): the echoed stream is delimited by
+    // a short packet, so an object that is an exact multiple of the max packet gets an explicit
+    // zero-length one. Keeping both device → host streams delimited identically is what lets the
+    // host raise its read size once, for both.
+    if rx.total_len() > 0 && rx.total_len() % CHUNK_LEN as u32 == 0 {
+        if let Err(e) = ep_in.write(&[]).await {
+            info!("usb: [bulk] echo terminating ZLP failed: {:?}", defmt::Debug2Format(&e));
+        }
+    }
+    let result = rx.outcome().unwrap(); // complete ⇒ Some
+    let committed = result.status == TransferStatus::Committed;
+    let elapsed_ms = started.elapsed().as_millis().max(1);
+    info!(
+        "usb: [bulk] echo done: {} bytes in {} ms (~{} kB/s) -> {}",
+        rx.total_len(),
+        elapsed_ms,
+        (rx.total_len() as u64) * 1000 / (elapsed_ms * 1024),
+        if committed { "committed" } else { "crcMismatch" }
+    );
+    close_transfer();
+    tx.send_status(StatusMessage::TransferResult(result).encode()).await;
+    TransferOutcome::Answered
+}

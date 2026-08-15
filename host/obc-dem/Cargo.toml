@@ -1,0 +1,58 @@
+[package]
+name = "obc-dem"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/OBCT_Spec.md."
+
+# The **container writer is this crate's wasm-reachable half**. `obcm-assemble` places published
+# cells into a terrain shard (EL4, #1072) and compiles for `wasm32-unknown-unknown`, so it takes this
+# crate with `default-features = false` — which drops the DEM decoder and the HTTP client and leaves
+# `container`, whose only dependencies are `obc-formats` and `obc-elevation`. The alternative was a
+# second OBCT writer inside the assembler, which is exactly the drift `container`'s module header
+# exists to refuse.
+#
+# The two producer halves are separate features because they are separate costs: `geotiff` is a
+# decoder, `fetch` is an HTTP client with a TLS stack behind it. The bakery (`obc-bake`) drives
+# `bake_cell` over tiles an operator already has and never downloads one, so it takes `geotiff`
+# alone and no `ureq`/rustls/ring reaches its dependency tree. `dem` is both, and stays the default
+# because the `obc-dem` binary is both.
+[features]
+default = ["dem"]
+dem = ["geotiff", "fetch"]
+geotiff = ["dep:tiff"]
+fetch = ["dep:ureq"]
+external-fixtures = []
+
+[[bin]]
+name = "obc-dem"
+path = "src/main.rs"
+required-features = ["geotiff", "fetch"]
+
+[dependencies]
+# The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
+# lattice sample into a byte offset. Transcribing any of it here is exactly the drift `obc-formats`
+# exists to prevent — this crate writes the bytes that module names.
+obc-formats = { path = "../../firmware/obc-formats" }
+# The **shared** lattice arithmetic and the **shared** reader. A baker that re-derived "which cell
+# owns sample i" from the prose would be a second implementation of the one thing `OBCT_Spec.md` §5
+# says two implementations must agree on — so this crate does the shifts with `obc_elevation::grid`
+# and every test reads its own output back through `obc_elevation::TerrainReader`. Depending on a
+# `no_std` foundation crate from a host tool is the allowed direction (`dependency_rules.json`).
+obc-elevation = { path = "../../firmware/obc-elevation" }
+# The GeoTIFF decoder. **Pure Rust** — this is what the #1070 spike proved against a real GLO-30
+# tile: float32 samples (`SampleFormat = 3`), Adobe DEFLATE (`Compression = 8`) with the
+# *floating-point* horizontal predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
+# features are off deliberately: `fax`, `jpeg` and `lzw` are codecs no DEM ships in, and every one
+# of them is decoder surface this tool would otherwise carry for nothing.
+tiff = { version = "0.11", default-features = false, features = ["deflate"], optional = true }
+# `fetch` only. Blocking and rustls-by-default, so no OpenSSL follows it onto macOS or Windows —
+# the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
+# stays the last native dependency in the tree, and this crate has none at all).
+ureq = { version = "3", optional = true }
+
+[dev-dependencies]
+# Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
+# than asserted. Already in the workspace lockfile (`obc-pack` publishes catalog digests with it).
+sha2 = "0.11"
+obc-fixtures = { path = "../obc-fixtures" }

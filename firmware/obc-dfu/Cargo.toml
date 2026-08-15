@@ -10,5 +10,25 @@ description = "OBCU update-image container + boot-state RRAM page codec + boot-d
 # links it cheaply; host-tested to the settings-codec bar. A workspace member so the plain
 # `cargo test` below exercises it on the host, exactly like obc-reader / obc-ble.
 [dependencies]
-
-[dev-dependencies]
+# CRC-32/IEEE, shared with obc-ble. A dependency-free leaf, so it does not cost the bootloader's
+# link anything the old in-crate copy didn't.
+obc-crc = { path = "../obc-crc" }
+# The OBCU v2 signature check (#997), on BOTH sides of the pipeline: the armer verifies with it and
+# `obc-mkimage` signs with it, so host and device can never drift onto different implementations.
+# Chosen over ed25519-dalek because it is `core`-only with no RNG or `zeroize` machinery pulled in,
+# has no transitive dependencies at all with default features off, and — the deciding feature —
+# offers **incremental** verification (`verify_incremental`/`absorb`), so the armer folds the check
+# into the single 512-byte-chunk pass it already makes over a ~900 KB image instead of needing the
+# whole image in RAM on a 256 KB part.
+#
+# `obc-boot` never verifies (locked in #773 — it is flash-once, so the trust root must live in the
+# app), never calls into `sig`, and the unreachable code is dropped whole by its link: `llvm-nm` on
+# the bootloader ELF finds **zero** `ed25519_compact` symbols, so this dependency costs it nothing
+# but build time and it needed no edit at all. (Its `.text` still moves +156 B — that is the
+# `ImageHeader` codec growing by two fields, not cryptography.)
+#
+# `opt_size` is NOT optional here: without it the crate's default `double_scalarmult_vartime` unrolls
+# into ~265 KB of Thumb (383 KB for the whole crate) under the board's opt-level — a fifth of the app
+# slot for one signature check on a device that verifies once per update. With it the whole crate is
+# a few KB; the extra milliseconds are invisible next to the seconds-long SD read it rides along with.
+ed25519-compact = { version = "2.3", default-features = false, features = ["opt_size"] }

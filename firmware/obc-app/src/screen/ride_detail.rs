@@ -265,15 +265,7 @@ impl RideDetailScreen {
         // act, so it doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless.
         if self.delete_enabled(rx.activity, rx.rides.len()) {
             let row_y = h - 10 - ROW_H;
-            let geo = super::GuardedRowsGeometry {
-                x: 14,
-                w: w - 28,
-                top: row_y,
-                row_h: ROW_H,
-                gap: 0,
-                label_dx: 12,
-                label_dy: 5,
-            };
+            let geo = super::GuardedRowsGeometry::panel(w, row_y, ROW_H, 0);
             let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
             super::draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, geo);
         }
@@ -285,6 +277,7 @@ mod tests {
     use super::*;
     use crate::activity::Mode;
     use crate::ride::RideSummary;
+    use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
     fn summary(name: &str) -> RideSummary {
@@ -302,19 +295,7 @@ mod tests {
     fn run(scr: &mut RideDetailScreen, act: &mut Activity, rides: &[RideSummary], g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides,
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { rides, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 

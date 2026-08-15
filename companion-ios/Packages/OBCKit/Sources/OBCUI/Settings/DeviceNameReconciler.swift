@@ -23,10 +23,10 @@ import OBCTransport
 ///   rename and this reconnect gets our bond name pushed back over it.
 ///   Acceptable for now — revisit if multi-phone setups become real.
 public struct DeviceNameReconciler: Sendable {
-    private let transport: any DeviceTransport
+    private let transport: any DeviceConfiguration
     private let bondStore: any BondStore
 
-    public init(transport: any DeviceTransport, bondStore: any BondStore) {
+    public init(transport: any DeviceConfiguration, bondStore: any BondStore) {
         self.transport = transport
         self.bondStore = bondStore
     }

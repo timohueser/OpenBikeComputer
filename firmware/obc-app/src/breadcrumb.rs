@@ -7,7 +7,7 @@
 //!   zoomed-in riding view draws from. **Never decimated** — just a fixed-length ring.
 //! - [`spine`](Breadcrumb::spine) — the whole rest of the ride, held to a fixed point budget by
 //!   **Visvalingam–Whyatt**: when full, drop the single least-significant vertex — smallest
-//!   [effective area](obc_route::tri_area_m2) (the triangle with its two neighbours), i.e. whose
+//!   [effective area](obc_route::tri_area_m2_cl) (the triangle with its two neighbours), i.e. whose
 //!   removal bends the line least. A straight run collapses toward its endpoints; a bend is kept.
 //!
 //! Not a distance/perpendicular *tolerance*: a global tolerance on a *growing* track sticks once
@@ -23,7 +23,8 @@
 //! containers, so the renderer's polyline scratch can never overrun.
 
 use heapless::{Deque, Vec};
-use obc_route::{cos_lat, ground_dist_m, tri_area_m2_cl};
+use obc_map_scene::{cos_lat, ground_dist_m};
+use obc_route::tri_area_m2_cl;
 
 /// A 2-D point in microdegrees `(lon, lat)` — what the renderer projects.
 type P = (i32, i32);
@@ -37,12 +38,8 @@ const RECENT_MIN_M: f32 = 4.0;
 
 /// Whole-ride spine capacity (points). The spine holds exactly this many once warmed (~6 KB
 /// regardless of ride length); the only lever for long-ride fidelity is this number, at linear RAM
-/// cost. The constrained `nrf-mem` profile quarters it to 256 (~1.5 KB — issue #270's cull: the
-/// map path must leave room for the BLE stack on the 256 KB DK); the `recent` tail is untouched.
-#[cfg(not(feature = "nrf-mem"))]
+/// cost. The `recent` tail is sized independently.
 const SPINE_CAP: usize = 1024;
-#[cfg(feature = "nrf-mem")]
-const SPINE_CAP: usize = 256;
 
 /// The travelled path drawn on the map: a full-res recent tail over a coarse whole-ride spine.
 /// Owned by [`App`](crate::App) (kilobytes, so *not* the `Copy` [`Activity`](crate::Activity));

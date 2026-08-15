@@ -3,6 +3,10 @@
 # workspace build (geos-sys needs ≥3.14, newer than distro packages). Writes the shell
 # shim ~/.obc-geos-env.sh that the `obc` tasks source. Idempotent. Needs cmake + a C++
 # compiler + make. Called by `obc doctor --install`; safe to run standalone.
+#
+# NOT needed for the desktop app: obc-desktop builds its own GEOS in, statically
+# (#907, its README). This script is for the workspace — the CLI packer, the sim, and
+# CI's host jobs — where linking the system library is what keeps builds fast.
 set -euo pipefail
 
 VER="${GEOS_VER:-3.14.1}"

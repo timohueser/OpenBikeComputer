@@ -1,11 +1,12 @@
-//! Wiring test for the global long-press hint in [`App::render_frame`]: holding the encoder swells a
+//! Wiring test for the global long-press hint in [`App::render_frame`]: holding Select swells a
 //! black "frame bulge" into the right edge near the top, holding Back one near the bottom, and a
 //! quick tap neither. Each held frame is compared to the idle frame so any standing chrome cancels
 //! out and only the bulge's extra near-black pixels are measured.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
-use obc_app::{App, AppState, Button, InputClock};
+use obc_app::{App, AppState};
+use obc_ports::{Button, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
@@ -26,7 +27,8 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
-    app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    app.render_frame(Some(&mut scratch), &mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
 }
 
@@ -50,14 +52,14 @@ fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
     app.handle_input(InputClock(0), &mut keys(&[]));
     let (i_top, i_bot) = render(&mut app, &bytes).edge_halves(hud);
 
-    // Hold the encoder past the dead zone: a bulge swells the top half. Its base spans `2*base_half`
+    // Hold Select past the dead zone: a bulge swells the top half. Its base spans `2*base_half`
     // px, so the quartic shoulders can graze a few px past the midline — hence require the top-half
     // growth to dominate rather than the bottom count to be zero.
-    let (e_top, e_bot) = render_hold(&bytes, Button::Encoder, 300).edge_halves(hud);
-    assert!(e_top > i_top, "encoder hold ⇒ a bulge swells the top of the right edge");
+    let (e_top, e_bot) = render_hold(&bytes, Button::Select, 300).edge_halves(hud);
+    assert!(e_top > i_top, "Select hold ⇒ a bulge swells the top of the right edge");
     assert!(
         e_top - i_top > 10 * (e_bot - i_bot),
-        "the encoder bulge belongs to the top half (top +{}, bottom +{})",
+        "the Select bulge belongs to the top half (top +{}, bottom +{})",
         e_top - i_top,
         e_bot - i_bot,
     );
@@ -69,6 +71,6 @@ fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
 
     // Just-pressed, still inside the dead zone (50 ms of a 500 ms hold ⇒ 10% < DEAD):
     // a tap-length press swells nothing, so a quick click never flashes a bulge.
-    let early = render_hold(&bytes, Button::Encoder, 50).edge_halves(hud);
+    let early = render_hold(&bytes, Button::Select, 50).edge_halves(hud);
     assert_eq!(early, (i_top, i_bot), "inside the dead zone a press shows no bulge");
 }

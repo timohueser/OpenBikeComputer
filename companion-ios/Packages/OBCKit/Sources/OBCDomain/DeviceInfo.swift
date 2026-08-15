@@ -6,7 +6,7 @@ import Foundation
 /// **B-S0 skeleton.** The fields track DIS (see `companion-ios/OBCProtocol.md` →
 /// *Control plane*); `B1` finalizes the type as it wires `BLETransport`. New
 /// fields are defaulted so the scaffold's two-arg call sites keep compiling.
-/// Kept a plain `Sendable` value type so it crosses the `DeviceTransport`
+/// Kept a plain `Sendable` value type so it crosses the `DeviceLink`
 /// boundary freely.
 public struct DeviceInfo: Equatable, Sendable {
     /// User-facing device name. Renamable via `DeviceConfig.name` (H3) — the
@@ -32,6 +32,37 @@ public struct DeviceInfo: Equatable, Sendable {
     /// fabricated value. The (serial, epoch) library scoping that consumes it is
     /// V5 (#769); this field is the wire fact it stands on.
     public let storeEpoch: UInt32?
+    /// The **OBCM map-format version** this device's firmware reads (the identity read's third
+    /// field, E1 / #911) — `10` today. Not to be confused with `protocolVersion` beside it: that is
+    /// the *wire* contract, a different number in a different sequence, and neither is derivable
+    /// from the other. `OBCC_Spec.md` §6(c) is what consumes it — a host offering map artifacts must
+    /// not offer one this firmware cannot read — which today is the web/desktop builder rather than
+    /// this app; the app carries the field so the mirror stays honest about what the wire says, and
+    /// so a device dashboard can show it.
+    ///
+    /// `nil` when the read carried no such byte: a firmware predating the field (a 6-byte read), or
+    /// the store-less 2-byte read. **Deliberately not defaulted to `0`** — the same rule as
+    /// `storeEpoch`: `0` would read as "supports OBCM v0" and refuse every real map, where `nil`
+    /// correctly means unknown.
+    public let obcmVersion: UInt8?
+    /// The device's **capability word** (the identity read's fourth field, WX3 / #1188) — the
+    /// bitmask of optional contracts this firmware implements, of which `OBCProtocol.featureWeather`
+    /// is bit 0. Unknown bits are ignored, never rejected.
+    ///
+    /// `nil` when the read carried no such field: any firmware predating it, or a read too short to
+    /// hold the whole `u32`. **Deliberately not defaulted to `0`** — the same rule as `storeEpoch`
+    /// and `obcmVersion`. Both `nil` and `0` currently mean "no weather", but fabricating a zero
+    /// would make a diagnostic lie about which firmware generation answered, and treating a
+    /// *partial* word as data could claim a feature the device never announced.
+    public let featureBits: UInt32?
+
+    /// Whether this device announced the Weather Request contract — the gate the weather UI opens
+    /// on. An absent capability word is a firmware that predates it, i.e. a device without weather,
+    /// so this is `false` rather than a special case at every call site.
+    public var supportsWeather: Bool {
+        guard let featureBits else { return false }
+        return featureBits & OBCProtocol.featureWeather != 0
+    }
 
     public init(
         name: String,
@@ -39,7 +70,9 @@ public struct DeviceInfo: Equatable, Sendable {
         hardwareVersion: String = "",
         serial: String = "",
         protocolVersion: UInt16 = OBCProtocol.version,
-        storeEpoch: UInt32? = nil
+        storeEpoch: UInt32? = nil,
+        obcmVersion: UInt8? = nil,
+        featureBits: UInt32? = nil
     ) {
         self.name = name
         self.firmwareVersion = firmwareVersion
@@ -47,5 +80,7 @@ public struct DeviceInfo: Equatable, Sendable {
         self.serial = serial
         self.protocolVersion = protocolVersion
         self.storeEpoch = storeEpoch
+        self.obcmVersion = obcmVersion
+        self.featureBits = featureBits
     }
 }

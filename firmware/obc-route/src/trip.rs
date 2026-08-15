@@ -3,7 +3,7 @@
 //! never contains route bytes, so membership edits never touch a route payload. The reference
 //! firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files.
 //!
-//! Layout (little-endian; pinned by `protocol-vectors/trip-v1.bin` against the Swift trip codec):
+//! Layout (little-endian; pinned by `specs/vectors/trip-v1.bin` against the Swift trip codec):
 //!
 //! ```text
 //! Header (56 bytes):
@@ -48,10 +48,7 @@ pub const TRIP_HEADER_LEN: usize = 56;
 /// [`TripMeta::read`] windows + truncates a longer trip rather than overflowing, exactly as
 /// [`RouteReader::load_waypoints`](crate::RouteReader::load_waypoints) does for waypoints. A trip
 /// can reference at most one route per stage, so this stays comfortably past the route catalog cap.
-#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_TRIP_STAGES: usize = 32;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_TRIP_STAGES: usize = 16;
 
 /// The lightweight trip description — readable from the header alone (no stage table), so a catalog
 /// scan is one small read per file. Mirrors [`RouteSummary`](crate::RouteSummary).

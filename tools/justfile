@@ -15,23 +15,98 @@ lib := justfile_directory() / "obc-dev.sh"
 default:
     @just --justfile '{{justfile()}}' --list --unsorted
 
+# ── Deployed services ────────────────────────────────────────────────────────
+
+# Inspect, resume, or persistently pause the deployed weather bakery.
+#
+#   obc weather status
+#   obc weather stop
+#   obc weather start
+#
+# The SSH target defaults to root@wx. Set OBC_WX_SSH_TARGET in tools/obc.local
+# when that alias is not configured, or pass a one-off target as the second arg.
+# Stop disables the cycle timer and stops an in-flight bake; start enables the
+# canonical 15-minute publisher again.
+# Control the deployed weather bakery. Args: status|start|stop [root@HOST]
+weather *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    (( $# <= 2 )) || { _err "usage: obc weather status|start|stop [root@HOST]"; exit 2; }
+    action="${1:-status}"
+    resolved_target="${2:-${OBC_WX_SSH_TARGET:-root@wx}}"
+    _run "$OBC_TOOLS/weather-service.sh" "$action" "$resolved_target"
+
 # ── Simulator ────────────────────────────────────────────────────────────────
 
-# Run the simulator (always --physical). Args: [MAP.obcm] [TRACK.gpx] [-- extra sim flags].
-# MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK to $OBC_GPX
-# or the bundled grimsel-climb.gpx. Pass `none` as the track to run without a GPS.
+# List, inspect, download, verify and prune the content-addressed fixture registry.
+# Common forms: `obc fixtures list`, `obc fixtures show grimsel`,
+# `obc fixtures sync sim`, `obc fixtures verify test`.
+fixtures *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/fixtures.py" "$@"
+
+# Run a named fixture scenario or an explicit map (always --physical). With no
+# arguments this runs the canonical `grimsel` scenario.
+# Args: [SCENARIO|MAP.obcm|MS<id>.OBS] [TRACK.gpx] [-- sim flags].
+# Explicit MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK
+# to $OBC_GPX. Named scenarios are the reproducible path. Pass `none` as the
+# explicit track to run without GPS.
+# A MAP ending in .OBS is an OBCA volume set and rides the sim's --set flag; passing
+# --set through `--` also works and suppresses the default positional map.
+# Live weather needs no task of its own — it is a sim flag:
+#   obc sim -- --weather live            (real service + MET for the rider's position)
+#   obc sim -- --weather live --weather-offline   (and the WX14 failure controls)
 # Run the simulator on a map + GPX, always at physical size. Args: [MAP] [TRACK.gpx] [-- sim flags]
 sim *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     split_args "$@"
-    mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
-    gpxf="$(resolve_gpx "${_POS[1]:-}")"
-    cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
+    scenario="${_POS[0]:-grimsel}"
+    scenario_args=()
+    mapf="" setf="" gpxf=""
+    if [[ -n "$scenario" ]] && python3 "$OBC_TOOLS/fixtures.py" exists "$scenario"; then
+        (( ${#_POS[@]} <= 1 )) || {
+            _err "a named scenario already supplies its track; pass simulator flags after --"
+            exit 1
+        }
+        _run python3 "$OBC_TOOLS/fixtures.py" sync "$scenario"
+        resolved="$(python3 "$OBC_TOOLS/fixtures.py" resolve --no-sync "$scenario")"
+        while IFS=$'\t' read -r kind value; do
+            case "$kind" in
+              map)     mapf="$value" ;;
+              map_set) setf="$value" ;;
+              gpx)     gpxf="$value" ;;
+              weather) scenario_args+=(--weather "$value") ;;
+              routes_dir) scenario_args+=(--routes-dir "$value") ;;
+              tracks_dir) scenario_args+=(--tracks-dir "$value") ;;
+              arg)     scenario_args+=("$value") ;;
+              *) _err "fixture resolver returned unknown field '$kind'"; exit 1 ;;
+            esac
+        done <<< "$resolved"
+        if [[ -n "$setf" ]]; then cmd=(cargo run --release -p obc-sim -- --set "$setf" --physical)
+        else cmd=(cargo run --release -p obc-sim -- "$mapf" --physical); fi
+    else
+      gpxf="$(resolve_gpx "${_POS[1]:-}")"
+      if [[ " ${_EXTRA[*]:-} " == *" --set "* ]]; then
+        # An explicit --set names the whole map; injecting the default positional
+        # map alongside it would trip the sim's mutual-exclusion check.
+        cmd=(cargo run --release -p obc-sim -- --physical)
+      elif [[ "${_POS[0]:-}" == *.OBS || "${_POS[0]:-}" == *.obs ]]; then
+        cmd=(cargo run --release -p obc-sim -- --set "${_POS[0]}" --physical)
+      else
+        mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
+        cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
+      fi
+    fi
     [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
+    (( ${#scenario_args[@]} )) && cmd+=("${scenario_args[@]}")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
-    cd "$OBC_ROOT/firmware"; _run "${cmd[@]}"
+    cd "$OBC_ROOT"; _run "${cmd[@]}"
 
 # ── Board firmware ───────────────────────────────────────────────────────────
 
@@ -59,30 +134,63 @@ flash *args:
     (( synth )) && feats+=(synth)
     (( ${#feats[@]} )) && a+=(--features "$(IFS=,; echo "${feats[*]}")")
     cd "$OBC_ROOT/firmware/obc-fw-nrf54l"
-    _run cargo "$action" --release "${a[@]}"
+    # `${a[@]+"${a[@]}"}`, not `"${a[@]}"`: macOS ships bash 3.2, where expanding an EMPTY array
+    # under `set -u` is an "unbound variable" error. That is the no-options case — i.e. plain
+    # `obc flash`, now the common one since the USB plane stopped being a feature.
+    _run cargo "$action" --release ${a[@]+"${a[@]}"}
 
-# Feed a recorded ride to a debug-uart board over VCOM (obc-usb-host).
+# Build & flash the 32 KB bootloader (obc-boot). Flash it ONCE: probe-rs writes ELFs at their
+# linked addresses, so the app (linked at 0x8000) never touches it afterwards. Opts: rtt (defmt
+# over RTT — a debug aid, NOT the shipping shape the 32 KB size guard is measured on), build
+# (compile only). Needs no RISC-V toolchain: the bootloader keeps the COM wave alive in software,
+# not on the FLPR.
+# Build & flash the bootloader — once. Opts: rtt (defmt logging) build (compile only)
+flash-boot *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    rtt=0 action=run
+    for o in "$@"; do case "$o" in
+      rtt)              rtt=1 ;;
+      build|build-only) action=build ;;
+      *) _err "unknown flash-boot option: '$o'  (want: rtt build)"; exit 1 ;;
+    esac; done
+    [[ "$action" == run ]] && { ensure_probe || exit 1; }
+    a=()
+    (( rtt )) && a+=(--features rtt)
+    cd "$OBC_ROOT/firmware/obc-boot"
+    # Empty-array expansion under bash 3.2 + `set -u` is an error — same guard as `flash`.
+    _run cargo "$action" --release ${a[@]+"${a[@]}"}
+    # `if`, not a trailing `[[ … ]] && …`: as the recipe's LAST statement, a false test would be the
+    # script's exit status, so `flash-boot build` would "fail" after building perfectly.
+    if [[ "$action" == run ]]; then
+      _say "power-cycle the DK: one short LED0 blink (bootloader), then the app"
+    fi
+
+# Drive a debug-uart board over VCOM (obc-usb-host). A GPX is optional: without one, the feeder's
+# fixed-location panel can stream an entered or searched coordinate instead.
 # Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
-# Feed a GPX to a debug-uart board over VCOM. Args: [TRACK.gpx] [-- --port TTY | --list]
+# Open the debug-uart GPS feeder. Args: [TRACK.gpx] [-- --port TTY | --list]
 uart *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     split_args "$@"
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     # `--list` just enumerates serial ports; no GPX needed.
     for e in "${_EXTRA[@]:-}"; do [[ "$e" == --list ]] && { _run cargo run --release -p obc-usb-host -- --list; exit 0; }; done
     gpxf="$(resolve_gpx "${_POS[0]:-}")"
-    [[ -z "$gpxf" || "$gpxf" == none ]] && { _err "no GPX to feed. Pass one:  obc uart <track.gpx>"; exit 1; }
-    cmd=(cargo run --release -p obc-usb-host -- --gpx "$gpxf")
+    cmd=(cargo run --release -p obc-usb-host --)
+    [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
 
-# Indoor ride in one step: flash the debug-uart firmware, then feed it a GPX over
-# VCOM. Args: [ble] [TRACK.gpx]. Flashes with `probe-rs download` (returns cleanly,
+# Bench control in one step: flash the debug-uart firmware, then open the feeder over
+# VCOM. Args: [ble] [TRACK.gpx]. Without a GPX, use its fixed-location panel. Flashes with
+# `probe-rs download` (returns cleanly,
 # no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
 # `obc flash debug-uart` in a second terminal instead.
-# One step: flash debug-uart firmware, then feed it a GPX. Args: [ble] [TRACK.gpx]
+# One step: flash debug-uart firmware, then open the GPS feeder. Args: [ble] [TRACK.gpx]
 debug *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -93,7 +201,8 @@ debug *args:
     [[ -n "$ble" ]] && { feats="ble,debug-uart"; nodef=(--no-default-features); }
     elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     _say "building debug-uart firmware…"
-    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release "${nodef[@]}" --features "$feats" )
+    # Same bash-3.2 empty-array trap as `flash` above: `nodef` is empty unless `ble` was passed.
+    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release ${nodef[@]+"${nodef[@]}"} --features "$feats" )
     _say "flashing over J-Link…"
     _run probe-rs download --chip nRF54L15 --verify "$elf"
     _run probe-rs reset --chip nRF54L15
@@ -114,9 +223,10 @@ rtt:
 
 # ── Map packing & the web builder ────────────────────────────────────────────
 
-# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
-# [-- --chunk-size N | --no-land]. Preset defaults to packer/presets/default.json; the
-# output defaults to <region>.obcm in the repo root (so `obc sim` picks it up next).
+# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [config.json] [out.obcm]
+# [-- --chunk-size N | --no-land]. The config defaults to builder/presets/schema.json —
+# the one shipped schema; the output defaults to <region>.obcm in the repo root (so
+# `obc sim` picks it up next).
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
 pack *args:
     #!/usr/bin/env bash
@@ -126,15 +236,141 @@ pack *args:
     pbf="${_POS[0]:-}"
     [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
     pbf="$(_abspath "$pbf")"
-    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/packer/presets/default.json}}"; preset="$(_abspath "$preset")"
+    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/schema.json}}"; preset="$(_abspath "$preset")"
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
-    ( cd "$OBC_ROOT/firmware" && _run cargo build --release -p obc-pack )
-    cmd=("$OBC_ROOT/firmware/target/release/obc-pack" "$pbf" "$preset" "$out")
+    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
     _say "wrote $out"
+
+# Bake the published cell catalog. `obc bake` processes every regions.toml entry;
+# positional ids narrow it (`obc bake europe/austria --force`). Output goes to
+# $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree
+# automatically, while an explicit tree remains available as their first argument:
+#
+#   obc bake europe/germany/baden-wuerttemberg
+#   obc bake terrain --sources /tmp/dem   # the OBCT band, own revision track
+#   obc bake verify
+#   obc bake publish                  # plan only
+#   obc bake publish --target r2      # upload content first, catalog root last
+#   obc bake clean-r2                 # dry-run removal of the complete maps bucket
+#   obc bake clean-r2 --apply         # purge that bucket before a fresh publish
+#
+# Publish reads its public URL and R2 credentials from tools/obc.local or the
+# environment. The clean command verifies the configured bucket by reading the
+# live catalog at OBC_R2_PREFIX, then deletes every object in that bucket.
+# Bake, verify, publish, or replace R2 objects using $OBC_BAKE_TREE
+bake *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    if [[ -z "${OBC_PYOSMIUM_UP_TO_DATE:-}" && -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]; then
+      export OBC_PYOSMIUM_UP_TO_DATE="$OBC_ROOT/.venv/bin/pyosmium-up-to-date"
+    fi
+    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
+    bin="$OBC_ROOT/target/release/obc-bake"
+    tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
+    case "${1:-}" in
+      verify)
+        shift
+        verify_tree="$tree"
+        if (( $# )) && [[ "$1" != -* ]]; then verify_tree="$1"; shift; fi
+        _run "$bin" verify "$verify_tree" "$@" ;;
+      publish)
+        shift
+        publish_tree="$tree"
+        if (( $# )) && [[ "$1" != -* ]]; then publish_tree="$1"; shift; fi
+        maps_base="${OBC_MAPS_BASE_URL:-}"
+        if [[ -z "$maps_base" && -n "${OBC_CATALOG_URL:-}" ]]; then
+          case "$OBC_CATALOG_URL" in
+            */catalog.json) maps_base="${OBC_CATALOG_URL%/catalog.json}" ;;
+            *)
+              _err "OBC_CATALOG_URL must end in /catalog.json: $OBC_CATALOG_URL"
+              exit 1 ;;
+          esac
+        fi
+        if [[ -z "$maps_base" ]]; then
+          prefix="${OBC_R2_PREFIX:-cell-catalog}"; prefix="${prefix#/}"; prefix="${prefix%/}"
+          [[ -n "$prefix" ]] || { _err "OBC_R2_PREFIX may not be empty"; exit 1; }
+          export OBC_R2_PREFIX="$prefix"
+          maps_base="https://maps.openbikecomputer.com/$prefix"
+          _say "using production catalog base: $maps_base"
+        fi
+        export OBC_MAPS_BASE_URL="$maps_base"
+        _run "$bin" publish "$publish_tree" "$@" ;;
+      clean-r2)
+        shift
+        apply=0
+        for arg in "$@"; do case "$arg" in
+          --apply) apply=1 ;;
+          *) _err "unknown clean-r2 option: '$arg'  (want: --apply)"; exit 1 ;;
+        esac; done
+        command -v rclone >/dev/null 2>&1 || { _err "rclone is required for R2 cleanup"; exit 1; }
+        missing=()
+        [[ -n "${OBC_R2_BUCKET:-}" ]] || missing+=(OBC_R2_BUCKET)
+        [[ -n "${OBC_R2_ACCESS_KEY_ID:-}" ]] || missing+=(OBC_R2_ACCESS_KEY_ID)
+        [[ -n "${OBC_R2_SECRET_ACCESS_KEY:-}" ]] || missing+=(OBC_R2_SECRET_ACCESS_KEY)
+        [[ -n "${OBC_R2_ENDPOINT:-}" || -n "${OBC_R2_ACCOUNT_ID:-}" ]] || missing+=(OBC_R2_ACCOUNT_ID)
+        if (( ${#missing[@]} )); then
+          _err "missing R2 settings: ${missing[*]}"
+          _hint "put them in the gitignored tools/obc.local (see tools/obc.local.example)"
+          exit 1
+        fi
+        prefix="${OBC_R2_PREFIX:-}"; prefix="${prefix#/}"; prefix="${prefix%/}"
+        [[ -n "$prefix" && "$prefix" != . ]] || {
+          _err "OBC_R2_PREFIX must name the catalog prefix used to verify the bucket (for example: cell-catalog)"
+          exit 1
+        }
+        case "/$prefix/" in
+          */../*|*/./*)
+            _err "unsafe OBC_R2_PREFIX '$prefix' contains a dot path segment"; exit 1 ;;
+        esac
+        maps_base="${OBC_MAPS_BASE_URL:-}"
+        [[ -n "$maps_base" ]] || { _err "OBC_MAPS_BASE_URL is required for R2 cleanup"; exit 1; }
+        maps_base="${maps_base%/}"
+        [[ "$maps_base" == */"$prefix" ]] || {
+          _err "OBC_MAPS_BASE_URL '$maps_base' does not end in OBC_R2_PREFIX '$prefix'"
+          exit 1
+        }
+        endpoint="${OBC_R2_ENDPOINT:-https://${OBC_R2_ACCOUNT_ID}.r2.cloudflarestorage.com}"
+        export RCLONE_CONFIG_OBCR2_TYPE=s3
+        export RCLONE_CONFIG_OBCR2_PROVIDER=Cloudflare
+        export RCLONE_CONFIG_OBCR2_REGION=auto
+        export RCLONE_CONFIG_OBCR2_ENDPOINT="$endpoint"
+        export RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID="$OBC_R2_ACCESS_KEY_ID"
+        export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
+        export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
+        root="obcr2:${OBC_R2_BUCKET}"
+        catalog="$root/$prefix/catalog.json"
+        _say "checking live catalog before cleanup: $catalog"
+        rclone lsjson "$catalog" --stat >/dev/null || {
+          _err "catalog is not readable at the configured prefix; refusing to purge it"
+          exit 1
+        }
+        if (( apply )); then
+          _warn "deleting every object in the R2 bucket: $root"
+          _run rclone delete "$root" --rmdirs
+          _ok "R2 bucket emptied; publish the verified bake tree immediately"
+        else
+          _say "dry run — review this list, then repeat with: obc bake clean-r2 --apply"
+          _run rclone delete "$root" --rmdirs --dry-run
+        fi ;;
+      terrain)
+        # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
+        # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
+        # extract, and it must never be a step of a schema re-bake.
+        shift
+        _run "$bin" terrain --out "$tree" "$@"
+        _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
+      regions|check-obcm-version|help|-h|--help)
+        _run "$bin" "$@" ;;
+      *)
+        _run "$bin" bake --out "$tree" "$@"
+        _say "bake tree: $tree — verify with: obc bake verify" ;;
+    esac
 
 # Run the web map builder at http://localhost:8000 (bootstraps the venv, obc-pack,
 # and the frontend on first run). Extra args pass through (e.g. --no-browser).
@@ -144,18 +380,128 @@ web *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
-    export OBC_PACK_BIN="$OBC_ROOT/firmware/target/release/obc-pack"
+    export OBC_PACK_BIN="$OBC_ROOT/target/release/obc-pack"
     if [[ ! -x .venv/bin/python ]]; then
       _say "creating .venv + installing packer deps…"
       _run python3 -m venv .venv
       _run .venv/bin/pip install -q --upgrade pip
-      _run .venv/bin/pip install -q -r packer/requirements.txt
+      _run .venv/bin/pip install -q -r builder/requirements.txt
     fi
-    [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd firmware && _run cargo build --release -p obc-pack ); }
-    if [[ ! -d packer/web_builder/static/dist ]]; then
-      _say "building the frontend…"; ( cd packer/web_builder/frontend && _run npm ci && _run npm run build )
+    if [[ "${1:-}" == preview-source ]]; then
+      shift
+      (( $# == 0 )) || { _err "usage: obc web preview-source"; exit 1; }
+      _say "preparing the small reference-complete source for the Teningen schema lab…"
+      _run .venv/bin/python -m builder.server.schema_preview --download-source
+      exit 0
     fi
-    _run .venv/bin/python -m packer.web_builder "$@"
+    # This is the maintainer schema host: a present binary may still predate the
+    # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
+    # and makes the served schema and every preview use this checkout exactly.
+    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    [[ -d builder/app/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/app && _run npm ci ); }
+    # Generated bindings are gitignored; existence cannot prove that any bridge
+    # matches its Rust source. Warm wasm-pack builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
+    # Always rebuild this small local bundle: tools/obc.local is runtime state,
+    # but a source checkout must never keep serving yesterday's platform adapter.
+    _say "building the maintainer frontend…"; ( cd builder/app && _run npm run build )
+    _run .venv/bin/python -m builder.server "$@"
+
+# Run the desktop app (Tauri + the shared published-cell frontend). The Rust side
+# embeds the built frontend. Opts: dev (live reload against Vite), build (compile
+# only, don't open the window).
+#   obc desktop         obc desktop dev        obc desktop build
+# The desktop app consumes published cells and no longer links the packer or GEOS.
+# `dev` drops `custom-protocol`, the feature that embeds the frontend, so the window
+# follows Vite instead.
+# Build & run the desktop app. Opts: dev (live-reload) build (compile only)
+desktop *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    mode=run
+    for o in "$@"; do case "$o" in
+      dev)              mode=dev ;;
+      build|build-only) mode=build ;;
+      *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
+    esac; done
+    fe="$OBC_ROOT/builder/app"
+    [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
+    # All three wasm bridges are imported by the app: GPX↔OBCR conversion, cell
+    # assembly, and the live skin preview. Generated bindings are gitignored;
+    # existence cannot prove that any bridge matches its Rust source, so always
+    # rebuild — warm wasm-pack builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
+    if [[ "$mode" == dev ]]; then
+      # `custom-protocol` is a default feature here, which is what makes plain
+      # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
+      _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
+      ( cd "$fe" && npm run dev -- --mode desktop & )
+      cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features
+    else
+      # vite/esbuild strips types without checking them; svelte-check is what
+      # fails loudly when the app drifts from a bridge's generated bindings.
+      _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
+      _say "building the desktop frontend bundle…"
+      ( cd "$fe" && _run npm run build:desktop )
+      cd "$OBC_ROOT/apps/obc-desktop"
+      [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
+      _run cargo run --release
+    fi
+
+# Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
+# Builds and serves it on :4173. Args: [PORT]. A catalog.json is the bakery's
+# output; without one the site says so and shows no coverage — that is OBCC_Spec.md
+# §7 refusing a manifest it has not got, not a bug.
+# Point it at a real one with OBC_CATALOG_URL=… (the deploy passes the same value as
+# VITE_CATALOG_URL from a repository variable — .github/workflows/deploy-site.yml).
+# Two deliberate differences from the deploy: this mounts the builder at the server
+# root rather than at /builder/ (nothing else is being served beside it), and it leaves
+# VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of
+# at siblings that aren't here.
+# Build & serve the static hosted tier (no backend) on :4173. Args: [PORT]
+site *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    port="${1:-4173}"
+    fe="$OBC_ROOT/builder/app"
+    [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
+    # Generated bindings are gitignored; existence cannot prove that any bridge
+    # matches its Rust source, so always rebuild — warm builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
+    # vite/esbuild strips types without checking them; svelte-check is what
+    # fails loudly when the app drifts from a bridge's generated bindings.
+    _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
+    _say "building the static web tier…"
+    ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build:web )
+    cd "$OBC_ROOT"
+    _say "serving http://localhost:$port  (Ctrl-C to stop)"
+    # `--directory` rather than `cd` + a relative path: the relative form resolved against the
+    # *serving* directory and vanished the moment we left the repo root.
+    _run python3 -m http.server "$port" --directory "$fe/dist/web"
+
+# Build and serve the standalone canonical rain-radar inspector. The local proxy caches immutable
+# OBCG shards, coalesces concurrent reads, counts actual upstream requests, and enforces a 2,000
+# request session ceiling by default. Args: [PORT], default 4174.
+# Inspect the global 1 km rain mosaic and its 0–2 h forecast on :4174. Args: [PORT]
+rain-radar *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    demo="$OBC_ROOT/tools/rain-radar-demo"
+    port="${1:-4174}"
+    (( $# <= 1 )) || { _err "usage: obc rain-radar [PORT]"; exit 1; }
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || {
+      _err "rain-radar port must be an integer from 1024 to 65535"; exit 1;
+    }
+    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || {
+      _err "rain-radar needs Node.js and npm"; exit 1;
+    }
+    [[ -d "$demo/node_modules" ]] || { _say "installing rain-radar dependencies…"; ( cd "$demo" && _run npm ci ); }
+    _say "building the rain-radar viewer…"; ( cd "$demo" && _run npm run build )
+    _say "serving http://127.0.0.1:$port  (Ctrl-C to stop)"
+    ( cd "$demo" && _run node server.mjs "$port" )
 
 # ── Host workspace chores ────────────────────────────────────────────────────
 
@@ -164,33 +510,87 @@ build:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT/firmware"; _run cargo build --release
+    cd "$OBC_ROOT"; _run cargo build --release
 
-# Run the host test suite. Extra args pass through (e.g. -p obc-pack).
+# Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
+# `fixtures` syncs captured inputs but remains scoped; `full` is the explicit
+# complete all-feature workspace suite.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT/firmware"; _run cargo test "$@"
+    cd "$OBC_ROOT"
+    mode="${1:-}"
+    [[ -n "$mode" ]] || {
+      _err "a test scope is required"
+      _hint "focused: obc test -p <crate> [test-filter]"
+      _hint "captured fixtures: obc test fixtures -p <crate>"
+      _hint "cross-cutting only: obc test full"
+      exit 2
+    }
+    require_scope() {
+      local arg
+      for arg in "$@"; do
+        case "$arg" in
+          -p|--package|--package=*|--manifest-path|--manifest-path=*) return 0 ;;
+        esac
+      done
+      _err "a Cargo package scope is required (-p/--package or --manifest-path)"
+      return 2
+    }
+    case "$mode" in
+      full)
+        shift
+        _run python3 "$OBC_TOOLS/fixtures.py" sync test
+        export OBC_FIXTURE_ROOT
+        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+        export OBC_REQUIRE_FIXTURES=1
+        _run cargo test --workspace --all-features --locked "$@"
+        ;;
+      fixtures)
+        shift
+        require_scope "$@" || { _hint "example: obc test fixtures -p obc-wx-bake"; exit 2; }
+        _run python3 "$OBC_TOOLS/fixtures.py" sync test
+        export OBC_FIXTURE_ROOT
+        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+        export OBC_REQUIRE_FIXTURES=1
+        _run cargo test --locked --features external-fixtures "$@"
+        ;;
+      *)
+        require_scope "$@" || { _hint "example: obc test -p obc-weather"; exit 2; }
+        _run cargo test --locked "$@"
+        ;;
+    esac
 
-# Format everything: the workspace AND the excluded board crate (the required two-step).
+# The workspace excludes three crates, and rustfmt walks up from each file to find its
+# own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
+# Format everything: the workspace + board crate + bootloader + desktop app (four-step).
 fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     _run cargo fmt --all
-    _run cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml
+    _run cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
+    _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
+    _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
+
+# Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.
+licenses *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run "$OBC_TOOLS/licenses/gen-third-party.sh" "$@"
 
 # Render benchmark + pixel-hash tripwire. Args: (none) | check | write.
 bench *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     case "${1:-}" in
-      check) _run cargo run -p obc-bench --release -- --check obc-bench/hashes.txt ;;
-      write) _run cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt ;;
+      check) _run cargo run -p obc-bench --release -- --check host/obc-bench/hashes.txt ;;
+      write) _run cargo run -p obc-bench --release -- --write-hashes host/obc-bench/hashes.txt ;;
       *)     _run cargo run -p obc-bench --release ;;
     esac
 
@@ -199,31 +599,48 @@ check-device:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    cd "$OBC_ROOT/firmware"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
+    cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
-# Run the CI rust gates locally — "will CI pass?" before you push. Mirrors the required
-# `ci` job (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
-# deny/wasm if cargo-deny/trunk are installed). Filter to a subset, e.g.:
+# Run explicitly selected CI gates locally. `full` mirrors the broad required
+# gate (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
+# deny/wasm if cargo-deny/trunk are installed). Examples:
 #   obc check fmt         obc check test         obc check board docs
+#   obc check full        # cross-cutting changes only
 check *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board deny wasm)
+    sel=("$@")
+    (( ${#sel[@]} )) || {
+      _err "select one or more gates (fmt, clippy, test, device, docs, board, frontend, deny, wasm)"
+      _hint "use package-scoped checks during development; use 'obc check full' only for cross-cutting changes"
+      exit 2
+    }
+    if [[ "${sel[0]}" == full ]]; then
+      (( ${#sel[@]} == 1 )) || { _err "'full' cannot be combined with individual gates"; exit 2; }
+      sel=(fmt clippy test device docs board frontend deny wasm)
+    fi
     want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
     FAILED=(); PASSED=(); SKIPPED=()
     step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
              if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     if want fmt; then
-      step "fmt (workspace)"  cargo fmt --all --check
-      step "fmt (board crate)" cargo fmt --check --manifest-path obc-fw-nrf54l/Cargo.toml
+      step "fmt (workspace)"   cargo fmt --all --check
+      step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
+      step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
+      step "fmt (desktop app)" cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     if want test; then
+      step "fixture registry unit tests" python3 -m unittest discover -s tools/tests -v
+      step "external fixtures (sync test profile)" python3 "$OBC_TOOLS/fixtures.py" sync test
+      export OBC_FIXTURE_ROOT
+      OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+      export OBC_REQUIRE_FIXTURES=1
       step "test (workspace, all features)" cargo test --workspace --all-features --locked
-      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check obc-bench/hashes.txt
+      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
     fi
     want device && step "device build (obc-app @ thumbv8m)" \
       cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
@@ -238,15 +655,38 @@ check *args:
         popd >/dev/null
       else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
     fi
+    if want frontend; then
+      if command -v npm >/dev/null 2>&1; then
+        fe="$OBC_ROOT/builder/app"
+        pushd "$fe" >/dev/null
+        [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
+        # Not optional: the TS wrapper imports the generated bindings, so svelte-check
+        # and the byte-identity drift guard both fail without the module present. CI
+        # gets all three packages from the `wasm-bridges` job; locally we build them.
+        step "wasm bridges"          npm run build:wasm
+        step "frontend svelte-check" npm run check
+        step "frontend vitest"       npm test
+        step "frontend builds (dev + web + desktop)" npm run build:all
+        popd >/dev/null
+      else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
+    fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/firmware/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (board crate)" cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
     if want wasm; then
-      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-sim → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
+      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-web-demo → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
       else _warn "skip wasm — trunk not installed (cargo install trunk)"; SKIPPED+=("wasm"); fi
+      # The assembly engine has to stay browser-shippable: the `cli` feature owns every
+      # std::fs call, so building the library without it catches a stray one here.
+      if rustup target list --installed | grep -q wasm32-unknown-unknown; then
+        step "wasm (obcm-assemble engine)" \
+          cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
+      else _warn "skip wasm engine — no wasm32 target (obc doctor --install)"; SKIPPED+=("wasm-engine"); fi
     fi
     want docs && step "docs link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
     printf '\n'; _say "check summary"
@@ -255,10 +695,19 @@ check *args:
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
 
+# Inventory and safely remove stale worktrees, build outputs, and OBC test scratch.
+# Dry-run by default. Common forms: `obc clean`, `obc clean --apply`,
+# `obc clean --include-builds --days 14 --apply`.
+clean *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
+
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
-# (rustup targets, just, probe-rs, the venv, and GEOS / RISC-V gcc via scripts/).
+# (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
 doctor *args:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -273,15 +722,15 @@ doctor *args:
     ck just     "just"                      'command -v just'   'obc doctor --install'
     ck thumbv8m "device target (thumbv8m)"  'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'obc doctor --install'
     ck wasm     "wasm target (docs demo)"   'rustup target list --installed | grep -q wasm32-unknown-unknown'     'obc doctor --install'
-    ck geos     "GEOS (obc-pack)"           '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    ck geos     "GEOS (obc-pack, workspace)" '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    ck osmium   "Osmium (planet sharding)"   'command -v osmium' 'install osmium-tool with your system package manager'
     ck riscv    "RISC-V gcc (board FLPR)"   'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'obc doctor --install (fetches an xPack toolchain)'
     ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
-    m="$(_all_maps | head -n1 || true)"
-    if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
-    elif [[ -f "$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
-    else _warn "no .obcm found — build one with 'obc pack' or 'obc web', or drop one in the repo root"; fi
+    ck replication "OSM replication client" 'command -v pyosmium-up-to-date || [[ -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]' 'obc doctor --install'
+    if python3 "$OBC_TOOLS/fixtures.py" exists grimsel; then _ok "default sim scenario → grimsel"
+    else _err "fixture catalog has no grimsel scenario"; MISSING+=(fixtures); fi
 
     if (( ! install )); then
       (( ${#MISSING[@]} )) && { printf '\n'; _hint "re-run with --install to fix: ${MISSING[*]}"; }
@@ -296,9 +745,13 @@ doctor *args:
       probe)    _run cargo install probe-rs-tools --locked ;;
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
-      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
+      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/builder/requirements.txt" ;;
+      replication)
+        [[ -x "$OBC_ROOT/.venv/bin/python" ]] || _run python3 -m venv "$OBC_ROOT/.venv"
+        _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/tools/requirements-bake.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
+      osmium)   _err "install osmium-tool via your system package manager" ;;
     esac; done
     printf '\n'; _say "done — re-run 'obc doctor' to confirm"
 
@@ -307,13 +760,43 @@ setup:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
+    # `setup` edits $HOME, not the repo, and the writes below bypass `_run` — so honour the dry-run
+    # switch explicitly rather than cheerfully reporting changes it already made.
+    if [[ -n "${OBC_DRY_RUN:-}" ]]; then
+      _say "dry run — would link ~/.local/bin/obc → $OBC_TOOLS/obc and wire completion into your shell rc"
+      exit 0
+    fi
+    # A git worktree has its own tools/ — linking from one pins `obc` to a checkout that is usually
+    # temporary. Point at the main working tree instead, whichever directory you ran this from.
+    main_root="$(git -C "$OBC_ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+    tools="$OBC_TOOLS"
+    if [[ -n "$main_root" && "$main_root" != "$OBC_ROOT" && -x "$main_root/tools/obc" ]]; then
+      _warn "$OBC_ROOT is a linked worktree — linking from the main checkout $main_root instead"
+      tools="$main_root/tools"
+    fi
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$OBC_TOOLS/obc" "$HOME/.local/bin/obc"
-    _ok "linked ~/.local/bin/obc → $OBC_TOOLS/obc"
-    comp="$OBC_TOOLS/obc.bash"; rc="$HOME/.bashrc"
-    # Strip any prior obc-completion lines first (so a relocated tools/ dir self-heals), then add.
-    if [[ -f "$rc" ]]; then grep -vE 'OpenBikeComputer `obc` completion|/obc\.bash"' "$rc" > "$rc.obc-tmp" || true; mv "$rc.obc-tmp" "$rc"; fi
-    printf '\n# OpenBikeComputer `obc` completion\n[ -f "%s" ] && source "%s"\n' "$comp" "$comp" >> "$rc"
-    _ok "completion wired into ~/.bashrc → $comp"
-    case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) _warn "~/.local/bin is not on PATH — add it in ~/.bashrc";; esac
-    _say "open a new shell (or: source ~/.bashrc) to pick up 'obc' + completion"
+    ln -sf "$tools/obc" "$HOME/.local/bin/obc"
+    _ok "linked ~/.local/bin/obc → $tools/obc"
+    # Completion is written for bash, but zsh runs it fine behind `bashcompinit` — and a zsh user
+    # with no ~/.bashrc used to get a cheerful "wired in" for a file their shell never reads. Wire
+    # whichever rc files actually exist, plus the one $SHELL implies.
+    comp="$tools/obc.bash"; rcs=()
+    [[ -f "$HOME/.bashrc" || "$SHELL" == */bash ]] && rcs+=("$HOME/.bashrc")
+    [[ -f "$HOME/.zshrc"  || "$SHELL" == */zsh  ]] && rcs+=("$HOME/.zshrc")
+    (( ${#rcs[@]} )) || rcs=("$HOME/.bashrc")
+    for rc in "${rcs[@]}"; do
+      # Strip any prior obc-completion block first (so a relocated tools/ dir self-heals), then add.
+      if [[ -f "$rc" ]]; then
+        grep -vE 'OpenBikeComputer `obc` completion|/obc\.bash"|bashcompinit && bashcompinit' "$rc" > "$rc.obc-tmp" || true
+        mv "$rc.obc-tmp" "$rc"
+      fi
+      { printf '\n# OpenBikeComputer `obc` completion\n'
+        # zsh needs bash-completion emulation before `complete -F` means anything.
+        [[ "$rc" == *.zshrc ]] && printf 'autoload -Uz bashcompinit && bashcompinit\n'
+        printf '[ -f "%s" ] && source "%s"\n' "$comp" "$comp"
+      } >> "$rc"
+      _ok "completion wired into ${rc/#$HOME/~} → $comp"
+    done
+    case ":$PATH:" in *":$HOME/.local/bin:"*) : ;;
+      *) _warn "~/.local/bin is not on PATH — add it in ${rcs[0]/#$HOME/~}";; esac
+    _say "open a new shell (or: source ${rcs[0]/#$HOME/~}) to pick up 'obc' + completion"

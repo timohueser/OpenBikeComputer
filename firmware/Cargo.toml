@@ -1,7 +1,0 @@
-[workspace]
-members = ["obc-formats", "obc-ports", "obc-map-scene", "obc-reader", "obc-route", "obc-render", "obc-app", "obc-host-core", "obc-sim", "obc-web-demo", "obc-pack", "obc-platform", "obc-display", "obc-sensors", "obc-storage", "obc-replay", "obc-usb-host", "obcm-testkit", "obc-vectors", "obc-ble", "obc-bench", "obc-dfu", "obc-mkimage"]
-# obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
-# [workspace]); it's built on its own, not as part of this host workspace (which builds its
-# members for the host target).
-exclude = ["obc-fw-nrf54l"]
-resolver = "2"

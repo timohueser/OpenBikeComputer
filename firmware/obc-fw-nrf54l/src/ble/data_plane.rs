@@ -25,7 +25,6 @@
 //! shared with the control plane as a `RefCell` that is **never borrowed across an `await`**.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
@@ -34,15 +33,14 @@ use nrf_sdc::{self as sdc};
 use obc_ble::{ObjectType, Receiver, StatusMessage, StoreChanged, TransferControl, TransferStatus};
 use trouble_host::prelude::*;
 
-use crate::object_store::{DiagInput, ObjectStore};
+use crate::link::identity;
+use crate::link::{transfer_result, transfer_result_at, Armed, StatusBytes, TRANSFER_ACTIVE};
+use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
-use super::gatt::{firmware_revision, serial_string, Server, HARDWARE_REVISION};
+use super::gatt::Server;
 use super::lifecycle::{conn_params, HOST_OP_TIMEOUT};
-use super::state::{
-    battery, stack_high_water, status, transfer_result, transfer_result_at, Armed, StatusBytes, TRANSFER_ABORT,
-    TRANSFER_ACTIVE, TRANSFER_ARM,
-};
+use super::state::{battery, TRANSFER_ABORT, TRANSFER_ARM};
 
 /// The L2CAP CoC data plane: accept the app's channel on the OBC SPSM and serve the transfers
 /// [`super::control::serve_connection`] arms through [`TRANSFER_ARM`] — the echo loopback, route
@@ -93,6 +91,22 @@ pub(crate) async fn serve_coc(
             // stale closed channel. A valid sender waits for its GATT write ack;
             // the control task signals TRANSFER_ARM before accepting that write,
             // so its descriptor wins before its first payload can be observed.
+            //
+            // **The cable's twin of this arm was deleted, and the radio's stays.**
+            // Over USB the same discard ate a pipelined manifest, because that
+            // host deliberately does *not* wait for its announce to be answered
+            // before queuing the payload — a bulk endpoint has no channel to
+            // reopen, so the protocol lets it pipeline and recovers with an
+            // explicit drain handshake instead. The app has no such licence and
+            // takes none: `BLETransport` writes `transferControl` **with
+            // response** and awaits it (`try await write(descriptor.encode(),
+            // to: GATT.transferControl)`), and the ack it awaits is `e.accept()`
+            // — issued *after* this signal. So the ordering the sentence above
+            // claims is real here and only here, and the CoC's own credit flow
+            // control is what holds a well-behaved sender's bytes meanwhile. The
+            // second job has no cable equivalent at all: a closed channel is how
+            // the app resets a failed exchange, which is why the radio needs no
+            // `drain_bulk_out` and has none.
             let armed = match select(TRANSFER_ARM.wait(), ch.receive(stack, &mut buf)).await {
                 Either::First(armed) => armed,
                 Either::Second(Ok(n)) if n > 0 => {
@@ -110,8 +124,24 @@ pub(crate) async fn serve_coc(
             }
             let outcome = match armed {
                 Armed::Echo(desc) => run_echo(stack, server, &mut ch, &desc, &mut buf).await,
+                // A weather bundle (WX8, #1193) streams into the WX7 dual-slot store, not the
+                // route temp — its own runner, routed on the type exactly like the fwimage/trip
+                // split inside `run_upload`.
+                Armed::Upload(desc, rx) if desc.ty == ObjectType::WeatherBundle => {
+                    run_weather_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await
+                }
                 Armed::Upload(desc, rx) => run_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await,
                 Armed::Download(desc) => run_download(stack, server, store, shared, &mut ch, &desc, &mut buf).await,
+                // Unreachable by construction: `classify_transfer` refuses every map-payload type
+                // on the radio (spec §10 — a DACH-shaped volume set is 7.6–8.9 GiB), so a set
+                // descriptor never arms a BLE data plane. Answered rather than `unreachable!()`,
+                // because a panic here would be a reset on a link a peer can drive.
+                Armed::SetShard(desc, ..) | Armed::SetTerrain(desc, ..) | Armed::SetManifest(desc, ..) => {
+                    warn!("ble: [coc] a volume-set transfer reached the radio — refusing (spec §10)");
+                    close_transfer();
+                    notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
+                    TransferOutcome::Answered
+                }
             };
             if let TransferOutcome::ChannelDropped = outcome {
                 warn!("ble: [coc] channel dropped mid-transfer — re-accepting (uploads restart)");
@@ -135,7 +165,7 @@ enum TransferOutcome {
 /// arriving after the clear belongs to the next armed descriptor.
 fn close_transfer() {
     let _ = TRANSFER_ABORT.try_take();
-    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
 }
 
 /// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,
@@ -179,7 +209,14 @@ async fn run_upload(
     // lock's `.await`.
     let began = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().upload_begin(&mut guard)
+        let opened = store.borrow_mut().upload_begin(&mut guard);
+        if opened {
+            // Same reservation the cable's twin makes, for the same reason: the announced length is
+            // known here, and every cluster booked now is four single-block FAT writes that would
+            // otherwise land in the middle of the transfer. Advisory — a refusal only costs pace.
+            store.borrow_mut().upload_reserve(&mut guard, rx.total_len());
+        }
+        opened
     };
     if !began {
         warn!("ble: [coc] cannot open upload temp — rejecting");
@@ -268,6 +305,89 @@ async fn run_upload(
     TransferOutcome::Answered
 }
 
+/// A **weather bundle** upload (WX8, #1193; spec §11.5): sink CoC bytes through the [`Receiver`]
+/// into the WX7 crash-safe inactive-slot transaction, then let
+/// [`ObjectStore::weather_finish`] deliver the §11.5/§11.6 verdict — commit, the two
+/// ignored-but-successful rows, `crcMismatch` for wire corruption, `error` for intact bytes that
+/// are not a bundle. The streaming skeleton is [`run_upload`]'s; only the storage calls differ,
+/// because a bundle must never touch the destructive `UPLOAD.TMP` path (the bundle the rider is
+/// looking at survives a torn transfer in the other slot).
+#[allow(clippy::too_many_arguments)]
+async fn run_weather_upload(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+    ch: &mut L2capChannel<'_, DefaultPacketPool>,
+    desc: &TransferControl,
+    mut rx: Receiver,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    info!("ble: [coc] weather upload start: {} bytes", desc.total_len);
+    // Open the dual-slot transaction at the first real byte (same reasoning as `run_upload`): a
+    // peer that writes `transferControl` but never opens the CoC holds no slot handle.
+    let began = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().weather_begin(&mut guard, rx.total_len(), desc.crc32)
+    };
+    if !began {
+        warn!("ble: [coc] cannot open the inactive weather slot — rejecting");
+        close_transfer();
+        notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        return TransferOutcome::Answered;
+    }
+    while !rx.is_complete() {
+        let n = match select(ch.receive(stack, buf), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(n)) if n > 0 => n,
+            Either::First(_) => {
+                // Channel gone with bytes still expected: release the slot (zero magic stays — the
+                // slot is never eligible) and re-accept; the app re-sends from the start.
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().weather_abort(&mut guard);
+                }
+                info!("ble: [coc] weather upload interrupted — slot released (uploads restart)");
+                close_transfer();
+                return TransferOutcome::ChannelDropped;
+            }
+            Either::Second(()) => {
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().weather_abort(&mut guard);
+                }
+                info!("ble: [coc] weather upload aborted by the app");
+                close_transfer();
+                notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
+                return TransferOutcome::Answered;
+            }
+        };
+        let consumed = rx.push(&buf[..n]);
+        let appended = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().weather_append(&mut guard, &buf[..consumed])
+        };
+        if !appended {
+            // The transaction released its own handle on the failed append; nothing else to drop.
+            warn!("ble: [coc] weather slot append failed — upload rejected");
+            close_transfer();
+            notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
+            return TransferOutcome::Answered;
+        }
+    }
+    let status = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().weather_finish(&mut guard)
+    };
+    let committed = status == TransferStatus::Committed;
+    info!("ble: [coc] weather upload finished -> status {}", status.as_u8());
+    let offset = if committed { rx.total_len() } else { 0 };
+    close_transfer();
+    notify_status(server, stack, transfer_result_at(rx.object_id(), status, offset)).await;
+    // Deliberately no `storeChanged`: a bundle is not a listed object and has no store revision —
+    // the phone learns the outcome from the `transferResult`, the rider from the next render.
+    TransferOutcome::Answered
+}
+
 /// A download: open the source (`routeList` / `rideList` / diagnostics from the store's built buffer, a
 /// route or ride detail straight off the card with its CRC pre-pass), notify the filled announce
 /// descriptor, then stream the object in CoC chunks. An abort between chunks stops cleanly; a send
@@ -286,19 +406,9 @@ async fn run_download(
     // runner has one open path. Bind the open's result before matching — a
     // `match store.borrow_mut().…` scrutinee temporary would keep the borrow alive through the
     // error arm's await.
-    let fw = firmware_revision();
-    let serial = serial_string();
-    let s = status();
-    let diag = DiagInput {
-        firmware: fw.as_str(),
-        hardware: HARDWARE_REVISION,
-        serial: serial.as_str(),
-        uptime_s: Instant::now().as_secs() as u32,
-        connects: s.connects,
-        disconnects: s.disconnects,
-        last_disconnect_reason: s.last_disconnect_reason,
-        stack_hw: stack_high_water(),
-    };
+    let fw = identity::firmware_revision();
+    let serial = identity::serial_string();
+    let diag = crate::link::diag_input(fw.as_str(), serial.as_str(), Instant::now().as_secs() as u32);
     let opened = {
         let mut guard = shared.lock().await;
         store.borrow_mut().download_open(&mut guard, desc, &diag)
@@ -503,11 +613,17 @@ pub(crate) async fn notify_bounded(
     handle: u16,
     bytes: &[u8],
     what: &str,
-) {
+) -> bool {
     match with_timeout(HOST_OP_TIMEOUT, server.notify(stack, handle, bytes)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!("ble: [coc] {} notify failed: {:?}", what, defmt::Debug2Format(&e)),
-        Err(_) => warn!("ble: [coc] {} notify timed out — abandoning", what),
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            warn!("ble: [coc] {} notify failed: {:?}", what, defmt::Debug2Format(&e));
+            false
+        }
+        Err(_) => {
+            warn!("ble: [coc] {} notify timed out — abandoning", what);
+            false
+        }
     }
 }
 

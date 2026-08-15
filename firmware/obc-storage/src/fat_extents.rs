@@ -21,20 +21,24 @@
 //! [`DirEntry::entry_block`]/[`entry_offset`](embedded_sdmmc::DirEntry::entry_offset) (this
 //! module re-reads the 32-byte on-disk entry to get the first cluster, which `ClusterId` hides).
 //! The volume geometry (partition start, FAT/data offsets) is re-derived from the MBR + BPB with
-//! the same rules `open_raw_volume`/`parse_volume` use, so the two views can't disagree on a card
-//! the manager successfully mounted. The caller should still verify the table against the normal
+//! the same rules `open_raw_volume`/`parse_volume` use, so the two views agree on any card the
+//! manager successfully mounted — except that this module additionally refuses a BPB whose derived
+//! sums wrap `u32` (the manager computes them unchecked) and clamps the cluster count to what the
+//! FAT actually covers (as Linux and FreeBSD do), because its arithmetic must stay in bounds where
+//! the manager's merely has to limp. The caller should still verify the table against the normal
 //! read path once at build time (read a block through both, compare) and fall back on any
 //! mismatch — a geometry bug must degrade to *slow*, never to *wrong bytes*.
 //!
 //! Bounded RAM by design (the alternative — caching the whole chain — was measured, rejected,
-//! and reverted in #500): [`MAX_EXTENTS`] runs. A file fragmented past the cap fails the build
-//! with [`BuildError::TooFragmented`] and the caller keeps the plain [`SdByteSource`] path; the
-//! fix for such a card is re-copying the map onto it (fresh FAT allocation is contiguous).
+//! and reverted in #500): [`MAX_EXTENTS`] runs by default, or a caller-selected smaller budget
+//! through [`ExtentTableWithCapacity`]. A file fragmented past its table's cap fails the
+//! build with [`BuildError::TooFragmented`] and the caller keeps the plain [`SdByteSource`] path;
+//! the fix for such a card is re-copying the map onto it (fresh FAT allocation is contiguous).
 
 use core::cell::RefCell;
 
 use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx};
-use obc_formats::io::{ByteSource, Error};
+use obc_formats::io::{rd_u16, rd_u32, ByteSource, Error};
 
 /// A [`BlockDevice`] by shared reference — what lets one card serve **both** the `VolumeManager`
 /// (which takes its device by value) and this module's raw extent reads. The board parks its
@@ -82,14 +86,15 @@ pub enum BuildError {
     /// A raw block read failed.
     Io,
     /// MBR/BPB/dir-entry contents outside what this module understands (no MBR partition 0, a
-    /// non-512-byte-sector or FAT12 volume, a corrupt directory entry…).
+    /// non-512-byte-sector or FAT12 volume, a corrupt directory entry, geometry whose derived
+    /// block sums don't fit the card's 32-bit LBA space…).
     Geometry,
     /// The FAT chain didn't cover the file's byte length (truncated chain, reserved/bad cluster
     /// id mid-chain, or a dir-entry size disagreeing with the open handle's length).
     Mismatch,
-    /// More than [`MAX_EXTENTS`] runs — the bounded table refuses rather than growing. Carries
-    /// the file's **true** extent count (the walk finishes for the count even once storage is
-    /// full), so the refusal log states exactly how fragmented the file is.
+    /// More runs than the table's const capacity — the bounded table refuses rather than growing.
+    /// Carries the file's **true** extent count (the walk finishes for the count even once storage
+    /// is full), so the refusal log states exactly how fragmented the file is.
     TooFragmented(u32),
 }
 
@@ -108,18 +113,47 @@ struct Geometry {
     cluster_count: u32,
 }
 
-/// The resolved file: its extent runs plus a resident one-block bounce buffer for the unaligned
-/// head/tail of a read. The bounce lives *here* — sized once, resident with the table — rather
-/// than on the read path's stack: `read_at` is reached from the deepest render frames, where the
-/// tight ride-stack budget has no spare 512 bytes (see the board crate's stack notes). For the
-/// same reason the board keeps the whole table in a `.bss` slot and never moves it by value.
-pub struct ExtentTable {
-    runs: heapless::Vec<Run, MAX_EXTENTS>,
+/// Maximum blocks per `BlockDevice::read` on the batched path — the CMD18 span size. A read of
+/// `k > 1` disk-contiguous blocks issues **one** CMD18 (`embedded-sdmmc` dispatches multi-block
+/// slices to CMD18+CMD12) instead of `k` CMD17s, amortising the per-command handshake (command
+/// frame + R1 poll + `wait_not_busy`) — measured on glass at ~260 µs/block on the reference card,
+/// so a 4 KB (8-block) chunk read drops from 8 commands to 1. Benefit is steeply diminishing past
+/// a few blocks (the per-block data-token + payload cost is irreducible), so `8` = one CMD18 for a
+/// packer-default 4 KB chunk, two for the 8 KB `MAX_CHUNK_BYTES` ceiling.
+///
+/// Whole aligned blocks land directly in the caller's existing buffer; this cap changes command
+/// granularity, not resident RAM. Only an unaligned head/tail uses [`ExtentTable::bounce`], the
+/// same one-block buffer the pre-batching path already held.
+pub(crate) const READ_BATCH: usize = 8;
+
+// `Block` is a dependency-owned `repr(Rust)` newtype-like struct, so do not assume its field layout
+// merely from the source. These compile-time checks prove the representation this build uses before
+// `blocks_from_bytes` reinterprets a caller buffer: exactly the public byte array, at offset zero,
+// with byte alignment and no padding. All bit patterns are valid because the only field is `[u8;
+// Block::LEN]`. A dependency change that invalidates any premise fails the build here.
+const _: () = assert!(core::mem::size_of::<Block>() == Block::LEN, "Block must contain no padding");
+const _: () = assert!(core::mem::align_of::<Block>() == core::mem::align_of::<u8>(), "Block must be byte-aligned");
+const _: () = assert!(core::mem::offset_of!(Block, contents) == 0, "Block contents must start at offset zero");
+
+/// The resolved file: its extent runs plus a resident one-block bounce for an unaligned read head
+/// or tail. Aligned interiors are read straight into the caller's buffer in [`READ_BATCH`]-block
+/// spans, so batching adds no resident RAM. The bounce lives *here* — sized once, resident with
+/// the table — rather than on the read path's stack: `read_at` is reached from the deepest render
+/// frames, where the tight ride-stack budget has no spare 512 bytes (see the board crate's stack
+/// notes). For the same reason the board keeps the whole table in a `.bss` slot and never moves it
+/// by value.
+pub struct ExtentTableWithCapacity<const N: usize> {
+    runs: heapless::Vec<Run, N>,
     len: u32,
     bounce: RefCell<Block>,
 }
 
-impl ExtentTable {
+/// The normal 128-run table used by standalone maps and DFU files. Keeping this as a concrete
+/// alias preserves the original construction API (`ExtentTable::build`) while set shards can opt
+/// into a smaller, explicitly named [`ExtentTableWithCapacity`].
+pub type ExtentTable = ExtentTableWithCapacity<MAX_EXTENTS>;
+
+impl<const N: usize> ExtentTableWithCapacity<N> {
     /// Resolve the file's FAT chain into an extent table, reading raw blocks off `dev` (the
     /// shared twin of the manager's [`SharedBlockDevice`]). `entry_block`/`entry_offset` locate
     /// the file's 32-byte directory entry (absolute, from the public
@@ -135,7 +169,7 @@ impl ExtentTable {
 
         // ── Volume geometry: MBR partition 0 → BPB, exactly `open_raw_volume`'s rules ──
         read_block(dev, 0, &mut block)?;
-        if read_u16(&block.contents, 510) != 0xAA55 {
+        if rd_u16(&block.contents, 510) != 0xAA55 {
             return Err(BuildError::Geometry);
         }
         let part = &block.contents[446..462];
@@ -143,60 +177,84 @@ impl ExtentTable {
         if (part[0] & 0x7F) != 0 || !matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0B | 0x0C | 0x0E) {
             return Err(BuildError::Geometry);
         }
-        let part_lba = read_u32(part, 8);
+        let part_lba = rd_u32(part, 8);
 
         read_block(dev, part_lba, &mut block)?;
         let bpb = &block.contents;
-        if read_u16(bpb, 510) != 0xAA55 || read_u16(bpb, 11) as usize != 512 {
+        if rd_u16(bpb, 510) != 0xAA55 || rd_u16(bpb, 11) as usize != 512 {
             return Err(BuildError::Geometry);
         }
         let spc = bpb[13] as u32;
-        let reserved = read_u16(bpb, 14) as u32;
+        let reserved = rd_u16(bpb, 14) as u32;
         let num_fats = bpb[16] as u32;
-        let root_entries = read_u16(bpb, 17) as u32;
-        let total_blocks = match read_u16(bpb, 19) {
-            0 => read_u32(bpb, 32),
+        let root_entries = rd_u16(bpb, 17) as u32;
+        let total_blocks = match rd_u16(bpb, 19) {
+            0 => rd_u32(bpb, 32),
             n => n as u32,
         };
-        let fat_size = match read_u16(bpb, 22) {
-            0 => read_u32(bpb, 36),
+        let fat_size = match rd_u16(bpb, 22) {
+            0 => rd_u32(bpb, 36),
             n => n as u32,
         };
-        if spc == 0 || fat_size == 0 {
+        if spc == 0 || fat_size == 0 || num_fats == 0 {
             return Err(BuildError::Geometry);
         }
+        // Everything below is arithmetic on raw BPB `u32`s a malformed card fully controls, and a
+        // release build wraps them silently: a wrapped `non_data` slips *past* the `checked_sub`
+        // guard and yields a plausible-looking geometry that then reads the wrong blocks and
+        // reports `Ok(())` — precisely what this module forbids. So each step is checked, and the
+        // volume is bounded as a whole so the chain walk's own arithmetic can't wrap either.
+        if part_lba.checked_add(total_blocks).is_none() {
+            return Err(BuildError::Geometry); // the volume runs off the card's 32-bit LBA space
+        }
+        let root_dir_blocks = root_entries.checked_mul(32).ok_or(BuildError::Geometry)?.div_ceil(512);
+        let non_data = num_fats
+            .checked_mul(fat_size)
+            .and_then(|fats| fats.checked_add(reserved))
+            .and_then(|n| n.checked_add(root_dir_blocks))
+            .ok_or(BuildError::Geometry)?;
         // FAT type is decided by cluster count (the BPB's own rule — mirrors `Bpb::create_from_bytes`).
-        let root_dir_blocks = (root_entries * 32).div_ceil(512);
-        let non_data = reserved + num_fats * fat_size + root_dir_blocks;
         let cluster_count = total_blocks.checked_sub(non_data).ok_or(BuildError::Geometry)? / spc;
         if cluster_count < 4085 {
             return Err(BuildError::Geometry); // FAT12 — unsupported, like the manager itself
         }
-        let geo = Geometry {
-            fat_start: part_lba + reserved,
-            data_start: part_lba + non_data,
-            spc,
-            fat32: cluster_count >= 65525,
-            cluster_count,
-        };
+        let fat32 = cluster_count >= 65525;
+        // Two bounds the walk below then relies on, applied as a *clamp* rather than a refusal:
+        // FAT32 addresses at most 0x0FFF_FFF5 clusters (a FAT16 volume is already under 65,525
+        // here), which keeps `2 + cluster_count` and `cluster * 4` inside `u32`; and the walk may
+        // only reach ids the FAT holds an entry for, which keeps `fat_start + cluster * 4 / 512`
+        // inside the FAT region — and therefore inside the volume already bounded above. Clamping
+        // mirrors Linux/FreeBSD (data clusters the FAT can't describe simply don't exist) and
+        // keeps every volume the manager mounts mountable here: a chain id past the clamp fails
+        // that one file's walk below, degrading to the slow path instead of refusing the card.
+        let entries_per_block = if fat32 { 128 } else { 256 };
+        let addressable = fat_size.saturating_mul(entries_per_block).saturating_sub(2).min(0x0FFF_FFF5);
+        let cluster_count = cluster_count.min(addressable);
+        // No wrap: `non_data <= total_blocks` (the `checked_sub` above) and `part_lba +
+        // total_blocks` fits, so both sums — and every `data_start + (cluster - 2) * spc` the walk
+        // derives from them — stay below the volume's end block.
+        let geo =
+            Geometry { fat_start: part_lba + reserved, data_start: part_lba + non_data, spc, fat32, cluster_count };
 
         // ── The file's first cluster, from its raw 32-byte directory entry ──
         read_block(dev, entry_block.0, &mut block)?;
+        // `off + 32` is checked: `usize` is 32-bit on the device, so a caller-supplied offset near
+        // `u32::MAX` would otherwise wrap the window's end below its start.
         let off = entry_offset as usize;
-        let entry = block.contents.get(off..off + 32).ok_or(BuildError::Geometry)?;
+        let entry = off.checked_add(32).and_then(|end| block.contents.get(off..end)).ok_or(BuildError::Geometry)?;
         if entry[11] == 0x0F || entry[11] & 0x10 != 0 {
             return Err(BuildError::Geometry); // an LFN fragment or a directory, not a file entry
         }
-        if read_u32(entry, 28) != expected_len {
+        if rd_u32(entry, 28) != expected_len {
             return Err(BuildError::Mismatch);
         }
-        let hi = if geo.fat32 { read_u16(entry, 20) as u32 } else { 0 };
-        let first_cluster = (hi << 16) | read_u16(entry, 26) as u32;
+        let hi = if geo.fat32 { rd_u16(entry, 20) as u32 } else { 0 };
+        let first_cluster = (hi << 16) | rd_u16(entry, 26) as u32;
 
         // ── One walk of the chain, compressed into runs ──
         let bytes_per_cluster = geo.spc * 512;
         let clusters_needed = expected_len.div_ceil(bytes_per_cluster);
-        let mut runs: heapless::Vec<Run, MAX_EXTENTS> = heapless::Vec::new();
+        let mut runs: heapless::Vec<Run, N> = heapless::Vec::new();
         let mut file_block = 0u32;
         // Run bookkeeping independent of storage, so an overflowing walk still finishes and
         // reports the file's *true* extent count — the actionable number in the refusal (and
@@ -241,16 +299,16 @@ impl ExtentTable {
                     cached_fat_lba = fat_lba;
                 }
                 cluster = if geo.fat32 {
-                    read_u32(&block.contents, ent_off) & 0x0FFF_FFFF
+                    rd_u32(&block.contents, ent_off) & 0x0FFF_FFFF
                 } else {
-                    read_u16(&block.contents, ent_off) as u32
+                    rd_u16(&block.contents, ent_off) as u32
                 };
             }
         }
-        if run_count as usize > MAX_EXTENTS {
+        if run_count as usize > N {
             return Err(BuildError::TooFragmented(run_count));
         }
-        Ok(ExtentTable { runs, len: expected_len, bounce: RefCell::new(Block::new()) })
+        Ok(ExtentTableWithCapacity { runs, len: expected_len, bounce: RefCell::new(Block::new()) })
     }
 
     /// How many extent runs the file resolved to — 1 = fully contiguous. The number #500's open
@@ -276,53 +334,74 @@ impl ExtentTable {
         self.runs.is_empty()
     }
 
-    /// Absolute LBA of file block `file_block`, or `None` past the mapped extents.
-    fn lba_of(&self, file_block: u32) -> Option<u32> {
+    /// Absolute LBA of file block `file_block`, **and** how many blocks stay disk-contiguous from
+    /// it (to the end of its extent run) — the cap on a single CMD18 batch, since a run boundary is
+    /// an LBA discontinuity one multi-block read can't cross. `None` past the mapped extents.
+    fn lba_run_of(&self, file_block: u32) -> Option<(u32, u32)> {
         // Runs are sorted by construction; binary-search the covering run.
         let i = self.runs.partition_point(|r| r.file_block <= file_block).checked_sub(1)?;
         let r = &self.runs[i];
-        (file_block - r.file_block < r.blocks).then(|| r.lba + (file_block - r.file_block))
+        let into = file_block - r.file_block;
+        (into < r.blocks).then(|| (r.lba + into, r.blocks - into))
     }
 }
 
 /// A [`ByteSource`] serving `read_at` straight off the card through an [`ExtentTable`] — the
 /// fast twin of [`SdByteSource`](crate::SdByteSource), same construction pattern (borrow, rebuild
 /// per use, hold no seek state).
-pub struct ExtentSource<'a, D: BlockDevice> {
+pub struct ExtentSourceWithCapacity<'a, D: BlockDevice, const N: usize> {
     dev: &'a D,
-    table: &'a ExtentTable,
+    table: &'a ExtentTableWithCapacity<N>,
 }
 
-impl<'a, D: BlockDevice> ExtentSource<'a, D> {
+/// Direct-read source for the default-capacity [`ExtentTable`].
+pub type ExtentSource<'a, D> = ExtentSourceWithCapacity<'a, D, MAX_EXTENTS>;
+
+impl<'a, D: BlockDevice, const N: usize> ExtentSourceWithCapacity<'a, D, N> {
     /// A source over `table`, reading raw blocks off `dev`. The caller keeps the underlying file
     /// open for the table's lifetime (an open handle is what pins the chain).
-    pub fn new(dev: &'a D, table: &'a ExtentTable) -> Self {
-        ExtentSource { dev, table }
+    pub fn new(dev: &'a D, table: &'a ExtentTableWithCapacity<N>) -> Self {
+        ExtentSourceWithCapacity { dev, table }
     }
 }
 
-impl<D: BlockDevice> ByteSource for ExtentSource<'_, D> {
+impl<D: BlockDevice, const N: usize> ByteSource for ExtentSourceWithCapacity<'_, D, N> {
     // `inline(never)`: called from the deepest render/nav frames — keep this body's locals out
     // of them permanently, whatever the inliner decides later (deep-frame discipline; on-glass
     // stack peaks have moved with inlining before). Measured free: one out-of-line call per
     // multi-ms SD read.
     #[inline(never)]
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
-        let end = offset.checked_add(buf.len() as u32).ok_or(Error::BadOffset)?;
+        // `try_from`, not `as`: a >4 GiB request (possible on a 64-bit host build of this crate)
+        // would truncate to a small length and sail through the bound check below.
+        let want = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
+        let end = offset.checked_add(want).ok_or(Error::BadOffset)?;
         if end > self.table.len {
             return Err(Error::BadOffset);
         }
-        // Block-at-a-time through the table's resident bounce buffer (see its field doc for why
-        // it isn't a stack local here). Single-block CMD17s already cut the measured per-chunk
-        // cost ~30× (the FAT walk was the cost, not the data blocks); batching contiguous spans
-        // into one CMD18 is a further ~2× left on the table if a read path ever needs it.
+        // Read aligned interiors straight into the caller's buffer, capped by [`READ_BATCH`] and
+        // the current disk-contiguous run. That makes a multi-block span one CMD18 instead of one
+        // CMD17 per block without adding a second resident chunk-sized buffer. The existing
+        // one-block bounce handles only an unaligned head/tail. A maximally-fragmented file
+        // (1-block runs) still degrades to CMD17 per block.
         let mut bounce = self.table.bounce.borrow_mut();
         let mut off = offset;
         let mut done = 0usize;
         while done < buf.len() {
-            let lba = self.table.lba_of(off / 512).ok_or(Error::BadOffset)?;
-            self.dev.read(core::slice::from_mut(&mut *bounce), BlockIdx(lba)).map_err(|_| Error::Io)?;
+            let (lba, run_left) = self.table.lba_run_of(off / 512).ok_or(Error::BadOffset)?;
             let in_block = (off % 512) as usize;
+            if in_block == 0 {
+                let blocks = ((buf.len() - done) / 512).min(run_left as usize).min(READ_BATCH);
+                if blocks != 0 {
+                    let n = blocks * 512;
+                    self.dev.read(blocks_from_bytes(&mut buf[done..done + n]), BlockIdx(lba)).map_err(|_| Error::Io)?;
+                    done += n;
+                    off += n as u32;
+                    continue;
+                }
+            }
+
+            self.dev.read(core::slice::from_mut(&mut *bounce), BlockIdx(lba)).map_err(|_| Error::Io)?;
             let n = (512 - in_block).min(buf.len() - done);
             buf[done..done + n].copy_from_slice(&bounce.contents[in_block..in_block + n]);
             done += n;
@@ -336,17 +415,20 @@ impl<D: BlockDevice> ByteSource for ExtentSource<'_, D> {
     }
 }
 
+/// View a whole-block byte window as the exact `Block` slice required by [`BlockDevice::read`].
+fn blocks_from_bytes(bytes: &mut [u8]) -> &mut [Block] {
+    debug_assert!(bytes.len().is_multiple_of(Block::LEN));
+    // SAFETY: the compile-time assertions above prove `Block` is exactly one byte-aligned
+    // `[u8; Block::LEN]` at offset zero, with no padding; therefore every byte pattern is valid,
+    // the input pointer is suitably aligned, and `bytes.len() / Block::LEN` covers exactly the
+    // same allocation. The exclusive slice borrow is consumed for this returned lifetime, so no
+    // aliasing mutable reference remains while the device writes the blocks.
+    unsafe { core::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast(), bytes.len() / Block::LEN) }
+}
+
 /// One raw block read off the shared device.
 fn read_block<D: BlockDevice>(dev: &D, lba: u32, block: &mut Block) -> Result<(), BuildError> {
     dev.read(core::slice::from_mut(block), BlockIdx(lba)).map_err(|_| BuildError::Io)
-}
-
-fn read_u16(b: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([b[off], b[off + 1]])
-}
-
-fn read_u32(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
 
 // The tests hand-build minimal-but-valid empty FAT16/FAT32 images in RAM, then create the actual
@@ -363,6 +445,7 @@ mod tests {
     use std::vec::Vec;
 
     use embedded_sdmmc::{Mode, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+    use obc_formats::io::{put_u16, put_u32};
 
     use super::*;
 
@@ -391,6 +474,31 @@ mod tests {
         }
     }
 
+    /// A transparent test wrapper that records each raw read as `(start LBA, block count)`. The
+    /// byte-differential matrix proves correctness; this pins the performance contract so a
+    /// future rewrite cannot silently fall back to CMD17 per block while keeping the bytes right.
+    struct RecordingDevice<'a> {
+        disk: &'a RamDisk,
+        reads: RefCell<Vec<(u32, usize)>>,
+    }
+
+    impl BlockDevice for RecordingDevice<'_> {
+        type Error = ();
+
+        fn read(&self, blocks: &mut [Block], start: BlockIdx) -> Result<(), Self::Error> {
+            self.reads.borrow_mut().push((start.0, blocks.len()));
+            self.disk.read(blocks, start)
+        }
+
+        fn write(&self, blocks: &[Block], start: BlockIdx) -> Result<(), Self::Error> {
+            self.disk.write(blocks, start)
+        }
+
+        fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
+            self.disk.num_blocks()
+        }
+    }
+
     struct Epoch;
     impl TimeSource for Epoch {
         fn get_timestamp(&self) -> Timestamp {
@@ -406,13 +514,6 @@ mod tests {
     }
 
     const PART_START: u32 = 64;
-
-    fn put_u16(img: &mut [u8], off: usize, v: u16) {
-        img[off..off + 2].copy_from_slice(&v.to_le_bytes());
-    }
-    fn put_u32(img: &mut [u8], off: usize, v: u32) {
-        img[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
 
     /// An empty FAT32 volume: 1-block clusters (so single-block appends fragment maximally),
     /// 65,600 clusters (the FAT32 floor is 65,525), one FAT.
@@ -565,6 +666,20 @@ mod tests {
     }
 
     #[test]
+    fn caller_selected_extent_cap_is_enforced_with_the_true_count() {
+        const SMALL_CAP: usize = 4;
+        let fs = setup(mkfs_fat32(), &["MAP.BIN", "OTHER.BIN"], SMALL_CAP + 2);
+        let (eb, eo, len) = fs.entry_facts("MAP.BIN");
+        assert_eq!(
+            ExtentTableWithCapacity::<SMALL_CAP>::build(fs.disk, eb, eo, len)
+                .err()
+                .expect("build should enforce the selected cap"),
+            BuildError::TooFragmented((SMALL_CAP + 2) as u32),
+            "a smaller resident table must still report the file's true extent count"
+        );
+    }
+
+    #[test]
     fn wrong_length_is_refused_and_eof_is_bad_offset() {
         let fs = setup(mkfs_fat32(), &["MAP.BIN"], 4);
         let (eb, eo, len) = fs.entry_facts("MAP.BIN");
@@ -577,6 +692,96 @@ mod tests {
         let src = ExtentSource::new(fs.disk, &table);
         let mut buf = [0u8; 8];
         assert_eq!(src.read_at(len - 4, &mut buf).unwrap_err(), Error::BadOffset);
+    }
+
+    /// Malformed geometry must be *refused*, never wrapped into a plausible-looking table that
+    /// then serves the wrong blocks with `Ok(())` (this module's standing rule, top of file). Each
+    /// case patches one BPB field so a different derived sum or product would overflow `u32`; the
+    /// patch is applied to the mounted image's BPB block and rolled back afterwards, so one
+    /// fixture covers them all.
+    #[test]
+    fn wrapping_geometry_is_refused_not_wrapped() {
+        // Patches the image's BPB block, which starts at the given byte offset.
+        type Patch = fn(&mut Vec<u8>, usize);
+        let cases: &[(&str, Patch)] = &[
+            ("num_fats * fat_size", |img, b| {
+                img[b + 16] = 16; // 16 FATs × 0x1000_0000 blocks = exactly 2^32 → wraps to 0
+                put_u32(img, b + 36, 0x1000_0000);
+            }),
+            ("reserved + num_fats * fat_size", |img, b| put_u32(img, b + 36, 0xFFFF_FFFF)),
+            ("part_lba + total_blocks", |img, b| put_u32(img, b + 32, 0xFFFF_FFFF)),
+        ];
+
+        let fs = setup(mkfs_fat32(), &["MAP.BIN"], 4);
+        let (eb, eo, len) = fs.entry_facts("MAP.BIN");
+        let b = (PART_START * 512) as usize;
+        let pristine: Vec<u8> = fs.disk.0.borrow()[b..b + 512].to_vec();
+        for (what, patch) in cases {
+            {
+                let img = &mut *fs.disk.0.borrow_mut();
+                img[b..b + 512].copy_from_slice(&pristine);
+                patch(img, b);
+            }
+            assert_eq!(
+                ExtentTable::build(fs.disk, eb, eo, len).err(),
+                Some(BuildError::Geometry),
+                "{what} must refuse the build, not wrap into a table"
+            );
+        }
+
+        // A cluster count the FAT can't cover is *clamped*, not refused — the manager mounts
+        // these (so do Linux and FreeBSD, by the same clamp), and a refusal here would take a
+        // working card's map with it. An inflated total_blocks leaves the rest of the geometry
+        // untouched, so the build must succeed with the same extents as the pristine card; only
+        // a chain id past the clamp may fail, and then per-file in the walk.
+        {
+            let img = &mut *fs.disk.0.borrow_mut();
+            img[b..b + 512].copy_from_slice(&pristine);
+        }
+        let pristine_runs: Vec<_> = ExtentTable::build(fs.disk, eb, eo, len).unwrap().runs().collect();
+        {
+            let img = &mut *fs.disk.0.borrow_mut();
+            put_u32(img, b + 32, 0x2000_0000);
+        }
+        let clamped = ExtentTable::build(fs.disk, eb, eo, len)
+            .expect("an oversized cluster count is clamped to the FAT's coverage, not refused");
+        assert_eq!(clamped.runs().collect::<Vec<_>>(), pristine_runs, "the clamp must not move the extents");
+
+        // Same rule for the caller-supplied directory-entry offset: `off + 32` must not wrap
+        // 32-bit `usize` into a window that looks in-range.
+        fs.disk.0.borrow_mut()[b..b + 512].copy_from_slice(&pristine);
+        assert_eq!(
+            ExtentTable::build(fs.disk, eb, u32::MAX, len).err(),
+            Some(BuildError::Geometry),
+            "an entry offset whose 32-byte window wraps must refuse the build"
+        );
+    }
+
+    #[test]
+    fn read_calls_are_batched_and_clamped_to_extent_runs() {
+        let contiguous = setup(mkfs_fat32(), &["MAP.BIN"], READ_BATCH + 3);
+        let (eb, eo, len) = contiguous.entry_facts("MAP.BIN");
+        let table = ExtentTable::build(contiguous.disk, eb, eo, len).unwrap();
+        let first_lba = table.runs().next().unwrap().0;
+        let dev = RecordingDevice { disk: contiguous.disk, reads: RefCell::new(Vec::new()) };
+        let mut buf = vec![0u8; (READ_BATCH + 3) * 512];
+        ExtentSource::new(&dev, &table).read_at(0, &mut buf).unwrap();
+        assert_eq!(
+            *dev.reads.borrow(),
+            vec![(first_lba, READ_BATCH), (first_lba + READ_BATCH as u32, 3)],
+            "a long aligned read is capped at READ_BATCH without falling back to CMD17"
+        );
+        assert_eq!(buf, pattern(0, 0, buf.len()));
+
+        let fragmented = setup(mkfs_fat32(), &["MAP.BIN", "OTHER.BIN"], 4);
+        let (eb, eo, len) = fragmented.entry_facts("MAP.BIN");
+        let table = ExtentTable::build(fragmented.disk, eb, eo, len).unwrap();
+        let want_lbas: Vec<_> = table.runs().map(|(lba, _)| (lba, 1)).collect();
+        let dev = RecordingDevice { disk: fragmented.disk, reads: RefCell::new(Vec::new()) };
+        let mut buf = vec![0u8; len as usize];
+        ExtentSource::new(&dev, &table).read_at(0, &mut buf).unwrap();
+        assert_eq!(*dev.reads.borrow(), want_lbas, "a CMD18 span must not cross a fragmented run boundary");
+        assert_eq!(buf, pattern(0, 0, buf.len()));
     }
 
     /// The shared body: build the image, create the files, build MAP.BIN's table, assert the
@@ -592,8 +797,23 @@ mod tests {
 
         let src = ExtentSource::new(fs.disk, &table);
         let file = fs.vmgr.open_file_in_dir(fs.root, "MAP.BIN", Mode::ReadOnly).unwrap();
-        let windows: &[(u32, usize)] =
-            &[(0, 512), (0, len as usize), (1, 511), (7, 1300), (509, 8), (512, 512), (len - 700, 700), (len - 1, 1)];
+        // Windows cover: sub-block, whole-file, unaligned head/tail, cross-block, cross-extent, and
+        // — for the batched CMD18 path — an exactly-`READ_BATCH`-aligned span (512, 4096) and an
+        // unaligned span longer than one batch (3, 4090) that forces multiple `read` turns and, in
+        // the fragmented cases, a batch clamped to each single-block run. All fit the smallest
+        // fixture (fat16, len 6144).
+        let windows: &[(u32, usize)] = &[
+            (0, 512),
+            (0, len as usize),
+            (1, 511),
+            (7, 1300),
+            (509, 8),
+            (512, 512),
+            (512, 4096),
+            (3, 4090),
+            (len - 700, 700),
+            (len - 1, 1),
+        ];
         for &(off, n) in windows {
             let mut got = vec![0u8; n];
             src.read_at(off, &mut got).unwrap();

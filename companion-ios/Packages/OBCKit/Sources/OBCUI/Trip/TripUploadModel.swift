@@ -64,10 +64,19 @@ public final class TripUploadModel: Identifiable {
         /// route's own choice (a trip is one unit). The trip-object step ignores it
         /// (trips carry no retention).
         let commit: (@MainActor @Sendable (DeviceObjectID?, UInt32, Retention) -> Void)?
+        /// Apply the trip's chosen retention to a **skipped** member stage (finding
+        /// #876-4): a skip skips the *bytes*, never the retention postcondition. The
+        /// trip-object skip carries none (trips have no retention). Read at execution
+        /// time so it uses the confirmed trip level.
+        let applyRetention: (@MainActor @Sendable (Retention) -> Void)?
 
-        /// A stage already up-to-date on the device — flashes by, tallied.
-        public static func skip(title: String) -> QueueStep {
-            QueueStep(title: title, skip: true, makeTransfer: nil, commit: nil)
+        /// A stage already up-to-date on the device — no bytes transfer, but a member
+        /// stage still applies the trip's retention (`applyRetention`); the trip
+        /// object's own skip passes `nil`.
+        public static func skip(
+            title: String, applyRetention: (@MainActor @Sendable (Retention) -> Void)? = nil
+        ) -> QueueStep {
+            QueueStep(title: title, skip: true, makeTransfer: nil, commit: nil, applyRetention: applyRetention)
         }
 
         /// A transfer step (a stage upload or the trip object).
@@ -76,7 +85,7 @@ public final class TripUploadModel: Identifiable {
             makeTransfer: @escaping @MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?,
             commit: @escaping @MainActor @Sendable (DeviceObjectID?, UInt32, Retention) -> Void
         ) -> QueueStep {
-            QueueStep(title: title, skip: false, makeTransfer: makeTransfer, commit: commit)
+            QueueStep(title: title, skip: false, makeTransfer: makeTransfer, commit: commit, applyRetention: nil)
         }
     }
 
@@ -116,7 +125,7 @@ public final class TripUploadModel: Identifiable {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink
     private let steps: [QueueStep]
     private let precheck: TripUploadPrecheck
     private let timing: Timing
@@ -130,7 +139,7 @@ public final class TripUploadModel: Identifiable {
     @ObservationIgnored private var linkUp = true
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink,
         tripName: String,
         deviceName: String,
         precheck: TripUploadPrecheck,
@@ -304,6 +313,10 @@ public final class TripUploadModel: Identifiable {
             if Task.isCancelled { return }
             let step = steps[stepIndex]
             if step.skip {
+                // Skipped bytes, not skipped policy (finding #876-4): a member stage
+                // already current on the device still lands the trip's chosen
+                // retention — the same postcondition a freshly uploaded stage gets.
+                step.applyRetention?(retention)
                 skippedCount += 1
                 stepIndex += 1
                 continue

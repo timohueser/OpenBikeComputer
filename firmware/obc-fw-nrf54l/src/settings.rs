@@ -70,6 +70,15 @@ fn boot_state_base() -> u32 {
     core::ptr::addr_of!(__boot_state_base) as u32
 }
 
+/// Base address of the **blob-stage carve** (#1158, `OBCU_Spec.md` §3): the `__semmc_stage_base`
+/// linker symbol (`ORIGIN(SEMMC_STAGE)`), read at runtime like [`boot_state_base`].
+fn semmc_stage_base() -> u32 {
+    extern "C" {
+        static __semmc_stage_base: u8;
+    }
+    core::ptr::addr_of!(__semmc_stage_base) as u32
+}
+
 // The armer writes whole 16-byte RRAMC lines with no read-modify-write — the shared codec pads
 // every encoded blob to a line multiple (pinned in obc-dfu too; mirrored here like the settings
 // SLOT_LEN guard so a codec change fails loud at this write site's crate).
@@ -103,7 +112,7 @@ const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
 /// fresh magic to be safely ignored anyway.
 const ID_MARKS_OFFSET: u32 = 2560;
 /// The id line is one RRAM write line by construction — pin it so a codec growth fails loud.
-const _: () = assert!(obc_app::settings::ID_MARKS_LEN == RRAM_WRITE_LINE);
+const _: () = assert!(obc_app::store_meta::ID_MARKS_LEN == RRAM_WRITE_LINE);
 
 /// Byte offset of the **trip-id high-water line** (epic #526 TR4, #653) — one 16-byte line holding
 /// the next fresh trip object id, so a trip id deleted last session can't be re-issued (the phone's
@@ -122,7 +131,7 @@ const TRIP_MARK_MAGIC: [u8; 4] = *b"OBTM";
 const TRIP_MARK_VERSION: u8 = 1;
 /// Pin the trip-mark line clear of both the arm marker above it and the id high-water line below it.
 #[cfg(feature = "ble")]
-const _: () = assert!(ARM_MARKER_OFFSET + obc_app::settings::ARM_MARKER_LEN as u32 <= TRIP_MARK_OFFSET);
+const _: () = assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 <= TRIP_MARK_OFFSET);
 #[cfg(feature = "ble")]
 const _: () = assert!(TRIP_MARK_OFFSET + RRAM_WRITE_LINE as u32 <= ID_MARKS_OFFSET);
 
@@ -157,6 +166,53 @@ fn decode_trip_mark(b: &[u8; RRAM_WRITE_LINE]) -> Option<u16> {
     Some(u16::from_le_bytes([b[6], b[7]]))
 }
 
+/// Byte offset of the **map-id high-water line** (issue #927) — one 16-byte line holding the next
+/// fresh map object id, so an id whose `MP{id}.OBM` was deleted last session can't be re-issued to a
+/// different map (spec §4.1's "within a store epoch, an id the device minted is never re-issued").
+/// Maps draw from their own counter for the same reason trips do, so this is its own line. Placed on
+/// the free line right after the trip mark (@2112 + 16 B = @2128), clear of the id line @2560.
+///
+/// Unlike the trip mark this is **not** `#[cfg(feature = "ble")]`: a map arrives over USB, and the
+/// USB device plane is unconditional.
+const MAP_MARK_OFFSET: u32 = 2128;
+/// The map-mark tag; anything else there (blank page, torn write, older layout) reads as "no floor".
+/// Distinct from `OBCD`/`OBCI`/`OBCP`/`OBCB`/`OBTM` so the magic actually discriminates this record.
+const MAP_MARK_MAGIC: [u8; 4] = *b"OBMM";
+/// Map-mark layout version (bump on any field change — an old version reads as no floor).
+const MAP_MARK_VERSION: u8 = 1;
+/// Pin the map-mark line clear of the arm marker above it and the id high-water line below it.
+const _: () =
+    assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 + RRAM_WRITE_LINE as u32 <= MAP_MARK_OFFSET);
+const _: () = assert!(MAP_MARK_OFFSET + RRAM_WRITE_LINE as u32 <= ID_MARKS_OFFSET);
+
+/// Encode the map-id floor into its fixed 16-byte RRAM line: `magic(4) · version(1) · pad(1) ·
+/// next_map_id u16 LE · pad(4) · crc32 LE` — CRC-32 over bytes `[0..12]`, so a torn write reads back
+/// invalid ("no floor"). The map twin of [`encode_trip_mark`].
+fn encode_map_mark(next_map_id: u16) -> [u8; RRAM_WRITE_LINE] {
+    let mut b = [0u8; RRAM_WRITE_LINE];
+    b[0..4].copy_from_slice(&MAP_MARK_MAGIC);
+    b[4] = MAP_MARK_VERSION;
+    b[6..8].copy_from_slice(&next_map_id.to_le_bytes());
+    let mut crc = obc_ble::Crc32::new();
+    crc.update(&b[0..12]);
+    b[12..16].copy_from_slice(&crc.finalize().to_le_bytes());
+    b
+}
+
+/// Decode the map-id floor, or `None` for a blank / torn / foreign line (→ "no floor").
+fn decode_map_mark(b: &[u8; RRAM_WRITE_LINE]) -> Option<u16> {
+    if b[0..4] != MAP_MARK_MAGIC || b[4] != MAP_MARK_VERSION {
+        return None;
+    }
+    let mut crc = obc_ble::Crc32::new();
+    crc.update(&b[0..12]);
+    let stored = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
+    if crc.finalize() != stored {
+        return None;
+    }
+    Some(u16::from_le_bytes([b[6], b[7]]))
+}
+
 /// Byte offset of the **DFU arm-marker slot** within the reserved settings page — the armer's
 /// breadcrumb, written right after the `Armed` boot-state write and consumed by the boot-outcome
 /// reconcile (`dfu::reconcile_boot_outcome`) on the next boot. Placed on the line right after the
@@ -168,8 +224,8 @@ fn decode_trip_mark(b: &[u8; RRAM_WRITE_LINE]) -> Option<u16> {
 const ARM_MARKER_OFFSET: u32 = 2064;
 /// The marker is whole RRAM write lines by construction — pin it so a codec growth fails loud,
 /// and pin that it stays clear of the id high-water line.
-const _: () = assert!(obc_app::settings::ARM_MARKER_LEN.is_multiple_of(RRAM_WRITE_LINE));
-const _: () = assert!(ARM_MARKER_OFFSET + obc_app::settings::ARM_MARKER_LEN as u32 <= ID_MARKS_OFFSET);
+const _: () = assert!(obc_app::dfu::ARM_MARKER_LEN.is_multiple_of(RRAM_WRITE_LINE));
+const _: () = assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 <= ID_MARKS_OFFSET);
 
 /// Byte offset of the **BLE bond slot** within the reserved settings page: the one bonded peer's
 /// identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands straight back in
@@ -183,7 +239,7 @@ const BOND_OFFSET: u32 = 3072;
 /// 16-byte line at @2560 must end at or before @3072, with @2576 left unused. Guarded here where
 /// `BOND_OFFSET` is in scope (both are `cfg(ble)`-relevant).
 #[cfg(feature = "ble")]
-const _: () = assert!(ID_MARKS_OFFSET + obc_app::settings::ID_MARKS_LEN as u32 <= BOND_OFFSET);
+const _: () = assert!(ID_MARKS_OFFSET + obc_app::store_meta::ID_MARKS_LEN as u32 <= BOND_OFFSET);
 /// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
 /// "no bond" rather than garbage — the device falls back to open pairing.
 ///
@@ -282,13 +338,66 @@ impl RramSettingsStore {
         }
     }
 
+    /// Stage the sEMMC soft-peripheral image into the `SEMMC_STAGE` carve (#1158,
+    /// `OBCU_Spec.md` §3) — the armer's blob handoff to the bootloader, which boots the card
+    /// through this copy on the Install/Rollback paths.
+    ///
+    /// Write ordering inside the carve is the commit story: the blob body lands first (16-byte
+    /// RRAMC lines, zero-padded tail), the CRC-framed header line **last** — so a power cut
+    /// mid-stage leaves a carve that fails [`obc_dfu::validate_stage`], indistinguishable from
+    /// "never staged". Idempotent and cheap on re-arms: when the carve already validates to these
+    /// exact bytes (the common case — the blob only changes when the app image does), nothing is
+    /// written. Returns `false` on a controller error or a failed readback — the armer then aborts
+    /// with the boot-state page untouched (`ArmError::BlobStage`).
+    pub fn stage_semmc_blob(&mut self, blob: &[u8]) -> bool {
+        let base = semmc_stage_base();
+        // SAFETY: the linker reserves the SEMMC_STAGE carve; RRAM is memory-mapped and always
+        // readable, and this store is the sole writer (one thread-mode executor).
+        let carve = unsafe { core::slice::from_raw_parts(base as *const u8, obc_dfu::STAGE_LEN) };
+        if obc_dfu::validate_stage(carve) == Some(blob) {
+            defmt::info!("dfu: sEMMC blob already staged ({=usize} B) — skipping the write", blob.len());
+            return true;
+        }
+        let Some(header) = obc_dfu::encode_stage_header(blob) else {
+            defmt::warn!("dfu: sEMMC blob ({=usize} B) cannot be staged (empty/oversize)", blob.len());
+            return false;
+        };
+        // Blob body first, in whole 16-byte lines (a 256 B stack chunk keeps the RRAMC write
+        // sizes in the same family as the settings blobs; the tail line is zero-padded).
+        let mut off = base + obc_dfu::STAGE_HEADER_LEN as u32;
+        for chunk in blob.chunks(256) {
+            let mut lines = [0u8; 256];
+            lines[..chunk.len()].copy_from_slice(chunk);
+            let padded = chunk.len().div_ceil(RRAM_WRITE_LINE) * RRAM_WRITE_LINE;
+            if let Err(e) = self.rram.write(off, &lines[..padded]) {
+                defmt::warn!("dfu: sEMMC blob stage write failed @ {=u32:#010x}: {}", off, e);
+                return false;
+            }
+            off += padded as u32;
+        }
+        // The header line is the commit point.
+        if let Err(e) = self.rram.write(base, &header) {
+            defmt::warn!("dfu: sEMMC blob stage header write failed: {}", e);
+            return false;
+        }
+        // Readback through the same validator the bootloader uses — a stage the bootloader would
+        // reject must fail the arm here, where the app can say so.
+        let ok = obc_dfu::validate_stage(carve) == Some(blob);
+        if ok {
+            defmt::info!("dfu: staged sEMMC blob ({=usize} B) to RRAM @ {=u32:#010x}", blob.len(), base);
+        } else {
+            defmt::warn!("dfu: sEMMC blob stage readback mismatch @ {=u32:#010x}", base);
+        }
+        ok
+    }
+
     /// Persist the DFU **arm marker** — the armer's breadcrumb, written right after the `Armed`
     /// boot-state write so the next boot can tell a failed install apart from a plain boot.
     /// Best-effort: the caller proceeds to the reboot either way (a missing marker only costs
     /// the failure card its version string, never the install).
-    pub fn write_arm_marker(&mut self, marker: &obc_app::settings::ArmMarker) -> bool {
+    pub fn write_arm_marker(&mut self, marker: &obc_app::dfu::ArmMarker) -> bool {
         let off = region_offset() + ARM_MARKER_OFFSET;
-        match self.rram.write(off, &obc_app::settings::encode_arm_marker(marker)) {
+        match self.rram.write(off, &obc_app::dfu::encode_arm_marker(marker)) {
             Ok(()) => true,
             Err(e) => {
                 defmt::warn!("dfu: arm-marker RRAM write failed: {}", e);
@@ -299,11 +408,11 @@ impl RramSettingsStore {
 
     /// Load the DFU arm marker, or `None` when the slot is blank / torn / a foreign layout —
     /// "no arm happened", a plain boot.
-    pub fn read_arm_marker(&mut self) -> Option<obc_app::settings::ArmMarker> {
+    pub fn read_arm_marker(&mut self) -> Option<obc_app::dfu::ArmMarker> {
         let off = region_offset() + ARM_MARKER_OFFSET;
-        let mut buf = [0u8; obc_app::settings::ARM_MARKER_LEN];
+        let mut buf = [0u8; obc_app::dfu::ARM_MARKER_LEN];
         match self.rram.read(off, &mut buf) {
-            Ok(()) => obc_app::settings::decode_arm_marker(&buf),
+            Ok(()) => obc_app::dfu::decode_arm_marker(&buf),
             Err(e) => {
                 defmt::warn!("dfu: arm-marker RRAM read failed: {} → treating as no marker", e);
                 None
@@ -315,7 +424,7 @@ impl RramSettingsStore {
     /// boot-outcome verdict is delivered, so each arm's card shows exactly once.
     pub fn clear_arm_marker(&mut self) {
         let off = region_offset() + ARM_MARKER_OFFSET;
-        if let Err(e) = self.rram.write(off, &[0u8; obc_app::settings::ARM_MARKER_LEN]) {
+        if let Err(e) = self.rram.write(off, &[0u8; obc_app::dfu::ARM_MARKER_LEN]) {
             defmt::warn!("dfu: arm-marker RRAM clear failed: {}", e);
         }
     }
@@ -324,11 +433,11 @@ impl RramSettingsStore {
     /// torn / a foreign layout — "no floor", i.e. allocation falls back to scan-max + 1 exactly
     /// as before the marks existed (fresh devices and reflashes behave identically until the
     /// first delete).
-    pub fn load_id_marks(&mut self) -> Option<obc_app::settings::IdMarks> {
+    pub fn load_id_marks(&mut self) -> Option<obc_app::store_meta::IdMarks> {
         let off = region_offset() + ID_MARKS_OFFSET;
-        let mut buf = [0u8; obc_app::settings::ID_MARKS_LEN];
+        let mut buf = [0u8; obc_app::store_meta::ID_MARKS_LEN];
         match self.rram.read(off, &mut buf) {
-            Ok(()) => obc_app::settings::decode_id_marks(&buf),
+            Ok(()) => obc_app::store_meta::decode_id_marks(&buf),
             Err(e) => {
                 defmt::warn!("settings: id-marks RRAM read failed: {} → no floor (scan-max+1)", e);
                 None
@@ -338,9 +447,9 @@ impl RramSettingsStore {
 
     /// Persist the id high-water marks — one aligned 16-byte line write, no erase; called once
     /// per id assignment (a route upload commit / a ride finish), so the write rate is negligible.
-    pub fn save_id_marks(&mut self, m: &obc_app::settings::IdMarks) {
+    pub fn save_id_marks(&mut self, m: &obc_app::store_meta::IdMarks) {
         let off = region_offset() + ID_MARKS_OFFSET;
-        let bytes = obc_app::settings::encode_id_marks(m);
+        let bytes = obc_app::store_meta::encode_id_marks(m);
         if let Err(e) = self.rram.write(off, &bytes) {
             defmt::warn!("settings: id-marks RRAM write failed: {}", e);
         }
@@ -372,6 +481,31 @@ impl RramSettingsStore {
         let off = region_offset() + TRIP_MARK_OFFSET;
         if let Err(e) = self.rram.write(off, &encode_trip_mark(next_trip_id)) {
             defmt::warn!("settings: trip-mark RRAM write failed: {}", e);
+        }
+    }
+
+    /// Load the durable **map**-id high-water floor (issue #927), or `None` when the line is blank /
+    /// torn / a foreign layout — "no floor", i.e. fresh map ids fall back to `scan_max + 1`. Maps
+    /// draw from their own counter (like trips), so this is its own RRAM line.
+    pub fn load_map_mark(&mut self) -> Option<u16> {
+        let off = region_offset() + MAP_MARK_OFFSET;
+        let mut buf = [0u8; RRAM_WRITE_LINE];
+        match self.rram.read(off, &mut buf) {
+            Ok(()) => decode_map_mark(&buf),
+            Err(e) => {
+                defmt::warn!("settings: map-mark RRAM read failed: {} → no floor (scan-max+1)", e);
+                None
+            }
+        }
+    }
+
+    /// Persist the next fresh map id — one aligned 16-byte line write, called once per map upload
+    /// commit, so an id deleted last session can't be re-issued across a reboot. Never reuses a lower
+    /// id: the caller passes `max(current floor, next)`.
+    pub fn save_map_mark(&mut self, next_map_id: u16) {
+        let off = region_offset() + MAP_MARK_OFFSET;
+        if let Err(e) = self.rram.write(off, &encode_map_mark(next_map_id)) {
+            defmt::warn!("settings: map-mark RRAM write failed: {}", e);
         }
     }
 

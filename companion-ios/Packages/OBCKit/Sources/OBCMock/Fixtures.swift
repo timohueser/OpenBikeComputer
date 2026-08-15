@@ -218,11 +218,23 @@ extension FixtureSet {
     /// and the possession ack dead.
     public static let defaultStoreEpoch: UInt32 = 0x0BC0_0001
 
+    /// The OBCM map-format version every mock device reports unless a fixture
+    /// overrides it (E1 / #911) — what the reference firmware's reader reads
+    /// (`obc_formats::obcm::VERSION`). A mock device is a device, so it states
+    /// one rather than serving the pre-E1 short read by default.
+    public static let defaultObcmVersion: UInt8 = 13
+
+    /// The optional contracts a mock device announces unless a fixture overrides them (WX3 §11):
+    /// current firmware implements weather, so the mock does too — otherwise every mock run would
+    /// show the weather screen's "this OBC has no weather support" state and nothing else.
+    public static let defaultFeatureBits: UInt32 = OBCProtocol.featureWeather
+
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
     public static let builtIn = FixtureSet(
         deviceInfo: DeviceInfo(
             name: "OBC (mock)", firmwareVersion: "0.0.0-mock",
-            serial: "OBC-MOCK-000000", storeEpoch: defaultStoreEpoch),
+            serial: "OBC-MOCK-000000", storeEpoch: defaultStoreEpoch,
+            obcmVersion: defaultObcmVersion, featureBits: defaultFeatureBits),
         config: DeviceConfig(name: "OBC (mock)"),
         battery: 72, routes: [], rides: [],
         diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
@@ -237,12 +249,13 @@ extension FixtureSet {
 public enum SampleRouteFile {
     /// Raw values are the `-OBCImportSample <kind>` launch tokens.
     public enum Kind: String, Sendable {
-        case gpx, tcx, bad
+        case gpx, tcx, bad, grimsel
     }
 
     public static func fileName(_ kind: Kind = .gpx) -> String {
         switch kind {
         case .gpx, .tcx: "sample-import.\(kind.rawValue)"
+        case .grimsel: "website-import.gpx"
         case .bad: "packing-list.pdf"
         }
     }
@@ -252,17 +265,26 @@ public enum SampleRouteFile {
         case .gpx, .tcx:
             Bundle.module.url(forResource: "sample-import", withExtension: kind.rawValue)
                 .flatMap { try? Data(contentsOf: $0) }
+        case .grimsel:
+            Bundle.module.url(forResource: "website-import", withExtension: "gpx")
+                .flatMap { try? Data(contentsOf: $0) }
         case .bad:
             Data("socks · stove · sleeping bag — definitely not a route\n".utf8)
         }
     }
 }
 
-/// A synthetic, fully valid OBCU update container (`OBCU_Spec.md` §1) for the
+/// A synthetic OBCU v2 update container (`OBCU_Spec.md` §1) for the
 /// `-OBCFirmwareDemo` launch hook and previews — the Files picker can't be driven
 /// from automation, so a demo/screenshot run needs a pre-staged file. Both CRCs
-/// are correct, so `StagedFirmware.validate` accepts it just like a real
-/// `UPDATE.BIN`. Not a real image — the raw body is a deterministic pattern.
+/// are correct and the signature marker is set, so `StagedFirmware.validate` accepts
+/// it just like a real `UPDATE.BIN`. Not a real image — the raw body is a
+/// deterministic pattern.
+///
+/// **Its signature is a placeholder.** The app deliberately does not verify signatures
+/// (the trusted key lives in the firmware — §1.4), so a demo fixture only needs a
+/// well-formed 64-byte trailer to exercise every app-side path. A real device would
+/// refuse this file at the arm, which is exactly correct: it isn't a real release.
 public enum SampleFirmwareFile {
     /// A ~0.9 MB container tagged `version`, sized to feel like a real firmware
     /// image so the transfer bar paces realistically.
@@ -273,13 +295,18 @@ public enum SampleFirmwareFile {
 
         var header = Data(count: 64)
         header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
-        header[4] = 1 // header_version LE
+        header[4] = 1 // header_version LE — still 1 in a v2 container (§1.2)
         header.replaceSubrange(8..<12, with: withUnsafeBytes(of: UInt32(image.count).littleEndian, Array.init))
         header.replaceSubrange(12..<16, with: withUnsafeBytes(of: CRC32.checksum(image).littleEndian, Array.init))
         let v = Array(version.utf8.prefix(32))
         header.replaceSubrange(16..<16 + v.count, with: v)
+        // 48..52: sig_scheme = 1 (Ed25519), sig_len = 64 — the v2 marker (§1.1).
+        header.replaceSubrange(48..<50, with: withUnsafeBytes(of: UInt16(1).littleEndian, Array.init))
+        header.replaceSubrange(50..<52, with: withUnsafeBytes(of: UInt16(64).littleEndian, Array.init))
         header.replaceSubrange(60..<64, with: withUnsafeBytes(of: CRC32.checksum(header[0..<60]).littleEndian, Array.init))
-        return header + image
+        // A deterministic stand-in trailer (see the note above — not a valid signature).
+        let signature = Data((0..<64).map { UInt8(($0 &* 7 &+ 3) & 0xFF) })
+        return header + image + signature
     }
 }
 
@@ -349,12 +376,21 @@ private struct DeviceInfoDTO: Decodable {
     /// every fixture device has an id era (#769 — the identity gate is
     /// fail-closed, and a device without an epoch can't sync).
     let storeEpoch: UInt32?
+    /// Optional in the JSON; defaults to `FixtureSet.defaultObcmVersion` so a
+    /// mock device states the map format it reads, the way a real one does.
+    let obcmVersion: UInt8?
+    /// Optional in the JSON; defaults to `FixtureSet.defaultFeatureBits` — a mock device is a
+    /// *current* device, so it announces the optional contracts current firmware implements
+    /// (weather, WX3). `-OBCWeatherDemo unsupported` is how a run models an older one.
+    let featureBits: UInt32?
 
     var domain: DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion,
                    hardwareVersion: hardwareVersion ?? "", serial: serial ?? "",
                    protocolVersion: protocolVersion ?? OBCProtocol.version,
-                   storeEpoch: storeEpoch ?? FixtureSet.defaultStoreEpoch)
+                   storeEpoch: storeEpoch ?? FixtureSet.defaultStoreEpoch,
+                   obcmVersion: obcmVersion ?? FixtureSet.defaultObcmVersion,
+                   featureBits: featureBits ?? FixtureSet.defaultFeatureBits)
     }
 }
 

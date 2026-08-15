@@ -7,12 +7,12 @@
 //! geometry the Map draws — so [`RouteReader::elevation_profile`] reduces the route to
 //! a [`Profile`] of per-column min/max elevation.
 //!
-//! **Why a pyramid.** Zooming must not re-stream the route on every encoder detent. One
+//! **Why a pyramid.** Zooming must not re-stream the route on every Up/Down step. One
 //! load-time pass builds a **fine base** level ([`PROFILE_COLS`] columns); the coarser
 //! levels are pure **min/max downsamples** of the finer one (merge adjacent column pairs —
 //! a few array passes, no extra chunk decodes), the same trick the OBCM map format uses
 //! (v5). Drawing a view then [picks the level](Profile::window) whose resolution matches
-//! the visible window and walks only ~chart-width columns, so the per-detent cost is flat
+//! the visible window and walks only ~chart-width columns, so the per-step cost is flat
 //! across every zoom level and touches no geometry.
 //!
 //! The resolution is decoupled from any display width: the screen maps columns onto its
@@ -22,28 +22,23 @@
 
 use heapless::Vec;
 
-use crate::deadband::DeadBand;
-use crate::geo::seg_dist_m;
-use crate::reader::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_elevation::DeadBand;
 use obc_formats::io::{ByteSource, Error};
+use obc_formats::obcr::CHUNK_META_LEN;
+use obc_map_scene::ground_dist_m;
 
 /// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
 /// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
 /// must stay even for the pair-merge downsample). The one RAM/zoom-depth knob: doubling it
-/// doubles both (~16 KB for the whole pyramid at 2048). `nrf-mem` trims to 256 (~2.3 KB) for the
-/// narrow panel — one zoom-in step over the 240-px base view — freeing RAM for the renderer, the
-/// ride loop's resident route index/cache, and the BLE stack sharing the 256 KB DK (issue #270).
-#[cfg(not(feature = "nrf-mem"))]
-pub const PROFILE_COLS: usize = 2048;
-#[cfg(feature = "nrf-mem")]
-pub const PROFILE_COLS: usize = 256;
+/// doubles both (~4 KB for the whole pyramid at 512 — one clean zoom-in step over the 240-px
+/// panel; the freed RAM funds the all-features build's ≥65 KB stack reserve).
+pub const PROFILE_COLS: usize = 512;
 
 /// Per-level column counts, finest first — each a clean halving so the pair-merge downsample
-/// lands exactly. On the full profile the coarsest level (256) still covers the 240-px panel,
-/// so a full-route draw walks ~256 columns, not the 2048-wide base; on `nrf-mem` the *base*
-/// (256) is what just covers the panel — the full-route draw uses it directly and the coarser
-/// levels serve only narrower draws ([`Profile::window`] takes the coarsest level that still
-/// fills the target pixels, so nothing upsamples chunkily).
+/// lands exactly. The coarsest levels sit under the 240-px panel, so a full-route draw walks
+/// the 256 level, not the 512-wide base ([`Profile::window`] takes the coarsest level that
+/// still fills the target pixels, so nothing upsamples chunkily).
 const LEVEL_COLS: [usize; 4] = [PROFILE_COLS, PROFILE_COLS / 2, PROFILE_COLS / 4, PROFILE_COLS / 8];
 /// Number of pyramid levels (length of [`LEVEL_COLS`]).
 const NUM_LEVELS: usize = LEVEL_COLS.len();
@@ -186,6 +181,32 @@ impl Profile {
         (a + (b - a) * f) as u32
     }
 
+    /// Cumulative ascent (m) climbed by **`dist_m` metres** along a route of `route_total_m` — the
+    /// distance-indexed twin of [`ascent_to`](Self::ascent_to), which every consumer that thinks in
+    /// route metres (matched ride progress, a waypoint's `dist_along_m`, a corridor POI's
+    /// along-route position) wants instead of a fraction it has to derive itself.
+    ///
+    /// A zero-length route has no axis to place `dist_m` on, so it reads `0`.
+    #[inline]
+    pub fn ascent_to_m(&self, dist_m: u32, route_total_m: u32) -> u32 {
+        if route_total_m == 0 {
+            return 0;
+        }
+        self.ascent_to((dist_m.min(route_total_m) as f32 / route_total_m as f32).clamp(0.0, 1.0))
+    }
+
+    /// Ascent (m) still to climb between two along-route distances — `ascent_to_m(to) −
+    /// ascent_to_m(from)`, saturating so a backwards pair reads `0` rather than wrapping.
+    ///
+    /// This is the one "climb between here and there" lookup: the Up-ahead rows' climb-to-go
+    /// (`from` = matched progress, `to` = the entry's `dist_along_m`), the `TO CLIMB` tile and the
+    /// ETA model's ascent-to-go (`to` = `route_total_m`) all read it, so they cannot drift apart.
+    /// Non-increasing in `from` and non-decreasing in `to`, since the curve is monotonic.
+    #[inline]
+    pub fn ascent_between_m(&self, from_m: u32, to_m: u32, route_total_m: u32) -> u32 {
+        self.ascent_to_m(to_m, route_total_m).saturating_sub(self.ascent_to_m(from_m, route_total_m))
+    }
+
     /// Pick the pyramid [`Window`] to draw for a view centered on `center_frac` at zoom
     /// factor `zoom` (`1.0` = whole route, larger = closer), into a chart `target_px`
     /// wide.
@@ -194,7 +215,7 @@ impl Profile {
     /// level is the **coarsest** one that still puts at least `target_px` columns inside
     /// that span — so the draw has a source column per pixel without walking more than
     /// ~`2·target_px`. Pure arithmetic over the cached pyramid: no geometry is read, so
-    /// this is cheap to call per detent.
+    /// this is cheap to call per step.
     pub fn window(&self, center_frac: f32, zoom: f32, target_px: u32) -> Window {
         let zoom = zoom.max(1.0);
         let span = (1.0 / zoom).min(1.0);
@@ -258,7 +279,7 @@ impl RouteReader<'_> {
             let mut prev: Option<(i32, i32)> = None;
             for p in &buf {
                 if let Some(pr) = prev {
-                    dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
                 }
                 prev = Some((p.lon, p.lat));
                 let frac = dist / total;
@@ -274,7 +295,7 @@ impl RouteReader<'_> {
             }
         }
 
-        fill_gaps(&mut cols[..PROFILE_COLS], (self.min_ele_m, self.max_ele_m));
+        fill_gaps(&mut cols[..PROFILE_COLS], band_fallback((self.min_ele_m, self.max_ele_m)), band_is_set);
         downsample_levels(&mut cols);
         let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
         let peak_col = peak_column(&cols[..PROFILE_COLS]);
@@ -319,7 +340,17 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     let point_len = ride_point_len(info.version);
     let points_at = name_len + ride_header_len(info.version) as u32;
 
-    let mut cols = [(i16::MAX, i16::MIN); TOTAL_COLS];
+    // Build the band **into the result value**, not a separate `cols` scratch: the array is
+    // `TOTAL_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
+    // live in the frame at once. Written in place it exists once (the ascent curve stays a local
+    // — it integrates as `f32` and is quantised into the struct's `u32` at the end).
+    let mut out = Profile {
+        cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
+        cum_ascent: [0; ASCENT_COLS],
+        min_ele_m: 0,
+        max_ele_m: 0,
+        peak_col: 0,
+    };
     let mut casc = [0f32; ASCENT_COLS];
     let total = info.distance_m.max(1) as f64;
     let base_last = PROFILE_COLS - 1;
@@ -346,7 +377,7 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
             // centimetres — under a band column's reach).
             let p = (lon / 10, lat / 10);
             if let Some(pr) = prev {
-                dist += seg_dist_m(pr, p) as f64;
+                dist += ground_dist_m(pr, p) as f64;
             }
             prev = Some(p);
             if ele == RIDE_ELE_NONE {
@@ -356,7 +387,7 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
             max_ele = max_ele.max(ele);
             let frac = dist / total;
             let col = ((frac * base_last as f64) as usize).min(base_last);
-            let slot = &mut cols[col];
+            let slot = &mut out.cols[col];
             slot.0 = slot.0.min(ele);
             slot.1 = slot.1.max(ele);
             let acol = ((frac * asc_last as f64) as usize).min(asc_last);
@@ -370,11 +401,13 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     if min_ele > max_ele {
         (min_ele, max_ele) = (0, 0);
     }
-    fill_gaps(&mut cols[..PROFILE_COLS], (min_ele, max_ele));
-    downsample_levels(&mut cols);
-    let cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
-    let peak_col = peak_column(&cols[..PROFILE_COLS]);
-    Ok(Profile { cols, cum_ascent, min_ele_m: min_ele, max_ele_m: max_ele, peak_col })
+    fill_gaps(&mut out.cols[..PROFILE_COLS], band_fallback((min_ele, max_ele)), band_is_set);
+    downsample_levels(&mut out.cols);
+    out.cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
+    out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
+    out.min_ele_m = min_ele;
+    out.max_ele_m = max_ele;
+    Ok(out)
 }
 
 /// A stored ride's recorded-track polyline decimated to at most `N` points — uniform by point
@@ -454,27 +487,42 @@ pub const SPARKLINE_BUCKETS: usize = 64;
 /// there), so the mini band reads as a coarser copy of the full Route-overview band. `O(points)`,
 /// one pass over the geometry — call it once at commit time on the host, never on the render path.
 pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKETS]> {
-    let idx = RouteIndex::read(src).ok()?;
-    let lo = idx.min_ele_m as i32;
-    let span = idx.max_ele_m as i32 - lo;
+    // **Streams the chunk index; never materialises it.** A `RouteIndex` is
+    // `MAX_ROUTE_CHUNKS × 48 B` and is returned by value, so building one here put tens of KB on
+    // the stack to produce this function's 64-byte result (73.7 KB measured on the LM20 at 512
+    // chunks — more than the whole stack region; issue: LM20 retarget, 2026-07-24). Nothing here
+    // needs random access: the walk is strictly forward, one chunk at a time, so it reads each
+    // 48-byte meta straight from the source through the same `parse_chunk_meta` the index build
+    // uses. Resident cost is now the point scratch alone, independent of `MAX_ROUTE_CHUNKS`.
+    let h = read_header(src).ok()?;
+    let lo = h.min_ele_m as i32;
+    let span = h.max_ele_m as i32 - lo;
     if span <= 0 {
         return None; // flat / no elevation — omit the band
     }
-    let reader = RouteReader::new(&idx, src);
-    let total = idx.total_distance_m.max(1) as f64;
+    let total = h.total_distance_m.max(1) as f64;
     let last = SPARKLINE_BUCKETS - 1;
     // Peak height per bucket; sentinel `i16::MIN` = "no point landed here" (gap-filled below).
     let mut maxes = [i16::MIN; SPARKLINE_BUCKETS];
     let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
-    for k in 0..reader.chunks().len() {
-        if reader.decode_chunk(k, &mut buf).is_err() {
+    let mut meta_bytes = [0u8; CHUNK_META_LEN];
+    let src_len = src.len();
+    for k in 0..h.chunk_count {
+        let off = h.index_offset + k * CHUNK_META_LEN as u32;
+        if src.read_at(off, &mut meta_bytes).is_err() {
             continue;
         }
-        let mut dist = reader.chunks()[k].cum_distance_m as f64;
+        let Ok(m) = parse_chunk_meta(&meta_bytes, src_len) else { continue };
+        let n = m.point_count as usize;
+        buf.clear();
+        if n == 0 || decode_chunk_from(src, &m, n, &mut buf).is_err() {
+            continue;
+        }
+        let mut dist = m.cum_distance_m as f64;
         let mut prev: Option<(i32, i32)> = None;
         for p in &buf {
             if let Some(pr) = prev {
-                dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
             }
             prev = Some((p.lon, p.lat));
             let b = ((dist / total) * last as f64) as usize;
@@ -565,13 +613,18 @@ fn peak_column(cols: &[(i16, i16)]) -> usize {
     peak_col
 }
 
-/// Make `cols` gap-free: each empty column (sentinel `min > max`) inherits the nearest
-/// filled column — forward first, then backward for any leading gap. A route with no
-/// points at all falls back to the header `(min, max)` so the band still has a shape.
-fn fill_gaps(cols: &mut [(i16, i16)], fallback: (i16, i16)) {
-    let is_set = |c: &(i16, i16)| c.0 <= c.1;
-
-    let mut last: Option<(i16, i16)> = None;
+/// Make `cols` gap-free: each empty column inherits the nearest filled column — forward carry
+/// first, then a backward carry for any leading run of empties the forward pass can't reach. A
+/// column still empty after both falls back to `fallback`, so the buffer is never left holding a
+/// sentinel.
+///
+/// Generic over the column payload and its emptiness test, because both elevation buffers want
+/// exactly this carry: the route [`Profile`]'s `(min, max)` band (sentinel `min > max`, falling
+/// back to the header extent so the band still has a shape when a route decodes to nothing) and
+/// the [`ClimbProfile`](crate::climb_profile::ClimbProfile)'s one-sample-per-column scalar
+/// (sentinel [`EMPTY`](crate::climb_profile), falling back to the seg's base).
+pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T) -> bool) {
+    let mut last: Option<T> = None;
     for c in cols.iter_mut() {
         if is_set(c) {
             last = Some(*c);
@@ -580,7 +633,7 @@ fn fill_gaps(cols: &mut [(i16, i16)], fallback: (i16, i16)) {
         }
     }
     // Backward carry fills columns before the first set one (forward carry can't reach).
-    let mut next: Option<(i16, i16)> = None;
+    let mut next: Option<T> = None;
     for c in cols.iter_mut().rev() {
         if is_set(c) {
             next = Some(*c);
@@ -588,11 +641,21 @@ fn fill_gaps(cols: &mut [(i16, i16)], fallback: (i16, i16)) {
             *c = v;
         }
     }
-    // Only reachable when the route had no decodable points.
-    let fallback = (fallback.0.min(fallback.1), fallback.0.max(fallback.1));
+    // Only reachable when the whole span had no decodable points.
     for c in cols.iter_mut() {
         if !is_set(c) {
             *c = fallback;
         }
     }
+}
+
+/// The band buffer's emptiness test: an unwritten column carries the inverted sentinel `min > max`.
+fn band_is_set(c: &(i16, i16)) -> bool {
+    c.0 <= c.1
+}
+
+/// Normalize a `(min, max)` band fallback so it reads as *set* — the header extent is trusted for
+/// its two values, not for their order.
+fn band_fallback(fallback: (i16, i16)) -> (i16, i16) {
+    (fallback.0.min(fallback.1), fallback.0.max(fallback.1))
 }

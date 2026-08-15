@@ -116,7 +116,7 @@ impl ResetScreen {
             return;
         }
 
-        // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live encoder hold.
+        // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live Select hold.
         let p = rx.hold_progress.clamp(0.0, 1.0);
         let prompt = if p > 0.02 { rx.t(Msg::ResetKeepHolding) } else { rx.t(Msg::ResetHoldToErase) };
         cv.text(prompt, Point::new(w / 2, TITLE_BAR_H + 150), Font::Body, TextAlign::Center, INK);
@@ -134,24 +134,13 @@ impl ResetScreen {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode, Units};
 
     fn run(scr: &mut ResetScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, s);
         scr.handle(g, &mut cx)
     }
 

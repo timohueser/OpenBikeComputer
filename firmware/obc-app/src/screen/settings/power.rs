@@ -1,6 +1,6 @@
 //! The Power screen — GPS fix interval + a power-saver toggle. `GPS Fix` is a value row whose stepper
 //! opens in place; the interval step adapts (1 s up to 10 s, then 5 s) so a long interval is a few
-//! detents. `Power Saver` is a click-to-flip toggle. (The idle-return timeout used to live here; it
+//! steps. `Power Saver` is a click-to-flip toggle. (The idle-return timeout used to live here; it
 //! moved to the Display page with the other "how the screen behaves" settings.)
 
 use core::fmt::Write;
@@ -20,8 +20,8 @@ const GPS_FIX: usize = 0;
 const POWER_SAVER: usize = 1;
 const ROWS: usize = 2;
 
-/// Step the fix interval by `n` detents with adaptive granularity: 1 s under 10 s, 5 s at/above,
-/// clamped. Per-detent (multi-detent flicks compound) with the boundary re-checked each detent, so a
+/// Step the fix interval by `n` steps with adaptive granularity: 1 s under 10 s, 5 s at/above,
+/// clamped. Per-step (multi-step flicks compound) with the boundary re-checked each step, so a
 /// sweep up reads 1…10, 15, 20, ….
 fn step_interval(v: u16, n: i32) -> u16 {
     let dir = n.signum();
@@ -48,7 +48,7 @@ impl PowerScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 if self.editing {
                     cx.settings.fix_interval_s = step_interval(cx.settings.fix_interval_s, n);
                 } else {
@@ -67,14 +67,7 @@ impl PowerScreen {
                 Transition::None
             }
             // Back steps out of an open field first, else climbs to the Settings list.
-            Gesture::Back => {
-                if self.editing {
-                    self.editing = false;
-                    Transition::None
-                } else {
-                    Transition::Pop
-                }
-            }
+            Gesture::Back => super::back_out_of_field(self.editing, || self.editing = false),
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -106,6 +99,7 @@ impl PowerScreen {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
     /// The adaptive interval step: 1 s granularity under 10 s, 5 s at/above, clamped at the bounds.
@@ -115,30 +109,18 @@ mod tests {
         assert_eq!(step_interval(10, 1), 15, "5 s steps from 10 s up");
         assert_eq!(step_interval(1, -1), 1, "can't go below the minimum");
         assert_eq!(step_interval(FIX_INTERVAL_MAX, 1), FIX_INTERVAL_MAX, "can't exceed the maximum");
-        // A multi-detent flick compounds with the boundary re-checked each detent: 1→…→10→15.
+        // A multi-step flick compounds with the boundary re-checked each step: 1→…→10→15.
         assert_eq!(step_interval(8, 4), 20, "8→9→10→15→20 across the boundary");
     }
 
     fn run(scr: &mut PowerScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, s);
         scr.handle(g, &mut cx)
     }
 
-    /// Press opens the interval stepper, a turn edits it live, and press steps back out; the
+    /// Press opens the interval stepper, a step edits it live, and press steps back out; the
     /// toggle row is a click-to-flip.
     #[test]
     fn stepper_and_toggle_behaviour() {
@@ -146,11 +128,11 @@ mod tests {
         let mut scr = PowerScreen::new();
         run(&mut scr, &mut s, Gesture::Press); // enter the interval stepper
         assert!(scr.editing);
-        run(&mut scr, &mut s, Gesture::Turn(1));
+        run(&mut scr, &mut s, Gesture::Step(1));
         assert_eq!(s.fix_interval_s, 6, "rotating the open stepper edits the interval live");
         run(&mut scr, &mut s, Gesture::Press); // off the single field → out
         assert!(!scr.editing);
-        run(&mut scr, &mut s, Gesture::Turn(1)); // → Power Saver row
+        run(&mut scr, &mut s, Gesture::Step(1)); // → Power Saver row
         assert_eq!(scr.selected, POWER_SAVER);
         run(&mut scr, &mut s, Gesture::Press);
         assert!(s.power_saver, "press flips the toggle");

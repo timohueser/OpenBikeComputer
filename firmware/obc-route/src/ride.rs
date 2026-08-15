@@ -3,7 +3,7 @@
 //! Finish (`/tracks/RD{id}.ORD`). The stored file **is** the wire object, so a BLE ride
 //! download is a verbatim byte stream with no encode on the transfer path.
 //!
-//! Layout (little-endian; pinned by `protocol-vectors/ride-v{1,2}.bin` against the Swift
+//! Layout (little-endian; pinned by `specs/vectors/ride-v{1,2}.bin` against the Swift
 //! `RideObjectCodec`):
 //!
 //! ```text
@@ -50,11 +50,10 @@
 
 use heapless::String;
 
-use crate::track::decode_record;
 use obc_formats::io::{ByteSink, ByteSource, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_formats::ride::{is_supported_version, VERSION_V2};
-use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
+use obc_formats::track::{decode_record, RECORD_LEN as TRACK_RECORD_LEN};
 
 // The ride-object codec/constants are owned by `obc-formats`; imported under the module-local
 // `RIDE_*` / `ride_*` names this converter + reader read. Not re-exported — consumers reach the
@@ -78,7 +77,7 @@ pub struct RideStats {
     pub climb_m: u16,
     /// Unix seconds that were true at [`anchor_ms`](RideStats::anchor_ms).
     pub unix_at_anchor: u32,
-    /// The monotonic millis (the [`TrackPoint::t_ms`](crate::TrackPoint::t_ms) clock) at which
+    /// The monotonic millis (the [`TrackPoint::t_ms`](obc_ports::TrackPoint::t_ms) clock) at which
     /// [`unix_at_anchor`](RideStats::unix_at_anchor) was read.
     pub anchor_ms: u32,
     /// Per-ride BLE-sensor summary (epic #707, SE2's `Activity` accessors), written into the v2

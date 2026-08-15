@@ -3,15 +3,17 @@
 //! the stat rows flip together every 5 s — page A is the route's **track-shape preview** (the
 //! host-decimated polyline, the NEW ROUTE page's sketch) over its DISTANCE, page B the full
 //! **elevation profile** (the Statistics band, **non-interactive**: no cursor, no zoom, no live
-//! shading) over CLIMB + DESCENT. (EST TIME was investigated for page A and omitted: the §8.6
-//! nav profiles carry only dimensionless edge-weight multipliers — no speed model exists
-//! anywhere in the format, so there is no defensible estimate.) Below the pager, a START RIDE
+//! shading) over CLIMB + DESCENT. (EST TIME joined page A with the elevation epic's time model
+//! (#1068, EL9): it was omitted at review round 3 because the §8.6 nav profiles carry only
+//! dimensionless edge-weight multipliers — no speed model existed anywhere — and
+//! [`obc_route::eta`] is exactly that missing model, `dist / v_flat + ascent × k_climb` keyed by
+//! the rider's bike profile.) Below the pager, a START RIDE
 //! row and (when deletable) the Delete-route row under it. The two action rows are
 //! the **Pause-menu (ride_control) row family** (owner review round 3 — the round-2 focus
 //! outline read as one-off chrome): unselected rows are plain labels, the selected row wears the
 //! standard amber fill, and the guarded Delete row shows its shaded base + warning hold-fill
 //! only **while selected**. The cursor semantics are round 2's, unchanged: entry selects START
-//! RIDE; *turn* toggles between the two rows; *press* starts the session only from the START row
+//! RIDE; *up/down* toggles between the two rows; *press* starts the session only from the START row
 //! and drops into the riding Map — exactly what picking a route used to do directly; *hold*
 //! charges the delete only while the Delete row is selected; *back* cancels and returns to the
 //! Route menu. With the Delete row hidden (in use / computed) there is nothing to toggle: press
@@ -57,7 +59,7 @@ const EXPIRY_ROW_Y: i32 = LIST_TOP + 4;
 const EXPIRY_ROW_X: i32 = 12;
 
 /// The stat ledger under the media band — the content-paired pager's stat half (owner review
-/// round 3): page A (track shape) carries DISTANCE, page B (elevation) CLIMB + DESCENT;
+/// round 3): page A (track shape) carries DISTANCE + EST TIME, page B (elevation) CLIMB + DESCENT;
 /// [`ROW_PITCH`] is the row spacing within a page. Placed between the band and the action rows
 /// (whose Pause-family block sits 4 px higher than the old START bar — the ledger moved up with
 /// it, keeping the same breathing gap above the amber row).
@@ -170,11 +172,11 @@ impl RouteOverviewScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // The action-row cursor (owner review round 2): a detent toggles START ↔ Delete. With
+            // The action-row cursor (owner review round 2): a step toggles START ↔ Delete. With
             // the Delete row hidden (in use / computed) there is one row and the step is a no-op —
             // the cursor also clamps back to START first, in case the row vanished under it (the
             // route became the active ride's via the swap flow).
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 let len = if self.delete_enabled(cx.activity, cx.routes) { 2 } else { 1 };
                 self.selected = self.selected.min(len - 1);
                 self.selected = super::list::step_selection(self.selected, n, len);
@@ -250,13 +252,20 @@ impl RouteOverviewScreen {
             let dist_unit = write_computed_distance(&mut dist, total_m, units);
             let rows_top = LIST_TOP + 34;
             ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
+            // EST TIME (EL9, #1077) — the one figure a length-only page was missing. A computed
+            // route's points are all zero-elevation until EL7 fills them from terrain, so the
+            // model's ascent term is zero and this reads exactly `distance / v_flat`; when EL7
+            // lands the identical call starts answering with the real climb, with nothing here to
+            // change. The BIKE TYPE row directly under it names the profile the figure is keyed to.
+            let est = est_time_value(total_m, route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
+            ledger_row(cv, w, rows_top + ROW_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
             // The bike profile the route was planned under (routing-v2 N5): the rider must be able to
             // tell a Road route from an MTB one they picked by accident. The name resolves against the
             // loaded map for the current selection — which is the profile the just-finished plan used,
             // since planning uses `bike_profile_idx` and the overview opens straight off it.
-            draw_profile_label(cv, w, rx, rows_top + ROW_PITCH);
+            draw_profile_label(cv, w, rx, rows_top + 2 * ROW_PITCH);
             // The route-shape preview fills the middle between the ledger and the START bar.
-            draw_route_preview(cv, w, rows_top + 2 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
+            draw_route_preview(cv, w, rows_top + 3 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
             draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
             return;
         }
@@ -360,16 +369,23 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The stats pair with their media (owner review round 3): DISTANCE belongs to the track
-        // shape (page A), CLIMB + DESCENT to the elevation band (page B). The flip itself is the
-        // affordance — no page dots. (Page A stays a lone DISTANCE: EST TIME was investigated and
-        // omitted — the §8.6 profiles carry no speed model, so no defensible estimate exists.)
-        let entries: [(&str, &str, &str, Option<bool>); 3] = [
+        // EST TIME (EL9, #1077): the gradient-aware estimate for the whole route, keyed to the
+        // rider's bike profile. It pairs with the track shape on page A — "how far, how long" — while
+        // the climbing that drives it is spelled out on page B. Totals come from the opened route
+        // when it has streamed in (metre/metre exact) and from the catalog summary before that, so
+        // the row never has to show a placeholder.
+        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
+
+        // The stats pair with their media (owner review round 3): DISTANCE + EST TIME belong to the
+        // track shape (page A), CLIMB + DESCENT to the elevation band (page B). The flip itself is
+        // the affordance — no page dots.
+        let entries: [(&str, &str, &str, Option<bool>); 4] = [
             (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
             (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
             (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
+            (rx.t(Msg::RouteOverviewEstTime), &est, "h", None),
         ];
-        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0] };
+        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0, 3] };
         for (slot, &e) in page_rows.iter().enumerate() {
             let y = ROWS_TOP + slot as i32 * ROW_PITCH;
             let (caption, value, unit, arrow) = entries[e];
@@ -387,15 +403,7 @@ impl RouteOverviewScreen {
         // can't act, so it doesn't show) — and the `selection_is_guarded` guard keeps a hold a
         // no-op regardless. START keeps the two-row block's top slot either way, so nothing jumps
         // when the Delete row re-arms.
-        let geo = super::GuardedRowsGeometry {
-            x: 14,
-            w: w - 28,
-            top: action_rows_top(h),
-            row_h: OPTION_ROW_H,
-            gap: OPTION_GAP,
-            label_dx: 12,
-            label_dy: 5,
-        };
+        let geo = super::GuardedRowsGeometry::panel(w, action_rows_top(h), OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
@@ -444,6 +452,29 @@ fn fmt_remaining(deadline: u32, now_utc: u32) -> heapless::String<12> {
         let _ = s.push_str("soon");
     }
     s
+}
+
+/// The route's length in metres for the time model: the **opened** route's exact total once it has
+/// streamed in, else the catalog summary's whole-km figure. The estimate is a whole-minute readout,
+/// so the km-grain fallback only matters for the frame or two before the geometry opens.
+fn route_total_m(rx: &Render, summary: &RouteSummary) -> u32 {
+    rx.route.map_or(summary.distance_km * 1000, |r| r.total_distance_m)
+}
+
+/// The route's total ascent in metres for the time model — the opened route's header figure, else
+/// the catalog summary's. A route with no elevation at all (a computed one, until EL7) reports `0`
+/// here, which is exactly what makes [`est_time_value`] fall back to `distance / v_flat` with no
+/// branch of its own.
+fn route_ascent_m(rx: &Render, summary: &RouteSummary) -> u32 {
+    rx.route.map_or(summary.climb_m, |r| r.total_ascent_m)
+}
+
+/// The EST TIME ledger value: the whole route through the gradient-aware model
+/// ([`obc_route::eta`], elevation epic #1068 / EL9) rendered `H:MM`, the same duration shape the
+/// RIDE tile and the ride ledger use. Not localised and not unit-dependent — hours and minutes are
+/// hours and minutes in every catalog language and both unit systems.
+fn est_time_value(total_m: u32, ascent_m: u32, bike_profile_idx: u8) -> heapless::String<8> {
+    crate::stat_fields::fmt_hms(obc_route::route_time_s(total_m, ascent_m, bike_profile_idx) as f32)
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
@@ -514,7 +545,7 @@ pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i
     }
     // Aspect-fit: one scale for both axes (the smaller of the two fits), the fitted shape
     // centred in the box. `max(1.0)` guards a degenerate straight north-south / east-west line.
-    let clat = obc_route::cos_lat((min_lat / 2) + (max_lat / 2));
+    let clat = obc_map_scene::cos_lat((min_lat / 2) + (max_lat / 2));
     let geo_w = ((max_lon - min_lon) as f32 * clat).max(1.0);
     let geo_h = ((max_lat - min_lat) as f32).max(1.0);
     let scale = (fit_w as f32 / geo_w).min(fit_h as f32 / geo_h);
@@ -563,10 +594,10 @@ mod tests {
     use crate::activity::Mode;
     use crate::retention::Retention;
     use crate::route::RouteSummary;
-    use crate::screen::PoiScratch;
+    use crate::screen::test_ctx;
     use crate::settings::Settings;
     use crate::AppState;
-    use obc_route::BBox;
+    use obc_map_scene::BBox;
 
     fn summary() -> RouteSummary {
         RouteSummary {
@@ -582,24 +613,12 @@ mod tests {
     fn run(scr: &mut RouteOverviewScreen, act: &mut Activity, routes: &[RouteSummary], g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes,
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { routes, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
     /// The action cursor (owner review round 2): entry selects START and a hold there does
-    /// **nothing** — deleting takes a turn onto the Delete row first, then the completed hold
+    /// **nothing** — deleting takes a step onto the Delete row first, then the completed hold
     /// records the route's index, restores the pre-preview active route, and pops back to the
     /// Routes list.
     #[test]
@@ -614,7 +633,7 @@ mod tests {
         assert!(matches!(t, Transition::None), "a hold with START selected does not delete");
         assert_eq!(act.take_route_delete(), None);
 
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // → the Delete row
+        run(&mut scr, &mut act, &routes, Gesture::Step(1)); // → the Delete row
         assert!(scr.selection_is_guarded(&act, &routes), "the hold fill is live on the Delete row");
         let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::Pop), "the delete pops back to the Routes list");
@@ -623,22 +642,22 @@ mod tests {
     }
 
     /// A press fires the START action only from the START row — with the cursor on Delete a press
-    /// does nothing (the row is hold-guarded), and a turn brings the cursor back.
+    /// does nothing (the row is hold-guarded), and a step brings the cursor back.
     #[test]
     fn press_on_the_delete_row_is_a_no_op() {
         let routes = [summary()];
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RouteOverviewScreen::new(0, None);
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // → Delete
+        run(&mut scr, &mut act, &routes, Gesture::Step(1)); // → Delete
         let t = run(&mut scr, &mut act, &routes, Gesture::Press);
         assert!(matches!(t, Transition::None), "press on the Delete row starts nothing");
         assert!(!act.is_tracking(), "no session began");
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // wrap back → START
+        run(&mut scr, &mut act, &routes, Gesture::Step(1)); // wrap back → START
         let t = run(&mut scr, &mut act, &routes, Gesture::Press);
         assert!(!matches!(t, Transition::None), "press on START starts the ride");
     }
 
-    /// The Delete row is hidden — a turn has nothing to select and a hold does nothing — while
+    /// The Delete row is hidden — a step has nothing to select and a hold does nothing — while
     /// this route is the active route of a running tracking session (the greying predicate moved
     /// off the old Route-menu footer).
     #[test]
@@ -649,14 +668,14 @@ mod tests {
         act.active_route = Some(0); // …route 0
         let mut scr = RouteOverviewScreen::new(0, None);
         assert!(!scr.delete_enabled(&act, &routes), "the active ride's route can't be deleted");
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1));
+        run(&mut scr, &mut act, &routes, Gesture::Step(1));
         assert_eq!(scr.selected, START, "with the Delete row hidden there is nothing to toggle");
         let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold over the in-use route does nothing");
         assert_eq!(act.take_route_delete(), None);
     }
 
-    /// A computed (length-only) overview has no Delete row, so a turn stays on START and a hold is
+    /// A computed (length-only) overview has no Delete row, so a step stays on START and a hold is
     /// a no-op — the locked length-only page stays exactly as-is.
     #[test]
     fn computed_overview_has_no_delete() {
@@ -664,8 +683,8 @@ mod tests {
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.delete_enabled(&act, &routes));
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1));
-        assert_eq!(scr.selected, START, "no Delete row — the turn is a no-op");
+        run(&mut scr, &mut act, &routes, Gesture::Step(1));
+        assert_eq!(scr.selected, START, "no Delete row — the step is a no-op");
         run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert_eq!(act.take_route_delete(), None);
     }
@@ -692,6 +711,24 @@ mod tests {
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.tick_timers(PAGE_FLIP_MS).changed);
         assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
+    }
+
+    /// The EST TIME ledger value (EL9, #1077): `H:MM` from the gradient-aware model, keyed by the
+    /// rider's bike profile, with a zero-ascent route (a device-planned one, until EL7 fills its
+    /// elevation from terrain) degrading to plain `distance / v_flat` — the natural behavior, not a
+    /// special case, so the row never needs a "no elevation" branch or a `--`.
+    #[test]
+    fn est_time_value_is_the_gradient_aware_estimate() {
+        // Road profile, 22 km/h flat: 44 km with no climbing is two hours.
+        assert_eq!(est_time_value(44_000, 0, 0).as_str(), "2:00", "a flat route is distance / v_flat");
+        // The same 44 km over a 1000 m col costs 1000 × 1.6 s = 26:40 more → 2:26.
+        assert_eq!(est_time_value(44_000, 1_000, 0).as_str(), "2:26", "the col adds its climb term");
+        // Same route, MTB profile (16 km/h, 2.3 s/m): 2:45 flat + 38:20 climbing → 3:23.
+        assert_eq!(est_time_value(44_000, 1_000, 2).as_str(), "3:23", "a slower bike, a longer day");
+        // A stale out-of-range index falls back to profile 0, the router's own rule.
+        assert_eq!(est_time_value(44_000, 1_000, 99), est_time_value(44_000, 1_000, 0));
+        // Degenerate inputs stay a readable zero rather than a placeholder.
+        assert_eq!(est_time_value(0, 0, 0).as_str(), "0:00");
     }
 
     /// The locked remaining-time format (epic #638 S5), at every boundary: the day/hour cutover at

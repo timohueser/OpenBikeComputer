@@ -7,6 +7,7 @@ use embedded_graphics::{
     primitives::{Polyline, PrimitiveStyle, Rectangle},
 };
 
+use crate::collect::ScreenPoint;
 use crate::fill::fill_convex_quad;
 use crate::viewport::{round_pt, Viewport};
 use crate::MAX_SCREEN_POINTS;
@@ -446,8 +447,8 @@ where
     }
 }
 
-/// Project and stroke one map line (its exterior ring) — the draw phase's `Kind::Line` arm, and the
-/// single point where per-feature line styling branches on the resolved scene style
+/// Stroke one already-projected map line (its exterior ring) — the draw phase's `Kind::Line` arm,
+/// and the single point where per-feature line styling branches on the resolved scene style
 /// (`dashed` + optional device-quantized `color2`):
 ///
 /// - **solid, no `color2`** → today's single stroke, byte-for-byte unchanged (the zero-cost path).
@@ -455,14 +456,14 @@ where
 ///   (#559), so `draw_line` itself never double-strokes for casing.
 /// - **dashed, no `color2`** → dashes in `color`, transparent gaps (admin borders).
 /// - **dashed + `color2`** → **railway stripe**: a full solid base in `color2`, then dashes in
-///   `color` on top → alternating segments. Re-projects for the second pass (cheap vs. buffering).
+///   `color` on top → alternating segments.
 ///
 /// Uses the same view-clipped stroke as the route/breadcrumb overlays.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_line<D>(
     target: &mut D,
     vp: &Viewport,
-    pts: &[(i32, i32)],
+    pts: &[ScreenPoint],
     color: D::Color,
     weight: u32,
     dashed: bool,
@@ -475,18 +476,14 @@ pub(crate) fn draw_line<D>(
     match (dashed, color2) {
         // Solid (with or without color2 — casing is #559's job, not draw_line's). Unchanged path.
         (false, _) => {
-            let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, color, weight, w, h).stroke(projected);
+            Stroker::new(target, screen, color, weight, w, h).stroke(pts.iter().map(|p| p.point()));
         }
         (true, None) => {
-            let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, color, weight, w, h).stroke_dashed(projected);
+            Stroker::new(target, screen, color, weight, w, h).stroke_dashed(pts.iter().map(|p| p.point()));
         }
         (true, Some(c2)) => {
-            let base = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, c2, weight, w, h).stroke(base);
-            let dashes = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, color, weight, w, h).stroke_dashed(dashes);
+            Stroker::new(target, screen, c2, weight, w, h).stroke(pts.iter().map(|p| p.point()));
+            Stroker::new(target, screen, color, weight, w, h).stroke_dashed(pts.iter().map(|p| p.point()));
         }
     }
 }
@@ -695,7 +692,7 @@ mod tests {
     fn draw_both(quad: &[Point; 4]) -> (Grid, Grid) {
         let mut generic = Grid::new();
         let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
-        fill_polygon(&mut generic, quad, &[4], BinaryColor::On, GW, GH, &mut xs);
+        fill_polygon(&mut generic, quad, &[4usize], BinaryColor::On, GW, GH, &mut xs);
         let mut specialized = Grid::new();
         fill_convex_quad(&mut specialized, quad, BinaryColor::On, GW, GH);
         (generic, specialized)

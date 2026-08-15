@@ -23,8 +23,10 @@ use obc_ports::Fix;
 use obc_reader::Reader;
 
 use crate::catalog_state::CatalogState;
+use crate::corridor::CorridorScratch;
 use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
+use crate::next_ahead::NextAhead;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 
@@ -42,6 +44,21 @@ pub(crate) struct UploadEvent {
     /// elevation. Carried with the event so the idle "ROUTE RECEIVED" card can draw it; the
     /// mid-ride swap / active-replace variants ignore it.
     pub(crate) elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
+}
+
+/// What the single pending-upload slot holds: a committed **route** upload or a committed **trip**
+/// upload. One slot for both kinds keeps the locked most-recent-wins rule across the whole popup
+/// family — and since a trip object always arrives *after* its member routes (it references their
+/// ids, so every client sends the routes first), a burst of route events capped by the trip event
+/// naturally collapses to the one "TRIP RECEIVED" prompt.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PendingUpload {
+    Route(UploadEvent),
+    /// The committed trip's durable object id — validated against the (already re-fed) trip
+    /// catalog at delivery time.
+    Trip {
+        id: u16,
+    },
 }
 
 /// The UI-plane state + policy component. See the module docs; field-level invariants are on
@@ -64,6 +81,12 @@ pub(crate) struct UiRuntime {
     /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
     /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
     pub(crate) map_dirty: bool,
+    /// A one-shot **overlay** repaint demand from something other than the hold bulge — today only
+    /// the Recalculating freeze flipping (issue #1146, P2), whose banner appears and clears on the
+    /// overlay plane. The bulge's own demand is derived from its live state at drain time
+    /// ([`InputPlane::take_overlay_dirty`]); a freeze edge has no such continuous state to derive
+    /// from, so it is latched here and OR'd in at [`take_dirty`](UiRuntime::take_dirty).
+    pub(crate) overlay_edge: bool,
     /// Accumulated **region-scoped** repaint demand (#500 follow-up): the union of every
     /// region-carrying screen-tick change since the last drain — the nav-planning spinner's
     /// needle disc. Kept apart from [`map_dirty`](App::map_dirty) so the two can't blur: any
@@ -101,7 +124,12 @@ pub(crate) struct UiRuntime {
     /// event, or a timed repaint must not reset it. Seeded to `0` (the boot origin), so the idle
     /// clock runs from power-on until the first touch.
     pub(crate) last_input_ms: u32,
-    /// Host-supplied encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
+    /// Whether idle time is currently accumulating. A screen/circumstance for which no idle return
+    /// is eligible suspends the clock; the first eligible pass after that suspension starts a fresh
+    /// full window. This keeps a long modal operation from donating its elapsed time to the ordinary
+    /// screen that replaces it.
+    pub(crate) idle_return_timing: bool,
+    /// Host-supplied Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar; [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
     /// single-loop hosts (the render reads `App`'s own [`InputPlane`]); the **two-plane firmware**
     /// feeds live progress in each frame via [`set_hold_progress`](App::set_hold_progress), since
@@ -122,6 +150,18 @@ pub(crate) struct UiRuntime {
     /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
     /// when a POI list opens, so re-entering a category re-queries.
     pub(crate) poi_scratch: screen::PoiScratch,
+    /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
+    /// ahead, frozen on take. Held once here for the same reason as
+    /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
+    /// (see [`CorridorScratch`](crate::corridor::CorridorScratch)). Disarmed until a screen asks
+    /// for it, so a device that never opens the Up-ahead list never runs the query.
+    pub(crate) corridor_scratch: CorridorScratch,
+    /// The per-category **"next ahead" cache** (epic #946, U5) — the distilled map-POI half of the
+    /// six `Next: <category>` stat tiles, harvested out of [`corridor_scratch`](Self::corridor_scratch)
+    /// on its own progress-keyed refresh policy. App-owned for the same #425 reason as the two
+    /// snapshots above (a `Screen` variant is a slot in a `.bss` union), and quiet — asking for
+    /// nothing — unless such a tile is on the grid while the Statistics screen is up.
+    pub(crate) next_ahead: NextAhead,
     /// The live BLE pairing passkey ([`BleStatus::passkey`](crate::BleStatus)), fed by
     /// [`set_ble_status`](App::set_ble_status) and driving the passkey card (P2, #449) via
     /// [`reconcile_passkey_card`](App::reconcile_passkey_card). Held off `AppState` so feeding it
@@ -139,13 +179,13 @@ pub(crate) struct UiRuntime {
     /// scan, fed by the host through [`set_sensor_scan_hits`](App::set_sensor_scan_hits). Empty
     /// outside a scan; replaced wholesale each pass while one runs.
     pub(crate) sensor_scan_hits: crate::sensors::SensorScanHits,
-    /// The one **pending route-upload prompt** (epic #447, P4), set by
-    /// [`notify_route_uploaded`](App::apply_event) and delivered (or dropped) by
-    /// [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single slot:
-    /// consecutive uploads replace it — most recent wins, the popup rule. Carried by **durable
-    /// object id**, never a catalog index, so a rescan between arrival and a hold-deferred
-    /// delivery can't retarget it.
-    pub(crate) pending_upload: Option<UploadEvent>,
+    /// The one **pending upload prompt** (epic #447, P4) — a route *or* a trip commit
+    /// ([`PendingUpload`]), set by [`App::apply_event`](crate::App::apply_event) and delivered (or
+    /// dropped) by [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single
+    /// slot: consecutive uploads replace it — most recent wins, the popup rule. Carried by
+    /// **durable object id**, never a catalog index, so a rescan between arrival and a
+    /// hold-deferred delivery can't retarget it.
+    pub(crate) pending_upload: Option<PendingUpload>,
     /// Device warnings **discovered but not yet shown** on the advisory card (issue #504) — a
     /// missing-sensor probe result, or the map-slow flag. Accumulated by
     /// [`notify_warning`](App::apply_event) and delivered (or deferred behind a passkey card /
@@ -177,14 +217,18 @@ impl UiRuntime {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
+            overlay_edge: false,
             region_dirty: None,
             frame_size: (0, 0),
             render_clip: None,
             next_wake_ms: None,
             last_input_ms: 0,
+            idle_return_timing: true,
             hold_progress_override: None,
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
+            corridor_scratch: CorridorScratch::new(),
+            next_ahead: NextAhead::new(),
             ble_passkey: None,
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
             sensor_scan_hits: crate::sensors::SensorScanHits::new(),
@@ -215,14 +259,18 @@ impl UiRuntime {
             addr_of_mut!((*slot).now_ms).write(0);
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
+            addr_of_mut!((*slot).overlay_edge).write(false);
             addr_of_mut!((*slot).region_dirty).write(None);
             addr_of_mut!((*slot).frame_size).write((0, 0));
             addr_of_mut!((*slot).render_clip).write(None);
             addr_of_mut!((*slot).next_wake_ms).write(None);
             addr_of_mut!((*slot).last_input_ms).write(0);
+            addr_of_mut!((*slot).idle_return_timing).write(true);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).hold_cancel_pending).write(false);
             addr_of_mut!((*slot).poi_scratch).write(PoiScratch::new());
+            addr_of_mut!((*slot).corridor_scratch).write(CorridorScratch::new());
+            addr_of_mut!((*slot).next_ahead).write(NextAhead::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).sensor_status)
                 .write([crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS]);
@@ -239,14 +287,18 @@ impl UiRuntime {
                 input: _,
                 now_ms: _,
                 map_dirty: _,
+                overlay_edge: _,
                 region_dirty: _,
                 frame_size: _,
                 render_clip: _,
                 next_wake_ms: _,
                 last_input_ms: _,
+                idle_return_timing: _,
                 hold_progress_override: _,
                 hold_cancel_pending: _,
                 poi_scratch: _,
+                corridor_scratch: _,
+                next_ahead: _,
                 ble_passkey: _,
                 sensor_status: _,
                 sensor_scan_hits: _,
@@ -314,9 +366,8 @@ impl UiRuntime {
         self.base_content() != BaseContent::Chrome
     }
 
-    /// Whether the base (lowest opaque) screen draws the **map** — the [`Map`](crate::screen::map)
-    /// screen ([`BaseContent::Map`]), the only one that reads the streamed-map [`Reader`]. A
-    /// render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
+    /// Whether the base (lowest opaque) screen draws the **map** — any [`BaseContent::Map`] screen.
+    /// A render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
     /// build the `Reader` (an SD style-table parse + its stack spike), pass `None` to
     /// [`render_map_timed`](App::render_map_timed), and a menu / Home redraw draws only its own
     /// chrome with zero map I/O.
@@ -324,10 +375,22 @@ impl UiRuntime {
         self.base_content() == BaseContent::Map
     }
 
+    /// Whether the base (lowest opaque) screen **wants the rain overlay** — its declared
+    /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay), true only for the WX11 rain map.
+    /// The frame's rain lease is dropped when this is false, so the precipitation raster is a
+    /// property of the screen the rider is on rather than of the host's weather mount: leaving the
+    /// rain map leaves the Map clean with nothing to reset, and no rain *tile* is decoded on a
+    /// frame no screen would draw it on (a property that starts paying storage reads once the board
+    /// renders rain — today `obc-sim` is the only host that leases one).
+    pub(crate) fn base_wants_rain(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        self.stack.get(base).is_some_and(|s| s.caps().rain_overlay)
+    }
+
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
     /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
-    /// Chosen from the base screen's declared [`ReaderNeed`]: the Map always needs it; the **POI
-    /// list** screen (issue #425) does too, but only until it has taken its one-shot snapshot; and
+    /// Chosen from the base screen's declared [`ReaderNeed`]: map-base screens always need it; the
+    /// **POI list** screen (issue #425) does too, but only until it has taken its one-shot snapshot; and
     /// the **POI detail** screen (issue #444) does until it has resolved its one hours read. Both
     /// take their one-shot read in the pre-draw [`prepare`](crate::screen::Screen::prepare) pass off
     /// the `Reader`, so a render-on-demand host (the board's two-plane loop) must build the `Reader`
@@ -340,6 +403,13 @@ impl UiRuntime {
     /// board host does, keeping its per-frame `Reader` build (and stack spike) off every non-map,
     /// already-resolved frame.
     pub(crate) fn base_needs_reader(&self) -> bool {
+        // The route-corridor snapshot (epic #946, U2) is armed by a screen but owned by the App, so
+        // its need is a **request**, not a `ReaderNeed` row: a screen that wants an Up-ahead list
+        // keeps the `Reader` built until the one query lands, then stops asking — the same one-shot
+        // energy pattern as the two POI rows below. Disarmed (the normal state) this is free.
+        if self.corridor_scratch.pending() {
+            return true;
+        }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let Some(scr) = self.stack.get(base) else { return false };
         match scr.caps().reader {
@@ -352,17 +422,123 @@ impl UiRuntime {
     }
 
     /// Run the base (lowest-opaque) screen's pre-draw acquisition (#803): hand it the frame's
-    /// `Reader` and fix so it resolves any reader-backed one-shot state (the POI snapshot / hours)
-    /// into immutable prepared state before the draw loop. A no-op for every non-POI base — only the
-    /// two POI screens' [`prepare`](crate::screen::Screen::prepare) acts. Called by
+    /// `Reader`, streamed route, and fix so it resolves reader-backed state (POI snapshot / hours,
+    /// or Skip-ahead geometry) into immutable prepared state before the draw loop. Called by
     /// [`render_map_timed`](App::render_map_timed) ahead of building the draw context, so `Render`
     /// carries the POI scratch read-only and draw stays side-effect-free.
-    pub(crate) fn prepare_base(&mut self, reader: Option<&Reader>, user_fix: Option<Fix>) {
+    #[allow(clippy::too_many_arguments)] // the per-frame prepare snapshot, one value per field
+    pub(crate) fn prepare_base(
+        &mut self,
+        reader: Option<&Reader>,
+        route: Option<&obc_route::RouteReader>,
+        user_fix: Option<Fix>,
+        active_route: Option<usize>,
+        progress_m: u32,
+        route_total_m: u32,
+        detour_preview: &[(i32, i32)],
+    ) {
+        // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
+        // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
+        // than inside one screen's `prepare`. A no-op unless a screen armed it.
+        self.corridor_scratch.prepare(reader, route);
+        // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
+        // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
+        // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
+        if let Some(key) = self.next_ahead.request() {
+            if self.corridor_scratch.holds(key) {
+                self.next_ahead.harvest(key, self.corridor_scratch.entries());
+            }
+        }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         if let Some(scr) = self.stack.get_mut(base) {
-            let mut px = screen::Prepare { reader, poi_scratch: &mut self.poi_scratch, user_fix };
+            let mut px = screen::Prepare {
+                reader,
+                route,
+                poi_scratch: &mut self.poi_scratch,
+                user_fix,
+                active_route,
+                progress_m,
+                route_total_m,
+                detour_preview,
+            };
             scr.prepare(&mut px);
         }
+    }
+
+    /// Point the App-owned corridor snapshot at whatever the **stack** currently wants (epic #946,
+    /// U3). The Up-ahead screen never queries anything itself: it declares a
+    /// [`CorridorKey`](crate::corridor::CorridorKey) (its filter + the progress anchor frozen at
+    /// entry) through [`Screen::corridor_request`], and this arms it. Everything the lifecycle needs
+    /// falls out of that one declaration:
+    ///
+    /// * **entry** — a screen appears that wants a key ⇒ armed (and, on a *fresh* open,
+    ///   [`invalidate`](crate::corridor::CorridorScratch::invalidate)d, so re-entering re-takes the
+    ///   identical key: the "re-enter refreshes" half of the #115 contract);
+    /// * **a filter change** — the key changes ⇒ the stale rows drop and the query re-runs;
+    /// * **riding on** — the key does *not* change (the anchor is frozen) ⇒ nothing re-runs;
+    /// * **exit** (Back, or the idle return — both *pop* the list off the stack) — nobody wants a
+    ///   key ⇒ disarmed, and the reader-build seam goes quiet;
+    /// * **buried** — a host-pushed card (a passkey, a warning) on top is *not* an exit: the scan
+    ///   covers the whole stack, so the list's request is still found and the scratch stays armed
+    ///   for the uncover.
+    ///
+    /// Cheap enough to call whenever the stack may have moved: a scan of ≤ [`MAX_DEPTH`] slots and
+    /// an idempotent `arm`. The **query** still runs only in the pre-draw `prepare` boundary.
+    ///
+    /// [`MAX_DEPTH`]: crate::screen::MAX_DEPTH
+    /// U5 adds a **second, lower-priority** requester: with no screen asking, the
+    /// [`NextAhead`](crate::next_ahead::NextAhead) cache may want one single-category snapshot to
+    /// refresh a `Next: <category>` tile. A screen always wins — the Up-ahead list is a thing the
+    /// rider is *looking at*, a stat tile's refresh can wait a screen visit — and a cache request
+    /// never counts as a "fresh open" (there is no screen entry to re-take for).
+    ///
+    /// The two can never fight over the buffer's *contents*: the cache only asks while the
+    /// Statistics screen is the base one (so never while the Up-ahead list is up, including U4's
+    /// `Waypoints only` scope where that screen deliberately asks for nothing), and
+    /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
+    /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
+    pub(crate) fn reconcile_corridor(&mut self, fresh_open: bool) {
+        match self.stack.iter().rev().find_map(|s| s.corridor_request()) {
+            Some(key) => {
+                self.corridor_scratch.arm(key);
+                if fresh_open {
+                    self.corridor_scratch.invalidate();
+                }
+            }
+            None => match self.next_ahead.request() {
+                Some(key) => self.corridor_scratch.arm(key),
+                None => self.corridor_scratch.disarm(),
+            },
+        }
+    }
+
+    /// Re-decide what the `Next: <category>` tiles need (epic #946, U5) and re-point the corridor
+    /// scratch at it. Called once per pass from
+    /// [`advance_animations`](crate::App::advance_animations) — the one hook every host runs — with
+    /// the facts the policy needs: the rider's field selection, the active route, and matched
+    /// progress. Everything else (the triggers, the round-robin, the one-category-per-query rule)
+    /// lives in [`NextAhead::reconcile`](crate::next_ahead::NextAhead).
+    ///
+    /// The tiles only exist on the Statistics grid, so the request is scoped to that screen being
+    /// the one drawn: elsewhere the cache asks for nothing, the scratch disarms, and the reader seam
+    /// is as quiet as before this feature existed.
+    pub(crate) fn reconcile_next_ahead(&mut self, settings: &Settings, active_route: Option<usize>, progress_m: u32) {
+        let mut placed = obc_reader::PoiCategorySet::EMPTY;
+        for f in settings.stat_fields.as_slice() {
+            if let Some(cat) = f.category() {
+                placed = placed.with(cat);
+            }
+        }
+        self.next_ahead.reconcile(placed, self.stats_grid_shown(), active_route, progress_m);
+        self.reconcile_corridor(false);
+    }
+
+    /// Whether the **Statistics** screen — the only place a `Next: <category>` tile draws — is the
+    /// base (lowest opaque) screen this pass. Deliberately not "is anywhere on the stack": a tile
+    /// behind a menu isn't being read, and the query it would keep warm costs a card spin-up.
+    fn stats_grid_shown(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        matches!(self.stack.get(base), Some(Screen::Statistics(_)))
     }
 
     /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
@@ -428,12 +604,12 @@ impl UiRuntime {
     }
 
     /// Whether a hold gesture is charging right now — either button down, its long-press not yet
-    /// fired. Reads the host-fed encoder progress ([`set_hold_progress`](App::set_hold_progress), the
+    /// fired. Reads the host-fed Select progress ([`set_hold_progress`](App::set_hold_progress), the
     /// two-plane firmware) and `App`'s own input plane (the single-loop hosts). Gates the host-pushed
     /// passkey card's open/close so it never lands mid-hold.
     pub(crate) fn hold_charging(&self) -> bool {
         self.hold_progress_override.is_some_and(|p| p > 0.0)
-            || self.input.encoder_hold_progress() > 0.0
+            || self.input.select_hold_progress() > 0.0
             || self.input.back_hold_progress() > 0.0
     }
 
@@ -498,10 +674,71 @@ impl UiRuntime {
         }
     }
 
+    /// The stack index of the map-transfer card, or `None` when it isn't up (issue #927). Searched
+    /// across the whole stack for the same reason the passkey card's index is: a close must find it
+    /// wherever it ended up.
+    fn map_transfer_index(&self) -> Option<usize> {
+        self.stack.iter().position(|s| matches!(s, Screen::MapTransfer(_)))
+    }
+
+    /// Whether the map-transfer card is up — the modal-priority query, and what
+    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up) exposes.
+    pub(crate) fn map_transfer_card_up(&self) -> bool {
+        self.map_transfer_index().is_some()
+    }
+
+    /// Reconcile the host-pushed map-transfer card to the board's live transfer state (issue #927) —
+    /// the tail of [`App::set_map_transfer`](crate::App::set_map_transfer), and the direct analogue
+    /// of [`reconcile_passkey_card`](Self::reconcile_passkey_card):
+    ///
+    /// - a state with no card up → push one;
+    /// - a **changed** state with a card up → rewrite it in place and dirty (never stack a second);
+    /// - an unchanged state → nothing, so the per-pass feed never re-dirties on the steady state
+    ///   (progress is published in KiB, so even a fast card only changes this a few times a second);
+    /// - no state with a card up → remove it and repaint what it covered.
+    ///
+    /// **Deferred while a hold charges**, like every host-pushed screen: the desired state is re-fed
+    /// each pass, so the deferral is just "try again next pass". Unlike the passkey card this one
+    /// does *not* clear the upload popups — the two cannot coexist in practice (a map transfer is
+    /// USB-only and a route popup is BLE-driven), and stacking over one is harmless if they ever do.
+    pub(crate) fn reconcile_map_transfer_card(&mut self, state: Option<crate::screen::MapTransfer>) {
+        if self.hold_charging() {
+            return;
+        }
+        match (state, self.map_transfer_index()) {
+            (Some(state), Some(i)) => {
+                let Screen::MapTransfer(card) = &mut self.stack[i] else { return };
+                if card.state() != state {
+                    card.set_state(state);
+                    self.map_dirty = true;
+                }
+            }
+            (Some(state), None) => {
+                let r = self.stack.push(Screen::MapTransfer(crate::screen::MapTransferScreen::new(state)));
+                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+                self.map_dirty = true;
+            }
+            (None, Some(i)) => {
+                let _ = self.stack.remove(i);
+                self.map_dirty = true;
+            }
+            (None, None) => {}
+        }
+    }
+
     /// Queue a route-upload advisory event (single slot — most recent wins) and try to deliver
     /// it immediately — the tail of [`HostEvent::RouteUploaded`](crate::host::HostEvent) handling.
     pub(crate) fn post_upload_event(&mut self, ev: UploadEvent, catalogs: &CatalogState, tracking: bool) {
-        self.pending_upload = Some(ev);
+        self.pending_upload = Some(PendingUpload::Route(ev));
+        self.reconcile_upload_prompt(catalogs, tracking);
+    }
+
+    /// Queue a trip-upload advisory event into the same single slot (most recent wins) and try to
+    /// deliver it — the tail of [`HostEvent::TripUploaded`](crate::host::HostEvent) handling. The
+    /// trip commit always follows its member routes' commits, so this is what collapses the
+    /// per-route popup burst into the one "TRIP RECEIVED" card.
+    pub(crate) fn post_trip_upload_event(&mut self, id: u16, catalogs: &CatalogState, tracking: bool) {
+        self.pending_upload = Some(PendingUpload::Trip { id });
         self.reconcile_upload_prompt(catalogs, tracking);
     }
 
@@ -528,15 +765,29 @@ impl UiRuntime {
             return; // defer a tick; retried from `advance_animations`
         }
         self.pending_upload = None;
-        // Resolve the durable id in the (already rescanned) catalog; a vanished route drops the
-        // advisory prompt entirely.
-        let Some(idx) = catalogs.route_index_of(ev.id) else { return };
-        let screen = if ev.active_replace {
-            Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
-        } else if tracking {
-            Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
-        } else {
-            Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms, ev.elevation))
+        let screen = match ev {
+            PendingUpload::Route(ev) => {
+                // Resolve the durable id in the (already rescanned) catalog; a vanished route
+                // drops the advisory prompt entirely.
+                let Some(idx) = catalogs.route_index_of(ev.id) else { return };
+                if ev.active_replace {
+                    Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
+                } else if tracking {
+                    Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
+                } else {
+                    Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms, ev.elevation))
+                }
+            }
+            // The trip card is the same whether idle or tracking (there is nothing to swap onto —
+            // a trip is a folder, not a navigable route). Validate the id against the (already
+            // re-fed) trip catalog; a vanished trip drops the advisory prompt entirely. The screen
+            // keeps the durable id, so no remap is needed while it is up.
+            PendingUpload::Trip { id } => {
+                if !catalogs.trips().iter().any(|t| t.id == id) {
+                    return;
+                }
+                Screen::TripReceived(crate::screen::TripReceivedScreen::new(id, self.now_ms))
+            }
         };
         match self.upload_prompt_index() {
             Some(i) => self.stack[i] = screen,
@@ -552,9 +803,12 @@ impl UiRuntime {
     /// the manual Route-swap prompt (the locked "same rule when the manual swap is up"). `None`
     /// when the prompt should push fresh.
     fn upload_prompt_index(&self) -> Option<usize> {
-        self.stack
-            .iter()
-            .position(|s| matches!(s, Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::RouteSwap(_)))
+        self.stack.iter().position(|s| {
+            matches!(
+                s,
+                Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::TripReceived(_) | Screen::RouteSwap(_)
+            )
+        })
     }
 
     /// Remove every host-pushed upload popup from the stack (the passkey card just opened over
@@ -565,7 +819,7 @@ impl UiRuntime {
         let mut i = 0;
         while i < self.stack.len() {
             let popup = match &self.stack[i] {
-                Screen::RouteReceived(_) | Screen::RouteUpdated(_) => true,
+                Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::TripReceived(_) => true,
                 Screen::RouteSwap(s) => s.is_received(),
                 _ => false,
             };
@@ -593,6 +847,7 @@ impl UiRuntime {
             let expired = match &self.stack[i] {
                 Screen::RouteReceived(s) => s.expired(now),
                 Screen::RouteUpdated(s) => s.expired(now),
+                Screen::TripReceived(s) => s.expired(now),
                 Screen::RouteSwap(s) => s.expired(now),
                 _ => false,
             };
@@ -734,6 +989,9 @@ impl UiRuntime {
         if !self.idle_return_pending(tracking) {
             return None;
         }
+        if !self.idle_return_timing {
+            return Some(timeout);
+        }
         let elapsed = self.now_ms.wrapping_sub(self.last_input_ms);
         Some(timeout.saturating_sub(elapsed).max(1))
     }
@@ -758,8 +1016,8 @@ impl UiRuntime {
     }
 
     /// Whether the current top screen is **exempt** from the idle-return timeout — the modal cards
-    /// that must stay put until dismissed (the BLE passkey card, the three route-received /
-    /// -updated / -swap popups, the #504 sensor/storage warning card), the route-planning spinner (a
+    /// that must stay put until dismissed (the BLE passkey card, the route-received / -updated /
+    /// -swap / trip-received popups, the #504 sensor/storage warning card), the route-planning spinner (a
     /// multi-second wait that isn't idleness), and the whole SD-sideload update flow (a card/wait the
     /// rider is acting on — never yank it Home mid-flow). Reads the top screen's declared
     /// [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal card can't be
@@ -795,10 +1053,27 @@ impl UiRuntime {
     /// [`idle_return`]: crate::settings::Settings::idle_return
     /// [`Never`]: crate::settings::IdleReturn::Never
     pub(crate) fn apply_idle_return(&mut self, settings: &Settings, tracking: bool) {
-        let Some(timeout) = settings.idle_return.timeout_ms() else { return };
-        // Nothing to move (already home / on a ride view), a modal exemption is up, or a hold is
-        // charging (a gesture in progress is activity): defer, exactly like the popup sweeps.
-        if !self.idle_return_pending(tracking) || self.hold_charging() {
+        let Some(timeout) = settings.idle_return.timeout_ms() else {
+            self.idle_return_timing = false;
+            return;
+        };
+        // No return is eligible while already at the destination/deliberate view or while an
+        // idle-exempt modal is up. Suspend rather than merely ignoring the expired absolute
+        // deadline: when a long plan/upload/update wait later reveals an ordinary screen, that
+        // screen receives a fresh full window instead of being swept away immediately.
+        if !self.idle_return_pending(tracking) {
+            self.idle_return_timing = false;
+            return;
+        }
+        // A charging hold is live activity even before it resolves into a gesture.
+        if self.hold_charging() {
+            self.last_input_ms = self.now_ms;
+            self.idle_return_timing = true;
+            return;
+        }
+        if !self.idle_return_timing {
+            self.last_input_ms = self.now_ms;
+            self.idle_return_timing = true;
             return;
         }
         if self.now_ms.wrapping_sub(self.last_input_ms) < timeout {
@@ -839,7 +1114,9 @@ impl UiRuntime {
         let region = self.region_dirty.take();
         Dirty {
             map: full || region.is_some(),
-            overlay: self.input.take_overlay_dirty(),
+            // Drain the bulge's trailing edge unconditionally (it must be called exactly once per
+            // frame, whatever else is on the overlay), then fold in a freeze flip.
+            overlay: self.input.take_overlay_dirty() | core::mem::take(&mut self.overlay_edge),
             region: if full { None } else { region },
         }
     }

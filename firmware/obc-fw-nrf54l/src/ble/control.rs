@@ -5,11 +5,11 @@
 //! connection lifecycle (PHY/params/pairing) events. Writes are answered with the typed `status`
 //! envelope, never a hang or a bare ATT failure:
 //!
-//! - A `command` write ([`run_command`]) — `deleteObject` for routes (rides are never deleted over
-//!   the link; the app tombstones them locally) and `ackRides` (the phone's possession list
-//!   reconciles the synced sidecar) — answers `commandResult` and, on a store movement, notifies
-//!   `storeChanged` (status msg 2 — protocol v2's sole change signal).
-//! - A `transfer_control` write is decoded + [`classify_transfer`]-ed. A validated transfer is
+//! - A `command` write ([`run_command`](crate::link::command::run_command)) — the §4.4 imperatives —
+//!   answers `commandResult` and, on a store movement, notifies `storeChanged` (status msg 2 —
+//!   protocol v2's sole change signal).
+//! - A `transfer_control` write is decoded +
+//!   [`classify_transfer`](crate::link::transfer::classify_transfer)-ed. A validated transfer is
 //!   **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered later by the
 //!   data plane; everything invalid (or an abort with nothing in flight) gets an immediate typed
 //!   [`obc_ble::TransferResult`] on `status`, and an abort aimed at the in-flight transfer is forwarded
@@ -18,345 +18,29 @@
 //!   follows on the next advertise cycle.
 //! - The pairing/bonding events drive the passkey card + the single stored bond.
 //!
+//! The *decisions* behind the first three bullets are transport-free and live in [`crate::link`];
+//! what this file owns is the GATT event pump, the handle routing, and the reply plumbing.
+//!
 //! Store borrows stay inside the synchronous `with_data` closures — never held across an `await`.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use nrf_sdc::{self as sdc};
-use obc_app::Retention;
-use obc_ble::{
-    CommandResult, CommandStatus, Config, ObjectType, Op, SetClock, SetRouteRetention, StatusMessage, TransferControl,
-    TransferStatus,
-};
+use obc_ble::ObjectType;
 use trouble_host::prelude::*;
 
+use crate::link::command::run_command;
+use crate::link::identity::apply_config_write;
+use crate::link::transfer::{classify_transfer, TransferDisposition};
+use crate::link::{StatusBytes, TRANSFER_ACTIVE};
 use crate::object_store::ObjectStore;
-use crate::{SharedStore, SharedStoreMutex};
+use crate::SharedStoreMutex;
 
 use super::data_plane::{notify_bounded, publish_store_change};
 use super::gatt::{config_blob, Server};
 use super::state;
-use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
-
-/// What a `command` write did: the `commandResult` to notify, plus which store (if any) it moved
-/// (→ the caller also notifies `storeChanged`, typed accordingly).
-struct CommandOutcome {
-    result: StatusBytes,
-    store_changed: Option<ObjectType>,
-    /// `forgetBond` (§4.4 cmd 4): the app asked the device to dissolve its own bond. Deferred, not
-    /// done inline — the caller rings [`state::request_forget_bond`] **after** the `commandResult`
-    /// ack has gone out, so the ack reaches the phone before the forget machinery
-    /// ([`super::link_control`]) clears the bond and drops the link.
-    forget_bond: bool,
-}
-
-/// Execute a `command` write. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
-/// through the [`ObjectStore`]. Ride deletion over the link is **deliberately not implemented**
-/// (`notFound`): rides are deleted only from the device's Rides screen (#454) — the app hides synced
-/// rides locally (tombstones) rather than deleting them here, so a re-sync can never resurrect them.
-/// `ackRides` (cmd 2: `count u8 · count × object_id u16`) reconciles the synced sidecar from the
-/// phone's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
-/// newly-flagged count. `setClock` (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the
-/// phone's clock and crosses it to the ride loop to stamp — no store movement. `setRouteRetention`
-/// (cmd 6: `object_id u16 · retention u8`, epic #638 S4) sets a stored route's retention level through
-/// the S3 sidecar (not touching `last_used`), bumping the route revision on a real change. Any other
-/// command byte is `unknownCommand`.
-fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
-    let cmd = data.first().copied().unwrap_or(0);
-    let mut forget_bond = false;
-    let (status, detail, store_changed) = match (cmd, data) {
-        (obc_ble::CMD_DELETE_OBJECT, [_, ty, lo, hi, ..]) => {
-            let id = u16::from_le_bytes([*lo, *hi]);
-            match ObjectType::from_u8(*ty) {
-                Ok(ObjectType::Route) => {
-                    if store.borrow_mut().delete_route(shared, id) {
-                        info!("ble: [cmd] deleted route object {}", id);
-                        (CommandStatus::Ok, 0, Some(ObjectType::Route))
-                    } else {
-                        (CommandStatus::NotFound, 0, None)
-                    }
-                }
-                // A trip delete is **non-cascading** (spec §7.7): remove only the trip object — its
-                // member routes become top-level routes. Bumps the *trip* store revision → the caller
-                // notifies `storeChanged(trip)` (§4.3, its own counter). A cascade "delete trip &
-                // routes" is the initiating UI's composition (individual route deletes + this), never
-                // a wire verb.
-                Ok(ObjectType::Trip) => {
-                    if store.borrow_mut().delete_trip(shared, id) {
-                        info!("ble: [cmd] deleted trip object {}", id);
-                        (CommandStatus::Ok, 0, Some(ObjectType::Trip))
-                    } else {
-                        (CommandStatus::NotFound, 0, None)
-                    }
-                }
-                // Rides are never deleted over the link (see the fn doc); nothing else deletes.
-                _ => (CommandStatus::NotFound, 0, None),
-            }
-        }
-        (obc_ble::CMD_DELETE_OBJECT, _) => (CommandStatus::Error, 0, None), // truncated arg list
-        (obc_ble::CMD_ACK_RIDES, _) => match obc_ble::AckRides::decode(data) {
-            Ok(ack) => {
-                let newly = store.borrow_mut().ack_rides(shared, &ack);
-                info!("ble: [cmd] ackRides: {} acked, {} newly flagged", ack.count(), newly);
-                // Only an actual flag change moved the store (and only the ride side of it).
-                (CommandStatus::Ok, newly, (newly > 0).then_some(ObjectType::Ride))
-            }
-            Err(_) => (CommandStatus::Error, 0, None), // count promises more ids than the write carries
-        },
-        (obc_ble::CMD_INSTALL_FW, _) => {
-            // installFw (epic #615 S6, #621): request the on-glass-confirmed install of the staged
-            // /UPDATE.BIN. Answer from cheaply-knowable edge state only — `busy` (a ride recording or an
-            // install already pending) and `noStaged` (a card-root existence check); the multi-second
-            // OBCU CRC scan is NOT run here (it belongs to the on-device flow), so `invalid` is never
-            // produced — the handler accepts and the scan surfaces a bad image on glass. On `ok` it
-            // posts a request the ride loop drains into `App::open_remote_dfu_check` — push the
-            // "Checking card..." wait + post `DfuAction::Scan`, the System menu's press arriving over
-            // the air — and nothing more. It never posts `DfuAction::Install` (that stays the confirm
-            // screen's press and the physical debug link's): the command never waits for the human and
-            // never arms/reboots on its own (spec §4.4 security posture — no silent installs, ever).
-            let has_staged = store.borrow().update_staged(shared);
-            let busy = state::recording() || crate::object_store::dfu_install_pending();
-            let status = obc_ble::install_fw_reply(has_staged, busy, false);
-            if matches!(status, CommandStatus::Ok) {
-                crate::object_store::request_dfu_install_ble();
-                info!("ble: [cmd] installFw accepted — install request posted (awaits on-glass confirm)");
-            } else {
-                info!("ble: [cmd] installFw rejected: {}", status.as_u8());
-            }
-            (status, 0, None)
-        }
-        (obc_ble::CMD_FORGET_BOND, _) => {
-            // forgetBond (#756): the app's "Forget device" asks the device to dissolve its side of
-            // the bond too, so a one-sided app forget doesn't leave the pair wedged (the device would
-            // otherwise keep rejecting new pairings under the #455 reject-when-bonded posture until the
-            // rider ran Forget phone on the device). This is only reachable over the authenticated,
-            // encrypted link — the gated `command` characteristic requires it (§8) — so the bonded
-            // phone clearing its own bond is fully consistent with reject-when-bonded; a stranger can
-            // never issue it. We DON'T forget here: answer `commandResult(ok)` and defer the forget to
-            // *after* the ack has been sent (see the caller), so the phone gets its ack before the link
-            // drops. The forget itself reuses the on-device Forget-phone machinery (`link_control` →
-            // `forget_bond`): clears the RRAM bond slot + host table, lowers `paired`, drops the link,
-            // and re-opens pairing on the next connection.
-            forget_bond = true;
-            info!("ble: [cmd] forgetBond — ack first, then clear bond + drop link");
-            (CommandStatus::Ok, 0, None)
-        }
-        (obc_ble::CMD_SET_CLOCK, _) => {
-            // setClock (auto-expiry epic #638 S2, #642): the phone stamps the device's UTC clock +
-            // local offset on every connect. `SetClock::decode` owns the whole §4.4 validation (exact
-            // 7-byte length, `utc` ≥ 2020-01-01, `|offset|` ≤ 14 h) so a bad phone clock never seeds a
-            // trusted-but-stale set-point the retention sweep would honour: any `Err` → `error`. On
-            // success the validated pair crosses to the ride loop (`post_ble_clock`), which stamps it
-            // through `App::stamp_clock_ble` (sets + persists the offset, marks trust `Ble`). The clock
-            // is not a listed object — **no store revision bump**, so `store_changed` stays `None`.
-            match SetClock::decode(data) {
-                Ok(sc) => {
-                    crate::object_store::post_ble_clock(sc.utc, sc.offset_min);
-                    info!("ble: [cmd] setClock: utc {} offset {} min — posted to ride loop", sc.utc, sc.offset_min);
-                    (CommandStatus::Ok, 0, None)
-                }
-                Err(_) => {
-                    warn!("ble: [cmd] setClock rejected: malformed / out-of-range ({} B)", data.len());
-                    (CommandStatus::Error, 0, None)
-                }
-            }
-        }
-        (obc_ble::CMD_SET_ROUTE_RETENTION, _) => {
-            // setRouteRetention (auto-expiry epic #638 S4, #644): set a stored route's retention level
-            // without re-uploading it. `SetRouteRetention::decode` owns the whole §4.4 validation
-            // (exact 4-byte length, `retention` ≤ 5) so a bad write never mutates the store: any `Err`
-            // → `error`. A known id writes the level through the S3 retention sidecar **without
-            // touching `last_used`** (changing retention never resets the usage clock) and bumps the
-            // **route** store revision only on a *real* change — so `storeChanged(route)` + the ride
-            // loop's rescan re-feed `set_routes_with_meta`, and the phone sees the fresh expiry in the
-            // next `routeList`. Setting the same value twice is `ok` with no bump (the idempotence
-            // pin); an unknown `object_id` is `notFound`.
-            match SetRouteRetention::decode(data) {
-                Ok(srr) => match store.borrow_mut().set_route_retention(
-                    shared,
-                    srr.object_id,
-                    Retention::from_u8(srr.retention),
-                ) {
-                    None => {
-                        info!("ble: [cmd] setRouteRetention: unknown route {}", srr.object_id);
-                        (CommandStatus::NotFound, 0, None)
-                    }
-                    Some(changed) => {
-                        info!(
-                            "ble: [cmd] setRouteRetention: route {} -> retention {} (changed {})",
-                            srr.object_id, srr.retention, changed
-                        );
-                        (CommandStatus::Ok, 0, changed.then_some(ObjectType::Route))
-                    }
-                },
-                Err(_) => {
-                    warn!("ble: [cmd] setRouteRetention rejected: malformed / out-of-range ({} B)", data.len());
-                    (CommandStatus::Error, 0, None)
-                }
-            }
-        }
-        _ => (CommandStatus::UnknownCommand, 0, None),
-    };
-    CommandOutcome {
-        result: StatusMessage::CommandResult(CommandResult::with_detail(cmd, status, detail)).encode(),
-        store_changed,
-        forget_bond,
-    }
-}
-
-/// How a decoded `transfer_control` write proceeds.
-enum TransferDisposition {
-    /// Validated — hand to the CoC task (`serve_coc`), which answers when the transfer ends.
-    Arm(Armed),
-    /// Answer immediately on `status` (a reject, or an abort with nothing in flight).
-    Answer(StatusBytes),
-    /// An abort aimed at the in-flight transfer — signal the data plane; *it* answers.
-    AbortActive,
-}
-
-/// Decode + classify a `transfer_control` write against the store: echo uploads, route uploads (fresh
-/// or replace-by-id), and route / list downloads. Everything invalid — malformed bytes, an unknown id
-/// (`notFound`), a non-zero upload offset or a second open mid-transfer, an unsupported op/type
-/// combination — is answered immediately with the typed [`obc_ble::TransferResult`] (`error` /
-/// `notFound` / `busy`), never a hang or a bare ATT failure.
-fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> TransferDisposition {
-    let Ok(desc) = TransferControl::decode(data) else {
-        // A malformed descriptor — the app can't have meant a real transfer; report `error`.
-        warn!(
-            "ble: [gatt] transfer_control reject: malformed {} B descriptor -> status {}",
-            data.len(),
-            TransferStatus::Error.as_u8()
-        );
-        return TransferDisposition::Answer(transfer_result(0, TransferStatus::Error));
-    };
-    if desc.op == Op::Abort {
-        if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
-            info!("ble: [gatt] transfer_control abort active: type {} id {}", desc.ty.as_u8(), desc.object_id);
-            return TransferDisposition::AbortActive;
-        }
-        // Nothing in flight: discard any stray temp and confirm the abort.
-        store.borrow_mut().upload_discard(shared);
-        info!(
-            "ble: [gatt] transfer_control answer: op {} type {} id {} len {} -> status {}",
-            desc.op.as_u8(),
-            desc.ty.as_u8(),
-            desc.object_id,
-            desc.total_len,
-            TransferStatus::Aborted.as_u8()
-        );
-        return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
-    }
-    if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
-        warn!(
-            "ble: [gatt] transfer_control reject: op {} type {} id {} len {} -> status {} (active)",
-            desc.op.as_u8(),
-            desc.ty.as_u8(),
-            desc.object_id,
-            desc.total_len,
-            TransferStatus::Busy.as_u8()
-        );
-        return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Busy));
-    }
-    match (desc.op, desc.ty) {
-        (Op::Upload, ObjectType::Echo) => {
-            log_transfer_arm(&desc);
-            TransferDisposition::Arm(Armed::Echo(desc))
-        }
-        (Op::Upload, ObjectType::Route) => match store.borrow_mut().upload_open(shared, &desc) {
-            Ok(rx) => {
-                log_transfer_arm(&desc);
-                TransferDisposition::Arm(Armed::Upload(desc, rx))
-            }
-            Err(status) => {
-                log_transfer_reject(&desc, status);
-                TransferDisposition::Answer(transfer_result(desc.object_id, status))
-            }
-        },
-        // A trip upload (epic #526 TR4): the same CoC streaming + commit-then-swap as a route, but the
-        // storage-full guard is against the *trip* catalog and the commit target is `TP{id}.OBT`. The
-        // finish routes on `desc.ty` in the data plane, exactly like the route/fwImage split.
-        (Op::Upload, ObjectType::Trip) => match store.borrow_mut().upload_open_trip(shared, &desc) {
-            Ok(rx) => {
-                log_transfer_arm(&desc);
-                TransferDisposition::Arm(Armed::Upload(desc, rx))
-            }
-            Err(status) => {
-                log_transfer_reject(&desc, status);
-                TransferDisposition::Answer(transfer_result(desc.object_id, status))
-            }
-        },
-        // A firmware update image (epic #615 S6, #621): the size guard rejects an oversize object at
-        // announce, before any byte is consumed; a committed transfer promotes to /UPDATE.BIN (staging,
-        // not installing — see `fwimage_finish` + the `installFw` command). Same `Armed::Upload` arm as
-        // a route — the CoC streaming is identical; only the commit target differs (`desc.ty`).
-        (Op::Upload, ObjectType::FwImage) => match store.borrow_mut().fwimage_open(shared, &desc) {
-            Ok(rx) => {
-                log_transfer_arm(&desc);
-                TransferDisposition::Arm(Armed::Upload(desc, rx))
-            }
-            Err(status) => {
-                log_transfer_reject(&desc, status);
-                TransferDisposition::Answer(transfer_result(desc.object_id, status))
-            }
-        },
-        (
-            Op::Download,
-            ObjectType::Route
-            | ObjectType::Ride
-            | ObjectType::Trip
-            | ObjectType::RouteList
-            | ObjectType::RideList
-            | ObjectType::TripList
-            | ObjectType::Diagnostics,
-        ) => {
-            // Cheap existence check here for the immediate `notFound`; the source itself (and
-            // its CRC pre-pass) opens on the data plane, off the GATT reply path.
-            let known = match desc.ty {
-                ObjectType::Route => store.borrow().has_route(desc.object_id),
-                ObjectType::Ride => store.borrow().has_ride(desc.object_id),
-                ObjectType::Trip => store.borrow().has_trip(desc.object_id),
-                _ => true,
-            };
-            if !known {
-                log_transfer_reject(&desc, TransferStatus::NotFound);
-                return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::NotFound));
-            }
-            log_transfer_arm(&desc);
-            TransferDisposition::Arm(Armed::Download(desc))
-        }
-        // Uploads of ride/list/config/diagnostics types are nonsensical.
-        _ => {
-            log_transfer_reject(&desc, TransferStatus::Error);
-            TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
-        }
-    }
-}
-
-/// Log one accepted descriptor in the same numeric vocabulary as the iOS
-/// console, so an on-device trace correlates both sides of the exchange.
-fn log_transfer_arm(desc: &TransferControl) {
-    info!(
-        "ble: [gatt] transfer_control arm: op {} type {} id {} len {}",
-        desc.op.as_u8(),
-        desc.ty.as_u8(),
-        desc.object_id,
-        desc.total_len
-    );
-}
-
-/// Instrument an immediate semantic reject with its exact wire status.
-fn log_transfer_reject(desc: &TransferControl, status: TransferStatus) {
-    warn!(
-        "ble: [gatt] transfer_control reject: op {} type {} id {} len {} -> status {}",
-        desc.op.as_u8(),
-        desc.ty.as_u8(),
-        desc.object_id,
-        desc.total_len,
-        status.as_u8()
-    );
-}
+use super::state::{publish, TRANSFER_ABORT, TRANSFER_ARM};
 
 /// Serve GATT + connection events until the peer drops the link. Returns the disconnect reason (HCI
 /// status code); answers the OBC Control writes with the typed `status` envelope, publishes the link
@@ -402,6 +86,7 @@ pub(crate) async fn serve_connection(
                 let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
                 let mut forget_after_ack = false;
+                let mut secured_context_read = false;
                 let reply = match event {
                     GattEvent::Write(e) => {
                         let handle = e.handle();
@@ -413,11 +98,32 @@ pub(crate) async fn serve_connection(
                             info!("ble: [gatt] command write");
                             e.accept()
                         } else if handle == server.obc.transfer_control.handle {
-                            match e.with_data(|_off, data| classify_transfer(data, store, &mut guard)) {
+                            match e.with_data(|_off, data| {
+                                classify_transfer(data, store, &mut guard, crate::link::Transport::Ble)
+                            }) {
                                 TransferDisposition::Arm(armed) => {
-                                    info!("ble: [gatt] transfer_control: transfer armed");
-                                    TRANSFER_ACTIVE.store(true, Ordering::Relaxed);
-                                    TRANSFER_ARM.signal(armed);
+                                    // **The claim's answer is honoured** (#1146 P2) — the radio twin
+                                    // of the USB control plane's site, and for the same reason: the
+                                    // gate grew a second refuser (a live route search holding the
+                                    // scratch arena's nav arm) without this call site noticing.
+                                    // Nothing awaits between `classify_transfer` and this claim on
+                                    // the one cooperative executor, so a refusal is unreachable
+                                    // today; arming against it anyway would hand the CoC plane a
+                                    // store someone else owns.
+                                    if TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Ble)) {
+                                        info!("ble: [gatt] transfer_control: transfer armed");
+                                        TRANSFER_ARM.signal(armed);
+                                    } else {
+                                        warn!("ble: [gatt] transfer_control lost the gate after classify — busy");
+                                        debug_assert!(
+                                            false,
+                                            "the gate moved between classify and claim with no await between them"
+                                        );
+                                        status_msg = Some(crate::link::transfer_result(
+                                            armed.object_id(),
+                                            obc_ble::TransferStatus::Busy,
+                                        ));
+                                    }
                                 }
                                 TransferDisposition::AbortActive => {
                                     info!("ble: [gatt] transfer_control: abort → data plane");
@@ -427,21 +133,24 @@ pub(crate) async fn serve_connection(
                                     info!("ble: [gatt] transfer_control: answered on status");
                                     status_msg = Some(bytes);
                                 }
+                                // The *drain* half of an idle abort is a transport obligation the
+                                // radio does not have — it exists so a transport with an unrecallable
+                                // byte pipe can empty it before the peer retries (the cable's bulk
+                                // endpoint), and the CoC is closed and reopened around any failed
+                                // exchange, which *is* the discard and is the peer's to perform. The
+                                // **store** half is not transport-specific, so it still runs; there
+                                // is simply nothing to sequence it behind.
+                                TransferDisposition::AnswerIdleAbort(abort) => {
+                                    info!("ble: [gatt] transfer_control: idle abort answered on status");
+                                    crate::link::transfer::finish_idle_abort(store, &mut guard, &abort);
+                                    status_msg = Some(abort.bytes);
+                                }
                             }
                             e.accept()
                         } else if handle == server.obc.config.handle {
                             // Validate + apply: units and rename persist to RRAM settings; the
                             // advertised name follows on the next adv cycle.
-                            let applied = e.with_data(|_off, data| match Config::decode(data) {
-                                Some(cfg) => match core::str::from_utf8(cfg.name) {
-                                    Ok(name) => {
-                                        store.borrow_mut().apply_config(&mut guard, name, cfg.units);
-                                        true
-                                    }
-                                    Err(_) => false,
-                                },
-                                None => false,
-                            });
+                            let applied = e.with_data(|_off, data| apply_config_write(data, store, &mut guard));
                             if applied {
                                 info!("ble: [gatt] config write applied + persisted");
                                 config_written = true;
@@ -457,6 +166,12 @@ pub(crate) async fn serve_connection(
                     }
                     GattEvent::Read(e) => {
                         info!("ble: [gatt] read handle {}", e.handle());
+                        // A stray connection must not consume the one-shot advertisement hint.
+                        // Lower it only for the dedicated probe read after this link has resumed
+                        // the stored bond (or completed authenticated pairing), and only after the
+                        // response is handed to the controller below.
+                        secured_context_read =
+                            e.handle() == server.weather_request.context.handle && state::status().secured;
                         e.accept()
                     }
                     // Permission-violating request (e.g. a write to a read-only attribute): accepting
@@ -468,9 +183,21 @@ pub(crate) async fn serve_connection(
                 // (the RefCell borrows above already ended with `reply`). `config_blob`/storeChanged below
                 // read only the catalog + the settings cache, no card.
                 drop(guard);
-                match reply {
-                    Ok(reply) => reply.send().await,
-                    Err(e) => warn!("ble: [gatt] error sending response: {:?}", e),
+                let reply_sent = match reply {
+                    Ok(reply) => {
+                        // trouble-host's reply send is infallible once accept succeeded: it queues
+                        // the ATT response and returns `()`.
+                        reply.send().await;
+                        true
+                    }
+                    Err(e) => {
+                        warn!("ble: [gatt] error accepting request: {:?}", e);
+                        false
+                    }
+                };
+                if obc_ble::authenticated_context_was_served(secured_context_read, reply_sent) {
+                    state::clear_weather_request();
+                    info!("ble: authenticated Weather Request context served — request hint cleared");
                 }
                 if let Some((buf, len)) = status_msg {
                     notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;

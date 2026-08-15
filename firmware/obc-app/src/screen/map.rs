@@ -5,12 +5,15 @@
 //! (stepping up above the chip while one is up), a low-battery cue in the top-left corner, and the
 //! pan HUD.
 //!
-//! Bindings depend on whether a ride is being tracked. Shared: `turn` = zoom, `hold` = enter Pan
-//! mode, `back-hold` = Menu. **Tracking** (the riding map): `press` = pause → Ride control, `back` =
-//! the sibling Statistics view. **Not tracking** (the route-less browse map, reached from the Menu's
-//! Map station): `press` = the start card, `back` = pop back to the Menu (there's no Statistics
-//! sibling without a ride). Off-route chrome can't fire without a route, so the browse map shows
-//! only clock / scale-bar / low-battery.
+//! Bindings depend on whether a ride is being tracked. Shared in Follow: up/down = zoom, `hold` =
+//! enter Inspect, `back-hold` = Ride menu. Inspect keeps Back tap as the quick return to Follow:
+//! `press` toggles Move ↔ Zoom, Back-hold toggles Route ↔ the last Free axis, and Select-hold only
+//! toggles Free V ↔ Free H. Select-hold is inert in Zoom; Back-hold still switches Route/Free and
+//! lands in Move. **Tracking** (the riding map): `press` = pause → Ride control,
+//! `back` = the sibling Statistics view. **Not tracking** (the route-less browse map, reached from
+//! the Menu's Map station): `press` = the start card, `back` = pop back to the Menu (there's no
+//! Statistics sibling without a ride). Off-route chrome can't fire without a route, so the browse
+//! map shows only clock / scale-bar / low-battery.
 
 use core::fmt::Write as _;
 
@@ -26,20 +29,14 @@ use obc_render::{
 };
 use obc_route::WptEntry;
 
-use crate::app::{Pan, PanAxis};
+use crate::app::{step_zoom, Pan, PanBasis, PanTool, MAX_ZOOM, MIN_ZOOM};
 use crate::input::Gesture;
 use crate::settings::{DateTime, Units, WaypointMode};
 use crate::wall_clock::MinuteTicker;
 use crate::Msg;
 use obc_ports::Fix;
 
-use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
-
-/// Zoom multiplier per encoder detent (matches the scroll-wheel feel).
-const ZOOM_STEP: f32 = 1.2;
-/// Zoom clamps (pixels per microdegree-lat), same spirit as the sim's bounds.
-const MIN_ZOOM: f32 = 1e-6;
-const MAX_ZOOM: f32 = 1e4;
+use super::{Ctx, RenderFrame, Screen, ScreenTick, StatisticsScreen, Transition};
 
 /// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
@@ -49,6 +46,9 @@ const DEFAULT_BG_RGB565: u16 = 0x2104;
 /// render benchmark's route scene pins its stroke weight to this exact value (re-exported as
 /// [`crate::screen::ROUTE_WEIGHT`]).
 pub const ROUTE_WEIGHT: u32 = 11;
+/// Narrower stroke painted inside the route line for the chooser's to-be-skipped stretch. The
+/// magenta edges remain visible, while warning-orange makes the selected interval unmistakable.
+const SKIPPED_WEIGHT: u32 = 7;
 
 /// Colour of the route direction chevrons — white, for contrast over the magenta route line. Drawn
 /// only at riding zoom (see [`CHEVRON_MAX_MPP`]).
@@ -184,24 +184,18 @@ impl MapScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // Pan mode is a sub-mode of the Map: while the shared camera holds a `pan`,
-        // the encoder/Back drive panning instead of the Follow bindings below.
+        // Select/Back drive panning instead of the Follow bindings below.
         if cx.state.pan.is_some() {
             return handle_pan(g, cx);
         }
         match g {
-            Gesture::Turn(n) => {
-                // Multiply per detent (no_std: no powf).
-                let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-                let mut z = cx.state.zoom;
-                for _ in 0..n.unsigned_abs() {
-                    z *= step;
-                }
-                cx.state.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
+            Gesture::Step(n) => {
+                cx.state.zoom = step_zoom(cx.state.zoom, n, MIN_ZOOM, MAX_ZOOM);
                 Transition::None
             }
             // hold = enter Pan mode: the camera detaches and the pan HUD appears.
             Gesture::Hold => {
-                cx.state.enter_pan();
+                cx.state.enter_pan(cx.activity.active_route.is_some(), cx.activity.progress_m);
                 Transition::None
             }
             // `back`: while tracking, swap to the sibling Statistics view (its `back` swaps straight
@@ -220,69 +214,14 @@ impl MapScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: obc_map_scene::MapScene,
     {
-        // The Map is the only screen that reads the `Reader`; `None` is unreachable in practice
-        // (the host only draws the map with it) — draw nothing rather than fault.
-        let Some(reader) = rx.reader else { return };
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
-        let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
-        // The base map, route, breadcrumb and marker render through the raw target + colour policy —
-        // the one consumer of the Canvas escape hatch (everything else draws via `Surface`).
-        let (target, color_fn) = cv.split();
-        let bg = color_fn(bg565);
-        // `render_timed` fills the per-stage timings from `rx.clock`; with a `NoopClock` it's `render`.
-        let mut stats = rx.renderer.render_timed(target, reader, &vp, bg, color_fn, rx.clock);
-
-        // Chevrons appear once zoomed past `CHEVRON_MAX_MPP`, anchored to the rider's matched
-        // distance (`progress_m`). Gated on the viewport scale, decoupled from the LOD pyramid.
-        let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
-
-        // The planned route, stroked in magenta under the breadcrumb + marker — handed to the
-        // renderer through the `RouteOverlaySource` seam (`RouteOverlay` adapts the reader).
-        if let Some(route) = rx.route {
-            let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
-                target,
-                &vp,
-                &crate::route::RouteOverlay(route),
-                color_fn(super::palette::ROUTE),
-                ROUTE_WEIGHT,
-                color_fn(ARROW_COLOR),
-                arrows_at,
-            );
-            stats.route_chunks = route_chunks;
-            stats.route_points = route_points;
-            stats.route_points_drawn = route_points_drawn;
-        }
-
-        // The breadcrumb in navy, drawn over the route (and under the marker). One chained stroke
-        // (coarse spine → full-res recent tail), so the tiers never double up.
-        if !rx.breadcrumb.is_empty() {
-            let trail = color_fn(super::palette::BREADCRUMB);
-            rx.renderer.stroke_path(target, &vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
-        }
-
-        rx.stats = stats;
-        // The raw-target borrow (`target` / `color_fn` from `split`) ends here; the diamonds and the
-        // marker below re-`split` the canvas as they draw.
-
-        // Waypoint diamonds: small filled-ink rhombuses on the route line at each named waypoint,
-        // drawn over the route + breadcrumb but under the marker (so the marker wins when the rider
-        // sits on a waypoint). Always on when the loaded route has waypoints — the part-3 chip setting
-        // governs only the chip, and an empty table (no route) skips the loop for free.
-        draw_waypoint_diamonds(cv, &vp, rx.waypoints.as_slice(), rx.w, rx.h);
-
-        // The "you" colour: warning-red while off-route, else the map's marker colour. Shared by the
-        // marker and the pan pin so the off-screen pin matches the on-screen marker. Drawn last of the
-        // map plane, so it sits over the waypoint diamonds.
-        let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
-        if let Some(fix) = rx.state.user_fix {
-            let (target, color_fn) = cv.split();
-            rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
-        }
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         let panning = rx.state.pan.is_some();
@@ -290,7 +229,7 @@ impl MapScreen {
         // Low-battery cue (top-left corner): a small warning-red battery glyph only when the charge
         // has dropped below LOW_BATTERY_PCT — nothing above it, so there's no permanent map battery
         // indicator. Shown in pan mode too (the top-right corner belongs to the pan compass rose).
-        if rx.state.battery_pct < LOW_BATTERY_PCT {
+        if rx.state.device.battery_pct < LOW_BATTERY_PCT {
             draw_low_battery(cv);
         }
 
@@ -372,6 +311,115 @@ impl MapScreen {
     }
 }
 
+/// Optional detour ink added to the shared map scene (#882): the skipped-span interval and rejoin
+/// candidate the chooser owns, plus (on the preview screen) the planned detour's decimated
+/// polyline. The normal Map passes `None` and pays no extra route decode.
+#[derive(Clone, Copy)]
+pub(crate) struct DetourMapOverlay<'a> {
+    pub start_m: u32,
+    pub end_m: u32,
+    pub candidate: (i32, i32),
+    /// The planned detour's decimated polyline — empty on the chooser (nothing planned yet).
+    pub detour: &'a [(i32, i32)],
+}
+
+/// Draw the reusable map scene (base map, full route, optional skipped-range + detour ink,
+/// breadcrumb, waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the
+/// Detour chooser/preview add their own floating HUD after this returns.
+pub(crate) fn draw_map_scene<D, F, S>(
+    cv: &mut Canvas<D, F>,
+    rx: &mut RenderFrame<'_, S>,
+    vp: &Viewport,
+    skip: Option<DetourMapOverlay<'_>>,
+) -> Option<u16>
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+    S: obc_map_scene::MapScene,
+{
+    let scene = rx.scene?;
+    let rx = &mut rx.render;
+    // The only reader of the host's lent scratch (#1146 P2) — which is why every other screen may
+    // be drawn with `None`. Reaching here without one means the host called a render entry point
+    // with `None` under a map-drawing base: skip the map rather than invent one, and say so loudly
+    // in a debug build.
+    let Some(scratch) = rx.scratch.as_deref_mut() else {
+        debug_assert!(false, "a map-drawing base needs the host's RenderScratch, but none was lent");
+        return None;
+    };
+    let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
+    let (target, color_fn) = cv.split();
+    let bg = color_fn(bg565);
+    // #1096 (provisional): the rider's contour switch, restated every frame from `Settings` — the
+    // switch lives there, not in the scratch (#1146's Config/Scratch rule), so a flip on the Display
+    // screen lands on the very next map frame with no reload and nothing to reset. Suppression drops
+    // the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
+    let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
+    // The rain overlay lease (WX10), taken for this frame: precipitation draws inside the base-map
+    // paint order (below the road band), so roads, route, rider and the chrome below all stay
+    // above it. `None` — no store, nothing current, expired, **or a base screen that did not
+    // declare `Caps::rain_overlay`** (every map screen but the WX11 rain map) — renders the
+    // byte-identical rain-free map. This helper is shared, so it deliberately does not decide
+    // *whether* rain belongs on the frame: `App::render_scene_map_rain_timed` already dropped the
+    // lease for a screen that doesn't want it.
+    let rain = rx.rain.take();
+    let mut stats = scratch.render_rain_timed(target, scene, vp, bg, cfg, rain, color_fn, rx.clock);
+    let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
+
+    if let Some(route) = rx.route {
+        let (route_chunks, route_points, route_points_drawn) = scratch.draw_route(
+            target,
+            vp,
+            &crate::route::RouteOverlay(route),
+            color_fn(super::palette::ROUTE),
+            ROUTE_WEIGHT,
+            color_fn(ARROW_COLOR),
+            arrows_at,
+        );
+        stats.route_chunks = route_chunks;
+        stats.route_points = route_points;
+        stats.route_points_drawn = route_points_drawn;
+
+        if let Some(selected) = skip {
+            route.visit_points_between(selected.start_m, selected.end_m, |pts| {
+                scratch.stroke_path(target, vp, pts.iter().copied(), color_fn(super::palette::WARNING), SKIPPED_WEIGHT);
+            });
+            // The planned detour (#882): blue, so the replanned portion reads apart from the
+            // magenta route it will replace and the warning-colored span it avoids.
+            if selected.detour.len() >= 2 {
+                scratch.stroke_path(
+                    target,
+                    vp,
+                    selected.detour.iter().copied(),
+                    color_fn(super::palette::DETOUR),
+                    ROUTE_WEIGHT,
+                );
+            }
+        }
+    }
+
+    if !rx.breadcrumb.is_empty() {
+        let trail = color_fn(super::palette::BREADCRUMB);
+        scratch.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
+    }
+    rx.stats = stats;
+
+    draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
+    let marker565 = if rx.activity.off_route { super::palette::WARNING } else { scene.marker_color() };
+    if let Some(fix) = rx.state.user_fix {
+        let (target, color_fn) = cv.split();
+        scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
+    }
+    if let Some(selected) = skip {
+        let (x, y) = vp.to_screen(selected.candidate.0, selected.candidate.1);
+        let c = Point::new(x, y);
+        cv.disc(c, 10, super::palette::PARCHMENT);
+        cv.disc(c, 7, super::palette::WARNING);
+        cv.disc(c, 3, super::palette::INK);
+    }
+    Some(marker565)
+}
+
 // ---- Waypoint diamonds (on the route line) --------------------------------
 
 /// The four screen vertices `(top, bottom, left, right)` of a waypoint diamond centred at
@@ -402,16 +450,18 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 }
 
 /// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is `Some`.
-/// `turn` pans along the active axis, `press` toggles the axis, `hold` flips north-up ↔ heading-up,
-/// `back` recenters on the rider (staying in pan), `back-hold` exits to Follow. This deliberately
-/// overrides the global `back-hold` = Menu while panning — exit pan first to reach the Menu.
-fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
+/// Up/Down applies the active Move/Zoom tool; `press` toggles those tools; Back-hold toggles the
+/// Route/Free family and Select-hold changes only an active Free axis. Select-hold is inert in Zoom;
+/// Back-hold switches family and lands in Move. `back` exits to Follow. The holds override the
+/// riding map's normal long-press actions in Inspect.
+pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
+    let has_route = cx.activity.active_route.is_some();
     match g {
-        Gesture::Turn(n) => cx.state.pan_step(n),
-        Gesture::Press => cx.state.toggle_pan_axis(),
-        Gesture::Hold => cx.state.toggle_pan_orientation(),
-        Gesture::Back => cx.state.recenter_on_user(),
-        Gesture::BackHold => cx.state.exit_pan(),
+        Gesture::Step(n) => cx.state.pan_step(n, cx.activity.route_total_m),
+        Gesture::Press => cx.state.toggle_pan_tool(),
+        Gesture::Hold => cx.state.toggle_pan_free_axis(),
+        Gesture::Back => cx.state.exit_pan(),
+        Gesture::BackHold => cx.state.toggle_pan_family(has_route),
     }
     Transition::None
 }
@@ -810,7 +860,7 @@ fn scale_label(dist: u32, units: Units) -> heapless::String<8> {
     s
 }
 
-/// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-detent
+/// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-step
 /// knob lives with the pan logic as [`crate::app::PAN_STEP_PX`].)
 mod hud {
     /// Active-axis chevron — an open, round-capped "Λ" caret: tip `REACH` ahead of the centre, back
@@ -822,12 +872,16 @@ mod hud {
     pub const CHEV_INSET: f32 = 20.0;
     /// Ink halo thickness drawn behind every glyph so it reads over any map.
     pub const OUTLINE: f32 = 2.0;
-    /// Compass disc radius and its centre inset from the top-right corner, plus the needle
-    /// length (kept inside the face) and base half-width.
-    pub const COMPASS_R: f32 = 15.0;
-    pub const COMPASS_MARGIN: f32 = 19.0;
-    pub const NEEDLE_LEN: f32 = 11.0;
-    pub const NEEDLE_W: f32 = 4.0;
+    /// Persistent Inspect-state frame: two amber edge pixels and a one-pixel ink keyline inside.
+    /// Three pixels total is conspicuous on 240×320 without materially shrinking the map.
+    pub const FRAME_AMBER_W: i32 = 2;
+    pub const FRAME_INK_W: i32 = 1;
+    /// Native-panel corner radius. This matches the simulator's 10 px display mask and leaves the
+    /// same gentle curve on the physical rounded-corner panel.
+    pub const FRAME_RADIUS: u32 = 10;
+    /// Zoom's bare plus/minus strokes use the same amber-with-ink-halo treatment as the chevrons.
+    pub const ZOOM_GLYPH_HALF: f32 = 7.0;
+    pub const ZOOM_GLYPH_HW: f32 = 2.5;
     /// Back-to-you marker — a simple filled triangle in the rider's marker colour (so it
     /// reads as "you" and stays distinct from the hollow amber chevrons). Its half-height
     /// / half-width, inset from the edge, and how far off-screen the rider must be first.
@@ -867,41 +921,98 @@ fn outlined_arrow(
     cv.triangle(t, bl, br, fill);
 }
 
-/// Draw the pan-mode HUD over the already-rendered map: an open chevron on each of the active
-/// axis's edges, the frozen-orientation compass, and (only once the rider is off-screen) a back-to-
-/// you marker. `vp` carries the frozen pan rotation, so the compass needle and off-screen test
-/// agree with what's drawn.
-fn draw_pan_hud(cv: &mut impl Surface, size: (f32, f32), pan: Pan, user_fix: Option<Fix>, marker: u16, vp: &Viewport) {
+/// Draw the Inspect HUD over the already-rendered map: a persistent amber frame, the active
+/// action's self-explanatory edge cues, and (once the rider is off-screen) a back-to-you marker.
+/// Route mode needs no label or false screen-space arrow: frame + movement along the visible route
+/// is the feedback. The viewport carries the frozen rotation used by the off-screen test.
+pub(super) fn draw_pan_hud(
+    cv: &mut impl Surface,
+    size: (f32, f32),
+    pan: Pan,
+    user_fix: Option<Fix>,
+    marker: u16,
+    vp: &Viewport,
+) {
     use super::palette::*;
     use hud::*;
     let (w, h) = size;
 
-    // 1) Back-to-you marker first, so the chevrons render over it where they overlap. A filled
+    // 1) Persistent Inspect frame. Unlike a Route-only label it communicates the important state —
+    //    this camera is detached — in Route, Free, and Zoom alike.
+    draw_inspect_frame(cv, w as i32, h as i32);
+
+    // 2) Back-to-you marker first, so the chevrons render over it where they overlap. A filled
     //    triangle at the rider's bearing edge crossing.
     if let Some((bx, by, bux, buy)) = user_fix.and_then(|fix| back_to_you(w, h, vp, fix)) {
         outlined_arrow(cv, (bx, by), (bux, buy), (BACK_H, BACK_W), marker, INK);
     }
 
-    // 2) Active-axis chevrons: one hollow caret on each of the axis's two edges.
-    let chevs: [((f32, f32), (f32, f32)); 2] = match pan.axis {
-        PanAxis::Vertical => [((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))],
-        PanAxis::Horizontal => [((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))],
-    };
-    for (center, dir) in chevs {
-        chevron(cv, center, dir, AMBER, INK);
+    // 3) Up/Down cues. Free movement gets directional edge chevrons; Zoom gets unambiguous +/−
+    //    cues. Route movement deliberately gets no false screen-space arrow or explanatory chrome:
+    //    moving along the visible route is already direct feedback.
+    if pan.tool == PanTool::Zoom {
+        draw_zoom_cue(cv, (w / 2.0, CHEV_INSET), false);
+        draw_zoom_cue(cv, (w / 2.0, h - CHEV_INSET), true);
+    } else {
+        let chevs = match pan.basis {
+            PanBasis::Vertical => Some([((w / 2.0, CHEV_INSET), (0.0, -1.0)), ((w / 2.0, h - CHEV_INSET), (0.0, 1.0))]),
+            PanBasis::Horizontal => {
+                Some([((CHEV_INSET, h / 2.0), (-1.0, 0.0)), ((w - CHEV_INSET, h / 2.0), (1.0, 0.0))])
+            }
+            PanBasis::Route => None,
+        };
+        if let Some(chevs) = chevs {
+            for (center, dir) in chevs {
+                chevron(cv, center, dir, AMBER, INK);
+            }
+        }
+    }
+}
+
+/// Draw the detached-camera frame: two concentric amber strokes follow the panel's rounded mask,
+/// and a thin ink keyline keeps them legible over orange roads and pale map fills. The input
+/// plane's hold bulge renders above this, so charging feedback still wins temporarily without
+/// erasing the persistent mode cue.
+fn draw_inspect_frame(cv: &mut impl Surface, w: i32, h: i32) {
+    use super::palette::*;
+    use hud::*;
+    let total_w = FRAME_AMBER_W + FRAME_INK_W;
+    if w <= 2 * total_w || h <= 2 * total_w {
+        return;
     }
 
-    // 3) Compass (top-right): parchment disc + ink ring, an amber north needle and a wood south
-    //    tail. The needle reads the frozen viewport rotation, so it holds still while panning.
-    let (ccx, ccy) = (w - COMPASS_MARGIN, COMPASS_MARGIN);
-    cv.disc(pt(ccx, ccy), COMPASS_R as u32, INK);
-    cv.disc(pt(ccx, ccy), (COMPASS_R - 2.0) as u32, PARCHMENT);
-    let (nux, nuy) = vp.north_screen_unit();
-    let (perpx, perpy) = (-nuy, nux);
-    let base_l = pt(ccx + perpx * NEEDLE_W, ccy + perpy * NEEDLE_W);
-    let base_r = pt(ccx - perpx * NEEDLE_W, ccy - perpy * NEEDLE_W);
-    cv.triangle(pt(ccx + nux * NEEDLE_LEN, ccy + nuy * NEEDLE_LEN), base_l, base_r, AMBER);
-    cv.triangle(pt(ccx - nux * NEEDLE_LEN, ccy - nuy * NEEDLE_LEN), base_l, base_r, WOOD);
+    // Reducing the radius with each inset keeps the three strokes concentric instead of making
+    // the inner corners progressively squarer. At 240x320 the outer 10 px curve is the same curve
+    // used by the simulator's display texture and the intended device glass.
+    for inset in 0..FRAME_AMBER_W {
+        cv.round_outline(
+            rect(inset, inset, w - 2 * inset, h - 2 * inset),
+            FRAME_RADIUS.saturating_sub(inset as u32),
+            AMBER,
+        );
+    }
+    for offset in 0..FRAME_INK_W {
+        let inset = FRAME_AMBER_W + offset;
+        cv.round_outline(
+            rect(inset, inset, w - 2 * inset, h - 2 * inset),
+            FRAME_RADIUS.saturating_sub(inset as u32),
+            INK,
+        );
+    }
+}
+
+/// A bare +/- glyph with the same round-ended amber stroke and ink halo as the pan chevrons. The
+/// map remains visible around it; there is no white button disc competing with route furniture.
+pub(super) fn draw_zoom_cue(cv: &mut impl Surface, center: (f32, f32), plus: bool) {
+    use super::palette::*;
+    use hud::*;
+    let (cx, cy) = center;
+    for (hw, color) in [(ZOOM_GLYPH_HW + OUTLINE, INK), (ZOOM_GLYPH_HW, AMBER)] {
+        rounded_arm(cv, (cx - ZOOM_GLYPH_HALF, cy), (cx + ZOOM_GLYPH_HALF, cy), hw, color);
+        if plus {
+            rounded_arm(cv, (cx, cy - ZOOM_GLYPH_HALF), (cx, cy + ZOOM_GLYPH_HALF), hw, color);
+        }
+    }
 }
 
 /// Where to put the back-to-you marker for an off-screen rider — `(x, y, ux, uy)`, the
@@ -947,15 +1058,24 @@ fn chevron(cv: &mut impl Surface, center: (f32, f32), dir: (f32, f32), fill: u16
     let rb = (cx - ux * CHEV_BACK + px * CHEV_SPREAD, cy - uy * CHEV_BACK + py * CHEV_SPREAD);
     // Ink halo first (wider), fill on top — same centreline, so the halo is even all round.
     for (hw, color) in [(CHEV_HW + OUTLINE, outline), (CHEV_HW, fill)] {
-        arm(cv, lb, tip, hw, color);
-        arm(cv, tip, rb, hw, color);
-        // `disc(c, r)` spans diameter `2r+1` (true radius `r+0.5`), so pass `hw-0.5` to make
-        // the round cap exactly `hw` wide — matching the arm, not bulging half a pixel past it.
+        rounded_arm(cv, lb, tip, hw, color);
+        rounded_arm(cv, tip, rb, hw, color);
+        // The shared tip needs its own cap after the two strokes overlap, keeping the join as round
+        // and even as the standalone +/- glyphs' endpoints.
         let r = round_coord(hw - 0.5).max(1) as u32;
-        cv.disc(pt(lb.0, lb.1), r, color);
         cv.disc(pt(tip.0, tip.1), r, color);
-        cv.disc(pt(rb.0, rb.1), r, color);
     }
+}
+
+/// Stroke `a`→`b` with round caps. Shared by the directional chevrons and zoom glyphs so both
+/// affordances have exactly the same visual weight on the RGB222 panel.
+fn rounded_arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16) {
+    arm(cv, a, b, hw, color);
+    // `disc(c, r)` spans diameter `2r+1` (true radius `r+0.5`), so pass `hw-0.5` to make the
+    // round cap exactly `hw` wide — matching the arm, not bulging half a pixel past it.
+    let r = round_coord(hw - 0.5).max(1) as u32;
+    cv.disc(pt(a.0, a.1), r, color);
+    cv.disc(pt(b.0, b.1), r, color);
 }
 
 /// Stroke segment `a`→`b` as a filled quad (two triangles) of half-width `hw`. The unit
@@ -974,25 +1094,14 @@ fn arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16)
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::screen::{Screen, Transition};
     use crate::Settings;
 
     fn run(act: &mut Activity, g: Gesture) -> Transition {
         let mut st = crate::AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = super::Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, act, &mut settings);
         MapScreen::new().handle(g, &mut cx)
     }
 
@@ -1160,7 +1269,7 @@ mod tests {
     fn wp(dist_along_m: u32, name: &str) -> WptEntry {
         let mut n = heapless::String::new();
         let _ = n.push_str(name);
-        WptEntry { dist_along_m, lon: 0, lat: 0, name: n }
+        WptEntry { dist_along_m, lon: 0, lat: 0, category: None, lateral_offset_m: 0, name: n }
     }
 
     /// The waypoint chip's pure visibility helper: shown only when not panning, the warning chip is

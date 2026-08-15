@@ -26,7 +26,41 @@ routes = "Routes"
 rides = "Rides"
 pois = "POIs"
 map = "Map"
+weather = "Weather"
 settings = "Settings"
+
+# --- The mid-ride compass, the Up-ahead timeline, and the Detour chooser ---
+[ride_menu]
+title = "RIDE MENU"
+up_ahead = "Up ahead"
+detour = "Detour"
+inspect_rejoin = "Inspect rejoin"
+main_menu = "Main menu"
+no_route = "No route loaded"
+off_route = "Return to route"
+route_end = "Route ends here"
+no_nav = "No routing data"
+
+# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+[up_ahead]
+everything = "Everything"
+filter_title = "SHOW"
+none = "Nothing up ahead"
+none_sub = "No stops on route"
+none_category_sub = "None of this kind"
+# The two source-scoped empty sub-lines (U4): with only one source feeding the list, "No stops on
+# route" would be a lie — name the scope instead.
+none_waypoints_sub = "Waypoints only"
+none_pois_sub = "Map POIs only"
+no_route_sub = "Load a route first"
+
+# --- UpAheadSource enum labels (Ride settings row, epic #946 U4). Short by necessity: the value
+# --- shares the row's sub-caption line with its cue at 240 px, so the ring's three words carry
+# --- the "only" the epic spells out.
+[up_ahead_source]
+both = "Both"
+waypoints = "Waypoints"
+map_pois = "Map POIs"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -107,6 +141,8 @@ to_climb = "To climb"
 grade = "Grade"
 elevation = "Elevation"
 ride_time = "Ride time"
+time_to_go = "Time to go"
+eta = "ETA"
 clock = "Clock"
 next_waypoint = "Next waypoint"
 waypoint_list = "Waypoint list"
@@ -124,6 +160,10 @@ to_climb = "TO CLIMB"
 grade = "GRADE"
 elev = "ELEV "
 ride = "RIDE"
+# The ETA tile's caption. `TIME TO GO` reuses the shared `to_go` fragment with an "h" unit prefix
+# (`h TO GO`), the same caption idiom `dist_to_go` uses (`km TO GO`) — a single tile fits 8 Label
+# glyphs, so a spelled-out caption would be ellipsised.
+eta = "ETA"
 time = "TIME"
 next_wpt = "NEXT WPT"
 waypoints = "WAYPOINTS"
@@ -147,6 +187,9 @@ no_gps_fix = "No GPS Fix"
 off_route = "off route "
 # The route-less browse map's one-shot start hint chip (auto-hides after a few seconds).
 press_to_start = "Press to start a ride"
+# The Recalculating freeze banner (#1146): up on the overlay plane while the host plans a
+# reroute and the map is held still.
+recalculating = "Recalculating..."
 
 # --- The Statistics riding screen ---
 [stats]
@@ -159,18 +202,12 @@ grade = "grade "
 # --- The Settings list ---
 [settings]
 title = "SETTINGS"
-datetime = "Date & Time"
-autodelete = "Auto-delete"
-units = "Units"
-bike_type = "Bike type"
-stats = "Stats"
+ride = "Ride"
 display = "Display"
+connections = "Connections"
 power = "Power"
-bluetooth = "Bluetooth"
-sensors = "Sensors"
-language = "Language"
+weather = "Weather"
 system = "System"
-reset = "Reset"
 
 # --- Date & Time settings screen ---
 [datetime]
@@ -181,22 +218,21 @@ local_time = "Local time"
 offset = "Offset"
 utc = "UTC "
 
-# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
 [autodelete]
-title = "AUTO-DELETE"
-synced_rides = "SYNCED RIDES"
 never = "Never"
 day1 = "1 day"
 week1 = "1 week"
 month1 = "1 month"
 
-# --- Stats settings screen ---
-[set_stats]
-title = "STATS"
+# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+[ride]
+title = "RIDE"
+bike_type = "Bike type"
+fields = "Data fields"
+fields_sub = "panels & order"
 pages = "Pages"
 pages_sub = "auto-flip"
-fields = "Fields"
-fields_sub = "panels & order"
 climb = "Climb"
 # "panel", not "climb panel": the mode value + its ◄ cue share this sub-caption line (owner
 # review round 1), and the longer caption can't clear the 7-char "Manuell"/"Desact." values
@@ -204,6 +240,10 @@ climb = "Climb"
 climb_sub = "panel"
 waypoints = "Waypoints"
 waypoints_sub = "chip"
+up_ahead = "Up ahead"
+up_ahead_sub = "shows"
+autodelete = "Auto-delete"
+autodelete_sub = "rides"
 
 # --- Display settings screen ---
 [display]
@@ -212,6 +252,10 @@ clock = "Clock"
 clock_sub = "on map"
 scale_bar = "Scale bar"
 scale_bar_sub = "on map"
+# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
+# review decides the feature's fate — drop these two keys from all four catalogs with the row.
+contours = "Contours"
+contours_sub = "on map"
 idle = "Idle"
 idle_sub = "timeout"
 
@@ -222,6 +266,12 @@ gps_fix = "GPS Fix"
 gps_fix_sub = "interval"
 power_save = "Power save"
 power_save_sub = "low power"
+
+# --- Connections settings menu (Phone / Sensors) ---
+[connections]
+title = "CONNECTIONS"
+phone = "Phone"
+sensors = "Sensors"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
@@ -284,6 +334,16 @@ routing_uses = "Routing uses this profile"
 no_profiles = "No map profiles"
 no_profiles_sub = "Load a map to pick a bike type"
 
+# --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
+# "Up ahead" category picker all draw these ---
+[poi_cat]
+water = "Water"
+campsite = "Campsite"
+accommodation = "Lodging"
+resupply = "Resupply"
+pharmacy = "Pharmacy"
+bike_shop = "Bike shop"
+
 # --- POI category menu ---
 [poi_menu]
 title = "POIS"
@@ -304,6 +364,8 @@ today = "Today"
 open = "OPEN"
 closed = "CLOSED"
 route_here = "Route here"
+side_left = "left"
+side_right = "right"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -344,6 +406,7 @@ title = "ROUTE"
 no_route = "No route"
 no_route_sub = "Back to the list"
 distance = "DISTANCE"
+est_time = "EST TIME"
 climb = "CLIMB"
 descent = "DESCENT"
 bike_type = "BIKE TYPE"
@@ -364,6 +427,15 @@ active_route = "Active route"
 nav_follows = "Navigation follows"
 new_version = "the new version"
 
+# --- Trip-received popup (the trip twin of the route-received card) ---
+[trip_received]
+title = "TRIP RECEIVED"
+view_trip = "View trip"
+dismiss = "Dismiss"
+route_one = "route"
+routes = "routes"
+trip_removed = "Trip removed"
+
 # --- Route swap / active-route prompt ---
 [route_swap]
 received_title = "ROUTE RECEIVED"
@@ -375,6 +447,13 @@ route_removed = "Route removed"
 recording = "Recording a ride"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
+# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+[detour]
+title = "DETOUR"
+planning = "Planning detour..."
+commit_failed = "Couldn't apply detour."
+rejoin_hint = "Try a farther rejoin."
+
 [nav_route]
 create_route = "Create route"
 cancel = "Cancel"
@@ -410,9 +489,27 @@ battery = "Battery"
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
 title = "SYSTEM"
+units = "Units"
+datetime = "Date & Time"
+language = "Language"
+update = "Firmware"
+about = "About"
+reset = "Reset"
+
+# --- About page (issue #1149): the credits + licences surface. Only the section
+# captions are translated; the attribution texts are legal formulas and stay canonical. ---
+[about]
+title = "ABOUT"
+map_data = "Map data"
+elevation = "Elevation"
+firmware = "Firmware"
+
+# --- Firmware page (device info ledger + the SD-sideload install action) ---
+[firmware]
+title = "FIRMWARE"
 install_update = "Install update from card"
 recording = "Recording"
-firmware = "Firmware"
+version = "Firmware"
 map = "Map"
 card_free = "Card free"
 
@@ -441,11 +538,27 @@ unreadable = "Could not read the update file."
 damaged = "The update file is damaged."
 too_large = "The update file is too large for this device."
 fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."
+untrusted = "This update file is not signed for this device."
 install_recording = "Finish and save your ride before installing an update."
 install_pending_save = "A ride is still being saved. Try again in a moment."
 install_no_card = "No card found. Insert the card and try again."
 install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
 install_state_write = "Could not prepare the update. Nothing was changed."
+
+# --- The map-transfer card (map_transfer.rs, issue #927): what the glass shows while a map
+# is written to the card over USB, and what it says when the write ends ---
+[map_transfer]
+title = "MAP"
+receiving = "Receiving map"
+keep_cable = "Keep the cable connected."
+installed = "Map installed"
+restart = "Restart the device to use it."
+failed = "Map not stored"
+failed_storage = "The card could not store the map."
+failed_damaged = "The map arrived damaged. Send it again."
+failed_format = "That file is not a map this device reads."
+failed_refused = "The map arrived incomplete. Send it again."
+
 # --- Boot-fault cards (fault.rs; drawn pre-app, so the device renders the English
 # column in every build — catalogued so the repertoire test pins the copy) ---
 [fault]
@@ -455,3 +568,63 @@ nomap_what = "Card has no map"
 nomap_fix = "Add a map file"
 badmap_what = "Bad map file"
 badmap_fix = "Re-copy it to the card"
+cardtype_what = "Card too small"
+cardtype_fix = "Use an SDHC or SDXC card"
+storagefault_what = "Reader fault"
+storagefault_fix = "Restart the device"
+
+# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
+[weather]
+title = "WEATHER"
+hourly = "HOURLY"
+rain_map = "RAIN MAP"
+updated = "Updated"
+updating = "UPDATING"
+dry_1 = "DRY FOR"
+dry_2 = "2 HOURS"
+rain = "RAIN"
+storm = "STORM"
+rain_in = "RAIN IN"
+storm_in = "STORM IN"
+now = "NOW"
+min = "MIN"
+in = "IN"
+update_needed = "WEATHER UPDATE NEEDED"
+hourly_only = "NO RAIN DATA HERE"
+hourly_only_sub = "Hourly only"
+no_data = "NO WEATHER DATA"
+no_data_sub = "Connect phone"
+zoom_for_rain = "ZOOM IN FOR RAIN"
+alert_rain = "RAIN AHEAD"
+alert_storm = "STORM AHEAD"
+alert_rain_body = "Heavy rain on the route ahead."
+alert_storm_body = "Thunderstorm on the route ahead."
+alert_gust = "STRONG WIND"
+alert_gust_body = "Dangerous gusts ahead."
+view_rain_map = "VIEW RAIN MAP"
+dismiss = "DISMISS"
+
+# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+[weather_refresh]
+off = "Off"
+m15 = "15 min"
+m30 = "30 min"
+m60 = "60 min"
+m120 = "120 min"
+
+# --- The Weather settings screen ---
+[weather_settings]
+title = "WEATHER"
+refresh = "Refresh"
+refresh_sub = "via phone"
+
+# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
+[compass]
+n = "N"
+ne = "NE"
+e = "E"
+se = "SE"
+s = "S"
+sw = "SW"
+w = "W"
+nw = "NW"

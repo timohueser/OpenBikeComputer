@@ -1,0 +1,80 @@
+# The curated region list — what the bakery bakes, and therefore what the hosted
+# builder offers. Reviewable, in-repo, and **one line per region** on purpose:
+# adding coverage is a one-line PR, and removing it is a one-line revert.
+#
+# `id` is both the catalog's `region_id` (OBCC_Spec.md §6 — "slash-separated,
+# mirroring the Geofabrik hierarchy") and the Geofabrik download path: the extract
+# URL is `<base>/<id>-latest.osm.pbf`. One string, so a region cannot be listed
+# under a name Geofabrik does not serve, and the manifest's ids cannot drift from
+# the source tree they came from. `name` is what a human sees in the picker.
+#
+# `id` and `name` are the only fields. Every region uses the one schema in
+# `builder/presets/schema.json`; presentation skins are stamped at assembly time.
+# Unknown fields fail the parse instead of silently changing what gets baked.
+#
+# ── Curation policy ────────────────────────────────────────────────────────────
+#
+# DACH first (locked 2026-07-29, #898): Germany with all sixteen Bundesländer,
+# Austria, Switzerland, plus the Freiburg government-region test excerpt. With no
+# region arguments, `obc-bake bake` processes every line. Positional ids select a
+# subset. `--all` bakes the planet instead; these same entries then become named
+# selection presets, derived from their polygons without baking regional extracts.
+#
+# Germany is listed **alongside** its Bundesländer, not instead of them: they are
+# convenient named selections over the same shared cells, so overlap costs no
+# duplicate cell storage.
+#
+# One region is deliberately outside DACH, and it is not a widening of the policy.
+# `north-america/us/iowa` exists to give the **weather event packs** a basemap:
+# The fixture registry freezes real CONUS storms for the nowcaster to be scored
+# against, and rendering one on the simulator needs a map under it. The convention
+# documented in `host/obc-wx-bake/tests/events/README.md` keeps this to one entry:
+# every US event pack crops to ground Iowa covers, so one state map serves them all.
+# A future pack that wants Kansas is a conversation, not a second line added quietly.
+#
+# Every path below was verified against download.geofabrik.de on 2026-07-29;
+# `freiburg-regbez` was verified on 2026-07-31, `us/iowa` on 2026-08-10.
+
+regions = [
+  # Germany — the whole country, then each Bundesland.
+  { id = "europe/germany", name = "Germany" },
+  { id = "europe/germany/baden-wuerttemberg", name = "Baden-Württemberg" },
+  { id = "europe/germany/baden-wuerttemberg/freiburg-regbez", name = "Regierungsbezirk Freiburg" },
+  { id = "europe/germany/baden-wuerttemberg/karlsruhe-regbez", name = "Regierungsbezirk Karlsruhe" },
+  { id = "europe/germany/baden-wuerttemberg/stuttgart-regbez", name = "Regierungsbezirk Stuttgart" },
+  { id = "europe/germany/baden-wuerttemberg/tuebingen-regbez", name = "Regierungsbezirk Tübingen" },
+  { id = "europe/germany/bayern", name = "Bayern" },
+  { id = "europe/germany/bayern/mittelfranken", name = "Mittelfranken" },
+  { id = "europe/germany/bayern/niederbayern", name = "Niederbayern" },
+  { id = "europe/germany/bayern/oberbayern", name = "Oberbayern" },
+  { id = "europe/germany/bayern/oberfranken", name = "Oberfranken" },
+  { id = "europe/germany/bayern/oberpfalz", name = "Oberpfalz" },
+  { id = "europe/germany/bayern/schwaben", name = "Schwaben" },
+  { id = "europe/germany/bayern/unterfranken", name = "Unterfranken" },
+  { id = "europe/germany/berlin", name = "Berlin" },
+  { id = "europe/germany/brandenburg", name = "Brandenburg" },
+  { id = "europe/germany/bremen", name = "Bremen" },
+  { id = "europe/germany/hamburg", name = "Hamburg" },
+  { id = "europe/germany/hessen", name = "Hessen" },
+  { id = "europe/germany/mecklenburg-vorpommern", name = "Mecklenburg-Vorpommern" },
+  { id = "europe/germany/niedersachsen", name = "Niedersachsen" },
+  { id = "europe/germany/nordrhein-westfalen", name = "Nordrhein-Westfalen" },
+  { id = "europe/germany/nordrhein-westfalen/arnsberg-regbez", name = "Regierungsbezirk Arnsberg" },
+  { id = "europe/germany/nordrhein-westfalen/detmold-regbez", name = "Regierungsbezirk Detmold" },
+  { id = "europe/germany/nordrhein-westfalen/duesseldorf-regbez", name = "Regierungsbezirk Düsseldorf" },
+  { id = "europe/germany/nordrhein-westfalen/koeln-regbez", name = "Regierungsbezirk Köln" },
+  { id = "europe/germany/nordrhein-westfalen/muenster-regbez", name = "Regierungsbezirk Münster" },
+  { id = "europe/germany/rheinland-pfalz", name = "Rheinland-Pfalz" },
+  { id = "europe/germany/saarland", name = "Saarland" },
+  { id = "europe/germany/sachsen", name = "Sachsen" },
+  { id = "europe/germany/sachsen-anhalt", name = "Sachsen-Anhalt" },
+  { id = "europe/germany/schleswig-holstein", name = "Schleswig-Holstein" },
+  { id = "europe/germany/thueringen", name = "Thüringen" },
+  # Austria and Switzerland — whole countries. Geofabrik offers no sub-extracts (and
+  # therefore no boundary .poly files) below country level for either, so there is
+  # nothing finer to select yet.
+  { id = "europe/austria", name = "Austria" },
+  { id = "europe/switzerland", name = "Switzerland" },
+  # The one non-DACH entry: the basemap the weather event packs are rendered over.
+  { id = "north-america/us/iowa", name = "Iowa" },
+]

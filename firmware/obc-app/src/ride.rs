@@ -98,7 +98,9 @@ impl RideSummary {
 // (id-only) still decodes: every entry reads `synced_at = 0` ("legacy synced", which the sweep
 // stamps `now` rather than deleting on sight), so upgrading a device never surprise-deletes a ride.
 
-/// The sidecar magic tag; anything else there decodes to the empty synced set.
+/// The sidecar magic tag; anything else there decodes to the empty synced set. Shares its four
+/// bytes with `MAP.SEL` and with the OBCA set manifest (`obc_formats::obcs::MAGIC`) — three
+/// unrelated files, no shared parser; see the note on `store_meta::SELECTED_MAP_MAGIC`.
 const SYNCED_MAGIC: [u8; 4] = *b"OBCS";
 /// The v1 layout version — id-only entries (2 bytes each). Still decoded (with `synced_at = 0`) for
 /// backward compatibility; never written.
@@ -164,6 +166,27 @@ impl SyncedRides {
         }
     }
 
+    /// Apply one **possession ack** (`ackRides`, spec §4.4 cmd 2) — from any sink, over any
+    /// transport — returning how many ids it newly flagged.
+    ///
+    /// This is the whole of the merge rule, and it is deliberately one line: an ack **only ever
+    /// adds**. Ids the acking peer does not list are untouched, because `synced` means "a durable
+    /// copy of this ride exists off the device" and not "this peer has it" — the desktop app having
+    /// fsynced a ride is not undone by a phone whose library never held it. Add-only + idempotent
+    /// is what makes a desktop ack and a phone heal commute *on the flags*: both orders flag the
+    /// same rides, with no format change and no per-sink bookkeeping.
+    ///
+    /// `synced_at` is the acking sink's trusted-clock instant, or `0` when it has none (the
+    /// countdown then starts on the sweep's first trusted pass — invariant 5: a
+    /// synced-without-timestamp ride is never deleted on sight). It is **first-ack-wins, not
+    /// earliest-instant-wins**: an already-flagged ride keeps the stamp it was flagged with, so a
+    /// re-ack can never push an expiry anchor forward, and two sinks holding the same ride with
+    /// different instants record whichever ack reached the device first. Both `ackRides` handlers
+    /// pass `0` today, so no ack carries an instant to disagree about — the anchor is the sweep's.
+    pub fn ack(&mut self, ids: impl Iterator<Item = u16>, synced_at: u32) -> usize {
+        ids.filter(|&id| self.insert(id, synced_at)).count()
+    }
+
     /// Drop ride `id` from the synced set (a deleted ride's id is retired so a later scan doesn't
     /// carry a stale flag — though ids never reuse, so this is belt-and-braces). Returns `true` if it
     /// was present.
@@ -179,6 +202,13 @@ impl SyncedRides {
     /// The synced ids, for tests.
     pub fn ids(&self) -> impl Iterator<Item = u16> + '_ {
         self.rides.iter().map(|r| r.id)
+    }
+
+    /// Every synced ride as `(id, synced_at)` — the source for the board's compact ride-retention
+    /// inventory (finding #876-2). Covers **all** synced rides (up to [`MAX_RIDES`]), not the
+    /// newest-32 UI catalog, so retention reaches an older synced+expired ride.
+    pub fn entries(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
+        self.rides.iter().map(|r| (r.id, r.synced_at))
     }
 
     /// How many rides are synced.
@@ -349,6 +379,125 @@ mod synced_rides_tests {
         let mut old = buf;
         old[4] = SYNCED_VERSION + 1;
         assert_eq!(decode_synced_rides(&old[..n]), SyncedRides::new(), "a foreign version → nothing synced");
+    }
+
+    /// **E1 (#911) regression pin — an ack never un-flags.** `synced` means "a durable copy exists
+    /// off the device", so a phone acking its own library must not clear a ride the desktop app
+    /// already fsynced and flagged. The phone simply never held ride 3; that is not evidence the
+    /// ride is unsynced.
+    #[test]
+    fn a_later_ack_never_unflags_what_another_sink_set() {
+        let mut set = SyncedRides::new();
+        // Desktop (USB), acking after fsync.
+        assert_eq!(set.ack([3u16, 5].into_iter(), 1_000), 2);
+        // Phone (BLE) connects and heals from its library, which never held ride 3.
+        assert_eq!(set.ack([5u16, 9].into_iter(), 2_000), 1, "only ride 9 is new");
+        assert!(set.contains(3), "the desktop's flag survives a phone ack that omits it");
+        assert!(set.contains(5) && set.contains(9));
+        assert_eq!(set.len(), 3);
+    }
+
+    /// **E1 (#911) regression pin — first sync, not last.** A second ack of an already-flagged ride
+    /// keeps the original `synced_at`, whichever sink sends it, so a re-connect can never push an
+    /// auto-expiry countdown anchor forward and keep a ride alive indefinitely.
+    #[test]
+    fn the_first_synced_at_survives_a_second_ack_from_either_sink() {
+        let mut set = SyncedRides::new();
+        set.ack([7u16].into_iter(), 1_000); // desktop first
+        set.ack([7u16].into_iter(), 9_000); // phone re-acks on every connect
+        assert_eq!(set.synced_at(7), 1_000, "the phone's re-ack does not re-stamp");
+
+        let mut other = SyncedRides::new();
+        other.ack([7u16].into_iter(), 2_000); // phone first
+        other.ack([7u16].into_iter(), 9_000); // desktop acks after fsync
+        assert_eq!(other.synced_at(7), 2_000, "the desktop's ack does not re-stamp either");
+    }
+
+    /// **E1 (#911) acceptance — both merge orders agree on the flags.** Phone-then-desktop and
+    /// desktop-then-phone flag exactly the same rides, because an ack only ever adds. That is what
+    /// lets two sinks run with no coordination, no per-sink field and no new command.
+    ///
+    /// The **stamp** is first-*ack*-wins, not earliest-*instant*-wins, and this test says so out
+    /// loud rather than papering over it: an id both sinks hold keeps whichever ack reached the
+    /// device first, so with two sinks carrying different trusted-clock instants the two orders
+    /// can differ by the gap between those instants. That is the specified behaviour (the flag
+    /// means "a durable copy exists", and the anchor is when the device learned it), and on the
+    /// reference firmware it is unobservable anyway — see the sibling test: both sinks ack with
+    /// `synced_at = 0` and the sweep owns the anchor.
+    #[test]
+    fn phone_and_desktop_acks_flag_the_same_rides_in_either_order() {
+        // The two lists overlap on 5 and 8 and disagree everywhere else.
+        const PHONE: [u16; 3] = [1, 5, 8];
+        const PHONE_AT: u32 = 1_700_000_000;
+        const DESKTOP: [u16; 3] = [5, 8, 13];
+        const DESKTOP_AT: u32 = 1_700_003_600; // an hour later
+
+        let mut phone_first = SyncedRides::new();
+        assert_eq!(phone_first.ack(PHONE.into_iter(), PHONE_AT), 3);
+        assert_eq!(phone_first.ack(DESKTOP.into_iter(), DESKTOP_AT), 1, "only 13 is new");
+
+        let mut desktop_first = SyncedRides::new();
+        assert_eq!(desktop_first.ack(DESKTOP.into_iter(), DESKTOP_AT), 3);
+        assert_eq!(desktop_first.ack(PHONE.into_iter(), PHONE_AT), 1, "only 1 is new");
+
+        for id in [1u16, 5, 8, 13] {
+            assert!(phone_first.contains(id), "ride {id} flagged, phone first");
+            assert!(desktop_first.contains(id), "ride {id} flagged, desktop first");
+        }
+        assert_eq!(phone_first.len(), 4);
+        assert_eq!(desktop_first.len(), 4);
+
+        // Ids only one sink held carry that sink's instant either way.
+        assert_eq!(phone_first.synced_at(1), PHONE_AT);
+        assert_eq!(desktop_first.synced_at(1), PHONE_AT);
+        assert_eq!(phone_first.synced_at(13), DESKTOP_AT);
+        assert_eq!(desktop_first.synced_at(13), DESKTOP_AT);
+        // A shared id records the ack that arrived first, which is order-dependent by design.
+        assert_eq!(phone_first.synced_at(5), PHONE_AT);
+        assert_eq!(desktop_first.synced_at(5), DESKTOP_AT);
+    }
+
+    /// …and with what the reference firmware actually sends, the orders are indistinguishable.
+    /// Both `ackRides` handlers pass `synced_at = 0` (the ack path has no trusted-clock handle), so
+    /// no ack ever carries an instant to disagree about: the sweep sets the one anchor afterwards.
+    /// This is the acceptance case from #911 — "a desktop ack followed by a phone connect leaves
+    /// both flags set and `synced_at` unchanged from the first ack".
+    #[test]
+    fn firmware_sinks_ack_without_an_instant_so_both_orders_are_identical() {
+        const PHONE: [u16; 3] = [1, 5, 8];
+        const DESKTOP: [u16; 3] = [5, 8, 13];
+
+        let mut phone_first = SyncedRides::new();
+        phone_first.ack(PHONE.into_iter(), 0);
+        phone_first.ack(DESKTOP.into_iter(), 0);
+        let mut desktop_first = SyncedRides::new();
+        desktop_first.ack(DESKTOP.into_iter(), 0);
+        desktop_first.ack(PHONE.into_iter(), 0);
+
+        for id in [1u16, 5, 8, 13] {
+            assert!(phone_first.contains(id) && desktop_first.contains(id));
+            assert_eq!(phone_first.synced_at(id), 0, "unstamped — the sweep starts the countdown");
+            assert_eq!(desktop_first.synced_at(id), phone_first.synced_at(id), "ride {id} agrees");
+        }
+
+        // And once the sweep has stamped, a re-ack from the other sink leaves the anchor alone.
+        assert!(phone_first.stamp_synced_at(5, 6_000));
+        phone_first.ack(DESKTOP.into_iter(), 0);
+        assert_eq!(phone_first.synced_at(5), 6_000, "synced_at unchanged by a later ack");
+    }
+
+    /// The board acks with `synced_at = 0` whenever its clock is untrusted. That must not become a
+    /// permanent unstamped entry: the sweep's `stamp_synced_at` starts the countdown on the first
+    /// trusted pass, and a later ack carrying a real instant still does **not** re-stamp it (the
+    /// stamp is owned by the sweep, and the ride was synced before either instant).
+    #[test]
+    fn an_untrusted_clock_ack_leaves_the_stamp_for_the_sweep() {
+        let mut set = SyncedRides::new();
+        set.ack([4u16].into_iter(), 0);
+        assert_eq!(set.synced_at(4), 0, "flagged synced, countdown not yet started");
+        assert!(set.stamp_synced_at(4, 5_000), "the first trusted tick starts it");
+        set.ack([4u16].into_iter(), 9_000);
+        assert_eq!(set.synced_at(4), 5_000, "a later ack does not move the anchor");
     }
 
     /// `remove` retires an id (the deleted-ride cleanup) without disturbing the rest.

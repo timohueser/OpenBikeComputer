@@ -1,0 +1,10 @@
+[package]
+name = "obc-weather"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Allocation-free no_std OBCW reader, fixed tile cache and deterministic dual-slot selector"
+
+[dependencies]
+obc-crc = { path = "../obc-crc" }
+obc-formats = { path = "../obc-formats" }

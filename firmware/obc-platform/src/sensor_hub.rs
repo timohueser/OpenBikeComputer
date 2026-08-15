@@ -217,6 +217,15 @@ impl SensorHub {
     pub fn control(&self) -> SensorControl<'_> {
         SensorControl(self)
     }
+
+    /// Publish one datapoint into its mailbox **and** pulse the shared event. Every producer path
+    /// funnels through here, so the "a publish always wakes the ride loop" invariant is stated once
+    /// rather than re-spelled in each of the nine dispatches (where one missing pulse would strand
+    /// a sample in its mailbox until some other sensor happened to fire).
+    fn publish<T: Send>(&self, mailbox: &Sig<T>, v: T) {
+        mailbox.signal(v);
+        self.event.signal(());
+    }
 }
 
 // ============================ Producer: the I²C sensor task ============================
@@ -230,39 +239,33 @@ pub struct SensorTaskLink<'a>(&'a SensorHub);
 impl SensorTaskLink<'_> {
     /// Publish a fresh GPS [`Fix`] (on a valid NAV-PVT) and pulse the event so the loop wakes.
     pub fn dispatch_fix(&self, f: Fix) {
-        self.0.fix.signal(FixStore::pack(f));
-        self.0.event.signal(());
+        self.0.publish(&self.0.fix, FixStore::pack(f));
     }
 
     /// Publish a fresh barometric altitude in metres (coherent with the fix).
     pub fn dispatch_alt(&self, m: f32) {
-        self.0.alt.signal(m);
-        self.0.event.signal(());
+        self.0.publish(&self.0.alt, m);
     }
 
     /// Publish a fresh ambient temperature in °C (from the same BMP581 read).
     pub fn dispatch_temp(&self, c: f32) {
-        self.0.temp.signal(c);
-        self.0.event.signal(());
+        self.0.publish(&self.0.temp, c);
     }
 
     /// Publish a fresh GPS UTC time (on a NAV-PVT with resolved time — independent of a position fix).
     pub fn dispatch_time(&self, t: GpsTime) {
-        self.0.gps_time.signal(t);
-        self.0.event.signal(());
+        self.0.publish(&self.0.gps_time, t);
     }
 
     /// Publish a fresh compass heading in degrees CW from north (from the magnetometer read with each fix).
     pub fn dispatch_heading(&self, deg: f32) {
-        self.0.heading.signal(deg);
-        self.0.event.signal(());
+        self.0.publish(&self.0.heading, deg);
     }
 
     /// Publish the boot probe result (once, after the sensor task probes all three chips). Pulses the
     /// event so the ride loop wakes and drains it via [`SensorConsumer::take_presence`].
     pub fn dispatch_presence(&self, p: SensorPresence) {
-        self.0.presence.signal(p);
-        self.0.event.signal(());
+        self.0.publish(&self.0.presence, p);
     }
 
     /// Await the next requested fix interval (seconds) — the task selects on this to apply a rate
@@ -290,22 +293,19 @@ pub struct SampleInjector<'a>(&'a SensorHub);
 impl SampleInjector<'_> {
     /// Publish a fresh heart-rate sample (bpm) and pulse the shared event so the loop wakes.
     pub fn dispatch_hr(&self, bpm: u16) {
-        self.0.hr.signal(bpm);
-        self.0.event.signal(());
+        self.0.publish(&self.0.hr, bpm);
     }
 
     /// Publish a fresh power sample (watts). Non-negative — a signed meter reading is clamped at 0
     /// by the producer.
     pub fn dispatch_power(&self, watts: u16) {
-        self.0.power.signal(watts);
-        self.0.event.signal(());
+        self.0.publish(&self.0.power, watts);
     }
 
     /// Publish a fresh cadence sample (rpm). A coasting rider publishes a fresh `0` (feet still),
     /// distinct from no sample at all (the mailbox staying empty).
     pub fn dispatch_cadence(&self, rpm: u8) {
-        self.0.cadence.signal(rpm);
-        self.0.event.signal(());
+        self.0.publish(&self.0.cadence, rpm);
     }
 }
 
@@ -411,61 +411,51 @@ impl LocationSource for GpsLocation<'_> {
     }
 }
 
-/// The barometric altimeter. See [`SensorConsumer::altimeter`].
-pub struct BaroAltimeter<'a>(&'a Sig<f32>);
-impl AltimeterSource for BaroAltimeter<'_> {
-    fn poll(&mut self) -> Option<f32> {
-        self.0.try_take()
-    }
+/// Declare one drain: a newtype over its mailbox whose `poll` is the fresh-mailbox `try_take`. The
+/// bodies are the *same* body seven times over — spelling them out invites one of them to quietly
+/// grow a peek or a clone and break the drain-once contract the app's staleness gate rests on. The
+/// GPS fix is the one source that isn't identical (it unpacks its store), so it stays hand-written
+/// above.
+macro_rules! impl_mailbox_source {
+    ($(#[$doc:meta])* $name:ident, $store:ty, $port:ident, $out:ty) => {
+        $(#[$doc])*
+        pub struct $name<'a>(&'a Sig<$store>);
+        impl $port for $name<'_> {
+            fn poll(&mut self) -> Option<$out> {
+                self.0.try_take()
+            }
+        }
+    };
 }
 
-/// Ambient temperature. See [`SensorConsumer::temperature`].
-pub struct SensorTemp<'a>(&'a Sig<f32>);
-impl TemperatureSource for SensorTemp<'_> {
-    fn poll(&mut self) -> Option<f32> {
-        self.0.try_take()
-    }
-}
-
-/// The GPS UTC clock. See [`SensorConsumer::clock`].
-pub struct GpsClock<'a>(&'a Sig<GpsTime>);
-impl ClockSource for GpsClock<'_> {
-    fn poll(&mut self) -> Option<GpsTime> {
-        self.0.try_take()
-    }
-}
-
-/// The electronic compass. See [`SensorConsumer::compass`].
-pub struct MagCompass<'a>(&'a Sig<f32>);
-impl CompassSource for MagCompass<'_> {
-    fn poll(&mut self) -> Option<f32> {
-        self.0.try_take()
-    }
-}
-
-/// The rider's heart rate. See [`SensorConsumer::hr`].
-pub struct SensorHr<'a>(&'a Sig<u16>);
-impl HeartRateSource for SensorHr<'_> {
-    fn poll(&mut self) -> Option<u16> {
-        self.0.try_take()
-    }
-}
-
-/// The rider's power. See [`SensorConsumer::power`].
-pub struct SensorPower<'a>(&'a Sig<u16>);
-impl PowerSource for SensorPower<'_> {
-    fn poll(&mut self) -> Option<u16> {
-        self.0.try_take()
-    }
-}
-
-/// The rider's cadence. See [`SensorConsumer::cadence`].
-pub struct SensorCadence<'a>(&'a Sig<u8>);
-impl CadenceSource for SensorCadence<'_> {
-    fn poll(&mut self) -> Option<u8> {
-        self.0.try_take()
-    }
-}
+impl_mailbox_source!(
+    /// The barometric altimeter. See [`SensorConsumer::altimeter`].
+    BaroAltimeter, f32, AltimeterSource, f32
+);
+impl_mailbox_source!(
+    /// Ambient temperature. See [`SensorConsumer::temperature`].
+    SensorTemp, f32, TemperatureSource, f32
+);
+impl_mailbox_source!(
+    /// The GPS UTC clock. See [`SensorConsumer::clock`].
+    GpsClock, GpsTime, ClockSource, GpsTime
+);
+impl_mailbox_source!(
+    /// The electronic compass. See [`SensorConsumer::compass`].
+    MagCompass, f32, CompassSource, f32
+);
+impl_mailbox_source!(
+    /// The rider's heart rate. See [`SensorConsumer::hr`].
+    SensorHr, u16, HeartRateSource, u16
+);
+impl_mailbox_source!(
+    /// The rider's power. See [`SensorConsumer::power`].
+    SensorPower, u16, PowerSource, u16
+);
+impl_mailbox_source!(
+    /// The rider's cadence. See [`SensorConsumer::cadence`].
+    SensorCadence, u8, CadenceSource, u8
+);
 
 #[cfg(test)]
 mod tests {

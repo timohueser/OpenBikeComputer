@@ -20,7 +20,16 @@ name: CI
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
 #   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
-#   * `--locked` everywhere so a stale Cargo.lock (any of the three) fails CI.
+#   * obc-web-convert (#896), obc-web-assemble (#1034), and obc-skin-preview (#1045) are normal
+#     workspace members (so fmt/clippy/test/deny already cover them) whose *shipping* artifacts are
+#     wasm32 builds the web builder imports — hence the extra `wasm-bridges` job, its three
+#     bundle-size guards, and the artifact hand-off into `web`.
+#   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
+#     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
+#     every renderer test's way. Its job is also the only Rust one that needs Node — the shell
+#     *embeds* the built frontend, so it breaks from either side and both halves are built there.
+#     It is the only **three-OS matrix** in this file because it is the artifact a user installs.
+#   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
 
 on:
   pull_request:
@@ -47,6 +56,7 @@ jobs:
       wasm: ${{ steps.filter.outputs.wasm }}
       ios: ${{ steps.filter.outputs.ios }}
       web: ${{ steps.filter.outputs.web }}
+      desktop: ${{ steps.filter.outputs.desktop }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -55,9 +65,30 @@ jobs:
           filters: |
             rust:
               - 'firmware/**'
-              - 'packer/presets/**'
+              # host/ holds the packer, the bench + its golden hashes, and the test oracles
+              # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
+              - 'host/**'
+              # apps/ holds the shells: the simulator, the wasm hosts, and the Tauri app.
+              - 'apps/**'
+              - 'builder/presets/**'
+              # builder/tests/ drives the real obc-pack binary and the builder's pure API
+              # endpoints, so the packer, the presets it round-trips, and the server module
+              # under test all have to be able to trigger it.
+              - 'builder/tests/**'
+              - 'builder/server/*.py'
+              - 'builder/requirements*.txt'
               - 'rust-toolchain.toml'
               - 'deny.toml'
+              # The other half of the dependency-licence pair (#1149): the config, the template
+              # and the generator all decide what THIRD-PARTY.md should contain, and the `deny`
+              # job is what compares that to the committed file.
+              - 'about.toml'
+              - 'THIRD-PARTY.md'
+              - 'tools/licenses/**'
+              - 'tools/fixtures.py'
+              - 'tools/check_fixture_policy.py'
+              - 'tools/tests/**'
+              - 'fixtures/**'
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
             docs:
@@ -65,6 +96,8 @@ jobs:
               - '.github/workflows/ci.yml'
             wasm:
               - 'firmware/**'
+              - 'host/**'
+              - 'apps/**'
               - 'docs/**'
               # The root cargo config is gone (`MapCache::new_boxed` removed the wasm
               # shadow-stack flag it carried — PRs #661/#666), but rustflags placed there
@@ -74,13 +107,53 @@ jobs:
               - '.github/workflows/ci.yml'
             ios:
               - 'companion-ios/**'
+              # The Swift suite pins the shared protocol vectors byte-for-byte, so a regenerated
+              # fixture is an iOS change even when no Swift file moved. Missing this is why the
+              # `obcm_version` assertion sat a version behind for the whole of v12 (#1105): the
+              # vector changed, the pin did not, and nothing ran to say so.
+              - 'specs/vectors/**'
+              - '.github/workflows/ci.yml'
+            desktop:
+              # The Tauri shell embeds the same published-cell frontend, so either
+              # half can break the packaged app.
+              - 'apps/obc-desktop/**'
+              - 'apps/obc-skin-preview/**'
+              - 'builder/app/**'
+              - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
             web:
-              - 'packer/web_builder/frontend/**'
+              - 'builder/app/**'
+              # The frontend now embeds firmware and host code: obc-web-convert (#896) compiles the
+              # shared obc-route conversion path to wasm and obc-web-assemble (#1034) the
+              # obcm-assemble OBCA engine — so any shared-
+              # crate change can move those bytes. The conversion bridge's byte-identity guard reads
+              # specs/vectors/ and the assembly bridge's reads its own checked-in cell fixture under
+              # apps/, and the toolchain file picks the compiler that produces both modules.
+              - 'firmware/**'
+              - 'host/**'
+              - 'apps/**'
+              - 'specs/vectors/**'
+              - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
 
+  retired-map-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deleted catalog and bake APIs stay deleted
+        run: python3 tools/check_retired_map_stack.py
+
+  fixture-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Registry unit tests
+        run: python3 -m unittest discover -s tools/tests -v
+      - name: Large fixture policy
+        run: python3 tools/check_fixture_policy.py
+
   # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
-  # shared firmware/rustfmt.toml, so the excluded crates inherit it; the virtual workspace
+  # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: changes
@@ -91,17 +164,20 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      - name: cargo fmt --check (host workspace + standalone board crate + obc-boot)
+      - name: cargo fmt --check (host workspace + the three standalone crates)
         run: |
           rc=0
           echo "::group::firmware workspace"
-          cargo fmt --all --check --manifest-path firmware/Cargo.toml || rc=1
+          cargo fmt --all --check || rc=1
           echo "::endgroup::"
           echo "::group::obc-fw-nrf54l (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
           echo "::endgroup::"
           echo "::group::obc-boot (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
+          echo "::endgroup::"
+          echo "::group::obc-desktop (workspace-excluded)"
+          cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -117,13 +193,13 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: host
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
-        run: cargo clippy --manifest-path firmware/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # The 251-test shared render + packer suite — the real safety net.
   test:
@@ -137,15 +213,38 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: host
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
+      - name: Cache content-addressed developer fixtures
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/openbikecomputer/fixtures
+          key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
       - name: cargo test (workspace, all features)
-        run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
+        env:
+          OBC_REQUIRE_FIXTURES: "1"
+        run: |
+          python3 tools/fixtures.py sync test
+          export OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
+          cargo test --workspace --all-features --locked
+      # …and once with obc-formats' *default* features, which is the shape the device image
+      # links. `obcg-deflate` (OBCG codec 2, `OBCG_Spec.md` §5) is off there, so the tests that
+      # pin the firmware boundary — no inflate in the crate, a codec-2 tile refused rather than
+      # silently accepted — are `#[cfg(not(feature = ...))]` and are compiled *out* of the
+      # all-features run above. One crate, a few seconds, and the PR's structural claim stops
+      # being asserted by dead code (#1241).
+      - name: cargo test (obc-formats, default features = the device's shape)
+        run: cargo test -p obc-formats --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
+      # The weather service's freshness/cost probe. It runs unattended from a schedule against a
+      # live bucket, so its alarms are only as good as the cases below — and it reads the same
+      # `specs/vectors/wx-manifest-v2.json` the baker and both clients are pinned against.
+      - name: weather freshness probe unit tests
+        run: python3 -m unittest discover -s ops/weather/tests -v
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
       # Renderer pixel-hash tripwire (issue #327): re-render the 7 fixed bench scenes over the
@@ -153,7 +252,21 @@ jobs:
       # file. Timings are printed to the log but never gated (shared runners are noisy); an
       # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
       - name: obc-bench --check (render pixel-hash tripwire)
-        run: cargo run --manifest-path firmware/Cargo.toml -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
+        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Routing-profile round-trips through the builder's pack path. These shell out to the
+      # real obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table
+      # against independently quantized expectations — so they pin the packer's writer
+      # against the spec rather than against itself — plus the pure /api/schema and
+      # /api/presets endpoints via FastAPI's TestClient. The suite existed and passed but no
+      # workflow ran it; requirements-dev.txt is what makes it installable.
+      - name: web-builder packer tests (pytest)
+        run: |
+          pip install -r builder/requirements-dev.txt
+          cargo build -p obc-pack --release --locked
+          PYTHONPATH=. python3 -m pytest builder/tests/ -v
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
@@ -172,13 +285,22 @@ jobs:
       matrix:
         include:
           # default = the shipping LS021/FLPR map + two-plane path (square-loop GPS, no host feed).
+          # Since 2026-07-26 that includes the **USB device plane** (#889): `usb` is no longer a
+          # feature, so `src/usb/` and the `src/link/` core it shares with the radio are compiled,
+          # linted and resource-gated by the default legs below — no separate USB matrix leg exists
+          # or is needed, and the plane can no longer rot in a profile nobody builds.
           - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings" }
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
           - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
           # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
           - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked" }
-          # The BLE build (issue #270): the map plane cfg'd out, the nrf-sdc/MPSL/TrouBLE stack +
-          # status UI in. Needs --no-default-features (MPSL provides the critical-section impl).
+          # `ble` named explicitly. This leg used to be "the BLE build" against a map-only default,
+          # and later carried a --no-default-features that existed only to keep `cs-single-core` out
+          # of a BLE image. `ble` has been part of `default` since the LM20 retarget,
+          # `cs-single-core` is gone (#931), and the new `sd-bench` map profiler is opt-in — so
+          # `default` and this pair are still the same feature set, built two ways. Kept because
+          # `--no-default-features --features ble` is the invocation the README documents and the one
+          # a future optional feature would first break.
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
           - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
@@ -296,10 +418,10 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
-        run: cargo build --manifest-path firmware/Cargo.toml -p obc-app --target thumbv8m.main-none-eabihf --locked
+        run: cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
       - name: thumbv8m +strict-align backend probe
         run: python3 firmware/tools/resource_guard.py strict-align
 
@@ -317,16 +439,32 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --manifest-path firmware/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --all-features --config deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
         run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-boot bootloader)
         run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
+      # The desktop shell is the one artifact a *user* installs, so its tree is the
+      # one where a bad licence or a live advisory matters most.
+      - name: cargo-deny (obc-desktop app)
+        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
+      # deny.toml gates which licences may enter the tree; THIRD-PARTY.md is the *text* those
+      # licences require us to hand over with a binary (#1149). Both belong to the same job:
+      # the dependency bump that changes one changes the other, and a stale notice file is only
+      # ever discovered at a release tag otherwise, where release.yml links it by tag.
+      # Pinned: the committed file is a byte-for-byte diff target, so a generator that changed
+      # its own formatting would fail this check with nothing wrong in the tree. Bump the pin
+      # and regenerate in the same commit.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.1
+      - name: THIRD-PARTY.md is current
+        run: tools/licenses/gen-third-party.sh --check
 
-  # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
+  # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
   # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
-  # (The `wasm` path filter's firmware/** covers firmware/obc-web-demo/** and every shared crate.)
+  # (The `wasm` path filter's firmware/** covers apps/obc-web-demo/** and every shared crate.)
   wasm:
     needs: changes
     if: needs.changes.outputs.wasm == 'true'
@@ -338,13 +476,79 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: wasm
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk@0.21.14
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
+      # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
+      # the library must carry no filesystem and no native dependency. Building it for wasm32 with
+      # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call
+      # in the crate, so a stray `std::fs` in the engine fails here rather than in P4.
+      - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
+        run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
+
+  # The hosted builder's three wasm bridges — the shared crates compiled to wasm so the hosted tier
+  # needs no backend at all:
+  #
+  #   * obc-web-convert (#896) — the obc-route GPX↔OBCR path, so route conversion runs client-side.
+  #   * obc-web-assemble (#1034) — the obcm-assemble OBCA engine, so downloaded map cells become a
+  #     map in the tab. This is the one that makes the cell catalog's promise true (epic #1016):
+  #     any selection is an assembly, not a bake, and nothing has to be pre-baked or server-side.
+  #   * obc-skin-preview (#1045) — the firmware reader + renderer over the canonical Teningen map,
+  #     loaded only while the skin-space editor is open.
+  #
+  # Two things happen per module and the order matters:
+  #
+  #   1. wasm-pack builds it (wasm-bindgen + wasm-opt in one step — the demo's Trunk is an app
+  #      bundler and has no place here; these are libraries consumed by Vite).
+  #   2. The bundle-size budget gates it. Both artifacts are downloaded by real visitors, so a
+  #      silent size regression must fail the build, not land quietly.
+  #
+  # The exact bytes that pass the budget are then handed to the `web` job, which type-checks
+  # against them and runs the byte-identity tests on them — the shipped module and the tested
+  # module are the same file, not two builds that happen to agree.
+  wasm-bridges:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: wasm-bridges
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+      - name: Build all wasm bridges
+        run: bash builder/build-wasm-bridges.sh
+      - name: bundle-size budget (convert)
+        run: python3 firmware/tools/wasm_size_guard.py --module convert
+      - name: bundle-size budget (assemble)
+        run: python3 firmware/tools/wasm_size_guard.py --module assemble
+      - name: bundle-size budget (preview)
+        run: python3 firmware/tools/wasm_size_guard.py --module preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: builder/app/src/lib/convert/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
+          retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
   # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
@@ -375,10 +579,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: swift test (OBCKit package, host)
-        run: swift test --package-path companion-ios/Packages/OBCKit
+        run: |
+          # Swift Testing schedules suites concurrently even though SwiftPM's
+          # test runner defaults to --no-parallel. Keep the exhaustive codec
+          # mutation test out of the process with timeout-sensitive async model
+          # tests, then run it alone against the same already-built package.
+          exhaustive='OBCWeatherCodecTests/validCRCStructuredMutationsAndEveryTruncationReachRealParserBoundaries'
+          swift test --package-path companion-ios/Packages/OBCKit --skip "$exhaustive"
+          swift test --package-path companion-ios/Packages/OBCKit --skip-build --filter "$exhaustive"
 
-  # iOS companion, app tier: xcodegen + a simulator-SDK build of the app target (build-only —
-  # XCUITests on a booted sim are deliberately deferred; they'd be the slow/flaky tier).
+  # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
+  # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
+  # compares them with the committed, compressed assets; this keeps the marketing surface honest
+  # without paying for the full simulator suite on every PR.
   # The pbxproj is gitignored, so running xcodegen here also validates the fresh-clone setup
   # and catches project.yml drift. The Debug/Release pair doubles as the mock-seam gate:
   # OBCMock's build marker must be present in the Debug binary (proves the grep isn't
@@ -391,8 +604,8 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app
     steps:
       - uses: actions/checkout@v4
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen and WebP tools
+        run: brew install xcodegen webp
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
@@ -408,6 +621,10 @@ jobs:
       - name: Mock marker present in Debug
         working-directory: companion-ios
         run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
+      - name: Companion website screenshots are current
+        env:
+          OBC_DERIVED_DATA_PATH: ${{ github.workspace }}/companion-ios/DerivedData
+        run: companion-ios/scripts/capture-website-screenshots.sh --check
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
@@ -424,32 +641,205 @@ jobs:
 
   # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
   # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
-  # The web builder's Svelte frontend: type-check, unit tests, production build.
+  # The web builder's Svelte frontend: type-check, unit tests, production builds.
+  #
+  # One source tree, three hosts (#895): `npm run build` is the local FastAPI one,
+  # `build:web` the static hosted site and `build:desktop` the Tauri shell. All three
+  # are built here — a host that stops compiling is otherwise invisible until someone
+  # tries to ship it. The *contents* of the web bundle (no job polling, no style
+  # editor) are asserted by vitest, which builds and inspects the emitted chunks.
+  #
+  # The three wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
+  # module the byte-identity tests run against is literally the one the size budget passed. It is
+  # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
+  # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
+  # type-checks against them, and the vitest suites and `build:all` fail without the artifacts.
+  # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
+  # cell fixture in Node and compares the result to the bytes the native CLI wrote.
+  # The two jobs share one path filter so they are always skipped or run together.
   web:
-    needs: changes
+    needs: [changes, wasm-bridges]
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packer/web_builder/frontend
+        working-directory: builder/app
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: builder/app/src/lib/convert/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+          cache-dependency-path: builder/app/package-lock.json
       - run: npm ci
       - name: svelte-check
         run: npm run check
       - name: vitest
         run: npm test
-      - name: production build
-        run: npm run build
+      - name: production builds (dev + web + desktop hosts)
+        run: npm run build:all
+
+  # The Tauri desktop shell (apps/obc-desktop, #906). Workspace-excluded like the
+  # board crate and the bootloader, and for the same kind of reason: Tauri drags in
+  # wry and a platform webview, and putting WebKitGTK's headers in the way of
+  # `cargo test` for the renderer helps nobody.
+  #
+  # `tauri::generate_context!` *embeds* the built frontend, so a desktop build
+  # genuinely fails when either half breaks — which is the point of building it here
+  # rather than trusting that two green halves make a green whole. The bundle itself
+  # comes from `desktop-frontend` above (built once, on Linux); the wasm bridge it
+  # imports comes from `wasm-bridges`, for the same reason the `web` job takes it.
+  # No leg of this matrix runs Node.
+  #
+  # The shell is built and tested on all three supported desktop platforms.
+  # The bundle the Tauri shell embeds. Built once, on Linux, and handed to all three
+  # legs of `desktop` below: it is a Vite build of the same sources whatever runner
+  # produces it, so building it per-platform bought nothing and cost three `npm ci`
+  # runs and a Node toolchain on each. Split out rather than folded into `web`
+  # because that job builds the *web* host and runs the test suite; this is one
+  # `--mode desktop` bundle and nothing else.
+  desktop-frontend:
+    needs: [changes, wasm-bridges]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: builder/app/src/lib/convert/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: builder/app/package-lock.json
+      - name: Build the desktop bundle
+        working-directory: builder/app
+        run: |
+          npm ci
+          npm run build:desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-desktop-frontend
+          path: builder/app/dist/desktop
+          retention-days: 1
+
+  desktop:
+    needs: [changes, desktop-frontend]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ${{ matrix.os }}
+    env:
+      # Baked into packaged apps; a runtime variable can still override it for a
+      # maintainer testing an unpublished tree.
+      OBC_CATALOG_URL: ${{ vars.OBC_CATALOG_URL }}
+    strategy:
+      # One platform's failure must not hide another's.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            slug: linux-x86_64
+            exe: obc-desktop
+          - os: macos-latest
+            slug: macos-arm64
+            exe: obc-desktop
+          - os: windows-latest
+            slug: windows-x86_64-msvc
+            exe: obc-desktop.exe
+    defaults:
+      run:
+        # Git Bash on the Windows runner, so the shared steps below are one script
+        # rather than three. Nothing here needs a Windows-native shell.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/obc-desktop
+          key: desktop-${{ matrix.slug }}
+      # wry's Linux backend. macOS and Windows need nothing extra — which is most of
+      # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
+      - name: Install the Linux webview deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
+      # The bundle the shell embeds, built once on Linux by `desktop-frontend` and
+      # unpacked here. It is byte-identical on all three runners — a Vite build of the
+      # same sources — so building it per-platform was three runs of `npm ci` and
+      # three Node toolchains for one output. Landing it at the path tauri.conf.json's
+      # `frontendDist` names is the whole integration; nothing here runs npm, and the
+      # `beforeBuildCommand` in that file is never executed (there is no Tauri CLI in
+      # this repo — see the note above about `custom-protocol`).
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-desktop-frontend
+          path: builder/app/dist/desktop
+      # Order matters. `cargo test` never produces the plain binary — even with
+      # --all-targets it builds bins as *test harnesses*, a different artifact — so the
+      # `build` below is a full codegen + link either way. Running it first means the
+      # normal lib it produces is already there for `test` to link against, instead of
+      # `test` building one set of artifacts and `build` starting a second.
+      - name: "obc-desktop: clippy"
+        working-directory: apps/obc-desktop
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+      - name: "obc-desktop: build (release)"
+        working-directory: apps/obc-desktop
+        run: cargo build --release --locked
+      - name: "obc-desktop: test"
+        working-directory: apps/obc-desktop
+        run: cargo test --release --locked -- --nocapture
+      # Recorded so an accidental native dependency or bundling regression is visible.
+      - name: "obc-desktop: record the artifact size"
+        working-directory: apps/obc-desktop
+        run: |
+          bytes=$(wc -c < "target/release/${{ matrix.exe }}")
+          echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-desktop-${{ matrix.slug }}
+          path: apps/obc-desktop/target/release/${{ matrix.exe }}
+          retention-days: 7
+      # macOS ships two architectures and this crate is built on the Apple-silicon
+      # runner, so cross-build the Intel slice to keep a future universal bundle open.
+      #
+      # Push events only: a second target triple is build-only insurance, not a
+      # correctness gate on the app anyone runs.
+      - name: "obc-desktop: the macOS Intel slice (build-only)"
+        if: runner.os == 'macOS' && github.event_name == 'push'
+        working-directory: apps/obc-desktop
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          file target/x86_64-apple-darwin/release/obc-desktop
 
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, docs, ios-unit, ios-app, web]
+    needs: [changes, retired-map-stack, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)

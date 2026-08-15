@@ -36,6 +36,8 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
@@ -46,9 +48,27 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
+use obc_storage::route_name;
+use obc_storage::weather as weather_store;
 
 use crate::sd::Storage;
 use crate::SharedStore;
+
+/// The outcome of a `setRouteRetention` command (finding #876-5) — replaces the old `Option<bool>`
+/// so a durable-write failure is distinguishable from success. The BLE handler maps it to a
+/// [`CommandStatus`](obc_ble::CommandStatus): `Changed`/`Unchanged` → `Ok` (bump only on `Changed`),
+/// `NotFound` → `NotFound`, `WriteFailed` → `Error` — never a false `ok` ahead of durability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetRetentionResult {
+    /// No stored route has this id (or the card is absent) — the handler answers `notFound`.
+    NotFound,
+    /// The route already had this level — `ok`, **no** revision bump (the idempotence pin).
+    Unchanged,
+    /// A real change persisted durably — `ok`, revision bumped, `storeChanged(route)` fires.
+    Changed,
+    /// The route exists but the retention sidecar rewrite did not reach the card — `Error`, no bump.
+    WriteFailed,
+}
 
 /// Store-movement edge for the app UI (epic #447): [`bump_revision`](ObjectStore::bump_revision) —
 /// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
@@ -92,6 +112,27 @@ pub(crate) fn take_route_uploaded() -> Option<(u16, bool)> {
     (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
 }
 
+/// The latest **committed trip upload** for the app UI — the trip twin of [`UPLOAD_EVENT`], packed
+/// identically (`present-bit | replaced-bit | id`). The replaced-bit matters more here than for
+/// routes: the desktop app *edits* a trip exclusively by replace-at-same-id (rename, add/remove/
+/// move stage — one upload per click), so the app **suppresses the popup on a replace** and only a
+/// *fresh* trip — a delivery — is announced. Published by [`ObjectStore::upload_finish_trip`]
+/// **before** its revision bump, drained by the ride loop strictly *after* the route event so the
+/// pass's popup order matches the wire's routes-then-trip commit order — the trip popup then wins
+/// the app's single most-recent-wins prompt slot, which is exactly what collapses a trip
+/// transfer's per-route popup parade into one "TRIP RECEIVED" card. Same latest-wins single-slot +
+/// `Relaxed` hand-off rationale as [`UPLOAD_EVENT`]: of two fresh trips committing between passes,
+/// only the newest pops — the same policy routes have always had.
+static TRIP_UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
+
+/// Drain the latest committed trip upload since the last call: `(trip_id, replaced_existing)`, or
+/// `None` when none landed. The ride loop calls this once per pass, after [`take_store_changed`]
+/// (the id must resolve against the freshly re-fed trip catalog) and after [`take_route_uploaded`].
+pub(crate) fn take_trip_uploaded() -> Option<(u16, bool)> {
+    let v = TRIP_UPLOAD_EVENT.swap(0, Ordering::Relaxed);
+    (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
+}
+
 /// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
 /// asleep) otherwise dozes up to the watchdog-feed cap (~12 s) before its next pass would notice
 /// [`STORE_CHANGED`] — an upload from the phone should hit the Route menu now, not "eventually". A
@@ -106,46 +147,72 @@ pub(crate) async fn wait_store_changed() {
 }
 
 /// On-device route-delete request (epic #447, P6): the durable object id of a route the Route menu's
-/// hold-to-delete footer asked to remove. The **ride loop** posts it (it drains the app's
-/// `take_route_delete`), and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` —
-/// executes it via [`ObjectStore::delete_route`], so the delete goes through the same catalog +
-/// revision + `storeChanged` path a phone-initiated delete does (never raw SD). A coalescing
-/// `Signal` (level, one id in flight) rather than a queue: the footer fires one delete at a time and
-/// the drain runs promptly, so a second request can't stack up behind the first.
+/// hold-to-delete footer asked to remove, or the auto-expiry sweep's next expired route. The **ride
+/// loop** posts it, and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` — executes
+/// it via [`ObjectStore::delete_route`], so the delete goes through the same catalog + revision +
+/// `storeChanged` path a phone-initiated delete does (never raw SD).
 ///
 /// It lives as a module static, like [`STORE_CHANGED`], because the `ObjectStore` is trapped behind
 /// the BLE task's `RefCell` while the app lives in the ride loop — this is the lock-free hand-off
 /// from the loop that owns the *intent* to the plane that owns the *store*.
-static ROUTE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+///
+/// A bounded **[`Channel`]**, not a coalescing `Signal` (finding #876-3): the old overwriting
+/// `Signal` held only the newest id, so a retention batch dispatched faster than the SD delete task
+/// drained silently lost the earlier ids until a later sweep. The channel never *overwrites* a
+/// queued id — but be precise about what it does and does not guarantee: a full channel drops the
+/// posted id ([`request_route_delete`] reports `false`), and the app's dispatch bookkeeping ran
+/// *before* this post, so a drop is **not observed backpressure**. End-to-end losslessness rests on
+/// the app's **retain-until-rescan** ownership instead: a retention delete candidate stays queued in
+/// `obc-app` until the store rescan confirms the id gone, so a dropped post is simply re-dispatched
+/// after the bounded backoff. With one retention delete in flight per kind plus at most one manual
+/// delete, depth [`DELETE_CHANNEL_CAP`] means a full channel is effectively unreachable — and when
+/// it isn't, the cost is a delay, never a lost delete. Manual (UI hold-to-delete) and retention
+/// deletes share this one executor.
+static ROUTE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
+
+/// The bounded delete-request channel depth. The app dispatches **one retention delete per kind in
+/// flight** (retained until the store confirms it gone) plus at most one manual delete, so at most a
+/// couple of ids are ever outstanding; a small depth is ample. A full channel drops the post (the
+/// caller warns) and the app's retained candidate re-dispatches it after the backoff — a delay,
+/// never a lost delete (see [`ROUTE_DELETE_REQ`]).
+const DELETE_CHANNEL_CAP: usize = 8;
 
 /// Post a route-delete request from the ride loop (epic #447, P6) — the BLE plane drains it and runs
-/// the `ObjectStore` delete. Overwrites any un-drained request (one delete in flight at a time).
-pub(crate) fn request_route_delete(id: u16) {
-    ROUTE_DELETE_REQ.signal(id);
+/// the `ObjectStore` delete. Returns `false` when the channel is full and the id was **dropped**;
+/// the caller must surface that (a warn), and recovery is the app's retain-until-rescan retry — the
+/// candidate is still owned app-side and re-dispatches after its bounded backoff (finding #876-3).
+pub(crate) fn request_route_delete(id: u16) -> bool {
+    ROUTE_DELETE_REQ.try_send(id).is_ok()
 }
 
-/// The BLE plane's route-delete arm: resolves with the id to delete once the ride loop posts one.
-/// Folded into the BLE lifetime `join` so it drains whether the phone is connected or the device is
-/// parked advertising (see `ble::run`).
+/// The BLE plane's route-delete arm: resolves with the next id to delete once the ride loop posts
+/// one. Folded into the BLE lifetime `join` so it drains whether the phone is connected or the device
+/// is parked advertising (see `ble::run`).
 pub(crate) async fn wait_route_delete() -> u16 {
-    ROUTE_DELETE_REQ.wait().await
+    ROUTE_DELETE_REQ.receive().await
 }
 
 /// On-device **ride**-delete request (epic #447, P7 / #454) — the ride-namespace twin of
 /// [`ROUTE_DELETE_REQ`]. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
 /// plane drains it and runs [`ObjectStore::delete_ride`], so an on-device ride delete goes through
 /// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
-static RIDE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+/// A bounded [`Channel`] like [`ROUTE_DELETE_REQ`] (finding #876-3): the ride retention sweep can
+/// discover several synced+aged rides at once, and the old overwriting `Signal` lost all but the
+/// newest. Same contract as the route channel: never an overwrite, but a full channel **drops** the
+/// post — end-to-end losslessness rests on the app's retain-until-rescan retry, not on observed
+/// backpressure. Shared by manual (Rides-menu hold) and retention ride deletes.
+static RIDE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
 
-/// Post a ride-delete request from the ride loop (epic #447, P7). Overwrites any un-drained request
-/// (one delete in flight at a time — the footer fires one at a time and the drain runs promptly).
-pub(crate) fn request_ride_delete(id: u16) {
-    RIDE_DELETE_REQ.signal(id);
+/// Post a ride-delete request from the ride loop (epic #447, P7). Returns `false` when the channel
+/// is full and the id was **dropped** — the caller warns, and the app's retained candidate
+/// re-dispatches after its bounded backoff (see [`request_route_delete`]).
+pub(crate) fn request_ride_delete(id: u16) -> bool {
+    RIDE_DELETE_REQ.try_send(id).is_ok()
 }
 
-/// The BLE plane's ride-delete arm: resolves with the ride id to delete once the ride loop posts one.
+/// The BLE plane's ride-delete arm: resolves with the next ride id to delete once the ride loop posts one.
 pub(crate) async fn wait_ride_delete() -> u16 {
-    RIDE_DELETE_REQ.wait().await
+    RIDE_DELETE_REQ.receive().await
 }
 
 /// On-device trip **cascade**-delete request (epic #526, TR3/TR4) — the trip-namespace sibling of
@@ -176,7 +243,7 @@ pub(crate) async fn wait_trip_cascade() -> u16 {
 /// rescans the whole directory, so a burst of saves needs no queue and no payload.
 static RIDE_SAVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Post the saved-ride edge from the ride loop (`ble` builds; map-only re-feeds its menu directly).
+/// Post the saved-ride edge from the ride loop.
 pub(crate) fn note_ride_saved() {
     RIDE_SAVED.signal(());
 }
@@ -331,6 +398,27 @@ const LIST_BUF_LEN: usize = {
 // (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
 use crate::sd::SIDELOAD_ID_BASE;
 
+/// The one place a volume-set refusal becomes a wire status (issue #1039). `obc_app::set_upload`
+/// names the *reason* so its rules can be tested without a wire vocabulary; this maps each onto the
+/// §4.3 status a host already knows how to read:
+///
+/// - a part field that names no file, or a manifest with no set in flight, is a client error about
+///   an object that does not exist → `notFound` / `error`, the same pair a bad id gets;
+/// - a set past this board's shard ceiling is a **catalog** it cannot index another entry in, which
+///   is exactly what `storageFull` means in §4.3 (the route cap, the trip cap) — and like those, it
+///   is refused at descriptor-open before a byte streams, so the host can say "this device cannot
+///   take a map that large" instead of failing at the end of a multi-gigabyte upload;
+/// - a manifest sent before its shards is a protocol-order error, not a storage one → `error`.
+const fn set_reject_status(reject: obc_app::SetReject) -> TransferStatus {
+    match reject {
+        obc_app::SetReject::Part => TransferStatus::NotFound,
+        obc_app::SetReject::Shards => TransferStatus::StorageFull,
+        obc_app::SetReject::Mismatch | obc_app::SetReject::ManifestEarly | obc_app::SetReject::Length => {
+            TransferStatus::Error
+        }
+    }
+}
+
 pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
     /// card and the RRAM store themselves are **not** owned here: they live in the shared
@@ -344,16 +432,8 @@ pub struct ObjectStore {
     /// mid-session and this catalog must follow (it feeds the `rideList` object the phone syncs
     /// against).
     rides: Vec<ObjectSlot, MAX_RIDES>,
-    /// The trip catalog (epic #526 TR4): `TP{id}.OBT` files scanned at boot + on every trip
-    /// commit/delete, the wire-facing twin of the app's trip folders. Each slot's `byte_len` is the
-    /// stored trip-object size; the `tripList` build reads each file's stages fresh (like routes read
-    /// their header) to sum resolvable-stage stats.
-    trips: Vec<ObjectSlot, MAX_TRIPS>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
-    /// The next fresh **trip** id — a device counter separate from routes/rides (spec §4.1), floored
-    /// by its own RRAM high-water line so a deleted trip id is never re-issued across a reboot.
-    next_trip_id: u16,
     /// The store revision: monotonic per boot, bumped on every route/ride commit/delete.
     revision: u32,
     /// The **trip** store revision — monotonic per boot, its own counter (spec §4.3: a trip
@@ -365,46 +445,110 @@ pub struct ObjectStore {
     route_total: u16,
     /// Full ride-catalog size before the [`MAX_RIDES`] cap — the `rideList` header's `total`.
     ride_total: u16,
-    /// Full trip-catalog size before the [`MAX_TRIPS`] cap — the `tripList` header's `total`.
-    trip_total: u16,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
+    /// The **volume set** being received, if any (issue #1039). A set is several transfers, so
+    /// unlike every other object type it needs state that outlives one descriptor: which set id
+    /// this device minted, how many shards it will have, and which of them have committed. That is
+    /// what makes `OBCA_Spec.md` §5.4's manifest-last rule enforceable rather than merely
+    /// documented — see `obc_app::set_upload`. Eight bytes.
+    ///
+    /// Deliberately **not** dropped by [`link_reset`](Self::link_reset), which runs on either
+    /// transport's teardown. It is closed by [`set_manifest_finish`](Self::set_manifest_finish)
+    /// (the set committed, or its manifest was refused and the set deleted with it) and by
+    /// [`set_upload_abort`](Self::set_upload_abort) — the cable's own teardown, and the `op=3`
+    /// abort that reaches it.
+    set_upload: Option<obc_app::SetUpload>,
 }
 
+/// The **weather bundle** transaction in flight, if any (WX8, #1193; spec §11.5): the WX7
+/// crash-safe inactive-slot publication from `obc_storage::weather`, held across the CoC chunks
+/// exactly as the temp handle is for a route, and never routed through the destructive route
+/// `UPLOAD.TMP` path — the whole point of the dual-slot store is that the bundle the rider is
+/// looking at survives a torn transfer.
+///
+/// **Deliberately a module static and *not* an `ObjectStore` field.** As a field it re-opened the
+/// #677/#1108 boot-frame wound: one more (non-trivially-initialised) field in the ~13.5 KB struct
+/// made LLVM stop coalescing `init_store`'s construction temporaries, and the measured boot chain
+/// grew by a whole extra `ObjectStore` copy (`init_store` frame 14,692 → 27,556 B on the release
+/// disassembly). The transaction is ≤ 64 bytes (pinned in `obc-storage`), so a static of its own
+/// costs nothing resident and keeps the boot-critical struct's layout exactly as the two-phase
+/// `empty`/`hydrate` pattern measured it. Same access discipline as every store cell: locked
+/// synchronously inside the store's methods, never across an `await`, on the one cooperative
+/// executor.
+static WEATHER_TX: BlockingMutex<CriticalSectionRawMutex, core::cell::RefCell<Option<weather_store::WeatherUpload>>> =
+    BlockingMutex::new(core::cell::RefCell::new(None));
+
+/// The announce-time ceiling on a weather bundle's `total_len` (#1221 F6). A megabyte-scale
+/// length — which no OBCW producer can mean — is refused before a byte streams, instead of being
+/// streamed to the card for minutes and then failing validation.
+///
+/// **This is now exactly the phone producer's own policy cap, not 4× it.** WXR5 (#1244) raised
+/// that cap from 64 KiB to 256 KiB when the phone's corridor became 162 × 162 cells of one uniform
+/// dataset (raw4 worst case ~150 KiB), so the margin this constant used to carry is spent. It is
+/// still the right number — a conforming bundle cannot exceed the producer policy, and the device
+/// pays nothing for the size because its reader is a windowed streamer — but a *further* producer
+/// raise is now a firmware change, which it deliberately was not before.
+const WEATHER_BUNDLE_MAX_LEN: u32 = 256 * 1024;
+
 impl ObjectStore {
-    /// Mount-time construction: load settings, scan `/routes` into the id table, and sweep
-    /// aborted commits (files whose held-back magic never got patched — see `sd.rs`). Runs under a
-    /// boot-time lock of the shared store (`shared`), which it borrows for the settings load + scans.
-    pub fn new(shared: &mut SharedStore) -> Self {
-        let settings = shared.settings.load().unwrap_or_default();
-        let mut store = ObjectStore {
-            settings,
-            routes: Vec::new(),
-            rides: Vec::new(),
-            trips: Vec::new(),
-            next_id: 0,
-            next_trip_id: 0,
-            revision: 1,
-            trip_revision: 1,
-            route_total: 0,
-            ride_total: 0,
-            trip_total: 0,
-            list_buf: [0; LIST_BUF_LEN],
-        };
-        store.rescan(shared);
-        store.rescan_rides(shared);
-        store.rescan_trips(shared);
+    /// The empty store — no settings read, no card scan; [`hydrate`](Self::hydrate) does that,
+    /// in place. Construction is split in two because this struct is ~13.5 KB by value: the old
+    /// `new(shared)`-then-`RefCell::new` shape put **two** copies of it in `link::init_store`'s
+    /// frame (the return slot + the wrapper's argument), the measured ~27.6 KB boot spike that
+    /// overran the residual stack once EL7 grew the ride task's poll frame (STKOF HardFault at
+    /// the `init_store` prologue, 2026-08-03). Since WX12 (#1197) the empty store is a **`const`**
+    /// — a `.rodata` image the slot write copies from — because even the one by-value hop proved
+    /// optimizer-fragile: a +96 B `Settings` growth was enough for rustc 1.96 to stop collapsing
+    /// `RefCell::new(empty())` and stack the two ~13.6 KB temporaries again (the boot-chain guard
+    /// caught it, as designed). A constant can't be duplicated onto the stack; everything that
+    /// scans stays in [`hydrate`], operating on the slot directly.
+    pub const EMPTY: ObjectStore = ObjectStore {
+        settings: Settings::DEFAULT,
+        routes: Vec::new(),
+        rides: Vec::new(),
+        next_id: 0,
+        revision: 1,
+        trip_revision: 1,
+        route_total: 0,
+        ride_total: 0,
+        list_buf: [0; LIST_BUF_LEN],
+        set_upload: None,
+    };
+
+    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings, scan
+    /// `/routes` into the id table, and sweep aborted commits (files whose held-back magic never
+    /// got patched — see `sd.rs`). Runs under a boot-time lock of the shared store (`shared`),
+    /// which it borrows for the settings load + scans.
+    pub fn hydrate(&mut self, shared: &mut SharedStore) {
+        self.settings = shared.settings.load().unwrap_or_default();
+        self.rescan(shared);
+        self.rescan_rides(shared);
+        // Seed the canonical trip repository for every link-store composition point. Normal boot
+        // already scanned once to build the pre-link App, but map-recovery USB calls `init_store`
+        // before App construction and depends on this scan for trip visibility and id recovery.
+        // Both scans finish before a link plane is published; runtime App reloads stay scan-free.
+        if let Some(storage) = &mut shared.storage {
+            storage.trips().scan();
+        }
         // The durable id floor (#450): fresh upload ids start at `max(scan_max + 1, stored floor)`,
         // so an id deleted last session can't be re-issued (the phone's persisted `deviceObjectID`s
         // key on it). A blank/torn line is "no floor" → exactly the old scan-derived start.
         if let Some(m) = shared.settings.load_id_marks() {
-            store.next_id = store.next_id.max(m.next_route_id);
+            self.next_id = self.next_id.max(m.next_route_id);
         }
         // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
         if let Some(floor) = shared.settings.load_trip_mark() {
-            store.next_trip_id = store.next_trip_id.max(floor);
+            if let Some(storage) = &mut shared.storage {
+                storage.trips().observe_floor(floor);
+            }
         }
-        store
+        if let Some(storage) = &mut shared.storage {
+            let trips = storage.trips();
+            let len = trips.len();
+            let candidate = trips.candidate().unwrap_or(SIDELOAD_ID_BASE);
+            defmt::info!("store: {=usize} trip object(s), next trip id {=u16}", len, candidate);
+        }
     }
 
     /// (Re)build the id table from the card. Uploaded files carry their **durable id in the
@@ -428,7 +572,7 @@ impl ObjectStore {
         for name in &names {
             match storage.route_object_info(name) {
                 Some((byte_len, _)) => {
-                    let id = match crate::sd::uploaded_route_id(name) {
+                    let id = match route_name::uploaded_id(name.base_name(), name.extension()) {
                         Some(id) => {
                             self.next_id = self.next_id.max(id.saturating_add(1));
                             id
@@ -495,49 +639,6 @@ impl ObjectStore {
         defmt::info!("store: {=usize} ride object(s)", self.rides.len());
     }
 
-    /// (Re)build the **trip** catalog from the card (epic #526 TR4) — the trip twin of [`rescan`]:
-    /// scan `TP{id}.OBT` (durable id in the name) + side-loaded `.obt` (session id), record each
-    /// slot's byte length, and resume `next_trip_id` past the highest stored upload id. A trip whose
-    /// header doesn't validate is skipped; a torn commit (held-back zero version) is swept like an
-    /// aborted route commit (same zeroed-first-bytes signature, same `/routes` dir).
-    fn rescan_trips(&mut self, shared: &mut SharedStore) {
-        self.trips.clear();
-        self.trip_total = 0;
-        let Some(storage) = &mut shared.storage else { return };
-        let mut names: Vec<ShortFileName, MAX_TRIPS> = Vec::new();
-        let mut over_cap: u16 = 0;
-        storage.for_each_trip_file(|n| {
-            if names.push(n.clone()).is_err() {
-                over_cap = over_cap.saturating_add(1);
-            }
-        });
-        for name in &names {
-            match storage.read_trip(name) {
-                Some((byte_len, _meta, _stage_count)) => {
-                    let id = match crate::sd::uploaded_trip_id(name) {
-                        Some(id) => {
-                            self.next_trip_id = self.next_trip_id.max(id.saturating_add(1));
-                            id
-                        }
-                        None => match storage.sideload_id(name) {
-                            Some(id) => id,
-                            None => continue,
-                        },
-                    };
-                    let _ = self.trips.push(ObjectSlot { id, file: name.clone(), byte_len });
-                }
-                None => {
-                    if storage.is_aborted_commit(name) {
-                        defmt::info!("store: sweeping aborted trip commit {}", defmt::Debug2Format(name));
-                        let _ = storage.delete_trip_file(name);
-                    }
-                }
-            }
-        }
-        self.trip_total = (self.trips.len() as u16).saturating_add(over_cap);
-        defmt::info!("store: {=usize} trip object(s), next trip id {=u16}", self.trips.len(), self.next_trip_id);
-    }
-
     /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
     /// stamps it into the `storeChanged` status message (protocol v2's sole change signal — the
     /// `objectStore` digest characteristic is retired).
@@ -570,13 +671,9 @@ impl ObjectStore {
         self.trip_revision
     }
 
-    fn trip_index(&self, id: u16) -> Option<usize> {
-        self.trips.iter().position(|s| s.id == id)
-    }
-
     /// Whether a trip object with this id exists (the control plane's cheap `notFound` check).
-    pub fn has_trip(&self, id: u16) -> bool {
-        self.trip_index(id).is_some()
+    pub fn has_trip(&self, shared: &mut SharedStore, id: u16) -> bool {
+        shared.storage.as_mut().is_some_and(|storage| storage.trips().contains(id))
     }
 
     fn slot_index(&self, id: u16) -> Option<usize> {
@@ -593,14 +690,6 @@ impl ObjectStore {
         let storage = shared.storage.as_ref()?;
         let crcs = storage.load_route_crcs();
         self.routes.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
-    }
-
-    /// The trip twin of [`find_route_by_content`](Self::find_route_by_content), against the
-    /// trip-CRC sidecar (`upload_finish_trip`'s dedup lookup).
-    fn find_trip_by_content(&self, shared: &SharedStore, crc: u32, byte_len: u32) -> Option<u16> {
-        let storage = shared.storage.as_ref()?;
-        let crcs = storage.load_trip_crcs();
-        self.trips.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
     }
 
     /// Whether a route object with this id exists (the control plane's cheap `notFound` check).
@@ -629,16 +718,29 @@ impl ObjectStore {
     /// every field coherent (not only units + name). Then [`BLE_CONFIG_WRITTEN`] is raised so the
     /// ride loop reloads the units + name into the live `App` copy before its next save — the phone's
     /// write reaches the UI and can't be clobbered by the app's change-detection save (#456).
-    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8) {
+    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8, weather_refresh: Option<u8>) {
         // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
         self.settings = shared.settings.load().unwrap_or_default();
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
+        // The §7.3 weather-refresh interval (WX8, #1193). `None` = the writer never mentioned the
+        // field — *leave the stored value untouched* (spec §7.3's absent-on-write rule; this is
+        // what keeps an old app's rename from resetting a rider who chose `Off`). The caller
+        // already validated the byte through the wire enum's strict write direction.
+        if let Some(refresh) = weather_refresh {
+            // Wire-validated upstream (obc-ble's strict write direction); this converts the §11.8
+            // byte into obc-app's typed representation (#1221/#1224 merge resolution).
+            self.settings.weather_refresh = obc_app::WeatherRefresh::from_byte(refresh);
+        }
         // The BLE plane persists its owned fields directly (best-effort): the store logs a write
         // failure internally, and the phone re-asserts config on reconnect, so there is no App-side
         // revision to retry here (the device-edit path owns the acknowledged handshake — #810).
         let _ = shared.settings.save(&self.settings);
         BLE_CONFIG_WRITTEN.store(true, Ordering::Relaxed);
+        // The due scheduler keys its cadence off this setting — wake it so an interval change
+        // lands now rather than at the next unrelated edge (WX8).
+        #[cfg(feature = "ble")]
+        crate::ble::weather_settings_changed();
     }
 
     /// Refresh the config cache from RRAM **if** the ride loop flagged an on-device settings change
@@ -715,14 +817,10 @@ impl ObjectStore {
     /// (never the route store, §4.3). `true` = deleted; an unknown id → `false` (the handler answers
     /// `notFound`).
     pub fn delete_trip(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.trip_index(id) else { return false };
         let Some(storage) = &mut shared.storage else { return false };
-        if !storage.delete_trip_file(&self.trips[idx].file) {
+        if !storage.trips().delete(id) {
             return false;
         }
-        storage.forget_trip_crc(id);
-        self.trips.remove(idx);
-        self.trip_total = self.trip_total.saturating_sub(1);
         self.bump_trip_revision();
         true
     }
@@ -738,13 +836,14 @@ impl ObjectStore {
     ///
     /// Driven by the ride loop's TR3 drain: `App::drain_host_commands` → [`request_trip_cascade`] →
     /// the BLE plane's `trip_cascade_task`, mirroring the `request_route_delete` →
-    /// [`delete_route`](Self::delete_route) seam (the map-only build routes through
-    /// [`Storage::delete_trip_cascade_by_id`](crate::sd::Storage::delete_trip_cascade_by_id) instead).
+    /// [`delete_route`](Self::delete_route) seam.
     pub fn delete_trip_cascade(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.trip_index(id) else { return false };
-        // Resolve the member stage ids from the stored trip file before deleting anything.
-        let file = self.trips[idx].file.clone();
-        let stages = shared.storage.as_ref().and_then(|s| s.read_trip(&file)).map(|(_, meta, _)| meta.stage_ids);
+        // Snapshot member ids before any route delete re-borrows Storage; the Trips view never
+        // survives a nested repository mutation (and never crosses an await).
+        let stages = shared.storage.as_mut().and_then(|storage| storage.trips().stage_ids(id));
+        if stages.is_none() && !self.has_trip(shared, id) {
+            return false;
+        }
         if let Some(stages) = stages {
             for stage_id in stages {
                 let _ = self.delete_route(shared, stage_id); // dangling → false, skipped
@@ -791,17 +890,32 @@ impl ObjectStore {
     /// - `Some(false)` — the value was already that level; `ok` with **no** revision bump (the
     ///   idempotence pin: only a real change moves the store).
     ///
-    /// A missing card is treated as "no such route" (`None`) — nothing to write.
-    pub fn set_route_retention(&mut self, shared: &mut SharedStore, id: u16, retention: Retention) -> Option<bool> {
+    /// A missing card is treated as "no such route" ([`NotFound`](SetRetentionResult::NotFound)) —
+    /// nothing to write. A sidecar write that does not reach the card is
+    /// [`WriteFailed`](SetRetentionResult::WriteFailed) — the revision is **not** bumped and the
+    /// handler replies `command` `Error`, never a false `ok` (finding #876-5).
+    pub fn set_route_retention(
+        &mut self,
+        shared: &mut SharedStore,
+        id: u16,
+        retention: Retention,
+    ) -> SetRetentionResult {
         if !self.has_route(id) {
-            return None;
+            return SetRetentionResult::NotFound;
         }
-        let storage = shared.storage.as_mut()?;
-        let changed = storage.set_route_retention_level(id, retention);
-        if changed {
-            self.bump_revision();
+        let Some(storage) = shared.storage.as_mut() else {
+            return SetRetentionResult::NotFound;
+        };
+        match storage.set_route_retention_level(id, retention) {
+            Ok(false) => SetRetentionResult::Unchanged, // already that level — `ok`, no bump (idempotence pin)
+            Ok(true) => {
+                // Durable success only: bump the route revision so `storeChanged(route)` + the ride
+                // loop's rescan re-feed the fresh retention.
+                self.bump_revision();
+                SetRetentionResult::Changed
+            }
+            Err(_) => SetRetentionResult::WriteFailed, // torn persist — no bump, surfaced as `Error`
         }
-        Some(changed)
     }
 
     /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
@@ -858,16 +972,15 @@ impl ObjectStore {
     /// (spec §4.2) — here [`MAX_TRIPS`], the resident cap on this memory profile.
     pub fn upload_open_trip(
         &mut self,
-        shared: &SharedStore,
+        shared: &mut SharedStore,
         desc: &TransferControl,
     ) -> Result<Receiver, TransferStatus> {
-        let catalog_full = self.trips.is_full() || self.next_trip_id >= SIDELOAD_ID_BASE;
-        let id_known = self.trip_index(desc.object_id).is_some();
+        let Some(storage) = shared.storage.as_mut() else { return Err(TransferStatus::Error) };
+        let trips = storage.trips();
+        let catalog_full = trips.is_full() || trips.candidate().is_none();
+        let id_known = trips.contains(desc.object_id);
         if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, id_known, catalog_full) {
             return Err(status);
-        }
-        if shared.storage.is_none() {
-            return Err(TransferStatus::Error);
         }
         Receiver::new(desc).map_err(|_| TransferStatus::Error)
     }
@@ -879,6 +992,23 @@ impl ObjectStore {
         shared.storage.as_mut().is_some_and(|s| s.upload_begin())
     }
 
+    /// Reserve the announced object's cluster chain before the first payload byte, so the FAT's
+    /// per-cluster writes leave the streaming path. Advisory: `false` only means the upload runs at
+    /// the old pace. See [`Storage::upload_reserve`](crate::sd::Storage::upload_reserve).
+    pub fn upload_reserve(&mut self, shared: &mut SharedStore, total_len: u32) -> bool {
+        shared.storage.as_mut().is_some_and(|s| s.upload_reserve(total_len))
+    }
+
+    /// Arm the map-only deferred writer after the scratch arena granted two stable halves.
+    pub fn upload_fast_begin(&mut self, shared: &mut SharedStore) -> bool {
+        shared.storage.as_mut().is_some_and(Storage::upload_fast_begin)
+    }
+
+    /// Join the last deferred card write before a map's header/magic commit.
+    pub fn upload_sync(&mut self, shared: &mut SharedStore) -> bool {
+        shared.storage.as_mut().is_some_and(Storage::upload_sync)
+    }
+
     /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
     pub fn upload_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
         shared.storage.as_mut().is_some_and(|s| s.upload_append(bytes))
@@ -887,6 +1017,20 @@ impl ObjectStore {
     /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
     /// the partial upload and release any open storage handles a cancelled future couldn't.
     /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
+    ///
+    /// **This runs on *either* transport's teardown**, which is the fact everything below turns on:
+    /// a phone walking out of range must not disturb a transfer the cable is running. Two things
+    /// follow, and both are load-bearing rather than tidy (issue #1039):
+    ///
+    /// - A volume set is **not** torn down here, for the same reason `map_upload_abort` is not: it
+    ///   is gigabytes, and only the cable's own teardown knows the cable went away. The USB data
+    ///   plane owns that cleanup at the two points that know it — `discard_upload` mid-transfer,
+    ///   and `set_upload_abort` beside this call on endpoint disable.
+    /// - `upload_discard` no longer *means* "close whatever file is open". The storage handle
+    ///   carries its owner (`sd::UploadOwner`), so this closes the temp and only the temp; a map or
+    ///   a set streaming on the other wire keeps its handle. Before that, this call closed the
+    ///   cable's file and the next append failed into a discard that deleted the whole upload —
+    ///   the same bug the set teardown above was moved out of here to avoid, one layer down.
     pub fn link_reset(&mut self, shared: &mut SharedStore) {
         self.upload_discard(shared);
         if let Some(storage) = &mut shared.storage {
@@ -894,7 +1038,8 @@ impl ObjectStore {
         }
     }
 
-    /// Abort/interrupt: discard the in-flight temp.
+    /// Abort/interrupt: discard the in-flight **temp**. A map or set stream owns its own handle and
+    /// its own teardown (`sd::UploadOwner`) — see [`link_reset`](Self::link_reset).
     pub fn upload_discard(&mut self, shared: &mut SharedStore) {
         if let Some(storage) = &mut shared.storage {
             storage.upload_abort();
@@ -1025,51 +1170,70 @@ impl ObjectStore {
         // were exactly the on-glass duplicate-trip bug. Before the storage-full backstop for the same
         // reason (a dedup hit consumes no trip slot).
         if fresh {
-            if let Some(id) = self.find_trip_by_content(shared, whole_crc, rx.total_len()) {
+            let duplicate =
+                shared.storage.as_mut().and_then(|storage| storage.trips().find_by_content(whole_crc, rx.total_len()));
+            if let Some(id) = duplicate {
                 self.upload_discard(shared);
                 return (id, TransferStatus::Committed);
             }
         }
-        if fresh && (self.trips.is_full() || self.next_trip_id >= SIDELOAD_ID_BASE) {
-            // Storage-full backstop: the catalog filled during the transfer (upload_open_trip already
-            // rejects at descriptor-open). Same typed status either way.
+        let Some(storage) = shared.storage.as_mut() else { return (rx.object_id(), TransferStatus::Error) };
+        let (catalog_full, candidate) = {
+            let trips = storage.trips();
+            (trips.is_full(), trips.candidate())
+        };
+        if fresh && (catalog_full || candidate.is_none()) {
+            // Storage-full backstop: the catalog or id band filled during the transfer
+            // (`upload_open_trip` already rejects at descriptor-open). Same typed status either way.
             self.upload_discard(shared);
             return (rx.object_id(), TransferStatus::StorageFull);
         }
-        let replace_idx = if fresh { None } else { self.trip_index(rx.object_id()) };
-        let Some(storage) = &mut shared.storage else { return (rx.object_id(), TransferStatus::Error) };
-        let replace_file = replace_idx.map(|i| self.trips[i].file.clone());
-        match storage.upload_commit_trip(replace_file.as_ref(), self.next_trip_id) {
-            Some((file, byte_len)) => {
-                let id = match replace_idx {
-                    Some(i) => {
-                        self.trips[i].byte_len = byte_len;
-                        self.trips[i].file = file;
-                        self.trips[i].id
-                    }
-                    None => {
-                        let id = self.next_trip_id;
-                        self.next_trip_id += 1;
-                        // Advance the persisted trip-id floor (its own RRAM line, spec §4.1) so this id
-                        // stays reserved across deletes + reboots.
-                        shared.settings.save_trip_mark(self.next_trip_id);
-                        let _ = self.trips.push(ObjectSlot { id, file, byte_len });
-                        self.trip_total = self.trip_total.saturating_add(1);
-                        id
-                    }
+        let replace_file =
+            if fresh { None } else { shared.storage.as_mut().and_then(|storage| storage.trips().file(rx.object_id())) };
+        let replaced = replace_file.is_some();
+        // Exhaustion is possible only for a replacement, where the storage path keeps the existing
+        // filename and ignores this value.
+        let candidate = candidate.unwrap_or(SIDELOAD_ID_BASE);
+        let committed =
+            shared.storage.as_mut().and_then(|storage| storage.trips().promote_temp(replace_file.as_ref(), candidate));
+        match committed {
+            Some(commit) => {
+                let id = if replaced {
+                    rx.object_id()
+                } else {
+                    // The media commit made `candidate` visible. This is the sequence's only
+                    // advance; it also owns the persisted-floor handoff, so abort/validation
+                    // failures above cannot burn an id.
+                    let SharedStore { storage, settings } = shared;
+                    let id = storage
+                        .as_mut()
+                        .expect("trip media commit requires mounted storage")
+                        .trips()
+                        .commit(|floor| settings.save_trip_mark(floor));
+                    debug_assert_eq!(id, candidate);
+                    id
                 };
-                // Persist the verified whole-object CRC into the trip-CRC sidecar in the same movement,
-                // so the trip's `tripList` entry serves its fingerprint immediately (never lazily).
-                storage.set_trip_crc(id, whole_crc);
+                let recorded = shared
+                    .storage
+                    .as_mut()
+                    .is_some_and(|storage| storage.trips().record_commit(id, replaced, commit, whole_crc));
+                debug_assert!(recorded, "validated trip commit must fit its reserved catalog row");
+                // The app-UI trip upload event: the committed id + fresh-vs-replace, published
+                // before the revision bump so the STORE_WAKE'd pass sees the rescan edge and this
+                // event together. Only a *fresh* trip pops the "TRIP RECEIVED" card — the app
+                // suppresses the replace case, a host-side edit (see [`TRIP_UPLOAD_EVENT`]).
+                TRIP_UPLOAD_EVENT
+                    .store(UPLOAD_EVENT_PRESENT | ((replaced as u32) << 16) | id as u32, Ordering::Relaxed);
                 self.bump_trip_revision();
                 (id, TransferStatus::Committed)
             }
             None => {
-                if let Some(i) = replace_idx {
-                    let gone = shared.storage.as_ref().is_none_or(|s| s.read_trip(&self.trips[i].file).is_none());
+                if replaced {
+                    let gone = shared
+                        .storage
+                        .as_mut()
+                        .is_none_or(|storage| storage.trips().repair_failed_replace(rx.object_id()));
                     if gone {
-                        self.trips.remove(i);
-                        self.trip_total = self.trip_total.saturating_sub(1);
                         self.bump_trip_revision();
                     }
                 }
@@ -1088,12 +1252,12 @@ impl ObjectStore {
     /// catalog slot: [`fwimage_finish`](Self::fwimage_finish) promotes it to `/UPDATE.BIN` in the card
     /// root, not into the route catalog.
     pub fn fwimage_open(&mut self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
-        // `total_len` is the whole OBCU container (64-byte header + raw image), so the ceiling must be
-        // container-sized too: the raw-image cap plus the header. Gating at the bare `MAX_IMAGE_LEN`
-        // would spuriously reject a raw image in `MAX_IMAGE_LEN-HEADER_LEN+1 ..= MAX_IMAGE_LEN` that the
-        // armer/engine (which gate the raw `image_len` only) would happily flash (DR5, #733).
-        let max_container_len = obc_dfu::MAX_IMAGE_LEN + obc_dfu::HEADER_LEN as u32;
-        if let Some(status) = TransferStatus::fwimage_announce_reject(desc.total_len, max_container_len) {
+        // `total_len` is the whole OBCU container (64-byte header + raw image + — since v2, #997 —
+        // the 64-byte signature trailer), so the ceiling must be container-sized too. Gating at the
+        // bare `MAX_IMAGE_LEN` would spuriously reject a raw image the armer/engine (which gate the
+        // raw `image_len` only) would happily flash (DR5, #733); `MAX_CONTAINER_LEN` carries the
+        // arithmetic so the two can't drift apart again.
+        if let Some(status) = TransferStatus::fwimage_announce_reject(desc.total_len, obc_dfu::MAX_CONTAINER_LEN) {
             return Err(status);
         }
         // No card ⇒ nowhere to stage; answer now rather than after the CoC opens.
@@ -1131,6 +1295,586 @@ impl ObjectStore {
     /// existence check (spec §4.4). Purely presence; the full CRC scan is the on-device flow's.
     pub fn update_staged(&self, shared: &SharedStore) -> bool {
         shared.storage.as_ref().is_some_and(|s| s.has_update_bin())
+    }
+
+    // ==================== the weather bundle upload (WX8, #1193) ====================
+
+    /// Validate + arm a **weather bundle** upload (spec §11.5): the singleton at `object_id = 0` —
+    /// any other id is answered `notFound` rather than quietly treated as `0`, and there is no
+    /// catalog-full refusal because a bundle is **always** a replacement (the WX7 store writes the
+    /// inactive slot). Like every upload, no storage is touched here; the data plane opens the WX7
+    /// transaction at the first streamed byte ([`weather_begin`](Self::weather_begin)).
+    pub fn weather_upload_open(
+        &self,
+        shared: &SharedStore,
+        desc: &TransferControl,
+    ) -> Result<Receiver, TransferStatus> {
+        if desc.object_id != obc_ble::WEATHER_BUNDLE_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        // Announce-time size cap, before any byte streams. [`WEATHER_BUNDLE_MAX_LEN`] is the
+        // phone producer's own policy cap, so a conforming bundle always fits, while a length in
+        // the megabytes — which no OBCW producer can mean — is refused with the typed `error` a
+        // malformed announce gets (a retry would reproduce it; the fault is the sender's).
+        if desc.total_len > WEATHER_BUNDLE_MAX_LEN {
+            return Err(TransferStatus::Error);
+        }
+        // No card ⇒ no slots; answer now rather than after the CoC opens.
+        if shared.storage.is_none() {
+            return Err(TransferStatus::Error);
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the WX7 crash-safe inactive-slot transaction at the transfer's first real byte —
+    /// the weather twin of [`upload_begin`](Self::upload_begin), backed by
+    /// [`obc_storage::weather::WeatherUpload`] rather than the destructive `UPLOAD.TMP` path.
+    /// `false` = no card, no safe inactive slot, or an open failure (the caller answers `error`).
+    pub fn weather_begin(&mut self, shared: &mut SharedStore, total_len: u32, crc32: u32) -> bool {
+        let Some(storage) = shared.storage.as_mut() else { return false };
+        match weather_store::WeatherUpload::begin(storage, total_len, crc32) {
+            Ok(tx) => {
+                WEATHER_TX.lock(|slot| *slot.borrow_mut() = Some(tx));
+                true
+            }
+            Err(e) => {
+                defmt::warn!("store: [weather] begin failed: {}", defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// Sink one CoC chunk into the inactive slot. `false` = storage failure (the transaction has
+    /// already released its slot; the caller aborts and answers `error`).
+    ///
+    /// **The law this method's shape exists for: card I/O never runs under the
+    /// `CriticalSectionRawMutex`.** `WEATHER_TX.lock` masks every interrupt for the closure's
+    /// duration, and a weather bundle is ~190 appends over a live BLE connection — an sEMMC/FAT
+    /// append (worse, a cluster allocation's read-modify-write) is milliseconds of masked time
+    /// each, which violates the MPSL/SDC timing contract and drops the very link the bytes are
+    /// arriving on. So the lock is held only to **take** the transaction and to **restore** it;
+    /// the `push` (the actual write) runs outside, exactly as `weather_begin`/`weather_finish`/
+    /// [`weather_abort`](Self::weather_abort) already do their storage work. The take/restore
+    /// window is race-free: this method is synchronous, every caller runs on the one cooperative
+    /// executor, and cancellation can only land at an `await` — nothing can observe the empty
+    /// slot mid-call.
+    pub fn weather_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
+        let Some(storage) = shared.storage.as_mut() else { return false };
+        let Some(mut tx) = WEATHER_TX.lock(|slot| slot.borrow_mut().take()) else { return false };
+        match tx.push(storage, bytes) {
+            Ok(()) => {
+                WEATHER_TX.lock(|slot| *slot.borrow_mut() = Some(tx));
+                true
+            }
+            Err(e) => {
+                defmt::warn!("store: [weather] append failed: {}", defmt::Debug2Format(&e));
+                // A terminal push released the slot handle itself — drop the poisoned transaction
+                // rather than restoring it.
+                false
+            }
+        }
+    }
+
+    /// All bytes arrived: validate + publish per §11.5/§11.6, returning the wire status for the
+    /// `transferResult`. The disposition rules, verbatim from the frozen contract:
+    ///
+    /// - a **valid, newer** bundle commits (magic flush = the eligibility point) → `committed`;
+    /// - a **duplicate or stale** bundle is *ignored but successful* → `committed` — an error here
+    ///   would push a phone whose HTTP path was slow into an unwinnable retry loop. The
+    ///   newest-wins comparison is the WX7 selector's own (`candidate_is_newer`), which
+    ///   `obc_ble::classify_upload` is parity-tested against;
+    /// - a wire-corrupted transfer → `crcMismatch` (*send the same bytes again*);
+    /// - bytes that arrived **intact but do not validate as OBCW** → `error`, deliberately not
+    ///   `crcMismatch`: a retry would reproduce the failure and the fault is the phone's to fix.
+    ///
+    /// A commit refreshes the boot-shared slot selection and pokes the due scheduler (success is
+    /// what finishes a request — §11.3).
+    pub fn weather_finish(&mut self, shared: &mut SharedStore) -> TransferStatus {
+        use weather_store::UploadError;
+        // Storage first, transaction second: with the card gone the transaction is left in place
+        // rather than taken-and-dropped without its `abandon_slot` (its handle refers to storage
+        // state that died with the mount; a later `weather_begin` on a remount replaces it).
+        let Some(storage) = shared.storage.as_mut() else { return TransferStatus::Error };
+        let Some(tx) = WEATHER_TX.lock(|slot| slot.borrow_mut().take()) else { return TransferStatus::Error };
+        match tx.finish(storage) {
+            Ok(commit) => {
+                // Re-derive the active selection through the same shared selector boot uses, so
+                // what the wire answered and what the device renders cannot disagree.
+                storage.refresh_weather_selection();
+                defmt::info!(
+                    "store: [weather] committed generation {=u32} into slot {=str}",
+                    commit.installed.generation,
+                    match commit.installed.slot {
+                        obc_weather::Slot::A => "A",
+                        obc_weather::Slot::B => "B",
+                    }
+                );
+                #[cfg(feature = "ble")]
+                crate::ble::weather_committed();
+                TransferStatus::Committed
+            }
+            Err(UploadError::NotNewer { active, incoming }) => {
+                // §11.6's two "ignored but successful" rows. The classifier names which one — and
+                // is the host-tested twin of the `candidate_is_newer` call that just refused the
+                // commit, so the two verdicts cannot drift.
+                let disposition = obc_ble::classify_upload(
+                    obc_ble::BundleIdentity { generation: incoming.generation, generated_at: incoming.generated_at },
+                    Some(obc_ble::BundleIdentity { generation: active.generation, generated_at: active.generated_at }),
+                );
+                defmt::info!(
+                    "store: [weather] {=str} ignored (kept generation {=u32}) — answered committed",
+                    match disposition {
+                        obc_ble::UploadDisposition::DuplicateIgnored => "duplicate",
+                        _ => "stale",
+                    },
+                    active.generation
+                );
+                // An accepted upload of ANY freshness class finishes the pending request (#1221
+                // F3, Timo's decision): a duplicate/stale `committed` is the phone's complete
+                // answer — "nothing newer exists upstream" — and a scheduler that kept re-raising
+                // the same request against the same upstream would loop at upload cadence. The
+                // next attempt comes from the normal interval machinery.
+                #[cfg(feature = "ble")]
+                crate::ble::weather_committed();
+                TransferStatus::Committed
+            }
+            Err(UploadError::OuterCrc) => TransferStatus::CrcMismatch,
+            Err(UploadError::InvalidBundle(v)) => {
+                // Intact bytes that are not a bundle: `error`, never `crcMismatch` (§11.5 — the
+                // pinned distinction; answering crcMismatch would hide a producer bug behind an
+                // infinite, blameless-looking retry ladder).
+                defmt::warn!("store: [weather] intact upload failed OBCW validation: {}", defmt::Debug2Format(&v));
+                TransferStatus::Error
+            }
+            Err(e) => {
+                defmt::warn!("store: [weather] finish failed: {}", defmt::Debug2Format(&e));
+                TransferStatus::Error
+            }
+        }
+    }
+
+    /// Abort/interrupt: release the in-flight weather transaction's slot handle (the zero magic
+    /// stays — the slot is never eligible). Runs from the radio's own teardown too, since a
+    /// cancelled future can't release it itself; a no-op when nothing is in flight.
+    ///
+    /// Storage is checked **before** the transaction is taken: with the card gone there is no
+    /// handle to release (it died with the mount), so the transaction is left for a remount's
+    /// `weather_begin` to replace rather than taken-and-dropped half-cleaned.
+    pub fn weather_abort(&mut self, shared: &mut SharedStore) {
+        let Some(storage) = shared.storage.as_mut() else { return };
+        if let Some(tx) = WEATHER_TX.lock(|slot| slot.borrow_mut().take()) {
+            tx.abort(storage);
+        }
+    }
+
+    /// The active bundle's identity for the request context's bundle group (§11.4 validity bit 3)
+    /// and the scheduler's age input — the boot/commit-refreshed slot selection, no card I/O.
+    pub fn weather_active(&self, shared: &SharedStore) -> Option<obc_weather::Candidate> {
+        shared.storage.as_ref().and_then(|s| s.weather_active())
+    }
+
+    // ==================== the map upload (issue #927) ====================
+
+    /// Validate + arm a **map** upload (spec §4.2 / §10). Three refusals, all before a byte streams,
+    /// because a map runs for minutes and a late failure costs the rider all of them:
+    /// a named object id (maps are **new-only** — see `Storage`'s map section for why the device
+    /// never rewrites a stored map in place), an object too short to be an OBCM at all, and one the
+    /// card cannot hold with [`MAP_FREE_HEADROOM`](crate::sd::MAP_FREE_HEADROOM) left over. The rule
+    /// itself is the host-tested [`TransferStatus::map_announce_reject`]; the constants are the
+    /// board's, exactly as `fwimage_open` passes its own ceiling in.
+    ///
+    /// Like every other upload, the SD file is **not** opened here — the data plane opens it at the
+    /// first streamed byte ([`map_upload_begin`](Self::map_upload_begin)), so an armed transfer whose
+    /// stream never starts leaves nothing on the card.
+    ///
+    /// A map carries no catalog slot in this store: there is no `mapList` on the wire, and the card's
+    /// map catalog is derived by a directory scan whenever it is wanted
+    /// ([`Storage::scan_maps_into`](crate::sd::Storage::scan_maps_into)) rather than held resident.
+    pub fn map_upload_open(
+        &mut self,
+        shared: &SharedStore,
+        desc: &TransferControl,
+    ) -> Result<Receiver, TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        let free = storage.card_free_bytes();
+        if let Some(status) = TransferStatus::map_announce_reject(
+            desc.object_id,
+            desc.total_len,
+            obc_formats::obcm::HEADER_LEN as u32,
+            free,
+            crate::sd::MAP_FREE_HEADROOM,
+        ) {
+            return Err(status);
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Allocate the fresh map object id and open `MP{id}.OBM` for the stream — called by the data
+    /// plane at the first byte. Returns the id, which the data plane carries to
+    /// [`map_upload_finish`](Self::map_upload_finish) (a map holds no slot in this store, so there is
+    /// nothing here to remember it in — and nothing to leak if the transfer dies).
+    ///
+    /// The id is `max(card scan + 1, RRAM floor)`, the durable-id rule of spec §4.1. The **floor is
+    /// bumped here, not at commit**, so an id handed to a transfer is spent even if that transfer
+    /// fails: re-issuing it would be safe today (the failed upload stored nothing) but the invariant
+    /// worth keeping is the simple one — an id this device has ever named an object with is never
+    /// handed out twice within a store epoch.
+    pub fn map_upload_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let scan_next = shared.storage.as_ref()?.next_map_id_from_scan();
+        let floor = shared.settings.load_map_mark().unwrap_or(0);
+        let id = floor.max(scan_next);
+        if id == u16::MAX {
+            defmt::warn!("store: map id space exhausted — refusing the upload");
+            return None;
+        }
+        shared.settings.save_map_mark(id.saturating_add(1));
+        shared.storage.as_mut()?.map_upload_begin(id).then_some(id)
+    }
+
+    /// All bytes arrived: verify the whole-object CRC (the [`Receiver`] outcome, as for every other
+    /// type) and, on a match, patch the held-back magic into `MP{id}.OBM` — the commit point — then
+    /// record the map as the card's **selected** one, so the map a rider just sent is what comes up
+    /// on the next boot without a second step.
+    ///
+    /// Deliberately does **not** bump the store revision or notify `storeChanged`: a map is not a
+    /// listed object (there is no `mapList`), so there is no catalog for a peer to re-read. It also
+    /// does not touch the running session — the map plane keeps streaming from the map it opened at
+    /// boot, because `MapTables` is parsed once into a `.bss` slot the whole ride loop borrows. That
+    /// is what the card's "restart to use it" line is telling the rider.
+    pub fn map_upload_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            // A CRC mismatch: the partial never had its magic patched in, so nothing durable was
+            // created — drop it rather than leave its clusters to the next boot's sweep (the retry
+            // gets a fresh id and a fresh filename, so it would not reuse this one).
+            if let Some(storage) = &mut shared.storage {
+                storage.map_upload_abort(id);
+            }
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        let Some(_len) = storage.map_upload_commit(id, magic) else { return TransferStatus::Error };
+        if let Some(name) = crate::sd::map_file_name_for(id) {
+            storage.save_selected_map(&name);
+        }
+        TransferStatus::Committed
+    }
+
+    // ==================== the volume-set upload (issue #1039) ====================
+    //
+    // The set path is the map path with one thing added: memory between transfers. Each file — every
+    // shard, then the manifest — streams exactly as a single map does (straight into its final 8.3
+    // name, format magic held back, patched in at commit). What the session holds is the *order*,
+    // because `OBCA_Spec.md` §5.4's rule is about order and a device that only saw one transfer at a
+    // time could not check it.
+
+    /// Validate + arm a **shard** upload (`OBCA_Spec.md` §5.1). The map guards run unchanged —
+    /// long enough to be an OBCM, and a card with room to spare — plus the three the session owns
+    /// (`obc_app::shard_announce`): a part field that names a real file of a set, a shard count
+    /// inside this board's [`SD_SET_MAX_SHARDS`](crate::sd::SD_SET_MAX_SHARDS) ceiling, and
+    /// agreement with the set already in flight.
+    ///
+    /// The free-space guard is necessarily **per file**: the device is not told the set's total
+    /// until the manifest, which by §5.4 is last. A host has the whole projection before it starts
+    /// (§5.7 makes that mandatory) and is the right place to refuse a set that cannot fit; this is
+    /// the backstop, and it is the same backstop a single map gets.
+    ///
+    /// Note what is *not* checked: `object_id` is not an object id here (see `obc_ble::SetPart`),
+    /// so `map_announce_reject`'s new-only clause would be nonsense and is deliberately not reused.
+    /// A shard has no id to target, and the set it belongs to is the one in flight.
+    pub fn set_shard_open(
+        &self,
+        shared: &SharedStore,
+        desc: &TransferControl,
+    ) -> Result<(Receiver, obc_ble::SetPart), TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        let Some(part) = obc_ble::SetPart::decode(desc.object_id) else {
+            return Err(TransferStatus::NotFound);
+        };
+        let fresh = obc_app::shard_announce(
+            self.set_upload.as_ref(),
+            part.shard_count,
+            part.index,
+            crate::sd::SD_SET_MAX_SHARDS as u8,
+        )
+        .map_err(set_reject_status)?;
+        // A set with no id left to mint is refused **here**, at the announce, rather than at the
+        // first byte: the answer is the same `storageFull` the shard ceiling gets — a catalog that
+        // cannot take another entry, §4.3's own meaning — and the host is told before it opens the
+        // pipe instead of after a red storage-failed card. `set_shard_begin` keeps the check as a
+        // backstop, because the id is minted there and the card can change under a slow host.
+        if fresh && storage.next_set_id_from_scan() > obc_formats::obcs::MAX_SET_ID {
+            return Err(TransferStatus::StorageFull);
+        }
+        if desc.total_len < obc_formats::obcm::HEADER_LEN as u32 {
+            return Err(TransferStatus::Error);
+        }
+        if let Some(free) = storage.card_free_bytes() {
+            if desc.total_len as u64 + crate::sd::MAP_FREE_HEADROOM > free {
+                return Err(TransferStatus::StorageFull);
+            }
+        }
+        Receiver::new(desc).map(|rx| (rx, part)).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Validate + arm the set's **terrain shard** upload (#1044) — the raster that carries the
+    /// set's elevation (`OBCA_Spec.md` §5.1's `terrain` role, an OBCT container).
+    ///
+    /// New-only, like the manifest: there is at most one terrain shard per set, so a named
+    /// `object_id` is `notFound` — there is nothing for an id to select. What the session owns is
+    /// the ordering (`obc_app::terrain_announce`): a raster with no set in flight names no set at
+    /// all, because the set id is minted by the first OBCM shard.
+    ///
+    /// The free-space and minimum-length guards are the shard path's, against an OBCT header
+    /// instead of an OBCM one.
+    pub fn set_terrain_open(&self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        if desc.object_id != TransferControl::NEW_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        obc_app::terrain_announce(self.set_upload.as_ref()).map_err(set_reject_status)?;
+        if desc.total_len < obc_formats::obct::HEADER_LEN as u32 {
+            return Err(TransferStatus::Error);
+        }
+        if let Some(free) = storage.card_free_bytes() {
+            if desc.total_len as u64 + crate::sd::MAP_FREE_HEADROOM > free {
+                return Err(TransferStatus::StorageFull);
+            }
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the card file for the armed terrain shard — `MS{id}.OBD` under the open session's id.
+    /// Unlike a shard this never mints a set: `set_terrain_open` already refused a raster with no
+    /// session, and a terrain shard is not something a set can begin with.
+    pub fn set_terrain_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let id = self.set_upload.as_ref()?.id();
+        if shared.storage.as_mut().is_some_and(|storage| storage.set_terrain_begin(id)) {
+            return Some(id);
+        }
+        // As for a shard: the open truncates, so a failure here has already destroyed any raster a
+        // previous attempt committed, and nothing downstream runs to notice.
+        self.set_upload.as_mut()?.clear_terrain();
+        None
+    }
+
+    /// The terrain shard's bytes have all arrived: verify the whole-object CRC, patch the held-back
+    /// `OBCT` magic in, and record the raster in the session — the fact
+    /// `obc_app::manifest_announce` reads to know the manifest is one record longer.
+    ///
+    /// A failed raster leaves the **session** open but stops it counting the record, exactly as a
+    /// failed shard does: it is one independent file, and the honest recovery is to re-send it
+    /// rather than the gigabytes beside it.
+    pub fn set_terrain_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_terrain_discard(id);
+            }
+            self.forget_terrain();
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_terrain_commit(id, magic).is_none() {
+            // The commit either deleted `MS{id}.OBD` (it is not a readable OBCT — a wrong file, or
+            // a container version this firmware does not read) or left it zero-magic. Either way
+            // the card has no raster this set can mount, so the session must stop naming one.
+            self.forget_terrain();
+            return TransferStatus::Error;
+        }
+        if let Some(session) = &mut self.set_upload {
+            session.mark_terrain();
+        }
+        TransferStatus::Committed
+    }
+
+    /// The session stops counting this set's raster: the card no longer holds a readable
+    /// `MS{id}.OBD` (#1044). The terrain twin of [`forget_shard`](Self::forget_shard), and the same
+    /// rule — a session never claims a file the card cannot supply.
+    fn forget_terrain(&mut self) {
+        if let Some(session) = &mut self.set_upload {
+            session.clear_terrain();
+        }
+    }
+
+    /// Validate + arm the **manifest** upload — `OBCA_Spec.md` §5.4's manifest-last rule, enforced
+    /// before a byte streams (`obc_app::manifest_announce`). New-only like a map, so a named
+    /// `object_id` is `notFound`: the manifest is the set's identity, not a slot to write into.
+    pub fn set_manifest_open(&self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        if shared.storage.is_none() {
+            return Err(TransferStatus::Error);
+        }
+        if desc.object_id != TransferControl::NEW_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        obc_app::manifest_announce(self.set_upload.as_ref(), desc.total_len).map_err(set_reject_status)?;
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the card file for one armed shard — called by the data plane at the first streamed
+    /// byte, exactly like [`map_upload_begin`](Self::map_upload_begin). Mints the set id and writes
+    /// the in-flight token on the *first* shard of a set; joins the open session otherwise.
+    /// Returns the set id, which the data plane carries to the commit.
+    pub fn set_shard_begin(&mut self, shared: &mut SharedStore, part: obc_ble::SetPart) -> Option<u16> {
+        let id = match self.set_upload {
+            Some(session) => session.id(),
+            None => {
+                let id = shared.storage.as_ref()?.next_set_id_from_scan();
+                // The backstop behind `set_shard_open`'s announce-time refusal: the host was
+                // already told `storageFull` before the pipe opened, so reaching this means the
+                // card changed under a slow host.
+                if id > obc_formats::obcs::MAX_SET_ID {
+                    defmt::warn!("store: volume-set id space exhausted — refusing the upload");
+                    return None;
+                }
+                if !shared.storage.as_mut()?.set_upload_begin(id) {
+                    return None;
+                }
+                self.set_upload = Some(obc_app::SetUpload::new(id, part.shard_count));
+                id
+            }
+        };
+        if shared.storage.as_mut().is_some_and(|storage| storage.set_shard_begin(id, part.index as usize)) {
+            return Some(id);
+        }
+        // The open is `ReadWriteCreateOrTruncate`, so by the time it can fail the shard that was
+        // under this name is **already gone**. Nothing streams and `set_shard_finish` is never
+        // reached, so this is the only place that can keep the session honest about it (#1044).
+        self.set_upload.as_mut()?.clear(part.index);
+        None
+    }
+
+    /// One shard's bytes have all arrived: verify the whole-object CRC, patch the held-back OBCM
+    /// magic in, and record the shard as committed in the session — the fact
+    /// `obc_app::manifest_announce` later reads to decide whether the manifest may be sent.
+    ///
+    /// A failed shard leaves the **session** open but stops it counting this shard. Shards are
+    /// independent files (§5.4), so the honest recovery is for the host to re-send this one rather
+    /// than the gigabytes beside it — and for that to work the session has to admit the shard is
+    /// gone, or the manifest sails through its announce and dies at the set-deleting commit.
+    pub fn set_shard_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        part: obc_ble::SetPart,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_shard_discard(id, part.index as usize);
+            }
+            self.forget_shard(part.index);
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_shard_commit(id, part.index as usize, magic).is_none() {
+            // The commit either deleted the shard (its header is not a readable OBCM) or left it
+            // zero-magic, which no reader accepts either. Both are "there is no shard here now".
+            self.forget_shard(part.index);
+            return TransferStatus::Error;
+        }
+        if let Some(session) = &mut self.set_upload {
+            session.mark(part.index);
+        }
+        TransferStatus::Committed
+    }
+
+    /// The session stops counting shard `index`: the card no longer holds a readable one under
+    /// that name, whatever the reason (#1044).
+    ///
+    /// Every failure path of a shard transfer routes through here rather than each remembering to
+    /// clear the bit, because the one that did not was the bug: a session claiming a file the card
+    /// cannot supply passes the manifest's announce-length check and dies at the *commit*, which
+    /// deletes the whole set. Cleared, the same host is refused at the announce with
+    /// `manifestEarly` — the answer that says which file to send again.
+    fn forget_shard(&mut self, index: u8) {
+        if let Some(session) = &mut self.set_upload {
+            session.clear(index);
+        }
+    }
+
+    /// Open the card file for the armed manifest — the same `MS{id}.OBS` the session's token
+    /// already occupies, truncated back to its four zero bytes.
+    pub fn set_manifest_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let id = self.set_upload.as_ref()?.id();
+        shared.storage.as_mut()?.set_manifest_begin(id).then_some(id)
+    }
+
+    /// **The set's commit point.** Verify the whole-object CRC, then hand the held-back `OBCS`
+    /// magic to the card, which re-reads the manifest, validates it against §5.3 *and* against the
+    /// shards actually present, and only then writes those four bytes. On success the set becomes
+    /// the card's selected map, exactly as a committed single map does.
+    ///
+    /// Either way the session closes: a set that committed is finished, and one whose manifest was
+    /// refused has already been deleted whole — leaving it half-present is the state §5.4 exists to
+    /// make impossible.
+    pub fn set_manifest_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        self.set_upload = None;
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_upload_abort(id);
+            }
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_manifest_commit(id, magic).is_none() {
+            return TransferStatus::Error;
+        }
+        if let Some(name) = obc_formats::obcs::manifest_name(id) {
+            if let Ok(short) = ShortFileName::create_from_str(name.as_str()) {
+                storage.save_selected_map(&short);
+            }
+        }
+        TransferStatus::Committed
+    }
+
+    /// Whether a volume-set upload session is open — i.e. whether a refusal here lands *mid-set*,
+    /// with a previous file's outcome already on the glass (#1044).
+    pub fn set_upload_active(&self) -> bool {
+        self.set_upload.is_some()
+    }
+
+    /// Abandon the set in flight: close the session and delete every file of it, token first
+    /// (`OBCA_Spec.md` §5.4's ordering, executed by `obc_formats::obcs::delete_plan`). A no-op when
+    /// no set is open, so the link-reset path can call it unconditionally.
+    pub fn set_upload_abort(&mut self, shared: &mut SharedStore) {
+        let Some(session) = self.set_upload.take() else { return };
+        if let Some(storage) = &mut shared.storage {
+            storage.set_upload_abort(session.id());
+        }
     }
 
     // ==================== downloads ====================
@@ -1171,10 +1915,10 @@ impl ObjectStore {
             // A trip detail download is the same verbatim stream as a route — the stored `TP{id}.OBT`
             // *is* the wire object — out of `/routes` (`ride = false`).
             ObjectType::Trip => {
-                let Some(idx) = self.trip_index(desc.object_id) else {
+                let Some(file) = shared.storage.as_mut().and_then(|storage| storage.trips().file(desc.object_id))
+                else {
                     return Err(TransferStatus::NotFound);
                 };
-                let file = self.trips[idx].file.clone();
                 self.open_object_download(shared, desc, &file, false)
             }
             // A ride download is the same verbatim stream — the stored `RD{id}.ORD` *is* the wire
@@ -1247,7 +1991,7 @@ impl ObjectStore {
         let Some(len) = opened else {
             return Err(TransferStatus::Error);
         };
-        let Some(crc) = object_crc(storage, len) else {
+        let Some(crc) = storage.object_crc(len) else {
             storage.close_object();
             return Err(TransferStatus::Error);
         };
@@ -1338,11 +2082,7 @@ impl ObjectStore {
                 Some(c) => c,
                 // Lazy fill: stream the whole file once through the detail-download handle slot
                 // (idle during a list build) to compute the CRC, then remember it as dirty.
-                None => match storage.open_object(&file).and_then(|len| {
-                    let computed = object_crc(storage, len);
-                    storage.close_object();
-                    computed
-                }) {
+                None => match storage.file_crc(&file) {
                     Some(c) => {
                         if crcs.insert(id, c) {
                             crcs_dirty = true;
@@ -1419,62 +2159,29 @@ impl ObjectStore {
         let Some(storage) = shared.storage.as_mut() else {
             return Some((ListHeader::ENCODED_LEN, 0, 0, TripListEntry::ENTRY_LEN as u8));
         };
-        let mut crcs = storage.load_trip_crcs();
-        let mut crcs_dirty = false;
         let mut off = ListHeader::ENCODED_LEN;
-        let mut count: u16 = 0;
-        for i in 0..self.trips.len() {
-            let id = self.trips[i].id;
-            let file = self.trips[i].file.clone();
-            let (byte_len, meta, stage_count) = storage.read_trip(&file)?; // transient → fail whole list
-                                                                           // Sum distance/ascent over the trip's resolvable stages; a dangling stage id (no route
-                                                                           // with it) is skipped, contributing nothing.
-            let mut total_distance_m: u32 = 0;
-            let mut total_ascent_m: u32 = 0;
-            for stage_id in &meta.stage_ids {
-                if let Some(route_file) = self.routes.iter().find(|s| s.id == *stage_id).map(|s| s.file.clone()) {
-                    if let Some((_, info)) = storage.route_object_info(&route_file) {
-                        total_distance_m = total_distance_m.saturating_add(info.distance_m);
-                        total_ascent_m = total_ascent_m.saturating_add(info.ascent_m);
-                    }
+        let routes = &self.routes;
+        let list_buf = &mut self.list_buf;
+        let mut trips = storage.trips();
+        let total = trips.total();
+        let count = trips.for_each_list_row(
+            |stage_id| routes.iter().find(|slot| slot.id == stage_id).map(|slot| slot.file.clone()),
+            |id, byte_len, total_distance_m, total_ascent_m, stage_count, meta, crc| {
+                let entry = TripListEntry {
+                    object_id: id,
+                    byte_len,
+                    total_distance_m,
+                    total_ascent_m,
+                    stage_count,
+                    name: meta.name.as_bytes(),
+                    crc32: crc,
                 }
-            }
-            let crc = match crcs.get(id) {
-                Some(c) => c,
-                // Lazy fill: stream the whole trip file once to compute its CRC (the tiny file is a
-                // fast pass), then remember it as dirty for the single persist below.
-                None => match storage.open_object(&file).and_then(|len| {
-                    let computed = object_crc(storage, len);
-                    storage.close_object();
-                    computed
-                }) {
-                    Some(c) => {
-                        if crcs.insert(id, c) {
-                            crcs_dirty = true;
-                        }
-                        c
-                    }
-                    None => TripListEntry::CRC_UNKNOWN,
-                },
-            };
-            let entry = TripListEntry {
-                object_id: id,
-                byte_len,
-                total_distance_m,
-                total_ascent_m,
-                stage_count,
-                name: meta.name.as_bytes(),
-                crc32: crc,
-            }
-            .encode();
-            self.list_buf[off..off + TripListEntry::ENTRY_LEN].copy_from_slice(&entry);
-            off += TripListEntry::ENTRY_LEN;
-            count += 1;
-        }
-        if crcs_dirty {
-            storage.write_trip_crcs(&crcs);
-        }
-        Some((off, count, self.trip_total, TripListEntry::ENTRY_LEN as u8))
+                .encode();
+                list_buf[off..off + TripListEntry::ENTRY_LEN].copy_from_slice(&entry);
+                off += TripListEntry::ENTRY_LEN;
+            },
+        )?;
+        Some((off, count, total, TripListEntry::ENTRY_LEN as u8))
     }
 }
 
@@ -1516,21 +2223,4 @@ pub enum DownloadSource {
     List,
     /// The open route / ride file on the card.
     Object,
-}
-
-/// The whole-object CRC pre-pass over the open detail-download file: one sequential read of
-/// `len` bytes in card-block-sized chunks. Synchronous (the caller yields between GATT events,
-/// not mid-CRC) — ~0.5 s/MB at the 8 MHz bus, and a route object is typically well under one.
-fn object_crc(storage: &Storage, len: u32) -> Option<u32> {
-    let src = storage.object_source()?;
-    let mut crc = Crc32::new();
-    let mut buf = [0u8; 512];
-    let mut off = 0u32;
-    while off < len {
-        let n = ((len - off) as usize).min(buf.len());
-        obc_formats::io::ByteSource::read_at(&src, off, &mut buf[..n]).ok()?;
-        crc.update(&buf[..n]);
-        off += n as u32;
-    }
-    Some(crc.finalize())
 }

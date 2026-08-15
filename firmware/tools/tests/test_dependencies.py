@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -65,6 +66,25 @@ def rules(exceptions=()):
 
 
 class DependencyTests(unittest.TestCase):
+    def test_obc_weather_is_core_and_cannot_pull_in_storage_policy(self):
+        production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
+        self.assertIn("obc-weather", production_rules["groups"]["core"])
+        edges = {check_dependencies.Edge("obc-weather", "obc-storage")}
+        violations = check_dependencies.check_edges(edges, production_rules)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("core -> platform", violations[0])
+
+    def test_wx_bake_is_host_only(self):
+        production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
+        self.assertEqual(
+            check_dependencies.group_index(production_rules)["obc-wx-bake"],
+            "host",
+        )
+        edges = {check_dependencies.Edge("obc-weather", "obc-wx-bake")}
+        violations = check_dependencies.check_edges(edges, production_rules)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("core -> host", violations[0])
+
     def test_forbidden_edge_has_useful_message(self):
         edges = check_dependencies.local_edges(metadata(("low", "high", None)))
         violations = check_dependencies.check_edges(edges, rules())
@@ -174,10 +194,10 @@ class DependencyTests(unittest.TestCase):
         self.assertIn(check_dependencies.Edge("obc-fw-nrf54l", "obc-app"), edges)
 
     def test_standalone_manifest_paths_are_relative_to_primary_root(self):
-        primary = Path("/repo/firmware/Cargo.toml")
+        primary = Path("/repo/Cargo.toml")
         manifests = check_dependencies.metadata_manifests(
             primary,
-            {"standalone_manifests": ["obc-fw-nrf54l/Cargo.toml", "obc-boot/Cargo.toml"]},
+            {"standalone_manifests": ["firmware/obc-fw-nrf54l/Cargo.toml", "firmware/obc-boot/Cargo.toml"]},
         )
         self.assertEqual(
             manifests,

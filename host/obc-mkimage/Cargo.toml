@@ -1,0 +1,20 @@
+[package]
+name = "obc-mkimage"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "Host tool that wraps a raw app image into an OBCU update container (obc-mkimage wrap) and inspects one (obc-mkimage inspect). The producer side of the SD-staged DFU pipeline (epic #615)."
+
+[dependencies]
+# The shared OBCU codec — the exact bytes the armer and bootloader read back, and (since #997) the
+# exact Ed25519 message the armer verifies: `obc_dfu::sig::sign_image` is the only signing path, so
+# the host cannot drift from the device.
+obc-dfu = { path = "../../firmware/obc-dfu" }
+# `keygen`'s entropy. Deliberately NOT ed25519-compact's `random` feature: that would mix fresh
+# noise into every signature's nonce, and OBCU signing is required to be deterministic (pinned spec
+# vector, reproducible releases — see `obc_dfu::sig::sign_image`).
+getrandom = "0.4"
+
+[dev-dependencies]
+# The shared scratch-path helper the CLI tests build their throwaway paths with.
+obcm-testkit = { path = "../obcm-testkit" }

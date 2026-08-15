@@ -404,34 +404,58 @@ impl BootState {
         }
     }
 
+    /// The OBCU header of the image **that is running right now**, when the page records one.
+    ///
+    /// Every state names the running image in its own place, and getting the mapping wrong would
+    /// misreport the device's version to a host (#996 / epic #773), so it lives here beside the
+    /// codec rather than in each reader:
+    ///
+    /// - `Idle` — the `installed` record, i.e. what the last confirmed install left behind. `None`
+    ///   on a device that has never installed an update (probe-flashed), which is the whole reason
+    ///   this returns an `Option`.
+    /// - `Trial` — `installed` *is* what's running: the bootloader wrote this page on its way into
+    ///   the freshly-installed image's single trial boot, before the app confirms it.
+    /// - `Armed` — an arm that the bootloader never consumed, so the **old** image is still
+    ///   running, and its header is the one the armer snapshotted into `rollback` (absent on a
+    ///   first install, exactly as the arm recorded it). The same mapping the app's stray-arm
+    ///   downgrade uses when it rewrites this page as `Idle`.
+    ///
+    /// Never the *staged* image: `Armed { update }` is a request, not a fact about the running
+    /// image, and reporting it would claim a version the device may never boot.
+    pub fn running_image(&self) -> Option<ImageHeader> {
+        match self {
+            BootState::Idle { installed, .. } => *installed,
+            BootState::Trial { installed, .. } => Some(*installed),
+            BootState::Armed { rollback, .. } => rollback.map(|r| r.header),
+        }
+    }
+
     /// Encode into the CRC-framed, 16-byte-line-aligned blob (see the module doc + `OBCU_Spec.md` §2).
     /// Never fails: every [`BootState`] fits [`MAX_ENCODED_LEN`] by construction.
     pub fn encode(&self) -> EncodedPage {
         let mut b = [0u8; MAX_ENCODED_LEN];
         b[OFF_MAGIC..OFF_MAGIC + 4].copy_from_slice(&MAGIC);
         b[OFF_VERSION..OFF_VERSION + 2].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-        let (tag, generation) = match self {
-            BootState::Idle { .. } => (TAG_IDLE, 0),
-            BootState::Armed { generation, .. } => (TAG_ARMED, *generation),
-            BootState::Trial { generation, .. } => (TAG_TRIAL, *generation),
+        // One match over `self` yields the tag, generation, and the payload end offset together — the
+        // payload writers fill `b[HDR_LEN..]`, disjoint from the tag/generation header fields written
+        // below, so the write order doesn't matter and `blob_len` only needs `end`.
+        let (tag, generation, end) = match self {
+            BootState::Idle { installed, last_outcome } => {
+                let c = put_opt_header(&mut b, HDR_LEN, installed);
+                (TAG_IDLE, 0, put_opt_outcome(&mut b, c, last_outcome))
+            }
+            BootState::Armed { generation, update, rollback } => {
+                let c = update.write(&mut b, HDR_LEN);
+                (TAG_ARMED, *generation, put_opt_staged(&mut b, c, rollback))
+            }
+            BootState::Trial { generation, installed, rollback } => {
+                b[HDR_LEN..HDR_LEN + HEADER_LEN].copy_from_slice(&installed.encode());
+                (TAG_TRIAL, *generation, put_opt_staged(&mut b, HDR_LEN + HEADER_LEN, rollback))
+            }
         };
         b[OFF_TAG] = tag;
         // OFF_TAG + 1 reserved (0)
         b[OFF_GENERATION..OFF_GENERATION + 4].copy_from_slice(&generation.to_le_bytes());
-        let end = match self {
-            BootState::Idle { installed, last_outcome } => {
-                let c = put_opt_header(&mut b, HDR_LEN, installed);
-                put_opt_outcome(&mut b, c, last_outcome)
-            }
-            BootState::Armed { update, rollback, .. } => {
-                let c = update.write(&mut b, HDR_LEN);
-                put_opt_staged(&mut b, c, rollback)
-            }
-            BootState::Trial { installed, rollback, .. } => {
-                b[HDR_LEN..HDR_LEN + HEADER_LEN].copy_from_slice(&installed.encode());
-                put_opt_staged(&mut b, HDR_LEN + HEADER_LEN, rollback)
-            }
-        };
         // Pad (with the CRC) up to a whole 16-byte line; the padding is inside the CRC-covered span.
         let blob_len = (end + CRC_LEN).div_ceil(16) * 16;
         b[OFF_BLOB_LEN..OFF_BLOB_LEN + 4].copy_from_slice(&(blob_len as u32).to_le_bytes());
@@ -519,19 +543,30 @@ impl BootState {
 /// host-tested here.
 ///
 /// Sized by its inlined [`StagedRef`] like [`BootState`] — same no-alloc rationale (see that type).
+///
+/// Each variant carries **everything [`engine::run`](crate::engine::run) needs to execute it**, so
+/// the engine never re-matches the source [`BootState`] to recover a `generation` or `rollback` —
+/// which used to require dead "unreachable via decide()" fallbacks that would have silently
+/// substituted `generation = 0` / `rollback = None` into a written state record if `decide`'s
+/// mapping ever drifted (DR7, #735).
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootDecision {
     /// Nothing pending — jump to the app (`Idle`).
     Jump,
-    /// Flash the staged image, then write `Trial` and **jump into it** — the one trial boot
-    /// (`Armed`). Idempotent: a power loss mid-flash re-enters here next boot (invariant 2).
-    Install(StagedRef),
-    /// The trial boot went unconfirmed and a snapshot exists — flash it back (`Trial` with a rollback).
-    Rollback(StagedRef),
+    /// Flash the staged `update`, then write `Trial` and **jump into it** — the one trial boot
+    /// (`Armed`). Idempotent: a power loss mid-flash re-enters here next boot (invariant 2). Carries
+    /// the arm's `generation` (recorded in the terminal outcome) and the `rollback` snapshot that
+    /// rides into the `Trial` record (and forward into the reject `Idle` on a bad stage).
+    Install { update: StagedRef, generation: u32, rollback: Option<StagedRef> },
+    /// The trial boot went unconfirmed and a `snapshot` exists — flash it back (`Trial` with a
+    /// rollback). Carries the trial's `installed` header (carried into the `Idle` on a bad snapshot)
+    /// and the arm's `generation` (recorded in the terminal outcome).
+    Rollback { snapshot: StagedRef, installed: ImageHeader, generation: u32 },
     /// The trial boot went unconfirmed with **no** snapshot (the first-install case) — accept the
-    /// running image and clear the state to `Idle` (`Trial` without a rollback).
-    AcceptAndClear,
+    /// running image and clear the state to `Idle` (`Trial` without a rollback). Carries the running
+    /// image's `installed` header and the arm's `generation`, both recorded in the accepted `Idle`.
+    AcceptAndClear { installed: ImageHeader, generation: u32 },
 }
 
 /// The bootloader's decision function, as pure logic. The bootloader entry reads the page, calls this,
@@ -549,10 +584,12 @@ pub enum BootDecision {
 pub fn decide(state: &BootState) -> BootDecision {
     match state {
         BootState::Idle { .. } => BootDecision::Jump,
-        BootState::Armed { update, .. } => BootDecision::Install(*update),
-        BootState::Trial { rollback, .. } => match rollback {
-            Some(r) => BootDecision::Rollback(*r),
-            None => BootDecision::AcceptAndClear,
+        BootState::Armed { generation, update, rollback } => {
+            BootDecision::Install { update: *update, generation: *generation, rollback: *rollback }
+        }
+        BootState::Trial { generation, installed, rollback } => match rollback {
+            Some(r) => BootDecision::Rollback { snapshot: *r, installed: *installed, generation: *generation },
+            None => BootDecision::AcceptAndClear { installed: *installed, generation: *generation },
         },
     }
 }

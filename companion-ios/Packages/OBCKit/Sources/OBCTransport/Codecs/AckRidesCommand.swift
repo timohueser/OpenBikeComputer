@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// The `ackRides` command encoder (spec §4.4, cmd `2` — mirrored in `OBCProtocol.md`):
+/// The `ackRides` command encoder (spec §4.4, cmd `2`; see `OBCProtocol.md`):
 /// `cmd u8 · count u8 · count × object_id u16 LE`, the phone's **ride-possession ack**.
 ///
 /// The device's per-ride "synced" flag (its Rides screen's delete-guard cue) is otherwise set only
@@ -28,8 +28,7 @@ public enum AckRidesCommand {
             let slice = ids[start..<min(start + maxIDsPerWrite, ids.count)]
             var data = Data([commandByte, UInt8(slice.count)])
             for id in slice {
-                data.append(UInt8(id.raw & 0xFF))
-                data.append(UInt8(id.raw >> 8))
+                data.appendUInt16LE(id.raw)
             }
             return data
         }

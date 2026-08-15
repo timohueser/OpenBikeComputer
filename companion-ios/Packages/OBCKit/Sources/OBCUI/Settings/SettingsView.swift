@@ -13,6 +13,9 @@ public struct SettingsView: View {
     /// navigation path; `nil` keeps the Firmware row a coming-soon placeholder
     /// (previews / any wiring that doesn't host the update screen).
     private let onOpenFirmwareUpdate: (() -> Void)?
+    /// Push the Weather screen (WX13). `nil` keeps the row out entirely — a
+    /// wiring that hosts no weather screen must not show a row that goes nowhere.
+    private let onOpenWeather: (() -> Void)?
     /// Debug-only: the hidden second entry into the mock dev panel (B1P's
     /// deferral) — five taps on the App version row. `nil` in Release wiring,
     /// where the gesture goes nowhere.
@@ -29,10 +32,12 @@ public struct SettingsView: View {
     public init(
         model: SettingsModel,
         onOpenFirmwareUpdate: (() -> Void)? = nil,
+        onOpenWeather: (() -> Void)? = nil,
         onOpenDevPanel: (() -> Void)? = nil
     ) {
         self.model = model
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
+        self.onOpenWeather = onOpenWeather
         self.onOpenDevPanel = onOpenDevPanel
     }
 
@@ -41,6 +46,7 @@ public struct SettingsView: View {
             VStack(spacing: 26) {
                 deviceGroup
                 routesGroup
+                if onOpenWeather != nil { weatherGroup }
                 firmwareGroup
                 servicesGroup
                 aboutGroup
@@ -162,15 +168,30 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: Weather (WX13)
+
+    private var weatherGroup: some View {
+        OBCGroupedSection(
+            "Weather",
+            footer: "How often your OBC asks for weather, what this phone does in the background, "
+                + "and where the data comes from."
+        ) {
+            OBCListRow(
+                icon: "cloud.sun",
+                iconColor: OBCTheme.water,
+                label: "Weather",
+                showsChevron: true,
+                showsDivider: false,
+                action: onOpenWeather
+            )
+            .accessibilityIdentifier("settings.weather")
+        }
+    }
+
     // MARK: Firmware (coming soon)
 
     private var firmwareGroup: some View {
-        OBCGroupedSection(
-            "Firmware",
-            footer: onOpenFirmwareUpdate == nil
-                ? "OTA updates will arrive in a later release. For now, flash from the desktop tool."
-                : "Import an UPDATE.BIN to send new firmware to your device over Bluetooth."
-        ) {
+        OBCGroupedSection("Firmware", footer: firmwareFooter) {
             if let onOpenFirmwareUpdate {
                 OBCListRow(
                     icon: "arrow.down.to.line",
@@ -187,6 +208,23 @@ public struct SettingsView: View {
                     comingSoon: true
                 )
             }
+            // #773 U5 — the one switch behind the launch sheet and the background check.
+            OBCListRow(
+                icon: "arrow.clockwise",
+                iconColor: OBCTheme.water,
+                label: "Check for updates automatically"
+            ) {
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(
+                        get: { model.autoCheckUpdates },
+                        set: { model.setAutoCheckUpdates($0) }
+                    )
+                )
+                .labelsHidden()
+                .tint(OBCTheme.forest)
+            }
+            .accessibilityIdentifier("firmware.autoCheck")
             OBCListRow(
                 icon: "clock",
                 iconColor: OBCTheme.parchment3,
@@ -195,6 +233,18 @@ public struct SettingsView: View {
                 showsDivider: false
             )
         }
+    }
+
+    /// The footer carries #773's privacy footnote verbatim in spirit: the check is a plain
+    /// anonymous request for a public file, and nothing about the device is sent. It is a
+    /// requirement of the epic, not a reassurance we invented, so it lives where the switch is.
+    private var firmwareFooter: String {
+        guard onOpenFirmwareUpdate != nil else {
+            return "OTA updates will arrive in a later release. For now, flash from the desktop tool."
+        }
+        return "Send new firmware over Bluetooth — a file you picked, or the published update the "
+            + "app finds for you. Checking is an anonymous request for one public file: no account, "
+            + "and nothing about your device or your rides is sent."
     }
 
     // MARK: Connected services (the B7 seam, disabled)
@@ -291,12 +341,11 @@ public struct SettingsView: View {
 
 /// Inert transport for `#Preview` construction only — serves the design's
 /// identity (Trailhead · 82% · v0.4.2) and nothing else.
-private struct PreviewSettingsTransport: DeviceTransport {
+private struct PreviewSettingsTransport: DeviceLink, DeviceBattery, DeviceConfiguration, DeviceBonding {
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
     var battery: AsyncStream<Int> { AsyncStream { $0.yield(82); $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo {
@@ -304,16 +353,6 @@ private struct PreviewSettingsTransport: DeviceTransport {
     }
     func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
     func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
-    func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        .immediatelyFinished(.failed(.notConnected))
-    }
-    func deleteRoute(_ id: DeviceObjectID) async throws {}
-    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 }
 
 private struct PreviewNoopBondStore: BondStore {

@@ -3,28 +3,27 @@ name = "obc-app"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "OBC device application and compatibility facade (no_std) — shared by the desktop simulator and the nRF54L firmware"
-
-[features]
-# Constrained on-device memory profile (issue #124). Forwards to the renderer + reader + route
-# crates so the board firmware enables just `obc-app/nrf-mem` to trim every resident buffer
-# `App` embeds (renderer scratch) and the caches it pairs with. See `obc-reader`'s `nrf-mem`.
-# Off by default (full sizes on host/sim/tests).
-nrf-mem = ["obc-render/nrf-mem", "obc-reader/nrf-mem", "obc-route/nrf-mem"]
+description = "OBC device application (no_std) — shared by the desktop simulator and the nRF54L firmware"
 
 [dependencies]
-# Dependency-light semantic hardware/host ports. obc-app re-exports these names during the staged
-# migration so existing board and simulator imports remain source-compatible.
+# Dependency-light semantic hardware/host ports.
 obc-ports = { path = "../obc-ports" }
 # The persistent-format authority: OBCM/ride format constants, the POI category/subtype table, and
 # its lookups (`poi_label_of` / `poi_category_of`). no_std foundation crate — a downward edge.
 obc-formats = { path = "../obc-formats" }
+# Elevation: the shared ascent dead-band the ride ledger integrates barometric climb through, and
+# (from EL7) the OBCT terrain source the app mounts. no_std leaf — a downward edge like obc-formats.
+obc-elevation = { path = "../obc-elevation" }
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
 # simulator re-enables std on `obc-reader` through its own dependency edge. `render`
-# brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
+# brings the `Viewport` + the `RenderScratch` the app draws through; it's no_std.
 obc-reader = { path = "../obc-reader" }
+obc-map-scene = { path = "../obc-map-scene" }
 obc-render = { path = "../obc-render" }
+# The OBCW weather reader + fixed cache (WX7): the rain-overlay adapter (WX10) bridges it onto
+# `obc-render`'s format-agnostic RainOverlaySource seam. no_std, shared with the firmware.
+obc-weather = { path = "../obc-weather" }
 # The route format + reader (RouteSummary for the menu catalog, RouteReader the Map
 # draws). no_std, shared with the firmware exactly like the map reader.
 obc-route = { path = "../obc-route" }
@@ -39,4 +38,9 @@ libm = { version = "0.2", default-features = false } # no arch asm: identical co
 [dev-dependencies]
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
 # integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
-obcm-testkit = { path = "../obcm-testkit" }
+obcm-testkit = { path = "../../host/obcm-testkit" }
+# The About page (#1149) hand-wraps the Copernicus attribution into on-glass lines; the parity
+# test re-joins them and compares against `obc_dem::COPERNICUS_ATTRIBUTION` — the one copy of the
+# wording in the repository — so the device text cannot drift from the host's. Dev-only: the
+# `no_std` device build never sees the host crate.
+obc-dem = { path = "../../host/obc-dem" }

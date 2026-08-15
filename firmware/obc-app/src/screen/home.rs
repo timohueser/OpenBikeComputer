@@ -3,7 +3,7 @@
 //!
 //! It draws a code-generated topographic backdrop, the wall clock, and the battery gauge. Both
 //! `press` and `back-hold` open the compass [`Menu`](MenuScreen) — the one entry point into the
-//! app; the Route menu is reached from there via the Routes station. Encoder turns are ignored.
+//! app; the Route menu is reached from there via the Routes station. Up/Down steps are ignored.
 //!
 //! The backdrop is procedural: a smooth height field (a sum of [`Bump`] Lorentzians, [`field`])
 //! traced into iso-lines by marching squares ([`contours`]) — no map data or I/O. Its massif is
@@ -125,11 +125,12 @@ impl HomeScreen {
 
         // The battery group, nudged 6 px below its old h*64/100 anchor (owner review round 1: a
         // little more air between the date line and the gauge).
-        battery(cv, w, h * 64 / 100 + 6, rx.state.battery_pct);
+        let device = rx.state.device;
+        battery(cv, w, h * 64 / 100 + 6, device.battery_pct);
 
         // The BLE connected rune lives in a fixed top-right status slot — 10 px inset from both
         // edges, white, and only when a phone is linked (nothing else ever occupies this corner).
-        if rx.state.ble_connected() {
+        if device.ble_connected() {
             super::ble_glyph(cv, w - 10 - super::BLE_GLYPH_W, 10 + 8, palette::PARCHMENT);
         }
     }

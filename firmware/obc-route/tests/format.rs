@@ -1,20 +1,20 @@
 //! Format-contract tests for the OBCR reader.
 //!
-//! Each test builds a synthetic `.obcr` byte buffer with a small handwritten builder
-//! that mirrors `OBCR_Spec.md` exactly, then asserts the reader parses it back.
-//! Building the bytes here (rather than via the converter) pins the reader to the
-//! spec independently: if either drifts, these break.
+//! Each test builds a synthetic `.obcr` byte buffer with the shared handwritten builder
+//! ([`common::build_obcr`], which mirrors `OBCR_Spec.md` exactly), then asserts the reader
+//! parses it back. Hand-emitting the bytes rather than going through the converter pins the
+//! reader to the spec independently: if either drifts, these break.
 
 use core::cell::Cell;
 
 use obc_formats::io::{ByteSource, Error, SliceSource};
-use obc_formats::obcr::{CHUNK_META_LEN, HEADER_LEN};
+use obc_formats::obcr::{HEADER_FULL_LEN, VERSION};
 use obc_route::{
     RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
 };
 
 mod common;
-use common::decode;
+use common::{build_obcr, decode, ChunkIn, IndexPlacement, RouteSpec};
 
 /// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
 /// the [`RouteCache`] really skips the source on a hit.
@@ -56,16 +56,9 @@ impl ByteSource for ReentrantSource<'_> {
     }
 }
 
-/// A chunk to encode: its absolute points (lon, lat, ele) plus the cumulative stats
-/// at its first point.
-struct ChunkIn {
-    points: Vec<(i32, i32, i16)>,
-    cum_distance_m: u32,
-    cum_ascent_m: u32,
-}
-
-/// Build a `.obcr` from chunks, mirroring the spec's byte layout. `start` is the
-/// first route point; `totals` is (distance_m, ascent_m, descent_m).
+/// Build a `.obcr` from seam-sharing chunks with the index right after the header — the layout
+/// the corruption tests below poke meta fields in at known absolute offsets. `start` is the
+/// first route point; `totals` is `(distance_m, ascent_m, descent_m)`.
 fn build_route(
     name: &str,
     start: (i32, i32),
@@ -73,83 +66,17 @@ fn build_route(
     ele_range: (i16, i16),
     chunks: &[ChunkIn],
 ) -> Vec<u8> {
-    let all = || chunks.iter().flat_map(|c| c.points.iter().copied());
-    let min_lon = all().map(|p| p.0).min().unwrap();
-    let min_lat = all().map(|p| p.1).min().unwrap();
-    let max_lon = all().map(|p| p.0).max().unwrap();
-    let max_lat = all().map(|p| p.1).max().unwrap();
-    // Distinct points: seams (each chunk's first == previous chunk's last) count once.
-    let distinct: usize = chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
-
-    let index_offset = HEADER_LEN;
-    let data_offset = index_offset + chunks.len() * CHUNK_META_LEN;
-
-    let mut metas: Vec<u8> = Vec::new();
-    let mut data: Vec<u8> = Vec::new();
-    let mut cursor = data_offset;
-    for ch in chunks {
-        let p = &ch.points;
-        let anchor = p[0];
-        let (cmin_lon, cmin_lat) = (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
-        let (cmax_lon, cmax_lat) = (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
-
-        let mut body: Vec<u8> = Vec::new();
-        for w in p.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            body.extend_from_slice(&((b.0 - a.0) as i16).to_le_bytes());
-            body.extend_from_slice(&((b.1 - a.1) as i16).to_le_bytes());
-            body.extend_from_slice(&b.2.to_le_bytes());
-        }
-
-        // ChunkMeta (44 bytes).
-        metas.extend_from_slice(&cmin_lon.to_le_bytes());
-        metas.extend_from_slice(&cmin_lat.to_le_bytes());
-        metas.extend_from_slice(&cmax_lon.to_le_bytes());
-        metas.extend_from_slice(&cmax_lat.to_le_bytes());
-        metas.extend_from_slice(&anchor.0.to_le_bytes());
-        metas.extend_from_slice(&anchor.1.to_le_bytes());
-        metas.extend_from_slice(&anchor.2.to_le_bytes());
-        metas.extend_from_slice(&(p.len() as u16).to_le_bytes());
-        metas.extend_from_slice(&ch.cum_distance_m.to_le_bytes());
-        metas.extend_from_slice(&ch.cum_ascent_m.to_le_bytes());
-        metas.extend_from_slice(&(cursor as u32).to_le_bytes());
-        metas.extend_from_slice(&(body.len() as u32).to_le_bytes());
-
-        cursor += body.len();
-        data.extend_from_slice(&body);
-    }
-    assert_eq!(metas.len(), chunks.len() * CHUNK_META_LEN);
-
-    // Header (112 bytes).
-    let mut f: Vec<u8> = Vec::new();
-    f.extend_from_slice(b"OBCR");
-    f.push(1); // version
-    f.push(0); // flags
-    f.push(name.len() as u8);
-    f.push(0); // reserved
-    f.extend_from_slice(&min_lon.to_le_bytes());
-    f.extend_from_slice(&min_lat.to_le_bytes());
-    f.extend_from_slice(&max_lon.to_le_bytes());
-    f.extend_from_slice(&max_lat.to_le_bytes());
-    f.extend_from_slice(&start.0.to_le_bytes());
-    f.extend_from_slice(&start.1.to_le_bytes());
-    f.extend_from_slice(&(distinct as u32).to_le_bytes());
-    f.extend_from_slice(&totals.0.to_le_bytes());
-    f.extend_from_slice(&totals.1.to_le_bytes());
-    f.extend_from_slice(&totals.2.to_le_bytes());
-    f.extend_from_slice(&ele_range.0.to_le_bytes());
-    f.extend_from_slice(&ele_range.1.to_le_bytes());
-    f.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
-    f.extend_from_slice(&(index_offset as u32).to_le_bytes());
-    f.extend_from_slice(&(data_offset as u32).to_le_bytes());
-    let mut name_field = [0u8; 48];
-    name_field[..name.len()].copy_from_slice(name.as_bytes());
-    f.extend_from_slice(&name_field);
-    assert_eq!(f.len(), HEADER_LEN, "header must be 112 bytes");
-
-    f.extend_from_slice(&metas);
-    f.extend_from_slice(&data);
-    f
+    build_obcr(&RouteSpec {
+        name,
+        chunks,
+        totals,
+        index: IndexPlacement::BeforeData,
+        start: Some(start),
+        ele_range: Some(ele_range),
+        seam_shared: true,
+        ..Default::default()
+    })
+    .0
 }
 
 /// Two seam-sharing chunks: chunk 0 ends at (40,40,210), chunk 1 begins there.
@@ -424,13 +351,13 @@ fn visible_chunk_query() {
     let r = RouteReader::new(&ridx, &src);
 
     // A view around (10,10) overlaps only chunk 0 (bbox 10..40).
-    let view = obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 30, max_lat: 30 };
+    let view = obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 30, max_lat: 30 };
     let mut hit = Vec::new();
     r.for_each_visible_chunk(&view, |k, _| hit.push(k));
     assert_eq!(hit, vec![0]);
 
     // A view around (80,60) overlaps only chunk 1 (bbox 40..90).
-    let view = obc_route::BBox { min_lon: 70, min_lat: 50, max_lon: 100, max_lat: 80 };
+    let view = obc_map_scene::BBox { min_lon: 70, min_lat: 50, max_lon: 100, max_lat: 80 };
     let mut hit = Vec::new();
     r.for_each_visible_chunk(&view, |k, _| hit.push(k));
     assert_eq!(hit, vec![1]);
@@ -452,13 +379,12 @@ fn rejects_bad_input() {
     bytes[0] = b'X';
     assert_eq!(err(&bytes), Error::BadMagic);
 
-    let mut bytes = two_chunk_route();
-    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension)
-    assert_eq!(err(&bytes), Error::BadVersion);
-
-    let mut bytes = two_chunk_route();
-    bytes[4] = 0;
-    assert_eq!(err(&bytes), Error::BadVersion);
+    // v3 is the only accepted version: both the retired ones and a future one are rejected.
+    for version in [0u8, 1, 2, VERSION + 1] {
+        let mut bytes = two_chunk_route();
+        bytes[4] = version;
+        assert_eq!(err(&bytes), Error::BadVersion, "v{version} must not load");
+    }
 }
 
 /// `chunk_count > MAX_ROUTE_CHUNKS` is rejected before any chunk is read: a corrupt header must
@@ -478,8 +404,8 @@ fn rejects_chunk_count_over_cap() {
 #[test]
 fn rejects_point_count_over_cap() {
     let mut bytes = two_chunk_route();
-    // index_offset = HEADER_LEN (chunk metas follow the header); point_count is at meta byte 26.
-    let pc_off = HEADER_LEN + 26;
+    // index_offset = HEADER_FULL_LEN (chunk metas follow the header); point_count is at meta byte 26.
+    let pc_off = HEADER_FULL_LEN + 26;
     let bad = (MAX_POINTS_PER_CHUNK as u16 + 1).to_le_bytes();
     bytes[pc_off..pc_off + 2].copy_from_slice(&bad);
     let src = SliceSource(&bytes);
@@ -492,11 +418,27 @@ fn rejects_point_count_over_cap() {
 fn rejects_chunk_data_region_past_end() {
     let mut bytes = two_chunk_route();
     // Inflate chunk 0's byte_len (meta byte 40) so byte_offset + byte_len exceeds the file.
-    let len_off = HEADER_LEN + 40;
+    let len_off = HEADER_FULL_LEN + 40;
     let bad = (bytes.len() as u32 + 1).to_le_bytes();
     bytes[len_off..len_off + 4].copy_from_slice(&bad);
     let src = SliceSource(&bytes);
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset));
+}
+
+/// A chunk whose `byte_len` disagrees with its `point_count` is rejected: the data region is
+/// exactly `point_count − 1` six-byte records (§3), and the decode path sizes its read from the
+/// count alone — a shrunken `byte_len` that still lies inside the file would otherwise let chunk 0
+/// decode chunk 1's bytes as its own geometry.
+#[test]
+fn rejects_chunk_byte_len_disagreeing_with_point_count() {
+    let len_off = HEADER_FULL_LEN + 40;
+    // Chunk 0 has 3 points ⇒ a truthful byte_len of 12; every other in-file value is a forgery.
+    for forged in [0u32, 6, 18] {
+        let mut bytes = two_chunk_route();
+        bytes[len_off..len_off + 4].copy_from_slice(&forged.to_le_bytes());
+        let src = SliceSource(&bytes);
+        assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset), "byte_len {forged}");
+    }
 }
 
 /// `preview_polyline` (#685 §4): the two-chunk fixture has 5 distinct points (the seam point

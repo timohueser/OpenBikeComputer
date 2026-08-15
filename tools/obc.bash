@@ -17,13 +17,23 @@ _obc_root() {
   dirname "$t"
 }
 
+# zsh runs this file through `bashcompinit`, which supplies `compgen`/`complete` but NOT
+# `mapfile` (a bash builtin) — so filling COMPREPLY portably is on us. Reads NUL-free lines,
+# which is what compgen emits.
+_obc_reply() { COMPREPLY=(); local _l; while IFS= read -r _l; do COMPREPLY+=("$_l"); done; }
+
 # Task names, from the justfile (falls back to a static list).
 _obc_tasks() {
   local t; t="$(_obc_toolsdir)"
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "sim flash uart debug rtt pack web build test fmt bench check check-device doctor setup"
+  echo "fixtures sim weather flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device clean doctor setup"
+}
+
+_obc_fixture_ids() {
+  local root; root="$(_obc_root)" || return
+  python3 "$root/tools/fixtures.py" complete "$1" 2>/dev/null
 }
 
 # .obcm maps across the repo root, maps/, and the web-builder cache.
@@ -37,12 +47,14 @@ _obc_maps() {
 # Bundled + saved GPX tracks worth suggesting.
 _obc_gpx() {
   local root; root="$(_obc_root)" || return
-  find "$root/firmware/obc-sim/assets" "$root/tracks" -maxdepth 1 -name '*.gpx' 2>/dev/null
+  find "$root/fixtures/sources" "$root/tracks" -maxdepth 5 -name '*.gpx' 2>/dev/null
 }
 
+# The shipped packer configs. `-maxdepth 1` is doing real work: it keeps
+# builder/presets/skins/ out, and a skin is not something `obc pack` can use.
 _obc_presets() {
   local root; root="$(_obc_root)" || return
-  find "$root/packer/presets" -maxdepth 1 -name '*.json' 2>/dev/null
+  find "$root/builder/presets" -maxdepth 1 -name '*.json' 2>/dev/null
 }
 
 # Index of the current word among the non-flag args (0 = first positional, …).
@@ -55,12 +67,17 @@ _obc_posidx() {
 }
 
 _obc() {
+  # zsh arrays are 1-based, bash's are 0-based, and `bashcompinit` does not change that — so
+  # `COMP_WORDS[1]` is the *task* in bash and the *command name* in zsh, and every per-task case
+  # below silently matched nothing. `ksh_arrays` gives this function bash indexing; `local_options`
+  # restores the shell's own setting on return. Guarded by ZSH_VERSION so bash never runs it.
+  [ -n "${ZSH_VERSION:-}" ] && setopt local_options ksh_arrays
   local cur task idx
   cur="${COMP_WORDS[COMP_CWORD]}"
   task="${COMP_WORDS[1]:-}"
 
   if (( COMP_CWORD == 1 )); then
-    mapfile -t COMPREPLY < <(compgen -W "$(_obc_tasks)" -- "$cur")
+    _obc_reply < <(compgen -W "$(_obc_tasks)" -- "$cur")
     return
   fi
 
@@ -68,30 +85,44 @@ _obc() {
   case "$task" in
     sim)
       case "$idx" in
-        0) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
-        1) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_gpx) none" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
+        0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_fixture_ids scenarios) $(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
+        1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx) none" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
       esac ;;
+    weather)
+      (( idx == 0 )) && _obc_reply < <(compgen -W "status start stop" -- "$cur") ;;
     uart)
-      (( idx == 0 )) && { compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur"); } ;;
+      (( idx == 0 )) && { compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur"); } ;;
     debug)
       compopt -o filenames 2>/dev/null
-      mapfile -t COMPREPLY < <(compgen -W "ble $(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
+      _obc_reply < <(compgen -W "ble $(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
     flash)
-      mapfile -t COMPREPLY < <(compgen -W "ble debug-uart synth build" -- "$cur") ;;
+      _obc_reply < <(compgen -W "ble debug-uart synth build" -- "$cur") ;;
     pack)
       case "$idx" in
-        0) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -f -X '!*.pbf' -- "$cur"; compgen -d -- "$cur") ;;
-        1) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_presets)" -- "$cur"; compgen -f -X '!*.json' -- "$cur") ;;
-        *) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -f -- "$cur") ;;
+        0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -X '!*.pbf' -- "$cur"; compgen -d -- "$cur") ;;
+        1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_presets)" -- "$cur"; compgen -f -X '!*.json' -- "$cur") ;;
+        *) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -- "$cur") ;;
       esac ;;
     bench)
-      (( idx == 0 )) && mapfile -t COMPREPLY < <(compgen -W "check write" -- "$cur") ;;
+      (( idx == 0 )) && _obc_reply < <(compgen -W "check write" -- "$cur") ;;
+    desktop)
+      _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
+    flash-boot)
+      _obc_reply < <(compgen -W "rtt build" -- "$cur") ;;
     check)
-      mapfile -t COMPREPLY < <(compgen -W "fmt clippy test device docs board deny wasm" -- "$cur") ;;
+      _obc_reply < <(compgen -W "fmt clippy test device docs board frontend deny wasm full" -- "$cur") ;;
     doctor)
-      mapfile -t COMPREPLY < <(compgen -W "--install" -- "$cur") ;;
+      _obc_reply < <(compgen -W "--install" -- "$cur") ;;
     test)
-      mapfile -t COMPREPLY < <(compgen -W "-p --release --" -- "$cur") ;;
+      _obc_reply < <(compgen -W "-p fixtures full --release --" -- "$cur") ;;
+    clean)
+      _obc_reply < <(compgen -W "--apply --days --base --include-builds" -- "$cur") ;;
+    fixtures)
+      if (( idx == 0 )); then
+        _obc_reply < <(compgen -W "list show sync verify prune pack publish" -- "$cur")
+      else
+        _obc_reply < <(compgen -W "$(_obc_fixture_ids targets) --apply" -- "$cur")
+      fi ;;
   esac
 }
 

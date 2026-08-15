@@ -46,6 +46,12 @@ use super::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 #[derive(Debug)]
 pub struct PoiDetailScreen {
     poi: Poi,
+    /// The POI's **signed** lateral offset from the route line (m; positive = right of the direction
+    /// of travel) when it was opened from the [Up-ahead timeline](super::UpAheadScreen) — `None`
+    /// from the nearby-POI browser, which has no route to be off. Drawn as one extra line under the
+    /// distance row with the side spelled out in words (epic #946, U3): the list row's side arrow is
+    /// a glance cue, this is the answer to "how far off my route is it, and which side".
+    off_route_m: Option<i16>,
     /// The resolved schedule, cached on the first [`prepare`](Self::prepare) pass with a `Reader`.
     /// Tri-state: `None` = not resolved yet (keep asking for the reader), `Some(None)` = resolved to
     /// *no hours* (`hours_ref` 0xFFFF or an out-of-range ref), `Some(Some(_))` = the pooled schedule.
@@ -58,7 +64,22 @@ impl PoiDetailScreen {
     /// Open the detail for `poi` (cloned out of the list snapshot by the list's `Gesture::Press`).
     /// The schedule is resolved lazily on the first [`prepare`](Self::prepare) pass with a `Reader`.
     pub fn new(poi: Poi) -> Self {
-        PoiDetailScreen { poi, schedule: None }
+        PoiDetailScreen { poi, off_route_m: None, schedule: None }
+    }
+
+    /// Carry the POI's signed lateral offset from the route (m) onto the detail — what the
+    /// [Up-ahead timeline](super::UpAheadScreen) knows and the nearby browser doesn't. Clamped to
+    /// the record's `i16`, which the 300 m corridor half-width can never reach.
+    pub(crate) fn off_route(mut self, offset_m: i32) -> Self {
+        self.off_route_m = Some(offset_m.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+        self
+    }
+
+    /// The carried off-route offset, if this detail was opened from the Up-ahead timeline. The draw
+    /// reads the field directly, so this exists for the timeline's own hand-off pin.
+    #[cfg(test)]
+    pub(crate) fn off_route_m(&self) -> Option<i16> {
+        self.off_route_m
     }
 
     /// Whether the schedule cache still needs a `Reader` — it hasn't resolved yet. Drives
@@ -166,11 +187,30 @@ impl PoiDetailScreen {
         let mut dist: heapless::String<12> = heapless::String::new();
         super::write_off_route(&mut dist, "", self.poi.distance_m, rx.settings.units);
         cv.text(&dist, Point::new(dist_x, dist_y), Font::Body, TextAlign::Left, INK);
+        let mut dist_bot = dist_y + Font::Body.cap_height() as i32;
+
+        // Off-route line (epic #946, U3) — only when the Up-ahead timeline handed the offset over.
+        // The list row draws a side *arrow* (the device font has no arrow glyph, so it's a drawn
+        // triangle); here the side is a word, because this is the screen you read rather than
+        // glance at. Muted Label under the distance, so the two route numbers stack.
+        if let Some(off) = self.off_route_m {
+            let mut line: heapless::String<24> = heapless::String::new();
+            super::write_off_route(&mut line, "", off.unsigned_abs() as u32, rx.settings.units);
+            let _ = line.push(' ');
+            let _ = line.push_str(rx.t(if off > 0 { Msg::PoiDetailSideRight } else { Msg::PoiDetailSideLeft }));
+            let off_y = dist_bot + 6;
+            // The same drawn side arrow the timeline row uses, left of the words: without it
+            // "245m left" reads as a *remaining* distance, which is exactly the number above it.
+            use super::up_ahead::{draw_side_arrow, ARROW_GAP, ARROW_W};
+            draw_side_arrow(cv, Point::new(x, off_y + Font::Label.cap_height() as i32 / 2), off > 0, SUBTEXT);
+            cv.text(&line, Point::new(x + ARROW_W + ARROW_GAP, off_y), Font::Label, TextAlign::Left, SUBTEXT);
+            dist_bot = off_y + Font::Label.cap_height() as i32;
+        }
 
         // Today's hours — a muted heading row ("Today" / "Closed today" / "Hours not listed"), then
         // each open interval on its own Body row (`08:00 – 18:00`). Stacking the (up to two) ranges
         // keeps each within the 240 px panel, where a single two-range line wouldn't fit.
-        let head_y = dist_y + Font::Body.cap_height() as i32 + 16;
+        let head_y = dist_bot + 16;
         let schedule = self.schedule.flatten();
         let weekday = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day);
         let intervals: &[Interval] = match &schedule {

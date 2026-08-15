@@ -52,7 +52,9 @@ final class SettingsModelTests: XCTestCase {
         await waitFor("connection") { model.connection == .connected }
         XCTAssertEqual(model.statusLine, "Connected · 82%")
         XCTAssertEqual(model.firmwareDisplay, "v0.4.2")
-        XCTAssertEqual(model.firmwareLine, "v0.4.2 · latest")
+        // No "· latest" any more (#773 U5): since U4 the app has a real update channel, so the row
+        // states the version and the firmware screen states the comparison.
+        XCTAssertEqual(model.firmwareLine, "v0.4.2")
         XCTAssertTrue(model.canRename)
     }
 

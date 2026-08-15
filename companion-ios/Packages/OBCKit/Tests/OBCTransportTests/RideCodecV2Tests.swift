@@ -6,12 +6,12 @@ import OBCDomain
 /// The **ride object v2** codec (epic #707, SE4 #711): the app must accept the
 /// BLE-sensor ride the SE3 firmware writes — a per-ride sensor summary in the
 /// header, per-point `hr`/`cad`/`pwr`. These pins hold the Swift decode to the
-/// cross-language contract `protocol-vectors/ride-v2.bin` (the firmware side
+/// cross-language contract `specs/vectors/ride-v2.bin` (the firmware side
 /// pins the same bytes), plus a v2-specific round-trip / rejection net. The v1
 /// vector + round-trip stay in `ProtocolVectorTests` / `RideCodecTests` and must
 /// remain green — v1 rides still list, download, and delete.
 struct RideCodecV2Tests {
-    /// `protocol-vectors/` at the repo root, resolved from this file's location
+    /// `specs/vectors/`, resolved from this file's location
     /// (companion-ios/Packages/OBCKit/Tests/OBCTransportTests/…) — the same
     /// traversal `ProtocolVectorTests` uses.
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
@@ -21,7 +21,7 @@ struct RideCodecV2Tests {
         .deletingLastPathComponent()  // Packages
         .deletingLastPathComponent()  // companion-ios
         .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func vector(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)

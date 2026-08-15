@@ -1,0 +1,336 @@
+@import "./tokens.css";
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+}
+
+body {
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--parchment);
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+/* The app owns the viewport and the page never scrolls: `main` is the scroll
+   container, and the builder locks itself further so only its steps column
+   moves (Home.svelte). On narrow screens the lock is traded back for ordinary
+   page scrolling — a phone-width window has no room for a fixed map pane. */
+#app {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+}
+
+@media (max-width: 940px) {
+    #app {
+        height: auto;
+        min-height: 100dvh;
+    }
+}
+
+h1,
+h2,
+h3 {
+    font-family: var(--serif);
+    font-weight: 600;
+    color: var(--ink);
+    margin: 0;
+}
+
+a {
+    color: var(--forest);
+    text-decoration: none;
+}
+
+a:hover {
+    color: var(--forest-deep);
+    text-decoration: underline;
+}
+
+button {
+    font-family: var(--sans);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+input,
+select {
+    font-family: var(--sans);
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--parchment);
+    border: 1px solid var(--parchment-3);
+    border-radius: 8px;
+    padding: 7px 10px;
+}
+
+input:focus,
+select:focus {
+    outline: none;
+    border-color: var(--wood);
+    box-shadow: 0 0 0 3px rgba(95, 125, 61, 0.18);
+}
+
+/* --- shared components (field-guide look) --- */
+
+.card {
+    background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
+    border: 1px solid var(--parchment-3);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(36, 51, 28, 0.06);
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 11px;
+    padding: 9px 16px;
+    font-weight: 600;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line-strong);
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+    background: var(--parchment-2);
+    border-color: var(--wood);
+}
+
+.btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.btn.primary {
+    background: var(--forest);
+    color: var(--parchment);
+    border-color: transparent;
+    box-shadow: 0 4px 10px rgba(44, 82, 48, 0.25);
+}
+
+.btn.primary:hover:not(:disabled) {
+    background: var(--forest-deep);
+}
+
+.btn.primary:disabled {
+    box-shadow: none;
+}
+
+.btn.ghost {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--wood);
+}
+
+.btn.ghost:hover:not(:disabled) {
+    background: rgba(95, 125, 61, 0.1);
+}
+
+/* A small square control — the tiles' pull arrow and ⋯ trigger (device page, ride library). */
+.iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    flex: none;
+    border-radius: 9px;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    color: var(--ink-soft);
+    font-size: 15px;
+    line-height: 1;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.iconbtn:hover:not(:disabled) {
+    color: var(--ink);
+    border-color: var(--wood);
+}
+
+/* The gallery grid the device page's tiles sit in (~3 columns at the page's 920px width). */
+.tilegrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--parchment);
+    border: 1px solid var(--parchment-3);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 13px;
+    color: var(--ink);
+}
+
+.chip button {
+    background: none;
+    border: none;
+    color: var(--ink-faint);
+    padding: 0 2px;
+    font-size: 14px;
+    line-height: 1;
+}
+
+.chip button:hover {
+    color: var(--coral);
+}
+
+.muted {
+    color: var(--ink-soft);
+}
+
+.faint {
+    color: var(--ink-faint);
+}
+
+.small {
+    font-size: 12.5px;
+}
+
+.mono {
+    font-family: var(--mono);
+}
+
+/* Segmented toggle (Regions | Draw box) */
+.seg {
+    display: inline-flex;
+    border: 1px solid var(--parchment-3);
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--parchment);
+}
+
+.seg button {
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    padding: 6px 14px;
+    font-size: 13px;
+}
+
+.seg button.active {
+    background: var(--ink);
+    color: var(--parchment);
+}
+
+/* Leaflet: blend the raster tiles into the parchment look, restyle chrome. */
+.leaflet-tile-pane {
+    filter: sepia(0.22) saturate(0.82) contrast(0.95) brightness(1.02);
+}
+
+.leaflet-container {
+    font-family: var(--sans);
+    background: var(--parchment-2);
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-tooltip {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--parchment-3);
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(36, 51, 28, 0.18);
+}
+
+.leaflet-popup-tip {
+    background: var(--panel);
+}
+
+.region-popup {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 220px;
+    overflow: auto;
+}
+
+.region-popup button {
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 5px 9px;
+    font-size: 13px;
+    color: var(--ink);
+}
+
+.region-popup button:hover {
+    background: rgba(95, 125, 61, 0.12);
+}
+
+.region-popup button.selected {
+    border-color: var(--forest);
+    color: var(--forest-deep);
+    font-weight: 600;
+}
+
+/* Catalog states in the click popup: a baked region carries a forest dot, one
+   the catalog doesn't have (or the device can't read) carries the reason. */
+.region-popup button.tone-available::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--forest);
+}
+
+.region-popup button .tag {
+    margin-left: 8px;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+}
+
+.region-popup button.tone-unsupported .tag {
+    color: #8a6410;
+}
+
+.bbox-handle {
+    background: var(--parchment);
+    border: 2px solid var(--coral);
+    border-radius: 4px;
+}
+
+.bbox-handle-nw,
+.bbox-handle-se {
+    cursor: nwse-resize;
+}
+
+.bbox-handle-ne,
+.bbox-handle-sw {
+    cursor: nesw-resize;
+}
+
+.bbox-cursor {
+    cursor: crosshair !important;
+}
+
+/* The coverage map's not-baked hatch (#1038). Leaflet's SVG renderer sets fill
+   as a presentation attribute; CSS wins over attributes, which is how these
+   rectangles pick up the injected <pattern> (coverageMap.ts owns the defs). */
+.coverage-hatch {
+    fill: url(#obc-unbaked-hatch);
+    fill-opacity: 0.5;
+}
+
+.coverage-hatch.faintly {
+    fill-opacity: 0.3;
+}

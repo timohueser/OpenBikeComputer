@@ -1,0 +1,135 @@
+{
+  "cutter": "obc-pack 0.1.0",
+  "schema": {
+    "obcm_version": 13,
+    "chunk_size": 512,
+    "grid": {
+      "origin_udeg": -268435456,
+      "world_side_udeg": 536870912
+    },
+    "lods": [
+      {
+        "index": 0,
+        "max_mpp": null,
+        "band": "coarse"
+      },
+      {
+        "index": 1,
+        "max_mpp": 6.0,
+        "band": "fine"
+      }
+    ],
+    "bands": [
+      {
+        "id": "coarse",
+        "cell_log2": 20,
+        "lods": [
+          0
+        ],
+        "sections": [],
+        "role": "coarse"
+      },
+      {
+        "id": "fine",
+        "cell_log2": 18,
+        "lods": [
+          1
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "network",
+        "cell_log2": 18,
+        "lods": [],
+        "sections": [
+          "nav",
+          "poi"
+        ],
+        "role": "core"
+      }
+    ],
+    "routing": {
+      "min_component_edges": 4
+    }
+  },
+  "sources": [
+    {
+      "id": "fixture",
+      "coverage": [
+        47180000,
+        7340000,
+        47450000,
+        7870000
+      ]
+    }
+  ],
+  "extract_bbox": [
+    47240000,
+    7552176,
+    47390000,
+    7722176
+  ],
+  "cells": [
+    {
+      "id": "20/0301/0263",
+      "band": "coarse",
+      "path": "cells/coarse/0301/0263.obcm",
+      "bytes": 587,
+      "sha256": "5c7df5f7dea08dd9f91f15edbec5d5d24e843eed37a648c093e13de06e0ac92f",
+      "partial": true,
+      "pois": 0,
+      "nav_nodes": 0,
+      "nav_edges": 0,
+      "empty": false
+    },
+    {
+      "id": "18/1204/1052",
+      "band": "fine",
+      "path": "cells/fine/1204/1052.obcm",
+      "bytes": 1518,
+      "sha256": "eee9c0298da7f6a3b9732e58f7adef3447f76c296668ca6056ee94bff91f856b",
+      "partial": false,
+      "pois": 0,
+      "nav_nodes": 0,
+      "nav_edges": 0,
+      "empty": false
+    },
+    {
+      "id": "18/1204/1053",
+      "band": "fine",
+      "path": "cells/fine/1204/1053.obcm",
+      "bytes": 1530,
+      "sha256": "8f753917cf3c74e19c160e721213ebb9f42922e5b0f1644ba4095893c678e70a",
+      "partial": false,
+      "pois": 0,
+      "nav_nodes": 0,
+      "nav_edges": 0,
+      "empty": false
+    },
+    {
+      "id": "18/1204/1052",
+      "band": "network",
+      "path": "cells/network/1204/1052.obcm",
+      "bytes": 3584,
+      "sha256": "9c263cf39bcd28aa0b6d502d243d21385cf15b8c434155ab52e606821a7bdf2d",
+      "partial": false,
+      "pois": 2,
+      "nav_nodes": 6,
+      "nav_edges": 4,
+      "empty": false
+    },
+    {
+      "id": "18/1204/1053",
+      "band": "network",
+      "path": "cells/network/1204/1053.obcm",
+      "bytes": 4608,
+      "sha256": "b25a6064febe58e238192a4c29025240e5de8ed09814987e594b87677717d712",
+      "partial": false,
+      "pois": 2,
+      "nav_nodes": 9,
+      "nav_edges": 7,
+      "empty": false
+    }
+  ]
+}

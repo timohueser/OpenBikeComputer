@@ -1,0 +1,42 @@
+[package]
+name = "obc-web-convert"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal firmware crate — not published to crates.io
+description = "The hosted builder's wasm conversion bridge (epic #894, A2): GPX → OBCR, recorded track → GPX, and OBCR read-back (polyline + waypoints) in the browser, through the exact obc-route code the device and the CLI run. No framework — four functions and a typed error."
+
+# `cdylib` is what wasm-bindgen links; `rlib` keeps the crate a normal workspace library so
+# `cargo test`/`clippy` exercise the conversion core on the host target too.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The conversion algorithms themselves — the same `no_std` code the nRF54L runs on Finish and
+# on a BLE route upload. This crate adds no geometry, no parsing, no format knowledge: it is a
+# byte-buffer adapter plus an error vocabulary.
+obc-route = { path = "../../firmware/obc-route" }
+# The byte-I/O seam (`ByteSource`/`ByteSink`/`Error`) and the recorded-track record width — the
+# byte authority, imported directly rather than through the route algorithms.
+obc-formats = { path = "../../firmware/obc-formats" }
+# `RouteReader::decode_chunk` fills a fixed-capacity buffer; the version tracks obc-route's.
+heapless = "0.8"
+
+[dev-dependencies]
+# `TrackPoint` — the tests hand-encode recorded-track records to drive the track→GPX path.
+obc-ports = { path = "../../firmware/obc-ports" }
+
+# --- Web (wasm32) surface — the only target this crate actually ships on. The conversion core
+# above stays target-independent so `cargo test` exercises it natively in the workspace, exactly
+# like obc-web-demo's demo core.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# `js_sys::Error` + `Reflect::set`: a failure crosses to JS as a real `Error` instance carrying a
+# stable `code` property, so callers can branch on the cause without matching on message text.
+js-sys = "0.3"
+# Surface Rust panics in the browser console instead of an opaque trap.
+console_error_panic_hook = "0.1"
+
+# wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting, and the
+# bundle-size budget CI enforces (firmware/tools/wasm_size_guard.py) is measured on its output.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz']

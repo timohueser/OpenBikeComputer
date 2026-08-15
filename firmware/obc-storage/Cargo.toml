@@ -13,6 +13,11 @@ description = "Board-agnostic no_std storage adapters from an embedded-sdmmc SD 
 # (#807/#812 severed `obc-storage -> obc-route`).
 obc-formats = { path = "../obc-formats" }
 
+# Shared OBCW reader + pure A/B generation selector. This is a downward platform -> core edge;
+# byte layout remains owned solely by obc-formats.
+obc-weather = { path = "../obc-weather" }
+obc-crc = { path = "../obc-crc" }
+
 # The `TrackSink`/`TrackPoint`/`TrackError` semantic seam the track adapter fulfils — the foundation
 # port contract, never an upward renderer/UI dependency.
 obc-ports = { path = "../obc-ports" }
@@ -23,6 +28,6 @@ obc-ports = { path = "../obc-ports" }
 # defmt/RTT itself); the adapters add no logging of their own.
 embedded-sdmmc = { version = "0.9", default-features = false }
 
-# The bounded `Vec<Run, MAX_EXTENTS>` the FAT-extent table stores the resolved map chain in.
+# The bounded `Vec<Run, N>` a FAT-extent table stores the resolved map chain in.
 # Same 0.8 the rest of the OBC stack uses.
 heapless = "0.8"

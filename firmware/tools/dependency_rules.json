@@ -1,11 +1,14 @@
 {
   "schema_version": 1,
   "standalone_manifests": [
-    "obc-fw-nrf54l/Cargo.toml",
-    "obc-boot/Cargo.toml"
+    "firmware/obc-fw-nrf54l/Cargo.toml",
+    "firmware/obc-boot/Cargo.toml",
+    "apps/obc-desktop/Cargo.toml"
   ],
   "groups": {
     "foundation": [
+      "obc-crc",
+      "obc-elevation",
       "obc-formats",
       "obc-map-scene",
       "obc-ports"
@@ -15,7 +18,8 @@
       "obc-dfu",
       "obc-reader",
       "obc-render",
-      "obc-route"
+      "obc-route",
+      "obc-weather"
     ],
     "app": [
       "obc-app"
@@ -27,15 +31,26 @@
       "obc-storage"
     ],
     "host": [
+      "obc-bake",
       "obc-bench",
+      "obc-dem",
+      "obc-desktop",
+      "obc-fixtures",
       "obc-host-core",
       "obc-mkimage",
       "obc-pack",
       "obc-replay",
       "obc-sim",
+      "obc-skin-preview",
+      "obc-tree-walk",
       "obc-usb-host",
       "obc-vectors",
+      "obc-web-assemble",
+      "obc-web-convert",
       "obc-web-demo",
+      "obc-wx-bake",
+      "obc-wx-client",
+      "obcm-assemble",
       "obcm-testkit"
     ],
     "standalone": [

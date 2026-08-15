@@ -1,0 +1,70 @@
+[package]
+name = "obcm-assemble"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "The OBCA cell assembly engine: baked grid cells → one .obcm or a volume set (GEOS-free, wasm-capable)"
+
+# The engine is a library first: `lib` is what the P4 wasm bridge will wrap, and the CLI below is a
+# thin native driver over it. `default = ["cli"]` keeps `cargo build --release` producing the binary
+# while `--no-default-features --lib` is the surface the wasm32 guard compiles (see CI's `wasm` job).
+[features]
+default = ["cli"]
+cli = []
+# The peak-allocation harness in `main.rs`: a counting global allocator plus a wrapped `Clock`, so
+# every phase boundary the engine ticks reports the heap high-water mark since the previous one.
+# **Off by default** — it is a measurement build (a global allocator is process-wide, and the CLI is
+# the only place one may be installed), never something a produced set should depend on. Native only:
+# it changes no engine code, so the wasm `--no-default-features --lib` surface never sees it.
+mem-profile = []
+
+[[bin]]
+name = "obcm-assemble"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# Normative OBCM constants and the neutral byte-source/sink seam. The engine's I/O never touches a
+# filesystem: everything crosses `obc_formats::io`.
+obc-formats = { path = "../../firmware/obc-formats" }
+# Resident quadtree BFS numbering shared with the packer and byte-fixture oracle.
+obc-tree-walk = { path = "../obc-tree-walk" }
+# The real reader — the same crate the firmware runs. Used to parse every input cell's directories
+# and, in the verify pass, to walk the finished output exactly as a device would (OBCA §4.8). `alloc`
+# is on for `MapCache::new_boxed`: the ~277 KB cache must not land on a small (wasm) stack.
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-map-scene = { path = "../../firmware/obc-map-scene" }
+# The **one** OBCT container writer in the tree (`OBCT_Spec.md` §4): a published terrain cell and an
+# assembled terrain shard come out of the same code, which is what makes "a cell is a 1 × 1 shard" a
+# fact. `default-features = false` drops obc-dem's GeoTIFF decoder and HTTP client — neither of which
+# compiles for wasm32 and neither of which an assembler has any use for.
+obc-dem = { path = "../obc-dem", default-features = false }
+# The real OBCT **reader**, for the §4.8 read-back of the terrain shard — the same parser the
+# firmware runs, exactly as `obc-reader` is for the OBCM shards.
+obc-elevation = { path = "../../firmware/obc-elevation" }
+# Shard digests + the set id (OBCA §5.2). Pure Rust, so it follows the engine to wasm.
+sha2 = "0.11"
+# `obc-reader`'s feature-decode API fills caller-owned fixed-capacity buffers, so the verify pass
+# traffics in the same `heapless` version the reader and the firmware do.
+heapless = "0.8"
+# The schema (OBCC §4) and skin (§5) documents the assembler is driven by.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.
+# The tree's one hand-written OBCM byte builder, and deliberately independent of every production
+# serializer — which is what makes it an oracle. The §8 nav fixtures here are built with it rather
+# than with a private transcription, so this crate's tests and `obc-reader`'s read the same bytes.
+obcm-testkit = { path = "../obcm-testkit" }
+# The differential oracle (#1024's acceptance bar) packs and cuts the SAME synthetic extract with
+# the real packer, then compares `pack(X)` against `assemble(cut(X))`. A dev-dep only: obc-pack
+# carries libGEOS and never enters the engine's build graph (the same boundary obc-route ↔ obc-pack
+# already crosses).
+obc-pack = { path = "../obc-pack" }
+# The oracle's pixel half: the real renderer over the real device framebuffer.
+obc-render = { path = "../../firmware/obc-render" }
+obc-display = { path = "../../firmware/obc-display" }
+# The oracle's route half: the real A* the device runs.
+obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
+embedded-graphics = "0.8"

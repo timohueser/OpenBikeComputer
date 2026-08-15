@@ -1,0 +1,389 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-07-30T09:00:00Z",
+  "source": {
+    "dataset_id": "openstreetmap",
+    "attribution": "© OpenStreetMap contributors",
+    "license": "ODbL-1.0",
+    "license_url": "https://opendatacommons.org/licenses/odbl/1-0/"
+  },
+  "schema": {
+    "id": "bikepacking",
+    "revision": 7,
+    "name": "Bikepacking",
+    "description": "Three LOD rungs over four bands — the shape of the shipped bikepacking ladder at example scale.",
+    "obcm_version": 13,
+    "grid": {
+      "origin_udeg": -268435456,
+      "world_side_udeg": 536870912
+    },
+    "lods": [
+      {
+        "index": 0,
+        "max_mpp": null,
+        "band": "coarse"
+      },
+      {
+        "index": 1,
+        "max_mpp": 16.0,
+        "band": "mid"
+      },
+      {
+        "index": 2,
+        "max_mpp": 3.0,
+        "band": "fine"
+      }
+    ],
+    "bands": [
+      {
+        "id": "coarse",
+        "cell_log2": 20,
+        "lods": [
+          0
+        ],
+        "sections": [],
+        "role": "coarse"
+      },
+      {
+        "id": "mid",
+        "cell_log2": 19,
+        "lods": [
+          1
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "fine",
+        "cell_log2": 18,
+        "lods": [
+          2
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "network",
+        "cell_log2": 18,
+        "lods": [],
+        "sections": [
+          "nav",
+          "poi"
+        ],
+        "role": "core"
+      }
+    ],
+    "styles": [
+      {
+        "id": 1,
+        "feature_type": "highway.primary"
+      },
+      {
+        "id": 2,
+        "feature_type": "highway.track"
+      },
+      {
+        "id": 3,
+        "feature_type": "natural.water"
+      },
+      {
+        "id": 4,
+        "feature_type": "landuse.forest"
+      }
+    ],
+    "routing": {
+      "min_component_edges": 50,
+      "profiles": [
+        "Road",
+        "Gravel"
+      ]
+    },
+    "chunk_size": 4096
+  },
+  "skins": [
+    {
+      "id": "contrast",
+      "name": "High contrast",
+      "description": "High contrast: fewer greys, heavier strokes, for bright sun on the panel.",
+      "version": 1,
+      "marker_color": 31,
+      "styles": [
+        {
+          "feature_type": "highway.primary",
+          "color": 64160,
+          "weight": 3,
+          "z_index": 60,
+          "priority": 2,
+          "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        },
+        {
+          "feature_type": "highway.track",
+          "color": 43648,
+          "weight": 1,
+          "z_index": 30,
+          "priority": 3,
+          "dashed": true,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        },
+        {
+          "feature_type": "natural.water",
+          "color": 21983,
+          "weight": 1,
+          "z_index": 10,
+          "priority": 3,
+          "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        },
+        {
+          "feature_type": "landuse.forest",
+          "color": 23365,
+          "weight": 1,
+          "z_index": 5,
+          "priority": 4,
+          "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        }
+      ]
+    },
+    {
+      "id": "default",
+      "name": "Bikepacking",
+      "description": "The full touring look: warm through-roads, brown trails, indigo cycleways.",
+      "version": 4,
+      "marker_color": 63488,
+      "styles": [
+        {
+          "feature_type": "highway.primary",
+          "color": 64160,
+          "weight": 3,
+          "z_index": 60,
+          "priority": 2,
+          "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        },
+        {
+          "feature_type": "highway.track",
+          "color": 43648,
+          "weight": 1,
+          "z_index": 30,
+          "priority": 3,
+          "dashed": true,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        },
+        {
+          "feature_type": "natural.water",
+          "color": 21983,
+          "weight": 1,
+          "z_index": 10,
+          "priority": 3,
+          "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        },
+        {
+          "feature_type": "landuse.forest",
+          "color": 23365,
+          "weight": 1,
+          "z_index": 5,
+          "priority": 4,
+          "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
+          "color2": null
+        }
+      ],
+      "preview": {
+        "url": "https://maps.example.org/catalog/previews/default.a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67.png",
+        "bytes": 19,
+        "sha256": "a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67"
+      }
+    }
+  ],
+  "regions": [
+    {
+      "id": "europe/switzerland",
+      "name": "Switzerland",
+      "boundary": {
+        "tolerance_udeg": 2000,
+        "rings": [
+          [
+            [
+              45800000,
+              5900000
+            ],
+            [
+              47800000,
+              5900000
+            ],
+            [
+              47800000,
+              10500000
+            ],
+            [
+              45800000,
+              10500000
+            ],
+            [
+              45800000,
+              5900000
+            ]
+          ]
+        ]
+      },
+      "bytes": 4592,
+      "bytes_by_band": {
+        "coarse": 2088,
+        "fine": 976,
+        "mid": 1064,
+        "network": 464
+      },
+      "cell_count": {
+        "coarse": 1,
+        "fine": 3,
+        "mid": 1,
+        "network": 2
+      },
+      "partial_cell_count_by_band": {
+        "coarse": 0,
+        "fine": 0,
+        "mid": 0,
+        "network": 1
+      },
+      "terrain": {
+        "cell_count": 2,
+        "known_empty_count": 1,
+        "bytes": 1096
+      },
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.5a5d56b7ef65865bf54ceb37e2dc9e504f002eeae1712226fce2d8b1bf402bdc.json",
+      "cells_bytes": 427,
+      "cells_sha256": "5a5d56b7ef65865bf54ceb37e2dc9e504f002eeae1712226fce2d8b1bf402bdc"
+    },
+    {
+      "id": "europe/switzerland/basel-stadt",
+      "name": "Basel-Stadt",
+      "parent": "europe/switzerland",
+      "boundary": {
+        "tolerance_udeg": 2000,
+        "rings": [
+          [
+            [
+              47500000,
+              7500000
+            ],
+            [
+              47600000,
+              7500000
+            ],
+            [
+              47600000,
+              7700000
+            ],
+            [
+              47500000,
+              7700000
+            ],
+            [
+              47500000,
+              7500000
+            ]
+          ]
+        ]
+      },
+      "bytes": 4000,
+      "bytes_by_band": {
+        "coarse": 2088,
+        "fine": 552,
+        "mid": 1064,
+        "network": 296
+      },
+      "cell_count": {
+        "coarse": 1,
+        "fine": 1,
+        "mid": 1,
+        "network": 1
+      },
+      "partial_cell_count_by_band": {
+        "coarse": 0,
+        "fine": 0,
+        "mid": 0,
+        "network": 0
+      },
+      "terrain": {
+        "cell_count": 1,
+        "known_empty_count": 0,
+        "bytes": 548
+      },
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.193008a2ba404971d2303c7c35b706542ef528487dc3ab426446caa3fc3391c7.json",
+      "cells_bytes": 329,
+      "cells_sha256": "193008a2ba404971d2303c7c35b706542ef528487dc3ab426446caa3fc3391c7"
+    }
+  ],
+  "cell_index": [
+    {
+      "band": "coarse",
+      "cell_log2": 20,
+      "cell_count": 1,
+      "known_empty_count": 0,
+      "bytes": 590,
+      "sha256": "e4420b2655de65780813a68eeb7284531344f30905446793c984198c5e43c63e",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.e4420b2655de65780813a68eeb7284531344f30905446793c984198c5e43c63e.json"
+    },
+    {
+      "band": "mid",
+      "cell_log2": 19,
+      "cell_count": 1,
+      "known_empty_count": 0,
+      "bytes": 584,
+      "sha256": "8baa6c6a2eca324fc0a381a32c4f466040d0e22e016f85f7fde4acc4cd913f1c",
+      "url": "https://maps.example.org/catalog/cells/mid/index.8baa6c6a2eca324fc0a381a32c4f466040d0e22e016f85f7fde4acc4cd913f1c.json"
+    },
+    {
+      "band": "fine",
+      "cell_log2": 18,
+      "cell_count": 2,
+      "known_empty_count": 1,
+      "bytes": 1414,
+      "sha256": "9bc3269f561a6d5b51ed25543b922904e96e003869c0c6a42fd85a8f79725556",
+      "url": "https://maps.example.org/catalog/cells/fine/index.9bc3269f561a6d5b51ed25543b922904e96e003869c0c6a42fd85a8f79725556.json"
+    },
+    {
+      "band": "network",
+      "cell_log2": 18,
+      "cell_count": 2,
+      "known_empty_count": 0,
+      "bytes": 1072,
+      "sha256": "9a56ca381adac2b0ef0f40afe003b6cf3c26ce6f91eaa51b3ace606312403ef9",
+      "url": "https://maps.example.org/catalog/cells/network/index.9a56ca381adac2b0ef0f40afe003b6cf3c26ce6f91eaa51b3ace606312403ef9.json"
+    }
+  ],
+  "terrain": {
+    "dataset_id": "copernicus-glo-30",
+    "dataset_version": "2021-1",
+    "posting_log2": 9,
+    "cell_log2": 13,
+    "terrain_revision": 3,
+    "attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+    "cell_index": {
+      "cell_count": 2,
+      "known_empty_count": 1,
+      "bytes": 983,
+      "sha256": "ee33bfae60baa62b2312f308ec812c5f3af4b7a0e2cb93a9c7b4754561fe48ff",
+      "url": "https://maps.example.org/catalog/cells/terrain/index.ee33bfae60baa62b2312f308ec812c5f3af4b7a0e2cb93a9c7b4754561fe48ff.json"
+    }
+  },
+  "network_terrain_revision": 3
+}

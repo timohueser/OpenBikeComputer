@@ -1,16 +1,20 @@
-//! Shared BLE state: the link-status snapshot the UI reads, the BAS battery cell, and the
-//! one-transfer-at-a-time arming channel the control plane ([`super::control`]) and the CoC data
-//! plane ([`super::data_plane`]) coordinate through. Everything here is `pub(crate)` at most —
-//! it lives entirely within the `ble` module tree, read/written across the four planes but never
-//! wider.
+//! Shared **radio** state: the link-status snapshot the UI reads, the Bluetooth switch, the BAS
+//! battery cell, and the CoC arming channel the control plane ([`super::control`]) and the CoC data
+//! plane ([`super::data_plane`]) coordinate through. Everything here is `pub(crate)` at most — it
+//! lives entirely within the `ble` module tree, read/written across the four planes but never wider.
+//!
+//! Anything a *second transport* would also need — the command handler, descriptor classification,
+//! the cross-transport one-transfer gate, the identity blobs — lives in [`crate::link`] instead.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
-use obc_ble::{Receiver, StatusMessage, TransferControl, TransferResult, TransferStatus};
+use embassy_time::{Duration, Instant};
+
+use crate::link::Armed;
 
 // ============================ Link status → the status UI ============================
 
@@ -129,11 +133,59 @@ pub fn app_ble_status() -> obc_app::BleStatus {
 /// it from the persisted settings at boot, before the first advertise.
 static RADIO_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Cable-level radio interlock. Active BLE radio work and the nRF54L sEMMC card engine have been
+/// observed to corrupt card commands when they overlap; USB map transfers therefore own the radio
+/// for the whole time J3 has VBUS. Start inhibited so a cable present at boot cannot race the first
+/// advertisement; the USB task releases this as soon as it has sampled VBUS low.
+static USB_RADIO_INHIBITED: AtomicBool = AtomicBool::new(true);
+
 /// Edge for the lifecycle loop: signalled whenever [`RADIO_ENABLED`] *changes*, so the advertise /
 /// serve phases can wake, re-check the level, and wind the radio up or down. Level + edge (not just
 /// a `Signal` payload) so a toggle bounced off-and-on between polls degrades to a harmless
 /// re-advertise, never a stuck state.
 static RADIO_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+// ============================ Secondary advertising intent ============================
+
+/// A pending request for the peripheral advertiser to expose the dedicated **Weather Request**
+/// service instead of OBC Control (spec §11). The GATT database always contains both services; this
+/// bit only selects the one UUID that fits in the single legacy primary advertisement — which is
+/// why it is a swap rather than a second advertised UUID.
+static WEATHER_REQUEST_PENDING: AtomicBool = AtomicBool::new(false);
+static WEATHER_REQUEST_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static WEATHER_REQUEST_BUDGET: BlockingMutex<CriticalSectionRawMutex, Cell<Option<obc_ble::WeatherRequestBudget>>> =
+    BlockingMutex::new(Cell::new(None));
+
+// The arming seam: the production due scheduler ([`super::weather`]) arms it on every raise, and
+// the `ble-weather-request` harness once at boot.
+pub(crate) fn arm_weather_request(window: Duration) {
+    WEATHER_REQUEST_BUDGET.lock(|budget| {
+        budget.set(Some(obc_ble::WeatherRequestBudget::new(Instant::now().as_ticks(), window.as_ticks())))
+    });
+    if !WEATHER_REQUEST_PENDING.swap(true, Ordering::Relaxed) {
+        WEATHER_REQUEST_EDGE.signal(());
+    }
+}
+
+pub(crate) fn clear_weather_request() {
+    WEATHER_REQUEST_BUDGET.lock(|budget| budget.set(None));
+    if WEATHER_REQUEST_PENDING.swap(false, Ordering::Relaxed) {
+        WEATHER_REQUEST_EDGE.signal(());
+    }
+}
+
+pub(crate) fn weather_request_pending() -> bool {
+    WEATHER_REQUEST_PENDING.load(Ordering::Relaxed)
+}
+
+pub(crate) async fn weather_request_changed() {
+    WEATHER_REQUEST_EDGE.wait().await;
+}
+
+pub(crate) fn weather_request_remaining() -> Option<Duration> {
+    let now = Instant::now().as_ticks();
+    WEATHER_REQUEST_BUDGET.lock(|budget| budget.get().map(|budget| Duration::from_ticks(budget.remaining_ticks(now))))
+}
 
 /// The Bluetooth screen's **Forget phone** (#455), rung by the ride loop after
 /// [`App::drain_host_commands`](obc_app::App::drain_host_commands): the lifecycle loop clears the RRAM bond
@@ -147,7 +199,7 @@ pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new
 /// **sensor** manager's work edge (SE6, #707) so the central-role task winds sensor links up/down
 /// with the phone link — its own dedicated wake so it never contends on `RADIO_EDGE`'s single waiter.
 pub fn set_radio_enabled(enabled: bool) {
-    if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
+    if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled && !USB_RADIO_INHIBITED.load(Ordering::Relaxed) {
         RADIO_EDGE.signal(());
         super::sensors::wake_work();
     }
@@ -159,9 +211,18 @@ pub(crate) fn seed_radio_enabled(enabled: bool) {
     RADIO_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// The current radio switch level.
+/// Inhibit active phone advertising/connections and sensor scanning while USB has VBUS. This does
+/// not overwrite the rider's persisted switch: removing the cable restores its effective level.
+pub(crate) fn set_usb_radio_inhibited(inhibited: bool) {
+    if USB_RADIO_INHIBITED.swap(inhibited, Ordering::Relaxed) != inhibited && RADIO_ENABLED.load(Ordering::Relaxed) {
+        RADIO_EDGE.signal(());
+        super::sensors::wake_work();
+    }
+}
+
+/// The effective radio level after applying the rider switch and USB interlock.
 pub(crate) fn radio_enabled() -> bool {
-    RADIO_ENABLED.load(Ordering::Relaxed)
+    RADIO_ENABLED.load(Ordering::Relaxed) && !USB_RADIO_INHIBITED.load(Ordering::Relaxed)
 }
 
 /// Resolve once the radio switch reads **off** — the advertise / serve phases' wind-down arm.
@@ -191,24 +252,12 @@ pub fn request_forget_bond() {
     FORGET_BOND.signal(());
 }
 
-// ============================ Ride-recording → the installFw busy-gate (S6, #621) ============
-
-/// Whether a ride is recording, mirrored across the plane boundary: the ride loop owns the `App`
-/// and pushes `app.activity.is_tracking()` here each pass ([`set_recording`]); the `installFw`
-/// command handler reads it as the `busy` gate's "a ride is recording" input (spec §4.4) — the arm
-/// ends in a reboot, so an install must never be requested mid-ride. Defaults **false**; the ride
-/// loop seeds the real value on its first pass. `Relaxed`: both planes are cooperative futures on
-/// the one executor, and a stale read is at worst one pass late (the on-device guard still refuses).
-static RECORDING: AtomicBool = AtomicBool::new(false);
-
-/// Push the ride-recording state to the BLE plane (ride loop, once per pass — one atomic store).
-pub fn set_recording(recording: bool) {
-    RECORDING.store(recording, Ordering::Relaxed);
-}
-
-/// Whether a ride is recording (the `installFw` `busy` gate).
-pub(crate) fn recording() -> bool {
-    RECORDING.load(Ordering::Relaxed)
+/// The lifetime link counters + the last disconnect reason, for the §7.5 diagnostics blob
+/// ([`crate::link::diag_input`]). Kept here because they are the *radio* link's history; the
+/// diagnostics object is a device fact, so a USB reader gets the same three numbers.
+pub(crate) fn link_counters() -> (u32, u32, u8) {
+    let s = status();
+    (s.connects, s.disconnects, s.last_disconnect_reason)
 }
 
 /// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A
@@ -221,67 +270,20 @@ pub(crate) fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
 }
 
-/// The deepest stack use seen so far (bytes), published by the status loop from its
-/// [`stackmeter`](crate::stackmeter) paint-scan and surfaced in the diagnostics blob (§7.5) so the
-/// A9 soak rig can post the stack high-water without RTT. 0 = not measured yet.
-static STACK_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
+// ============================ CoC data-plane arming ============================
 
-/// Publish a new stack high-water peak (called by `run_status` when the mark grows).
-pub fn publish_stack_high_water(bytes: usize) {
-    STACK_HIGH_WATER.store(bytes as u32, Ordering::Relaxed);
-}
-
-/// The latest stack high-water mark (bytes) for the diagnostics blob.
-pub(crate) fn stack_high_water() -> u32 {
-    STACK_HIGH_WATER.load(Ordering::Relaxed)
-}
-
-// ============================ Data-plane arming ============================
-
-/// A transfer the control plane validated and handed to the data plane: the echo loopback, a route
-/// upload with its ready fresh [`Receiver`] (the store opened the temp), or a download (the data plane
-/// opens the source itself; opening may be slow — a CRC pre-pass — and belongs off the GATT reply
-/// path).
-#[derive(Clone, Copy)]
-pub(crate) enum Armed {
-    Echo(TransferControl),
-    Upload(TransferControl, Receiver),
-    Download(TransferControl),
-}
-
-/// The control plane → data plane hand-off: `serve_connection` decodes a `transfer_control` write,
-/// validates it against the `ObjectStore`, and signals the [`Armed`] transfer here; `serve_coc` wakes
-/// on it and drives the CoC. A `Signal` (latest-value) suffices because exactly one transfer is in
-/// flight at a time — [`TRANSFER_ACTIVE`] turns a second open into a typed `busy` instead of a silent
-/// overwrite.
+/// The GATT control plane → CoC data plane hand-off: `serve_connection` decodes a
+/// `transfer_control` write, [`classify_transfer`](crate::link::transfer::classify_transfer)
+/// validates it against the `ObjectStore`, and the [`Armed`] transfer is signalled here; `serve_coc`
+/// wakes on it and drives the CoC. A `Signal` (latest-value) suffices because exactly one transfer
+/// is in flight at a time — the *cross-transport* [`TRANSFER_ACTIVE`](crate::link::TRANSFER_ACTIVE)
+/// gate turns a second open into a typed `busy` instead of a silent overwrite. The signal itself is
+/// per-transport: each data plane waits on its own.
 pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal::new();
 
-/// One-transfer-at-a-time: set by the control plane when it arms, cleared by the data plane when the
-/// transfer concludes (answered, aborted, or the channel dropped). While set, another
-/// `transferControl` open is answered `busy`.
-pub(crate) static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// An abort aimed at the in-flight transfer: the control plane signals, the data plane consumes it at
-/// its next step (between SDUs / chunks), discards, and answers `aborted` with the durable offset.
-/// Latched — an abort that races the transfer's own completion is drained at the same boundary that
-/// clears [`TRANSFER_ACTIVE`], before the terminal result is notified, so it can't leak into the next
-/// one.
+/// An abort aimed at the in-flight CoC transfer: the control plane signals, the data plane consumes
+/// it at its next step (between SDUs / chunks), discards, and answers `aborted` with the durable
+/// offset. Latched — an abort that races the transfer's own completion is drained at the same
+/// boundary that clears `TRANSFER_ACTIVE`, before the terminal result is notified, so it can't leak
+/// into the next one.
 pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-// ============================ Status-message vocabulary ============================
-
-/// A `status` notification's bytes, ready to hand to `server.notify` (`&buf[..len]`). The board keeps
-/// one small stack buffer per message rather than a heapless alloc — every status message fits.
-pub(crate) type StatusBytes = ([u8; StatusMessage::MAX_ENCODED_LEN], usize);
-
-/// A `transferResult` status message with a zero `committed_offset` — the shape for every result the
-/// control plane answers directly (nothing durable is being reported).
-pub(crate) fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
-    transfer_result_at(object_id, status, 0)
-}
-
-/// A `transferResult` carrying a real durable byte count — a committed transfer reports its
-/// `total_len`.
-pub(crate) fn transfer_result_at(object_id: u16, status: TransferStatus, committed_offset: u32) -> StatusBytes {
-    StatusMessage::TransferResult(TransferResult::new(object_id, status, committed_offset)).encode()
-}

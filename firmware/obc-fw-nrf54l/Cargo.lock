@@ -229,7 +229,6 @@ checksum = "8ec610d8f49840a5b376c69663b6369e71f4b34484b9b2eb29fb918d92516cb9"
 dependencies = [
  "bare-metal",
  "bitfield",
- "critical-section",
  "embedded-hal 0.2.7",
  "volatile-register",
 ]
@@ -432,6 +431,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed25519-compact"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c24599140dc39d7a81e4476e7573d41bbc18e07c803900298e522a5fbcfbfb6"
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -536,6 +541,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy-net-driver"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "524eb3c489760508f71360112bca70f6e53173e6fe48fc5f0efd0f5ab217751d"
+
+[[package]]
+name = "embassy-net-driver-channel"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a07d2eb9f05a6fc876500949856ea1be40773d866d8cb99384f72d0ae4568c16"
+dependencies = [
+ "embassy-futures",
+ "embassy-net-driver",
+ "embassy-sync",
+]
+
+[[package]]
 name = "embassy-nrf"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -623,6 +645,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy-usb"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a25746d8b152b72fbf2a217f489a083dbbe243f281f09184a1f2cfbe9bbb245f"
+dependencies = [
+ "bitflags 2.13.0",
+ "defmt 1.1.0",
+ "embassy-futures",
+ "embassy-net-driver-channel",
+ "embassy-sync",
+ "embassy-time",
+ "embassy-usb-driver",
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.3",
+]
+
+[[package]]
 name = "embassy-usb-driver"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -636,8 +675,6 @@ dependencies = [
 [[package]]
 name = "embassy-usb-synopsys-otg"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6efd0c0e0b21bcf91b475b8fa47347c1df32c9a99728ae1e1b0e6625862dfd1a"
 dependencies = [
  "critical-section",
  "defmt 1.1.0",
@@ -696,16 +733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-hal-bus"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513e0b3a8fb7d3013a8ae17a834283f170deaf7d0eeab0a7c1a36ad4dd356d22"
-dependencies = [
- "critical-section",
- "embedded-hal 1.0.0",
-]
-
-[[package]]
 name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -742,8 +769,7 @@ dependencies = [
 [[package]]
 name = "embedded-sdmmc"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3c7f9ea039eeafc4a49597b7bd5ae3a1c8e51b2803a381cb0f29ce90fe1ec6"
+source = "git+https://github.com/timohueser/embedded-sdmmc-rs?branch=cmd25-multiblock-write#e846db6655acc40fb3db8278061717244e5c3771"
 dependencies = [
  "byteorder",
  "embedded-hal 1.0.0",
@@ -1133,7 +1159,7 @@ dependencies = [
 [[package]]
 name = "nrf-mpsl"
 version = "0.3.0"
-source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=f54b6389ffa2750d4d3a4f5435660cb66b47e51a#f54b6389ffa2750d4d3a4f5435660cb66b47e51a"
 dependencies = [
  "cfg-if",
  "cortex-m",
@@ -1150,7 +1176,7 @@ dependencies = [
 [[package]]
 name = "nrf-mpsl-sys"
 version = "0.2.1"
-source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=f54b6389ffa2750d4d3a4f5435660cb66b47e51a#f54b6389ffa2750d4d3a4f5435660cb66b47e51a"
 dependencies = [
  "bindgen",
  "doxygen-rs",
@@ -1169,7 +1195,7 @@ dependencies = [
 [[package]]
 name = "nrf-sdc"
 version = "0.4.0"
-source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=f54b6389ffa2750d4d3a4f5435660cb66b47e51a#f54b6389ffa2750d4d3a4f5435660cb66b47e51a"
 dependencies = [
  "bt-hci",
  "critical-section",
@@ -1186,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "nrf-sdc-sys"
 version = "0.2.1"
-source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/alexmoon/nrf-sdc.git?rev=f54b6389ffa2750d4d3a4f5435660cb66b47e51a#f54b6389ffa2750d4d3a4f5435660cb66b47e51a"
 dependencies = [
  "bindgen",
  "doxygen-rs",
@@ -1219,20 +1245,34 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-elevation",
  "obc-formats",
+ "obc-map-scene",
  "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obc-weather",
 ]
 
 [[package]]
 name = "obc-ble"
 version = "0.1.0"
+dependencies = [
+ "obc-crc",
+]
+
+[[package]]
+name = "obc-crc"
+version = "0.1.0"
 
 [[package]]
 name = "obc-dfu"
 version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+ "obc-crc",
+]
 
 [[package]]
 name = "obc-display"
@@ -1242,9 +1282,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-elevation"
+version = "0.1.0"
+dependencies = [
+ "obc-formats",
+]
+
+[[package]]
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
+ "obc-crc",
  "obc-ports",
 ]
 
@@ -1257,15 +1305,13 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.1.0",
  "defmt-rtt",
- "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-nrf",
  "embassy-sync",
  "embassy-time",
+ "embassy-usb",
  "embedded-graphics",
- "embedded-hal 1.0.0",
- "embedded-hal-bus",
  "embedded-sdmmc",
  "embedded-storage",
  "heapless 0.8.0",
@@ -1274,9 +1320,12 @@ dependencies = [
  "nrf-sdc",
  "obc-app",
  "obc-ble",
+ "obc-crc",
  "obc-dfu",
  "obc-display",
+ "obc-elevation",
  "obc-formats",
+ "obc-map-scene",
  "obc-platform",
  "obc-ports",
  "obc-reader",
@@ -1284,6 +1333,7 @@ dependencies = [
  "obc-route",
  "obc-sensors",
  "obc-storage",
+ "obc-weather",
  "panic-probe",
  "static_cell",
  "trouble-host",
@@ -1307,8 +1357,8 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "heapless 0.8.0",
+ "obc-map-scene",
  "obc-ports",
- "obc-route",
 ]
 
 [[package]]
@@ -1341,7 +1391,9 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-elevation",
  "obc-formats",
+ "obc-map-scene",
  "obc-ports",
  "obc-reader",
 ]
@@ -1360,8 +1412,18 @@ version = "0.1.0"
 dependencies = [
  "embedded-sdmmc",
  "heapless 0.8.0",
+ "obc-crc",
  "obc-formats",
  "obc-ports",
+ "obc-weather",
+]
+
+[[package]]
+name = "obc-weather"
+version = "0.1.0"
+dependencies = [
+ "obc-crc",
+ "obc-formats",
 ]
 
 [[package]]

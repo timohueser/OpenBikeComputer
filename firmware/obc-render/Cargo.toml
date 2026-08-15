@@ -5,13 +5,6 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map rendering path using embedded-graphics"
 
-[features]
-# Constrained on-device memory profile (issue #124) — shrinks the per-frame renderer scratch
-# (`MAX_SPANS` / `MAX_FRAME_POINTS` / `MAX_FRAME_RINGS` / `MAX_SCREEN_POINTS`). The app/board
-# feature also enables the concrete reader's independent cache trim. Off by default (full preview
-# fidelity on host/sim/tests).
-nrf-mem = []
-
 [dependencies]
 obc-map-scene = { path = "../obc-map-scene" }
 embedded-graphics = "0.8"
@@ -27,4 +20,4 @@ obc-reader = { path = "../obc-reader" }
 obc-formats = { path = "../obc-formats" }
 # Shared OBCM byte builder for the priority-saturation test (same source the reader's
 # format tests use, so a format bump edits one place).
-obcm-testkit = { path = "../obcm-testkit" }
+obcm-testkit = { path = "../../host/obcm-testkit" }

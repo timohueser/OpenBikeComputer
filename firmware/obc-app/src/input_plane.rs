@@ -9,8 +9,8 @@
 //! On the firmware this plane runs on a **high-priority interrupt executor** that preempts the
 //! CPU-bound map render every few milliseconds: it samples the buttons, recognises gestures (into a
 //! channel the map plane drains), and animates the hold bulge on its own overlay layer — so
-//! press-to-feedback latency stays bounded regardless of map-frame length. On the simulator (and
-//! the firmware's single-executor fallback) the same plane runs inline via
+//! press-to-feedback latency stays bounded regardless of map-frame length. On the single-loop hosts
+//! (the simulator, the web demos) the same plane runs inline via
 //! [`App::handle_input`](crate::App::handle_input). Either way the logic is *this one struct*, so
 //! host and device behave identically.
 //!
@@ -34,10 +34,10 @@ use obc_ports::{InputClock, InputSource};
 pub struct InputPlane {
     /// The shared gesture recognizer (raw events + clock → the five gestures).
     gestures: Gestures,
-    /// The global long-press hint overlay (the charge-in-place bulge at the encoder / Back
+    /// The global long-press hint overlay (the charge-in-place bulge at the Select / Back
     /// edges), drawn above every screen on the dedicated overlay layer.
     hold_hints: HoldHints,
-    /// In-flight encoder / Back hold-progress (0.0–1.0) for the confirm ring.
+    /// In-flight Select / Back hold-progress (0.0–1.0) for the confirm ring.
     enc_progress: f32,
     back_progress: f32,
     /// The most recently recognized gesture, for the host's input readout.
@@ -94,7 +94,7 @@ impl InputPlane {
             self.last_gesture = Some(g);
             on_gesture(g);
         }
-        self.enc_progress = self.gestures.encoder_progress(now_ms);
+        self.enc_progress = self.gestures.select_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
         self.hold_hints.update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
     }
@@ -150,8 +150,8 @@ impl InputPlane {
         self.last_gesture
     }
 
-    /// In-flight encoder hold-progress (0.0–1.0) for the confirm-ring readout.
-    pub fn encoder_hold_progress(&self) -> f32 {
+    /// In-flight Select hold-progress (0.0–1.0) for the confirm-ring readout.
+    pub fn select_hold_progress(&self) -> f32 {
         self.enc_progress
     }
 

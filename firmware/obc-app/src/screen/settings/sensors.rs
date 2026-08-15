@@ -9,7 +9,7 @@
 //!   Bluetooth Forget-family guarded footer: a plain prompt while unselected, the shaded base filling
 //!   warning-red with the live hold while the row is selected).
 //! - [`SensorScanScreen`]: the scan list for one quantity — the discovered sensors of that kind
-//!   (name, or address when unnamed, + RSSI), a turn to move, a press to **save + connect** (writes
+//!   (name, or address when unnamed, + RSSI), a step to move, a press to **save + connect** (writes
 //!   the settings slot → the host reconciles it to the radio) and pop back to the row now `Connecting`.
 //!   Empty while scanning shows `Searching…`.
 //!
@@ -27,17 +27,13 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{confirm_row, palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 use crate::sensors::{SensorPhase, SensorStatus};
 use crate::settings::{Language, SavedSensor, SENSOR_SLOTS};
 use crate::Msg;
 
 /// Two-line row height — matches the Bluetooth toggle row's family.
 const ROW_H: i32 = 58;
-/// The Forget footer's height + bottom anchor — the Route overview / Bluetooth Delete-row geometry
-/// (38 px tall, 10 px above the card bottom) so the button faces all match.
-const FORGET_H: i32 = 38;
-
 /// The i18n key for a slot's kind label (`Heart rate` / `Power` / `Cadence`). Slot index = kind.
 fn kind_msg(slot: usize) -> Msg {
     match slot {
@@ -66,7 +62,7 @@ impl SensorsScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 self.selected = crate::screen::list::step_selection(self.selected, n, SENSOR_SLOTS);
                 Transition::None
             }
@@ -89,7 +85,6 @@ impl SensorsScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::SensorsTitle), "");
 
@@ -104,21 +99,10 @@ impl SensorsScreen {
             super::row_label(cv, row, rx.t(kind_msg(slot)), Some(&sub));
         }
 
-        // The Forget footer — the Bluetooth/Route Delete-row treatment: a plain left-aligned label
-        // while the selected row has no saved sensor, the shaded base + warning hold-fill while it
-        // does. Drawn only when the selected slot is saved (the only-when-possible grammar).
+        // The Forget footer, drawn only when the selected slot is saved (the only-when-possible
+        // grammar) — so on this page it is always the guarded row holding the cursor.
         if self.selection_is_guarded(rx.settings) {
-            let fy = h - 10 - FORGET_H;
-            let row = super::row_rect(fy, w, FORGET_H);
-            confirm_row(cv, row, true, true, rx.hold_progress, WARNING, 6);
-            cv.text_vcentered(
-                rx.t(Msg::SensorsForget),
-                row.top_left.x + 12,
-                (fy, FORGET_H),
-                Font::Body,
-                TextAlign::Left,
-                INK,
-            );
+            super::forget_footer(cv, w, h, rx.t(Msg::SensorsForget), true, rx.hold_progress);
         }
     }
 }
@@ -178,7 +162,7 @@ impl SensorScanScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 let len = self.count(cx.sensor_scan_hits);
                 if len > 0 {
                     self.selected = crate::screen::list::step_selection(self.selected.min(len - 1), n, len);
@@ -258,6 +242,7 @@ fn fmt_addr(buf: &mut heapless::String<24>, addr: &[u8; 6]) {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::sensors::SensorScanHit;
     use crate::settings::Settings;
     use crate::{AppState, Mode};
@@ -276,19 +261,7 @@ mod tests {
         g: Gesture,
     ) -> Transition {
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: hits,
-            now_ms: 0,
-        };
+        let mut cx = Ctx { sensor_scan_hits: hits, ..test_ctx(st, &mut act, s) };
         scr.handle(g, &mut cx)
     }
 
@@ -300,19 +273,7 @@ mod tests {
         hits: &[SensorScanHit],
         g: Gesture,
     ) -> Transition {
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: st,
-            activity: act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            sensor_scan_hits: hits,
-            now_ms: 0,
-        };
+        let mut cx = Ctx { sensor_scan_hits: hits, ..test_ctx(st, act, s) };
         scr.handle(g, &mut cx)
     }
 
@@ -322,22 +283,10 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = SensorsScreen::new();
-        run(&mut scr, &mut st, &mut s, &[], Gesture::Turn(1)); // → Power (slot 1)
+        run(&mut scr, &mut st, &mut s, &[], Gesture::Step(1)); // → Power (slot 1)
         let t = {
             let mut act = Activity::new(Mode::Idle);
-            let scratch = crate::screen::PoiScratch::new();
-            let mut cx = Ctx {
-                state: &mut st,
-                activity: &mut act,
-                settings: &mut s,
-                routes: &[],
-                rides: &[],
-                trips: &[],
-                nav_profiles: &crate::NavProfiles::EMPTY,
-                poi_scratch: &scratch,
-                sensor_scan_hits: &[],
-                now_ms: 0,
-            };
+            let mut cx = test_ctx(&mut st, &mut act, &mut s);
             let t = scr.handle(Gesture::Press, &mut cx);
             assert!(act.sensor_scan_active(), "entering a row raises scan mode");
             t
@@ -388,7 +337,7 @@ mod tests {
         assert!(!act.sensor_scan_active(), "picking leaves scan mode");
     }
 
-    /// Turn walks only this quantity's hits; a press with no hits does nothing (no panic on empty).
+    /// Up/Down walks only this quantity's hits; a press with no hits does nothing (no panic on empty).
     #[test]
     fn scan_cursor_bounded_to_kind_and_empty_is_safe() {
         let mut st = AppState::new(0, 0, 1.0);
@@ -397,7 +346,7 @@ mod tests {
         let mut scr = SensorScanScreen::new(2); // Cadence — no hits below
         let hits = [hit(0, "HRM", -60), hit(1, "PWR", -50)];
 
-        run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Turn(1));
+        run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Step(1));
         assert_eq!(scr.selected, 0, "no cadence hits → the cursor can't move");
         let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
         assert!(matches!(t, Transition::None), "a press with no hit does nothing");

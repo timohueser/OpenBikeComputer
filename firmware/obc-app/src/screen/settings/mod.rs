@@ -2,7 +2,7 @@
 //! screen ([`SettingsScreen`]) and the reusable drawing kit every settings screen shares (the slider
 //! toggle, the value/stepper field, the row cursor); the individual screens live one file each.
 //!
-//! The two-level encoder model:
+//! The two-level Select model:
 //! - **Rotate** moves the amber row cursor; while a field is open it changes that field's value.
 //! - **Press** flips a toggle, or enters a value row's stepper (a `▲▼` box marks the live field);
 //!   pressing again steps field→field and off the end steps back out.
@@ -30,45 +30,51 @@ use super::{palette, Ctx, Render, Screen, Transition};
 /// like Add field never reaches for `super::super::`.
 pub(super) use super::empty_state;
 
+mod about;
 mod add_field;
-mod autodelete;
 /// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
 /// bike from the same sprites + colours the Bike-type screen uses.
 pub(crate) mod bike_icons;
 mod bike_type;
 mod bluetooth;
+mod connections;
 mod datetime;
 mod display;
 mod fields;
+mod firmware;
 mod language;
 mod power;
 mod reset;
+mod ride;
 mod sensors;
-mod stats;
 mod system;
 mod units;
+mod weather;
 
+pub use about::AboutScreen;
 pub use add_field::AddFieldScreen;
-pub use autodelete::AutoDeleteScreen;
 pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
+pub use connections::ConnectionsScreen;
 pub use datetime::DateTimeScreen;
 pub use display::DisplayScreen;
 pub use fields::StatFieldsScreen;
+pub use firmware::FirmwareScreen;
 pub use language::LanguageScreen;
 pub use power::PowerScreen;
 pub use reset::ResetScreen;
+pub use ride::RideScreen;
 pub use sensors::{SensorScanScreen, SensorsScreen};
-pub use stats::StatsScreen;
 pub use system::SystemScreen;
 pub use units::UnitsScreen;
+pub use weather::WeatherSettingsScreen;
 
-/// The number of Settings list entries. The row *labels* are looked up per-language at draw time
-/// (see [`SettingsScreen::draw`]); Auto-delete (route auto-expiry, epic #638 S5) sits just under
-/// Date & Time (both are clock-anchored device housekeeping), Sensors (BLE sensors, epic #707) just
-/// under Bluetooth, and System (the firmware-update door, epic #615 S5) just above the terminal
-/// (destructive) Reset row.
-const N_ITEMS: usize = 12;
+/// The number of Settings list entries — six themed groups. The row *labels* are looked up
+/// per-language at draw time (see [`SettingsScreen::draw`]). Each row opens a group screen: Ride
+/// (routing + the riding grid + retention), Display, Weather (the WX11 refresh interval),
+/// Connections (Phone + Sensors), Power, and System (Units / Date & Time / Language / Firmware
+/// update / About / Reset).
+const N_ITEMS: usize = 6;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -82,27 +88,16 @@ impl SettingsScreen {
         SettingsScreen { selected: 0 }
     }
 
-    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
-                0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
-                1 => Transition::Push(Screen::AutoDelete(AutoDeleteScreen::new())),
-                2 => Transition::Push(Screen::Units(UnitsScreen::new())),
-                3 => Transition::Push(Screen::BikeType(BikeTypeScreen::new())),
-                4 => Transition::Push(Screen::Stats(StatsScreen::new())),
-                5 => Transition::Push(Screen::Display(DisplayScreen::new())),
-                6 => Transition::Push(Screen::Power(PowerScreen::new())),
-                7 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
-                8 => Transition::Push(Screen::Sensors(SensorsScreen::new())),
-                9 => Transition::Push(Screen::Language(LanguageScreen::new())),
-                10 => {
-                    // Opening System triggers the one-shot card-free scan (T8 item 6): the host runs
-                    // the FAT free-cluster scan once on entry and answers via `App::apply_event`.
-                    cx.activity.request_card_scan();
-                    Transition::Push(Screen::System(SystemScreen::new()))
-                }
-                _ => Transition::Push(Screen::Reset(ResetScreen::new())),
+                0 => Transition::Push(Screen::Ride(RideScreen::new())),
+                1 => Transition::Push(Screen::Display(DisplayScreen::new())),
+                2 => Transition::Push(Screen::WeatherSettings(WeatherSettingsScreen::new())),
+                3 => Transition::Push(Screen::Connections(ConnectionsScreen::new())),
+                4 => Transition::Push(Screen::Power(PowerScreen::new())),
+                _ => Transition::Push(Screen::System(SystemScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
             Gesture::Hold | Gesture::BackHold => Transition::None,
@@ -113,18 +108,12 @@ impl SettingsScreen {
         // Built per-frame from the catalog (the old `const ITEMS` couldn't stay const once the labels
         // are language-dependent); the order matches the `handle` press arms above.
         let items: [&str; N_ITEMS] = [
-            rx.t(Msg::SettingsDatetime),
-            rx.t(Msg::SettingsAutodelete),
-            rx.t(Msg::SettingsUnits),
-            rx.t(Msg::SettingsBikeType),
-            rx.t(Msg::SettingsStats),
+            rx.t(Msg::SettingsRide),
             rx.t(Msg::SettingsDisplay),
+            rx.t(Msg::SettingsWeather),
+            rx.t(Msg::SettingsConnections),
             rx.t(Msg::SettingsPower),
-            rx.t(Msg::SettingsBluetooth),
-            rx.t(Msg::SettingsSensors),
-            rx.t(Msg::SettingsLanguage),
             rx.t(Msg::SettingsSystem),
-            rx.t(Msg::SettingsReset),
         ];
         list::nav_list(cv, rx.w, rx.h, rx.t(Msg::SettingsTitle), &items, self.selected);
     }
@@ -134,6 +123,36 @@ impl SettingsScreen {
 
 /// Left inset of every settings row (clears the framed outline).
 pub(super) const ROW_X: i32 = 14;
+
+/// The Forget row's height + bottom anchor — the Route overview Delete row's geometry family
+/// (38 px tall, the standard 10 px above the card bottom), so the button faces all match.
+pub(super) const FORGET_H: i32 = 38;
+
+/// **Back** on a settings page that has an editable field: an open field takes the press — `close`
+/// runs and the page stays put — otherwise Back climbs to the Settings list. That's the two levels
+/// of "inside" (row cursor, open field) unwinding one press at a time, identically on Display,
+/// Power, Ride and Date & time.
+pub(super) fn back_out_of_field(open: bool, close: impl FnOnce()) -> Transition {
+    if open {
+        close();
+        Transition::None
+    } else {
+        Transition::Pop
+    }
+}
+
+/// The bottom-anchored guarded **Forget** row shared by Bluetooth and Sensors — the Pause-menu
+/// guarded-row treatment (owner review round 3: the round-2 focus outline is retired everywhere):
+/// a plain left-aligned Body label while unselected, the shaded base + warning-red hold fill only
+/// while the cursor is on it, exactly the `ride_control` family's selected-guarded face at the
+/// delete rows' bottom anchor. Both pages draw it only while there *is* something to forget (the
+/// round-1 only-when-possible grammar), so the caller owns that condition.
+pub(super) fn forget_footer(cv: &mut impl Surface, w: i32, h: i32, label: &str, selected: bool, hold: f32) {
+    let fy = h - 10 - FORGET_H;
+    let row = row_rect(fy, w, FORGET_H);
+    super::confirm_row(cv, row, selected, true, hold, palette::WARNING, 6);
+    cv.text_vcentered(label, row.top_left.x + 12, (fy, FORGET_H), Font::Body, TextAlign::Left, palette::INK);
+}
 
 /// The full-width settings-row rectangle at `y` of height `h`.
 pub(super) fn row_rect(y: i32, w: i32, h: i32) -> Rectangle {

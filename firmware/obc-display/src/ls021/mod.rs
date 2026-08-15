@@ -27,6 +27,7 @@
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 
+use crate::framebuffer::rgb565_to_device64_byte;
 use crate::panel::{composite_overlay_window, Band};
 
 pub mod rowdiff;
@@ -113,7 +114,7 @@ pub struct OverlayScratch<'a> {
 /// clean resident `fb` backdrop within `window`, for a transport that scans the resident frame
 /// directly — so the composited window must transiently *be* in the frame. The clean window bytes
 /// are saved (≤ the window's area), the composited window written in (each RGB565 scratch pixel
-/// re-quantized to a device-64 byte through `quantize`), `push` drives the full-width rows
+/// re-quantized to a device-64 byte through [`rgb565_to_device64_byte`]), `push` drives the full-width rows
 /// `[y0, y0 + rows)` to glass, and the clean bytes are restored — **byte-identically, push fault or
 /// not** (a mid-scan transport reading restored clean bytes just paints clean rows; the caller
 /// retries). The row-hash store keeps tracking the clean frame throughout: after the restore the
@@ -121,9 +122,10 @@ pub struct OverlayScratch<'a> {
 ///
 /// The composite itself is the shared [`composite_overlay_window`] (backdrop fill + one
 /// `draw_overlay` call over a frame-absolute [`Band`] — the caller's brief input-plane lock inside
-/// it is taken once per overlay frame, never per row). `quantize` is the caller's RGB565 →
-/// device-64 packer, passed in so this crate stays free of the reader's quantizer dependency —
-/// both the board and the host tests pass the same `rgb565_to_device64`-based closure.
+/// it is taken once per overlay frame, never per row). The re-quantization is this crate's own
+/// [`rgb565_to_device64_byte`] — the same packer the resident frame was rendered with, so an
+/// overlay pixel and a map pixel of the same colour land on the same device-64 byte by
+/// construction rather than by two callers agreeing.
 ///
 /// Both [`OverlayScratch`] slices must hold at least `w × rows` entries (panics otherwise — a
 /// backend wiring bug, caught loudly). Transport-generic: the board's `push` is the blocking FLPR
@@ -134,7 +136,6 @@ pub fn composite_into_resident<E>(
     frame: Size,
     window: RowWindow,
     scratch: OverlayScratch<'_>,
-    quantize: impl Fn(u16) -> u8,
     draw_overlay: &mut dyn FnMut(&mut Band),
     push: impl FnOnce(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
@@ -155,7 +156,7 @@ pub fn composite_into_resident<E>(
         for c in 0..w {
             let idx = (y0 + r) * fw + x0 + c;
             save_scratch[r * w + c] = fb[idx];
-            fb[idx] = quantize(win_scratch[r * w + c]);
+            fb[idx] = rgb565_to_device64_byte(win_scratch[r * w + c]);
         }
     }
 
@@ -182,14 +183,6 @@ mod tests {
     extern crate std;
     use std::vec;
     use std::vec::Vec;
-
-    /// The real RGB565 → device-64 byte packer — the exact closure the board backend passes
-    /// (`obc_reader::rgb565_to_device64` returns 0/85/170/255 per channel; `/85` recovers the
-    /// 2-bit level), so the roundtrip through the backdrop expansion is exact.
-    fn quant(px: u16) -> u8 {
-        let (r, g, b) = obc_reader::rgb565_to_device64(px);
-        ((r / 85) << 4) | ((g / 85) << 2) | (b / 85)
-    }
 
     fn white() -> Rgb565 {
         Rgb565::new(31, 63, 31)
@@ -218,7 +211,6 @@ mod tests {
             Size::new(fw as u32, fh as u32),
             window,
             OverlayScratch { win: &mut win, save: &mut save },
-            quant,
             &mut |band| {
                 // Paint frame-absolute (5, 3) into the window.
                 band.fill_solid(&Rectangle::new(Point::new(5, 3), Size::new(1, 1)), white()).ok();
@@ -249,7 +241,6 @@ mod tests {
             Size::new(fw as u32, fh as u32),
             window,
             OverlayScratch { win: &mut win, save: &mut save },
-            quant,
             &mut |band| {
                 band.fill_solid(&Rectangle::new(Point::new(2, 1), Size::new(2, 2)), white()).ok();
             },

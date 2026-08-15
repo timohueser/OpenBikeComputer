@@ -13,12 +13,14 @@
 //! a node is one quadtree descent to its coord's leaf (a degenerate one-point view) +
 //! one chunk read + relaxing its neighbors straight off the record — each neighbor's
 //! coord and cost are inline (§8.3), so the heuristic needs no second fetch.
-//! Consecutive settles have strong spatial locality; the [`NavTileCache`] turns the
-//! per-settle re-read into a resident-slot hit (the device is SD-bound — the cache's
-//! hit/miss counters are the number R4 logs on-glass).
+//! Consecutive settles scatter among a bounded set of active leaves; the [`NavTileCache`]
+//! keeps that working set resident and turns most per-settle re-reads into slot hits (the device
+//! is SD-bound — the cache's hit/miss counters are the number R4 logs on-glass).
 //!
-//! **The scratch is fixed** ([`NAV_MAX_NODES`] tracked nodes, per-target sized)
-//! because the router must coexist with the map cache and the render scratch in RAM.
+//! **The scratch is fixed** — [`NAV_MAX_NODES`] tracked nodes, **one size on every
+//! target**, host, sim and device alike, which is the point: the sim's plannable
+//! range *is* the device's — because the router must coexist with the map cache and
+//! the render scratch in RAM.
 //! On a dense graph it fills — but a full table no longer aborts (N4, epic #533):
 //! the first failed insert latches a `table_full` flag and the search **continues
 //! without inserting new nodes** (relaxing already-tracked nodes — decrease-key — still
@@ -29,25 +31,50 @@
 //! re-open strictly lowers an integer `g ≥ 0`, and no new node ever enters once full — the
 //! frontier must empty.
 //!
-//! **Profile-weighted edges** (epic #533, N3): each edge is relaxed by the selected
-//! **bike profile's** multiplier for its §8.3 `way_kind` — `weighted = (cost_m ×
-//! mult(kind)) >> 4`, `mult` a 40-byte per-plan lookup (32 highway × 8 surface `u8`
-//! 1/16 bytes, combined at lookup) resolved once from the map's §8.6 profile table. An
-//! out-of-range profile index falls back to profile 0 (a stale device setting must
-//! never brick routing — never an error). A **forbidden** class (`mult == 0`) is simply
-//! not relaxed: the neighbor is skipped, so the graph stays whole for the other
-//! profiles and an endpoint whose only escapes are forbidden drains the frontier to an
-//! honest [`NavError::NoPath`]. The *displayed* distance is unweighted — the planner sums
-//! each hop's raw edge `length_m` at emit, not the weighted `g`.
+//! **Profile-weighted, climb-aware edges** (epic #533 N3; the climb term is EL6, epic #1068). Every
+//! edge is relaxed through the §8.6 formula, verbatim:
+//!
+//! ```text
+//! weighted = (cost_m × effective(way_kind)) >> 4  +  ascent_m × climb_weight     # saturating
+//! ```
+//!
+//! `effective` is the selected **bike profile's** multiplier for the edge's §8.3 `way_kind`, from a
+//! 40-byte per-plan lookup (32 highway × 8 surface `u8` 1/16 bytes, combined at lookup);
+//! `climb_weight` is the same profile's flat-metres-per-metre-of-ascent byte. Both are resolved
+//! **once per plan** from the map's §8.6 profile table into [`ProfileMult`]. An out-of-range profile
+//! index falls back to profile 0 (a stale device setting must never brick routing — never an error).
+//! A **forbidden** class (`effective == 0`) is simply not relaxed: the neighbor is skipped, so the
+//! graph stays whole for the other profiles and an endpoint whose only escapes are forbidden drains
+//! the frontier to an honest [`NavError::NoPath`]. The *displayed* distance is unweighted — the
+//! planner sums each hop's raw edge `length_m` at emit, not the weighted `g`.
+//!
+//! `ascent_m` is the §8.3 neighbor entry's own **directional** integrated climb (v12) — it is read
+//! off the adjacency record already in hand, which is why EL5 put it *there* and not in the §8.4
+//! edge pool: relaxation still costs no second fetch. A map packed without terrain carries `0`
+//! everywhere and a `climb_weight` of `0` is a legal, meaningful profile, so both zeroes reproduce
+//! v11's costing exactly — the null path is provably today's router (pinned in `tests/nav.rs`).
+//!
+//! **Admissibility with elevation, restated where the code lives** (§8.6, normative): *`Ascent M`
+//! and `Climb Weight` are both unsigned and the term is added, so a descent MUST NOT reduce an
+//! edge's cost below its profile-weighted ground length.* That is the whole reason the climb term is
+//! shaped as it is. `h` remains the great-circle distance to the goal in the same
+//! local-equirectangular metric the packer summed every `cost_m` in, nothing anywhere subtracts from
+//! a cost, and every non-forbidden multiplier is ≥ 1.0× — so `weighted ≥ ground length ≥
+//! great-circle` still holds edge for edge and `h` stays a lower bound unchanged. Descent credits
+//! are therefore **banned**, not merely unimplemented (epic #1068's out-of-scope list): an edge
+//! cheaper than its straight-line distance would break the bound the whole ε-ladder rests on.
+//! Gradient effects on *time* belong in ETA (EL9), never in the A\* cost.
 //!
 //! **Bounded suboptimality, not exactness** (decided 2026-07-06 — range in fixed
 //! memory): the priority is `f = g + ε·h`, ε an inflation from the [`NAV_EPSILON_LADDER`].
 //! The heuristic itself never overestimates the *weighted* cost — it is the great-circle
 //! distance to the goal in the *same* local-equirectangular metric the packer summed for
-//! every edge's `cost_m`, and every non-forbidden profile multiplier is **≥ 1.0**
-//! (packer-enforced + reader-clamped), so `weighted cost ≥ ground length ≥ great-circle`:
-//! `h` stays admissible unchanged. Weighted A\* therefore returns a path of cost **≤ ε×
-//! the cheapest route under the selected profile**, where ε is **the rung the search
+//! every edge's `cost_m`, every non-forbidden profile multiplier is **≥ 1.0**
+//! (packer-enforced + reader-clamped), and the climb term only ever *adds*, so
+//! `weighted cost ≥ ground length ≥ great-circle`: `h` stays admissible unchanged. Weighted A\*
+//! therefore returns a path of cost **≤ ε× the cheapest *climb-aware* route under the selected
+//! profile** (that reading is the only thing EL6 changed about this bound — the ε numbers and every
+//! rung's logic are untouched), where ε is **the rung the search
 //! succeeded on** — 1.3× for the first-try success every route used before N8 (a few
 //! percent on road networks in practice), and 2.0× or 3.0× only for a route that *would
 //! otherwise have failed* the tight bound (see the ε-escalation note under [`NAV_EPSILON_LADDER`]).
@@ -92,20 +119,102 @@
 //! the truly-hopeless path, bought so a *reachable-but-far* target that the tight bound
 //! couldn't fit now succeeds. A step-count budget in the stepping host is the named
 //! future lever if the wait annoys.
+//!
+//! **Emit-time elevation fill** (EL7, epic #1068): every [`step`](NavPlanner::step) takes an
+//! [`ElevationSource`] and the emit phase samples it at each emitted vertex, so a planned route's
+//! OBCR carries real heights and its header the real min/max/ascent/descent. Nothing downstream
+//! changed to make that work — the Climb screen, the elevation profile, the ride stats and the GPX
+//! export have always read those fields; they were simply zero for a device-planned route. Three
+//! rules govern the fill:
+//!
+//! - **Densify to [`ELE_SAMPLE_STEP_M`] when there is terrain.** A nav edge's polyline is OSM way
+//!   geometry: it carries a vertex where the *road* bends, which on a straight alpine ramp can be
+//!   kilometres away (up to the packer's 30 000 µdeg ≈ 3.3 km densification bound). Sampling only
+//!   at those vertices would run a chord straight through a crest. Intermediate points are
+//!   interpolated linearly in µdeg and sampled like any other vertex — they are ordinary OBCR
+//!   points, and the emitter's decimator is free to drop the ones that carry neither shape nor
+//!   height (see [`ObcrEmitter::keep_elevation_detail`](crate::convert::ObcrEmitter)).
+//! - **A hole carries the last known height forward.** [`ElevationSource::sample`] answers `None`
+//!   for a coverage edge, a `NODATA` corner or no terrain file at all; OBCR has no per-point
+//!   "unknown" encoding, so the fill repeats the last resolved height — a flat segment across the
+//!   gap, honest enough, and one that books no phantom climb through the dead-band. A hole
+//!   **before the first resolved sample** has nothing to carry, so the integrator does not run at
+//!   all until coverage begins ([`EleFill::resolve`]): pushing the `0` placeholder would anchor the
+//!   band at sea level and book the whole first real height as ascent. If **no** sample ever
+//!   resolves, the header stats stay zeroed exactly as they were before EL7.
+//! - **The null source is bit-for-bit the old behaviour.** With
+//!   [`NullElevation`](obc_elevation::NullElevation) nothing densifies, every stored height is 0
+//!   and every stat is 0, so the emitted OBCR is byte-identical to the pre-EL7 one (pinned in
+//!   `tests/nav.rs`). That is the property that makes the terrain file removable.
+//!
+//! The totals go through the same [`DeadBand`] at the same [`ELE_DEADBAND_M`] threshold the GPX
+//! converter ([`crate::convert`]) runs over an imported track, so a route planned on the device and
+//! the same route exported to GPX and re-imported agree on their climb.
+//!
+//! **The one boundary on that parity**, stated rather than hidden: a route whose *opening* points
+//! fall outside terrain coverage still **stores** height `0` for them, because OBCR has no
+//! "unknown" encoding. The route's own stats are right — the integrator ignored those points — but
+//! an export of it re-imports as a `0 → first-real-height` step, which the converter's dead-band
+//! *will* book. Parity therefore holds for a route lying wholly inside coverage, which is every
+//! route on a map whose terrain was baked for it; the honest fix for the exception is a terrain
+//! file that covers the map's graph, never a fabricated height.
 
 use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
-use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
+use crate::corridor::Corridor;
 use crate::reader::MAX_WAYPOINTS;
-use obc_formats::io::ByteSink;
+use obc_elevation::{DeadBand, ElevationSource, ELE_DEADBAND_M};
+use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
-use obc_reader::{BBox, NavTileCache, Reader, M_PER_DEG};
+use obc_map_scene::{cos_lat, ground_dist_m};
+use obc_map_scene::{BBox, M_PER_DEG};
+use obc_reader::{NavEdgeCandidate, NavEdgePosition, NavEdgeSnap, NavTileCache, Reader};
 
-/// Snap radius, meters (locked on #116): each endpoint snaps to the nearest routable
-/// node within this, or the route fails as [`NavError::NoPath`]. v1 snaps to nodes,
-/// not mid-edge (a noted future refinement).
-const SNAP_RADIUS_M: f32 = 250.0;
+/// Maximum accepted distance from the requested position to the winning full road polyline.
+/// The wider [`SNAP_LOOKUP_RADIUS_M`] only discovers candidate edge ids; it never weakens this
+/// actual point-to-road limit or quantizes the returned projection.
+pub(crate) const SNAP_RADIUS_M: f32 = 100.0;
+
+/// Maximum ground distance from any point on an indexed edge to its nearest endpoint/interior
+/// anchor. The mathematical bound is 150 m; one metre covers microdegree anchor rounding.
+const SNAP_INDEX_REACH_M: f32 = 151.0;
+/// Node/anchor discovery radius. A road point is within [`SNAP_INDEX_REACH_M`] of a lookup record;
+/// adding [`SNAP_RADIUS_M`] gives a complete ≈250 m search (the extra metre is rounding slack).
+const SNAP_LOOKUP_RADIUS_M: f32 = SNAP_INDEX_REACH_M + SNAP_RADIUS_M;
+/// The usual case searches less area once: if its winning road is within 49 m, the triangle bound
+/// proves no record outside this window can name a closer edge. Otherwise one full pass follows.
+const SNAP_INITIAL_LOOKUP_RADIUS_M: f32 = 200.0;
+
+/// Reserved ids for exact projected endpoints. Packed node ids are dense from zero and cannot use
+/// the top two values.
+const VIRTUAL_START_ID: u32 = u32::MAX;
+const VIRTUAL_GOAL_ID: u32 = u32::MAX - 1;
+
+/// Largest ground gap (m) between two emitted OBCR points **while terrain is available** (EL7):
+/// a longer edge segment is split with linearly interpolated points, each sampled like a real
+/// vertex.
+///
+/// 250 m is chosen against the raster, not the road: v1 terrain is a 512 µdeg posting (≈ 40 m
+/// north-south), so a 250 m step still lands ~6 postings apart — it cannot invent detail the DEM
+/// does not have, and it cannot miss a col or a crest by more than a quarter of the shallowest
+/// interesting climb. It is also cheap: at ≈ 4 samples/km a 100 km route asks the tile cache for
+/// ~400 samples, and with terrain cells covering ~55 km of latitude those samples walk the raster
+/// in order, so the resident 4-tile cache serves nearly all of them.
+pub(crate) const ELE_SAMPLE_STEP_M: f32 = 250.0;
+
+/// Hard cap on interpolated points inserted into one edge segment — a guard, not a tuning knob.
+/// The packer's own 30 000 µdeg bound puts a real segment at ≤ 3.3 km (≈ 14 steps); anything that
+/// asks for more than this is corrupt geometry, and the fill would rather emit a coarse line than
+/// loop on it.
+const ELE_MAX_DENSIFY_STEPS: u32 = 64;
+
+/// The height move (m) that forces the emitter to keep a vertex once terrain is filling the route
+/// (EL7). It is [`ELE_DEADBAND_M`] deliberately: the stored points are what a GPX export writes and
+/// what a re-import integrates, so keeping every vertex the dead-band would *book* is exactly what
+/// makes the exported route's climb agree with the header's. A geometric decimator alone would drop
+/// a crest that sits on a straight road.
+const ELE_KEEP_M: i16 = ELE_DEADBAND_M as i16;
 
 /// The **ε-escalation ladder** (N8, epic #533): weighted-A\* heuristic inflation ε as a sequence
 /// of integer `(num, den)` ratios — `f = g + (num·h)/den`. The search starts at rung 0 (1.3×, the
@@ -121,16 +230,19 @@ const SNAP_RADIUS_M: f32 = 250.0;
 /// suboptimality note).
 pub const NAV_EPSILON_LADDER: [(u32, u32); 3] = [(13, 10), (2, 1), (3, 1)];
 
-/// Search-phase step budget, **by cache misses** (N4, epic #533): a [`NavPlanner::step`] settles
-/// nodes until it has incurred this many [`NavTileCache`] misses, then returns. A miss is the only
-/// expensive unit of a settle — one ~512 B SD chunk read; a hit reads nothing. Budgeting by misses
-/// (read `tiles.stats().misses` delta inside the loop — no clock, no new dependency) makes a step's
-/// wall time roughly constant at ~6 SD reads whatever the cache hit rate, instead of the old fixed
+/// Search-phase step budget, **by logical source fills** (graph chunks plus route-private quadtree
+/// index windows): a [`NavPlanner::step`] settles until it has incurred this many reads, then returns.
+/// Sector-aligned v12 maps turn each 512-byte fill into one physical command; old unaligned maps may
+/// need two. Budgeting by reads (no clock, no new dependency) makes a step's wall time roughly
+/// constant whatever the cache hit rate, instead of the old fixed
 /// "8 settles per step" which paced by *work attempted* and so ran a warm step (mostly hits) far
-/// under the SD envelope while still charging a full pass. With the 8-slot cache the same real
-/// route now paces to far fewer steps (measured on grimsel: the search's step count drops several-
-/// fold), which is where the board's per-plan wall-time floor (`LOOP_MS` × steps) comes down.
-pub const NAV_MISSES_PER_STEP: u32 = 6;
+/// under the SD envelope while still charging a full pass. The enlarged route working set turns
+/// more settles into hits, which is where the board's per-plan wall-time floor (`LOOP_MS` × steps)
+/// comes down.
+///
+/// Twelve aligned fills preserve the former worst-case physical envelope of six unaligned graph
+/// misses (twelve CMD17s), while halving the 8 ms scheduler floor on the newly-resident routes.
+pub const NAV_MISSES_PER_STEP: u32 = 12;
 
 /// Hard settle cap per search [`NavPlanner::step`] (N4): even a **fully warm** step (every settle a
 /// cache hit ⇒ [`NAV_MISSES_PER_STEP`] never reached) returns after this many settles, so a step's
@@ -142,7 +254,8 @@ pub const NAV_SETTLES_PER_STEP_CAP: u32 = 64;
 /// Emit-phase step budget: path hops (edge-geometry fetches + OBCR pushes) per
 /// [`NavPlanner::step`] — the emit is short next to the search, so a few hops per
 /// step finishes it in a handful of passes without one long blocking tail.
-pub const NAV_EMIT_HOPS_PER_STEP: u16 = 4;
+/// Eight aligned edge chunks likewise preserve the former four-unaligned-hop command envelope.
+pub(crate) const NAV_EMIT_HOPS_PER_STEP: u16 = 8;
 
 /// How the router surfaces failure — the two-tier UX maps [`NavError::Exhausted`] to
 /// "Too far to route here" (with no distance cap, running out of table **is** the
@@ -180,8 +293,9 @@ pub enum NavError {
 /// 34 B/node with `u32` costs and id-keyed `came_from` before the 2026-07-06 range
 /// fix). `g`/`h` in `u16` meters saturate at 65 535 m and a saturated cost only makes its
 /// node maximally unattractive (never mis-ordered, never wrapped). `g` now accumulates
-/// **weighted** cost (`(cost_m × mult) >> 4`, N3), so it saturates *earlier* than plain
-/// distance — a 4× multiplier ⇒ ~16 km of that class fills the field — but this is the
+/// **weighted** cost (`(cost_m × mult) >> 4 + ascent_m × climb_weight`, N3 + EL6), so it saturates
+/// *earlier* than plain distance — a 4× multiplier ⇒ ~16 km of that class fills the field, and the
+/// climb term charges a further 10 m per metre climbed at the stock Road weight — but this is the
 /// same graceful degradation: the fixed table exhausts long before saturation matters on
 /// real terrain (profiles are capped ≤ ~8×), and with no distance cap a very distant goal
 /// still degrades the ordering toward uniform expansion until the table exhausts (see the
@@ -190,24 +304,13 @@ pub enum NavError {
 /// `came_from` as a slot index (slots never move — open addressing, no deletion)
 /// both saves 2 B and turns the emit chain-walk into direct indexing.
 ///
-/// Per-target `N` (the const must stay trivial to bump):
-/// - **host/sim** (`not(nrf-mem)`): 1536 nodes × 26 B = 39 936 B — deliberately
-///   **emulating the final device's (LM20) 40 kB nav-budget cap** (Timo, 2026-07-06)
-///   rather than using free host RAM, so the sim's plannable range **is** the final
-///   device's range by construction. (The LM20's map gets RAM priority — real maps
-///   are far bigger than the fixtures — with 60 kB the absolute nav ceiling only if
-///   the map turns out not to need the space.) The sim still heap-allocates the
-///   table (a stack local would trap the wasm build).
-/// - **device (DK)** (`nrf-mem`): 768 nodes ≈ 20 KB of `.bss`. Budget math
-///   (2026-07-06, DK debug-uart build): stack region 69 736 B, pre-nav render peak
-///   35 808 B; the flattened plan frame's excursion is assumed ≤ render peak +
-///   ~8 KB ≈ 44 KB; keeping ≥ 6 KB of margin leaves ~20 KB for this table (the ~4 KB
-///   tile cache rides the same nav budget), i.e. ~800 slimmed nodes — chosen
-///   conservatively at 768; the coordinator re-measures on-glass and bumps.
-#[cfg(not(feature = "nrf-mem"))]
+/// `N` = 1536 nodes × 26 B = 39 936 B — the device's (LM20) **40 kB nav-budget cap**
+/// (Timo, 2026-07-06), shared by host/sim/device so the sim's plannable range **is**
+/// the device's range by construction. (The map gets RAM priority — real maps are far
+/// bigger than the fixtures — with 60 kB the absolute nav ceiling only if the map
+/// turns out not to need the space.) The sim still heap-allocates the table (a stack
+/// local would trap the wasm build).
 pub const NAV_MAX_NODES: usize = 1536;
-#[cfg(feature = "nrf-mem")]
-pub const NAV_MAX_NODES: usize = 768;
 
 /// `meta` bit 15: the slot is occupied (the open-addressing "live" marker).
 const META_OCCUPIED: u16 = 1 << 15;
@@ -281,25 +384,35 @@ fn sat16(m: u32) -> u16 {
     m.min(u16::MAX as u32) as u16
 }
 
-/// The selected bike profile's edge-weight lookup, resolved **once per plan** from the map's §8.6
-/// profile table (epic #533, N3): the 32 highway + 8 surface `u8` 1/16-fixed-point multipliers
-/// (`16` = 1.0×, `0` = forbidden), copied by value into the planner. Kept as the raw 40 bytes and
-/// **combined at lookup** ([`mult`](Self::mult)) rather than pre-expanded to a 256-entry
+/// The selected bike profile's edge-cost parameters, resolved **once per plan** from the map's §8.6
+/// profile table (epic #533 N3; the climb weight is EL6, epic #1068): the 32 highway + 8 surface
+/// `u8` 1/16-fixed-point multipliers (`16` = 1.0×, `0` = forbidden) plus the profile's climb weight,
+/// copied by value into the planner. The multipliers are kept as the raw 40 bytes and
+/// **combined at lookup** ([`edge_cost`](Self::edge_cost)) rather than pre-expanded to a 256-entry
 /// `way_kind → multiplier` table — 40 B of `.bss` next to the scratch, no 256 B table, and one
 /// multiply per relaxation. Mirrors [`obc_reader::MapProfile::multiplier`]'s integer arithmetic
 /// exactly (the reader owns the same combine for its own callers); the copy is what lets the
 /// weighting run with no `Reader` borrow held across the search.
+///
+/// **[`edge_cost`](Self::edge_cost) is the router's one cost model.** POI plans and #882's detour
+/// dispatch run the same [`settle`] and therefore the same function — there is deliberately no
+/// second formula anywhere for a detour to drift from (pinned in `tests/detour.rs`).
 #[derive(Clone, Copy)]
 struct ProfileMult {
     highway: [u8; 32],
     surface: [u8; 8],
+    /// §8.6 v12 `Climb Weight`, widened once so relaxation does no cast: flat metres charged per
+    /// metre of a neighbor entry's `ascent_m`. `0` = climb-blind, which is both what a pre-terrain
+    /// map decodes to and a legal opinion a producer may hold.
+    climb: u32,
 }
 
 impl ProfileMult {
-    /// The all-1.0× table: every non-forbidden multiplier `16`. The pre-resolution placeholder a
-    /// fresh [`NavPlanner`] holds (overwritten at its first step) and the fallback for the
-    /// degenerate empty-profile-table map (which snaps to nothing and fails first anyway).
-    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8] };
+    /// The all-1.0×, climb-blind table: every non-forbidden multiplier `16`, `climb` `0`. The
+    /// pre-resolution placeholder a fresh [`NavPlanner`] holds (overwritten at its first step) and
+    /// the fallback for the degenerate empty-profile-table map (which snaps to nothing and fails
+    /// first anyway).
+    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
 
     /// Resolve the profile selected by `profile_idx` from the reader's parsed §8.6 table. An
     /// **out-of-range index falls back to profile 0** (locked on #536: a stale device profile
@@ -309,34 +422,55 @@ impl ProfileMult {
     fn resolve(reader: &Reader, profile_idx: u8) -> ProfileMult {
         let profiles = reader.nav_profiles();
         match profiles.get(profile_idx as usize).or_else(|| profiles.first()) {
-            Some(p) => ProfileMult { highway: p.highway, surface: p.surface },
+            Some(p) => ProfileMult { highway: p.highway, surface: p.surface, climb: u32::from(p.climb_weight()) },
             None => ProfileMult::NEUTRAL,
         }
     }
 
-    /// Effective edge multiplier for a packed `way_kind` byte in 1/16 fixed-point:
-    /// `(highway[kind & 31] × surface[kind >> 5]) >> 4`. `None` when either class is **forbidden**
-    /// (a `0` byte) — the neighbor is then skipped in relaxation (§8.6).
+    /// The §8.6 weighted cost of one adjacency entry, **the formula verbatim**:
+    ///
+    /// ```text
+    /// (cost_m × ((highway[kind & 31] × surface[kind >> 5]) >> 4)) >> 4  +  ascent_m × climb_weight
+    /// ```
+    ///
+    /// `None` when either multiplier class is **forbidden** (a `0` byte) — the neighbor is then
+    /// skipped in relaxation, never relaxed at a huge cost, so the graph stays whole for the other
+    /// profiles (§8.6).
+    ///
+    /// **Overflow analysis** (why the saturating ops here are discipline, not need). Every input is
+    /// bounded by its wire type: `cost_m` widens from a §8.3 `uint16` (≤ 65 535), `ascent_m` is a
+    /// `uint16` (≤ 65 535), and the two multiplier bytes are `u8`, so `effective ≤ (255 × 255) >> 4
+    /// = 4 064` and `climb ≤ 255`. The distance term is therefore at most
+    /// `(65 535 × 4 064) >> 4 = 16 645 890` and the climb term at most `65 535 × 255 = 16 711 425`;
+    /// their sum, ≤ 33 357 315, is **under 1 % of `u32::MAX`**. Nothing here can wrap even on a
+    /// hand-forged file, and the spec's own range check (a 60 km edge with 3 000 m of ascent at
+    /// weight 15) is three orders of magnitude inside it. The one place a real value is *lost* is
+    /// the caller's [`sat16`] into the 16-bit frontier cost — and a saturated `g` only makes its
+    /// node maximally unattractive, never mis-ordered (see the [`NAV_MAX_NODES`] layout note).
     #[inline]
-    fn mult(&self, way_kind: u8) -> Option<u32> {
+    fn edge_cost(&self, cost_m: u32, ascent_m: u16, way_kind: u8) -> Option<u32> {
         let mh = self.highway[(way_kind & 0x1F) as usize] as u32;
         let ms = self.surface[(way_kind >> 5) as usize] as u32;
         if mh == 0 || ms == 0 {
-            None
-        } else {
-            Some((mh * ms) >> 4)
+            return None;
         }
+        let distance = (cost_m.saturating_mul((mh * ms) >> 4)) >> 4;
+        // Additive and non-negative, always — §8.6's normative rule and the reason `h` survives
+        // elevation. Nothing in this crate subtracts from a cost.
+        Some(distance.saturating_add(u32::from(ascent_m).saturating_mul(self.climb)))
     }
 }
 
 /// The router's entire mutable state: an open-addressed `node_id → NavEntry` table and
 /// a binary min-heap of table indices ordered by `f = g + ε·h` (heap-position
 /// back-pointers make decrease-key O(log n), so a node is queued at most once — the
-/// heap can never outgrow the table). Caller-owned; the device keeps one in `.bss`
-/// ([`NavScratch::new`] is `const` and all-zero — an all-zero struct **is** `new()`,
-/// which is what lets the sim heap-allocate it zeroed). `N` is generic so tests
+/// heap can never outgrow the table). Caller-owned: the sim heap-allocates one, and
+/// since #1146 P2 the device's is the nav arm of the board's scratch arena in
+/// `.uninit` — not a `.bss` static of its own — zero-filled in place each time a
+/// search claims it. Both rest on the same property: [`NavScratch::new`] is `const`
+/// and all-zero, so an all-zero block **is** `new()`. `N` is generic so tests
 /// exercise the exhaustion path with a deterministic tiny table; production uses the
-/// per-target [`NAV_MAX_NODES`] default.
+/// [`NAV_MAX_NODES`] default, the same on every target.
 pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     entries: [NavEntry; N],
     heap: [u16; N],
@@ -353,12 +487,8 @@ pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     eps_den: u16,
 }
 
-// Per-target table budget, enforced at compile time: the device table must stay a
-// ~20 KB `.bss` static (the R4 budget math above); slot indices — heap positions and
+// Table budget, enforced at compile time; slot indices — heap positions and
 // `came_from` — are 14-bit, with `HEAP_NONE` left over as the sentinel.
-#[cfg(feature = "nrf-mem")]
-const _: () = assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 20 * 1024, "NavScratch busts ~20 kB");
-#[cfg(not(feature = "nrf-mem"))]
 const _: () =
     assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 40 * 1024, "NavScratch busts the LM20 40 kB cap");
 const _: () = assert!(NAV_MAX_NODES < HEAP_NONE as usize, "table indices are 14-bit (meta packs flags above them)");
@@ -527,7 +657,7 @@ pub enum Step {
 /// read **before** the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavPhase {
-    /// Snapping an endpoint to the graph (one endpoint per step; a bounded ring walk each).
+    /// Projecting an endpoint onto the graph (one bounded lookup window per step).
     Snap,
     /// The weighted-A\* search, settling until [`NAV_MISSES_PER_STEP`] cache misses (capped at
     /// [`NAV_SETTLES_PER_STEP_CAP`] settles).
@@ -539,8 +669,46 @@ pub enum NavPhase {
     Done,
 }
 
-/// One snapped plan endpoint: `(node_id, (lon, lat))` µdeg — see [`NavPlanner::endpoints`].
-pub type NavEndpoint = (u32, (i32, i32));
+/// One snapped endpoint. Exact endpoint projections collapse back to real graph nodes; an interior
+/// projection remains a virtual node connected to both edge endpoints.
+#[derive(Clone, Copy)]
+enum SnappedEndpoint {
+    Node { id: u32, coord: (i32, i32) },
+    Edge(NavEdgeSnap),
+}
+
+impl SnappedEndpoint {
+    fn from_snap(edge: NavEdgeSnap) -> Self {
+        if edge.position.coord == edge.a.coord {
+            Self::Node { id: edge.a.id, coord: edge.a.coord }
+        } else if edge.position.coord == edge.b.coord {
+            Self::Node { id: edge.b.id, coord: edge.b.coord }
+        } else {
+            Self::Edge(edge)
+        }
+    }
+
+    fn coord(self) -> (i32, i32) {
+        match self {
+            Self::Node { coord, .. } => coord,
+            Self::Edge(edge) => edge.position.coord,
+        }
+    }
+
+    fn node_id(self) -> u32 {
+        match self {
+            Self::Node { id, .. } => id,
+            Self::Edge(_) => 0,
+        }
+    }
+
+    fn edge(self) -> Option<NavEdgeSnap> {
+        match self {
+            Self::Node { .. } => None,
+            Self::Edge(edge) => Some(edge),
+        }
+    }
+}
 
 /// The fine-grained internal phase; [`NavPhase`] is its public projection.
 enum PhaseState {
@@ -579,16 +747,24 @@ pub struct NavPlanner {
     /// The route's name, applied by the finishing header patch.
     name: heapless::String<NAME_CAP>,
     /// The selected bike profile index (device setting; N5 threads the real value — N3 hosts pass
-    /// `0`). Resolved to [`mult`](Self::mult) at the first step; out-of-range falls back to profile 0.
+    /// `0`). Resolved into [`mult`](Self::mult) at the first step; out-of-range falls back to
+    /// profile 0.
     profile_idx: u8,
-    /// The profile's 40-byte multiplier lookup, resolved once from the reader at the first step
-    /// (neutral until then). Every edge is relaxed through [`ProfileMult::mult`].
+    /// The profile's 40-byte multiplier lookup **and its climb weight**, resolved once from the
+    /// reader at the first step (neutral + climb-blind until then). Every edge — POI plan or detour
+    /// alike — is relaxed through [`ProfileMult::edge_cost`].
     mult: ProfileMult,
     /// The snapped endpoints (valid once their phase has run).
     start_id: u32,
     start_c: (i32, i32),
     goal_id: u32,
     goal_c: (i32, i32),
+    /// Exact interior-edge metadata for the two virtual endpoints, plus the expanding lookup's
+    /// current unresolved best candidate and pass (initial 200 m, then complete ≈250 m).
+    start_edge: Option<NavEdgeSnap>,
+    goal_edge: Option<NavEdgeSnap>,
+    snap_best: Option<NavEdgeCandidate>,
+    snap_ordinal: u8,
     /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe. Stays
     /// **cumulative across [`NAV_EPSILON_LADDER`] rungs** (N8): an escalated plan's `settles` is the
     /// honest total work over every attempt, not just the last.
@@ -610,6 +786,80 @@ pub struct NavPlanner {
     /// The OBCR emitter — created on entering the emit phase (its constructor writes the
     /// reserved header), consumed by the finish. The planner's one big field (~9 kB).
     em: Option<ObcrEmitter>,
+    /// The detour blacklist (#882): `Some` only for [`new_detour`](Self::new_detour) plans. Read
+    /// on every settle, so it lives here (caller-owned like the emitter, ~1 kB) — POI plans carry
+    /// `None` and relax byte-identically to a planner without the field.
+    corridor: Option<Corridor>,
+    /// Emit-time elevation fill state (EL7): the dead-band totals, the min/max and the carried
+    /// height, accumulated across every emit step. ~40 B — it rides in the planner rather than a
+    /// step frame because the fill spans steps, not because of its size.
+    ele: EleFill,
+}
+
+/// The route's elevation as the emit phase builds it: the shared [`DeadBand`] over the emitted
+/// point stream, the raw min/max, and the last height that actually resolved.
+///
+/// The dead-band is the **same** integrator, at the **same** [`ELE_DEADBAND_M`] threshold, that
+/// [`crate::convert`] runs over an imported GPX's `<ele>` — the point of the shared crate. `f64`
+/// matches the converter's sample type exactly, so the two producers' totals differ by nothing at
+/// all, not merely by little.
+#[derive(Debug, Clone, Copy)]
+struct EleFill {
+    band: DeadBand<f64>,
+    /// The last height a sample resolved, carried forward across a coverage hole; `0` until the
+    /// first one, which is what a null source leaves in every stored point.
+    last_m: i16,
+    /// Raw min/max over *resolved* samples only — never over the carried value, so a hole cannot
+    /// widen the band the profile scales to. Meaningless while `seen` is false.
+    min_m: i16,
+    max_m: i16,
+    /// Has any sample ever resolved? False ⇒ the header keeps the pre-EL7 zeroes.
+    seen: bool,
+}
+
+impl EleFill {
+    fn new() -> Self {
+        EleFill { band: DeadBand::new(), last_m: 0, min_m: i16::MAX, max_m: i16::MIN, seen: false }
+    }
+
+    /// Resolve one point's stored height: a real sample re-anchors the carry and grows the min/max,
+    /// a hole repeats the carry. Returns the height to store, having already integrated it.
+    ///
+    /// **Nothing is integrated before the first resolved sample.** The hole policy is *carry the
+    /// last known height forward* — and until one has resolved there is no known height to carry,
+    /// only the `0` placeholder. Pushing that into the band would anchor its reference at sea level
+    /// and book the entire first real height as ascent the moment coverage begins: a route whose
+    /// opening points fall outside the raster (the nav graph reaches past a terrain crop — complete-
+    /// way retention means the graph legally runs beyond the extract the sidecar was baked for)
+    /// would report a phantom +1400 m and poison every stored `cum_ascent` after it. Skipping the
+    /// push makes the first *resolved* sample the band's own first reference, which books nothing —
+    /// which is also exactly what the null source does forever.
+    fn resolve(&mut self, sample: Option<i16>) -> i16 {
+        if let Some(h) = sample {
+            self.last_m = h;
+            self.min_m = self.min_m.min(h);
+            self.max_m = self.max_m.max(h);
+            self.seen = true;
+        }
+        if self.seen {
+            self.band.push(f64::from(self.last_m));
+        }
+        self.last_m
+    }
+
+    /// The cumulative dead-banded climb so far, as the emitter stores it per point (and per chunk).
+    fn cum_ascent(&self) -> u32 {
+        self.band.ascent() as u32
+    }
+
+    /// The header's `(min, max, ascent, descent)`. Zeroes when nothing ever resolved — the same
+    /// "no elevation" shape the converter writes for a GPX with no `<ele>` at all.
+    fn stats(&self) -> (i16, i16, u32, u32) {
+        if !self.seen {
+            return (0, 0, 0, 0);
+        }
+        (self.min_m, self.max_m, self.band.ascent() as u32, self.band.descent() as u32)
+    }
 }
 
 impl NavPlanner {
@@ -635,6 +885,10 @@ impl NavPlanner {
             start_c: (0, 0),
             goal_id: 0,
             goal_c: (0, 0),
+            start_edge: None,
+            goal_edge: None,
+            snap_best: None,
+            snap_ordinal: 0,
             settles: 0,
             rung: 0,
             table_full: false,
@@ -643,7 +897,19 @@ impl NavPlanner {
             total_m: 0,
             last: None,
             em: None,
+            corridor: None,
+            ele: EleFill::new(),
         }
+    }
+
+    /// A **detour** planner (#882): like [`new`](Self::new), but the search additionally skips
+    /// any candidate edge the `corridor` blacklists — the geometric corridor around the skipped
+    /// route span, built host-side with [`Corridor::build`]. The exemption discs around the two
+    /// snapped endpoints are wired in automatically once the snap phases resolve.
+    pub fn new_detour(from: (i32, i32), to: (i32, i32), name: &str, profile_idx: u8, corridor: Corridor) -> Self {
+        let mut p = Self::new(from, to, name, profile_idx);
+        p.corridor = Some(corridor);
+        p
     }
 
     /// The public phase the **next** step will work on — the board's per-phase timing key.
@@ -668,14 +934,6 @@ impl NavPlanner {
     /// line logs it as `eps=`.
     pub fn epsilon_used(&self) -> (u32, u32) {
         NAV_EPSILON_LADDER[self.rung]
-    }
-
-    /// The snapped endpoints — `((start_id, start_coord), (goal_id, goal_coord))`, `(lon, lat)`
-    /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. A diagnostic for the
-    /// `nav_repro` harness (#501): lets a host run report exactly which graph nodes the plan
-    /// ran between.
-    pub fn endpoints(&self) -> (NavEndpoint, NavEndpoint) {
-        ((self.start_id, self.start_c), (self.goal_id, self.goal_c))
     }
 
     /// Terminal-transition helper: latch and return the failure.
@@ -705,39 +963,93 @@ impl NavPlanner {
         Ok(())
     }
 
-    /// Run **one bounded unit** of planning: one endpoint snap, a miss-budgeted burst of settles
+    /// Run **one bounded unit** of planning: one endpoint lookup window, a miss-budgeted burst of settles
     /// ([`NAV_MISSES_PER_STEP`] misses / [`NAV_SETTLES_PER_STEP_CAP`] cap), [`NAV_EMIT_HOPS_PER_STEP`]
-    /// emit hops, or the finishing header patch — then return. `reader`/`scratch`/`tiles`/`sink` are the caller's per-pass views over the same
+    /// emit hops, or the finishing header patch — then return. `reader`/`scratch`/`tiles`/`elev`/`sink`
+    /// are the caller's per-pass views over the same
     /// underlying state every step (on the board: a fresh `Reader` borrow + a sink over the same
     /// open file each pass). Terminal outcomes are idempotent — further steps re-return them.
+    ///
+    /// `elev` is the map's terrain (EL7), read **only** by the emit phase — snap and search never
+    /// touch it, so a host with no terrain hands in
+    /// [`NullElevation`](obc_elevation::NullElevation) and every phase behaves exactly as it did
+    /// before. It arrives per step rather than living in the planner because it is a *view of a
+    /// mounted file*, like `reader`: the planner is a `.bss` object with no lifetime, and the
+    /// source (plus its ~2.1 kB tile cache) is the caller's static.
     pub fn step<const N: usize>(
         &mut self,
         reader: &Reader,
         scratch: &mut NavScratch<N>,
         tiles: &mut NavTileCache,
+        elev: &mut dyn ElevationSource,
         sink: &mut dyn ByteSink,
     ) -> Step {
         match self.phase {
             PhaseState::SnapFrom => {
                 // First step of the plan: claim the caller's buffers and resolve the bike profile
                 // once (out-of-range index → profile 0; see `ProfileMult::resolve`).
-                scratch.reset();
-                tiles.reset();
-                self.mult = ProfileMult::resolve(reader, self.profile_idx);
-                let Some((id, c)) = snap(reader, tiles, self.from) else {
+                if self.snap_ordinal == 0 {
+                    scratch.reset();
+                    tiles.reset();
+                    self.mult = ProfileMult::resolve(reader, self.profile_idx);
+                }
+                let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
+                let lookup_radius = snap_lookup_radius(self.snap_ordinal);
+                match snap_window(reader, tiles, self.from, lookup_radius, cap) {
+                    Err(()) => return self.fail(NavError::NoPath),
+                    Ok(Some(found)) if self.snap_best.is_none_or(|old| snap_candidate_beats(&found, &old)) => {
+                        self.snap_best = Some(found);
+                    }
+                    Ok(_) => {}
+                }
+                if !snap_lookup_complete(self.snap_best.as_ref(), lookup_radius) {
+                    self.snap_ordinal = 1;
+                    return Step::Running;
+                }
+                self.snap_ordinal = 0;
+                let Some(candidate) = self.snap_best.take() else {
                     return self.fail(NavError::NoPath);
                 };
-                self.start_id = id;
-                self.start_c = c;
+                let Ok(Some(edge)) = reader.resolve_nav_edge_candidate_cached(candidate, tiles) else {
+                    return self.fail(NavError::NoPath);
+                };
+                let snapped = SnappedEndpoint::from_snap(edge);
+                self.start_c = snapped.coord();
+                self.start_edge = snapped.edge();
+                self.start_id = if self.start_edge.is_some() { VIRTUAL_START_ID } else { snapped.node_id() };
                 self.phase = PhaseState::SnapTo;
                 Step::Running
             }
             PhaseState::SnapTo => {
-                let Some((id, c)) = snap(reader, tiles, self.to) else {
+                let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
+                let lookup_radius = snap_lookup_radius(self.snap_ordinal);
+                match snap_window(reader, tiles, self.to, lookup_radius, cap) {
+                    Err(()) => return self.fail(NavError::NoPath),
+                    Ok(Some(found)) if self.snap_best.is_none_or(|old| snap_candidate_beats(&found, &old)) => {
+                        self.snap_best = Some(found);
+                    }
+                    Ok(_) => {}
+                }
+                if !snap_lookup_complete(self.snap_best.as_ref(), lookup_radius) {
+                    self.snap_ordinal = 1;
+                    return Step::Running;
+                }
+                self.snap_ordinal = 0;
+                let Some(candidate) = self.snap_best.take() else {
                     return self.fail(NavError::NoPath);
                 };
-                self.goal_id = id;
-                self.goal_c = c;
+                let Ok(Some(edge)) = reader.resolve_nav_edge_candidate_cached(candidate, tiles) else {
+                    return self.fail(NavError::NoPath);
+                };
+                let snapped = SnappedEndpoint::from_snap(edge);
+                self.goal_c = snapped.coord();
+                self.goal_edge = snapped.edge();
+                self.goal_id = if self.goal_edge.is_some() { VIRTUAL_GOAL_ID } else { snapped.node_id() };
+                // Both endpoints are now snapped — arm the detour corridor's take-off/landing
+                // exemptions (no-op for POI plans).
+                if let Some(cor) = self.corridor.as_mut() {
+                    cor.set_exempt_nodes(self.start_c, self.goal_c);
+                }
                 // Seed the frontier with the start node at rung 0 (1.3×).
                 if let Err(e) = self.reseed(scratch) {
                     return self.fail(e);
@@ -749,7 +1061,7 @@ impl NavPlanner {
             // neighbors. Terminates: a settle closes a node or (re-open) strictly lowers an integer
             // g ≥ 0, the frontier is bounded by the table, and no new node enters once full.
             PhaseState::Search => {
-                let miss_start = tiles.stats().misses;
+                let read_start = tiles.stats().source_reads();
                 let mut settled_this_step: u32 = 0;
                 loop {
                     let Some(idx) = scratch.heap_pop() else {
@@ -781,21 +1093,110 @@ impl NavPlanner {
                             Err(e) => self.fail(e),
                         };
                     }
+                    // An interior start is a virtual node with two partial-edge exits. It has no
+                    // §8.3 record. If both endpoints lie on the same edge, add the direct projected
+                    // connection as well so a short mid-block route does not detour via a junction.
+                    if scratch.entries[idx].node_id == VIRTUAL_START_ID {
+                        let Some(start) = self.start_edge else {
+                            return self.fail(NavError::NoPath);
+                        };
+                        let raw_a = start.from_a_m;
+                        self.table_full |= relax_virtual_edge(
+                            scratch,
+                            idx,
+                            start.a.id,
+                            start.a.coord,
+                            start.edge_id,
+                            raw_a,
+                            partial_ascent(start.ascent_ba, raw_a, start.length_m),
+                            start.way_kind,
+                            self.goal_c,
+                            &self.mult,
+                        );
+                        let raw_b = start.length_m.saturating_sub(start.from_a_m);
+                        self.table_full |= relax_virtual_edge(
+                            scratch,
+                            idx,
+                            start.b.id,
+                            start.b.coord,
+                            start.edge_id,
+                            raw_b,
+                            partial_ascent(start.ascent_ab, raw_b, start.length_m),
+                            start.way_kind,
+                            self.goal_c,
+                            &self.mult,
+                        );
+                        if let Some(goal) = self.goal_edge.filter(|goal| goal.edge_id == start.edge_id) {
+                            let raw = start.from_a_m.abs_diff(goal.from_a_m);
+                            let ascent = if goal.from_a_m >= start.from_a_m {
+                                partial_ascent(start.ascent_ab, raw, start.length_m)
+                            } else {
+                                partial_ascent(start.ascent_ba, raw, start.length_m)
+                            };
+                            self.table_full |= relax_virtual_edge(
+                                scratch,
+                                idx,
+                                VIRTUAL_GOAL_ID,
+                                goal.position.coord,
+                                start.edge_id,
+                                raw,
+                                ascent,
+                                start.way_kind,
+                                self.goal_c,
+                                &self.mult,
+                            );
+                        }
+                        scratch.entries[idx].meta |= META_CLOSED;
+                        continue;
+                    }
                     self.settles = self.settles.wrapping_add(1);
                     settled_this_step += 1;
                     scratch.entries[idx].meta |= META_CLOSED;
                     // Relax neighbors. A read failure is the only hard error; a full table latches
                     // `table_full` and keeps searching (decrease-key on tracked nodes still relaxes).
-                    if let Err(e) =
-                        settle::<N>(reader, scratch, tiles, idx, self.goal_c, &self.mult, &mut self.table_full)
-                    {
+                    if let Err(e) = settle::<N>(
+                        reader,
+                        scratch,
+                        tiles,
+                        idx,
+                        self.goal_c,
+                        &self.mult,
+                        self.corridor.as_ref(),
+                        &mut self.table_full,
+                    ) {
                         return self.fail(e);
+                    }
+                    // A virtual goal is reached from either real endpoint with the matching
+                    // directional partial distance and proportional directional ascent.
+                    if let Some(goal) = self.goal_edge {
+                        let settled_id = scratch.entries[idx].node_id;
+                        let partial = if settled_id == goal.a.id {
+                            Some((goal.from_a_m, goal.ascent_ab))
+                        } else if settled_id == goal.b.id {
+                            Some((goal.length_m.saturating_sub(goal.from_a_m), goal.ascent_ba))
+                        } else {
+                            None
+                        };
+                        if let Some((raw, ascent)) = partial {
+                            self.table_full |= relax_virtual_edge(
+                                scratch,
+                                idx,
+                                VIRTUAL_GOAL_ID,
+                                goal.position.coord,
+                                goal.edge_id,
+                                raw,
+                                partial_ascent(ascent, raw, goal.length_m),
+                                goal.way_kind,
+                                self.goal_c,
+                                &self.mult,
+                            );
+                        }
                     }
                     // Budget by cache misses — the only expensive unit (≈ one SD chunk read each) —
                     // so a step's wall time is ~constant whatever the hit rate; the settle cap bounds
                     // a fully-warm (hit-only) step. The check trails the settle, so a step always
                     // makes at least one node of progress.
-                    if tiles.stats().misses - miss_start >= NAV_MISSES_PER_STEP
+                    if tiles.stats().source_reads() - read_start >= NAV_MISSES_PER_STEP
                         || settled_this_step >= NAV_SETTLES_PER_STEP_CAP
                     {
                         break;
@@ -807,7 +1208,7 @@ impl NavPlanner {
             // the generic "couldn't find a route" tier — the UX is two-tier by design.
             PhaseState::Emit => {
                 if self.em.is_none() {
-                    match self.arm_emitter(scratch, sink) {
+                    match self.arm_emitter(scratch, elev, sink) {
                         Ok(true) => return Step::Running, // degenerate single-point route emitted
                         Ok(false) => {}
                         Err(e) => return self.fail(e),
@@ -817,7 +1218,7 @@ impl NavPlanner {
                     if self.hop < 1 {
                         break;
                     }
-                    if let Err(e) = self.emit_hop(reader, scratch, tiles, sink) {
+                    if let Err(e) = self.emit_hop(reader, scratch, tiles, elev, sink) {
                         return self.fail(e);
                     }
                     self.hop -= 1;
@@ -854,6 +1255,7 @@ impl NavPlanner {
     fn arm_emitter<const N: usize>(
         &mut self,
         scratch: &NavScratch<N>,
+        elev: &mut dyn ElevationSource,
         sink: &mut dyn ByteSink,
     ) -> Result<bool, NavError> {
         let em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
@@ -861,7 +1263,10 @@ impl NavPlanner {
         if self.chain_len == 1 {
             let e = &scratch.entries[scratch.heap[0] as usize];
             let (lon, lat) = (e.lon, e.lat);
-            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, 0, 0).is_err()) {
+            // The degenerate route is one point, so it needs no densification — just its height
+            // (0 under a null source, which keeps this arm byte-identical).
+            let ele = self.ele.resolve(elev.sample(lat, lon));
+            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, ele, 0).is_err()) {
                 return Err(NavError::NoPath);
             }
             self.phase = PhaseState::Finish;
@@ -872,13 +1277,28 @@ impl NavPlanner {
 
     /// Consume the emitter and patch the header — the plan's last writes.
     ///
+    /// The elevation figures are read off the emit phase's [`EleFill`] (EL7): the dead-banded
+    /// totals over the *emitted* point stream and the raw min/max over the samples that resolved.
+    /// The distance total is untouched — it stays the summed raw edge `length_m` (N3), never the
+    /// emitter's re-measured polyline, and densifying the polyline does not change it.
+    ///
     /// `#[inline(never)]` for the same reason as [`arm_emitter`](Self::arm_emitter):
     /// `Option::take` moves the ~9 kB emitter into a local; that temporary belongs in this
     /// popped frame, never in the step frame.
     #[inline(never)]
     fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
-        let stats =
-            EmitStats { min_ele_m: 0, max_ele_m: 0, ascent_m: 0, descent_m: 0, total_distance_m: Some(self.total_m) };
+        let (min_ele_m, max_ele_m, ascent_m, descent_m) = self.ele.stats();
+        let stats = EmitStats {
+            min_ele_m,
+            max_ele_m,
+            ascent_m,
+            descent_m,
+            total_distance_m: Some(self.total_m),
+            // The fill's own `seen` latch, handed out verbatim — the explicit "terrain answered"
+            // signal a detour splice needs (#1091). Never inferred from the values: a route at
+            // `0 m` throughout is a real sea-level route, not an elevation-less one.
+            has_elevation: self.ele.seen,
+        };
         let Some(em) = self.em.take() else {
             return Err(NavError::NoPath); // unreachable: Emit always arms it
         };
@@ -918,34 +1338,54 @@ impl NavPlanner {
     /// [`Reader::nav_edge_oriented`] and push it, deduping the seam vertex shared with the
     /// previous hop so the OBCR carries one continuous polyline. The edge's raw ground `length_m`
     /// (the call's return, no longer dead) accumulates into `total_m` — the **unweighted**
-    /// displayed distance, summed here rather than read off the weighted `g` (N3). Elevation is
-    /// zero throughout (no DEM, locked on #116).
+    /// displayed distance, summed here rather than read off the weighted `g` (N3). Every emitted
+    /// point's height comes from `elev` through [`fill_segment`] (EL7), which also inserts the
+    /// [`ELE_SAMPLE_STEP_M`] intermediates when there is terrain to put on them.
+    ///
+    /// The elevation work adds **no local** to this frame beyond the `EleFill` borrow: the state
+    /// lives in the planner, the tile cache in the caller's static, and the per-segment
+    /// interpolation runs one level down in [`fill_segment`]'s own popped frame.
     #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
     fn emit_hop<const N: usize>(
         &mut self,
         reader: &Reader,
         scratch: &mut NavScratch<N>,
         tiles: &mut NavTileCache,
+        elev: &mut dyn ElevationSource,
         sink: &mut dyn ByteSink,
     ) -> Result<(), NavError> {
         let hop = self.hop as usize;
         let prev = &scratch.entries[scratch.heap[hop] as usize];
         let cur = &scratch.entries[scratch.heap[hop - 1] as usize];
+        let partial = prev.node_id == VIRTUAL_START_ID || cur.node_id == VIRTUAL_GOAL_ID;
+        let positions = if partial {
+            Some((
+                self.edge_position(cur.edge_used, prev.node_id).ok_or(NavError::NoPath)?,
+                self.edge_position(cur.edge_used, cur.node_id).ok_or(NavError::NoPath)?,
+            ))
+        } else {
+            None
+        };
         let em = self.em.as_mut().ok_or(NavError::NoPath)?;
         let mut last = self.last;
         let mut werr = false;
-        let length_m = reader
-            .nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), |pt| {
-                if werr || last == Some(pt) {
-                    return; // seam vertex already emitted by the previous hop
-                }
-                if em.push(sink, pt.0, pt.1, 0, 0).is_err() {
-                    werr = true;
-                    return;
-                }
-                last = Some(pt);
-            })
-            .ok_or(NavError::NoPath)?;
+        let ele = &mut self.ele;
+        let mut push = |pt| {
+            if werr || last == Some(pt) {
+                return; // seam vertex already emitted by the previous hop
+            }
+            if fill_segment(em, sink, elev, ele, last, pt).is_err() {
+                werr = true;
+                return;
+            }
+            last = Some(pt);
+        };
+        let length_m = if let Some((from, to)) = positions {
+            reader.nav_edge_slice_oriented(tiles, cur.edge_used, from.0, to.0, &mut push).ok_or(NavError::NoPath)?;
+            from.1.abs_diff(to.1)
+        } else {
+            reader.nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), &mut push).ok_or(NavError::NoPath)?
+        };
         self.last = last;
         if werr {
             return Err(NavError::NoPath);
@@ -954,6 +1394,103 @@ impl NavPlanner {
         self.total_m = self.total_m.saturating_add(length_m);
         Ok(())
     }
+
+    /// Resolve a real/virtual A* entry to its exact position and raw offset on `edge_id`.
+    fn edge_position(&self, edge_id: u32, node_id: u32) -> Option<(NavEdgePosition, u32)> {
+        if node_id == VIRTUAL_START_ID {
+            let edge = self.start_edge.filter(|edge| edge.edge_id == edge_id)?;
+            return Some((edge.position, edge.from_a_m));
+        }
+        if node_id == VIRTUAL_GOAL_ID {
+            let edge = self.goal_edge.filter(|edge| edge.edge_id == edge_id)?;
+            return Some((edge.position, edge.from_a_m));
+        }
+        for edge in [self.start_edge, self.goal_edge].into_iter().flatten() {
+            if edge.edge_id != edge_id {
+                continue;
+            }
+            if node_id == edge.a.id {
+                return Some((edge.a.position, 0));
+            }
+            if node_id == edge.b.id {
+                return Some((edge.b.position, edge.length_m));
+            }
+        }
+        None
+    }
+}
+
+/// Emit one geometry segment `from → to` with its elevation (EL7).
+///
+/// Samples `to`'s height once, and — **only when that sample resolved**, i.e. only where there is
+/// terrain — inserts linearly interpolated points so no two emitted points are more than
+/// [`ELE_SAMPLE_STEP_M`] of ground apart, sampling each of them in travel order. Every point (real
+/// or interpolated) goes through [`EleFill::resolve`], so the dead-band sees the whole stream and
+/// the stored `cum_ascent` stays consistent with it.
+///
+/// With a null source `sample` is `None`, the loop never runs and the pushed height is 0: the exact
+/// call the pre-EL7 emit made, which is what makes the no-terrain output byte-identical.
+///
+/// `#[inline(never)]`: this is the fill's own popped frame (#419/#501). It holds the interpolation
+/// locals — a handful of scalars — and, more to the point, it keeps the *emitter's* `push` call
+/// tree out of [`NavPlanner::emit_hop`]'s frame, which is the frame that already carries the
+/// polyline closure.
+#[inline(never)]
+fn fill_segment(
+    em: &mut ObcrEmitter,
+    sink: &mut dyn ByteSink,
+    elev: &mut dyn ElevationSource,
+    ele: &mut EleFill,
+    from: Option<(i32, i32)>,
+    to: (i32, i32),
+) -> Result<(), Error> {
+    // Nav coordinates are `(lon, lat)`; the sampler takes `(lat, lon)`.
+    let sample = elev.sample(to.1, to.0);
+    // The first height that resolves is also the moment the emitter's decimator has something to
+    // preserve: from here on a vertex whose height has moved a dead-band from the last kept one is
+    // kept whatever the geometry says (see `ObcrEmitter::keep_elevation_detail`). Latched on the
+    // first sample rather than up front so a null source never touches the decimator at all.
+    if sample.is_some() && !ele.seen {
+        em.keep_elevation_detail(ELE_KEEP_M);
+    }
+    // Densify while this route has terrain — `sample` resolving, or any earlier one having. The
+    // "or earlier" half matters at a coverage edge: the segment that *leaves* the raster still has
+    // its far half on real ground, and a segment that crosses a hole entirely costs nothing anyway
+    // (its interpolated points are all the carried height, so the decimator drops them again).
+    if let (Some(prev), true) = (from, sample.is_some() || ele.seen) {
+        let steps = densify_steps(ground_dist_m(prev, to));
+        for k in 1..steps {
+            let mid = lerp_udeg(prev, to, k, steps);
+            let h = ele.resolve(elev.sample(mid.1, mid.0));
+            em.push(sink, mid.0, mid.1, h, ele.cum_ascent())?;
+        }
+    }
+    let h = ele.resolve(sample);
+    em.push(sink, to.0, to.1, h, ele.cum_ascent())
+}
+
+/// How many equal pieces a `dist_m` segment is split into to keep every emitted step at or under
+/// [`ELE_SAMPLE_STEP_M`]. `1` (no split) for anything already short enough; capped at
+/// [`ELE_MAX_DENSIFY_STEPS`].
+fn densify_steps(dist_m: f32) -> u32 {
+    // `is_none_or` rather than `!(a > b)`: the NaN case is deliberate (a length that isn't a number
+    // densifies nothing) and this spells it out instead of leaning on negated float comparison.
+    if dist_m.partial_cmp(&ELE_SAMPLE_STEP_M).is_none_or(|o| o != core::cmp::Ordering::Greater) {
+        return 1;
+    }
+    (libm::ceilf(dist_m / ELE_SAMPLE_STEP_M) as u32).clamp(1, ELE_MAX_DENSIFY_STEPS)
+}
+
+/// The point `k/den` of the way from `a` to `b`, interpolated **in microdegrees** — integer-only,
+/// truncating (≤ 1 µdeg ≈ 11 cm, far below the raster's ~40 m posting). Interpolating the stored
+/// integer coordinate rather than a projected metre pair keeps this deterministic across hosts, and
+/// the segment is short enough that a great-circle path and a lattice-linear one are the same line.
+fn lerp_udeg(a: (i32, i32), b: (i32, i32), k: u32, den: u32) -> (i32, i32) {
+    let f = |s: i32, e: i32| {
+        let d = i64::from(e) - i64::from(s);
+        (i64::from(s) + d * i64::from(k) / i64::from(den)) as i32
+    };
+    (f(a.0, b.0), f(a.1, b.1))
 }
 
 /// One-shot convenience over [`NavPlanner`]: loop [`step`](NavPlanner::step) to completion under
@@ -970,11 +1507,12 @@ pub fn plan_route<const N: usize>(
     profile_idx: u8,
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
+    elev: &mut dyn ElevationSource,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
     let mut planner = NavPlanner::new(from, to, name, profile_idx);
     loop {
-        match planner.step(reader, scratch, tiles, sink) {
+        match planner.step(reader, scratch, tiles, elev, sink) {
             Step::Running => {}
             Step::Done(stats) => return Ok(stats),
             Step::Failed(e) => return Err(e),
@@ -982,11 +1520,92 @@ pub fn plan_route<const N: usize>(
     }
 }
 
+/// One-shot convenience over [`NavPlanner::new_detour`]: loop [`step`](NavPlanner::step) to
+/// completion with the corridor blacklist — the headless sim's and the tests' detour twin of
+/// [`plan_route`]; interactive hosts step the planner themselves.
+#[allow(clippy::too_many_arguments)] // same shape rationale as `plan_route`
+pub fn plan_detour<const N: usize>(
+    reader: &Reader,
+    from: (i32, i32),
+    to: (i32, i32),
+    name: &str,
+    profile_idx: u8,
+    corridor: Corridor,
+    scratch: &mut NavScratch<N>,
+    tiles: &mut NavTileCache,
+    elev: &mut dyn ElevationSource,
+    sink: &mut dyn ByteSink,
+) -> Result<RouteStats, NavError> {
+    let mut planner = NavPlanner::new_detour(from, to, name, profile_idx, corridor);
+    loop {
+        match planner.step(reader, scratch, tiles, elev, sink) {
+            Step::Running => {}
+            Step::Done(stats) => return Ok(stats),
+            Step::Failed(e) => return Err(e),
+        }
+    }
+}
+
+#[inline]
+fn partial_ascent(total: u16, partial_m: u32, length_m: u32) -> u16 {
+    let rounded = u64::from(total) * u64::from(partial_m) + u64::from(length_m / 2);
+    rounded.checked_div(u64::from(length_m)).unwrap_or(0).min(u64::from(u16::MAX)) as u16
+}
+
+/// Relax one synthetic partial-edge adjacency used by an exact projected start or goal.
+#[allow(clippy::too_many_arguments)]
+fn relax_virtual_edge<const N: usize>(
+    scratch: &mut NavScratch<N>,
+    from: usize,
+    target_id: u32,
+    target_coord: (i32, i32),
+    edge_id: u32,
+    raw_cost_m: u32,
+    ascent_m: u16,
+    way_kind: u8,
+    goal_c: (i32, i32),
+    mult: &ProfileMult,
+) -> bool {
+    let Some(weighted) = mult.edge_cost(raw_cost_m, ascent_m, way_kind) else { return false };
+    let tentative = sat16((scratch.entries[from].g as u32).saturating_add(weighted));
+    match scratch.lookup(target_id) {
+        Some(j) => {
+            if tentative < scratch.entries[j].g {
+                let entry = &mut scratch.entries[j];
+                entry.g = tentative;
+                entry.came_from = from as u16;
+                entry.edge_used = edge_id;
+                if entry.heap_pos() == HEAP_NONE {
+                    entry.meta &= !META_CLOSED;
+                    scratch.heap_push(j);
+                } else {
+                    let pos = scratch.entries[j].heap_pos() as usize;
+                    scratch.sift_up(pos);
+                }
+            }
+            false
+        }
+        None => {
+            if let Ok(j) = scratch.insert(target_id, target_coord.0, target_coord.1) {
+                let entry = &mut scratch.entries[j];
+                entry.g = tentative;
+                entry.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
+                entry.came_from = from as u16;
+                entry.edge_used = edge_id;
+                scratch.heap_push(j);
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
+
 /// One settle: descend the node quadtree to the settled node's leaf (a degenerate
 /// one-point view — the spatial re-fetch) and relax each of its §8.3 neighbors from
-/// the inline `(coord, cost_m, way_kind)`, weighting the cost by the plan's profile
-/// (`mult`). A neighbor whose `way_kind` is **forbidden** under the profile (`mult` is
-/// `None`) is skipped — not relaxed — so the graph stays whole for other profiles. A
+/// the inline `(coord, cost_m, way_kind, ascent_m)` through the plan's profile
+/// ([`ProfileMult::edge_cost`]). A neighbor whose `way_kind` is **forbidden** under the profile
+/// (`edge_cost` is `None`) is skipped — not relaxed — so the graph stays whole for other profiles. A
 /// node the walk doesn't yield (corrupt map) simply relaxes nothing; the search
 /// continues on whatever frontier remains.
 ///
@@ -995,6 +1614,9 @@ pub fn plan_route<const N: usize>(
 /// relaxes normally (zero allocations). The only hard error is a read failure ([`NavError::NoPath`]);
 /// running out of table is no longer an error here — the caller drains the frontier and maps a
 /// latched `table_full` to [`NavError::Exhausted`] then.
+// The arg list is the relax context (goal, profile, optional corridor) plus the caller-owned
+// buffers — same shape rationale as `plan_route`'s allow.
+#[allow(clippy::too_many_arguments)]
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn settle<const N: usize>(
     reader: &Reader,
@@ -1003,6 +1625,7 @@ fn settle<const N: usize>(
     idx: usize,
     goal_c: (i32, i32),
     mult: &ProfileMult,
+    corridor: Option<&Corridor>,
     table_full: &mut bool,
 ) -> Result<(), NavError> {
     let settled = scratch.entries[idx];
@@ -1015,13 +1638,19 @@ fn settle<const N: usize>(
                 return;
             }
             for nb in n.neighbors() {
-                // Profile-weighted edge cost: `weighted = (cost_m × mult(kind)) >> 4` (mult in
-                // 1/16 fixed-point). A forbidden class (`mult == None`) is skipped entirely — the
-                // neighbor is never relaxed, so the graph stays whole for the other profiles.
-                let Some(m) = mult.mult(nb.way_kind) else {
+                // The §8.6 edge cost: profile-weighted ground length **plus** the entry's own
+                // directional climb charged at the profile's weight. `ascent_m` rides on the
+                // adjacency entry already in hand — no second fetch, which is why EL5 put it there.
+                // A forbidden class (`edge_cost == None`) is skipped entirely — the neighbor is
+                // never relaxed, so the graph stays whole for the other profiles.
+                let Some(weighted) = mult.edge_cost(nb.cost_m, nb.ascent_m, nb.way_kind) else {
                     continue;
                 };
-                let weighted = (nb.cost_m.saturating_mul(m)) >> 4;
+                // Detour blacklist (#882): an edge whose chord hugs the skipped span is skipped
+                // exactly like a forbidden class — never relaxed, graph untouched for other plans.
+                if corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat))) {
+                    continue;
+                }
                 // u16-saturating tentative cost: a saturated g is just maximally
                 // unattractive (see the layout note) — never wrapped, never mis-ordered.
                 let tentative = sat16((settled.g as u32).saturating_add(weighted));
@@ -1066,55 +1695,94 @@ fn settle<const N: usize>(
     Ok(())
 }
 
-/// Snap `p` to the nearest routable node within [`SNAP_RADIUS_M`] — the POI query's
-/// expanding-ring walk shape over the node quadtree: start with a small square view,
-/// double it until the best find is provably nearest (its distance ≤ the ring's
-/// half-extent — everything outside the square is at least that far), capping at the
-/// snap radius. The cap makes the final ring exhaustive by construction (a 250 m
-/// half-extent square contains the whole 250 m disc), so unlike the POI query no
-/// map-cover fallback is needed. Repeat visits across rings re-hit the tile cache.
-///
-/// **Kind-agnostic** (locked on #536): snap picks the nearest node of *any* kind — a rider
-/// standing on a footway must still snap; the profile shapes the route *away* from it, not the
-/// snap. One accepted v1 consequence: a node **all of whose edges are forbidden** under the active
-/// profile is a dead snap — the search then drains the frontier to an honest [`NavError::NoPath`].
-#[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
-fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32, (i32, i32))> {
+/// Scan one complete node-or-anchor lookup square and project all candidate edge geometries
+/// exactly. The caller first tries 200 m; if the triangle bound cannot prove that winner final, it
+/// follows with the complete ≈250 m square (whose overlapping center normally hits the cache).
+#[inline(never)]
+fn snap_window(
+    reader: &Reader,
+    tiles: &mut NavTileCache,
+    p: (i32, i32),
+    lookup_radius_m: f32,
+    cap: f32,
+) -> Result<Option<NavEdgeCandidate>, ()> {
     if reader.nav_directory().is_empty() {
-        return None;
+        return Err(());
     }
-    // Guard a degenerate cos_lat (poles / corrupt latitude) like the POI query.
     let cl = cos_lat(p.1).max(1e-3);
-    // 250 m as µdeg of latitude (~2 246); the opening ring is a quarter of it.
-    let full_half = (SNAP_RADIUS_M / M_PER_DEG as f32 * 1e6) as i32;
-    let mut half = (full_half / 4).max(1);
-    let mut best: Option<(u32, (i32, i32), f32)> = None;
-    loop {
-        let lon_half = ((half as f32 / cl) as i32).max(1);
-        let view = BBox {
-            min_lon: p.0.saturating_sub(lon_half),
-            min_lat: p.1.saturating_sub(half),
-            max_lon: p.0.saturating_add(lon_half),
-            max_lat: p.1.saturating_add(half),
-        };
-        reader
-            .for_each_nav_node_cached(&view, tiles, |n| {
-                let d = ground_dist_m_cl(p, (n.lon, n.lat), cl);
-                if d <= SNAP_RADIUS_M && best.is_none_or(|(_, _, bd)| d < bd) {
-                    best = Some((n.id, (n.lon, n.lat), d));
-                }
-            })
-            .ok()?;
-        let half_m = half as f32 * (M_PER_DEG as f32) * 1e-6;
-        if let Some((id, c, d)) = best {
-            if d <= half_m {
-                return Some((id, c));
-            }
-        }
-        if half >= full_half {
-            // Final ring covered the whole disc — whatever we found is the answer.
-            return best.map(|(id, c, _)| (id, c));
-        }
-        half = (half * 2).min(full_half);
+    let full_half = libm::ceilf(lookup_radius_m / M_PER_DEG as f32 * 1e6) as i32;
+    let lon_half = libm::ceilf(full_half as f32 / cl) as i32;
+    let view = BBox {
+        min_lon: p.0.saturating_sub(lon_half),
+        min_lat: p.1.saturating_sub(full_half),
+        max_lon: p.0.saturating_add(lon_half),
+        max_lat: p.1.saturating_add(full_half),
+    };
+    reader.nearest_nav_edge_candidate_cached(&view, tiles, p, cap).map_err(|_| ())
+}
+
+#[inline]
+fn snap_lookup_radius(pass: u8) -> f32 {
+    if pass == 0 {
+        SNAP_INITIAL_LOOKUP_RADIUS_M
+    } else {
+        SNAP_LOOKUP_RADIUS_M
+    }
+}
+
+#[inline]
+fn snap_lookup_complete(best: Option<&NavEdgeCandidate>, lookup_radius_m: f32) -> bool {
+    lookup_radius_m >= SNAP_LOOKUP_RADIUS_M
+        || best.is_some_and(|candidate| candidate.distance_m + SNAP_INDEX_REACH_M <= lookup_radius_m)
+}
+
+fn snap_candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool {
+    new.distance_m < old.distance_m || (new.distance_m == old.distance_m && new.edge_id < old.edge_id)
+}
+
+/// Unit cover for the one piece of arithmetic the integration suite can only reach through a packed
+/// map: [`ProfileMult::edge_cost`] at the extremes of its wire types (EL6). The routing *behaviour*
+/// is pinned end-to-end over real writer→reader bytes in `tests/nav.rs`; what lives here is the
+/// overflow argument from `edge_cost`'s doc, executed.
+#[cfg(test)]
+mod tests {
+    use super::{sat16, ProfileMult};
+
+    /// The maximum every input can legally reach — `cost_m` and `ascent_m` both `u16::MAX`, both
+    /// multiplier bytes and the climb weight all `u8::MAX`. The exact sum is asserted (not merely
+    /// "it didn't panic"), because the claim being pinned is that the true value *fits*: at
+    /// 33 357 315 it is under a hundredth of `u32::MAX`, so the router never reaches its own
+    /// saturation. Runs under `-C overflow-checks` in the debug test profile, which is what makes it
+    /// a real tripwire rather than a wrap-tolerant smoke test.
+    #[test]
+    fn edge_cost_at_the_wire_maxima_is_exact_and_nowhere_near_wrapping() {
+        let p = ProfileMult { highway: [u8::MAX; 32], surface: [u8::MAX; 8], climb: u32::from(u8::MAX) };
+        let got = p.edge_cost(u32::from(u16::MAX), u16::MAX, 0xFF).expect("255 is not forbidden");
+        // (65 535 × ((255 × 255) >> 4)) >> 4 = 16 645 890 distance, + 65 535 × 255 = 16 711 425 climb.
+        assert_eq!(got, 16_645_890 + 16_711_425);
+        assert!(got < u32::MAX / 64, "the worst legal edge must stay far inside u32");
+        // The only lossy step is the frontier's own 16-bit field, and it clamps rather than wraps.
+        assert_eq!(sat16(u32::from(u16::MAX).saturating_add(got)), u16::MAX);
+    }
+
+    /// A `climb_weight` of `0` and an `ascent_m` of `0` each independently reduce the formula to
+    /// v11's — the null path, in arithmetic form.
+    #[test]
+    fn either_zero_reproduces_the_pre_terrain_cost() {
+        let blind = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
+        let weighted = ProfileMult { climb: 10, ..blind };
+        assert_eq!(blind.edge_cost(1_000, 400, 0), Some(1_000), "climb-blind ignores a 400 m climb");
+        assert_eq!(weighted.edge_cost(1_000, 0, 0), Some(1_000), "a flat edge costs its ground length");
+        assert_eq!(weighted.edge_cost(1_000, 400, 0), Some(5_000), "…and a climbing one is charged for it");
+    }
+
+    /// A forbidden class is `None` **whatever the climb**: the skip decision is the multiplier's
+    /// alone, so an unroutable edge is never relaxed at some enormous cost instead.
+    #[test]
+    fn a_forbidden_class_stays_forbidden_under_any_climb() {
+        let mut p = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 255 };
+        p.highway[4] = 0;
+        assert_eq!(p.edge_cost(1_000, 0, 4), None);
+        assert_eq!(p.edge_cost(1_000, u16::MAX, 4), None);
     }
 }

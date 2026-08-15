@@ -1,0 +1,80 @@
+[package]
+name = "obc-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal app crate — not published to crates.io
+description = "OpenBikeComputer desktop app: the published-cell builder in a Tauri shell"
+
+# A standalone cargo root, like obc-fw-nrf54l and obc-boot — deliberately NOT a
+# member of the root Cargo.toml. Tauri drags in wry and a platform webview
+# (WebKitGTK on Linux, WebView2 on Windows), so joining the workspace would put a
+# GUI toolkit and its system headers in the way of `cargo test` for the renderer.
+# The cost is the usual one for an excluded crate: its own Cargo.lock, its own
+# fmt/clippy/test invocations, and its own CI job — see the repo CLAUDE.md and
+# .github/workflows/ci.yml's `desktop` job.
+[workspace]
+
+[features]
+# Plain `cargo build` produces a shippable app rather than a dev-server shell.
+default = ["custom-protocol"]
+
+# `tauri/custom-protocol` is what decides whether the app *is* an app: with it,
+# `tauri::generate_context!` embeds the built frontend and the webview loads it
+# over the `tauri://` protocol; without it, Tauri is in "dev" mode and points the
+# window at `build.devUrl`. The Tauri templates leave it off and have their CLI
+# add it for `tauri build` — which silently produces a blank window for anyone
+# running plain `cargo run`, which is how this repo builds everything.
+#
+# So it is ON by default here, and the live-reload loop is the explicit opt-out:
+#
+#     npm --prefix ../../builder/app run dev -- --mode desktop
+#     cargo run --no-default-features   # follows Vite
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+# Generates the Tauri context (config + the embedded frontend bundle).
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The device's own CRC-32/IEEE, linked rather than re-typed. A file streamed to a
+# device needs its whole-object checksum before the descriptor is written (spec
+# §4.2), and this is the implementation `lib/usb/crc32.ts` was ported from — so
+# the host, the app and the firmware cannot drift. No radio types come with it:
+# obc-ble is deliberately no_std and transport-free.
+obc-ble = { path = "../../firmware/obc-ble" }
+tauri = { version = "2", features = [] }
+# Native USB (#909). Pure Rust: there is no C library to vendor, no CMake leg,
+# and nothing for a user to install. It talks to each platform's own USB
+# stack directly — usbfs on Linux, IOKit on macOS, WinUSB on Windows.
+#
+# `features = ["tokio"]` is load-bearing, not tuning. nusb wraps every blocking
+# syscall in a `MaybeFuture`, and without a runtime feature the `.await` arm of
+# that type is a `panic!` — it compiles on all three platforms and dies the first
+# time anything is actually awaited. Tauri's runtime is tokio, so this is the
+# arm to enable. See `usb::runtime_guard` for what stops it happening again.
+nusb = { version = "0.2", features = ["tokio"] }
+# `HotplugWatch` is a `futures_core::Stream`; this is the trait, and nothing else
+# (futures-core has no dependencies of its own).
+futures-core = "0.3"
+# Tauri's async runtime is tokio, and these are the pieces the USB plane needs:
+# `sync` for the per-endpoint mutexes and the cancel epochs, `macros` for the
+# select! that makes a parked transfer cancellable, `fs` to read a map off the
+# disk without blocking a runtime worker.
+tokio = { version = "1", features = ["sync", "macros", "fs", "io-util"] }
+# Used from Rust only (no JS permission needed): "show the file I just built" in
+# the platform's own file manager.
+tauri-plugin-opener = "2"
+# The one place the *user* names a directory: relocating the ride library (E2
+# #912). Called from Rust, like the opener above, so `capabilities/default.json`
+# stays at `core:default` and no JS gets a file-picker. That is also the crate's
+# standing rule about paths, met rather than bent — the frontend still never
+# names a place; here the OS's own chooser does, with the person driving it.
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Blocking HTTP for the small map catalog document. The caller runs on a worker
+# thread, and rustls-by-default avoids an OpenSSL system dependency.
+ureq = "3"
+# Parses catalog/object URLs so the native fetch command can enforce same-origin
+# access instead of handing the webview a general HTTP proxy.
+url = "2"

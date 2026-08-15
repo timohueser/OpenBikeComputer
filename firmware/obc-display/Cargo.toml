@@ -12,7 +12,18 @@ description = "Board-agnostic no_std display seam: the generic native-frame + pr
 # neither embassy, nor the SD stack, nor app/UI state.
 embedded-graphics = "0.8"
 
+[features]
+# The reusable display-contract checks (`display_contracts::conformance`) — ~270 lines of assert
+# scaffolding with panic format strings that have no business in the device image. Test-only
+# consumers opt in: this crate's own tests (via the self dev-dependency below) and obc-sim's
+# presenter suite. The board crate never enables it, so it never reaches flash.
+conformance = []
+
 [dev-dependencies]
+# Self dev-dependency: turns `conformance` on for every test target of this crate without the
+# feature leaking into production consumers (dev-dep features unify only into test builds).
+obc-display = { path = ".", features = ["conformance"] }
+
 # The reader's RGB565→device-64 quantizer, so the framebuffer/ls021 tests can pin the panel-plane
 # pack against it exhaustively (the two implement the same quantization and must never drift).
 obc-reader = { path = "../obc-reader" }

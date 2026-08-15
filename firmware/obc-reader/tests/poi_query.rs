@@ -5,9 +5,8 @@
 //! reader's expanding-ring scan returns exactly the brute-force nearest-16 — same set, same order,
 //! same distances. The last test runs the query against the committed real Monaco map.
 
-use obc_reader::{
-    cos_lat, ground_dist_m_cl, MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS,
-};
+use obc_map_scene::{cos_lat, ground_dist_m_cl};
+use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS};
 use obcm_testkit::{build_poi_map, PoiSpec};
 
 /// Ground distance (m) from `pos` (lon, lat µdeg) to a POI, the same equirectangular metric the
@@ -373,9 +372,9 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
 /// ≤ 16 ascending results with plausible distances. Monaco's Water category has 28 POIs, so a
 /// nearest-16 query fills and the results are the closest 16.
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn monaco_water_query_smoke() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/monaco.obcm");
-    let bytes = std::fs::read(path).expect("committed monaco.obcm");
+    let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm").expect("full fixture suite requires map");
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();

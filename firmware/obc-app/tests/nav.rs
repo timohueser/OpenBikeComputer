@@ -8,11 +8,10 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::{needle_region, Screen};
-use obc_app::{
-    App, AppState, Fix, Gesture, HostCommand, HostMailbox, IdleReturn, InputClock, Mode, NavRequest, RouteSummary,
-    Settings,
-};
-use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
+use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, IdleReturn, Mode, NavRequest, RouteSummary, Settings};
+use obc_map_scene::BBox;
+use obc_ports::{Fix, InputClock};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_route::NavError;
 use obcm_testkit::{build_poi_map, PoiSpec};
 
@@ -41,7 +40,8 @@ fn render_into(app: &mut App, bytes: &[u8], buf: &mut Buf) {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid fixture");
     let reader = Reader::new(&src, &tables, &cache);
-    app.render_frame(buf, &reader, None, 240.0, 320.0, |c| {
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    app.render_frame(Some(&mut scratch), buf, &reader, None, 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
@@ -58,7 +58,7 @@ fn render(app: &mut App, bytes: &[u8]) {
 fn open_detail(app: &mut App, bytes: &[u8]) {
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     app.apply_gesture(Gesture::BackHold); // Home → Menu
-    app.apply_gesture(Gesture::Turn(2)); // Routes → Rides → POIs
+    app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
     app.apply_gesture(Gesture::Press); // → category list (Water first)
     app.apply_gesture(Gesture::Press); // → POI list
     render(app, bytes); // lazy snapshot fills
@@ -128,9 +128,9 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(2));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Turn(1)); // Water → Campsite
+    app.apply_gesture(Gesture::Step(1)); // Water → Campsite
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail (the unnamed campsite)
@@ -144,7 +144,7 @@ fn confirm_cancel_and_back_return_to_the_detail() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     open_detail(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → confirm
-    app.apply_gesture(Gesture::Turn(1)); // → Cancel
+    app.apply_gesture(Gesture::Step(1)); // → Cancel
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Cancel returns to the detail");
     assert!(plan_req(&mut app).is_none(), "cancel records nothing");
@@ -209,9 +209,9 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     assert!(app.activity.is_tracking());
     let session = app.activity.session();
 
-    // Mid-ride: Menu → POIs → detail → confirm → create → (host answers).
+    // Mid-ride: Ride menu → POIs → detail → confirm → create → (host answers).
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(2));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);

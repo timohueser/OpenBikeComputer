@@ -1,11 +1,11 @@
 ---
 title: The UI system
-description: How OpenBikeComputer's on-device interface works — screens as plain values, navigation as a return value, five gestures from two buttons, in-place settings editing that persists to RRAM, render-on-demand, and the "field map" look — all no_std and zero-allocation.
+description: How OpenBikeComputer's on-device interface works — screens as plain values, navigation as a return value, five gestures from four buttons, in-place settings editing that persists to RRAM, render-on-demand, and the "field map" look — all no_std and zero-allocation.
 ---
 
 # The UI system
 
-The device has two buttons, a 240×320 reflective panel, and a microcontroller with no room to waste. The interface that runs on it is deliberately small: `no_std`, **zero-allocation**, and built with **no retained widget tree** — no DOM, no `Box<dyn Widget>`, no per-frame layout pass. A screen is just a value; navigation is just a return value; and the whole thing runs identically in the browser simulator and on the device.
+The device has four buttons, a 240×320 reflective panel, and a microcontroller with no room to waste. The interface that runs on it is deliberately small: `no_std`, **zero-allocation**, and built with **no retained widget tree** — no DOM, no `Box<dyn Widget>`, no per-frame layout pass. A screen is just a value; navigation is just a return value; and the whole thing runs identically in the browser simulator and on the device.
 
 This page is about *how that works* — the handful of abstractions that make a real navigable UI out of almost nothing.
 
@@ -14,14 +14,14 @@ This page is about *how that works* — the handful of abstractions that make a 
 The core idea: each screen is an enum variant wrapping a little struct of typed state, and the set of screens is one `enum Screen` dispatched by `match`. The enum, its `handle`/`draw` delegation matches, and each screen's classification are all generated from a single declarative `screens!` table — one row per screen — so there are no trait objects, no heap, and no second list to keep in sync: adding a screen is **one table row plus its module**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteOverview, RouteSwap, plus the Settings tree. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
+<svg viewBox="0 0 720 322" role="img" aria-label="On the left, the Screen enum lists representative variants: Home, Map, Statistics, RideControl, Menu, RideMenu, RouteMenu, RouteOverview, and RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
   <defs>
     <marker id="aU1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
   <text class="d-tag" x="20" y="24">A screen is a value — no retained widget tree</text>
 
   <!-- enum Screen -->
-  <rect class="d-panel" x="36" y="44" width="210" height="232" rx="11" />
+  <rect class="d-panel" x="36" y="44" width="210" height="254" rx="11" />
   <text class="d-label" x="56" y="66">enum Screen</text>
   <g font-family="var(--mono)">
     <rect x="52" y="78"  width="178" height="22" rx="5" class="d-hot-fill" /><text class="d-sub" x="62" y="93" style="fill:#fff">Map(MapScreen)</text>
@@ -29,9 +29,10 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
     <rect x="52" y="126" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="140">Statistics(…)</text>
     <rect x="52" y="148" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="162">RideControl(…)</text>
     <rect x="52" y="170" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="184">Menu(…)</text>
-    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">RouteMenu(…)</text>
-    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteOverview(…)</text>
-    <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="250">RouteSwap(…)</text>
+    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">RideMenu(…)</text>
+    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteMenu(…)</text>
+    <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="250">RouteOverview(…)</text>
+    <rect x="52" y="258" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="272">RouteSwap(…)</text>
   </g>
 
   <!-- arrow to module -->
@@ -59,16 +60,22 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
 </figure>
 
 ```rust
-// The one screen table. Each row declares a variant, its state type, and its capabilities (Caps);
-// a dumb local macro expands it into the Screen enum, the handle/draw/prepare delegation matches,
-// and the per-screen Caps table that every cross-cutting UI policy reads.
+// The one screen table (excerpted — the real table carries every screen, doc comments and all).
+// Each row declares a variant, its state type, and its capabilities (Caps); a dumb local macro
+// expands it into the Screen enum, the handle/draw/prepare delegation matches, and the per-screen
+// Caps table that every cross-cutting UI policy reads.
 screens! {
     Home(HomeScreen) => Caps::nav().timed(),         // screensaver clock ticks each minute → timed
     Map(MapScreen) => Caps::map().timed(),           // reads the map Reader; a ride view + browse-exempt
     Statistics(StatisticsScreen) => Caps::riding().timed(),
+    Climb(ClimbScreen) => Caps::riding(),            // the climb profile view — a full-screen ride view
     RideControl(RideControl) => Caps::nav().ride_view().hold_fill(), // the Paused page; guarded Finish/Discard
     RideStart(RideStartScreen) => Caps::nav(),       // the browse map's start card (route-less ride)
     Menu(MenuScreen) => Caps::nav().timed(),          // the compass dial sweeps its needle → timed
+    RideMenu(RideMenuScreen) => Caps::nav().timed(),  // the same dial chrome, with ride-scoped stations
+    UpAhead(UpAheadScreen) => Caps::nav(),   // the merged waypoint + corridor-POI timeline
+    Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),        // live route index follows rescans
+    DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route), // the planned detour + cost line
     PoiMenu(PoiMenuScreen) => Caps::nav(),           // POIs browser: the category list
     PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),  // one-shot nearest-16 query
     PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours), // one-shot opening-hours read
@@ -85,9 +92,10 @@ screens! {
     Warning(WarningScreen) => Caps::modal(),          // advisory: missing sensor / slow map / write error
     // The Settings tree. `settings()` is what holds the debounced settings save while one is on top;
     // a guarded row adds `.hold_fill()` (the factory Reset, Forget phone, Fields delete, forget sensor).
-    Settings(SettingsScreen) => Caps::settings(),      Units(UnitsScreen) => Caps::settings(),
+    Settings(SettingsScreen) => Caps::settings(),      Ride(RideScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings().hold_fill(), Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
-    // …Date&Time, Display, Power, Sensors, Language, Stats → Fields → AddField, all Caps::settings().
+    // Five groups: Ride, Display, Connections (→ Bluetooth / Sensors), Power, System (→ Units,
+    // Date&Time, Language, Firmware, About, Reset), plus Ride's Fields → AddField editor. All Caps::settings().
 }
 
 // Each variant is a module with typed state and two methods (plus an optional third for the two POI
@@ -107,10 +115,10 @@ consistent (a Reader-needing map screen, a modal that isn't a ride view, and so 
 
 ## Navigation is a return value
 
-A screen never reaches out and changes the UI. It *returns* what it wants — a `Transition` — and a tiny `apply` function runs that against the screen **stack** (a `heapless::Vec<Screen, 8>`). The bottom of the stack is always Home, which is never popped, so `back` always has somewhere to go and the stack can never empty.
+A screen never reaches out and changes the UI. It *returns* what it wants — a `Transition` — and a tiny `apply` function runs that against the screen **stack** (a `heapless::Vec<Screen, 10>`). The bottom of the stack is always Home, which is never popped, so `back` always has somewhere to go and the stack can never empty.
 
 <figure class="fig">
-<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Menu on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
+<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Ride menu on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
   <defs>
     <marker id="aU2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -130,7 +138,7 @@ A screen never reaches out and changes the UI. It *returns* what it wants — a 
   <!-- stack -->
   <text class="d-tag" x="24" y="104">the stack</text>
   <g>
-    <rect x="40" y="200" width="150" height="34" rx="6" class="d-water" /><text class="d-label" x="115" y="222" text-anchor="middle" style="fill:#fff">Menu</text>
+    <rect x="40" y="200" width="150" height="34" rx="6" class="d-water" /><text class="d-label" x="115" y="222" text-anchor="middle" style="fill:#fff">Ride menu</text>
     <text class="d-sub" x="200" y="221" style="font-size:9px">← top (gets input)</text>
     <rect x="40" y="166" width="150" height="34" rx="6" class="d-forest" /><text class="d-label" x="115" y="188" text-anchor="middle" style="fill:#fff">Map</text>
     <rect x="40" y="132" width="150" height="34" rx="6" class="d-muted" /><text class="d-label" x="115" y="154" text-anchor="middle">Home</text>
@@ -179,13 +187,10 @@ three lines per gesture: the sweep itself runs through the same timer-poll contr
 clock uses (see *Render on demand* below), so it costs nothing once the needle has landed:
 
 ```rust
-fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
-        Gesture::Turn(n) => {
-            self.target_deg += n as f32 * DETENT_DEG; // the needle chases this in tick_timers
-            list::on_turn(&mut self.selected, n, ITEMS.len()) // Routes / Rides / POIs / Map / Settings
-        }
-        Gesture::Press   => match self.selected {
+        Gesture::Step(n) => self.dial.step(n), // shared selection wrap + eased needle target
+        Gesture::Press   => match self.dial.selected() {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
             1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
             2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
@@ -198,34 +203,103 @@ fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
 }
 ```
 
-Four of the five stations open a menu; the **Map** station opens the riding map directly. Which map depends on whether a ride is already being tracked. Mid-ride it lands you back on the live riding map — the ride base — by rooting the stack to a clean `[Home, Map]`, the same normalization the [idle return](#the-whole-flow) does, so it never stacks a second Map or leaves stale menus buried underneath. With **no** ride running it opens a route-less **browse map**: the identical Map screen — GPS-follow camera, zoom on turn, `hold` to Pan — reached without a route or a session, for reading the map while riding without recording. On entry the browse map briefly shows a one-shot bottom-centre *Press to start a ride* hint (auto-hiding after a few seconds — the lowest-priority tenant of the bottom chip slot). On the browse map `back` pops back to the Menu (there's no Statistics sibling without a ride) and `press` opens the **start card** — a small pre-ride launchpad: the selected bike's pixel sprite and profile name (the same sprite the Bike type settings screen draws), a two-row *GPS* / *Battery* checklist (the live fix state and the battery percent), then *Start ride* / *Back* rows. *Start ride* begins a route-less tracking session (the same session-begin the Route overview's START runs, minus the route) and roots to `[Home, Map]`. A route-less ride records and saves exactly like a guided one; only the route-relative stat tiles (*to go*, *to climb*, grade) read `--`, and the Statistics band shows a "No route loaded" note over an otherwise-live grid. The browse map is a *deliberate* view, so — unlike a menu left open — the idle-return timeout leaves it be.
+Most of the six stations open a menu; the **Weather** station opens the weather dashboard — the two-hour rain decision card, the hourly forecast and the rain map (epic #1185), every claim derived honestly from the phone-fed bundle's real timestamps (stale data says WEATHER UPDATE NEEDED, never "dry") — and the **Map** station opens the riding map directly. Which map depends on whether a ride is already being tracked. Mid-ride it lands you back on the live riding map — the ride base — by rooting the stack to a clean `[Home, Map]`, the same normalization the [idle return](#the-whole-flow) does, so it never stacks a second Map or leaves stale menus buried underneath. With **no** ride running it opens a route-less **browse map**: the identical Map screen — GPS-follow camera, zoom on Up/Down, `hold` to Inspect — reached without a route or a session, for reading the map while riding without recording. Inspect detaches the camera without changing its orientation. `press` toggles **Move ↔ Zoom**, so Up/Down can zoom at any point without leaving the mode. The two holds have separate, stable jobs: Back-hold toggles **Route ↔ the last-used Free axis**, while Select-hold toggles **Free vertical ↔ Free horizontal** only when Free is already active. In Route, Select-hold does nothing. It is inert in Zoom too, but Back-hold stays authoritative there: it switches Route/Free and always lands in Move, so Free Zoom goes straight to ordinary Route Move instead of feeling stuck. Without a route, Back-hold simply returns Zoom to Free Move and is otherwise inert. Route moves the cursor ahead/back along route distance, even around bends. `back` exits in one tap, resumes Follow, and recentres implicitly. A two-pixel amber frame with a one-pixel ink keyline marks the detached camera in every Inspect tool; its 10-pixel rounded corners follow the simulator and device display mask instead of disappearing beneath it. Within the frame, bare amber ± means Zoom, edge arrows show the active Free axis, and their absence means Up/Down follows the route. That makes Route Inspect distinct from Follow even with the optional clock disabled, without repeating the state in text or consuming meaningful space on the 240×320 panel. There is no separate snap-back command and no Inspect orientation toggle. On entry the browse map briefly shows a one-shot bottom-centre *Press to start a ride* hint (auto-hiding after a few seconds — the lowest-priority tenant of the bottom chip slot). On the browse map `back` pops back to the Menu (there's no Statistics sibling without a ride) and `press` opens the **start card** — a small pre-ride launchpad: the selected bike's pixel sprite and profile name (the same sprite the Bike type settings screen draws), a two-row *GPS* / *Battery* checklist (the live fix state and the battery percent), then *Start ride* / *Back* rows. *Start ride* begins a route-less tracking session (the same session-begin the Route overview's START runs, minus the route) and roots to `[Home, Map]`. A route-less ride records and saves exactly like a guided one; only the route-relative stat tiles (*to go*, *to climb*, grade) read `--`, and the Statistics band shows a "No route loaded" note over an otherwise-live grid. The browse map is a *deliberate* view, so — unlike a menu left open — the idle-return timeout leaves it be.
 
-## Two buttons, five gestures
+Once a ride is running, `back-hold` opens a second compass with the **same five-station bezel, amber needle sweep, and label strip**, but ride-scoped stations: **Up ahead**, **Detour**, **POIs**, **Routes**, and **Main menu**. Up ahead starts at north; one Up step reaches Main menu. **Up ahead** opens the [route's timeline](#up-ahead-one-timeline-for-the-route) — every stop still coming, the rider's own waypoints and the map's POIs on one axis, opened on the next one; Detour opens the rejoin chooser below; POIs and Routes open their existing browsers. A route-less recording keeps the same five positions: Up ahead and Detour stay dimmed and Up ahead opens *No route loaded / Load a route first*, so the ring never changes under the rider's hand. Detour additionally dims on a map without a routing graph and while the rider is off the route — the station is actionable exactly when a detour could actually be planned.
 
-The physical input model is tiny: a **rotary encoder** (which turns *and* pushes) and a dedicated **Back** button. A single shared recognizer — the same code on the simulator and the MCU — turns the raw stream of detents and button edges, plus a millisecond clock, into exactly **five gestures**. A screen's `handle` only ever sees these five.
+### Detouring around a blocked stretch
+
+**Detour** routes the rider *around* a closed or unpleasant stretch of the active route: pick how far ahead to rejoin, let the device plan a real path to that point on the map's routing graph, preview its shape and what it costs in distance and climbing, and commit — after which the detour simply **is** the route and normal guidance continues through it.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="Two controls on the left — a rotary encoder that turns and pushes, and a Back button — feed a shared Gestures recognizer in the middle, which also takes a millisecond clock. It emits five gestures on the right: Turn of n, Press, Hold, Back, and BackHold.">
+<svg viewBox="0 0 720 262" role="img" aria-label="The detour flow in three panels. Panel one, the chooser: the magenta route with an orange inner stroke marking the skipped stretch ahead of the rider and a ring at the candidate rejoin point; Up and Down move the rejoin in 100-metre steps. Panel two, the preview: the planned detour drawn in blue around the skipped stretch, with a panel showing two signed cost figures, here plus 434 metres of distance and 47 metres less climbing. Panel three, the commit: the spliced line — ridden part, detour, and the original route from the rejoin — is written as an ordinary route file and adopted; guidance continues.">
+  <defs>
+    <marker id="aDT" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Choose a rejoin · preview the cost · commit the splice</text>
+
+  <!-- panel 1: chooser -->
+  <text class="d-sub" x="30" y="52" style="font-size:9px;fill:#6b7758">① chooser — Up/Down move the rejoin</text>
+  <rect x="30" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M55 195 C 90 160, 100 120, 130 100 C 160 80, 185 80, 210 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <path d="M95 152 C 110 130, 118 112, 130 100 C 143 91, 152 87, 162 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
+  <path d="M62 188 l8 12 l-8 -4 l-8 4 z" fill="#ff0000" />
+  <circle cx="162" cy="84" r="7" fill="none" stroke="#000" stroke-width="2" />
+  <text class="d-sub" x="120" y="200" style="font-size:8.5px">skipped stretch</text>
+  <text class="d-sub" x="162" y="112" text-anchor="middle" style="font-size:8.5px">rejoin</text>
+  <text class="d-sub" x="30" y="228" style="font-size:9px">±100 m steps · 600 m minimum</text>
+
+  <!-- panel 2: preview -->
+  <line class="d-flow" x1="238" y1="135" x2="258" y2="135" marker-end="url(#aDT)" />
+  <text class="d-sub" x="266" y="52" style="font-size:9px;fill:#6b7758">② preview — the planned path + what it costs</text>
+  <rect x="266" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M291 195 C 326 160, 336 120, 366 100 C 396 80, 421 80, 446 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <path d="M331 152 C 346 130, 354 112, 366 100 C 379 91, 388 87, 398 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
+  <path d="M331 152 C 370 160, 410 130, 398 84" fill="none" stroke="#0000aa" stroke-width="3" />
+  <rect x="280" y="178" width="150" height="20" rx="6" style="fill:#f3f0df;stroke:#3d3427;stroke-width:1" />
+  <text x="291" y="192" style="font-family:var(--mono);font-size:9.5px;fill:#3d3427">+434 m</text>
+  <path d="M394 194 l6 -9 l6 9 z" fill="#3d3427" />
+  <text x="422" y="192" text-anchor="end" style="font-family:var(--mono);font-size:9.5px;fill:#3d3427">-47 m</text>
+  <text class="d-sub" x="266" y="228" style="font-size:9px">what it costs: distance · climbing</text>
+
+  <!-- panel 3: commit -->
+  <line class="d-flow" x1="474" y1="135" x2="494" y2="135" marker-end="url(#aDT)" />
+  <text class="d-sub" x="502" y="52" style="font-size:9px;fill:#6b7758">③ commit — the detour is the route</text>
+  <rect x="502" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M527 195 C 550 172, 558 152, 564 138 C 592 162, 630 132, 622 96 C 642 82, 662 76, 680 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <text class="d-sub" x="502" y="228" style="font-size:9px">an ordinary route file</text>
+  <text class="d-sub" x="30" y="252" style="font-size:9px;fill:#6b7758">back cancels at any step · a failed plan suggests the one useful remedy: try a farther rejoin</text>
+</svg>
+<figcaption>Opening the station replaces the ride compass with a north-up chooser: an orange inner stroke marks the skipped stretch, a ring the candidate rejoin, and each Up/Down step moves the rejoin by <b>100 m</b> (600 m minimum — below that the planner's take-off and landing neighbourhoods overlap the whole stretch). The rider's distance choice is the escape hatch the device can't provide itself: it cannot know how far a closure extends, so escalating the rejoin and replanning is how a still-blocked detour is retried. A Select <b>hold</b> toggles a candidate-centred inspection view (Up/Down zoom around the ring); <code>press</code> commits from either view, <code>back</code> cancels.</figcaption>
+</figure>
+
+`Press` freezes the request — the rider's along-route position, the chosen rejoin distance, and the current fix — and hands it to the host, which plans on the map's **§8 navigation graph** behind the shared spinning-needle wait. The skipped stretch is not resolved to graph edges by id — a route polyline is planner GPX, not guaranteed graph-aligned — but blacklisted **geometrically**: the span is downsampled into a corridor, and the search skips any edge *both* of whose endpoints hug it within ~40 m. Both-endpoints proximity doubles as the parallelism test: the blocked road and a street hugging it are skipped, while a bridge *crossing* the corridor (endpoints off to either side) and the junction edges that leave the road stay usable. Discs around the snapped start and rejoin nodes stay exempt so the search can always take off and land on the route itself.
+
+**While it plans, the map holds still.** A search and a map render want the same working memory, so a live planner run puts the map plane into a *Recalculating* freeze: redraws stop, the last frame stays on the reflective glass for free, and a **Recalculating...** pill sits over it on the overlay plane — the plane that composites above a frame nobody is repainting. Route-match progress pauses with it, because a search can replace the very geometry that progress is measured along, and drift under a frame nobody is redrawing is drift the rider cannot see; everything else about the ride keeps recording through the freeze (the fix, the breadcrumb, the totals, the altimeter). The freeze only exists where there is a map underneath to hold: planning from the menus draws an opaque spinner that already says *Finding a route...*, while the detour spinner is pushed **over** the chooser's map — so cancelling out of it can put a map base back under a search that is still running, and that is the window the freeze covers. It lifts the moment the plan answers, fails, or the cancel reaches the host, and the map catches up on the next frame.
+
+A successful plan lands on the **preview**: the detour's polyline in blue over the warning-coloured skipped stretch, and two signed figures — the **distance** cost (*+434 m*: detour length minus the stretch it replaces) and, beside it under a climb triangle, the **climb** cost (*−47 m*: the detour's own ascent minus the ascent of the stretch it replaces). Both price the same swap, and the climb one is the reason to take a longer way round a pass road at all. Its two terms come from the same integrator: the detour's ascent is what the router's [emit-time terrain fill](../terrain/#one-sampling-truth) booked through the shared dead-band, and the replaced stretch's is the route profile's own "climb between here and there" lookup — the one the Up-ahead rows and the `TO CLIMB` tile read. The figure reads `--` — never `+0` — when either side genuinely has no elevation: the map carries no terrain for the detour, or the loaded route has no heights. A flat detour around a flat stretch still reads `+0`, because zero climbing is an answer.
+
+When the planned path reaches the route earlier than the chosen point, the rejoin **advances to that first sustained contact** rather than riding up to the ring and doubling back — the chosen distance is a minimum, and both figures already describe the shortened detour and the longer stretch it replaces.
+
+Committing **splices**: the device streams a derived route — the ridden part up to the rider, the detour, then the original route from the rejoin — into the reserved computed-route slot and re-adopts it as the active route; the recording session, breadcrumb, and ride totals are untouched. Waypoints on the avoided stretch are dropped, climbs and the elevation profile rebuild from the spliced geometry, and the matcher re-anchors at the splice seam with a forward-only floor, so GPS jitter can never snap navigation back into a stretch that no longer exists. The spliced route is an ordinary route file and survives a power cycle like any other.
+
+**The heights across the join.** The detour arrives carrying the terrain the router sampled along it, and the splice keeps those heights — what it removes is only their *datum* mismatch at the two joins. The stored route's heights and the raster's need not agree there: a track imported from a phone or a barometric head unit sits tens of metres off a bare-earth DEM, and on a real Grimsel route the two seams disagreed by up to 56 m. A step that size at a join would be a cliff in the profile and phantom climb in the totals. So the splice measures the residual at each seam — *route height minus sampled height* — and adds a linear-in-arc-length blend of the two to every detour point. Both ends then land **exactly** on the stored route's own seam heights, while the interior keeps the shape the terrain gave it: a detour over a rise reads as a rise, not as the straight ramp between its endpoints that the pre-terrain splice had to draw. Because the blend is affine, a constant offset between the route's datum and the raster's cancels completely.
+
+When the map carries no terrain at all, the detour's points arrive at height `0` — a fact the splice is *told* rather than left to infer, since zero metres is a real height — and the blend collapses, arithmetically, to exactly the seam-to-seam interpolation that predates terrain, down to the byte. Either way the spliced route's climb totals are re-integrated over the **final** point stream with the same dead-band the router and the GPX importer use, so a detoured route's ascent is produced the same way an undetoured one's is.
+
+A few guards keep the flow honest: the chooser follows the live progress anchor while open, so a `Step` followed immediately by `Press` can't plan against a stale candidate; a catalog reorder rekeys the chooser, plan request, and preview by the route's durable id, and if the route vanished — or the rider passes the rejoin while deciding — the flow cancels back rather than committing a stale plan. Commit and cancel both pop back to the exact riding view that opened the compass.
+
+## Four buttons, five gestures
+
+The physical input model is tiny: **Up** and **Down** on the left flank, **Select** and **Back** on the right. No touchscreen, no wheel — four rubber buttons you can find and work through a winter glove without looking. A single shared recognizer — the same code on the simulator and the MCU — turns the raw stream of selection steps and button edges, plus a millisecond clock, into exactly **five gestures**. A screen's `handle` only ever sees these five.
+
+Up and Down are *step* controls: they move the selection the instant they go down, and auto-repeat while held, so a long list scrolls under one thumb. Only Select and Back carry both a short-press *and* a long-press meaning, so only those two are timed against the clock.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="Four buttons on the left — Up and Down on one flank, Select and Back on the other — feed a shared Gestures recognizer in the middle, which also takes a millisecond clock. It emits five gestures on the right: Step of n, Press, Hold, Back, and BackHold.">
   <defs>
     <marker id="aU3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Two buttons → one recognizer → five gestures</text>
+  <text class="d-tag" x="20" y="24">Four buttons → one recognizer → five gestures</text>
 
-  <!-- encoder -->
-  <circle cx="92" cy="86" r="30" style="fill:#eae4cb;stroke:#5f7d3d;stroke-width:1.6" />
-  <circle cx="92" cy="86" r="11" class="d-forest" />
-  <path d="M62 70 A34 34 0 0 1 78 56" fill="none" stroke="#3c6b39" stroke-width="2" marker-end="url(#aU3)" />
-  <path d="M122 102 A34 34 0 0 1 106 116" fill="none" stroke="#3c6b39" stroke-width="2" marker-end="url(#aU3)" />
-  <text class="d-label" x="92" y="140" text-anchor="middle">Encoder</text>
-  <text class="d-sub" x="92" y="154" text-anchor="middle">turn + push</text>
+  <!-- left flank: Up / Down (step controls, auto-repeat) -->
+  <text class="d-sub" x="86" y="52" text-anchor="middle" style="font-size:9px">left flank</text>
+  <rect x="46" y="60" width="80" height="30" rx="7" class="d-panel-2" />
+  <text class="d-label" x="86" y="80" text-anchor="middle">▲ Up</text>
+  <rect x="46" y="96" width="80" height="30" rx="7" class="d-panel-2" />
+  <text class="d-label" x="86" y="116" text-anchor="middle">▼ Down</text>
+  <text class="d-sub" x="86" y="140" text-anchor="middle" style="font-size:9px">steps · auto-repeat</text>
 
-  <!-- back -->
-  <rect x="60" y="176" width="64" height="34" rx="8" class="d-panel-2" />
-  <text class="d-label" x="92" y="198" text-anchor="middle">Back</text>
+  <!-- right flank: Select / Back (timed edges) -->
+  <text class="d-sub" x="86" y="168" text-anchor="middle" style="font-size:9px">right flank</text>
+  <rect x="46" y="176" width="80" height="30" rx="7" class="d-panel-2" />
+  <text class="d-label" x="86" y="196" text-anchor="middle">Select</text>
+  <rect x="46" y="212" width="80" height="30" rx="7" class="d-panel-2" />
+  <text class="d-label" x="86" y="232" text-anchor="middle">Back</text>
 
   <!-- recognizer -->
-  <line class="d-flow" x1="140" y1="86" x2="246" y2="120" marker-end="url(#aU3)" />
-  <line class="d-flow" x1="128" y1="193" x2="246" y2="150" marker-end="url(#aU3)" />
+  <line class="d-flow" x1="132" y1="96" x2="246" y2="120" marker-end="url(#aU3)" />
+  <line class="d-flow" x1="132" y1="206" x2="246" y2="150" marker-end="url(#aU3)" />
   <rect class="d-hot" x="250" y="96" width="170" height="74" rx="12" style="fill:#f8efe4" />
   <text class="d-title" x="335" y="126" text-anchor="middle" style="fill:#a9501c">Gestures</text>
   <text class="d-sub" x="335" y="144" text-anchor="middle">raw events + ms clock</text>
@@ -234,9 +308,9 @@ The physical input model is tiny: a **rotary encoder** (which turns *and* pushes
   <!-- gestures out -->
   <line class="d-flow" x1="420" y1="133" x2="486" y2="133" marker-end="url(#aU3)" />
   <g font-family="var(--mono)">
-    <rect x="496" y="50"  width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="67">Turn(n) — detents</text>
-    <rect x="496" y="82"  width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="99">Press — short encoder</text>
-    <rect x="496" y="114" width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="131">Hold — long encoder</text>
+    <rect x="496" y="50"  width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="67">Step(n) — up / down</text>
+    <rect x="496" y="82"  width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="99">Press — short select</text>
+    <rect x="496" y="114" width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="131">Hold — long select</text>
     <rect x="496" y="146" width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="163">Back — short back</text>
     <rect x="496" y="178" width="180" height="26" rx="6" class="d-panel-2" /><text class="d-sub" x="506" y="195">BackHold — long back</text>
   </g>
@@ -245,19 +319,19 @@ The physical input model is tiny: a **rotary encoder** (which turns *and* pushes
 </figure>
 
 ```rust
-pub enum Gesture { Turn(i32), Press, Hold, Back, BackHold }
+pub enum Gesture { Step(i32), Press, Hold, Back, BackHold }
 ```
 
-That the recognizer is fed by an injected `InputSource` is the key boundary: on the device [`ButtonInput`](src:firmware/obc-platform/src/button_input.rs) turns GPIO levels into the port's raw events; in the simulator [`DeviceInput`](src:firmware/obc-sim/src/device_input.rs) does the same for the control-panel knob and keyboard. Both implement [`obc-ports::InputSource`](src:firmware/obc-ports/src/lib.rs) directly, so neither the recognizer nor any screen knows which host supplied it. (The location, altimeter and track sinks cross the same kind of [HAL seam](../architecture/#two-hosts-one-core-and-the-seams-between-them).)
+That the recognizer is fed by an injected `InputSource` is the key boundary: on the device [`ButtonInput`](src:firmware/obc-platform/src/button_input.rs) turns GPIO levels into the port's raw events; in the simulator [`DeviceInput`](src:apps/obc-sim/src/device_input.rs) does the same for the on-housing pads, the keyboard and the mouse wheel. Both implement [`obc-ports::InputSource`](src:firmware/obc-ports/src/lib.rs) directly, so neither the recognizer nor any screen knows which host supplied it. (The location, altimeter and track sinks cross the same kind of [HAL seam](../architecture/#two-hosts-one-core-and-the-seams-between-them).)
 
 ## Hold to confirm
 
 Some actions are irreversible — finishing or discarding a ride. Rather than a modal "are you sure?", the UI uses a **guarded-action** pattern that's reusable across screens: a guarded option fires only on a *completed* `Hold`, and its row fills with a warning bar tracking the live hold-progress. Let go early and nothing happens — the recognizer makes that clean at the gesture level: a press is a `Press` only if released within a brief tap window (~200 ms); released *after* the window but *before* the hold completes, it's a **cancelled long-press** that yields nothing, never a surprise tap.
 
-A hold is also cancelled if the **screen stack changes** while it charges — the two buttons recognise independently, so a Back tap can dismiss a popup mid-hold, and a long-press that started over one screen must never complete onto whatever replaced it (a hold aimed at a prompt's "Finish & new" landing on another screen's guarded row could fire an action the rider never aimed at). The transition cancels the in-flight hold; the bar retracts, the release stays silent, and the next press starts clean.
+A hold is also cancelled if the **screen stack changes** while it charges — Select and Back recognise independently, so a Back tap can dismiss a popup mid-hold, and a long-press that started over one screen must never complete onto whatever replaced it (a hold aimed at a prompt's "Finish & new" landing on another screen's guarded row could fire an action the rider never aimed at). The transition cancels the in-flight hold; the bar retracts, the release stays silent, and the next press starts clean.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="Top: a timeline showing the encoder pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit.">
+<svg viewBox="0 0 720 250" role="img" aria-label="Top: a timeline showing Select pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit.">
   <text class="d-tag" x="20" y="24">Hold to confirm — the guarded-action pattern</text>
 
   <!-- timeline -->
@@ -314,12 +388,12 @@ The factory **Reset** screen is the one place a hold guards a *destructive* acti
 
 ### Deleting things — the hold-to-delete footer
 
-The same guarded hold does duty as a **delete** control. Rather than a modal "are you sure?", a screen that can delete an item fills a *"hold to delete"* bar with the live hold-progress, exactly like a guarded confirm row — the completed hold *is* the confirmation, there is no second popup. This began on the Stats **Fields** editor (remove a panel) and now drives deletion with one shared idiom in two shapes: a reserved **footer band** below the **Fields** grid, and — because routes and rides are each deleted from their *detail* page, not the list — a guarded delete row: **Delete route** on the **Route overview**, the bottommost element just below START RIDE, and **Delete ride** at the bottom of the **Ride detail** (the overview's recorded sibling, opened by pressing a Rides-list row). Both detail pages lead with a **content-paired pager**: every five seconds the media band and its stats flip together — the track's **shape sketch** (aspect-fit polyline, start disc, destination diamond) over the distance figures, then the **elevation band** over the climb figures — so the page reads as two matched cards rather than a chart with rotating captions. The action rows below are the Paused page's row family: unselected rows are plain labels, the selected one wears the standard amber fill. On the overview the hold is also **aimed**: a turn moves the selection between START RIDE and Delete route, press starts only from START, and the hold charges the delete only while the Delete row is selected (a hold anywhere else does nothing) — the guarded row showing its shaded base and warning fill exactly like a Paused-page Finish. One hold, one muscle memory — a rider who learns it once knows it everywhere.
+The same guarded hold does duty as a **delete** control. Rather than a modal "are you sure?", a screen that can delete an item fills a *"hold to delete"* bar with the live hold-progress — the completed hold *is* the confirmation, there is no second popup. One idiom drives deletion in two shapes: a reserved **footer band** below the **Fields** grid, and — because routes and rides are each deleted from their *detail* page, not the list — a guarded delete row: **Delete route** at the bottom of the **Route overview**, **Delete ride** at the bottom of the **Ride detail**. On the overview the hold is also **aimed**: Up/Down moves the selection between START RIDE and Delete route, and the hold charges the delete only while the Delete row is selected — a hold anywhere else does nothing. One hold, one muscle memory.
 
 Two behaviours make it safe to press without thinking:
 
 - **Hidden when the item is in use.** The delete simply isn't offered when it would break live state: the Route overview draws no Delete row for the route you're *actively navigating* (deleting the file under an open geometry handle mid-ride would break navigation — but a route merely *previewed* from idle is still deletable), and the Ride detail draws none while a ride is being recorded (its file isn't even written until Finish, and the filesystem refuses to delete an open handle). A state that can't act doesn't show — and the guard behind it still makes a stray hold a no-op.
-- **Sync state is visible before you delete.** A tracked ride the phone hasn't downloaded yet is unrecoverable if deleted, so the Rides list marks every **downloaded** ride with a small **check mark** — the device's success idiom; a ride the phone doesn't hold shows nothing there — and the Ride detail's title bar says it in words either way (*synced* / *not synced*). Still deletable, just *informed*. (Routes get no such cue: the phone can always re-upload one.)
+- **Sync state is visible before you delete.** A tracked ride with no copy anywhere else is unrecoverable if deleted, so the Rides list marks every ride a peer has confirmed it holds with a small **check mark** — the device's success idiom; a ride nobody has taken shows nothing there — and the Ride detail's title bar says it in words either way (*synced* / *not synced*). Still deletable, just *informed*. (Routes get no such cue: the phone can always re-upload one.) The cue tracks **durability**, not the iPhone: the phone and the desktop app both set it, while the hosted site's one-shot GPX export deliberately never does, so a ride exported in a browser still reads *not synced* here — [and says why](../companion-link/#synced-rides-reconciled-state-not-event-inference).
 
 <figure class="fig">
 <svg viewBox="0 0 720 250" role="img" aria-label="The guarded hold-to-delete. On the left, the Fields grid with a delete band that fills with a progress bar as you hold. On the right, its two states stacked: normal — hold to delete, and absent — an in-use route or recording ride simply shows no delete row.">
@@ -368,7 +442,7 @@ That cleanup is a **long-press** on the folder. Unlike the in-place [hold-to-del
 
 ## The POIs browser
 
-*POIs* is one of the compass Menu's stations, and it answers a bikepacker's question directly: *where's the nearest water / campsite / bakery?* The flow is two screens — a **category** list, then that category's **nearest-16** list — both built from the same [`screens!` table](#a-screen-is-a-value-not-a-widget-tree) rows and the shared list widget as every other menu, so there's almost nothing new in the plumbing. What's new is where the data comes from and how one element stays live.
+*POIs* is one of the compass Menu's stations, and it answers a bikepacker's question directly: *where's the nearest water / campsite / bakery?* — **near me, right now**, with no regard for where you're headed. (The other half of that pair, *what's coming up on my route*, is the [Up ahead timeline](#up-ahead-one-timeline-for-the-route); the two questions and why they stay separate screens are laid out there.) The flow is two screens — a **category** list, then that category's **nearest-16** list — both built from the same [`screens!` table](#a-screen-is-a-value-not-a-widget-tree) rows and the shared list widget as every other menu, so there's almost nothing new in the plumbing. What's new is where the data comes from and how one element stays live.
 
 <figure class="fig">
 <svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: that category's nearest sixteen POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI opens its detail view.">
@@ -423,7 +497,7 @@ That cleanup is a **long-press** on the folder. Unlike the in-place [hold-to-del
 
 ### A static list with one live element
 
-The list is a **static snapshot**, frozen the moment you enter. Membership, order and distances don't move — rows never reshuffle under the cursor as you turn, and the SD card isn't re-scanned every frame. Re-enter the category to refresh it against your current position. Under the hood the [nearest-16 query](../formats/#pois-a-nearest-list-not-a-map-layer) needs the streaming map `Reader`, which the host only builds for the frame that needs it — so the snapshot is taken in a small **pre-draw `prepare` pass** (the one place both the `Reader` and the fix are in hand), the first time both are present, into a single buffer the app owns (holding it per-screen would inflate every slot of the screen stack). Drawing then just *reads* that frozen buffer; the query is a side effect, and side effects don't belong in `draw` (see [Logic and drawing get different views](#logic-and-drawing-get-different-views-of-the-world)). Opening a list invalidates the buffer, so the next `prepare` re-queries.
+The list is a **static snapshot**, frozen the moment you enter. Membership, order and distances don't move — rows never reshuffle under the cursor as you scroll, and the SD card isn't re-scanned every frame. Re-enter the category to refresh it against your current position. Under the hood the [nearest-16 query](../formats/#pois-a-nearest-list-not-a-map-layer) needs the streaming map `Reader`, which the host only builds for the frame that needs it — so the snapshot is taken in a small **pre-draw `prepare` pass** (the one place both the `Reader` and the fix are in hand), the first time both are present, into a single buffer the app owns (holding it per-screen would inflate every slot of the screen stack). Drawing then just *reads* that frozen buffer; the query is a side effect, and side effects don't belong in `draw` (see [Logic and drawing get different views](#logic-and-drawing-get-different-views-of-the-world)). Opening a list invalidates the buffer, so the next `prepare` re-queries.
 
 The one thing that *is* live is the **bearing arrow** — recomputed every frame from the POI's stored coordinates and the rider's current heading, pure trig with zero SD access. It points from you toward the POI **relative to your heading**, so "straight up" means "dead ahead." The drawn glyph **snaps to eight compass directions** (45° steps) and is a full arrow — shaft plus barbs, double-stroked to a 2 px line: at ~11 px a degree-true arrow just smudges, while the eight snapped shapes read without focusing. That heading has two sources, and which one is used depends on whether you're moving:
 
@@ -508,24 +582,28 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
   <!-- open-now derivation -->
   <text class="d-tag" x="292" y="178">the OPEN / CLOSED badge</text>
   <rect class="d-hot" x="292" y="188" width="404" height="48" rx="10" style="fill:#f8efe4" />
-  <text class="d-sub" x="308" y="208" style="font-size:9.5px">local clock → weekday (Zeller) + minute-of-day</text>
-  <line class="d-flow" x1="560" y1="204" x2="600" y2="204" marker-end="url(#aPD)" />
-  <text class="d-sub" x="610" y="208" style="font-size:9.5px;fill:#a9501c">is_open?</text>
+  <text class="d-sub" x="308" y="208" style="font-size:9.5px">local clock → weekday + minute-of-day</text>
+  <line class="d-flow" x1="540" y1="204" x2="580" y2="204" marker-end="url(#aPD)" />
+  <text class="d-sub" x="590" y="208" style="font-size:9.5px;fill:#a9501c">is_open?</text>
   <text class="d-sub" x="308" y="226" style="font-size:9px">read live every frame — the one part that isn't frozen</text>
 </svg>
-<figcaption>The hours block reads the POI's [pooled schedule](../formats/#opening-hours-a-pooled-weekly-schedule) once (in the same pre-draw <code>prepare</code> pass the list snapshot uses — the one place the map <code>Reader</code> is in hand — then cached), then picks <b>today's</b> intervals. Three states: <b>Today</b> with the day's one or two ranges stacked (<code>08:00-12:00</code> / <code>14:00-18:00</code> — stacked because a two-range line won't fit the 240 px panel); <b>Closed today</b> when the schedule has no interval for this weekday; and <b>Hours not listed</b> when the POI had no parseable hours at all. The <b>OPEN / CLOSED</b> pill (green fill open, warning-red closed — a state, not just quieter text) is the only live piece — recomputed every frame from the device's local wall-clock. That local time comes from the user's <b>UTC offset</b> plus the <b>GPS clock</b> (the same clock that sets the ride time), and <code>weekday_from_ymd</code> (Zeller's congruence, Mon = 0) picks today's row; the minute-of-day then decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
+<figcaption>The hours block reads the POI's <a href="../formats/#opening-hours-a-pooled-weekly-schedule">pooled schedule</a> once, in the same pre-draw <code>prepare</code> pass the list snapshot uses, then picks <b>today's</b> intervals — <b>Today</b> with the day's ranges stacked, <b>Closed today</b>, or <b>Hours not listed</b>. The <b>OPEN / CLOSED</b> pill is the only live piece, recomputed each frame from the local wall-clock (GPS clock + UTC offset): Zeller's congruence picks today's row, and the minute-of-day decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
 </figure>
 
 ## Settings: a second level of focus
 
-Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Auto-delete, Units, Stats, Display, Power, Bluetooth, Sensors, Language, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a UTC offset, a fix interval, the stats page-cycle period — and the same toggle row flips a switch like the power saver. No new gestures; the existing five just mean different things at each level.
+Most screens have one focus: the row cursor. **Settings is five themed groups** rather than one long list — **Ride**, **Display**, **Connections**, **Power**, and **System**. Two of them are plain menus whose rows just open their own pages (**Connections** → Phone / Sensors; **System** → Units / Date & Time / Language / Firmware / Reset); the rest hold their controls inline, and **Ride** does both — it opens Bike type and Data fields as their own pages while cycling Climb, Waypoints, Up ahead, page-cycle and auto-delete in place. The rule is simple: a real interaction (a picker, an editor, a guarded action) keeps its own page; a lone toggle or value that belongs with a couple of siblings is just a row.
 
-The **Display** screen governs the Map's chrome and the auto-return: two toggles for the Map overlays — small floating top-centre **clock** digits (`HH:MM`, bare ink with a halo — no pill) and a bottom-left **scale bar** (the largest round 1/2/5 distance that fits the current zoom, in the units system) — plus the **idle-return** timeout (15 s / 30 s / 1 min / 5 min / Never, default 30 s) that decides how long an untouched UI waits before returning itself to Home (or, mid-ride, the Map). The Map's other chrome isn't a setting: a bottom-centre **one-slot warning chip** ("No GPS Fix" outranks "off route NNNm"), suppressed while panning (the pan bottom chevron owns that slot); that same bottom slot also carries the calmer waypoint chip mid-ride and, on the route-less browse map only, the one-shot *Press to start a ride* hint on entry — both at lower priority than the warning chip, so it always wins the slot. The scale bar sits right in the corner and steps up above whichever chip is up (a taller step for the two-line hint), and a warning-red **low-battery** glyph sits in the top-left corner below 10 %.
+Those control screens add a *second* level of focus. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a UTC offset, a fix interval, the stats page-cycle period — and the same toggle row flips a switch like the power saver. No new gestures; the existing five just mean different things at each level.
 
-The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens the grid **editor — which simply *is* the grid**: the same 3×2 tile pages the riding view shows, placed by the same layout walk and painted by the same tile renderer — in the editor the tiles carry fixed **sample values** (in a dimmed olive) so a layout is judged against realistic content rather than the dashes a route-less editor would otherwise draw. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, heart rate, power, cadence, …) — the rider picks which to show and in what order, and a field takes one of three shapes: a single column, a full-width two-column tile, or the page-sized [waypoint list panel](#waypoints-on-the-route) (two columns tall enough to fill a page). The cursor is the amber tile (walking past a page's last tile flips pages), and reordering reuses the grab idiom: press *lifts* the tile (move arrows appear), rotating moves it through the order — the grid reflows live, so a two-column panel's row-aligned hops are something you watch, not infer — and press drops it. A ghost `+` tile in the first free slot opens the field picker, so a new panel visibly lands where the ghost sits; a panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting. The same screen also carries two press-to-cycle mode rows: the **Climb** toggle — Off / Manual / Auto — that decides whether the [climb panel](#climbs-get-their-own-panel) appears on its own when a climb begins, and beneath it the **Waypoints** toggle — Off / Approach / Always — that governs the [waypoint chip](#waypoints-on-the-route).
+The **Display** screen governs the Map's chrome and the auto-return: two toggles for the Map overlays — the small floating top-centre **clock** digits and the bottom-left **scale bar** (the largest round 1/2/5 distance that fits the current zoom) — a third for the map's **terrain layer** ([contour lines](../packer-routing/#contours-traced-from-the-terrain), on by default; see below) — plus the **idle-return** timeout (15 s … 5 min / Never, default 30 s) that decides how long an untouched UI waits before returning to Home (or, mid-ride, the Map). The Map's other chrome isn't a setting: a bottom-centre **one-slot chip** where "No GPS Fix" outranks "off route", which outranks the calmer waypoint chip and the browse map's one-shot *Press to start a ride* hint; the scale bar steps up above whichever chip is showing, and a warning-red **low-battery** glyph appears top-left below 10 %. One more pill can appear above them all — the [*Recalculating...*](#detouring-around-a-blocked-stretch) banner while a route search holds the map still — but it belongs to the overlay plane rather than the map, for the reason that section gives.
+
+**The terrain toggle hides ink, not bytes.** It is the one Display row that changes the *map* rather than the chrome on top of it, and it works by a route worth understanding: a style record carries a [terrain-layer bit](../formats/#the-header), and with the row off the renderer's [collect pass](../rendering/#4-decode-by-priority) leaves those styles out of its visible-style mask, so the source is never asked to decode their geometry. Nothing is decoded, nothing is ranked against the frame budget, nothing is drawn — as opposed to drawing contours and painting over them, which would scar every road they cross. What it does *not* do is make the map smaller or the frame cheaper to fetch: contours are interleaved with everything else in the same cells, so the same chunks are read either way. Off is a legibility control, never a performance one. It is also deliberately **provisional** — it exists so both states can be judged on the same ride, and it goes away with whichever verdict that produces.
+
+The **Ride** screen gathers everything you tune for a ride. Two rows open their own pages — **Bike type** (the routing-profile picker) and **Data fields** — and the rest edit in place. *Data fields* opens the grid **editor, which simply *is* the grid**: the same 3×2 tile pages the riding view shows, painted by the same tile renderer, with fixed sample values so a layout is judged against realistic content. The rider picks fields from an in-code catalogue (speed, distance, climb, grade, clock, heart rate, power, cadence, …); a field takes one of three shapes — a single column, a full-width tile, or the page-sized [waypoint list panel](#waypoints-on-the-route). Reordering reuses the grab idiom (press lifts, rotate moves through the reflowing grid, press drops), a ghost `+` tile opens the field picker, and a panel is removed by the same **hold-to-delete** bar as everywhere else. The screen also carries the press-to-cycle mode rows: **Climb** (Off / Manual / Auto — whether the [climb panel](#climbs-get-their-own-panel) appears on its own), **Waypoints** (Off / Approach / Always — the [waypoint chip](#waypoints-on-the-route)), **Up ahead** (Both / Waypoints / Map POIs — [who feeds the timeline](#up-ahead-shows-a-scope-with-sharp-edges)), and **Auto-delete** (how long a synced ride is kept — see [What the rider sees](#what-the-rider-sees)). Everything lives in the same persisted `Settings` value, so it survives a reboot.
 
 <figure class="fig">
-<svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, rotate moves the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where rotate changes the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
+<svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, up and down move the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where up and down change the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
   <defs>
     <marker id="aU8" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -537,7 +615,7 @@ The **Stats** screen configures the riding grid itself. Its *Page cycle* row set
   <rect x="58" y="80" width="226" height="24" rx="5" class="d-amber" />
   <text class="d-sub" x="68" y="96" style="fill:#000;font-size:10px">amber bar = the cursor</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="60" y="130" style="font-size:10.5px">rotate — move the cursor</text>
+    <text class="d-sub" x="60" y="130" style="font-size:10.5px">up / down — move the cursor</text>
     <text class="d-sub" x="60" y="152" style="font-size:10.5px">press &nbsp;— toggle / open a value</text>
     <text class="d-sub" x="60" y="174" style="font-size:10.5px">back &nbsp;— climb one screen up</text>
   </g>
@@ -546,7 +624,7 @@ The **Stats** screen configures the riding grid itself. Its *Page cycle* row set
   <line class="d-flow" x1="304" y1="104" x2="416" y2="104" marker-end="url(#aU8)" />
   <text class="d-sub" x="360" y="96" text-anchor="middle" style="font-size:9px">press a value row</text>
   <line class="d-flow" x1="416" y1="150" x2="304" y2="150" marker-end="url(#aU8)" />
-  <text class="d-sub" x="360" y="166" text-anchor="middle" style="font-size:9px">back / past last field</text>
+  <text class="d-sub" x="360" y="166" text-anchor="middle" style="font-size:9px">back / last field</text>
 
   <!-- Field focus -->
   <rect class="d-panel-2" x="418" y="46" width="262" height="160" rx="12" />
@@ -557,17 +635,17 @@ The **Stats** screen configures the riding grid itself. Its *Page cycle* row set
   <path d="M452 110 l7 9 l7 -9 z" fill="#ffaa00" />
   <text class="d-sub" x="500" y="99" style="font-size:10px">box = the live field</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="438" y="130" style="font-size:10.5px">rotate — change the value</text>
+    <text class="d-sub" x="438" y="130" style="font-size:10.5px">up / down — change the value</text>
     <text class="d-sub" x="438" y="152" style="font-size:10.5px">press &nbsp;— step to the next field</text>
     <text class="d-sub" x="438" y="174" style="font-size:10.5px">back &nbsp;— step out of the field</text>
   </g>
 </svg>
-<figcaption>The settings editors reuse the five gestures at two levels: the row cursor, then a live field. Pressing a value row drops focus in; pressing past the last field (or <code>back</code>) lifts it back out. Edits apply <i>live</i> as you turn — there's no save button and no staging buffer: <code>back</code> just exits, and the change was already made.</figcaption>
+<figcaption>The settings editors reuse the five gestures at two levels: the row cursor, then a live field. Pressing a value row drops focus in; pressing past the last field (or <code>back</code>) lifts it back out. Edits apply <i>live</i> as you step — there's no save button and no staging buffer: <code>back</code> just exits, and the change was already made.</figcaption>
 </figure>
 
 ### Settings survive a reboot — independent of the SD card
 
-A setting is worthless if it's forgotten on power-off, so settings persist. The values live in a small `Settings` value (`Copy`, no floats) that the screens edit; the *medium* is a host concern behind one more trait, exactly like the sensor seams. The app seeds itself from `load()` at boot and asks the host to `save()` only when something actually changed — detected by the same one-`==` before/after compare the camera uses to decide it's dirty. The write is **debounced to leaving the settings subtree**: a stepper sweep edits live in RAM but never drives a write per detent, and nothing is written while any settings screen is still on top — the store sees exactly one write when you back out.
+A setting is worthless if it's forgotten on power-off, so settings persist. The values live in a small `Settings` value (`Copy`, no floats) that the screens edit; the *medium* is a host concern behind one more trait, exactly like the sensor seams. The app seeds itself from `load()` at boot and asks the host to `save()` only when something actually changed — detected by the same one-`==` before/after compare the camera uses to decide it's dirty. The write is **debounced to leaving the settings subtree**: a stepper sweep edits live in RAM but never drives a write per step, and nothing is written while any settings screen is still on top — the store sees exactly one write when you back out.
 
 Persistence is **acknowledged**, not fire-and-forget. `save()` reports whether the write reached durable storage; the app keeps the change marked *pending* until the host confirms it, so a failed RRAM/file write is **retried** (with a small backoff) instead of being silently lost, and a fresh edit safely supersedes an older pending one. A persistent failure also raises the shared advisory card ("Settings not saved") so it's visible, not just logged — the edit stays live in RAM the whole time.
 
@@ -582,7 +660,13 @@ pub trait SettingsStore {
 // Both shipped adapters bind `type Value = Settings`.
 ```
 
-The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator's [`FileSettingsStore`](src:firmware/obc-sim/src/settings_store.rs) and the board's [`RramSettingsStore`](src:firmware/obc-fw-nrf54l/src/settings.rs) implement that port directly. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator's [`FileSettingsStore`](src:apps/obc-sim/src/settings_store.rs) and the board's [`RramSettingsStore`](src:firmware/obc-fw-nrf54l/src/settings.rs) implement that port directly. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+
+### About — the credits live one screen deep
+
+Settings ▸ System ▸ **About** is the device's one credits surface: the map data's `© OpenStreetMap contributors` line with the ODbL notice, the terrain layer's Copernicus credit, and the firmware's own GPL-3.0 licence with a pointer to the source. It exists because the rendered map is a *Produced Work* under OpenStreetMap's licence, and for an offline device the required "this data is available under the ODbL" statement has to ship **on the glass** — a link can't discharge it when there may be no network for weeks. The OSMF's attribution guidelines class GPS units as mobile devices, where attribution behind one deliberate interaction is acceptable; an About page under System is exactly that, and it keeps the credit off the map itself, where every pixel is spoken for.
+
+The page is taller than the panel, so it's the one screen that **scrolls plain text**: Rotate moves a line window over hand-wrapped constant lines, with a right-edge scrollbar for position. Hand-wrapped, because the legal formulas are fixed strings — pre-wrapping makes the on-glass layout reviewable in the source, a test holds every line (and every caption translation) to the panel's 17-character Label budget, and a second test re-joins the Copernicus lines and compares them word-for-word against `obc-dem`'s canonical constant, so the wording can't drift between the bakery and the glass. Only the three section captions translate; the attributions themselves stay canonical.
 
 ## Self-cleaning storage: routes and rides expire
 
@@ -642,20 +726,20 @@ None of that can run on a guess about the date. The device has **no RTC**: at bo
 <figcaption>The safety core in one picture: a <b>GPS fix</b> or the phone's <b>setClock</b> are the only two sources that can establish a <em>trusted</em> clock for the boot, and the roughly-hourly housekeeping sweep refuses to stamp or delete anything until one of them has — and never runs while a ride is recording. Once trusted, it deletes routes idle past their retention and synced rides aged past the Auto-delete setting, but <b>re-stamps</b> rather than deletes the active route and any route whose usage clock was never started. A boot with neither source stays entirely hands-off.</figcaption>
 </figure>
 
-That gate is also why the **Date & Time** screen no longer lets you hand-set the clock — a fat-fingered year must never be able to trigger a mass delete. It's now three rows: a read-only *GPS fix* (the UTC anchor), a read-only *Local time*, and the one **UTC offset** stepper, which shifts only the *displayed* hour. Expiry arithmetic is pure UTC, so a wrong offset is purely cosmetic — after a flight you nudge the stepper once, or the next phone connect refreshes it silently.
+That gate is also why the **Date & Time** screen (under Settings ▸ System) no longer lets you hand-set the clock — a fat-fingered year must never be able to trigger a mass delete. It's now three rows: a read-only *GPS fix* (the UTC anchor), a read-only *Local time*, and the one **UTC offset** stepper, which shifts only the *displayed* hour. Expiry arithmetic is pure UTC, so a wrong offset is purely cosmetic — after a flight you nudge the stepper once, or the next phone connect refreshes it silently.
 
 ### What the rider sees
 
 Almost all of this is invisible, which is the point. Two surfaces show it:
 
-- The **Auto-delete** settings screen — a single stepper, *Synced rides*, choosing how long a synced ride survives before the device removes it (Never / 1 day / 1 week / 1 month, default 1 week). It reuses the one-value picker idiom of Units or Language: a turn walks the four values, a press cycles one forward, `back` is the save. Route retention has **no** device editor — it's per-route and set on the phone; the device only ever displays it.
+- The **Auto-delete** row on the **Ride** screen — *Synced rides*, choosing how long a synced ride survives before the device removes it (Never / 1 day / 1 week / 1 month, default 1 week). A **press** cycles the four values in place — the same press-to-cycle idiom as the Climb and Waypoints rows beside it — and `back` is the save. Route retention has **no** device editor — it's per-route and set on the phone; the device only ever displays it.
 - The **Route overview**'s expiry line — a small caption above the route's stats: a muted `Auto-delete` label beside the ink value (`in 3 d`), two-tone and space-separated (no separator glyph — the device font has no middot). It's deliberately *not* an always-on countdown: it appears **only once the route is within five days of deletion** (a deadline already past, before the hourly pass collects it, reads `soon`), so it reads as a *heads-up that this route is about to go*, not standing chrome. A route that never expires, or whose usage clock hasn't started, shows no line at all.
 
 Where that per-route state actually lives — an SD sidecar beside the catalog, never inside the byte-pinned route file, reached over BLE as a command rather than a re-upload — is a [companion-link](../companion-link/#the-trusted-clock-and-route-retention) design note.
 
 ## The UI speaks four languages
 
-Every user-facing word — English, German, French, Spanish — is a *lookup*, not a literal. The **language** is a runtime setting, not a build flag: it lives in the same persisted `Settings` value as Units, RRAM-backed and switchable on-glass from the **Language** settings screen (a one-row value picker showing each language's own name — `English` / `Deutsch` / `Français` / `Español`, so the row reads to someone who can't yet read the current UI). Language and Units are orthogonal — English + Metric is a perfectly good combo.
+Every user-facing word — English, German, French, Spanish — is a *lookup*, not a literal. The **language** is a runtime setting, not a build flag: it lives in the same persisted `Settings` value as Units, RRAM-backed and switchable on-glass from the **Language** screen under Settings ▸ System (a one-row value picker showing each language's own name — `English` / `Deutsch` / `Français` / `Español`, so the row reads to someone who can't yet read the current UI). Language and Units are orthogonal — English + Metric is a perfectly good combo.
 
 Because the render path is **stateless** (a screen is [a value, not a widget tree](#a-screen-is-a-value-not-a-widget-tree)), there is no ambient "current language" to set. Translation is a pure function of the message and the language, and the language rides along on the context every draw already receives:
 
@@ -667,17 +751,19 @@ pub const fn t(msg: Msg, lang: Language) -> &'static str { TABLE[msg as usize][l
 draw_text(target, rx.t(Msg::MenuRoutes), at, Font::Body, TextAlign::Center, ink);
 ```
 
-The `Msg` enum and the `TABLE` it indexes are **generated at compile time**. Four per-language catalogs — `obc-app/i18n/{en,de,fr,es}.toml` — hold the copy as `[section]` + `key = "value"` TOML; a small `build.rs` parses all four and emits one `Msg` variant per key plus `const TABLE: [[&str; 4]; N]`, the columns ordered to match the `Language` discriminants (En, De, Fr, Es). Because the table is `const`, the whole catalogue lands in flash `.rodata` — nothing touches the device's tight 256 KB RAM. English is the canonical key set: the build **fails with a named list of offenders** if any of de/fr/es is missing a key, carries an extra one, or changes the load-bearing leading/trailing spaces English glues into a concatenated readout (`AVG ` + a value, `grade ` + a percent) — so a half-translated *or* mis-spaced string can't ship silently. (A separate `obc-app` test walks the finished table and asserts every character is in the device font's repertoire — Latin-1 + Latin Extended-A — so a stray curly quote or em-dash fails CI rather than rendering as a `?` on-glass.)
+The `Msg` enum and the `TABLE` it indexes are **generated at compile time**. Four per-language catalogs — `obc-app/i18n/{en,de,fr,es}.toml` — hold the copy as `[section]` + `key = "value"` TOML; a small `build.rs` parses all four and emits one `Msg` variant per key plus `const TABLE: [[&str; 4]; N]`, the columns ordered to match the `Language` discriminants (En, De, Fr, Es). Because the table is `const`, the whole catalogue lands in flash `.rodata` — nothing touches the device's tight 512 KB RAM. English is the canonical key set: the build **fails with a named list of offenders** if any of de/fr/es is missing a key, carries an extra one, or changes the load-bearing leading/trailing spaces English glues into a concatenated readout (`AVG ` + a value, `grade ` + a percent) — so a half-translated *or* mis-spaced string can't ship silently. (A separate `obc-app` test walks the finished table and asserts every character is in the device font's repertoire — Latin-1 + Latin Extended-A — so a stray curly quote or em-dash fails CI rather than rendering as a `?` on-glass.)
 
 The words are translated; the *formats* are not. The 24-hour clock, ISO / `Mon DD` dates, and the metric/imperial unit suffixes (`KPH`, `km`, `m`) stay identical across languages — only the twelve month abbreviations are localized. Symbol-like labels (`KPH`) are language-independent by design; only word-bearing enum labels (a `Units` name, a `ClimbMode` name) route through the catalogue.
 
-**Adding a string:** add the key under the right `[section]` to **all four** `i18n/*.toml` files, then use `Msg::SectionKey` (PascalCased from `section.key`) via `rx.t(…)` at the draw site. Forget one file and the build stops with a `MISSING key` error naming it. **Adding a language** is a handful of matched edits: a new `xx.toml` catalog (with every English key), its code in the `build.rs` language list, a new `Language` enum variant carrying its endonym in `name()`, a slot in the picker's `ORDER`, a bump to `Language::COUNT`, and the one-byte codec's `from_byte` mapping — the append-only `Settings` codec already stores the language as a single byte, so no version bump is needed for the byte itself. Miss the catalog column and the build *won't link*: a `const` assertion ties `TABLE`'s width to `Language::COUNT`, turning a forgotten column into a compile error rather than a first-draw out-of-bounds panic.
+Adding a string is a key in all four `i18n/*.toml` files plus a `Msg::SectionKey` use at the draw site — forget one file and the build stops with a `MISSING key` error naming it. Adding a language is a new catalog plus a handful of matched edits (enum variant, picker slot, codec byte), and a `const` assertion ties `TABLE`'s width to `Language::COUNT`, so a forgotten column is a compile error rather than a first-draw out-of-bounds panic.
 
 ## Logic and drawing get different views of the world
 
 `handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the active climb, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to — `Render` carries no mutable state at all, so a frame's only outputs are pixels and the map's render statistics.
 
-The one thing that used to break that rule was the POI browser: its snapshot and hours reads needed the map `Reader`, which lives in the draw path, so they wrote back into the draw context mid-paint. That acquisition now happens in a third, even narrower context — **`Prepare`**, handed to a screen's optional `prepare` method in a pass that runs *before* the draw loop, carrying just the `Reader`, the shared POI buffer, and the fix. `prepare` does the side-effectful read; `draw` consumes the frozen result read-only. So the split is now clean in both directions: `prepare` may touch the `Reader`-backed one-shots, `handle` may change app state, and `draw` may do neither.
+The one thing that used to break that rule was the POI browser: its snapshot and hours reads needed the map `Reader`, which lives in the draw path, so they wrote back into the draw context mid-paint. That acquisition now happens in a third, even narrower context — **`Prepare`**, handed to a screen's optional `prepare` method in a pass that runs *before* the draw loop, carrying just the `Reader`, the App-owned snapshot buffers, and the fix. `prepare` does the side-effectful read; `draw` consumes the frozen result read-only. So the split is now clean in both directions: `prepare` may touch the `Reader`-backed one-shots, `handle` may change app state, and `draw` may do neither.
+
+There are **two** such buffers now, and the second one is shaped a little differently. The nearest-POI snapshot belongs to the screen that opened it, so a per-screen `prepare` fills it. The [route-corridor snapshot](#up-ahead-one-timeline-for-the-route) belongs to no single screen — the Up-ahead timeline reads it, and so does the stat fields' next-of-category cache — so instead of a per-screen row it is driven by an **App-level request**: whoever wants a snapshot declares its key, one reconcile step arms the buffer from the topmost declared request (a screen outranks the cache), and the fill runs at the same pre-draw boundary. The seam that decides whether the host builds a `Reader` at all folds that pending request in beside the per-screen needs, so a device whose rider never opens the list **and places no `Next:` tile** is in the disarmed state permanently and pays nothing for any of it.
 
 <figure class="fig">
 <svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state (camera, zoom, pan), the activity (ride mode), the route catalog, and the clock. On the right, draw receives Render, the read-only half: the map reader, the renderer, read-only state, the active route, its elevation profile, the breadcrumb, size, and hold-progress.">
@@ -706,7 +792,7 @@ The one thing that used to break that rule was the POI browser: its snapshot and
     <text class="d-sub" x="404" y="166">hold_progress — the confirm ring</text>
   </g>
 </svg>
-<figcaption>Splitting the context by role is a small thing that pays off constantly: drawing is provably side-effect-free, and the heavy render resources (the streaming map <code>Reader</code>, the reusable <code>MapRenderer</code>) are gathered once by the host and lent to whichever screen is on top.</figcaption>
+<figcaption>Splitting the context by role is a small thing that pays off constantly: drawing is provably side-effect-free, and the heavy render resources (the streaming map <code>Reader</code>, the reusable <code>RenderScratch</code>) are gathered once by the host and lent to whichever screen is on top.</figcaption>
 </figure>
 
 ## Render on demand — and the idle path is free
@@ -715,8 +801,8 @@ A reflective memory-LCD holds its image with no redraw, and a map frame is the e
 
 The dirty signal has two independent planes, mirroring the [two-plane architecture](../architecture/#staying-responsive-the-two-planes):
 
-- **map** — the screen stack. Set when a gesture was applied, when a fresh GPS fix moved the camera *on a view that shows live data*, when the route or ride session changed, when a screen's own timer poll (`tick_timers`) reported a change — the Statistics cursor springing back to the live position, or a wall-clock minute crossing (the Home screensaver's big clock, or the Map's small floating clock, each region-clipped to just the digits) — or, on a riding view, when the GPS fix goes stale or returns (raising or clearing the "No GPS Fix" chip, a timer edge surfaced from the per-frame `tick`). A parked Home screen fires none of the camera edges — so between those once-a-minute clock ticks the map stays clean.
-- **overlay** — the transient hold "bulge" and confirm ring. Derived from the live hold state by the input plane, which on the device runs preemptively so press-feedback latency never waits on a long map render.
+- **map** — the screen stack. Set when a gesture was applied, when a fresh GPS fix moved the camera *on a view that shows live data*, when the route or ride session changed, when a screen's own timer poll (`tick_timers`) reported a change — the Statistics grid advancing to its next configured page, or a wall-clock minute crossing (the Home screensaver's big clock, or the Map's small floating clock, each region-clipped to just the digits) — or, on a riding view, when the GPS fix goes stale or returns (raising or clearing the "No GPS Fix" chip, a timer edge surfaced from the per-frame `tick`). A parked Home screen fires none of the camera edges — so between those once-a-minute clock ticks the map stays clean.
+- **overlay** — the transient hold "bulge" and confirm ring, plus the [*Recalculating*](#detouring-around-a-blocked-stretch) banner. Mostly *derived* rather than accumulated: the bulge's demand is read off the live hold state by the input plane, which on the device runs preemptively so press-feedback latency never waits on a long map render. The freeze banner is derived too, and from a *level* rather than an event: the drain compares “is the map frozen right now?” against what it last reported and folds in an overlay repaint on either flip. That distinction is the whole of it — the freeze is a live plan **and** a map base underneath, and either half can move without the other, so a banner keyed on the plan starting would be asked for on a frame with no map to freeze and never asked for on the frame where one reappears. The release flip dirties the **map** too, since it held still for the whole search.
 
 ```rust
 loop {
@@ -768,7 +854,7 @@ Most navigation *replaces* the view, but the stack also supports screens that dr
   <text class="d-sub" x="555" y="153" text-anchor="middle" style="fill:#fff;font-size:9px">NEW ROUTE</text>
   <text class="d-sub" x="504" y="172" style="font-size:8.5px">Kandel Loop — 42 km</text>
   <text class="d-sub" x="504" y="186" style="font-size:8.5px">press to view</text>
-  <text class="d-sub" x="555" y="232" text-anchor="middle" style="font-size:9px">map still updates underneath</text>
+  <text x="555" y="232" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#e7ead8">map still updates underneath</text>
 </svg>
 <figcaption>Every current screen is opaque and replaces the view; the <code>Overlay</code> kind stays for transient panels that should not steal the whole display — a notification composites over the map, and the host keeps folding in GPS fixes behind it, so the ride doesn't visually freeze.</figcaption>
 </figure>
@@ -783,7 +869,7 @@ Pairing puts a **6-digit code** on the glass for the rider to type into the phon
 
 ### Route-upload prompts
 
-A route arriving over BLE surfaces as one of three **advisory** cards — advisory because the route is committed to the store (and the Route menu) *before* the prompt, so dismissing loses nothing. All three auto-close after 30 s (timeout = dismiss), and the display **wakes** to show them (an upload usually means the phone is right there). Which one appears depends on the rider's state: an idle *"Route received — View route / Dismiss"* (with the route's stats and a mini elevation sparkline; *View route* opens the same Route overview a Route-menu pick does), a mid-ride guarded *swap* prompt (the same shape a mid-ride route pick uses), or — when the upload *replaced the route being navigated* — an info-only card, because the device has already adopted the new version (the old file is gone). The [companion-link page](../companion-link/#when-a-route-lands-the-devices-side) tells the full story; the UI-side rules are the interesting part: a prompt **never lands while a hold is charging** (it defers a tick, so a half-done *Finish & new* hold can't complete onto it — the same [stack-change hold-cancel](#hold-to-confirm) at work), **consecutive uploads replace** the prompt by object id rather than stacking, and the **passkey card outranks** it (a pending prompt is dropped, not queued).
+A route arriving over BLE or USB surfaces as one of three **advisory** cards — advisory because the route is committed to the store (and the Route menu) *before* the prompt, so dismissing loses nothing. All of them auto-close after 30 s (timeout = dismiss), and the display **wakes** to show them (an upload usually means the phone is right there). Which one appears depends on the rider's state: an idle *"Route received — View route / Dismiss"* (with the route's stats and a mini elevation sparkline; *View route* opens the same Route overview a Route-menu pick does), a mid-ride guarded *swap* prompt (the same shape a mid-ride route pick uses), or — when the upload *replaced the route being navigated* — an info-only card, because the device has already adopted the new version (the old file is gone). A **trip** upload adds a fourth member: the trip object commits *after* its member routes, so its *"Trip received — View trip / Dismiss"* card (the trip's name, summed stats, and stage count; *View trip* opens the trip's folder in the Route menu) replaces the last per-route prompt — a whole-trip transfer ends on **one** card, not a parade. The [companion-link page](../companion-link/#when-a-route-lands-the-devices-side) tells the full story; the UI-side rules are the interesting part: a prompt **never lands while a hold is charging** (it defers a tick, so a half-done *Finish & new* hold can't complete onto it — the same [stack-change hold-cancel](#hold-to-confirm) at work), **consecutive uploads replace** the prompt by object id rather than stacking, and the **passkey card outranks** it (a pending prompt is dropped, not queued).
 
 ### The connected indicator
 
@@ -791,17 +877,19 @@ A single **static** Bluetooth rune says "a phone is linked right now." It appear
 
 ### The Bluetooth settings screen
 
-Settings ▸ **Bluetooth** is where the link's few knobs live. It's an ordinary settings screen (two-level focus like the rest), carrying: an **on/off** toggle for the radio (persisted in `Settings` like every other setting, and pushed to the radio plane by the host), a read-only **status line** (Off / Advertising / Connected, straight from the seam), a **"Paired: yes/no"** row (no phone name — deliberately not worth a protocol addition), and a hold-guarded **Forget phone** row. Forget uses the [delete-footer's guarded hold](#deleting-things-the-hold-to-delete-footer) — a completed hold fills it warning-red and clears the bond — and it matters more than it looks: because [a stored bond now rejects new pairings](../companion-link/#pairing-and-staying-paired), Forget phone is the **only** way to re-pair a replaced or reset phone. The guarded hold is the confirmation; there's no extra popup.
+Settings ▸ Connections ▸ **Phone** is where the link's few knobs live. It's an ordinary settings screen (two-level focus like the rest), carrying: an **on/off** toggle for the radio (persisted in `Settings` like every other setting, and pushed to the radio plane by the host), a read-only **status line** (Off / Advertising / Connected, straight from the seam), a **"Paired: yes/no"** row (no phone name — deliberately not worth a protocol addition), and a hold-guarded **Forget phone** row. Forget uses the [delete-footer's guarded hold](#deleting-things-the-hold-to-delete-footer) — a completed hold fills it warning-red and clears the bond — and it matters more than it looks: because [a stored bond now rejects new pairings](../companion-link/#pairing-and-staying-paired), Forget phone is the **only** way to re-pair a replaced or reset phone. The guarded hold is the confirmation; there's no extra popup.
 
 ### The Sensors screen
 
-Settings ▸ **Sensors** pairs the ride's BLE sensors, and sits right beside Bluetooth. It's three rows — **Heart rate**, **Power**, **Cadence** — each a kind label over a live status line: *Not set*, *Searching*, *Connecting*, or *Connected · 78%* (the battery percent shown only once the sensor reports it). **Press** a row to open its **scan list** — the discovered sensors of that kind, each a name (or its address when the advert carried none) over an RSSI reading; a press there **saves + connects** the highlighted sensor and pops back to the now-*Connecting* row. On a **saved** row a **hold** forgets it, using the very same [guarded delete footer](#deleting-things-the-hold-to-delete-footer) as Bluetooth's Forget phone — a plain prompt until the row is selected, then the base fills warning-red on the live hold. Saving or forgetting is just a `Settings` edit; the host reconciles the change to the radio and persists it, so there's one durable path and a saved sensor auto-reconnects across a reboot. How those sensors are actually scanned, connected, and decoded — the device's [central role](../companion-link/#sensors-the-device-as-ble-central) — is on the companion-link page.
+Settings ▸ Connections ▸ **Sensors** pairs the ride's BLE sensors, and sits beside Phone under the Connections menu. It's three rows — **Heart rate**, **Power**, **Cadence** — each a kind label over a live status line: *Not set*, *Searching*, *Connecting*, or *Connected · 78%* (the battery percent shown only once the sensor reports it). **Press** a row to open its **scan list** — the discovered sensors of that kind, each a name (or its address when the advert carried none) over an RSSI reading; a press there **saves + connects** the highlighted sensor and pops back to the now-*Connecting* row. On a **saved** row a **hold** forgets it, using the very same [guarded delete footer](#deleting-things-the-hold-to-delete-footer) as Bluetooth's Forget phone — a plain prompt until the row is selected, then the base fills warning-red on the live hold. Saving or forgetting is just a `Settings` edit; the host reconciles the change to the radio and persists it, so there's one durable path and a saved sensor auto-reconnects across a reboot. How those sensors are actually scanned, connected, and decoded — the device's [central role](../companion-link/#sensors-the-device-as-ble-central) — is on the companion-link page.
 
-The **live values** land on the riding grid as three [stat tiles](#settings-a-second-level-of-focus) — Heart rate, Power, Cadence — single-column raw integers (bpm / watts / rpm) that read `--` until a fresh sample arrives, and again once one goes stale (older than 5 s). They join the field catalogue like any other tile, so a rider picks and places them in the Stats editor; per-ride averages and maxima are recorded into the ride object.
+The **live values** land on the riding grid as three [stat tiles](#settings-a-second-level-of-focus) — Heart rate, Power, Cadence — single-column raw integers (bpm / watts / rpm) that read `--` until a fresh sample arrives, and again once one goes stale (older than 5 s). They join the field catalogue like any other tile, so a rider picks and places them in the Ride screen's Data fields editor; per-ride averages and maxima are recorded into the ride object.
 
 ## Climbs get their own panel
 
 A planned route's hard parts are its climbs, so a third riding view is given over to the one you're on. The **Climb** screen draws the current climb the way a dedicated climb computer does — a tall elevation trace with the **gradient shown as colour**, each column tinted by its local steepness from green through red. A "you are here" cursor rides the trace, and four tiles below read only *this* climb: the ascent and distance still to the top, the gradient here, and the average gradient of what's left.
+
+**Both kinds of route get this screen now.** For a long time it served only *imported* routes: a GPX arrives with a height on every point, while a route the device planned itself came out of the router with zero on every point, so its profile was a flat line and no climb was detectable in it — the Climb screen could not open at all. That gap closed by feeding the router's emit step the [terrain raster carried beside the map](../terrain/), so a planned route's points arrive with real heights and everything downstream lights up **without a line of its own changing**: the same segmentation pass, the same profile band, the same four tiles, the same GPX export. The screen never learns where its route came from — which is the property that made the change small.
 
 **The climbs are found once, at load.** Because the route is planned, its shape is known before you turn a pedal — so finding climbs is an offline *segmentation*, not a live detector. The same load-time pass that builds the whole-route [elevation profile](../formats/) walks the height-against-distance signal and cuts it into a handful of climbs on plain rules: a stretch counts only if it gains enough, averages steeply enough, and runs long enough; a shallow dip is bridged (a false flat is still one climb) while a deep col splits it in two. Deciding up front turns the live question — *am I on a climb?* — into an interval test on the matched distance, and the found climbs cost about a kilobyte of resident state.
 
@@ -866,11 +954,70 @@ A planned route's hard parts are its climbs, so a third riding view is given ove
 <figcaption>The Climb screen is the profile the way a paper route card would draw it — the trace tinted by gradient, hottest where it's steepest. The climbs themselves are found in one pass when the route loads (the same moment the whole-route profile is built), so riding only has to ask which segment the matched distance falls in; the panel then reads a second, finer profile scoped to that one climb — a small buffer rebuilt on each new climb, never per frame. Nothing new is stored in the route file.</figcaption>
 </figure>
 
+## Two numbers the elevation unlocked
+
+Once a route reliably carries heights, two readouts that had been deliberately absent
+become honest, and both are worth describing because their *models* are small enough
+to state in full.
+
+**Estimated time, and time to go.** The Route overview's `EST TIME` row had been
+investigated once and dropped, for a good reason: the map's bike profiles carry
+dimensionless edge-weight multipliers and no speed anywhere, so there was nothing to
+turn a distance into an hour. There is now — a two-line model, keyed to the same
+profile the router used:
+
+```
+time = distance / v_flat  +  ascent × k_climb
+```
+
+`v_flat` is that bike's flat cruising speed and `k_climb` the seconds a metre of
+climbing costs on top of the ground it covers — the classic "a metre up is worth
+eight to ten flat metres", written in time. At the Road profile's seeds (22 km/h,
+1.6 s/m) a 1 000 m col adds 27 minutes to its own length, about a 1 000 m/h ascent
+rate on a sustained 8 %, which is where a fit but unhurried rider lands.
+
+Two deliberate refusals shape it. **There is no setting**, because the rider already
+answered *which bike* once, in Bike type, and a second knob would let the clock and
+the router describe different bicycles. And **descent credits nothing**: braking,
+hairpins and fatigue eat most of what physics would hand back, and the failure modes
+are not symmetric — twenty minutes late costs a train, twenty minutes early is a
+pleasant surprise.
+
+Riding, the same estimate appears as **two tiles reading one number**: `h TO GO`
+counts down as `H:MM`, and `ETA` adds those minutes to the wall clock. The climb term
+comes from the profile's cumulative-ascent curve — the *same* curve the Up-ahead
+timeline's "climb to go" and the `TO CLIMB` tile read, so three surfaces cannot
+disagree about how much is left. A route with no elevation is not special-cased
+anywhere: its ascent-to-go is zero, the second term vanishes, and the answer is
+distance ÷ speed rather than a `--`.
+
+**Current Elevation, when it has earned it.** The barometer measures pressure, and
+turning pressure into height needs a sea-level reference nobody on a bike has, so the
+tile was always an estimate that drifted with the weather. With terrain mounted, the
+device subtracts the two at every GPS fix — map height minus barometric height — and
+low-passes that difference over about five minutes. The difference *is* the
+barometer's unknown offset, and it changes only as fast as the weather does, so
+adding it back gives an absolute elevation that still moves metre by metre with the
+barometer's own responsiveness.
+
+What "settled" means for a rider is concrete: roughly **twenty seconds of fixes**
+under open sky. Before that — and forever on a map with no terrain — the tile reads
+exactly what it read before any of this existed, with no fake precision. Once settled
+it *stays* settled: riding out of coverage freezes the offset rather than withdrawing
+the frame, and a large disagreement (a bridge over a gorge, a cutting, a tunnel with
+the mountain faithfully reported overhead) is rejected rather than averaged in. Only a
+*sustained, self-consistent* run of disagreement re-seeds the estimate, which is what
+lets a genuinely moved reference recover in about a minute instead of wedging the
+filter forever. And the **recorded ride is never fused** — its elevations stay the
+rider's own measurement, because folding the map into them would count the map twice.
+
 ## Waypoints on the route
 
-A planned route can carry **named waypoints** — a water stop, a viewpoint, the pass at the top — pinned along it in an [along-route table](../formats/#the-file) in the route file (`OBCR` v2). The device treats them as calm furniture, not a fourth screen: they surface in three always-available places plus two opt-in stat fields, every element built on machinery already there.
+A planned route can carry **named waypoints** — a water stop, a viewpoint, the pass at the top — pinned along it in an [along-route table](../formats/#waypoints-a-category-and-a-side) in the route file. Each one now carries a **category** and a **signed lateral offset** as well as a name, harvested from the planner's `<sym>`/`<type>` at import. In the riding views the device still treats them as calm furniture: three always-available cues plus the stat fields. The ride menu's browser — [Up ahead](#up-ahead-one-timeline-for-the-route) — is where they stop being furniture and become a list you read; every surface shares the same resident table and matched-distance axis.
 
-**Diamonds on the map.** Each named waypoint draws as a small ink diamond (~9 px) on the route line at its position — no label, the way the route's direction arrows read as furniture. They're always on when the loaded route has waypoints; the name lives in the chip, not on the glyph. A waypoint whose coordinate sits slightly off the drawn polyline shows its diamond slightly off the line, which is honest — the diamond marks the *point*, not the nearest pixel of route.
+The fixed-memory boundary remains explicit. A normal route's complete named table fits the resident **32-waypoint** cache. If a file carries more, the existing next-waypoint machinery advances that cache as a 32-entry window; the list shows that current resident plan window, and passed entries evicted from an oversized route are not re-read just to reconstruct history.
+
+**Diamonds on the map.** Each named waypoint draws as a small ink diamond (~9 px) on the route line at its position — no label, the way the route's direction arrows read as furniture. They're always on when the loaded route has waypoints; the name lives in the chip, not on the glyph. A waypoint whose coordinate sits slightly off the drawn polyline shows its diamond slightly off the line, which is honest — the diamond marks the *point*, not the nearest pixel of route. The category deliberately **doesn't** reach the marker: a categorised diamond would be a second icon species on a line that already carries direction arrows, and the map is the one surface where waypoints should stay quiet. Categories earn their icons in the list, not on the map.
 
 **The approach chip.** A one-line pill at the **bottom** of the Map — the same idiom as the off-route chip at the top, but calm ink-on-parchment rather than warning-orange — reads `◆ NAME  <distance>`: the along-route distance still to go to the next waypoint (the same arithmetic as the climb tiles' *to climb*). A three-state setting governs it, like the climb mode:
 
@@ -882,10 +1029,12 @@ Two details keep it steady. **Passing** is distance-hysteresis, not time: the ch
 
 **Ticks on the progress bar.** Under the Statistics [elevation profile](../formats/#exact-stats-decimated-geometry) the amber live-fraction bar already shares the route's distance axis, so each waypoint gets a thin **black** tick at its fraction, and the fill sweeping toward the next tick is free "distance to the next stop" context. Black, not red, is deliberate: the bar tints warning-red when you're off-route, and a red tick would vanish against it exactly then. (Diamonds *on* the profile were tried and dropped — ten waypoints clutter the thin band; the calm ticks won.)
 
-**Two opt-in stat fields.** For a waypoint readout on the numbers page, the [field picker](#settings-a-second-level-of-focus) offers two, so they cost nothing for riders who don't use them:
+**Opt-in stat fields.** For a waypoint readout on the numbers page, the [field picker](#settings-a-second-level-of-focus) offers two, so they cost nothing for riders who don't use them:
 
 - a **2×1 "next waypoint" tile** — name and distance-to-go, a direct sibling of the wide clock tile;
 - a **2×3 list panel** — the next few waypoints, name left / distance right, the first row emphasised. It's the one page-sized field: six slots, so it always begins a page, mirroring how a two-span tile always begins a row.
+
+Six more sit *between* the two in the picker — *[Next: water, Next: campsite, …](#the-next-category-stat-fields)*, directly under the next-waypoint tile and above the list panel — which answer the same question per category and, unlike these two, read the map's POIs as well as the route's own waypoints.
 
 **Unnamed waypoints are ignored everywhere** — no diamond, no tick, no chip, no list row. An empty label carries no information anywhere it would surface, so a waypoint whose name is blank after trimming is dropped as the route's table loads; the diamond, tick and row counts then stay consistent by construction. Together with **Off**, that's the whole answer to junk-waypoint routes: nameless artefacts never appear, and a route full of *named* clutter is silenced with one setting.
 
@@ -911,7 +1060,7 @@ Two details keep it steady. **Passing** is distance-hysteresis, not time: the ch
   <text class="d-sub" x="115" y="248" text-anchor="middle" style="font-size:9px">ink diamonds + the bottom approach chip</text>
 
   <!-- progress bar close-up -->
-  <text class="d-sub" x="250" y="70" style="font-size:10.5px">the Statistics progress bar shares the route's distance axis</text>
+  <text class="d-sub" x="250" y="56" style="font-size:10.5px">the Statistics progress bar shares the route's distance axis</text>
   <rect x="250" y="86" width="430" height="18" rx="9" style="fill:#eae3c9;stroke:#aaaa55;stroke-width:1" />
   <!-- live fill ~0.63 -->
   <rect x="250" y="86" width="271" height="18" rx="9" style="fill:#ffaa00" />
@@ -934,12 +1083,169 @@ Two details keep it steady. **Passing** is distance-hysteresis, not time: the ch
 <figcaption>Three read-outs, one distance axis. On the map the diamonds mark the waypoints and the bottom chip names the next one and counts down (default: only inside 500 m); on the Statistics bar the same waypoints are black ticks with the amber fill closing on the next. All of it is derived on each matched fix from the route's along-route waypoint table — nothing extra stored, nothing new sent over the link — and all of it hides or freezes off-route, where an along-route distance has no meaning. Unnamed waypoints are filtered as the table loads, so every count stays consistent.</figcaption>
 </figure>
 
-## The whole flow
+## Up ahead — one timeline for the route
 
-Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile). On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them.
+A bikepacker asks two different spatial questions, and for a long time this device could only answer one of them. *Where's the nearest water?* is a question about a **disc around you** — it ignores where you're going, and the [POIs browser](#the-pois-browser) answers it with a radius query and a bearing arrow. *Is there water in the next 30 km **of my route**?* is a question about a **line you're travelling along**, and no amount of panning a map answers it. The two look similar on paper and are completely different queries: one is sorted by how far away a thing is, the other by how far along it is.
 
 <figure class="fig">
-<svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the compass Menu on both press and back-hold — the single door into the app. The Menu opens the Route menu at its Routes station. Picking a route opens the Route overview; its START truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens the Paused page on press and enters Pan on hold. From Paused, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
+<svg viewBox="0 0 720 320" role="img" aria-label="Two panels comparing the device's two spatial queries. On the left, near me: a dashed circle drawn around the rider's fix, with points of interest scattered inside it and one greyed out beyond the edge; the route line crosses the panel faintly and plays no part. On the right, up ahead: the magenta route line runs through a pale band three hundred metres wide to each side, the rider sits on the line, and two points of interest inside the band are joined by dashed leaders to tick marks on the line itself, labelled with their along-route distances of one point two kilometres and four point eight kilometres; a third point outside the band is greyed out. Below each panel, a summary box: the left produces a browser list sorted by straight-line distance with a live bearing arrow, the right produces the Up ahead timeline sorted along the route, each row carrying a distance to go, a climb to go, and which side it sits on.">
+  <text class="d-tag" x="20" y="24">Two spatial questions — one map, one index, two windows</text>
+
+  <text class="d-sub" x="30" y="52" style="font-size:9px;fill:#6b7758">① near me — a disc around the fix</text>
+  <rect class="d-panel" x="24" y="60" width="320" height="186" rx="11" />
+  <!-- the route is present but irrelevant to this question -->
+  <path d="M56 232 C 106 198, 146 188, 186 158 C 226 128, 258 108, 320 90" fill="none" stroke="#ff00ff" stroke-width="4" opacity="0.16" />
+  <circle cx="184" cy="158" r="66" fill="none" stroke="#6b7758" stroke-width="1.3" stroke-dasharray="4 4" />
+  <g fill="#3d3427">
+    <circle cx="146" cy="124" r="5" /><circle cx="228" cy="140" r="5" />
+    <circle cx="162" cy="200" r="5" /><circle cx="232" cy="196" r="5" />
+  </g>
+  <circle cx="300" cy="104" r="5" fill="none" stroke="#c9c7b8" stroke-width="1.4" />
+  <text class="d-sub" x="292" y="92" text-anchor="end" style="font-size:8.5px;fill:#9aa884">out of range</text>
+  <path d="M184 158 L222 143" stroke="#cf6a2a" stroke-width="1.6" />
+  <path d="M228 140 l-11 -1 l5 6 z" fill="#cf6a2a" />
+  <text class="d-sub" x="222" y="122" text-anchor="end" style="font-size:8.5px;fill:#a9501c">bearing</text>
+  <path d="M184 150 l7 14 l-7 -5 l-7 5 z" fill="#ff0000" />
+  <text class="d-sub" x="184" y="236" text-anchor="middle" style="font-size:8px">nearest 16 · by straight-line distance · route-blind</text>
+
+  <text class="d-sub" x="382" y="52" style="font-size:9px;fill:#6b7758">② up ahead — a corridor along the route</text>
+  <rect class="d-panel" x="376" y="60" width="320" height="186" rx="11" />
+  <path d="M402 228 C 450 206, 468 170, 510 148 C 552 126, 578 100, 668 84" fill="none" stroke="#e6e0c4" stroke-width="34" stroke-linecap="round" />
+  <path d="M402 228 C 450 206, 468 170, 510 148 C 552 126, 578 100, 668 84" fill="none" stroke="#ff00ff" stroke-width="4" />
+  <!-- inside the corridor: projected onto the line -->
+  <circle cx="492" cy="170" r="5" fill="#3d3427" />
+  <path d="M492 170 L503 150" stroke="#6b7758" stroke-width="1.1" stroke-dasharray="3 3" />
+  <circle cx="503" cy="150" r="2.8" fill="#000" />
+  <text class="d-sub" x="512" y="180" style="font-size:9px">1.2 km</text>
+  <circle cx="572" cy="92" r="5" fill="#3d3427" />
+  <path d="M572 92 L566 114" stroke="#6b7758" stroke-width="1.1" stroke-dasharray="3 3" />
+  <circle cx="566" cy="114" r="2.8" fill="#000" />
+  <text class="d-sub" x="584" y="90" style="font-size:9px">4.8 km</text>
+  <!-- outside the corridor -->
+  <circle cx="636" cy="164" r="5" fill="none" stroke="#c9c7b8" stroke-width="1.4" />
+  <text class="d-sub" x="644" y="180" text-anchor="middle" style="font-size:8.5px;fill:#9aa884">off corridor</text>
+  <path d="M444 201 l8 13 l-8 -5 l-8 5 z" fill="#ff0000" transform="rotate(53 444 201)" />
+  <text class="d-sub" x="392" y="236" style="font-size:8px">±300 m either side · only what is still ahead of you</text>
+
+  <rect class="d-panel-2" x="24" y="262" width="320" height="48" rx="9" />
+  <text class="d-sub" x="40" y="282" style="font-size:9px">→ the <tspan class="d-label" style="font-size:9px">POIs browser</tspan> — rows by distance,</text>
+  <text class="d-sub" x="52" y="298" style="font-size:9px">with a live bearing arrow</text>
+  <rect class="d-hot" x="376" y="262" width="320" height="48" rx="9" style="fill:#f8efe4" />
+  <text class="d-sub" x="392" y="282" style="font-size:9px">→ the <tspan class="d-label" style="font-size:9px;fill:#a9501c">Up ahead timeline</tspan> — rows along the route,</text>
+  <text class="d-sub" x="404" y="298" style="font-size:9px">with distance-to-go, climb-to-go and a side</text>
+</svg>
+<figcaption>The same per-category quadtrees answer both — what differs is the <b>window</b> the walk is given and the <b>axis</b> the answers are sorted on. <i>Near me</i> takes a disc around the fix and sorts by straight-line distance; <i>up ahead</i> takes the route chunk by chunk, inflates each chunk's bounding box by the corridor half-width, and sorts by the projection onto the route line. Anything behind the rider is dropped on the way in, so the list never needs a "you are here" divider. The byte-level side of this is on the <a href="../formats/#pois-a-nearest-list-not-a-map-layer">formats page</a>.</figcaption>
+</figure>
+
+Once you have that corridor query, a second thing falls out: **a route's own waypoints and the map's POIs are the same kind of answer.** Both are a point with a category, a distance along the route, and a lateral offset. Splitting them into two lists would make the rider remember *provenance* — "was that spring in my GPX, or on the map?" — which is exactly the kind of bookkeeping a four-button device can't afford. So the ride compass's north station opens **one** route-ordered list over both, and the rider's own stops are distinguished *within* the rows rather than by which screen they're on.
+
+### One list, two sources
+
+The merge is an **iteration, not a copy**. Both inputs — the resident waypoint table and the App-owned corridor snapshot — are already ascending by along-route distance, so a two-finger walk over the two slices produces the list in one pass, filtering as it goes and breaking ties **waypoint-first**. Nothing is materialised: the `Screen` variant holds a cursor, a filter, and its snapshot key, never rows, because [a variant is a slot in a `.bss` union](#a-screen-is-a-value-not-a-widget-tree) and every row it held would be paid for by every other screen on the stack.
+
+<figure class="fig">
+<svg viewBox="0 0 720 292" role="img" aria-label="One timeline row dissected, plus the source cue legend and the Hold picker. The row is amber because it is under the cursor: line one carries a category icon with a small diamond pip beside it and the ellipsized name Fontaine du port; line two carries the distance to go, a climb to go prefixed by an up triangle, and at the right edge a left-pointing triangle followed by 271 metres, the off-route side hint. To the right, four icon states: a map POI unselected in muted olive, a map POI under the cursor in ink, a custom waypoint in amber with a pip, and a custom waypoint under the cursor in ink with a pip. Below, the seven-row category picker titled SHOW: Everything, then Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, with the cursor on Everything.">
+  <text class="d-tag" x="20" y="24">The row · the source cue · the Hold picker</text>
+
+  <!-- the row (selected: amber) -->
+  <rect x="24" y="44" width="392" height="66" rx="6" class="d-amber" />
+  <circle cx="52" cy="70" r="7" fill="#000" /><path d="M45 67 l7 -9 l7 9 z" fill="#000" />
+  <path d="M66 56 l4 4 l-4 4 l-4 -4 z" fill="#000" />
+  <text x="80" y="76" font-family="var(--mono)" style="font-size:12.5px;fill:#000">Fontaine du port</text>
+  <text x="34" y="100" font-family="var(--mono)" style="font-size:10px;fill:#000">219m</text>
+  <path d="M228 93 l5 -7 l5 7 z" fill="#000" />
+  <text x="242" y="100" font-family="var(--mono)" style="font-size:10px;fill:#000">13m</text>
+  <path d="M352 96 l9 -5 l0 10 z" fill="#000" />
+  <text x="406" y="100" text-anchor="end" font-family="var(--mono)" style="font-size:10px;fill:#000">271m</text>
+
+  <!-- callouts -->
+  <text class="d-sub" x="24" y="128" style="font-size:9px;fill:#a9501c">icon + pip</text>
+  <text class="d-sub" x="96" y="128" style="font-size:9px;fill:#a9501c">name, ellipsized to fit</text>
+  <text class="d-sub" x="24" y="142" style="font-size:9px">distance-to-go</text>
+  <text class="d-sub" x="214" y="142" style="font-size:9px">climb-to-go</text>
+  <text class="d-sub" x="416" y="142" text-anchor="end" style="font-size:9px">side, past 50 m</text>
+
+  <!-- source cue legend -->
+  <text class="d-tag" x="444" y="60">the icon says which source</text>
+  <g>
+    <circle cx="460" cy="80" r="6" fill="#6b7758" /><text class="d-sub" x="478" y="84" style="font-size:9.5px">map POI</text>
+    <circle cx="460" cy="102" r="6" fill="#24331c" /><text class="d-sub" x="478" y="106" style="font-size:9.5px">map POI · cursor</text>
+    <circle cx="460" cy="124" r="6" fill="#ffaa00" /><path d="M472 116 l3.5 3.5 l-3.5 3.5 l-3.5 -3.5 z" fill="#ffaa00" />
+    <text class="d-sub" x="484" y="128" style="font-size:9.5px">waypoint</text>
+    <circle cx="460" cy="146" r="6" fill="#24331c" /><path d="M472 138 l3.5 3.5 l-3.5 3.5 l-3.5 -3.5 z" fill="#24331c" />
+    <text class="d-sub" x="484" y="150" style="font-size:9.5px">waypoint · cursor</text>
+  </g>
+  <text class="d-sub" x="444" y="172" style="font-size:8.5px;fill:#6b7758">the pip is the colourblind-safe half of the pair</text>
+
+  <!-- the picker -->
+  <rect class="d-panel" x="24" y="164" width="196" height="116" rx="9" />
+  <rect x="30" y="170" width="184" height="14" rx="3" style="fill:#aa5500" />
+  <text class="d-sub" x="38" y="181" style="fill:#fff;font-size:8px">SHOW</text>
+  <rect x="30" y="188" width="184" height="11" rx="2" class="d-amber" />
+  <path d="M36 190 L36 197 L41 193.5 z" fill="#000" />
+  <text class="d-sub" x="48" y="197" style="fill:#000;font-size:8px">Everything</text>
+  <g>
+    <circle cx="38" cy="205" r="3" fill="#24331c" /><text class="d-sub" x="48" y="208" style="font-size:8px">Water</text>
+    <circle cx="38" cy="216" r="3" fill="#24331c" /><text class="d-sub" x="48" y="219" style="font-size:8px">Campsite</text>
+    <circle cx="38" cy="227" r="3" fill="#24331c" /><text class="d-sub" x="48" y="230" style="font-size:8px">Lodging</text>
+    <circle cx="38" cy="238" r="3" fill="#24331c" /><text class="d-sub" x="48" y="241" style="font-size:8px">Resupply</text>
+    <circle cx="38" cy="249" r="3" fill="#24331c" /><text class="d-sub" x="48" y="252" style="font-size:8px">Pharmacy</text>
+    <circle cx="38" cy="260" r="3" fill="#24331c" /><text class="d-sub" x="48" y="263" style="font-size:8px">Bike shop</text>
+  </g>
+  <text class="d-sub" x="232" y="202" style="font-size:9.5px">Hold opens it · seven rows on one page</text>
+  <text class="d-sub" x="232" y="220" style="font-size:9.5px">press applies + re-homes the cursor</text>
+  <text class="d-sub" x="232" y="238" style="font-size:9.5px">back cancels — the list's cursor survives</text>
+  <text class="d-sub" x="232" y="262" style="font-size:9px;fill:#a9501c">a mode inside the screen, not a screen</text>
+</svg>
+<figcaption>The row is the old waypoint row's exact arithmetic applied to both sources — <b>distance-to-go</b> is the along-route delta, <b>climb-to-go</b> subtracts the cached profile's cumulative ascent at the live matched fraction from cumulative ascent at the entry's, so a dip between here and the stop doesn't erase later climbing. A corridor POI <i>is</i> a point on that axis, so it needs no separate maths. The climb column slides left of the side hint rather than colliding with it on a 240 px panel.</figcaption>
+</figure>
+
+**The side hint is a triangle, not a glyph.** An entry's lateral offset is decision-relevant — *is that fountain worth the detour?* — and so is which side it's on, so past a tunable **50 m** the row draws a small arrow and the distance at line 2's right edge. The arrow is *drawn*: the device font's Latin strip has no arrow character, so a `←` would have shipped as a silent `?`. The text itself is the unsigned magnitude; the triangle carries the direction, resolved from the sign the [OBCR record](../formats/#waypoints-a-category-and-a-side) and the corridor projection **both** use — positive is right of the direction of travel. It applies to every row of both sources, because hand-placed waypoints sit off-route just as readily as map POIs. (One asymmetry the corridor imposes: a map POI's hint can never exceed 300 m, since farther ones aren't in the snapshot at all, while a waypoint's offset is whatever the planner drew.)
+
+**Source is per-row, never a section.** Map-POI icons keep the browser's muted/ink scheme; a custom waypoint's icon draws in **amber** — except on the amber cursor row, where it falls back to ink, so a small **diamond pip** beside the icon carries the distinction in every state and does the colourblind-safe half of the job. A waypoint with no usable category shows the familiar plain diamond as its icon and is only listed under *Everything*: a category filter is a question a generic waypoint cannot answer.
+
+**Passed entries are treated differently by source, on purpose.** A passed *waypoint* stays in the list, muted, with both forward-looking figures clamped to zero — reviewing the day's plan is a real use, and silently dropping half of it isn't friendlier. A passed *map POI* is simply never there: the snapshot is anchored at the progress the screen was opened with, and the corridor query drops anything behind that anchor on the way in. The list opens scrolled to the **first unpassed entry** of the merged list, and it always opens on **Everything** — predictable beats sticky.
+
+**The snapshot is frozen, and the screen never queries anything.** The corridor result lives in one App-owned buffer keyed by *(category filter, progress anchor)*, and the screen only ever *declares* what key it wants; a small reconcile step arms the buffer from whatever the screen stack asks for after each gesture and once per pass. Entering arms **and** invalidates, so re-entering refreshes; changing the filter re-keys, which is what re-queries; riding on changes nothing, so rows can't shift under the cursor and no frame touches the card; and *leaving* the screen — `back`, or an idle return — drops the request, so the host stops building a map `Reader` for it. A host-pushed card laid **over** the list (a passkey prompt, a warning) is deliberately not an exit: the reconcile step scans the whole stack for a declared key rather than only its top, so the frozen snapshot stays armed underneath the card and is still the same snapshot when it clears. That is the same [frozen-snapshot discipline](#a-static-list-with-one-live-element) the POIs browser runs on, now with a second tenant.
+
+Three empty states keep the screen honest, and the copy names the actual cause: *No route loaded / Load a route first*, *Nothing up ahead / No stops on route*, and — with a category filter live — *Nothing up ahead / None of this kind*. While a query is still in flight the list draws **nothing at all** rather than flashing a wrong answer for a frame, and a query that *fails* settles empty rather than spinning, so the honest answer arrives either way. Pressing a POI row opens its [detail view](#the-poi-detail-view), which repeats the same arrow with the side spelled out in words; pressing a waypoint row does nothing, because there is no waypoint detail to open and a dead hint row would be worse than silence.
+
+### Hold opens this screen's own config
+
+The category picker is the third instance of a pattern the UI had been using without naming: **`Hold` opens something belonging to the screen you're on** — a mode of it, or its configuration — and never navigates away from it. The Map's hold enters Inspect; once inside, Back-hold changes Route/Free and lands in Move while Select-hold changes only an active Free axis. Select-hold is inert in Zoom. The Statistics screen now mirrors that tool flow: Select-hold enters elevation-profile Inspect in **Pan**, a Select tap toggles **Pan ↔ Zoom**, and Up/Down performs the selected action. The first Up/Down step can enter Pan directly too, preserving the old one-action scrub. Zoom is centred on the chosen cursor; returning to Pan keeps that magnification and scales each pan step to the visible window, so the rider can zoom into a summit, move through its detail, then zoom again without losing the place. Inspect stays put until `back`, which restores the live cursor and whole route. Statistics needs no separate Inspect frame because the cursor/profile is its only interactive content: Pan adds no chrome, while bare −/+ cues appear only for Zoom. The timeline's hold opens the seven-row filter — *Everything* plus the six categories, cursor resting on the active one, `press` applies and `back` cancels. (Where a screen has no mode to enter, hold still acts *on* that screen rather than away from it: in the [Fields editor](#settings-a-second-level-of-focus) it's the hold-to-delete bar on the highlighted field, while reordering is the press-lift/press-drop grab idiom.) The [hold-hint bulge](#render-on-demand-and-the-idle-path-is-free) the overlay plane draws on every screen is what advertises that there's something under the hold at all, so the pattern needs no permanent text label.
+
+Two shapes it deliberately does **not** take. It isn't a filter *cycle* — six categories under one button would make the rider press through five wrong lists to reach the sixth. And it isn't a `Screen`: the picker is a mode inside the timeline (an optional row index), so there's no new stack slot, no cross-screen write-back, and the list's own cursor survives a cancel untouched. Its rows are drawn at a tighter pitch than the POI menu's for one reason found in the simulator — at the menu's pitch only five of seven fit, and *a filter you have to scroll to reach is a filter you won't use*.
+
+### "Up ahead shows": a scope with sharp edges
+
+Category is moment-to-moment intent; *who feeds the list* is a stable preference, so it lives in Settings rather than on the screen. One press-to-cycle row in the **Ride** group — **Up ahead shows: Both** (default) **/ Waypoints / Map POIs** — persisted in the same [RRAM settings blob](#settings-survive-a-reboot-independent-of-the-sd-card) as everything else. The row reads as a sentence, *"Up ahead shows ◄ Waypoints"*, which is what lets the value word be one short word at 240 px and still carry the "only".
+
+Two consequences are worth stating because they're the difference between a filter and a scope:
+
+- **Waypoints-only asks for nothing.** Under that scope the screen declares *no* snapshot key at all, so the buffer is disarmed, nothing is pending, and the host never builds a map `Reader` for the timeline. The list costs exactly what the plain waypoint list used to. A category filter can't turn the query back on, either — filters apply *within* the configured sources.
+- **The empty copy names the scope.** With one source scoped away, *"No stops on route"* would be a lie: the route may be lined with map POIs the rider chose not to see. So the sub-line reads *Waypoints only* or *Map POIs only* instead — unless a category filter is live, in which case *"None of this kind"* wins, because that's the thing the rider just did.
+
+The scope is the **Up-ahead list and nothing else**. It does not hide the map's waypoint diamonds, does not touch the [POIs browser](#the-pois-browser), does not touch the stats waypoint panel, and — the one that reads as an inconsistency until you say it out loud — does not scope the *Next: category* tiles below. Those answer a different question ("how far to the next water?") on a different screen; a preference about what a *list* shows has no business silently blanking a number.
+
+### The "Next: category" stat fields
+
+Six more fields join the [Fields editor](#settings-a-second-level-of-focus) — **Next: water / campsite / lodging / resupply / pharmacy / bike shop** — grouped in the picker directly after *Next waypoint*. Each is a full-width tile with a second anatomy: the category's own row icon, the ellipsized name of the next one of its kind, and the distance-to-go right-aligned beneath — `--` when nothing of that kind is ahead, with the category's word as the caption so the tile still reads as an answer rather than a blank. In the picker they read as a **block**: the category's icon in a left gutter and its own word as the label, sitting under *Next waypoint*. That costs them the span badge every other row wears — but all six are full-width by construction, so the badge carries no information the block doesn't already state, and the freed width is what lets the longest category word in every language (`Campingplatz`, `Fahrradladen`, `Hébergement`) draw whole. There is no setting for field curation: configuration-about-configuration is the thing to avoid, and if the picker ever feels crowded the fix is ordering *inside* it.
+
+The answer merges the same two sources as the list, with the same waypoint-wins tie-break, so one stop can never read differently in a tile and in the timeline. But the *data policy* is deliberately the opposite of the list's:
+
+- The **waypoint half needs no machinery at all** — the table is resident, route-ordered and at most 32 entries, so the tile walks it every draw. Zero I/O, correct on the first frame.
+- The **map-POI half is a cache, not a snapshot.** A list needs membership and order frozen so rows don't shift under the cursor; a tile shows one entry and the rider wants its distance to *count down*. So the tile is fed a distilled `(distance along, name)` per category and re-derives the distance from live progress every frame, and the cache re-takes on exactly four triggers: nothing is cached yet; matched progress has advanced **500 m** since the take that filled it; matched progress has fallen more than **100 m** *behind* that take; or the cached entry has been **passed** — the one case where a stale answer is actively wrong. The rewind trigger is there because a snapshot is only an answer for the axis *ahead of its anchor*, and progress does go backwards: a route re-upload or a second lap zeroes it, which would otherwise leave the tile blind to everything now in between. The 100 m tolerance is what keeps that from firing on noise — the route matcher searches a few segments behind the cursor, so ordinary re-matching wobbles progress back a handful of metres, and a zero-tolerance rule would burn a query per wobble. Swapping the route out from under the cache doesn't stale it, it **empties** it: distances are route-relative, so a same-index/new-bytes replace — a re-upload, a committed detour — leaves entries that are wrong rather than old, and the App-level "drop everything derived from the route's geometry" seam clears them alongside the matcher and the profile.
+
+Two rules keep that cheap and truthful. It refreshes **one category per query**, which is correctness rather than tuning: the corridor caps at 16 results *across the whole filter*, so a union query on a POI-dense map could come back with sixteen fountains and never mention the pharmacy 12 km on — and the pharmacy tile would lie. Filtered to one category, the nearest of it is the first result by construction, and a round-robin over the placed categories keeps any one from starving. And it only asks **while the Statistics grid is the screen being drawn**, with a tile actually placed and a route loaded — a rider on the map, in a menu, or with no such tile pays nothing, and leaving the page drops the request but *keeps* the cache, so coming back within 500 m is instant.
+
+The cache and the timeline share one buffer, with an explicit priority: **a screen always wins.** The reconcile step takes the topmost screen's request first and only falls back to the cache when no screen wants anything — and the cache's harvest accepts a landed snapshot only if it was taken for the cache's *own* key, so the two can never read each other's rows. In practice they never even compete: the cache asks only while Statistics is the base screen, which is never while the timeline is up.
+
+## The whole flow
+
+Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack. On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them. In their base state all three share `press` (pause) and `back-hold` (the ride-scoped compass); the Paused page accepts the same `back-hold`. Opening that menu never changes the activity mode, so it neither pauses a rolling rider nor resumes a paused one. The Map's Inspect sub-mode deliberately owns both holds: Back changes Route/Free and lands in Move, while Select changes only an active Free axis. Statistics Inspect instead uses Select tap for Pan/Zoom because its one-dimensional profile needs no axis/family choice. On either screen the simpler `back` tap exits Inspect and restores the live view before another Back can continue around the riding-view ring.
+
+<figure class="fig">
+<svg viewBox="0 0 900 360" role="img" aria-label="A navigation graph. Home opens the main compass Menu. Its Routes station opens the Route menu, a route pick opens Overview, and START roots to Map. Map, Statistics, and Climb form the riding-view back ring. Back-hold from a riding view or Paused opens the ride compass without changing activity mode; its north station opens the Up ahead timeline, while the other stations are Detour, POIs, Routes, and Main menu. In Inspect, Back tap returns to Map, Back-hold changes Route or Free and lands in Move, and Select-hold changes an active Free axis but is inert in Zoom. Press from Map pauses; Resume returns and held Finish or Discard clears to Home.">
   <defs>
     <marker id="aU7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5f7d3d" /></marker>
     <marker id="aU7c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -947,39 +1253,52 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <text class="d-tag" x="20" y="24">The screen flow</text>
 
   <!-- nodes -->
-  <rect class="d-panel" x="36"  y="150" width="104" height="40" rx="9" /><text class="d-label" x="88"  y="170" text-anchor="middle">Home</text><text class="d-sub" x="88" y="183" text-anchor="middle" style="font-size:8.5px">root</text>
-  <rect class="d-panel-2" x="232" y="56"  width="116" height="40" rx="9" /><text class="d-label" x="290" y="76"  text-anchor="middle">Route menu</text><text class="d-sub" x="290" y="89" text-anchor="middle" style="font-size:8.5px">pick a route</text>
-  <rect class="d-panel-2" x="246" y="150" width="104" height="40" rx="9" /><text class="d-label" x="298" y="170" text-anchor="middle">Overview</text><text class="d-sub" x="298" y="183" text-anchor="middle" style="font-size:8.5px">track · profile · stats</text>
-  <rect class="d-panel-2" x="232" y="246" width="116" height="40" rx="9" /><text class="d-label" x="290" y="266" text-anchor="middle">Menu</text><text class="d-sub" x="290" y="279" text-anchor="middle" style="font-size:8.5px">compass · 5 stations</text>
-  <rect class="d-forest" x="436" y="150" width="104" height="40" rx="9" /><text class="d-label" x="488" y="174" text-anchor="middle" style="fill:#fff">Map</text>
-  <rect class="d-water" x="596" y="150" width="104" height="40" rx="9" /><text class="d-label" x="648" y="170" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="648" y="183" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
-  <rect class="d-hot" x="436" y="56" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="488" y="80" text-anchor="middle" style="fill:#a9501c">Paused</text>
-  <rect class="d-panel-2" x="436" y="246" width="104" height="40" rx="9" /><text class="d-label" x="488" y="270" text-anchor="middle">Pan / Zoom</text>
-  <rect class="d-water" x="596" y="246" width="104" height="40" rx="9" /><text class="d-label" x="648" y="266" text-anchor="middle" style="fill:#fff">Climb</text><text class="d-sub" x="648" y="279" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">on a climb</text>
-  <!-- Statistics -> Climb (only while on a climb) -->
-  <line x1="648" y1="190" x2="648" y2="244" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="654" y="222" style="font-size:9px">back</text>
+  <rect class="d-panel" x="30"  y="160" width="100" height="40" rx="9" /><text class="d-label" x="80"  y="180" text-anchor="middle">Home</text><text class="d-sub" x="80" y="193" text-anchor="middle" style="font-size:8.5px">root</text>
+  <rect class="d-panel-2" x="210" y="50" width="116" height="40" rx="9" /><text class="d-label" x="268" y="70" text-anchor="middle">Route menu</text><text class="d-sub" x="268" y="83" text-anchor="middle" style="font-size:8.5px">pick a route</text>
+  <rect class="d-panel-2" x="220" y="160" width="104" height="40" rx="9" /><text class="d-label" x="272" y="180" text-anchor="middle">Overview</text><text class="d-sub" x="272" y="193" text-anchor="middle" style="font-size:8.5px">track · profile · stats</text>
+  <rect class="d-panel-2" x="210" y="270" width="116" height="40" rx="9" /><text class="d-label" x="268" y="290" text-anchor="middle">Main menu</text><text class="d-sub" x="268" y="303" text-anchor="middle" style="font-size:8.5px">compass · 6 stations</text>
+  <rect class="d-hot" x="410" y="50" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="462" y="74" text-anchor="middle" style="fill:#a9501c">Paused</text>
+  <rect class="d-forest" x="410" y="160" width="104" height="40" rx="9" /><text class="d-label" x="462" y="184" text-anchor="middle" style="fill:#fff">Map</text>
+  <rect class="d-panel-2" x="410" y="270" width="104" height="40" rx="9" /><text class="d-label" x="462" y="294" text-anchor="middle">Inspect</text>
+  <rect class="d-panel-2" x="585" y="50" width="130" height="40" rx="9" /><text class="d-label" x="650" y="70" text-anchor="middle">Ride menu</text><text class="d-sub" x="650" y="83" text-anchor="middle" style="font-size:8.5px">fixed compass · 5</text>
+  <rect class="d-panel-2" x="755" y="50" width="110" height="40" rx="9" /><text class="d-label" x="810" y="70" text-anchor="middle">Up ahead</text><text class="d-sub" x="810" y="83" text-anchor="middle" style="font-size:8.5px">merged timeline</text>
+  <rect class="d-water" x="585" y="160" width="115" height="40" rx="9" /><text class="d-label" x="642" y="180" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="642" y="193" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
+  <rect class="d-water" x="755" y="160" width="110" height="40" rx="9" /><text class="d-label" x="810" y="180" text-anchor="middle" style="fill:#fff">Climb</text><text class="d-sub" x="810" y="193" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">on a climb</text>
 
   <!-- edge from Home: both press and back-hold open the Menu (the single door in) -->
-  <line x1="140" y1="170" x2="230" y2="262" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="150" y="232" style="font-size:9px">press · back-hold</text>
+  <line x1="130" y1="180" x2="208" y2="286" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="136" y="238" style="font-size:9px">press · back-hold</text>
   <!-- Menu -> Route menu -->
-  <line x1="356" y1="250" x2="356" y2="98" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="362" y="178" style="font-size:9px">Routes</text>
+  <line x1="334" y1="274" x2="334" y2="92" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="340" y="140" style="font-size:9px">Routes</text>
   <!-- Route menu -> Overview (press) -->
-  <line x1="292" y1="96" x2="296" y2="148" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="248" y="122" style="font-size:9px">press</text>
+  <line x1="268" y1="90" x2="272" y2="158" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="230" y="126" style="font-size:9px">press</text>
   <!-- Overview -> Map (START/Root) -->
-  <line x1="350" y1="170" x2="432" y2="170" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="358" y="163" style="fill:#a9501c;font-size:9px">START · Root</text>
+  <line x1="324" y1="180" x2="408" y2="180" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="344" y="171" style="fill:#a9501c;font-size:9px">START · Root</text>
   <!-- Map <-> Statistics -->
-  <line x1="540" y1="160" x2="596" y2="160" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
-  <line x1="596" y1="180" x2="540" y2="180" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="568" y="200" text-anchor="middle" style="font-size:9px">back ⇄</text>
+  <line x1="514" y1="170" x2="583" y2="170" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
+  <line x1="585" y1="190" x2="516" y2="190" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="550" y="212" text-anchor="middle" style="font-size:9px">off-climb return</text>
+  <!-- On-climb ring: Statistics -> Climb -> Map. Off-climb, Statistics returns directly to Map. -->
+  <line x1="700" y1="170" x2="753" y2="170" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" />
+  <path d="M810 200 C 810 248, 560 248, 516 196" fill="none" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="700" y="260" text-anchor="middle" style="font-size:9px">on-climb back ring</text>
   <!-- Map -> Paused -->
-  <line x1="482" y1="150" x2="482" y2="98" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="396" y="126" style="fill:#a9501c;font-size:9px">press · pause</text>
+  <line x1="454" y1="160" x2="454" y2="92" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="366" y="128" style="fill:#a9501c;font-size:9px">press · pause</text>
   <!-- Paused -> Map (resume) -->
-  <line x1="500" y1="98" x2="500" y2="148" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="508" y="126" style="font-size:9px">resume</text>
+  <line x1="472" y1="90" x2="472" y2="158" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="480" y="126" style="font-size:9px">resume</text>
   <!-- Map -> Pan -->
-  <line x1="488" y1="190" x2="488" y2="244" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="496" y="220" style="font-size:9px">hold</text>
+  <line x1="454" y1="200" x2="454" y2="268" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="418" y="238" style="font-size:9px">hold</text>
+  <line x1="472" y1="270" x2="472" y2="202" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="480" y="246" style="font-size:8.5px">back exits</text>
+  <!-- Ride-menu access: same Push from riding views and Paused; no activity-mode write. -->
+  <line x1="514" y1="70" x2="583" y2="70" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="548" y="61" text-anchor="middle" style="font-size:8.5px">back-hold</text>
+  <line x1="642" y1="160" x2="642" y2="92" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="650" y="128" style="font-size:8.5px">back-hold</text>
+  <path d="M514 164 C 538 116, 558 94, 585 82" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" />
+  <path d="M755 164 C 738 124, 726 94, 715 82" fill="none" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" />
+  <!-- The north/default ride station opens the route-ordered Up-ahead timeline. -->
+  <line x1="717" y1="70" x2="753" y2="70" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="735" y="61" text-anchor="middle" style="font-size:8.5px">press</text>
+  <!-- The ride ring's Main-menu station keeps the full app one step away. -->
+  <path d="M585 82 C 560 330, 398 340, 326 300" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="430" y="338" style="font-size:8.5px">Main menu station</text>
   <!-- Paused -> Home (finish/discard) -->
-  <path d="M436 66 C 250 20, 90 70, 88 148" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="250" y="34" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
+  <path d="M410 60 C 260 12, 82 70, 80 158" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="236" y="28" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
-<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home has one door: both <code>press</code> and <code>back-hold</code> open the compass <b>Menu</b>, and the Route menu is reached from there at the Routes station. Picking a route opens the <b>Overview</b> — the paired track-shape / elevation pager with its distance and climb figures, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or finish &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. The Menu's <b>Map</b> station is a second way onto the map: mid-ride it returns to the live Map (the same <code>Root</code> landing), and with no ride running it opens a route-less <b>browse map</b> whose <code>press</code> start card begins a route-less ride — the same START path, minus the route. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest. Left untouched, the UI <b>returns on its own</b>: after a configurable idle timeout (default 30 s) it clears back to Home, or — mid-ride — back to the Map, so a menu or settings page left open doesn't strand the display away from the ride.</figcaption>
+<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home opens the <b>Main menu</b>, whose Routes station leads through the Route menu and Overview to a clean <code>[Home, Map]</code>. During a recording, <code>back-hold</code> from any riding view or Paused pushes the fixed <b>Ride menu</b> (Up ahead · Detour · POIs · Routes · Main menu) without touching the activity mode, and <code>back</code> returns to the exact view that called it; a route-less ride keeps all five stations but dims Up ahead and Detour. Inspect is the one exception: Back-hold changes Route/Free and lands in Move, Select-hold changes only an active Free axis, and a Back tap exits and restores Follow. The idle-return timeout clears abandoned chrome back to Home or — while tracking — the Map.</figcaption>
 </figure>
 
 ## The "field map" look
@@ -1020,16 +1339,18 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 
 - The screen system, stack, and `Transition`: [`obc-app/src/screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
 - The Climb screen: [`obc-app/src/screen/climb.rs`](src:firmware/obc-app/src/screen/climb.rs); the climb detection + per-climb profile it reads: [`obc-route/src/climb.rs`](src:firmware/obc-route/src/climb.rs), [`obc-route/src/climb_profile.rs`](src:firmware/obc-route/src/climb_profile.rs)
-- The waypoint UI — map diamonds + the approach chip: [`obc-app/src/screen/map.rs`](src:firmware/obc-app/src/screen/map.rs); the progress-bar ticks: [`obc-app/src/screen/statistics.rs`](src:firmware/obc-app/src/screen/statistics.rs); the next-waypoint tracking (approach radius, pass-linger): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs); the two stat fields: [`obc-app/src/stat_fields.rs`](src:firmware/obc-app/src/stat_fields.rs)
+- The waypoint UI — the ride compass: [`obc-app/src/screen/ride_menu.rs`](src:firmware/obc-app/src/screen/ride_menu.rs); map diamonds + the approach chip: [`obc-app/src/screen/map.rs`](src:firmware/obc-app/src/screen/map.rs); progress-bar ticks: [`obc-app/src/screen/statistics.rs`](src:firmware/obc-app/src/screen/statistics.rs); next-waypoint tracking (resident-window advance + pass linger): [`obc-app/src/ride_engine.rs`](src:firmware/obc-app/src/ride_engine.rs); the stat fields: [`obc-app/src/stat_fields.rs`](src:firmware/obc-app/src/stat_fields.rs)
+- The Up-ahead timeline + its category picker: [`obc-app/src/screen/up_ahead.rs`](src:firmware/obc-app/src/screen/up_ahead.rs); the App-owned corridor snapshot: [`obc-app/src/corridor.rs`](src:firmware/obc-app/src/corridor.rs); the next-of-category refresh cache: [`obc-app/src/next_ahead.rs`](src:firmware/obc-app/src/next_ahead.rs); the query underneath both: [`obc-reader/src/corridor.rs`](src:firmware/obc-reader/src/corridor.rs)
 - The host→app BLE seam (`BleStatus` — the connected indicator, passkey, paired): [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs)
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen, its Ride detail, and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/ride_detail.rs`](src:firmware/obc-app/src/screen/ride_detail.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
-- The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct adapters: [`obc-sim/src/settings_store.rs`](src:firmware/obc-sim/src/settings_store.rs), [`obc-fw-nrf54l/src/settings.rs`](src:firmware/obc-fw-nrf54l/src/settings.rs)
+- The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct adapters: [`obc-sim/src/settings_store.rs`](src:apps/obc-sim/src/settings_store.rs), [`obc-fw-nrf54l/src/settings.rs`](src:firmware/obc-fw-nrf54l/src/settings.rs)
 - The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
+- The climb segmentation and the per-climb profile: [`obc-route/src/climb.rs`](src:firmware/obc-route/src/climb.rs), [`obc-route/src/climb_profile.rs`](src:firmware/obc-route/src/climb_profile.rs); the gradient-aware time model behind `EST TIME` / `h TO GO` / `ETA`: [`obc-route/src/eta.rs`](src:firmware/obc-route/src/eta.rs); the altimeter fusion behind the Elevation tile: [`obc-app/src/altitude.rs`](src:firmware/obc-app/src/altitude.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
-- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); platform adapters: [`obc-platform/src/`](src:firmware/obc-platform/src); compatibility-only app re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); platform adapters: [`obc-platform/src/`](src:firmware/obc-platform/src)
 
-For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/).
+For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/). For where the heights behind the Climb screen, the time tiles and the Elevation tile come from, see [terrain & elevation](../terrain/).

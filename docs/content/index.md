@@ -1,6 +1,6 @@
 ---
 title: Overview
-description: How the OpenBikeComputer project fits together, and where to find what — hardware, software internals, and a build guide.
+description: How the OpenBikeComputer project fits together, and where to find its hardware and software internals.
 ---
 
 # OpenBikeComputer documentation
@@ -20,7 +20,7 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
     </marker>
   </defs>
 
-  <text class="d-tag" x="20" y="26">The whole pipeline, one glance</text>
+  <text class="d-tag" x="20" y="26">The whole pipeline</text>
 
   <!-- ingest lane labels -->
   <text class="d-tag" x="20" y="60" style="fill:#6b7758">① Build a map</text>
@@ -90,7 +90,7 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
   <line class="d-flow" x1="759" y1="335" x2="759" y2="309" marker-end="url(#ah)" />
   <text class="d-sub" x="767" y="326" style="font-size:8px;fill:#6b7758">to the app</text>
 </svg>
-<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. That same code runs on the desktop simulator, on this site's landing page (the <code>obc-web-demo</code> wasm host — live in your browser today), and on the device, where live sensors — GPS, barometer, compass — feed the same app the other hosts get from a GPX replay.</figcaption>
+<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. The same code runs on the desktop simulator, on this site's landing page (the <code>obc-web-demo</code> wasm host), and on the device — where live sensors feed the app the data the other hosts get from a GPX replay.</figcaption>
 </figure>
 
 The whole project is built around two ideas: **compact binary formats a microcontroller can read directly off flash** (no JSON, no reparsing, no heap churn), and **a single rendering path** the simulator and the firmware both run, so the desktop and the device can never drift apart.
@@ -101,7 +101,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
   <a class="doc-card" href="software/rendering/">
     <span class="dc-tag">Software</span>
     <h3>Rendering pipeline</h3>
-    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers. The deepest page.</p>
+    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers.</p>
   </a>
   <a class="doc-card" href="software/architecture/">
     <span class="dc-tag">Software</span>
@@ -121,12 +121,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
   <a class="doc-card" href="hardware/">
     <span class="dc-tag">Hardware</span>
     <h3>Hardware</h3>
-    <p>The reflective memory-LCD panel, the nRF54L microcontroller, schematic and PCB. <span class="pill">coming soon</span></p>
-  </a>
-  <a class="doc-card" href="build/">
-    <span class="dc-tag">Building one</span>
-    <h3>Build guide</h3>
-    <p>Bill of materials, the tools you'll need, flashing the firmware, and putting it together. <span class="pill">coming soon</span></p>
+    <p>The current nRF54LM20 development platform, reflective memory-LCD, sensors, storage, and links to the live wiring and display references.</p>
   </a>
 </div>
 
@@ -134,15 +129,21 @@ The whole project is built around two ideas: **compact binary formats a microcon
 
 | Layer | Crate / file | What it does |
 | :-- | :-- | :-- |
-| Map packer | [`obc-pack`](src:firmware/obc-pack) | OSM `.osm.pbf` → `.obcm` (ingest, multipolygon assembly, quadtree build) |
+| Map packer | [`obc-pack`](src:host/obc-pack) | OSM `.osm.pbf` → `.obcm` (ingest, multipolygon assembly, quadtree build, per-edge ascent) |
+| DEM rasteriser | [`obc-dem`](src:host/obc-dem) | Copernicus GLO-30 → `.obcd` terrain cells — the elevation raster carried beside a map |
+| Cell assembler | [`obcm-assemble`](src:host/obcm-assemble) | Downloaded OBCA cells → one `.obcm` (or a volume set): geometry grafted, the nav graph rewritten, verified against the spec |
+| Elevation | [`obc-elevation`](src:firmware/obc-elevation) | The OBCT reader, the sampling rules and the shared climb dead-band — one implementation, host and device |
 | Map reader | [`obc-reader`](src:firmware/obc-reader) | Parses OBCM directly off bytes — header, styles, LOD table, quadtree, chunk decode |
+| Weather reader | [`obc-weather`](src:firmware/obc-weather) | Validates OBCW and decodes one independently addressed rain tile at a time, with no provider or storage policy |
 | Route reader | [`obc-route`](src:firmware/obc-route) | OBCR reading, GPX → OBCR conversion, map-matching, elevation profile |
 | Renderer | [`obc-render`](src:firmware/obc-render) | The shared draw path — projection, culling, rasterising. `no_std`, zero-alloc |
 | Application | [`obc-app`](src:firmware/obc-app) | Camera, screen stack, input model, ride tracking — one per-frame entry point |
-| Simulator host | [`obc-sim`](src:firmware/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
-| Web demo host | [`obc-web-demo`](src:firmware/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:firmware/obc-host-core)) |
+| Simulator host | [`obc-sim`](src:apps/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
+| Web demo host | [`obc-web-demo`](src:apps/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:host/obc-host-core)) |
+| Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
+| Assembly bridge | [`obc-web-assemble`](src:apps/obc-web-assemble) | The web builder's wasm shim over the same cell assembler — downloaded map cells become one map in the tab, verified before anything leaves it |
 
-> **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then dive into the **[Rendering pipeline](software/rendering/)** — it's the most interesting machinery in the project. The **[data formats](software/formats/)** page is the reference the other two lean on.
+> **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then the **[Rendering pipeline](software/rendering/)**. The **[data formats](software/formats/)** page is the reference the other two lean on.
 
 ## A note on these docs
 

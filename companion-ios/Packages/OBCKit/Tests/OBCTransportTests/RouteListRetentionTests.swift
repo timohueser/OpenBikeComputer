@@ -11,9 +11,9 @@ import Testing
     /// A representative entry with a full expiry tail (`expires_at`, retention).
     private var entry: RouteListEntry {
         RouteListEntry(
-            objectID: 7, byteLen: 300, distanceMeters: 2207, ascentMeters: 76,
+            objectID: 7, byteLen: 308, distanceMeters: 2207, ascentMeters: 76,
             pointCount: 9, waypointCount: 2, name: "Vector Loop",
-            crc32: 0x1F66_C051, expiresAt: 1_784_808_000, retention: 3)
+            crc32: 0x1BFB_6E3C, expiresAt: 1_784_808_000, retention: 3)
     }
 
     /// Assemble a `routeList` object with an explicit header `entry_len` and
@@ -34,7 +34,7 @@ import Testing
         let decoded = try RouteList.decode(list(entryLen: 76, entries: [Data(core)]))
         #expect(decoded.count == 1)
         #expect(decoded[0].objectID == 7)
-        #expect(decoded[0].crc32 == 0x1F66_C051)
+        #expect(decoded[0].crc32 == 0x1BFB_6E3C)
         #expect(decoded[0].expiresAt == nil)
         #expect(decoded[0].retention == nil)
     }

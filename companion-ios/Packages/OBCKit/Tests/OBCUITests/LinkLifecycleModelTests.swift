@@ -217,6 +217,38 @@ struct LinkLifecycleModelTests {
         #expect(transport.count("connect") == 0)
     }
 
+    /// WX9 (#1194) no-regression: the standing weather watch keeps the radio after the foreground
+    /// link goes away, which is exactly what a Bluetooth off/on toggle looks like from here — the
+    /// transport publishes `.disconnected` on the way down. The link policy must be unmoved by it:
+    /// a foreground return with no link at suspend time still starts nothing (the watch's scan is
+    /// the transport's business, not this model's), and once a link exists again the ordinary
+    /// suspend → `resumeLink()` round trip is unchanged.
+    @Test func aBluetoothToggleUnderTheWeatherWatchDoesNotChangeTheForegroundPolicy() async {
+        let (model, transport, _, _) = make()
+        await startConnected(model, transport)
+
+        // Radio off: the transport reports the link gone while the app is still foregrounded.
+        transport.setState(.disconnected)
+        await eventually("link mirror down") { model.connection == .disconnected }
+
+        model.scenePhaseChanged(to: .background)
+        await eventually("suspended") { model.phase == .suspended }
+        model.scenePhaseChanged(to: .active)
+        await settle()
+        #expect(
+            transport.count("resumeLink") == 0,
+            "no link at suspend time — the watch keeping the radio is not a reason to re-raise one")
+
+        // Radio back and connected again: the normal policy, untouched.
+        transport.setState(.connected)
+        await eventually("link mirror up") { model.connection == .connected }
+        model.scenePhaseChanged(to: .background)
+        await eventually("suspended again") { model.phase == .suspended }
+        #expect(transport.count("suspendLink") == 2)
+        model.scenePhaseChanged(to: .active)
+        await eventually("resumed") { transport.count("resumeLink") == 1 }
+    }
+
     // MARK: The mock transport's default seam round-trips
 
     @Test func mockTransportSuspendResumeRoundTrip() async throws {
@@ -238,7 +270,8 @@ struct LinkLifecycleModelTests {
 
 /// Records which lifecycle seam each call used; state is a hand-driven
 /// replay-latest stream, like the real transport's.
-private final class SpyTransport: DeviceTransport, @unchecked Sendable {
+private final class SpyTransport: DeviceLink, DeviceBattery, DeviceObjects, DeviceRetention,
+    @unchecked Sendable {
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
     private let lock = NSLock()
     private var callLog: [String] = []
@@ -259,7 +292,6 @@ private final class SpyTransport: DeviceTransport, @unchecked Sendable {
 
     var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
     var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
 
     func connect() async throws {
         record("connect")
@@ -282,9 +314,6 @@ private final class SpyTransport: DeviceTransport, @unchecked Sendable {
     }
 
     func deviceInfo() async throws -> DeviceInfo { throw DeviceError.notConnected }
-    func readConfig() async throws -> DeviceConfig { throw DeviceError.notConnected }
-    func writeConfig(_ config: DeviceConfig) async throws { throw DeviceError.notConnected }
-
     func listRoutes() async throws -> [RouteCatalogEntry] {
         record("listRoutes")
         return []
@@ -296,7 +325,6 @@ private final class SpyTransport: DeviceTransport, @unchecked Sendable {
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished(.failed(.notConnected)) }
-    func readDiagnostics() async throws -> Data { throw DeviceError.notConnected }
 }
 
 /// A hand-fired `BackgroundTaskRunner`: records the begin/end pairing and lets

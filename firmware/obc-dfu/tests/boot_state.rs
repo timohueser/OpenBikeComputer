@@ -186,23 +186,29 @@ fn decide_matrix() {
     assert_eq!(decide(&BootState::Idle { installed: None, last_outcome: None }), BootDecision::Jump);
     assert_eq!(decide(&BootState::Idle { installed: Some(header("v", 1)), last_outcome: None }), BootDecision::Jump);
 
-    // Armed ⇒ Install the staged update (regardless of a rollback snapshot).
+    // Armed ⇒ Install the staged update (carrying its generation + rollback snapshot).
     let up = staged("u", 3);
-    assert_eq!(decide(&BootState::Armed { generation: 1, update: up, rollback: None }), BootDecision::Install(up));
     assert_eq!(
-        decide(&BootState::Armed { generation: 1, update: up, rollback: Some(staged("r", 1)) }),
-        BootDecision::Install(up)
+        decide(&BootState::Armed { generation: 1, update: up, rollback: None }),
+        BootDecision::Install { update: up, generation: 1, rollback: None }
+    );
+    let rb1 = staged("r", 1);
+    assert_eq!(
+        decide(&BootState::Armed { generation: 1, update: up, rollback: Some(rb1) }),
+        BootDecision::Install { update: up, generation: 1, rollback: Some(rb1) }
     );
 
-    // Trial with a snapshot ⇒ Rollback it; without ⇒ AcceptAndClear (first install).
+    // Trial with a snapshot ⇒ Rollback it (carrying the trial header + generation); without ⇒
+    // AcceptAndClear (first install), carrying the running image's header + generation.
     let rb = staged("r", 2);
+    let installed = header("v", 1);
     assert_eq!(
-        decide(&BootState::Trial { generation: 1, installed: header("v", 1), rollback: Some(rb) }),
-        BootDecision::Rollback(rb)
+        decide(&BootState::Trial { generation: 1, installed, rollback: Some(rb) }),
+        BootDecision::Rollback { snapshot: rb, installed, generation: 1 }
     );
     assert_eq!(
-        decide(&BootState::Trial { generation: 1, installed: header("v", 1), rollback: None }),
-        BootDecision::AcceptAndClear
+        decide(&BootState::Trial { generation: 1, installed, rollback: None }),
+        BootDecision::AcceptAndClear { installed, generation: 1 }
     );
 }
 
@@ -295,6 +301,46 @@ fn verdict_armed_is_not_started() {
     let armed = BootState::Armed { generation: 2, update: staged("u", 2), rollback: Some(staged("r", 1)) };
     assert_eq!(verdict(&armed, Some(2)), Verdict::NotStarted);
     assert_eq!(verdict(&armed, None), Verdict::NotStarted);
+}
+
+// ==================== the running image (#996) ====================
+
+/// `running_image` maps every state to the image that is *actually executing* — the fact the DIS /
+/// USB firmware-revision string is assembled from (#996, epic #773). The staged image is never it.
+#[test]
+fn running_image_per_state() {
+    assert_eq!(
+        BootState::Idle { installed: None, last_outcome: None }.running_image(),
+        None,
+        "a never-installed device names no image — the caller falls back to its build-time string"
+    );
+    let installed = header("v1.0.0", 800_000);
+    assert_eq!(
+        BootState::Idle {
+            installed: Some(installed),
+            last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 4 }),
+        }
+        .running_image(),
+        Some(installed),
+        "Idle runs its installed record"
+    );
+    let trial = header("v2.0.0", 900_000);
+    assert_eq!(
+        BootState::Trial { generation: 2, installed: trial, rollback: Some(staged("rollback", 2)) }.running_image(),
+        Some(trial),
+        "a trial boot runs the freshly-installed image, confirmed or not"
+    );
+    let rollback = staged("v1.0.0", 3);
+    assert_eq!(
+        BootState::Armed { generation: 7, update: staged("v3.0.0", 2), rollback: Some(rollback) }.running_image(),
+        Some(rollback.header),
+        "an unconsumed arm is still running the old image the armer snapshotted — never the staged one"
+    );
+    assert_eq!(
+        BootState::Armed { generation: 7, update: staged("v3.0.0", 2), rollback: None }.running_image(),
+        None,
+        "a first-install arm has no snapshot, so the page names no running image"
+    );
 }
 
 // ==================== v1 read-compatibility (DR2 #730) ====================

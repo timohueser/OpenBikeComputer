@@ -24,7 +24,7 @@ import OBCDomain
 /// the object holds (dangling refs included — the device tolerates them on read
 /// and never rewrites a stored trip), so decode∘encode round-trips byte-exactly.
 ///
-/// Pinned byte-for-byte against `protocol-vectors/trip-v1.bin`
+/// Pinned byte-for-byte against `specs/vectors/trip-v1.bin`
 /// (`TripCodecTests`), which the firmware side pins too, so neither can drift
 /// from the spec without a test going red.
 public enum TripObjectCodec {
@@ -57,12 +57,12 @@ public enum TripObjectCodec {
         var data = Data(count: headerLength)
         data[data.startIndex] = version
         // [1] reserved = 0
-        data.putLE(UInt16(stages.count), at: 2)
+        data.writeUInt16LE(UInt16(stages.count), at: 2)
         let nameBytes = truncatedUTF8(name, maxBytes: nameCap)
         data[data.startIndex + nameLengthOffset] = UInt8(nameBytes.count)
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + nameOffset + i] = byte }
         // name padding + reserved[3] already zero
-        for id in stages { data.appendLE(id.raw) }
+        for id in stages { data.appendUInt16LE(id.raw) }
         return data
     }
 
@@ -100,7 +100,7 @@ public enum TripObjectCodec {
         let b = data.startIndex
         let version = data[b]
         guard version == Self.version else { throw DeviceError.readFailed }
-        let stageCount = Int(data.getLE(at: 2) as UInt16)
+        let stageCount = Int(data.readUInt16LE(at: b + 2))
         let nameLen = Int(min(data[b + nameLengthOffset], UInt8(nameCap)))
         let name = String(decoding: data[(b + nameOffset)..<(b + nameOffset + nameLen)], as: UTF8.self)
 
@@ -109,7 +109,8 @@ public enum TripObjectCodec {
         var stages: [DeviceObjectID] = []
         stages.reserveCapacity(stageCount)
         for k in 0..<stageCount {
-            stages.append(DeviceObjectID(data.getLE(at: headerLength + k * stageIDLength) as UInt16))
+            let offset = b + headerLength + k * stageIDLength
+            stages.append(DeviceObjectID(data.readUInt16LE(at: offset)))
         }
         return Decoded(version: version, name: name, stageObjectIDs: stages)
     }
@@ -125,23 +126,5 @@ public enum TripObjectCodec {
             bytes.append(contentsOf: encoded)
         }
         return bytes
-    }
-}
-
-// MARK: - Little-endian helpers
-
-extension Data {
-    fileprivate mutating func appendLE(_ value: UInt16) {
-        append(UInt8(value & 0xFF)); append(UInt8((value >> 8) & 0xFF))
-    }
-
-    fileprivate mutating func putLE(_ value: UInt16, at offset: Int) {
-        let i = startIndex + offset
-        self[i] = UInt8(value & 0xFF); self[i + 1] = UInt8((value >> 8) & 0xFF)
-    }
-
-    fileprivate func getLE(at offset: Int) -> UInt16 {
-        let i = startIndex + offset
-        return UInt16(self[i]) | (UInt16(self[i + 1]) << 8)
     }
 }

@@ -1,0 +1,51 @@
+{
+  "id": "fixture",
+  "name": "Bridge Fixture",
+  "marker_color": 63488,
+  "styles": [
+    {
+      "id": 1,
+      "color": 31,
+      "weight": 1,
+      "z_index": 1,
+      "priority": 3,
+      "dashed": false,
+      "fixed_width": false,
+      "terrain_layer": false,
+      "color2": null
+    },
+    {
+      "id": 2,
+      "color": 63488,
+      "weight": 3,
+      "z_index": 5,
+      "priority": 3,
+      "dashed": false,
+      "fixed_width": false,
+      "terrain_layer": false,
+      "color2": null
+    },
+    {
+      "id": 3,
+      "color": 65504,
+      "weight": 2,
+      "z_index": 4,
+      "priority": 3,
+      "dashed": false,
+      "fixed_width": false,
+      "terrain_layer": false,
+      "color2": null
+    },
+    {
+      "id": 4,
+      "color": 30735,
+      "weight": 2,
+      "z_index": 6,
+      "priority": 2,
+      "dashed": true,
+      "fixed_width": false,
+      "terrain_layer": false,
+      "color2": 2047
+    }
+  ]
+}

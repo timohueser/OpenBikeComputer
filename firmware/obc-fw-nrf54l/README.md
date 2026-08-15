@@ -1,17 +1,17 @@
-# obc-fw-nrf54l — nRF54L15-DK firmware
+# obc-fw-nrf54l — nRF54LM20-DK firmware
 
 The **real hardware target** for OpenBikeComputer: the shared `obc-app` running on
-an nRF54L15-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
+an nRF54LM20-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
 load a route, ride it (driven by the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C
 bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save the ride
 as the durable `RDnn.ORD` ride object (GPX export happens in the companion app after sync — the
 device writes no GPX). The firmware drives
 the reflective **LS021B7DD02** memory LCD (the panel the project ships on) via the
 nRF54L's **FLPR** (the VPR RISC-V coprocessor) — the only display path. The LS021 protocol
-is on the [display-protocol docs page](https://timohueser.github.io/OpenBikeComputer/hardware/display-protocol/);
+is on the [display-protocol docs page](https://openbikecomputer.com/hardware/display-protocol/);
 the `ls021-*` binaries below are its standalone bring-up benches.
 
-See the module doc in [`src/main.rs`](src/main.rs) for the full peripheral/pin
+See the canonical hardware ledger in [`src/board.rs`](src/board.rs) for the full peripheral/pin
 plan; this README is the **board setup + build/flash** guide.
 
 ## One-time board configuration (nRF Connect **Board Configurator**)
@@ -24,72 +24,103 @@ unwritten). No soldering / solder-bridge cuts are needed on current board revisi
 1. **VDD / VDDM → 3.3 V.** The default is 1.8 V, which is too low for the LS021's logic. (Also feed
    the panel's `Vin` from the DK's 5 V / VBUS so its on-board 3.3 V LDO has headroom.)
 2. **External memory → OFF** ("external memory → GPIO on the P2 header"). This
-   electronically disconnects the on-board QSPI flash, freeing **P2.00–P2.05** so the
-   display can use them. We never use that flash (maps live on SD).
+   electronically disconnects the on-board QSPI flash, freeing **P2.00–P2.05**. Since the storage
+   pivot (#1158) those six pads carry the **microSD card** in native 4-bit SD mode, not the display;
+   either way we never use that flash (maps live on the card).
 3. **VCOM hardware flow control (HWFC) → OFF.** *Required for the `debug-uart`
    build.* The DK's J-Link VCOM defaults to RTS/CTS flow control; with it on, the
-   interface MCU gates **host→device** bytes on the device asserting RTS (P1.06) —
-   which this firmware never does (it runs the VCOM 2-wire, and P1.06/P1.07 are reused
-   as the SD bus). The symptom of leaving HWFC on: device→host **telemetry works** but
-   injected GPS fixes / button presses are silently ignored.
+   interface MCU gates **host→device** bytes on the device asserting RTS — which this
+   firmware never does (it runs the VCOM 2-wire). The symptom of leaving HWFC on:
+   device→host **telemetry works** but injected GPS fixes / button presses are silently ignored.
 
 ## Wiring (DK headers)
 
-Full detail is in the `src/main.rs` module doc. The **build drives the LS021 panel** — its FLPR
-wiring is in the [LS021 section below](#ls021-flpr-builds--dk-wiring-issue-165). Also on the board:
-a **microSD** breakout on the **P1** header (SCK P1_11 / MISO P1_07 / MOSI P1_06 / CS P0.00, with a
-pull-up on MISO — see below); the four DK buttons and LED0 are on-board; the J-Link **VCOM**
-(P1_04/P1_05) and RTT both ride the DK's USB.
+Full detail is in `src/board.rs`. The **build drives the LS021 panel** — its FLPR
+wiring is in the [LS021 section below](#ls021-flpr-builds--dk-wiring-issue-165). Also on the board: a
+**microSD** breakout on **P2.00–05** (native 4-bit SD, no SPI — see
+[microSD over sEMMC](#microsd-over-semmc-the-storage-transport)); the four DK buttons; the J-Link
+**VCOM** and RTT both ride the DK's USB.
 
 ### Full pin map (LS021 / FLPR build)
 
-**Port P2 — MCU/fast domain (panel source bus + COM) — all 11 pins used:**
+**Port P2 — MCU/fast domain. All 11 pins used: the microSD bus and the panel's source bus, two of
+them shared** (epic #1158). The card's six pads are *fixed* by Nordic's sEMMC soft peripheral; the
+display's six data lines take the four pins the retired SD-SPI path freed plus the two shared pads,
+whose `CTRLSEL` flips per mode (`GPIO` for the display blob, `VPR` for the soft peripheral). Display
+and storage never run at the same instant — `src/flpr_mux.rs` time-multiplexes the one FLPR.
 
-| Pin   | Signal | Notes                                   |
-|-------|--------|-----------------------------------------|
-| P2.00 | R0     | source data (odd-pixel R)               |
-| P2.01 | R1     | source data (even-pixel R)              |
-| P2.02 | G0     |                                         |
-| P2.03 | G1     |                                         |
-| P2.04 | B0     |                                         |
-| P2.05 | B1     |                                         |
-| P2.06 | BCK    | source shift clock                      |
-| P2.07 | VCOM   | COM electrode (HighDrive); LED2 pin     |
-| P2.08 | VB     | COM                                     |
-| P2.09 | LED0   | per-frame heartbeat blink               |
-| P2.10 | VA     | COM                                     |
+| Pin   | sEMMC | Display | Notes                                                        |
+|-------|-------|---------|--------------------------------------------------------------|
+| P2.00 | D3    | **B0**  | **shared** — `CTRLSEL` per mode; internal pull-up in storage mode |
+| P2.01 | CLK   | —       | card only; parked as an input in display mode                 |
+| P2.02 | D0    | —       | card only; parked as an input in display mode                 |
+| P2.03 | D2    | —       | card only; parked as an input in display mode                 |
+| P2.04 | D1    | **B1**  | **shared** — `CTRLSEL` per mode; internal pull-up in storage mode |
+| P2.05 | CMD   | —       | card only; parked as an input in display mode                 |
+| P2.06 | —     | R0      | source data (even-`x` R) — was SD-SPI SCK                     |
+| P2.07 | —     | BCK     | source shift clock (unchanged)                                |
+| P2.08 | —     | R1      | source data (odd-`x` R) — was SD-SPI MOSI                     |
+| P2.09 | —     | G0      | source data (even-`x` G) — was SD-SPI MISO                    |
+| P2.10 | —     | G1      | source data (odd-`x` G) — was SD-SPI CS                       |
 
-**Port P1 — PERI domain ≤8 MHz (gate/BSP + SD + VCOM + buttons) — all broken-out pins used:**
+The packed wire word is therefore `DATA_MASK = 0x751` (`B0`→0, `B1`→4, `R0`→6, `R1`→8, `G0`→9,
+`G1`→10) — pinned from both sides by `obc_display::ls021::wire`'s goldens and by a test that parses
+`src/flpr/flpr_scan.c`.
 
-| Pin   | Signal  | Notes                                  |
-|-------|---------|----------------------------------------|
-| P1.00 | GSP     | gate start pulse                       |
-| P1.01 | GCK     | gate clock                             |
-| P1.02 | —       | **NFC, off-limits**                    |
-| P1.03 | —       | **NFC, off-limits**                    |
-| P1.04 | VCOM TX | UARTE20 → host                         |
-| P1.05 | VCOM RX | UARTE20 ← host (needs HWFC OFF)        |
-| P1.06 | SD MOSI | SPIM22                                 |
-| P1.07 | SD MISO | SPIM22 (external pull-up to 3V3)       |
-| P1.08 | BTN2    | BACK                                   |
-| P1.09 | BTN1    | NEXT                                   |
-| P1.10 | INTB    | frame envelope; LED1 pin               |
-| P1.11 | SD SCK  | SPIM22                                 |
-| P1.12 | GEN     | gate enable (the freed SD-CS pin)      |
-| P1.13 | BTN0    | PREV                                   |
-| P1.14 | BSP     | source sub-line start                  |
+`even`/`odd` above is **0-based `x`**, matching those goldens: the `*0` lines carry `x = 0, 2, 4, …`.
+The panel datasheet numbers columns from 1 and so calls that same physical line the *odd* column —
+same wire, different origin.
 
-**Port P0 — low-power domain (P0.00–P0.04):**
+**Pad configuration per mode** (`src/semmc.rs`, `configure_storage_pads` / `configure_display_pads`):
 
-| Pin   | Signal     | Notes                                          |
-|-------|------------|------------------------------------------------|
-| P0.00 | SD CS      | held LOW (freed P1.12 for GEN)                  |
-| P0.01 | I²C SDA    | shared GPS + altimeter + compass bus (TWIM30, #218) |
-| P0.02 | I²C SCL    | shared GPS + altimeter + compass bus (TWIM30, #218) |
-| P0.03 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)     |
-| P0.04 | BTN3       | SELECT                                          |
+| | the six card pads | the four card-only pads |
+|---|---|---|
+| **storage** | Output, input Disconnect, **E0/E1** drive, `CTRLSEL = VPR`, `GPIOHSPADCTRL.BIAS = 2`; internal pull-up on `D3`/`D1` only | (same — all six are the card's) |
+| **display** | `P2.00`/`P2.04` → Output, S drive, no pull, `CTRLSEL = GPIO`, `GPIOHSPADCTRL.BIAS = 2` | Input, no pull, `CTRLSEL = GPIO` — the external pull-ups hold the bus idle-high and the card stays inert |
 
-The shared **I²C / Qwiic** bus on TWIM30 (the low-power-domain instance that reaches P0) carries the
+`GPIOHSPADCTRL.BIAS` is a **port-global** trim, not per-pin, so it is not restored per mode — both
+configurations set the same constant 2 (`semmc::HS_PAD_BIAS`). 2 is Nordic's value for the card at
+32 MHz and the panel's ≤0.758 MHz `BCK` is indifferent to it; writing it from both sides is what
+keeps the value independent of whether a card access has happened yet.
+
+Only `D3`/`D1` get an *internal* pull-up: this desk breakout carries its own resistors on
+`CLK`/`D0`/`D2`/`CMD`, and 13 kΩ ∥ 10 kΩ would sit under the SD spec's floor. **The production board
+should fit external 10–100 kΩ pull-ups on `CMD`/`DAT0–3` (none on `CLK`) and then run all internal
+pulls off.**
+
+**Port P1 — PERI domain ≤8 MHz (gate/BSP + sensors + COM + VCOM + buttons):**
+
+| Pin   | Signal       | Notes                                                     |
+|-------|--------------|-----------------------------------------------------------|
+| P1.03 | I²C SCL      | shared GPS + altimeter + compass bus (TWIM22, #218)        |
+| P1.04 | I²C SDA      | same bus                                                   |
+| P1.05 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)                |
+| P1.08 | BTN2         | BACK                                                       |
+| P1.09 | BTN1         | DOWN                                                       |
+| P1.10 | GSP          | gate start pulse                                           |
+| P1.11 | GCK          | gate clock                                                 |
+| P1.12 | GEN          | gate enable                                                |
+| P1.13 | INTB         | frame envelope                                             |
+| P1.14 | BSP          | source sub-line start (the lone P1 source line)            |
+| P1.16 | VCOM TX      | UARTE20 → host (`debug-uart` builds only)                  |
+| P1.17 | VCOM RX      | UARTE20 ← host (`debug-uart` only; needs HWFC OFF)         |
+| P1.22 | VCOM (COM)   | COM electrode, HighDrive — or a GPIOTE toggle on `com-hw`  |
+| P1.23 | VB           | COM electrode                                              |
+| P1.24 | VA           | COM electrode (inverse phase)                              |
+| P1.25 | LED1         | liveness heartbeat                                         |
+| P1.26 | BTN0         | UP                                                         |
+
+**Port P0 — low-power domain:**
+
+| Pin   | Signal | Notes    |
+|-------|--------|----------|
+| P0.05 | BTN3   | SELECT   |
+
+> **This table mirrors the canonical `src/board.rs` ledger and the constructors in `src/main.rs`.**
+> If they ever disagree, the constructors are the executable authority and both documents must be fixed.
+
+The shared **I²C / Qwiic** bus on TWIM22 (the instance the SD freed when storage moved onto the FLPR)
+carries the
 real sensors (issue #218 + compass): the u-blox **SAM-M10Q** GNSS (DDC address `0x42`), the Bosch
 **BMP581** altimeter (`0x47`, or `0x46` if the breakout straps `SDO` low), and an electronic compass
 — the **AK09916** magnetometer inside a TDK **ICM-20948** (the IMU itself at `0x68`/`0x69`; the ICM is
@@ -103,7 +134,7 @@ silent while moving or idle. A dead-band suppresses noise-only updates. The ship
 to drop the 9-axis IMU for a plain 3-axis magnetometer, which the [`obc_platform::compass`] (heading
 geometry) / [`obc_platform::icm20948`] (chip register map) split is designed for.
 
-The GPS **TX-Ready** line on P0.03 is an *optional* data-ready interrupt: when present it asserts as a
+The GPS **TX-Ready** line is an *optional* data-ready interrupt: when present it asserts as a
 NAV-PVT message becomes ready and wakes the event-driven sensor task, so the bus does **zero** work
 between fixes. **The SparkFun SAM-M10Q breakout (GPS-21834) does not break out TX-Ready** (it exposes
 SDA/SCL/INT/SAFE/RST/PPS — where `INT` is the EXTINT *wake input*, not data-ready), so on that board
@@ -130,7 +161,8 @@ From this crate directory (it's a standalone crate built for `thumbv8m.main-none
 
 ```sh
 # Default: full map + ride loop on the **LS021 panel via the FLPR** (issues #165 / #173),
-# driving the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C bus (issue #218).
+# driving the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C bus (issue #218),
+# with **both companion transports up** — the BLE radio and the USB device plane (#889).
 # Builds the RISC-V blob, so it needs an rv32emc gcc (below) + the LS021 wiring + Board-Configurator
 # settings. With no Qwiic hardware attached it still boots and idles waiting for a fix (watch RTT).
 cargo run --release
@@ -152,46 +184,113 @@ cargo run --release --features debug-uart
 cargo run --release --no-default-features --features ble
 ```
 
+**There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
+"USB device plane" section further down for the bring-up recipe.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
-spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`. All are
-in git history if an isolation bring-up is ever needed again — the FLPR transport is
-`src/ls021_flpr.rs`, exercised by the default build.)
+spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
+`sd_bench` raw-throughput harness went with the SPI storage path it measured, at #1158. Its sEMMC
+successor is the nonshipping `sd-bench` feature described below: it profiles the real map renderer
+rather than adding another standalone binary. All retired bins remain in git history if an isolation
+bring-up is ever needed again — the FLPR transport is `src/ls021_flpr.rs`, exercised by the default
+build.)
 
-### LS021 FLPR builds — DK wiring (issue #165)
+### LS021 FLPR builds — DK wiring
 
-The source bus + `BCK` + COM stay on **P2** (P2.00–06 data/clock, P2.07/08/10 COM, P2.09 heartbeat
-LED); the four gate lines + `BSP` sit on **free P1 pins** — `GSP P1.00 / GCK P1.01 / GEN P1.12 /
-INTB P1.10 / BSP P1.14` — deliberately **off** the SD-SPI bus (P1.06/07/11/12) and VCOM (P1.04/05)
-the app needs.
+The source bus + `BCK` stay on **P2** (see [the pin map](#full-pin-map-ls021--flpr-build)); the four
+gate lines + `BSP` sit on `GSP P1.10 / GCK P1.11 / GEN P1.12 / INTB P1.13 / BSP P1.14`, and COM on
+`P1.22–24`. Since #1158 the display shares P2 with the microSD card rather than with an SPI bus:
+`R0/R1/G0/G1` took `P2.06/.08/.09/.10` — the four pins the retired SD-SPI path freed — and `B0/B1`
+time-share `P2.00/.04` with the card's `D3/D1`.
 
-The DK breaks out only **P1.00–14** (P1.02/03 are NFC), which is one pin short for everything the app
-puts on P1 — so SD **`CS` moves from P1.12 to P0.00** (one jumper on the SD breakout; it's a plain
-GPIO, and the M33 already drives P0 for BTN3). That frees P1.12 for `GEN`. The SD bus pins (SCK P1.11
-/ MISO P1.07 / MOSI P1.06) are unchanged.
-
-The five gate/`BSP` DK pins, the masks in `src/flpr/flpr_pingpong.c`, and the physical 21-pin FPC
-harness must all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK
-header and remap all three together. Full pin/protocol detail:
+The gate/`BSP` pins, the masks in `src/flpr/flpr_scan.c`, and the physical 21-pin FPC harness must
+all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK header and
+remap all three together. Cross-core display architecture and protocol:
 [firmware/docs/ls021-flpr.md](../docs/ls021-flpr.md).
 
-#### COM on P2 is a DK artifact — route it onto GPIOTE pins on the production board
+### microSD over sEMMC — the storage transport
 
-COM (`VCOM`/`VB`/`VA`) sits on **P2** only because the source bus + COM came up together on the P2 FPC
-during bring-up — COM is a slow ~60 Hz wave that never needed P2's fast MCU domain. The cost: in
-embassy-nrf 0.11 **P2 has no GPIOTE mapping** (on either the nRF54L15 or the nRF54LM20 — only P0→GPIOTE30
-and P1/P3→GPIOTE20 are GPIOTE-capable), and PWM was proven dead on these exact pins (L1). So with COM
-on P2 the anti-DC-bias wave **must** be generated by the M33 (`com::com_task`), which wakes the core
-~120×/s regardless of the event-driven loop (issue #219) — capping the idle-power win.
+**There is no SPI.** The card runs in **native 4-bit SD mode** on the same FLPR that drives the
+panel, through Nordic's **sEMMC soft peripheral** — a 13,636 B position-independent RISC-V image
+(vendored at `vendor/semmc/`, `LicenseRef-Nordic-5-Clause`) that turns `P2.00–05` into a real SD host
+controller. The M33 fills in a register block in the image's RAM carve and pokes VPR tasks; the
+coprocessor does the clocking, CRC and framing. Measured on glass 2026-08-05/06 (LM20-DK + SanDisk
+SDXC 64 GB), against the SPI path this replaced:
 
-The fix is a layout choice, not firmware: **on the production board (nRF54LM20A, `hardware/PCB/`) route
-the three COM lines onto GPIOTE-capable P1/P3 pins** (all on GPIOTE20, so one DPPI channel toggles them
-in lockstep). Then the **`com-hw`** build (`cargo build --release --features com-hw`) drives COM from a
-zero-CPU **TIMER21 → DPPIC20 → GPIOTE20** toggle chain (`src/com_hw.rs`), the wave free-runs in
-System-ON sleep, and the M33 can finally WFI between events. The placeholder COM pins in the `com-hw`
-build (P1.04/05/15) are illustrative — reconcile them with the final schematic. On the DK, COM stays on
-P2 and the default build keeps `com_task`; `com-hw` is **on-glass + logic-analyzer verification pending**
-(no GPIOTE-COM board exists yet).
+| | sEMMC | SPI (retired) |
+| :-- | --: | --: |
+| read, CMD18 × 256 blocks @ 32 MHz 4-bit | **14.7 MB/s** | 1.07 MB/s |
+| write, CMD25 × 256 blocks @ 21.3 MHz | **8.2 MB/s** | ~1.1 MB/s |
+| single-block read | 430 µs | 1.1 ms |
+
+The bulk number is not the whole map-rendering story. The 2026-08-07 on-device profile used the
+shipping FAT extent path and the actual `MS7.OBS` three-shard map (394,075,657 B, 32 KiB clusters)
+while `SynthLocation` moved the camera. Counters at the `ByteSource` and concrete `BlockDevice`
+boundaries separate logical reader requests from physical sEMMC commands; the time includes FLPR
+mode acquisition, the card commands and any alignment-bounce copy.
+
+| Live map frame | Before reader tuning | Final warm result | Change |
+| :-- | --: | --: | --: |
+| four chunks | 36 commands / 18,432 B / **12.48–12.70 ms** | **0 commands / 0 B / 0 ms** on most frames | storage sleeps between refreshes |
+| five chunks | ~66 commands / ~30.8 KiB / **25.1–25.7 ms** | **0 commands / 0 B / 0 ms** once resident | eliminates steady five-chunk thrash |
+
+The raw bus was already healthy; command latency was the bottleneck. Pass B had been walking the
+quadtree again to reconstruct a leaf bbox even when pass A's geometry chunk was resident. The
+repeated ordered scans could also cyclically thrash both the index and geometry caches. Cached
+chunks now keep their leaf anchor; both caches use scan-resistant RRIP; the otherwise-idle first
+4 KiB of the oversized decode scratch acts as a fifth geometry slot; and two bounded leaf lists
+prefetch 1/8 of a viewport around the current view. The latter replaces one tagged index sector,
+so the complete change leaves `MapCache` at the same 37,084-byte resource baseline.
+
+Zero is the steady state, not a claim that panning never reads storage: crossing into two new
+chunks measured **4.45 ms**, while a periodic expanded-index refresh measured **5.9–7.6 ms** and
+was followed by zero-command frames again. A measured 1 KiB index-window experiment was rejected:
+despite turning reads into CMD18, it raised the earlier four-chunk warm result from 4.55–4.81 ms to
+8.6–9.0 ms by halving useful cache capacity.
+
+To reproduce, build and flash `cargo run --release --features synth,sd-bench`. The benchmark image
+boots directly to Map and emits one `map SD bench:` RTT line per redraw. `sd-bench` is absent from
+normal builds and adds no counters or automatic map boot to shipping firmware.
+
+**Wiring.** Six jumpers, no chip-select: `P2.00 D3 · P2.01 CLK · P2.02 D0 · P2.03 D2 · P2.04 D1 ·
+P2.05 CMD`, plus GND and 3V3. The pin assignment is fixed by the soft peripheral, not by us. Pull-ups
+per [the pad table above](#full-pin-map-ls021--flpr-build).
+
+**Sharing the coprocessor.** `src/flpr_mux.rs` time-multiplexes it: a switch to storage is 29 µs
+(park the hart, flip the pads, warm-boot the resident image, power it on), a switch back 138 µs
+(quiesce, park, flip, relaunch the display blob). The card keeps its `tran` + High-Speed state across
+a switch and is **never** re-initialised — measured 12/12 rounds. The mode is *lazy*, so a run of
+reads pays 29 µs once and a run of frames 138 µs once; the panel keeps getting frames throughout a
+multi-megabyte upload because storage sessions never outlive one synchronous burst.
+
+**Writes cap at 21.3 MHz.** 32 MHz writes fail card-side CRC on the jumper harness — a clean failure,
+nothing programmed — while 32 MHz reads are spotless. The clock is per-transaction, so mixed-rate is
+free. Re-test on soldered hardware.
+
+**If the card does not come up**, the RTT log names which rung failed (`SemmcError`), and an aborted
+transfer is decoded (`command timeout` / `command CRC` / `data CRC (clock too high for the wiring?)`
+/ `retries exceeded` / `protocol error`). A `data CRC` at 32 MHz on a long harness is the one worth
+trying `Semmc::set_read_delay` for.
+
+> ⚠️ **The bootloader cannot read the card.** `obc-boot` still carries the SPI path and there is no
+> room in its 32 KB carve for the 13.6 KB soft-peripheral image, so **SD-staged DFU (install and
+> rollback) does not work on this hardware** until the epic gives the bootloader a storage story. It
+> fails safely — bring-up reports no card and the old app boots — but it does fail. See
+> `obc-boot/src/sd.rs`.
+
+#### COM on P1.22–24: one wiring contract, two drivers
+
+The current nRF54LM20-DK harness routes COM (`VCOM`/`VB`/`VA`) to **P1.22/P1.23/P1.24**. The default
+build owns those three nets as high-drive GPIO outputs and `com::com_task` toggles them at ~60 Hz,
+waking the M33 about 120 times per second. The opt-in **`com-hw`** build owns the same pins as GPIOTE20
+channels and drives the same waveform from a zero-CPU **TIMER21 → DPPIC20 → GPIOTE20** chain.
+
+Historically, the first display harness put COM on P2.07/P2.08/P2.10 beside the source bus. P2 has no
+GPIOTE mapping and PWM was measured dead on that retired routing, so #1158 rehomed those nets to the
+current P1 pins when P2 became the display-source + native-SD bus. That history does not describe the
+current wiring. `com-hw` remains **on-glass + logic-analyzer verification pending**, so the shipping
+default continues to use the M33 driver on P1.22–24.
 
 ### FLPR toolchain
 
@@ -222,9 +321,11 @@ builds on it:
   anywhere. Its heapless 0.9 coexists with our 0.8 (no types cross the boundary).
 - **Critical section.** MPSL ships its own mandatory `critical-section` impl
   (`nrf-mpsl/critical-section-impl`) — global-interrupt-disable critical sections break its
-  radio timing, and two impls are a duplicate-symbol link error. So
-  `cortex-m/critical-section-single-core` moved behind the `cs-single-core` **default feature**,
-  and BLE builds pass `--no-default-features`.
+  radio timing, and two impls are a duplicate-symbol link error. It is the **only** impl in the
+  tree: `cortex-m/critical-section-single-core` lived behind a `cs-single-core` feature for a
+  radio-less build that stopped compiling and that nothing in CI built, and #931 removed it. `ble`
+  is a default feature, so the plain `cargo build --release` gets the right impl and there is no
+  invocation to remember.
 - **`central` is load-bearing.** trouble-host's Controller bound unconditionally requires
   `LeCreateConnCancel`, which only the multirole SDC lib variant exports — a peripheral-only
   `nrf-sdc` build is a link error. Costs flash only (the Builder never enables central roles).
@@ -237,13 +338,9 @@ builds on it:
   MPSL's recommended calibration (4 s cadence, ±500 ppm class) — solid, negotiates 2M PHY.
   Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
   before MPSL init — a filed follow-up.
-- **Interrupts/peripherals MPSL+SDC claim.** Vectors: `RADIO_0`, `TIMER10`, `GRTC_3` (high-prio),
-  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why the firmware's high-priority
-  `InterruptExecutor` (`src/planes.rs`) sits on **SWI01** (every build; the full priority ladder
-  is in `main.rs`'s module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
-  (LL crypto RNG), and a raft of PPI/PPIB channels (grouped in `main.rs`, consumed by
-  `ble::run`). The HF **crystal** is an MPSL hard requirement (`HfclkSource::ExternalXtal`) —
-  the `ble` build's boot config sets it; non-BLE builds keep the internal RC.
+- **MPSL/SDC hardware.** `board.rs` owns the five production MPSL vectors and 31 MPSL/SDC
+  timing/PPI claims. `main.rs` intentionally retains CRACEN so store-epoch minting can reborrow it
+  before `ble::run` consumes it as the link layer's crypto RNG; `ble::run` owns runtime/stack policy.
 - **RAM.** The map plane compiles into every build now (#270), so on the `ble` build the map and
   BLE stack are resident together. The budget assert in `main.rs` sums the map-plane residents
   (`MAP_RESIDENT`) and the BLE stack's (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this
@@ -270,18 +367,53 @@ builds on it:
 ## BLE — board-specific notes & on-glass verification
 
 The wire protocol (advertising policy, GATT services/UUIDs, CoC framing, object layouts, pairing
-security) is canonical in [`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — read it
+security) is canonical in [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — read it
 there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer state machine are the
-host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vectors/`). What's
+host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`). What's
 **board/firmware-specific** and worth knowing:
 
-- **DIS identity** — Firmware Revision is `<crate-semver>+<git-short>` (`build.rs` emits
-  `OBC_FW_GIT`), Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID` whose last
-  four digits are the `OBC-XXXX` advertised name.
+- **DIS identity** — Firmware Revision is the **installed OBCU container's version string**, read
+  off the DFU boot-state page at boot (`dfu::seed_firmware_revision` → `link::identity`), falling
+  back to `OBC_FW_GIT` — the bare git short hash `build.rs` emits — on a probe-flashed board that has
+  never installed a container. So a device you flashed over SWD reports `ca9b336`, not a version, and
+  no host offers it an auto-update (the dialect + why is in the BLE spec §3.1); to see a real version
+  on glass, install a wrapped `UPDATE.BIN` (`obc-mkimage`). The same string answers the USB
+  `DEVICE_INFO_READ` frame. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
+  whose last four digits are the `OBC-XXXX` advertised name.
 - **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
   files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
   the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
-  uploaded route shows in the on-device menu after a reflash. Every ride Finish on the map build
+  uploaded route shows in the on-device menu after a reflash. A **map** received over USB (#927) is
+  the fourth member of that family: `/MPnn.OBM` in the card root, same durable-id-in-the-filename
+  rule, and `OBM` is the 8.3-safe twin of `.obcm` the scan accepts beside it. It is the one upload
+  that streams *straight into its final file* rather than through `UPLOAD.TMP` — a temp-then-copy
+  promote would double both the minutes of writing and the free space needed — so the held-back
+  magic is patched into the final file itself at commit, and `sweep_aborted_maps()` reclaims the
+  zero-magic corpse of an interrupted transfer at the next boot. A **volume set** (#1039) is the
+  same file family `1..=32` times over — `/MSnnSkk.OBM` shards plus the `/MSnn.OBS` manifest
+  (`OBCA_Spec.md` §5) — and the same trick one level up: `set_upload_begin()` writes the manifest as
+  four zero bytes *before the first shard streams* and `set_manifest_commit()` patches `OBCS` in
+  last, after re-reading it and checking it against the shards on the card. So the manifest is the
+  set's commit point **and** its abandoned-upload signature: `sweep_aborted_sets()` reclaims a set
+  whose manifest magic is not *whole* — zeroed, half-patched, or shorter than four bytes — and can
+  never mistake a card-reader copy for its own (that one is written front to back from a finished
+  manifest, so its magic is there from the first block). Set ids are card-derived with no RRAM floor
+  — they name files, they are not durable protocol object ids — and are taken from **every** `MS`
+  name on the card, listed or not, so a rider's half-copied set is never minted over;
+  `set_upload_begin()` then runs the whole `delete_plan` first, which is §5.4's own replace-a-set
+  rule. `/MAP.SEL` records which map
+  the renderer streams from; a committed upload — single map or set — becomes that choice, effective
+  at the next boot (the map's tables are parsed once at startup and held for the session). A set
+  mount opens and retains every shard, resolves one direct-read FAT extent table per shard, and
+  places `SetShards<11>` in `.bss`; the board therefore mounts at most **11 shards** even though the
+  file format permits 32. Set-shard tables admit up to **64 FAT runs** (the standalone-map path
+  keeps its 128-run cap); a more fragmented shard is fixed by re-copying the publish tree to the
+  card. The parsed manifest is dropped after a synchronous mount, and the standalone/set extent
+  tables share one size/alignment-guarded `.bss` union because boot chooses exactly one map kind.
+  A larger set, or one whose shard extent table cannot be built and verified, is shown as
+  **MAP UNREADABLE** rather than partially mounted. Geometry renders through the same
+  app `MapScene` path as one `.obcm`; POIs, hours, the navigation graph and on-device routing stay on
+  the set's core shard. Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
   build just serves those. The id in each filename is recovered at boot and is what the app's
   synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);
@@ -310,30 +442,199 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
   totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
   counter must increment across them.
+- **Volume-set map path (#1033)** — put a valid `MS{id}.OBS` plus all derived shards on the card (or
+  upload the set), ensure `/MAP.SEL` names the manifest, and boot the default image. RTT must report
+  one mounted set and retain every shard; ride a route across a geometry-shard boundary at fine zoom,
+  then zoom out onto the coarse shard. Roads, route ink, rider marker and guidance must remain
+  continuous through both transitions. Repeat with a missing shard and with a set over 11 shards:
+  both must stop at **MAP UNREADABLE**, never render the remaining files as a smaller map. This run
+  is also the RAM acceptance for #1033: the guarded release ELF leaves 53,400 B above linked
+  residents, 17,592 B beyond the last measured 35,808 B deep-path peak, so complete the ordinary
+  route-load → ride → finish/save path while watching for `STKOF`/HardFault.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
 
+## The USB device plane (issue #889) — **in every build; cable-gated since #936**
+
+Every build ships a second transport for the *same* companion protocol: the LM20's USBHS
+behind one vendor-specific interface, so the web builder (WebUSB, Chromium) or the desktop app can
+push a map / route / firmware image to a plugged-in device. It was briefly behind a `usb` Cargo
+feature; **that feature is gone** — the plane is part of the device, not an option of it, and the
+resource baseline in [`firmware/tools/resource_baseline.json`](../tools/resource_baseline.json) pins
+the shape that includes it (+5,096 B resident and +45,688 B flash for the plane, +64 B and +288 B
+more for #936's VBUS gate, then +8 B resident and **−80 B** flash for #937's event-driven park;
+guarded poll frame 9,664 → 9,728 B against the unchanged 12,288 B limit, and unmoved since). The
+wire protocol is canonical in
+[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — USB is a transport under it, not a
+second protocol. What is **board-specific** and worth knowing:
+
+- **Zero GPIO cost.** D+/D−/VBUS/TXRTUNE are dedicated USBHS pins; nothing in the pin map above
+  moves. The driver ships in embassy-nrf 0.11 (`src/usb/usbhs.rs`, a full `embassy_usb_driver::Driver`
+  over the Synopsys OTG core, plus `vbus_detect.rs`), gated on the `nrf54lm20-app-s` feature this
+  crate already selects. It needs AHB ≥ 30 MHz — the board runs 128.
+- **Plug into J3 on the LM20-DK, not J4.** J4 is the on-board debugger (it is what `cargo run` and
+  RTT use); **J3 is the USB connector wired to the SoC**. You want both cables: J4 to flash and
+  watch RTT, J3 to the host that talks to the device. A production board with a routed USB port is
+  *not* a prerequisite for bring-up.
+- **VBUS gates everything, and J3 may be empty (#936).** Riding with no cable is the common case, so
+  the plane arms VBUS detection (VREGUSB only), parks, and builds the driver **when a cable
+  arrives** — then parks again on unplug and comes back on re-plug, any number of times. It is not
+  silent about it: `usb: no VBUS on J3 — device plane parked …` at boot, `usb: VBUS present …` +
+  `usb: device plane up …` when you plug in, `usb: VBUS removed …` when you pull it. Order no longer
+  matters, in either direction. Before the gate, a cable-less boot **faulted the bus** partway
+  through start-up (`Endpoint::wait_enabled` reads `USBHSCORE.DOEPCTL`, which does not answer while
+  `USBHS.ENABLE.CORE = 0`) and took the debug port with it — probe-rs reported
+  `DAP FAULT (sticky_err, sticky_orun)`, never a panic. If you ever see that signature again,
+  suspect a *new* USBHS access that escaped the gate, not a stack or a panic handler.
+- **The parked plane costs nothing (#937).** It waits on the VREGUSB interrupt, not a timer, so a
+  ride with J3 empty produces **zero** USB wake-ups — the 500 ms poll #936 shipped is gone, and so
+  is the 30 s fallback that briefly replaced it. There is **no timer here at all**: `wait_for_vbus`
+  registers on `VBUS_WAKER` *before* reading the level, and the level is a level rather than a
+  latched edge, so a wake cannot be lost and a periodic re-check could only ever help if one were.
+  Confirmed on glass 2026-07-26. If plug-in is ever *not* immediate, that is a broken interrupt
+  path to fix — not a latency to paper over.
+- **Two vectors, no clashes:** `USBHS` and `VREGUSB`. MPSL takes `RADIO_0` / `TIMER10` / `GRTC_3` /
+  `CLOCK_POWER` / `SWI00`, and the high-priority input executor is on `SWI01`. `VREGUSB` carries
+  **two** handlers — ours (wake the park) and embassy's (clear the events, wake the driver's own
+  bus waker) — bound in one `bind_interrupts!` arm. Ours reads and clears nothing, so the order
+  between them does not matter; dropping embassy's would leave the events uncleared and storm.
+- **Endpoint layout** (the host reads it off the descriptors): one interface, class `0xFF`, four
+  bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` control frames, `0x82/0x02` the
+  object stream. Control frames are `selector u8 · payload`, one frame per transfer.
+- **The bulk OUT endpoint is armed in bursts** (#1173), which is why
+  `embassy-usb-synopsys-otg` is vendored under `vendor/` — stock, it arms one packet and re-arms
+  only after the firmware task has copied it out, so the endpoint NAKs for a whole scheduler round
+  trip per 512 B (~342 µs measured on glass 2026-08-07, capping uploads at ~1.4 MB/s). The dial is
+  `BULK_OUT_BURST_PACKETS` in `src/usb/mod.rs`; the sweep recipe is on the constant, and both RAM
+  baselines move with it. **Bench it from RTT:** flash `cargo run --release`, upload a multi-shard
+  map from the web builder, and read the `~{} kB/s` figure on each
+  `usb: [bulk] upload finished` line. The watch-list — each line says something different went
+  wrong, and none of them is "slow":
+
+  | RTT line | What it means |
+  | :-- | :-- |
+  | `ep_out buffer overflow index=2` (driver) | **The burst reader armed with bytes still staged.** Should be structurally impossible — `arm_transfer` asserts against it — so a panic is the expected form. Treat any occurrence as possible silent loss; map uploads intentionally do not spend a second whole-file CRC pass looking for driver bugs. |
+  | the endpoint goes dead after exactly one burst | The core cleared `EPENA` on transfer completion and the stock `DOEPTSIZ`+`CNAK` re-arm is not enough on this part. Nothing else looks like this. |
+  | `discarded N unclaimed bytes while idle` with **N > 512** | Payload racing its own announce, now absorbed a whole burst deep. Expected to disappear once the idle-read fix lands; before it, this is bytes being thrown away. |
+  | `reject probe: first payload bytes …` | A CRC-checked object failed, with the discriminator inline: a **clean format magic** means the stream was offset-free and lost or gained bytes mid-way; **garbage** means it arrived offset. The probe is deliberately absent for link-checked map objects. |
+  | `host overran the announced length by N B` | The peer sent more than it announced — a host bug, not a device one. |
+  | `still receiving … into an abort drain` | The drain is not keeping up with a burst-armed endpoint; harmless, but it means the abort answer is late. |
+
+  Two cases worth constructing deliberately, because natural traffic almost never produces them:
+  an object whose length is an **exact multiple of 512** (no short packet anywhere, so the final
+  burst stays armed across the gap to the next announce), and an **unplug** and a host **abort**
+  in the middle of a burst.
+- **Map uploads use DMA at both ends of the pipeline.** The vendored OTG driver runs in buffer-DMA
+  mode, including aligned IN bounce storage and burst-sized OUT DMA. The scratch arena contributes
+  two 64 KiB halves: USB fills one while the storage path coalesces two adjacent 32 KiB FAT
+  clusters from the other into one 128-block CMD25 on the FLPR. The next append joins that DMA
+  before reusing its half; this ownership rule is correctness-critical. `UPLOAD_WRITE_PIPE` also
+  caches one FAT sector and the sEMMC driver offers ACMD23 as a best-effort pre-erase hint.
+- **The descriptor CRC remains on the wire, but USB map verification is link-checked.** `map`,
+  `mapShard`, `terrainShard`, and `mapSet` skip the redundant device-side whole-object fold. USB
+  packet CRC/retry, sEMMC block CRC/ECC, the exact announced length, the format header, and the
+  magic-last commit remain. Routes, trips, firmware images, echo, BLE uploads, and downloads retain
+  the whole-object check. This policy avoids roughly 20 serial CPU cycles per map byte without a
+  protocol-version or host change.
+- **Measured 2026-08-07 on the LM20-DK + reference SanDisk card:** a final 73.4 MB builder set's
+  three OBCM shards sustained 7.50, 7.27 and 7.85 MB/s; its 6 MB terrain shard sustained 7.65 MB/s.
+  That is about 7.3–7.9 MB/s across real artifacts, up from about 2.0 MB/s on the original
+  synchronous/CRC path. RTT's `usb: [bulk] upload finished` line is the authority for a particular
+  card and file.
+- **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
+  and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
+  Zadig.
+- **VID/PID `1209:0001`** is pid.codes' *prototype* pair — deliberately the id that means "not
+  allocated yet". Allocating a real PID is an owner action; when it lands, two constants change
+  (`src/usb/mod.rs` and the web builder's `OBC_USB_FILTERS`).
+
+### Bring-up recipe
+
+Steps 1–2 are the **cable-less boot**, and they are the ones that matter most: that is how the
+device is used. Steps 3–6 are the ordinary transfer path; step 7 is recovery. All seven were
+confirmed on glass, with the burst/DMA map path and recovery upload re-checked on 2026-08-07.
+
+1. With **J3 empty**, flash `cargo run --release` over **J4** — the plain default build; no feature
+   flag selects the plane any more (remember the flash-twice quirk and keep `--verify`; retry 2–3×
+   if probe-rs errors).
+2. **The board must reach the ride loop and stay there.** RTT shows
+   `usb: no VBUS on J3 — device plane parked; it comes up when a cable is plugged in`, then the map
+   renders and the session keeps logging. No `DAP FAULT`, no reset loop. This is the #936
+   regression test: before the VBUS gate, this exact step killed the boot.
+3. Now plug **J3** into the host. RTT: `usb: VBUS present — bringing the device plane up` followed by
+   `usb: device plane up — 1209:0001, serial '…', HS bulk 512 B`. **Watch the clock here** — that is
+   the #937 check. The defmt timestamp on `VBUS present` should be within a few milliseconds of the
+   connector seating, because a VREGUSB interrupt woke the task. If instead it lands *seconds*
+   later, or not at all, the VREGUSB wake is not arriving — there is no fallback timer to carry it
+   any more, so this is a hard failure rather than a slow success. On macOS
+   `system_profiler SPUSBDataType` (or Linux `lsusb -v -d 1209:0001`) should show
+   `OpenBikeComputer`, the FICR serial as `iSerialNumber`, **Speed: Up to 480 Mb/s**, one
+   vendor-specific interface and four bulk endpoints.
+4. In Chromium, `chrome://device-log` shows the enumeration; the web builder's connect button opens
+   the chooser and the identity + device-info reads answer. RTT should show
+   `usb: [ctl] endpoint enabled` and `usb: [bulk] endpoint enabled` once the host claims the
+   interface.
+5. **Unplug J3 mid-ride.** RTT: `usb: VBUS removed — device plane parked, endpoints idle until a
+   cable returns`, and the ride loop carries on untouched.
+6. **Plug it back in.** `usb: VBUS back — device plane serving again`, the host re-enumerates, and a
+   transfer works again — again within milliseconds, not seconds. Repeat a few times: the cable
+   cycle is a loop, not a one-shot, and this is also where a lost VREGUSB edge would show up, since
+   the park after an unplug is the one that has to be woken by an interrupt rather than entered
+   with the answer already known.
+7. **Recovery path:** boot once with an unreadable or absent map. Keep the fault screen visible,
+   connect the builder, and upload a valid map/set; USB must enumerate and run at the ordinary map
+   rate even though the ride loop and BLE were never spawned. Restart and confirm the normal BLE
+   stack starts — that proves the replacement parsed and mounted rather than merely committed.
+
+**Known failure modes.** *No* `usb:` line at all → the task never started (it is spawned
+unconditionally, so this is a real bring-up failure, not a missing build flag — check for a panic
+before the spawn). `usb: no VBUS …` while a cable *is* in J3 → VBUS detection, not the plane: check
+J3 really is the SoC connector on your DK revision and that `VREGUSB.TASKS_START` ran (that log
+line is printed after it). A `DAP FAULT (sticky_err, sticky_orun)` that loses the target is the
+#936 signature — a USBHS core access that escaped the VBUS gate; it is not a panic and not a stack
+overflow, so look for a new register read, not a new buffer. A plug or re-plug that is **never
+noticed** is the #937 signature: the park's VREGUSB wake is not arriving, and since the fallback
+timer is gone nothing else will rescue it — check that both handlers are still on the `VREGUSB` arm
+of `bind_interrupts!`. Enumeration at 12 Mb/s instead of 480 →
+the PHY fell back to full speed, and the 512 B bulk descriptors are then illegal; that is a real
+bug, not a slow link. A device that enumerates but whose transfers hang → look for `discarded N
+unclaimed bytes while idle` (the host wrote payload before its descriptor was acked) or a `busy`
+status (the cross-transport one-transfer gate — a BLE transfer is in flight). `Code 43` on Windows
+means the MS OS 2.0 descriptor set was rejected; re-read it with `usbview`.
+
 ## Driving it from a host (`debug-uart`)
 
-With the `debug-uart` firmware flashed and VCOM HWFC off, replay a recorded ride over
-the VCOM from the desktop feeder (from the `firmware/` workspace dir):
+With the `debug-uart` firmware flashed and VCOM HWFC off, open the desktop feeder from the
+repository root. A GPX path is optional:
 
 ```sh
-cargo run -p obc-usb-host -- --gpx ../kandel.gpx        # add --port <VCOM tty> if not auto-detected
+obc flash debug-uart
+obc uart                              # or: obc uart path/to/ride.gpx
+# One command to flash and then open the feeder:
+obc debug
 ```
 
-`obc-usb-host` streams the `.gpx` as fake GPS fixes (plus a baro/compass slider and an
-on-screen button row that injects encoder/Back presses), and shows the device's
-render-stats telemetry coming back. It's the same `obc-platform::debug_link` wire
-protocol the simulator uses — only the transport differs (a VCOM UART here). `--list`
-enumerates serial ports; the VCOM is the J-Link CDC port.
+`obc-usb-host` can stream the `.gpx` as fake GPS fixes, or keep a stationary fix fresh at decimal
+latitude/longitude entered in its **Fixed GPS location** panel. That panel also has a user-triggered
+place search (for example `Munich` or `Sydney`) whose result fills the coordinates; it uses the
+public OpenStreetMap Nominatim service only when **Search** is pressed, caches repeated queries for
+the session, and can be pointed at another compatible endpoint with `OBC_GEOCODER_URL`. Enable
+**Send stationary fix every second** to keep the device's normal GPS freshness gate satisfied —
+useful for weather tests anywhere in the world without manufacturing a GPX.
+
+The feeder also provides a baro/compass slider and an on-screen button row that injects the four
+buttons' presses, and shows the device's render-stats telemetry coming back. It's the same
+`obc-platform::debug_link` wire protocol the simulator uses — only the transport differs (a VCOM
+UART here). `--list` enumerates serial ports; the VCOM is the J-Link CDC port. The J3 USB device
+cable is not involved and should be unplugged when the test also needs BLE.
 
 ### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
 
-With an `UPDATE.BIN` (see `../README.md` §Firmware update images) in the card root, the
+With a **signed** `UPDATE.BIN` (see `../README.md` §Firmware update images — an unsigned
+container is refused since OBCU v2, #997) in the card root, the
 same link carries the DFU armer's trigger — no feeder GUI needed. Two hard-won gotchas
 (both bit for real): the J-Link exposes **two** CDC ports and only one is live — on macOS
 it's the `cu.usbmodem*133` one (`*131` silently swallows writes; and use `cu.*`, never
@@ -360,6 +661,7 @@ NOT clear it, only a physical DK power-cycle does.
 The device streams one `D` line per phase — scan result (staged version, size, extents),
 rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs the image
 (LED codes: `../obc-boot/README.md`). Errors (`no UPDATE.BIN…`, `failed its CRC check…`,
-`too fragmented…`) come back the same way and the device keeps running. The trigger is
+`is not signed…`, `signature is not valid for this device`, `too fragmented…`) come back the
+same way and the device keeps running. The trigger is
 refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
 is what S5's on-device menu entry will post.

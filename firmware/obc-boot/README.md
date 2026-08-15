@@ -10,18 +10,30 @@ which would re-enter the bootloader and read the fresh `Trial` as unconfirmed);
 a `Trial` still present at a *later* entry rolls back the same way. All install
 *sequencing* — pass ordering, retry counts, every failure edge — lives in
 `obc_dfu::engine` and is unit-tested there with mock IO; this crate only wires
-real SPI/RRAMC/GPIO into that engine (`src/sd.rs`, `src/install.rs`, `src/led.rs`)
-and acts on the outcome. The byte formats and the boot decision table are
-normative in [`OBCU_Spec.md`](../../OBCU_Spec.md).
+the real card transport/RRAMC/GPIO into that engine (`src/semmc.rs`,
+`src/install.rs`, `src/led.rs`) and acts on the outcome. The byte formats and the
+boot decision table are normative in [`OBCU_Spec.md`](../../specs/OBCU_Spec.md).
+
+**The card transport is the sEMMC soft peripheral** (#1158 — the SPI path is
+deleted; its pins are the display's now): the card only exists behind a ~13.6 KB
+coprocessor image this crate cannot afford to embed, so the app-side armer stages
+that image into the `SEMMC_STAGE` RRAM carve before every arm (`OBCU_Spec.md` §3)
+and `src/semmc.rs` validates it — the CRC frame plus the image's own metadata,
+through the shared `obc_dfu::blobstage` — before booting it on the FLPR. An
+`Armed` page whose carve fails validation is **abandoned** like DR3's unreadable
+card (the slot is untouched, no retry can heal a bad carve); a `Rollback` whose
+carve fails validation parks on SOS (a power cycle retries — near-unreachable, by
+the armer's stage-before-arm ordering).
 
 The RRAM layout (single source of truth for the app side:
 `../obc-fw-nrf54l/build.rs`; this crate's static [`memory.x`](memory.x) mirrors it):
 
 ```
-0x0000_0000  obc-boot          32 KB   (this crate; CI size-guards the budget)
-0x0000_8000  app slot        1484 KB   (obc-fw-nrf54l, linked at 0x8000)
-0x0017_B000  BOOT_STATE page    4 KB   (the obc-dfu handoff page)
-0x0017_C000  SETTINGS page      4 KB   (the app's persistent settings, #193)
+0x0000_0000  obc-boot           32 KB   (this crate; CI size-guards the budget)
+0x0000_8000  app slot         1976 KB   (obc-fw-nrf54l, linked at 0x8000)
+0x001F_6000  SEMMC_STAGE        20 KB   (the armer-staged sEMMC blob, #1158)
+0x001F_B000  BOOT_STATE page     4 KB   (the obc-dfu handoff page)
+0x001F_C000  SETTINGS page       4 KB   (the app's persistent settings, #193)
 ```
 
 ## LED codes (LED0 — the bootloader's entire UI)
@@ -31,8 +43,8 @@ The RRAM layout (single source of truth for the app side:
 | one short pulse | proof-of-life on every entry (then the app boots) |
 | slow heartbeat | verifying the staged image (nothing written yet) |
 | fast heartbeat | flashing the app slot / readback |
-| **2 blinks**, then boot | staged image invalid — arm cleared, old app intact |
-| **3 blinks**, pause, repeat | SD missing / read failing — retrying forever with backoff (reinsert card, or power cycle) |
+| **2 blinks**, then boot | arm cleared, old app intact — the staged image failed verification, or (DR3) an `Armed` card stayed unreadable past the retry budget, or (#1158) the staged sEMMC blob failed validation; the untouched arm was abandoned |
+| **3 blinks**, pause, repeat | SD missing / read failing — retrying with backoff (reinsert card, or power cycle). A pre-erase `Armed` arm gives up after ~a minute (`ARM_ABANDON_ROUNDS`) and abandons it (→ 2 blinks, old app boots); a `Rollback` or a mid-flash error retries forever (never abandon a touched slot) |
 | **SOS**, forever | readback never matched after retries — halted; state still `Armed`, so a power cycle retries the install |
 
 Heartbeat rates scale with card throughput (a toggle per N 4 KB chunks); the
@@ -70,7 +82,7 @@ cargo build --release --features rtt
 
 ```sh
 cd firmware/obc-boot
-cargo run --release        # probe-rs run --chip nRF54L15 --verify
+cargo run --release        # probe-rs run --chip nRF54LM20A --verify  (or: obc flash-boot)
 ```
 
 **The flash-twice DK quirk applies here too:** the first probe-rs flash after
@@ -115,16 +127,23 @@ Symptoms of a missing piece: no LED blink and no boot at all → no bootloader a
   Flip side: every trial boot now runs its bring-up under a counting dog, so the
   app must reach its own WDT adoption well inside one 24 s period (invariant
   comment at the app's WDT setup in `obc-fw-nrf54l/src/main.rs`).
-- **No executor, no timers, no FAT, no FLPR**: blocking embassy-nrf HAL only
-  (GPIO + blocking `Spim` + `Rramc`; the card delay source is a cycle-counted
-  busy-wait). `embedded_sdmmc::SdCard` is used **without** `VolumeManager` —
-  extents are pre-resolved absolute blocks, and `llvm-nm` on the release ELF
-  must show no FAT/volume symbols. The app starts the FLPR itself. The panel
-  keep-alive (`src/com.rs`) holds the line: no display driver, no framebuffer —
-  just parked pins and a CYCCNT-paced GPIO toggle woven into the existing waits.
-- **Deliberate duplication**: SD pins/frequencies, the panel/COM pins, and the
-  RRAM write idiom are copied from the board crate (`obc-fw-nrf54l/src/sd.rs`,
-  `src/main.rs`, `src/settings.rs`) with cross-referencing comments — no shared
-  pins module.
+- **No executor, no timers, no FAT, no interrupts**: blocking embassy-nrf HAL
+  (GPIO + `Rramc`) plus raw, polled MMIO for the sEMMC transport — every wait is
+  a DWT-cycle-bounded deadline, and the VPR00 completion vector is never bound.
+  Extents are pre-resolved absolute blocks and `llvm-nm` on the release ELF must
+  show no FAT/volume symbols. The **one** coprocessor use is deliberate and
+  scoped (#1158): the card only exists behind the sEMMC soft peripheral, so the
+  Install/Rollback paths boot the armer-staged image on the FLPR and park the
+  hart + reset the pads again before the jump; the display blob stays entirely
+  the app's. The panel keep-alive (`src/com.rs`) holds the line: no display
+  driver, no framebuffer — just parked pins and a CYCCNT-paced GPIO toggle woven
+  into the existing waits.
+- **Deliberate duplication**: the sEMMC driver is a subtractive port of the
+  board crate's (`obc-fw-nrf54l/src/semmc.rs` — laws, barrier, CMD8 workaround
+  inherited verbatim; `src/semmc.rs`'s module doc lists exactly what was dropped
+  and why), and the panel/COM pins + the RRAM write idiom are copied from
+  `src/main.rs` / `src/settings.rs` with cross-referencing comments — no shared
+  pins module. The carve geometry both crates must agree on lives in the shared
+  `obc_dfu::blobstage` constants and the two `memory.x` maps.
 - `main.rs` stays a thin driver (bring-up + outcome dispatch); review is the
   verification for the wiring, the host tests are it for the sequencing.

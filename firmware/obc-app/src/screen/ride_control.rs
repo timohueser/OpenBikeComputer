@@ -4,7 +4,7 @@
 //!
 //! Each option has a `guard` flag: non-guarded (Resume) fire on `press`; guarded, irreversible ones
 //! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
-//! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
+//! Select is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
 use core::fmt::Write;
 
@@ -15,7 +15,7 @@ use crate::input::Gesture;
 use crate::stat_fields::{fmt_hms, fmt_km};
 use crate::Msg;
 
-use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, Transition};
+use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, RideMenuScreen, Screen, Transition};
 
 /// The ride-so-far ledger: three caption/value rows under the title bar.
 const ROWS_TOP: i32 = 50;
@@ -53,7 +53,7 @@ impl RideControl {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => {
                 // Instant (non-guarded) options only — i.e. Resume.
                 if GUARDS[self.selected.min(GUARDS.len() - 1)] {
@@ -76,7 +76,7 @@ impl RideControl {
                 cx.activity.mode = Mode::Riding; // back = Resume (cancel the pause)
                 Transition::Pop
             }
-            Gesture::BackHold => Transition::None,
+            Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
         }
     }
 
@@ -119,15 +119,7 @@ impl RideControl {
         }
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
-        let geo = super::GuardedRowsGeometry {
-            x: 14,
-            w: w - 28,
-            top: OPTIONS_TOP,
-            row_h: OPTION_ROW_H,
-            gap: OPTION_GAP,
-            label_dx: 12,
-            label_dy: 5,
-        };
+        let geo = super::GuardedRowsGeometry::panel(w, OPTIONS_TOP, OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RideControlResume), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::RideControlFinish), guard: GUARDS[1] },

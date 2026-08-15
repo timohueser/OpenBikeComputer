@@ -119,7 +119,7 @@ fn independent_fakes_implement_sensor_input_and_track_ports() {
     assert_eq!(PowerSource::poll(&mut sensors), Some(240));
     assert_eq!(CadenceSource::poll(&mut sensors), Some(88));
 
-    let edge = InputEvent::Button(ButtonEvent::Down(Button::Encoder));
+    let edge = InputEvent::Button(ButtonEvent::Down(Button::Select));
     let mut input = FakeInput(Some(edge));
     assert_eq!(input.poll(), Some(edge));
 

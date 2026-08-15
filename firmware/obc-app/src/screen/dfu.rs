@@ -8,7 +8,7 @@
 //!   board's answer ([`App::apply_event`](crate::App::apply_event)) replaces
 //!   it with the confirm screen or the error card. **Back** cancels the wait.
 //! - [`DfuConfirmScreen`] — the *installed → update* version table and the no-undo / same-version
-//!   warnings. Encoder **Install** arms (posts
+//!   warnings. Select **Install** arms (posts
 //!   [`DfuAction::Install`](crate::activity::DfuAction) and swaps to the progress screen); **Back**
 //!   / **Cancel** returns to the System menu. The standard two-row confirm chrome, like
 //!   [`NavConfirmScreen`](super::NavConfirmScreen).
@@ -158,7 +158,7 @@ const INSTALL: usize = 0;
 const INSET: i32 = 12;
 
 /// The install confirm. Carries the scan report (the versions + no-undo fact) and the highlighted
-/// option. Encoder **Install** posts [`DfuAction::Install`](crate::activity::DfuAction) and swaps to
+/// option. Select **Install** posts [`DfuAction::Install`](crate::activity::DfuAction) and swaps to
 /// the progress screen; **Back** / **Cancel** returns to the System menu.
 #[derive(Debug)]
 pub struct DfuConfirmScreen {
@@ -173,7 +173,7 @@ impl DfuConfirmScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => super::list::on_turn(&mut self.selected, n, N_CONFIRM_ITEMS),
+            Gesture::Step(n) => super::list::on_step(&mut self.selected, n, N_CONFIRM_ITEMS),
             Gesture::Press if self.selected == INSTALL => {
                 // Arm: post the install one-shot (the board snapshots the rollback + arms + reboots)
                 // and swap to the progress spinner. The confirm was pushed over the System menu.
@@ -413,6 +413,7 @@ impl DfuErrorScreen {
             DfuScanError::Damaged => Msg::DfuDamaged,
             DfuScanError::TooLarge => Msg::DfuTooLarge,
             DfuScanError::TooFragmented => Msg::DfuFragmented,
+            DfuScanError::Untrusted => Msg::DfuUntrusted,
         };
         let key = match self.reason {
             DfuErrorReason::Scan(e) => scan_msg(e),
@@ -518,7 +519,7 @@ impl DfuFailedScreen {
 mod tests {
     use super::*;
     use crate::activity::{Activity, DfuAction};
-    use crate::screen::PoiScratch;
+    use crate::screen::test_ctx;
     use crate::settings::Settings;
     use crate::{AppState, Mode};
 
@@ -532,20 +533,8 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
-        let scratch = PoiScratch::new();
         let t = {
-            let mut cx = Ctx {
-                state: &mut st,
-                activity: &mut act,
-                settings: &mut settings,
-                routes: &[],
-                rides: &[],
-                trips: &[],
-                nav_profiles: &crate::NavProfiles::EMPTY,
-                poi_scratch: &scratch,
-                sensor_scan_hits: &[],
-                now_ms: 0,
-            };
+            let mut cx = test_ctx(&mut st, &mut act, &mut settings);
             scr(&mut cx)
         };
         (t, act.take_dfu_request())
@@ -571,8 +560,8 @@ mod tests {
     #[test]
     fn confirm_cancel_and_back_pop_without_arming() {
         let mut scr = DfuConfirmScreen::new(report("v1", "v2", false));
-        // Turn to the Cancel row, then press.
-        let (_, _) = run(&mut |cx| scr.handle(Gesture::Turn(1), cx));
+        // Step down to the Cancel row, then press.
+        let (_, _) = run(&mut |cx| scr.handle(Gesture::Step(1), cx));
         let (t, posted) = run(&mut |cx| scr.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop), "Cancel pops");
         assert_eq!(posted, None, "and arms nothing");

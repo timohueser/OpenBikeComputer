@@ -11,7 +11,7 @@ import Foundation
 ///
 /// The device encodes (its catalog scan → the wire); the app decodes (`listRoutes`). This mirrors
 /// the firmware `obc-ble` `list` codec field-for-field and is pinned byte-for-byte by
-/// `protocol-vectors/route-list.bin` (`ProtocolVectorTests`), so neither side can drift from the
+/// `specs/vectors/route-list.bin` (`ProtocolVectorTests`), so neither side can drift from the
 /// spec without a test going red.
 public struct RouteListEntry: Equatable, Sendable {
     public var objectID: UInt16
@@ -70,21 +70,21 @@ public struct RouteListEntry: Equatable, Sendable {
 
     public func encode() -> Data {
         var data = Data(count: Self.encodedLength)
-        data.putLE(objectID, at: 0)
+        data.writeUInt16LE(objectID, at: 0)
         // 2..4 reserved = 0
-        data.putLE(byteLen, at: 4)
-        data.putLE(distanceMeters, at: 8)
-        data.putLE(ascentMeters, at: 12)
-        data.putLE(pointCount, at: 16)
-        data.putLE(waypointCount, at: 20)
+        data.writeUInt32LE(byteLen, at: 4)
+        data.writeUInt32LE(distanceMeters, at: 8)
+        data.writeUInt32LE(ascentMeters, at: 12)
+        data.writeUInt32LE(pointCount, at: 16)
+        data.writeUInt16LE(waypointCount, at: 20)
         let nameBytes = Array(name.utf8.prefix(Self.maxNameLength))
         data[data.startIndex + 22] = UInt8(nameBytes.count)
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + 23 + i] = byte }
         // 23+n .. 71 zero padding
-        data.putLE(crc32, at: 72)
+        data.writeUInt32LE(crc32, at: 72)
         // The auto-expiry tail (epic #638), after the content crc32: `nil` writes
         // `0` (the wire's "no known expiry" / "keep forever"), 76..80 zero padding.
-        data.putLE(expiresAt ?? 0, at: 76)
+        data.writeUInt32LE(expiresAt ?? 0, at: 76)
         data[data.startIndex + 80] = retention ?? 0
         return data
     }
@@ -99,16 +99,16 @@ public struct RouteListEntry: Equatable, Sendable {
         let b = data.startIndex
         let nameLen = Int(min(data[b + 22], UInt8(Self.maxNameLength)))
         let hasExpiryTail = data.count >= Self.encodedLength
-        let rawExpiry: UInt32? = hasExpiryTail ? data.getLE(at: 76) : nil
+        let rawExpiry: UInt32? = hasExpiryTail ? data.readUInt32LE(at: b + 76) : nil
         self.init(
-            objectID: data.getLE(at: 0),
-            byteLen: data.getLE(at: 4),
-            distanceMeters: data.getLE(at: 8),
-            ascentMeters: data.getLE(at: 12),
-            pointCount: data.getLE(at: 16),
-            waypointCount: data.getLE(at: 20),
+            objectID: data.readUInt16LE(at: b),
+            byteLen: data.readUInt32LE(at: b + 4),
+            distanceMeters: data.readUInt32LE(at: b + 8),
+            ascentMeters: data.readUInt32LE(at: b + 12),
+            pointCount: data.readUInt32LE(at: b + 16),
+            waypointCount: data.readUInt16LE(at: b + 20),
             name: String(decoding: data[(b + 23)..<(b + 23 + nameLen)], as: UTF8.self),
-            crc32: data.getLE(at: 72),
+            crc32: data.readUInt32LE(at: b + 72),
             expiresAt: (rawExpiry ?? 0) == 0 ? nil : rawExpiry,
             retention: hasExpiryTail ? data[b + 80] : nil
         )
@@ -136,8 +136,8 @@ public enum RouteList {
     /// round-trip never models truncation).
     public static func encode(_ entries: [RouteListEntry]) -> Data {
         var data = Data([version, UInt8(RouteListEntry.encodedLength)])
-        data.appendLE(UInt16(entries.count))
-        data.appendLE(UInt16(entries.count))  // total = count
+        data.appendUInt16LE(UInt16(entries.count))
+        data.appendUInt16LE(UInt16(entries.count))  // total = count
         for entry in entries { data.append(entry.encode()) }
         return data
     }
@@ -182,14 +182,14 @@ public struct RideListEntry: Equatable, Sendable {
 
     public func encode() -> Data {
         var data = Data(count: Self.encodedLength)
-        data.putLE(objectID, at: 0)
+        data.writeUInt16LE(objectID, at: 0)
         // 2..4 reserved = 0
-        data.putLE(byteLen, at: 4)
-        data.putLE(startTime, at: 8)
-        data.putLE(distanceMeters, at: 12)
-        data.putLE(movingTimeSeconds, at: 16)
-        data.putLE(averageSpeedCms, at: 20)
-        data.putLE(climbMeters, at: 22)
+        data.writeUInt32LE(byteLen, at: 4)
+        data.writeUInt32LE(startTime, at: 8)
+        data.writeUInt32LE(distanceMeters, at: 12)
+        data.writeUInt32LE(movingTimeSeconds, at: 16)
+        data.writeUInt16LE(averageSpeedCms, at: 20)
+        data.writeUInt16LE(climbMeters, at: 22)
         let nameBytes = Array(name.utf8.prefix(Self.maxNameLength))
         data[data.startIndex + 24] = UInt8(nameBytes.count)
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + 25 + i] = byte }
@@ -203,13 +203,13 @@ public struct RideListEntry: Equatable, Sendable {
         let b = data.startIndex
         let nameLen = Int(min(data[b + 24], UInt8(Self.maxNameLength)))
         self.init(
-            objectID: data.getLE(at: 0),
-            byteLen: data.getLE(at: 4),
-            startTime: data.getLE(at: 8),
-            distanceMeters: data.getLE(at: 12),
-            movingTimeSeconds: data.getLE(at: 16),
-            averageSpeedCms: data.getLE(at: 20),
-            climbMeters: data.getLE(at: 22),
+            objectID: data.readUInt16LE(at: b),
+            byteLen: data.readUInt32LE(at: b + 4),
+            startTime: data.readUInt32LE(at: b + 8),
+            distanceMeters: data.readUInt32LE(at: b + 12),
+            movingTimeSeconds: data.readUInt32LE(at: b + 16),
+            averageSpeedCms: data.readUInt16LE(at: b + 20),
+            climbMeters: data.readUInt16LE(at: b + 22),
             name: String(decoding: data[(b + 25)..<(b + 25 + nameLen)], as: UTF8.self)
         )
     }
@@ -242,8 +242,8 @@ public enum RideList {
     /// `count` (a round-trip never models truncation).
     public static func encode(_ entries: [RideListEntry]) -> Data {
         var data = Data([RouteList.version, UInt8(RideListEntry.encodedLength)])
-        data.appendLE(UInt16(entries.count))
-        data.appendLE(UInt16(entries.count))  // total = count
+        data.appendUInt16LE(UInt16(entries.count))
+        data.appendUInt16LE(UInt16(entries.count))  // total = count
         for entry in entries { data.append(entry.encode()) }
         return data
     }
@@ -263,8 +263,8 @@ private func decodeList<Entry>(
     guard data[b] == RouteList.version else { throw DescriptorError.unknownStatus(data[b]) }
     let entryLen = Int(data[b + 1])
     guard entryLen >= minEntryLen else { throw DescriptorError.unknownStatus(data[b + 1]) }
-    let count: UInt16 = data.getLE(at: 2)
-    let total: UInt16 = data.getLE(at: 4)
+    let count = data.readUInt16LE(at: b + 2)
+    let total = data.readUInt16LE(at: b + 4)
     var entries: [Entry] = []
     entries.reserveCapacity(Int(count))
     for k in 0..<Int(count) {
@@ -273,34 +273,4 @@ private func decodeList<Entry>(
         entries.append(try entry(data[start..<(start + entryLen)]))
     }
     return (entries, Int(total))
-}
-
-// MARK: - Little-endian (de)serialization
-
-extension Data {
-    fileprivate mutating func appendLE(_ value: UInt16) {
-        append(UInt8(value & 0xFF)); append(UInt8((value >> 8) & 0xFF))
-    }
-
-    fileprivate mutating func putLE(_ value: UInt16, at offset: Int) {
-        let i = startIndex + offset
-        self[i] = UInt8(value & 0xFF); self[i + 1] = UInt8((value >> 8) & 0xFF)
-    }
-
-    fileprivate mutating func putLE(_ value: UInt32, at offset: Int) {
-        let i = startIndex + offset
-        self[i] = UInt8(value & 0xFF); self[i + 1] = UInt8((value >> 8) & 0xFF)
-        self[i + 2] = UInt8((value >> 16) & 0xFF); self[i + 3] = UInt8((value >> 24) & 0xFF)
-    }
-
-    fileprivate func getLE(at offset: Int) -> UInt16 {
-        let i = startIndex + offset
-        return UInt16(self[i]) | (UInt16(self[i + 1]) << 8)
-    }
-
-    fileprivate func getLE(at offset: Int) -> UInt32 {
-        let i = startIndex + offset
-        return UInt32(self[i]) | (UInt32(self[i + 1]) << 8)
-            | (UInt32(self[i + 2]) << 16) | (UInt32(self[i + 3]) << 24)
-    }
 }

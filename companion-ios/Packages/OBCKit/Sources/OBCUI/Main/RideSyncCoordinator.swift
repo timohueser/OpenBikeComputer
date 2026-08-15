@@ -4,8 +4,8 @@ import OBCDomain
 import OBCTransport
 
 /// The main screen's ride-sync state machine (B7), extracted from
-/// `MainScreenModel` (#358). Depends only on `DeviceTransport` (the golden
-/// rule) plus the `LibraryStore` it persists into.
+/// `MainScreenModel` (#358). Depends only on the link and stored-object
+/// capabilities plus the `LibraryStore` it persists into.
 ///
 /// **The SYNC button contract:** idle → syncing ("N of M rides") → done
 /// ("Synced N new rides just now", ~2 s check) → idle — driven off the
@@ -105,7 +105,7 @@ public final class RideSyncCoordinator {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink & DeviceObjects
     private let library: any LibraryStore
     private let timing: Timing
     /// The foreground-only policy's in-flight ledger (#459) — `nil` in tests
@@ -149,7 +149,7 @@ public final class RideSyncCoordinator {
     @ObservationIgnored private var activeDownload: RideDownload?
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink & DeviceObjects,
         library: any LibraryStore,
         timing: Timing = Timing(),
         activity: TransferActivity? = nil

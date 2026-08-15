@@ -6,7 +6,8 @@
 
 mod common;
 
-use common::{decode, VecSink};
+use common::{decode, route_points, VecSink};
+use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
@@ -37,7 +38,7 @@ const SHORTCUT_COST: u32 = 3_200;
 /// The shipped defaults are opinionated (Road/Gravel/MTB/Touring); the fixtures deliberately pin a
 /// neutral baseline so a profile-weighting test's math is the *only* thing under test.
 fn neutral_profile() -> NavProfile {
-    NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8] }
+    NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }
 }
 
 /// A test profile from an explicit set of highway-class overrides (surface all neutral). Each
@@ -49,20 +50,20 @@ fn profile(name: &str, overrides: &[(u8, u8)]) -> NavProfile {
     for &(class, m) in overrides {
         highway[class as usize] = m;
     }
-    NavProfile { name: name.into(), highway, surface: [16; 8] }
+    NavProfile { name: name.into(), highway, surface: [16; 8], climb_weight: 0 }
 }
 
-/// Serialize `graph` into a minimal v9 map (one empty geometry leaf, no styles) with the given
+/// Serialize `graph` into a minimal v13 map (one empty geometry leaf, no styles) with the given
 /// routing `profiles` (index-selectable by the router). At least one profile must be present.
 fn map_with_profiles(graph: &NavGraph, profiles: &[NavProfile]) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles);
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles, &mut NullElevation);
     assert_eq!(dropped, 0);
     bin
 }
 
-/// Serialize `graph` into a minimal v9 map with a single **neutral** profile (the default fixture:
+/// Serialize `graph` into a minimal v13 map with a single **neutral** profile (the default fixture:
 /// kind-agnostic tests route under all-1.0× weights).
 fn map_with(graph: &NavGraph) -> Vec<u8> {
     map_with_profiles(graph, &[neutral_profile()])
@@ -133,13 +134,13 @@ fn plan_p(
     profile_idx: u8,
 ) -> (Result<obc_route::RouteStats, NavError>, Vec<u8>, obc_reader::NavCacheStats) {
     let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("a serialized v9 map parses");
+    let tables = MapTables::parse(&src).expect("a serialized map parses");
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
     let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, name, profile_idx, &mut scratch, &mut tiles, &mut sink);
+    let res = plan_route(&r, from, to, name, profile_idx, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     (res, sink.buf, tiles.stats())
 }
 
@@ -153,21 +154,6 @@ fn plan(
     plan_p(bytes, from, to, name, 0)
 }
 
-/// Decode an emitted OBCR's full point list (all chunks stitched).
-fn route_points(obcr: &[u8]) -> Vec<obc_route::RoutePoint> {
-    let src = SliceSource(obcr);
-    let idx = RouteIndex::read(&src).expect("the emitted OBCR parses");
-    let r = RouteReader::new(&idx, &src);
-    let mut pts = Vec::new();
-    for k in 0..idx.chunks().len() {
-        let chunk = decode(&r, k);
-        // Chunks share their seam point; drop the duplicate when stitching.
-        let skip = usize::from(k > 0);
-        pts.extend_from_slice(&chunk[skip..]);
-    }
-    pts
-}
-
 /// Corner-to-corner over the uniform grid: the optimum is `4 × EDGE_COST` whatever
 /// monotone path A* picks, the stitched geometry keeps every shape point (9 points:
 /// 5 nodes + 4 nudged midpoints), and consecutive settles hit the graph-tile cache.
@@ -176,9 +162,9 @@ fn route_points(obcr: &[u8]) -> Vec<obc_route::RoutePoint> {
 #[test]
 fn grid_route_matches_known_optimum_and_round_trips() {
     let bytes = map_with(&grid3(false));
-    let from = (BASE.0 + 100, BASE.1 - 100); // ~15 m from node 0
+    let from = at(0, 0);
     let goal = at(2, 2);
-    let to = (goal.0 - 100, goal.1 + 100); // ~15 m from node 8
+    let to = goal;
     let (res, obcr, stats) = plan(&bytes, from, to, "Water stop");
     let route = res.expect("a grid route plans");
 
@@ -215,7 +201,7 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
     let mid = ((c0.0 + c8.0) / 2 + 500, (c0.1 + c8.1) / 2 - 500);
 
     // Forward: the shortcut runs a→b, traversed as stored.
-    let (res, obcr, _) = plan(&bytes, (c0.0 + 100, c0.1), (c8.0 - 100, c8.1), "Fwd");
+    let (res, obcr, _) = plan(&bytes, c0, c8, "Fwd");
     assert_eq!(res.unwrap().total_distance_m, SHORTCUT_COST, "the shortcut is the unique optimum");
     let pts = route_points(&obcr);
     assert_eq!(
@@ -225,7 +211,7 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
     );
 
     // Backward: same edge, traversed b→a — the decode must reverse it exactly.
-    let (res, obcr, _) = plan(&bytes, (c8.0 - 100, c8.1), (c0.0 + 100, c0.1), "Rev");
+    let (res, obcr, _) = plan(&bytes, c8, c0, "Rev");
     assert_eq!(res.unwrap().total_distance_m, SHORTCUT_COST);
     let pts = route_points(&obcr);
     assert_eq!(
@@ -255,7 +241,7 @@ fn disconnected_graph_is_no_path() {
             Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
         ],
     };
-    let (res, obcr, _) = plan(&map_with(&graph), (a0.0 + 100, a0.1), (b0.0 - 100, b0.1), "x");
+    let (res, obcr, _) = plan(&map_with(&graph), a0, b0, "x");
     assert_eq!(res, Err(NavError::NoPath));
     assert!(obcr.is_empty(), "a failed plan writes nothing");
 }
@@ -273,8 +259,7 @@ fn tiny_scratch_exhausts() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let goal = at(2, 2);
-    let res =
-        plan_route(&r, (BASE.0 + 100, BASE.1), (goal.0 - 100, goal.1), "x", 0, &mut scratch, &mut tiles, &mut sink);
+    let res = plan_route(&r, at(0, 0), goal, "x", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted));
 }
 
@@ -312,25 +297,94 @@ fn goal_tracked_before_fill_survives_exhaustion() {
     let mut scratch = NavScratch::<6>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let (from, to) = ((coord(0).0 + 50, coord(0).1), (coord(8).0 - 50, coord(8).1));
-    let res = plan_route(&r, from, to, "Salvaged", 0, &mut scratch, &mut tiles, &mut sink);
+    let (from, to) = (coord(0), coord(8));
+    let res = plan_route(&r, from, to, "Salvaged", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     let route = res.expect("the goal was tracked before the fill ⇒ salvage returns it");
     assert_eq!(route.total_distance_m, 20_000, "the direct (suboptimal, past-ε) edge — the full-table path");
     assert_eq!(route_points(&sink.buf).len(), 2, "start → goal over the single direct edge");
 }
 
-/// An endpoint with no routable node within 250 m fails to snap ⇒ `NoPath` — for the
-/// rider fix and the POI alike.
+/// An endpoint with no routable edge within 100 m fails to snap ⇒ `NoPath` — for the rider fix and
+/// the POI alike. The wider 250 m internal lookup square discovers nodes/anchors only.
 #[test]
 fn unsnappable_endpoint_is_no_path() {
     let bytes = map_with(&grid3(false));
-    let near0 = (BASE.0 + 100, BASE.1);
-    // ~4.4 km from the nearest node — well past the 250 m snap radius.
+    let near0 = at(0, 0);
+    // ~4.4 km from the nearest road — well past the 100 m acceptance radius.
     let lost = (BASE.0 + 60_000, BASE.1 + 60_000);
     let (res, _, _) = plan(&bytes, lost, near0, "x");
     assert_eq!(res, Err(NavError::NoPath), "`from` out of snap range");
     let (res, _, _) = plan(&bytes, near0, lost, "x");
     assert_eq!(res, Err(NavError::NoPath), "`to` out of snap range");
+}
+
+/// A rider beside the middle of a kilometre-long road is more than 250 m from either graph node.
+/// The sparse anchor is only a lookup aid: the emitted route starts at the exact perpendicular
+/// projection on the full edge geometry, not at the anchor and not at a junction.
+#[test]
+fn sparse_anchor_discovers_long_road_for_exact_projection() {
+    let a = BASE;
+    let b = (BASE.0 + SP, BASE.1);
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: 0 }],
+    };
+    let bytes = map_with(&graph);
+    // Deliberately not on an anchor (this edge's anchors land at 1/4, 1/2 and 3/4): the anchor only
+    // discovers the edge; projection still uses the complete polyline.
+    let along = SP * 43 / 100;
+    let rider = (BASE.0 + along, BASE.1 + 400); // ≈44 m north; 479 m from the nearer endpoint
+    let (result, obcr, _) = plan(&bytes, rider, b, "Mid-edge");
+    let route = result.expect("the sparse anchor finds the long road");
+    assert_eq!(route.total_distance_m, 634, "only the edge after the projection is traversed");
+    let points = route_points(&obcr);
+    assert_eq!(points.first().map(|p| (p.lon, p.lat)), Some((BASE.0 + along, BASE.1)));
+    assert_eq!(points.last().map(|p| (p.lon, p.lat)), Some(b));
+    assert_ne!(points[0].lat, rider.1, "the route begins on the road, not at the off-road GPS fix");
+}
+
+/// Exact projection is the normal path, not merely a fallback after node snapping fails: even when
+/// a junction is only ~49 m away, a rider beside a short road starts at the point abreast of them.
+/// This edge is below the 300 m anchor threshold, so discovery comes entirely from its endpoints.
+#[test]
+fn near_a_node_still_starts_at_the_exact_road_projection() {
+    let a = BASE;
+    let b = (BASE.0 + 2_000, BASE.1); // ≈223 m, so no interior lookup anchor
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 223, kind: 0 }],
+    };
+    let rider = (BASE.0 + 400, BASE.1 + 180); // ≈20 m off-road and ≈49 m from node a
+    let (result, obcr, _) = plan(&map_with(&graph), rider, b, "Near node");
+    let route = result.expect("endpoint discovery finds the short edge");
+    assert_eq!(route.total_distance_m, 178);
+    let points = route_points(&obcr);
+    assert_eq!(points.first().map(|p| (p.lon, p.lat)), Some((BASE.0 + 400, BASE.1)));
+    assert_eq!(points.last().map(|p| (p.lon, p.lat)), Some(b));
+}
+
+/// Both virtual endpoints may live inside the same long, curving edge. The direct partial-edge
+/// route clips at both projections, retains the intervening bends, and never detours via either
+/// graph endpoint.
+#[test]
+fn both_endpoints_project_and_clip_inside_one_curving_edge() {
+    let a = BASE;
+    let bend_a = (BASE.0 + 4_000, BASE.1);
+    let bend_b = (BASE.0 + 4_000, BASE.1 + 4_000);
+    let b = (BASE.0 + 8_000, BASE.1 + 4_000);
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, bend_a, bend_b, b], length_m: 1_335, kind: 0 }],
+    };
+    let from = (BASE.0 + 2_000, BASE.1 - 250);
+    let to = (BASE.0 + 6_000, BASE.1 + 4_250);
+    let (result, obcr, _) = plan(&map_with(&graph), from, to, "Curved");
+    let route = result.expect("sparse anchors discover the curved edge from both ends");
+    assert_eq!(route.total_distance_m, 891, "only two thirds of the rounded wire length is traversed");
+    assert_eq!(
+        route_points(&obcr).iter().map(|p| (p.lon, p.lat)).collect::<Vec<_>>(),
+        vec![(BASE.0 + 2_000, BASE.1), bend_a, bend_b, (BASE.0 + 6_000, BASE.1 + 4_000)]
+    );
 }
 
 /// A map whose nav section is empty (no routable ways) can't snap anything ⇒ `NoPath`.
@@ -356,19 +410,19 @@ fn far_beyond_range_target_exhausts_instead_of_precheck() {
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let from = (BASE.0 + 30, BASE.1);
-    let to = (BASE.0 + 1_999 * 135 - 30, BASE.1); // ~30 km away — pre-cap this was TooFar unseen
-    let res = plan_route(&r, from, to, "x", 0, &mut scratch, &mut tiles, &mut sink);
+    let from = BASE;
+    let to = (BASE.0 + 1_999 * 135, BASE.1); // ~30 km away — pre-cap this was TooFar unseen
+    let res = plan_route(&r, from, to, "x", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "the burn-before-fail search ends at the table, not a pre-check");
     assert!(sink.buf.is_empty(), "an exhausted plan writes nothing");
 }
 
-/// Both endpoints snapping to the same node degenerate to a single-point route of
-/// length 0 that still round-trips as a valid OBCR.
+/// Two identical graph positions degenerate to a single-point route of length 0 that still
+/// round-trips as a valid OBCR.
 #[test]
 fn same_snap_node_emits_single_point_route() {
     let bytes = map_with(&grid3(false));
-    let (res, obcr, _) = plan(&bytes, (BASE.0 + 100, BASE.1), (BASE.0 - 100, BASE.1), "Here");
+    let (res, obcr, _) = plan(&bytes, at(0, 0), at(0, 0), "Here");
     let route = res.expect("a degenerate route still plans");
     assert_eq!(route.total_distance_m, 0);
     assert_eq!(route.point_count, 1);
@@ -408,9 +462,9 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
     let tables_src = SliceSource(&bytes);
     let tables = MapTables::parse(&tables_src).unwrap(); // the device's boot-parsed tables
     let cache = MapCache::new();
-    let from = (BASE.0 + 100, BASE.1 - 100);
+    let from = at(0, 0);
     let goal = at(2, 2);
-    let to = (goal.0 - 100, goal.1 + 100);
+    let to = goal;
 
     // One device-shaped step: fresh source + Reader + sink view, phase read, then the step with
     // the planner/scratch/tiles field borrows all live across the call — `ride.rs`'s nav_step.
@@ -426,7 +480,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
         let src = SliceSource(bytes);
         let reader = Reader::new(&src, tables, cache);
         let planner = unsafe { nav.planner.assume_init_mut() };
-        planner.step(&reader, &mut *nav.scratch, &mut *nav.tiles, sink)
+        planner.step(&reader, &mut *nav.scratch, &mut *nav.tiles, &mut NullElevation, sink)
     }
     let mut nav = nav;
 
@@ -466,7 +520,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
     assert_eq!(sink3.buf, first, "a slot overwrite leaks no state between plans");
 }
 
-/// The v9 §8.3 record head is 13 bytes (**odd**), so the first neighbor entry of every record
+/// The v13 §8.3 record head is 13 bytes (**odd**), so the first neighbor entry of every record
 /// begins at an **odd** offset relative to the record start. Record 0 starts at chunk offset 0, so
 /// its neighbor fields (`id u32 @+13`, `dlat i16 @+17`, `dlon i16 @+19`, `edge_id u32 @+21`, …)
 /// decode at odd, unaligned offsets — and the 15-byte (odd) entry then shifts each following
@@ -477,10 +531,11 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
 #[test]
 fn record_stride_keeps_odd_offsets_exercised() {
     assert_eq!(obc_formats::obcm::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
-    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 15, "v9 neighbor entries are 15 bytes");
+    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 17, "v12 neighbor entries are 17 bytes");
     // ⇒ every record's first neighbor entry begins at record_start + 13 (odd), so its multi-byte
-    // fields decode at odd, unaligned offsets. The 15-byte entry keeps consecutive record starts
-    // parity-varying, so record heads are exercised at odd offsets in multi-record chunks too.
+    // fields decode at odd, unaligned offsets. The 17-byte entry is odd too, so consecutive record
+    // starts keep varying parity and record heads are exercised at odd offsets in multi-record
+    // chunks as well — the v12 widening did not accidentally align the layout.
 }
 
 /// The slimmed entry layout holds: 26 B/node (24 B entry + 2 B heap slot) plus the two
@@ -504,21 +559,21 @@ fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    let from = (BASE.0 + 30, BASE.1);
-    let to = (BASE.0 + 599 * 135 - 30, BASE.1);
+    let from = BASE;
+    let to = (BASE.0 + 599 * 135, BASE.1);
 
     // The old fixed table: 300 tracked nodes < the 600 the path needs ⇒ Exhausted.
     let mut small = NavScratch::<300>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, "x", 0, &mut small, &mut tiles, &mut sink);
+    let res = plan_route(&r, from, to, "x", 0, &mut small, &mut tiles, &mut NullElevation, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "the pre-fix 300-node table can't span ~9 km");
 
     // The capped sim/LM20-size table (1536 = the 40 kB nav budget) plans the same route.
     let mut big = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, "x", 0, &mut big, &mut tiles, &mut sink);
+    let res = plan_route(&r, from, to, "x", 0, &mut big, &mut tiles, &mut NullElevation, &mut sink);
     let route = res.expect("the capped sim table spans the ~9 km line");
     assert_eq!(route.total_distance_m, 599 * 15, "summed edge costs over the whole line");
 }
@@ -540,7 +595,7 @@ fn saturated_costs_plan_without_panicking() {
             Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000, kind: 0 },
         ],
     };
-    let (res, obcr, _) = plan(&map_with(&graph), (n0.0 + 30, n0.1), (n2.0 - 30, n2.1), "Far");
+    let (res, obcr, _) = plan(&map_with(&graph), n0, n2, "Far");
     let route = res.expect("a saturated-cost path still plans");
     assert_eq!(
         route.total_distance_m, 120_000,
@@ -562,14 +617,14 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    let from = (BASE.0 + 30, BASE.1);
-    let to = (BASE.0 + 119 * 135 - 30, BASE.1);
+    let from = BASE;
+    let to = (BASE.0 + 119 * 135, BASE.1);
 
     // One-shot reference.
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut one_shot = VecSink::default();
-    let reference = plan_route(&r, from, to, "Stepped", 0, &mut scratch, &mut tiles, &mut one_shot)
+    let reference = plan_route(&r, from, to, "Stepped", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut one_shot)
         .expect("the line plans one-shot");
 
     // Manual stepping over the same fixture.
@@ -588,7 +643,7 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
         }
         let settles_before = planner.settles();
         let misses_before = tiles.stats().misses;
-        let step = planner.step(&r, &mut scratch, &mut tiles, &mut stepped);
+        let step = planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut stepped);
         if phase == NavPhase::Search {
             // Miss budget, with a one-settle spillover bound: the budget check trails each settle,
             // so entering the step's final settle the delta is ≤ NAV_MISSES_PER_STEP − 1, and that
@@ -623,11 +678,14 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
 
     // Terminal idempotence: stepping again re-returns Done without touching the sink.
     let len = stepped.buf.len();
-    assert!(matches!(planner.step(&r, &mut scratch, &mut tiles, &mut stepped), obc_route::Step::Done(_)));
+    assert!(matches!(
+        planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut stepped),
+        obc_route::Step::Done(_)
+    ));
     assert_eq!(stepped.buf.len(), len, "a terminal step writes nothing");
 }
 
-/// The N4 step budget, pinned at both ends on a small graph that fits inside the 8-slot tile cache:
+/// The N4 step budget, pinned at both ends on a small graph that fits inside the tile cache:
 /// **cold**, no search step ever reads more than [`NAV_MISSES_PER_STEP`] chunks (plus at most the
 /// final settle's own reads); **warm**, once the whole graph is resident a step settles well past
 /// the pre-N4 fixed budget of 8 (the [`NAV_SETTLES_PER_STEP_CAP`] opening up is the whole point —
@@ -635,15 +693,15 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
 #[test]
 fn search_step_budget_is_miss_paced_cold_and_cap_opened_warm() {
     use obc_route::nav::{NAV_MISSES_PER_STEP, NAV_SETTLES_PER_STEP_CAP};
-    // ~60-node line: its whole node section is a handful of 512 B chunks — fits inside 8 cache slots,
+    // ~60-node line: its whole node section is a handful of 512 B chunks — fits inside the cache,
     // so after the first pass over it every settle is a hit and only the cap paces the step.
     let bytes = map_with(&line_graph(60, 200, 20));
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    let from = (BASE.0 + 30, BASE.1);
-    let to = (BASE.0 + 59 * 200 - 30, BASE.1);
+    let from = BASE;
+    let to = (BASE.0 + 59 * 200, BASE.1);
 
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
@@ -655,7 +713,7 @@ fn search_step_budget_is_miss_paced_cold_and_cap_opened_warm() {
         let phase = planner.phase();
         let settles_before = planner.settles();
         let misses_before = tiles.stats().misses;
-        let step = planner.step(&r, &mut scratch, &mut tiles, &mut sink);
+        let step = planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
         if phase == NavPhase::Search {
             let settle_delta = planner.settles() - settles_before;
             let miss_delta = tiles.stats().misses - misses_before;
@@ -694,12 +752,15 @@ fn abandoned_mid_search_plan_wrote_nothing() {
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let from = (BASE.0 + 30, BASE.1);
-    let to = (BASE.0 + 599 * 135 - 30, BASE.1);
+    let from = BASE;
+    let to = (BASE.0 + 599 * 135, BASE.1);
     let mut planner = NavPlanner::new(from, to, "x", 0);
-    for _ in 0..10 {
-        // 2 snap steps + 8 search steps — well before the ~600-settle search could finish.
-        assert_eq!(planner.step(&r, &mut scratch, &mut tiles, &mut sink), obc_route::Step::Running);
+    while planner.phase() == NavPhase::Snap {
+        assert_eq!(planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut sink), obc_route::Step::Running);
+    }
+    for _ in 0..8 {
+        // Eight search steps are well before the ~600-settle search can finish.
+        assert_eq!(planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut sink), obc_route::Step::Running);
     }
     assert_eq!(planner.phase(), NavPhase::Search, "still searching when abandoned");
     drop(planner); // the cancel: never stepped again
@@ -757,7 +818,7 @@ fn profile_steers_between_equal_length_corridors() {
     let cycle_loving = profile("cycle", &[(K_CYCLE, 16), (K_PRIMARY, 48)]); // primary 3.0×
     let primary_loving = profile("primary", &[(K_CYCLE, 48), (K_PRIMARY, 16)]); // cycleway 3.0×
     let bytes = map_with_profiles(&graph, &[cycle_loving, primary_loving]);
-    let (from, to) = ((a.0 + 30, a.1), (b.0 - 30, b.1));
+    let (from, to) = (a, b);
 
     let (res, obcr, _) = plan_p(&bytes, from, to, "Cycle", 0);
     assert_eq!(res.unwrap().total_distance_m, 2 * hop, "same-length corridors ⇒ identical ground distance");
@@ -794,7 +855,7 @@ fn detour_is_taken_exactly_when_the_multiplier_math_says_so() {
     let primary_2x = profile("p2", &[(K_PRIMARY, 32), (K_CYCLE, 16)]);
     let primary_125x = profile("p1.25", &[(K_PRIMARY, 20), (K_CYCLE, 16)]); // 1.25× = 20/16
     let bytes = map_with_profiles(&graph, &[primary_2x, primary_125x]);
-    let (from, to) = ((a.0 + 30, a.1), (b.0 - 30, b.1));
+    let (from, to) = (a, b);
 
     let (res, _, _) = plan_p(&bytes, from, to, "Detour", 0);
     assert_eq!(res.unwrap().total_distance_m, 2 * leg, "primary 2.0× > 1.4× ⇒ the cycleway detour wins");
@@ -823,7 +884,7 @@ fn forbidden_class_detours_then_no_paths() {
         ],
     };
     let bytes = map_with_profiles(&detourable, std::slice::from_ref(&no_steps));
-    let (res, obcr, _) = plan_p(&bytes, (a.0 + 30, a.1), (b.0 - 30, b.1), "Around", 0);
+    let (res, obcr, _) = plan_p(&bytes, a, b, "Around", 0);
     assert_eq!(res.unwrap().total_distance_m, 2 * 1_680, "the forbidden direct edge is skipped ⇒ detour");
     assert!(route_points(&obcr).iter().any(|p| (p.lon, p.lat) == d), "the route goes around via the legal apex");
 
@@ -833,7 +894,7 @@ fn forbidden_class_detours_then_no_paths() {
         edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS }],
     };
     let bytes = map_with_profiles(&dead, &[no_steps]);
-    let (res, obcr, _) = plan_p(&bytes, (a.0 + 30, a.1), (b.0 - 30, b.1), "Dead", 0);
+    let (res, obcr, _) = plan_p(&bytes, a, b, "Dead", 0);
     assert_eq!(res, Err(NavError::NoPath), "every escape forbidden ⇒ the frontier drains to NoPath");
     assert!(obcr.is_empty());
 }
@@ -851,7 +912,7 @@ fn displayed_distance_is_raw_length_not_weighted_g() {
         edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: length, kind: K_PRIMARY }],
     };
     let bytes = map_with_profiles(&graph, &[profile("p2", &[(K_PRIMARY, 32)])]); // 2.0×
-    let (res, _, _) = plan_p(&bytes, (a.0 + 30, a.1), (b.0 - 30, b.1), "Honest", 0);
+    let (res, _, _) = plan_p(&bytes, a, b, "Honest", 0);
     let route = res.expect("a single-edge route plans");
     assert_eq!(route.total_distance_m, length, "displayed distance is the raw ground length");
     assert_ne!(route.total_distance_m, 2 * length, "…and not the weighted g (which is 2×)");
@@ -883,7 +944,7 @@ fn out_of_range_profile_index_falls_back_to_zero() {
     // Profile 0 is cycle-loving; a second profile only exists to prove 200 doesn't select it.
     let bytes =
         map_with_profiles(&graph, &[profile("cycle", &[(K_PRIMARY, 48)]), profile("primary", &[(K_CYCLE, 48)])]);
-    let (from, to) = ((a.0 + 30, a.1), (b.0 - 30, b.1));
+    let (from, to) = (a, b);
     let (res0, obcr0, _) = plan_p(&bytes, from, to, "Fallback", 0);
     let (res200, obcr200, _) = plan_p(&bytes, from, to, "Fallback", 200);
     assert_eq!(res0.unwrap().total_distance_m, res200.unwrap().total_distance_m);
@@ -925,9 +986,9 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
     let prof = profile("mixed", &[(K_PRIMARY, 32), (K_CYCLE, 16)]);
     let bytes = map_with_profiles(&graph, std::slice::from_ref(&prof));
 
-    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let from = at(0, 0);
     let goal = at(2, 2);
-    let (res, obcr, _) = plan_p(&bytes, from, (goal.0 - 100, goal.1 + 100), "Mixed", 0);
+    let (res, obcr, _) = plan_p(&bytes, from, goal, "Mixed", 0);
     res.expect("the mixed-kind grid plans");
 
     // Reference: Dijkstra over the fixture graph with the same weighted edge costs (O(n²), n = 9).
@@ -980,7 +1041,7 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
     );
 }
 
-/// N5's acceptance ride (#538): over the **real re-packed grimsel map** (the sim's committed v9
+/// N5's acceptance ride (#538): over the **real re-packed grimsel map** (the sim's committed
 /// asset, shipping the default Road/Gravel/MTB/Touring table), the same endpoints planned under
 /// Road (profile 0) vs MTB (profile 2) produce **different polylines** — the profile weights
 /// genuinely steer the search, end-to-end through the same `plan_route` both hosts call. The raw
@@ -993,9 +1054,8 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 /// the extract, so pinning against the extract bbox is what survives a re-pack). Verified
 /// divergent on **both** the currently-committed fixture and the canonical re-pack of PR #549
 /// (identical road/mtb lengths, 8 867 m / 6 051 m, on the two packs), so the test stays green
-/// whichever lands first — and verified under **both** `NAV_MAX_NODES` sizes (the default 1536
-/// host table and the `nrf-mem` 768 one this test gets under `--all-features` feature
-/// unification), so both plans stay well inside the small table. A future re-pack from a newer
+/// whichever lands first — both plans stay well inside the 1536-node table. A future re-pack
+/// from a newer
 /// OSM snapshot could still move the graph enough to need a re-pin — the sweep in this PR's
 /// description is the recipe.
 // Reads the real grimsel fixture from disk, which Miri's default isolation forbids (and the 6.5 MB
@@ -1003,9 +1063,9 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 // §8 record decode over the synthetic writer→reader fixtures, which stay in the Miri run.
 #[cfg_attr(miri, ignore)]
 #[test]
+#[cfg(feature = "external-fixtures")]
 fn road_vs_mtb_diverge_over_grimsel() {
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel.obcm"))
-        .expect("grimsel.obcm fixture present");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
     let from = (8_169_610, 46_694_536);
     let to = (8_217_309, 46_706_261);
 
@@ -1110,7 +1170,7 @@ type LadderOutcome = (Result<obc_route::RouteStats, NavError>, (u32, u32), u32, 
 fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), profile_idx: u8) -> LadderOutcome {
     use obc_route::nav::Step;
     let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("a serialized v9 map parses");
+    let tables = MapTables::parse(&src).expect("a serialized map parses");
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
     let mut scratch = Box::new(NavScratch::<N>::new());
@@ -1120,7 +1180,7 @@ fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), p
     let mut eps = planner.epsilon_used();
     let mut first_escalation: Option<u32> = None;
     let res = loop {
-        let step = planner.step(&r, &mut scratch, &mut tiles, &mut sink);
+        let step = planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
         if planner.epsilon_used() != eps {
             first_escalation.get_or_insert(planner.settles());
             eps = planner.epsilon_used();
@@ -1143,9 +1203,9 @@ fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), p
 #[test]
 fn escalation_succeeds_on_second_rung() {
     let bytes = map_with(&grid_diag(9, 12, 0));
-    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let from = at(0, 0);
     let goal = at(8, 11);
-    let to = (goal.0 - 100, goal.1 + 100);
+    let to = goal;
     let (res, eps, settles, first_esc, obcr) = plan_ladder::<50>(&bytes, from, to, 0);
     res.expect("the ε = 2.0 rung completes the route the tight bound couldn't fit");
     assert_eq!(eps, (2, 1), "the plan escalated exactly one rung: 1.3 exhausted, 2.0 completed");
@@ -1161,9 +1221,9 @@ fn escalation_succeeds_on_second_rung() {
 #[test]
 fn ladder_exhausts_honestly_at_top_rung() {
     let bytes = map_with(&grid_diag(9, 12, 0));
-    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let from = at(0, 0);
     let goal = at(8, 11);
-    let to = (goal.0 - 100, goal.1 + 100);
+    let to = goal;
     let (res, eps, settles, _, obcr) = plan_ladder::<20>(&bytes, from, to, 0);
     assert_eq!(res, Err(NavError::Exhausted), "too dense for every rung ⇒ honest Exhausted");
     assert_eq!(eps, (3, 1), "the ladder climbed to and failed at the top rung");
@@ -1213,10 +1273,10 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
     let graph = grid_diag_mixed(rows, cols);
     let prof = profile("mixed", &[(K_PRIMARY, 32), (K_CYCLE, 16)]); // primary 2.0×, cycleway 1.0×
     let bytes = map_with_profiles(&graph, std::slice::from_ref(&prof));
-    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let from = at(0, 0);
     let goal_n = ((rows - 1) * cols + (cols - 1)) as usize;
     let goal = at(rows - 1, cols - 1);
-    let to = (goal.0 - 100, goal.1 + 100);
+    let to = goal;
     let reference = dijkstra_weighted(&graph, &prof, goal_n);
     assert!(reference > 0 && reference != u32::MAX, "the reference is a real finite cost");
 
@@ -1275,7 +1335,7 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
 fn first_try_success_takes_rung_zero_unchanged() {
     let bytes = map_with(&grid3(true));
     let (c0, c8) = (at(0, 0), at(2, 2));
-    let (from, to) = ((c0.0 + 100, c0.1), (c8.0 - 100, c8.1));
+    let (from, to) = (c0, c8);
 
     // The one-shot reference (the pre-N8 path — plain plan_route is unchanged for a 1.3 success).
     // Same name "x" as `plan_ladder` so the comparison is of route bytes, not the header name field.
@@ -1290,4 +1350,685 @@ fn first_try_success_takes_rung_zero_unchanged() {
     assert_eq!(route.total_distance_m, reference.total_distance_m, "same route as pre-N8");
     assert_eq!(obcr, one_shot, "byte-identical OBCR to the unchanged one-shot plan");
     assert!(settles > 0 && settles < obc_route::NAV_MAX_NODES as u32, "a single search, well within one table");
+}
+
+// --- EL7: emit-time elevation fill (epic #1068, #1075) -------------------------------------------
+
+/// A synthetic terrain: a tent-shaped ridge in longitude, peaking at [`CREST_LON`] and falling 1 m
+/// per 25 µdeg either side. The peak sits deliberately **between** two grid-edge vertices, so a
+/// vertex-only fill cannot see it — that is what makes it a densification probe rather than a
+/// sampling one. Latitude is ignored: one variable keeps every expectation below arithmetic.
+struct Ridge;
+
+/// Longitude of the ridge line — half-way along the first east-west grid edge (whose vertices sit
+/// at 500 000 / 505 000 µdeg), and on none of the interpolated points either.
+const CREST_LON: i32 = 502_500;
+/// The ridge's height at [`CREST_LON`], m.
+const CREST_M: i32 = 1_000;
+
+fn ridge_height(lon: i32) -> i16 {
+    (CREST_M - (lon - CREST_LON).abs() / 25).max(300) as i16
+}
+
+impl obc_route::ElevationSource for Ridge {
+    fn sample(&mut self, _lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        Some(ridge_height(lon_udeg))
+    }
+}
+
+/// The same ridge with a **hole** across a band of longitude — the coverage-edge / `NODATA` case.
+struct HolyRidge;
+
+/// The hole's longitude band (half-open), inside which [`HolyRidge`] answers `None`.
+const HOLE: core::ops::Range<i32> = 505_000..515_000;
+
+impl obc_route::ElevationSource for HolyRidge {
+    fn sample(&mut self, _lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        if HOLE.contains(&lon_udeg) {
+            return None;
+        }
+        Some(ridge_height(lon_udeg))
+    }
+}
+
+/// Terrain that **starts** past the route's opening — the coverage crop a real sidecar has when the
+/// nav graph reaches beyond the extract it was baked for (complete-way retention). Everything west
+/// of [`COVERAGE_LON`] is `None`; east of it the ground climbs 1 m per 25 µdeg from
+/// [`COVERED_BASE_M`], so the covered part has an exactly known climb.
+struct CroppedTerrain;
+
+/// Where coverage begins — past the grid's first column (500 000), so the route's first points and
+/// the interpolated ones between them are all outside the raster.
+const COVERAGE_LON: i32 = 507_000;
+/// The height at [`COVERAGE_LON`] — high enough that booking it as ascent would be unmissable.
+const COVERED_BASE_M: i32 = 1_412;
+
+fn covered_height(lon: i32) -> i16 {
+    (COVERED_BASE_M + (lon - COVERAGE_LON) / 25) as i16
+}
+
+impl obc_route::ElevationSource for CroppedTerrain {
+    fn sample(&mut self, _lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        (lon_udeg >= COVERAGE_LON).then(|| covered_height(lon_udeg))
+    }
+}
+
+/// Plan the standard corner-to-corner grid route through `elev`, returning `(stats, obcr bytes)`.
+fn plan_with_elevation(bytes: &[u8], elev: &mut dyn obc_route::ElevationSource) -> (obc_route::RouteStats, Vec<u8>) {
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).expect("a serialized map parses");
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    let res = plan_route(&r, c0, c8, "Water stop", 0, &mut scratch, &mut tiles, elev, &mut sink);
+    (res.expect("the grid plans"), sink.buf)
+}
+
+/// FNV-1a over the emitted bytes — a compact stand-in for pasting a whole OBCR into the test.
+fn digest(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// **The null-path pin (EL7, non-negotiable).** With [`NullElevation`] the emitted OBCR is
+/// byte-for-byte what the pre-terrain router wrote: no densification, no elevation, no stats. The
+/// digest below was taken from `develop` at the commit before EL7 (the same fixture and route
+/// through the then-argumentless `plan_route`) and must not move — if it does, adding terrain
+/// support changed the *no-terrain* output and the epic's "removable" claim is broken.
+#[test]
+fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut NullElevation);
+
+    assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "the no-terrain OBCR must stay byte-identical");
+    assert_eq!(route.point_count, 9, "no densification without terrain");
+    assert_eq!((route.total_ascent_m, route.total_descent_m), (0, 0));
+    assert_eq!((route.min_ele_m, route.max_ele_m), (0, 0));
+    assert!(route_points(&obcr).iter().all(|p| p.ele == 0), "every stored height is zero");
+}
+
+/// FNV-1a of the pre-EL7 emit for the fixture above; see the test's doc comment. Verified against
+/// `develop` (c566880b) by running the identical plan through the pre-EL7 `plan_route`.
+const NULL_PATH_DIGEST: u64 = 0x9469_2b0b_b07b_523e;
+
+/// The unlock: a real source fills every point's height, and the header carries real min/max and
+/// dead-banded ascent/descent instead of the zero stub. The crest is only reachable through the
+/// 250 m densification — a vertex-only fill would top out at the 900 m the edge's endpoints see.
+#[test]
+fn terrain_fills_every_point_and_the_header_stats() {
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut Ridge);
+    let pts = route_points(&obcr);
+
+    assert!(route.point_count > 9, "terrain densifies the polyline (got {})", route.point_count);
+    assert!(pts.iter().all(|p| p.ele >= 300), "every point carries a real height");
+    assert!(
+        route.max_ele_m > 950,
+        "the crest between two vertices is captured (got {} m; vertex-only would be 900)",
+        route.max_ele_m
+    );
+    assert_eq!(route.max_ele_m, pts.iter().map(|p| p.ele).max().unwrap(), "header max = stored max");
+    assert_eq!(route.min_ele_m, pts.iter().map(|p| p.ele).min().unwrap(), "header min = stored min");
+    assert!(route.total_ascent_m > 0 && route.total_descent_m > 0, "the route climbs the ridge and comes down");
+    // Distance is still the summed raw edge cost (N3) — densifying the geometry must not touch it.
+    assert_eq!(route.total_distance_m, 4 * EDGE_COST);
+}
+
+/// Densification is bounded by **ground distance**, not by vertex count: the route is sampled at
+/// least once per 250 m of it, whatever the graph's vertex spacing. What *survives* into the OBCR
+/// is then the decimator's business — a densified point on a flat straight run carries neither
+/// shape nor height and is correctly dropped again — so the bound is asserted on the sampling.
+#[test]
+fn terrain_samples_at_least_once_per_step_of_ground() {
+    /// [`Ridge`] with a sample counter.
+    struct Counting(u32);
+    impl obc_route::ElevationSource for Counting {
+        fn sample(&mut self, _lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+            self.0 += 1;
+            Some(ridge_height(lon_udeg))
+        }
+    }
+    let bytes = map_with(&grid3(false));
+    let mut counting = Counting(0);
+    let (route, _) = plan_with_elevation(&bytes, &mut counting);
+
+    // The emitted polyline is longer than the summed edge costs (the nudged shape points), so the
+    // route's own distance is a safe lower bound on what has to be covered at ≤ 250 m a step.
+    let want = route.total_distance_m / 250;
+    assert!(
+        counting.0 >= want,
+        "{} samples for {} m of route — under one per 250 m",
+        counting.0,
+        route.total_distance_m
+    );
+    // …and not wildly more: the fill samples points, it does not sweep the raster.
+    assert!(counting.0 < want * 4, "{} samples is far more than the step implies", counting.0);
+}
+
+/// The stats are the **shared** dead-band's, over the emitted point stream: re-integrating the
+/// stored heights with `obc_elevation::DeadBand` — exactly what the GPX converter does over an
+/// import, and therefore what a re-imported export of this route does — reproduces the header.
+#[test]
+fn the_header_stats_are_the_shared_dead_band_over_the_stored_points() {
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut Ridge);
+
+    let mut band = obc_elevation::DeadBand::<f64>::new();
+    for p in route_points(&obcr) {
+        band.push(f64::from(p.ele));
+    }
+    assert_eq!(
+        (band.ascent() as u32, band.descent() as u32),
+        (route.total_ascent_m, route.total_descent_m),
+        "a re-import of these very points books the header's climb"
+    );
+}
+
+/// A hole in coverage carries the last known height forward — a flat span, never a guess and never
+/// a phantom climb — while the sampled parts keep their real stats.
+#[test]
+fn a_coverage_hole_carries_the_last_height_forward() {
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut HolyRidge);
+    let pts = route_points(&obcr);
+
+    assert!(pts.iter().all(|p| p.ele >= 300), "no point falls back to 0 inside the hole");
+    // Every point inside the hole repeats one height — the last one that resolved before it — so
+    // the span is flat, and the dead-band books nothing across it.
+    let inside: Vec<i16> = pts.iter().filter(|p| HOLE.contains(&p.lon)).map(|p| p.ele).collect();
+    assert!(!inside.is_empty(), "the route does cross the hole");
+    assert!(inside.iter().all(|&e| e == inside[0]), "the hole is flat at the carried height (got {inside:?})");
+    assert!(route.total_ascent_m > 0, "the sampled part still books its climb (got {route:?})");
+}
+
+/// The end-to-end article, on the committed fixtures: the Grimsel map's nav graph planned through
+/// the Grimsel **terrain sidecar** (EL2's `grimsel.obcd`, the same file the simulator mounts).
+/// Nothing synthetic — this is the number a rider would see on the Route overview.
+// Reads the committed fixtures from disk, which Miri's default isolation forbids — skip it there,
+// like `road_vs_mtb_diverge_over_grimsel`. (Missed when EL7 landed; the module's standing
+// `cargo +nightly miri test -p obc-route --test nav` aborted on it.)
+#[cfg_attr(miri, ignore)]
+#[test]
+#[cfg(feature = "external-fixtures")]
+fn a_real_grimsel_plan_carries_the_pass_road_profile() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let terrain_src = SliceSource(&dem);
+    let mut terrain = obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src)
+        .expect("the baked terrain parses");
+
+    // Innertkirchen → up the pass road (the profile-divergence fixture's endpoints).
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    let src = SliceSource(&map);
+    let tables = MapTables::parse(&src).expect("grimsel parses");
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(NavScratch::<{ obc_route::NAV_MAX_NODES }>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let route = plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink)
+        .expect("the pass road plans");
+
+    // Alpine valley floor to well up the pass: heights in the hundreds-to-thousands, never the
+    // 0 m a missing fill would leave, and a climb that is real without being absurd.
+    assert!((500..=2_200).contains(&route.min_ele_m), "min {} m is not alpine ground", route.min_ele_m);
+    assert!((500..=2_600).contains(&route.max_ele_m), "max {} m is not alpine ground", route.max_ele_m);
+    assert!(route.max_ele_m > route.min_ele_m + 100, "a pass road is not flat ({route:?})");
+    assert!((100..=3_000).contains(&route.total_ascent_m), "ascent {} m is implausible", route.total_ascent_m);
+    let pts = route_points(&sink.buf);
+    assert!(pts.iter().all(|p| p.ele > 0), "every stored point has a real height");
+    let (hits, misses) = terrain.stats();
+    assert!(hits > misses, "the 4-tile cache serves the walk ({hits} hit / {misses} miss)");
+}
+
+/// **Round-trip parity** — the property the shared dead-band exists for: write a planned route out
+/// as GPX (what any exporter does with the stored points) and re-import it through
+/// [`gpx_to_obcr`](obc_route::gpx_to_obcr); the re-imported route's own climb agrees with the
+/// header the planner wrote. Without the emit-time fill both sides are 0 and the check is vacuous;
+/// with it, the two independently-computed totals have to land on each other.
+///
+/// The route is **wholly inside** `grimsel.obcd`'s coverage, and the `p.ele > 0` assertion in the
+/// export loop is what holds it there. That is the parity claim's boundary, by construction: a
+/// route whose opening lies outside the raster stores `0` for those points (the module docs' hole
+/// policy — the format has no "unknown"), so its export re-imports with a step the converter's
+/// dead-band books. Inside coverage — every route on a map whose terrain was baked for it — the
+/// two integrations agree.
+#[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
+#[test]
+#[cfg(feature = "external-fixtures")]
+fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let terrain_src = SliceSource(&dem);
+    let mut terrain =
+        obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src).unwrap();
+
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    let src = SliceSource(&map);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(NavScratch::<{ obc_route::NAV_MAX_NODES }>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let planned =
+        plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink).expect("plans");
+
+    // The export: one `<trkpt>` per stored point, exactly the fields an exporter has to hand.
+    let mut gpx = String::from("<gpx><trk><trkseg>");
+    for p in route_points(&sink.buf) {
+        assert!(p.ele > 0, "an exported point with no height would export a lie");
+        gpx.push_str(&format!(
+            "<trkpt lat=\"{:.6}\" lon=\"{:.6}\"><ele>{}</ele></trkpt>",
+            p.lat as f64 / 1e6,
+            p.lon as f64 / 1e6,
+            p.ele
+        ));
+    }
+    gpx.push_str("</trkseg></trk></gpx>");
+
+    let mut back = VecSink::default();
+    let reimported = obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), "Grimsel", &mut back).expect("re-imports");
+
+    assert_eq!((reimported.min_ele_m, reimported.max_ele_m), (planned.min_ele_m, planned.max_ele_m));
+    let (a, b) = (planned.total_ascent_m as i64, reimported.total_ascent_m as i64);
+    assert!(
+        (a - b).abs() * 20 <= a.max(1),
+        "planned +{a} m vs re-imported +{b} m — the two dead-band integrations must agree within 5%"
+    );
+}
+
+/// **A leading hole books nothing.** A route that starts outside coverage has no known height to
+/// carry yet, so the integrator must not run until the first sample resolves — otherwise the band
+/// anchors on the `0` placeholder and the first real height (1 412 m here) lands in the header as
+/// ascent, poisoning every stored `cum_ascent` after it as well.
+#[test]
+fn a_route_that_starts_outside_coverage_books_no_phantom_ascent() {
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut CroppedTerrain);
+    let pts = route_points(&obcr);
+
+    // The route genuinely straddles the coverage edge: points on both sides of it.
+    assert!(pts.iter().any(|p| p.lon < COVERAGE_LON), "the route starts outside coverage");
+    let covered: Vec<&obc_route::RoutePoint> = pts.iter().filter(|p| p.lon >= COVERAGE_LON).collect();
+    assert!(covered.len() >= 2, "and crosses well into it");
+
+    // The header's climb is the *covered* climb only — the 1 412 m step into coverage is not a hill.
+    let mut band = obc_elevation::DeadBand::<f64>::new();
+    for p in &covered {
+        band.push(f64::from(p.ele));
+    }
+    let covered_ascent = band.ascent() as u32;
+    assert!(covered_ascent > 0, "the covered part does climb (otherwise this test proves nothing)");
+    assert_eq!(
+        route.total_ascent_m, covered_ascent,
+        "header ascent must be the post-coverage climb only, not {} m of phantom step",
+        COVERED_BASE_M
+    );
+    assert!(
+        route.total_ascent_m < COVERED_BASE_M as u32,
+        "a {} m first sample was booked as ascent (the leading-hole bug)",
+        COVERED_BASE_M
+    );
+    // …and the same on the stored per-point cumulative: the first covered point must still read 0.
+    let first_covered_cum = cum_ascent_at(&obcr, |p| p.lon >= COVERAGE_LON);
+    assert_eq!(first_covered_cum, 0, "cum_ascent at the first covered point is poisoned");
+    // The uncovered opening still *stores* 0 (OBCR has no "unknown") — the documented wart.
+    assert!(pts.iter().filter(|p| p.lon < COVERAGE_LON).all(|p| p.ele == 0));
+}
+
+/// The stored cumulative ascent (a chunk-level field) at the first point matching `pred` — read
+/// through the same `ChunkMeta` the profile builder reads, so this checks what is *written*, not a
+/// recomputation.
+fn cum_ascent_at(obcr: &[u8], pred: impl Fn(&obc_route::RoutePoint) -> bool) -> u32 {
+    let src = SliceSource(obcr);
+    let idx = RouteIndex::read(&src).expect("the emitted OBCR parses");
+    let r = RouteReader::new(&idx, &src);
+    for k in 0..idx.chunks().len() {
+        let chunk = decode(&r, k);
+        if chunk.iter().any(&pred) {
+            return idx.chunks()[k].cum_ascent_m;
+        }
+    }
+    panic!("no point matched")
+}
+
+/// A source that never resolves is the null source as far as the route is concerned: same bytes,
+/// same zeroed stats — a flat 0 m route is never reported as real terrain.
+#[test]
+fn a_source_that_never_resolves_leaves_the_stats_zeroed() {
+    struct Blind;
+    impl obc_route::ElevationSource for Blind {
+        fn sample(&mut self, _lat: i32, _lon: i32) -> Option<i16> {
+            None
+        }
+    }
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut Blind);
+    let (_, null_obcr) = plan_with_elevation(&bytes, &mut NullElevation);
+
+    assert_eq!((route.min_ele_m, route.max_ele_m), (0, 0));
+    assert_eq!((route.total_ascent_m, route.total_descent_m), (0, 0));
+    assert_eq!(obcr, null_obcr, "an always-None source emits exactly the null source's bytes");
+}
+
+// --- EL6: climb-aware A* relaxation (epic #1068, #1074) ------------------------------------------
+//
+// The relaxation now costs an edge `(cost_m × effective) >> 4 + ascent_m × climb_weight` (§8.6).
+// `ascent_m` is baked by the packer from an `ElevationSource` at serialize time, so these fixtures
+// hand `serialize_lods` a synthetic terrain and then route over the resulting **real v12 bytes** —
+// the same writer→reader loop the rest of this file uses. Nothing below mounts terrain at *emit*
+// (every plan runs through `NullElevation`), which keeps the emitted OBCR comparable to the
+// pre-terrain pins: what is under test here is the search, not the fill.
+
+/// [`map_with_profiles`] over a caller-supplied terrain — the v12 ascent path. Without this the
+/// packer bakes `Ascent M = 0` everywhere and the climb term is unreachable from a test.
+fn map_with_terrain(
+    graph: &NavGraph,
+    profiles: &[NavProfile],
+    terrain: &mut dyn obc_route::ElevationSource,
+) -> Vec<u8> {
+    let lods =
+        vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles, terrain);
+    assert_eq!(dropped, 0);
+    bin
+}
+
+/// A neutral-multiplier profile carrying nothing but a climb weight — so a test that moves `w` moves
+/// **only** the climb term and every other input to the cost stays where the other fixtures put it.
+fn climb_profile(name: &str, climb_weight: u8) -> NavProfile {
+    NavProfile { name: name.into(), highway: [16; 32], surface: [16; 8], climb_weight }
+}
+
+/// A north-facing hillside: the ground rises 1 m per 25 µdeg of latitude above the fixture grid's
+/// base row and is dead flat at or below it. One variable (latitude), so every ascent below is
+/// arithmetic: a leg from row 0 to row 1 climbs `SP / 25 = 400 m`, and the same leg southbound
+/// climbs nothing at all.
+struct Hillside;
+
+/// The climb, in metres, of one grid row of the [`Hillside`] — `SP / 25`.
+const ROW_CLIMB_M: u32 = 400;
+
+impl obc_route::ElevationSource for Hillside {
+    fn sample(&mut self, lat_udeg: i32, _lon_udeg: i32) -> Option<i16> {
+        Some(((lat_udeg - BASE.1).max(0) / 25) as i16)
+    }
+}
+
+/// A conical knoll centred on the 3×3 grid's middle node: 600 m at the summit, falling 1 m per
+/// 20 µdeg of Chebyshev distance and flat at the grid's rim. Unlike [`Hillside`] it makes the grid's
+/// monotone corner-to-corner paths differ *in climb while tying in distance* — over the top costs
+/// 500 m, around the rim costs nothing — which is what the Dijkstra ground truth needs to bite on.
+struct Knoll;
+
+/// The knoll's summit height, m.
+const SUMMIT_M: i32 = 600;
+
+impl obc_route::ElevationSource for Knoll {
+    fn sample(&mut self, lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        let summit = at(1, 1);
+        let d = (lon_udeg - summit.0).abs().max((lat_udeg - summit.1).abs());
+        Some((SUMMIT_M - d / 20).max(0) as i16)
+    }
+}
+
+/// The pass-vs-valley fixture, the product behaviour in four nodes: A and B a grid row apart on the
+/// flat, joined either **north over a pass** (two short legs through the apex, which the
+/// [`Hillside`] puts [`ROW_CLIMB_M`] above them) or **south through a valley** (two long legs that
+/// never leave the flat). Every leg is longer than its own straight line, so the great-circle
+/// heuristic stays admissible whatever the profile.
+///
+/// The arithmetic, once, so every assertion below is a reading of it: the pass corridor costs
+/// `2 × PASS_LEG + ROW_CLIMB_M × w` and the valley `2 × VALLEY_LEG`, so they cross at
+/// `w = 2 × (VALLEY_LEG − PASS_LEG) / ROW_CLIMB_M = 5` exactly. Only the *uphill* leg books ascent —
+/// the descent off the far side books none, which is the §8.6 asymmetry made visible.
+///
+/// **Why the legs are kilometres and the nodes are hundreds of metres apart.** The search is
+/// *weighted* A\*, so a frontier node carries `ε·h` of inflation the goal (at `h = 0`) does not, and
+/// on a fixture whose legs were comparable to `ε·h` the ε rung — not the cost model — would decide
+/// the tie. Making each leg longer than `0.3 × h(pass → B)` puts the corridor choice back where
+/// these tests mean to read it: `A*` settles the pass before the goal pops whenever the pass is
+/// genuinely cheaper, so its answer here is the true climb-aware optimum, not a bounded
+/// approximation of one. (The bound itself is exercised, deliberately, in
+/// `the_climb_aware_optimum_matches_a_directional_dijkstra`.)
+fn pass_vs_valley() -> NavGraph {
+    let (a, b) = (at(0, 0), at(0, 2));
+    let (pass, valley) = (at(1, 1), at(-1, 1));
+    NavGraph {
+        nodes: vec![
+            Node { id: 0, coord: a },
+            Node { id: 1, coord: pass },
+            Node { id: 2, coord: valley },
+            Node { id: 3, coord: b },
+        ],
+        edges: vec![
+            Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 },
+            Edge { a: 1, b: 3, polyline: vec![pass, b], length_m: PASS_LEG, kind: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, valley], length_m: VALLEY_LEG, kind: 0 },
+            Edge { a: 2, b: 3, polyline: vec![valley, b], length_m: VALLEY_LEG, kind: 0 },
+        ],
+    }
+}
+
+/// One leg of the pass corridor, m — comfortably above both its own ~1 574 m straight line and the
+/// ~472 m of `ε·h` inflation the frontier carries (see [`pass_vs_valley`]).
+const PASS_LEG: u32 = 3_000;
+/// One leg of the valley corridor, m. `2 × 4 000 = 8 000` is 2 000 m of ground more than the pass —
+/// which the climb term matches at exactly `w = 5`.
+const VALLEY_LEG: u32 = 4_000;
+
+/// Plan A→B over a [`pass_vs_valley`] map and report `(raw distance, took the pass?)`.
+fn plan_corridor(bytes: &[u8]) -> (u32, bool) {
+    let (a, b) = (at(0, 0), at(0, 2));
+    let (res, obcr, _) = plan_p(bytes, a, b, "Corridor", 0);
+    let route = res.expect("both corridors are legal — one of them must plan");
+    let over_the_pass = route_points(&obcr).iter().any(|p| (p.lon, p.lat) == at(1, 1));
+    (route.total_distance_m, over_the_pass)
+}
+
+/// **The steering test** — the product behaviour EL6 exists for, pinned. Same map, same endpoints,
+/// same everything except the profile's climb weight: a climb-blind router takes the short steep
+/// pass (it is 1 600 m of ground cheaper) and a road-weighted one takes the long flat valley. This
+/// is the grimsel A/B in miniature, and it is deterministic.
+#[test]
+fn the_climb_weight_steers_from_the_pass_to_the_valley() {
+    let graph = pass_vs_valley();
+
+    // Non-vacuity first: the packer really did bake the climb the assertions below spend. The
+    // uphill direction books a row of the hillside; the downhill one books nothing.
+    let (up, down) = obc_pack::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
+    assert!(
+        (up as i64 - ROW_CLIMB_M as i64).abs() <= 4,
+        "the pass leg should bake ≈ {ROW_CLIMB_M} m of ascent, baked {up}"
+    );
+    assert_eq!(down, 0, "and nothing at all coming back down — ascent is directional (§8.3)");
+
+    let blind = map_with_terrain(&graph, &[climb_profile("Blind", 0)], &mut Hillside);
+    assert_eq!(plan_corridor(&blind), (2 * PASS_LEG, true), "climb-blind, the pass is simply the shorter way");
+
+    let road = map_with_terrain(&graph, &[climb_profile("Road", 10)], &mut Hillside);
+    assert_eq!(plan_corridor(&road), (2 * VALLEY_LEG, false), "at the stock Road weight the climb outprices 2 km");
+}
+
+/// The crossover sits **exactly** where the §8.6 arithmetic puts it, not merely somewhere sensible:
+/// the corridors tie at `w = 5` (`400 × 5 = 2 000` = the valley's extra ground), so `w = 4` still
+/// takes the pass and `w = 6` already takes the valley. A cost model that folded the climb term
+/// inside the `>> 4`, or scaled it by the way-kind multiplier, or charged both directions of the
+/// edge, would miss this by a rung.
+#[test]
+fn the_climb_crossover_lands_where_the_formula_says() {
+    let graph = pass_vs_valley();
+    let below = map_with_terrain(&graph, &[climb_profile("w4", 4)], &mut Hillside);
+    let above = map_with_terrain(&graph, &[climb_profile("w6", 6)], &mut Hillside);
+    assert_eq!(plan_corridor(&below), (2 * PASS_LEG, true), "4 × 400 = 1 600 < 2 000 ⇒ the pass still wins");
+    assert_eq!(plan_corridor(&above), (2 * VALLEY_LEG, false), "6 × 400 = 2 400 > 2 000 ⇒ the valley wins");
+}
+
+/// **The null-path pin (EL6, non-negotiable).** A map baked *with* terrain — every §8.3 `Ascent M`
+/// a real number — routed under a `climb_weight = 0` profile must emit the bytes `develop`'s
+/// pre-elevation router emitted. The digest is [`NULL_PATH_DIGEST`], the very constant EL7 took from
+/// `develop` at the commit before the epic touched this crate, so the two zeroes the spec calls
+/// legal (`Ascent M = 0` on a terrain-free map, `Climb Weight = 0` on a climb-blind profile) are
+/// *proved* to reproduce v11 costing rather than assumed to.
+#[test]
+fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
+    let graph = grid3(false);
+    let flat = map_with(&graph);
+    let hilly = map_with_terrain(&graph, &[neutral_profile()], &mut Hillside);
+
+    // The fixture is not vacuous: the two maps differ (the ascent field is populated) and a grid
+    // column really does climb a row of the hillside.
+    assert_ne!(flat, hilly, "the terrain-baked map must differ on the wire, or this pins nothing");
+    let (up, _) = obc_pack::nav::integrate_edge_ascent(&[at(0, 0), at(0, 500), at(1, 0)], &mut Hillside);
+    assert!(up >= ROW_CLIMB_M as u16 - 4, "a grid column climbs a row of the hillside, baked {up} m");
+
+    let (route, obcr) = plan_with_elevation(&hilly, &mut NullElevation);
+    assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "a climb-blind plan over baked ascents must not move a byte");
+    assert_eq!(route.total_distance_m, 4 * EDGE_COST);
+    let (_, flat_obcr) = plan_with_elevation(&flat, &mut NullElevation);
+    assert_eq!(obcr, flat_obcr, "…and is the same route the terrain-free map plans");
+}
+
+/// **The registered-fixture pin.** `sim-grimsel:grimsel.obcm` is the canonical map revision whose
+/// ascent table this test freezes, so every `Ascent M` on it is `0` and the climb term
+/// vanishes whatever the profile's weight — even though the shipped table carries the stock
+/// Road 10 / Gravel 8 / MTB 6 / Touring 8. All four profiles' routes are therefore byte-frozen at
+/// the digests `develop` produced before EL6; if one moves, the "no terrain ⇒ no change" claim (and
+/// with it every committed UI snapshot) is broken.
+#[cfg_attr(miri, ignore)] // reads the 6.5 MB fixture from disk — Miri's isolation forbids it
+#[test]
+#[cfg(feature = "external-fixtures")]
+fn the_terrain_free_grimsel_fixture_routes_byte_identically_on_every_profile() {
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    for (idx, want) in GRIMSEL_PRE_EL6_DIGESTS.iter().enumerate() {
+        let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
+        res.unwrap_or_else(|e| panic!("profile {idx} plans on grimsel, got {e:?}"));
+        assert_eq!(digest(&obcr), *want, "profile {idx}'s route on the terrain-free fixture moved");
+    }
+}
+
+/// FNV-1a of each stock profile's Innertkirchen→Grimsel route on the committed fixture, captured on
+/// `develop` at 16de566c (EL7's merge, the commit this branch forked from) and unchanged by EL6.
+#[cfg(feature = "external-fixtures")]
+const GRIMSEL_PRE_EL6_DIGESTS: [u64; 4] =
+    [0xd6e8_1a83_6000_7fb9, 0xb605_bfd0_f318_e1b3, 0xfa4b_d3c0_6c4c_1e92, 0x407d_5d79_4678_0248];
+
+/// **Admissibility in practice, not just in prose**: over a graph whose paths genuinely differ in
+/// climb (the [`Knoll`] — over the top costs 500 m, around the rim costs nothing, and every path
+/// ties on distance), weighted A\*'s answer is the *exact* optimum a plain Dijkstra over the same
+/// climb-aware, **directional** edge costs finds. The ε bound would allow 1.3× of it; the point of
+/// asserting equality is that an inadmissible `h` would show up here as a cheaper reference than the
+/// search could reach, long before it ever showed up as a 1.3.
+#[test]
+fn the_climb_aware_optimum_matches_a_directional_dijkstra() {
+    let graph = grid3(false);
+    let prof = climb_profile("Climby", 10);
+    let bytes = map_with_terrain(&graph, std::slice::from_ref(&prof), &mut Knoll);
+
+    // Reference: Dijkstra over the fixture graph with the SAME per-direction costs — the packer's
+    // own `integrate_edge_ascent` supplies each direction's ascent, so the ground truth is computed
+    // from the same integrator that wrote the bytes rather than from a re-derivation of it.
+    let n = graph.nodes.len();
+    let mut adj = vec![Vec::<(usize, u32)>::new(); n];
+    for e in &graph.edges {
+        let (fwd, back) = obc_pack::nav::integrate_edge_ascent(&e.polyline, &mut Knoll);
+        let base = weighted(e.length_m, e.kind, &prof);
+        let charge = |asc: u16| base + asc as u32 * prof.climb_weight as u32;
+        adj[e.a as usize].push((e.b as usize, charge(fwd)));
+        adj[e.b as usize].push((e.a as usize, charge(back)));
+    }
+    assert!(
+        adj.iter().flatten().any(|&(_, w)| w > weighted(EDGE_COST, 0, &prof)),
+        "the knoll must make some edge cost more than its ground length, or this test is vacuous"
+    );
+    let mut dist = vec![u32::MAX; n];
+    let mut done = vec![false; n];
+    dist[0] = 0;
+    for _ in 0..n {
+        let Some(u) = (0..n).filter(|&i| !done[i] && dist[i] != u32::MAX).min_by_key(|&i| dist[i]) else { break };
+        done[u] = true;
+        for &(v, w) in &adj[u] {
+            dist[v] = dist[v].min(dist[u].saturating_add(w));
+        }
+    }
+    let reference = dist[8];
+    assert!(reference > 0 && reference != u32::MAX, "the reference is a real finite cost");
+
+    // The found path, re-costed through the same directional table.
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    let (res, obcr, _) = plan_p(&bytes, c0, c8, "Knoll", 0);
+    res.expect("the knoll grid plans");
+    let mut seq: Vec<usize> = Vec::new();
+    for pt in route_points(&obcr) {
+        if let Some(node) = graph.nodes.iter().find(|nd| nd.coord == (pt.lon, pt.lat)) {
+            if seq.last() != Some(&(node.id as usize)) {
+                seq.push(node.id as usize);
+            }
+        }
+    }
+    let found: u32 = seq
+        .windows(2)
+        .map(|w| adj[w[0]].iter().find(|&&(v, _)| v == w[1]).expect("consecutive nodes share an edge").1)
+        .sum();
+
+    assert_eq!(found, reference, "weighted A* did not find the climb-aware optimum ({found} vs {reference})");
+    assert!(found <= reference * 13 / 10, "…and it is inside the ε = 1.3 bound by construction");
+}
+
+/// **Distance honesty under a dominant climb term** (N3's rule, re-pinned where EL6 could break it):
+/// a single hillside leg weighted at `w = 100` accumulates a `g` of `1 600 + 400 × 100 = 41 600`,
+/// twenty-six times its ground length — and the header still reports the ground length. Nothing on a
+/// display path reads `g`; `emit_hop` sums each hop's raw `length_m` and the climb term never enters
+/// that sum.
+#[test]
+fn the_displayed_distance_ignores_the_climb_term_entirely() {
+    let (a, pass) = (at(0, 0), at(1, 1));
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: pass }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 }],
+    };
+    let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
+    let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", 0);
+    let route = res.expect("a single uphill edge plans");
+    assert_eq!(route.total_distance_m, PASS_LEG, "the header total is the raw ground length");
+    assert!(route.total_distance_m < ROW_CLIMB_M * 100, "…and emphatically not the weighted g");
+}
+
+/// **The saturation edge.** At `w = 255` the pass leg's climb term alone is `400 × 255 = 102 000` —
+/// past `u16::MAX`, so the frontier's 16-bit `g` clamps. The documented consequence is that a
+/// saturated node is *maximally unattractive*, never wrapped and never mis-ordered: the plan must
+/// still complete, still take the flat valley, and still report its honest raw distance. (The
+/// arithmetic's own extremes — every input at its wire maximum — are unit-pinned next to
+/// `ProfileMult::edge_cost` in `src/nav.rs`.)
+#[test]
+fn a_saturating_climb_weight_clamps_instead_of_wrapping() {
+    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the fixture must actually reach saturation");
+    let bytes = map_with_terrain(&pass_vs_valley(), &[climb_profile("Absurd", 255)], &mut Hillside);
+    assert_eq!(plan_corridor(&bytes), (2 * VALLEY_LEG, false), "a saturated pass is unattractive, not cheap");
+}
+
+/// The other half of the saturation story: when **every** route saturates there is no ordering left
+/// to exploit, and the contract is only that the search degrades — it must still terminate and still
+/// return a real route, never panic and never wrap into a bogus shortcut. The knoll grid at `w = 255`
+/// saturates on the first climbing edge out of the start.
+#[test]
+fn a_wholly_saturated_frontier_still_returns_a_route() {
+    let graph = grid3(false);
+    let bytes = map_with_terrain(&graph, &[climb_profile("Absurd", 255)], &mut Knoll);
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    let (res, obcr, _) = plan_p(&bytes, c0, c8, "Saturated", 0);
+    let route = res.expect("a saturated frontier still drains to the goal");
+    assert!(route.total_distance_m >= 4 * EDGE_COST, "a real path, not a wrapped shortcut");
+    let pts = route_points(&obcr);
+    assert_eq!((pts[0].lon, pts[0].lat), c0);
+    assert_eq!((pts[pts.len() - 1].lon, pts[pts.len() - 1].lat), c8);
 }

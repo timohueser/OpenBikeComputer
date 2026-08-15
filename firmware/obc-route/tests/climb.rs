@@ -225,15 +225,6 @@ fn active_at_is_raw_interval_lookup() {
     assert_eq!(climbs.active_at(c1.end_m + 1000), None); // past the last climb
 }
 
-/// The difficulty-score placeholder is populated (non-zero for a real climb) but the label
-/// mapping is out of scope, so we only check it's set — proving the field is wired for C-later.
-#[test]
-fn category_placeholder_is_populated() {
-    let climbs = detect(&[(0.0, 100.0), (2000.0, 400.0), (3000.0, 400.0)]);
-    assert_eq!(climbs.len(), 1);
-    assert!(climbs[0].category > 0, "the reserved difficulty score should be computed");
-}
-
 // -------------------------------------------------------------------------------------------
 // Real-fixture end-to-end test through the reader.
 // -------------------------------------------------------------------------------------------
@@ -249,8 +240,11 @@ fn category_placeholder_is_populated() {
 #[test]
 fn grimsel_fixture_detects_the_pass() {
     // The fixture lives in the sim crate's assets; read it relative to this crate's dir.
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel-climb.obcr"))
-        .expect("grimsel-climb.obcr fixture present");
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"
+    ))
+    .expect("grimsel-climb.obcr fixture present");
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);

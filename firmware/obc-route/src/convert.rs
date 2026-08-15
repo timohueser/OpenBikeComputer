@@ -17,15 +17,17 @@
 
 use heapless::Vec;
 
-use crate::deadband::DeadBand;
-use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
 use crate::reader::{ChunkMeta, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS};
+use crate::symbol::category_for_symbol;
+use obc_elevation::DeadBand;
 use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, ByteSource, Error};
 use obc_formats::obcr::{
-    CHUNK_META_LEN, HEADER_V2_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_ELE_NONE, WAYPOINT_LEN,
+    CHUNK_META_LEN, HEADER_FULL_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_CATEGORY_GENERIC,
+    WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_OFF,
 };
-use obc_reader::BBox;
+use obc_map_scene::BBox;
+use obc_map_scene::{cos_lat, delta_m, ground_dist_m};
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
 const EPSILON_M: f32 = 1.0;
@@ -52,8 +54,24 @@ pub struct RouteStats {
     pub total_descent_m: u32,
     pub min_ele_m: i16,
     pub max_ele_m: i16,
-    /// Waypoints stored in the v2 section (0 when the GPX carried no `<wpt>`).
+    /// Waypoints stored in the waypoint section (0 when the GPX carried no `<wpt>`).
     pub waypoint_count: u16,
+    /// **Did a real height ever resolve while this route was emitted?** The producer's own
+    /// answer, not an inspection of the stored bytes: the GPX converter sets it when the track
+    /// carried at least one `<ele>`, the nav emit when at least one
+    /// [`ElevationSource`](obc_elevation::ElevationSource) sample answered `Some`
+    /// ([`EleFill::seen`](crate::nav)).
+    ///
+    /// It exists because `0 m` is a **real** height (a Dutch route is not an elevation-less one),
+    /// so no consumer can recover this by looking at the values. The detour splice reads it to
+    /// decide whether the detour's per-point heights are sampled terrain it must keep or the `0`
+    /// placeholder it must replace (#1091), and the detour preview to decide whether it has a
+    /// climb figure to show at all.
+    ///
+    /// Not a stored field: OBCR has no per-route "has elevation" flag and gains none here. What a
+    /// *reader* can say about already-stored bytes is the weaker
+    /// [`RouteReader::has_elevation`](crate::RouteReader::has_elevation).
+    pub has_elevation: bool,
 }
 
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
@@ -69,7 +87,18 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
     {
         let mut scan = WptScanner::new(src);
         while let Some(wp) = scan.next_waypoint()? {
-            if wps.push(WpPlace { wp, best_d2: f32::INFINITY, along_m: 0 }).is_err() {
+            // The symbol → category mapping happens once, here: what's stored is the category, so
+            // the freeform `<sym>` text never has to be carried past the import.
+            let category_id = category_for_symbol(&wp.symbol).map_or(WAYPOINT_CATEGORY_GENERIC, |c| c.id());
+            let place = WpPlace {
+                wp,
+                best_d2: f32::INFINITY,
+                along_m: 0,
+                category_id,
+                lateral_offset_m: 0,
+                sign_pending: false,
+            };
+            if wps.push(place).is_err() {
                 break; // cap reached — keep the first MAX_WAYPOINTS
             }
         }
@@ -83,6 +112,8 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
     let mut last_ele = 0f32;
     let mut min_ele = i16::MAX;
     let mut max_ele = i16::MIN;
+    // The previous raw point, kept only for the waypoint offset's *direction of travel*.
+    let mut prev_raw: Option<(i32, i32)> = None;
 
     while let Some(p) = scan.next_point()? {
         // Elevation: carry the last known value when a point lacks <ele>.
@@ -97,20 +128,46 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
 
         // Waypoint placement: nearest **raw** track point wins; its cumulative distance is
         // the waypoint's position along the route. Matches the phone importer's nearest-point
-        // (not segment-projection) placement so the two OBCR producers agree.
+        // (not segment-projection) placement so the two OBCR producers agree. The same
+        // projection also yields the stored lateral offset: its magnitude is the distance to
+        // that winning point, its sign which side of the direction of travel the waypoint fell.
         if !wps.is_empty() {
             let cl = cos_lat(p.lat);
+            let here = (p.lon, p.lat);
             for w in wps.iter_mut() {
-                let (dx, dy) = delta_m((p.lon, p.lat), (w.wp.lon, w.wp.lat), cl);
+                // A waypoint whose best point was the track's *first* has no incoming segment to
+                // take a heading from, so its sign waits one point for the outgoing one.
+                if w.sign_pending {
+                    if let Some(pr) = prev_raw {
+                        w.lateral_offset_m = signed_offset_m(w.best_d2, cross(pr, here, pr, (w.wp.lon, w.wp.lat), cl));
+                    }
+                    w.sign_pending = false;
+                }
+                let (dx, dy) = delta_m(here, (w.wp.lon, w.wp.lat), cl);
                 let d2 = dx * dx + dy * dy;
                 if d2 < w.best_d2 {
                     w.best_d2 = d2;
                     w.along_m = em.cum_dist() as u32;
+                    match prev_raw {
+                        Some(pr) => {
+                            w.lateral_offset_m = signed_offset_m(d2, cross(pr, here, here, (w.wp.lon, w.wp.lat), cl));
+                        }
+                        // Magnitude now, side on the next point (or, for a one-point track, never
+                        // — `signed_offset_m`'s positive default stands).
+                        None => {
+                            w.lateral_offset_m = signed_offset_m(d2, 0.0);
+                            w.sign_pending = true;
+                        }
+                    }
                 }
             }
         }
+        prev_raw = Some((p.lon, p.lat));
     }
 
+    // The min/max pair is still crossed iff no `<ele>` was ever parsed — the producer's own
+    // "did elevation resolve?" answer, taken *before* the zeroing clamp erases the distinction.
+    let has_elevation = min_ele <= max_ele;
     if min_ele > max_ele {
         min_ele = 0;
         max_ele = 0;
@@ -121,14 +178,16 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         ascent_m: elev.ascent() as u32,
         descent_m: elev.descent() as u32,
         total_distance_m: None,
+        has_elevation,
     };
     em.finish(sink, name, stats, &mut wps)
 }
 
 /// The producer-owned figures [`ObcrEmitter::finish`] bakes into the header: the elevation
-/// stats the caller tracked (GPX: dead-banded over raw `<ele>`; nav routes: all zero — no DEM)
-/// and an optional total-distance override (the router stores summed edge costs, the length
-/// #116 locked, rather than the emitter's re-measured polyline distance).
+/// stats the caller tracked (GPX: dead-banded over raw `<ele>`; nav routes: sampled from the
+/// map's terrain since EL7, all zero with a null source) and an optional total-distance override
+/// (the router stores summed edge costs, the length #116 locked, rather than the emitter's
+/// re-measured polyline distance).
 pub(crate) struct EmitStats {
     pub min_ele_m: i16,
     pub max_ele_m: i16,
@@ -136,10 +195,13 @@ pub(crate) struct EmitStats {
     pub descent_m: u32,
     /// `None` ⇒ the emitter's cumulative raw-path distance.
     pub total_distance_m: Option<u32>,
+    /// The producer's explicit "a real height resolved" answer — rides out on
+    /// [`RouteStats::has_elevation`] and is never written to the file.
+    pub has_elevation: bool,
 }
 
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
-/// ([`crate::nav`]): reserves the v2 header up front, feeds raw points through the
+/// ([`crate::nav`]): reserves the v3 header up front, feeds raw points through the
 /// 1-step-lookahead decimator and the `int16`-delta densify guard into the chunk
 /// [`Encoder`], then backfills the header once offsets and totals are known. Owns every
 /// format/geometry invariant (bbox growth, start point, cumulative distance, chunk
@@ -159,15 +221,18 @@ pub(crate) struct ObcrEmitter {
     // Decimation state (1-step lookahead).
     last_kept: Option<Cand>,
     pending: Option<Cand>,
+    /// Elevation-detail keep threshold (m), `0` = off — see
+    /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
+    ele_keep_m: i16,
 }
 
 impl ObcrEmitter {
-    /// Reserve the v2 header on `sink`; the body follows immediately
-    /// (`data_offset = HEADER_V2_LEN`).
+    /// Reserve the v3 header on `sink`; the body follows immediately
+    /// (`data_offset = HEADER_FULL_LEN`).
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
-        sink.write(&[0u8; HEADER_V2_LEN])?;
+        sink.write(&[0u8; HEADER_FULL_LEN])?;
         Ok(ObcrEmitter {
-            enc: Encoder::new(HEADER_V2_LEN as u32),
+            enc: Encoder::new(HEADER_FULL_LEN as u32),
             cum_dist: 0.0,
             prev: None,
             bbox: None,
@@ -175,7 +240,25 @@ impl ObcrEmitter {
             emitted: 0,
             last_kept: None,
             pending: None,
+            ele_keep_m: 0,
         })
+    }
+
+    /// Keep a candidate whose height differs from the last kept vertex by at least `threshold_m`,
+    /// on top of the geometric rules. Off (`0`) unless a producer turns it on.
+    ///
+    /// The decimator is otherwise purely planar: it drops anything within [`EPSILON_M`] of the
+    /// chord, so an interpolated point on a *straight* road is always dropped — including the one
+    /// standing on a crest. That is harmless for a GPX import, whose kept vertices are real track
+    /// points with their own `<ele>` at ~10 m spacing, and wrong for the nav router's emit-time
+    /// fill (EL7, epic #1068), whose extra points exist **only** to carry height: decimating them
+    /// away would leave the stored profile — and therefore a GPX export, and therefore a re-import's
+    /// stats — coarser than the totals the header claims. Setting this to the elevation dead-band
+    /// makes "kept" and "booked by the dead-band" the same set of vertices.
+    ///
+    /// Off for [`gpx_to_obcr`], so imported routes decimate byte-identically to before.
+    pub(crate) fn keep_elevation_detail(&mut self, threshold_m: i16) {
+        self.ele_keep_m = threshold_m;
     }
 
     /// Cumulative raw-path distance so far (m) — includes the point just pushed, so the GPX
@@ -197,7 +280,7 @@ impl ObcrEmitter {
     ) -> Result<(), Error> {
         // Distance from the previous raw point.
         if let Some(pr) = self.prev {
-            self.cum_dist += seg_dist_m(pr, (lon, lat)) as f64;
+            self.cum_dist += ground_dist_m(pr, (lon, lat)) as f64;
         } else {
             self.start = (lon, lat);
         }
@@ -214,7 +297,9 @@ impl ObcrEmitter {
             (Some(lk), Some(pd)) => {
                 let perp = perp_dist_m(lk, c, pd);
                 let span = (c.cum_d - lk.cum_d) as f32;
-                if perp > EPSILON_M || span > MAX_SPAN_M {
+                let ele_break =
+                    self.ele_keep_m > 0 && (i32::from(pd.ele) - i32::from(lk.ele)).abs() >= i32::from(self.ele_keep_m);
+                if perp > EPSILON_M || span > MAX_SPAN_M || ele_break || reverses(lk, pd, c) {
                     self.emitted += emit_densified(&mut self.enc, sink, Some(lk), pd)?;
                     self.last_kept = Some(pd);
                 }
@@ -257,6 +342,7 @@ impl ObcrEmitter {
             min_ele_m: stats.min_ele_m,
             max_ele_m: stats.max_ele_m,
             waypoint_count: wps.len() as u16,
+            has_elevation: stats.has_elevation,
         };
 
         let header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);
@@ -267,15 +353,72 @@ impl ObcrEmitter {
 
 /// A waypoint being placed: the raw `<wpt>` plus the best (squared) distance to any
 /// raw track point seen so far and the cumulative route distance there. `pub(crate)`
-/// only so the nav router can hand [`ObcrEmitter::finish`] an empty set.
+/// only so the nav router can hand [`ObcrEmitter::finish`] an empty set and the
+/// splicer can re-place stored waypoints.
 pub(crate) struct WpPlace {
     wp: RawWaypoint,
     best_d2: f32,
     along_m: u32,
+    /// The stored category byte (§4), mapped from `<sym>`/`<type>` at import and preserved
+    /// verbatim across a splice.
+    category_id: u8,
+    /// Signed lateral offset from the route line, m (positive = right of travel). Recomputed
+    /// whenever a nearer track point wins the placement; carried verbatim through a splice.
+    lateral_offset_m: i16,
+    /// The winning track point had no predecessor (it was the track's first), so the offset's
+    /// magnitude is stored but its side still waits for the outgoing segment.
+    sign_pending: bool,
+}
+
+impl WpPlace {
+    /// Re-place an already-stored [`Waypoint`](crate::reader::Waypoint) at a (possibly shifted)
+    /// along-route distance — the splicer's constructor: placement is already decided, so the
+    /// nearest-point search state is inert. The category byte and the lateral offset ride along
+    /// unchanged: a splice only replaces the avoided span (whose waypoints are dropped), so every
+    /// surviving waypoint still sits beside the very geometry its offset was measured against.
+    pub(crate) fn from_stored(w: &crate::reader::Waypoint, along_m: u32) -> WpPlace {
+        WpPlace {
+            wp: RawWaypoint {
+                lon: w.lon,
+                lat: w.lat,
+                ele: (w.ele != WAYPOINT_ELE_NONE).then_some(w.ele as f32),
+                name: w.name.clone(),
+                symbol: heapless::String::new(), // already mapped into `category_id`
+            },
+            best_d2: 0.0,
+            along_m,
+            category_id: w.category_id,
+            lateral_offset_m: w.lateral_offset_m,
+            sign_pending: false,
+        }
+    }
+}
+
+/// The 2-D cross product of the direction of travel `dir_a → dir_b` with the offset `at → wp`, in
+/// the local-equirectangular metric (`cl = cos_lat`). Positive means `wp` lies to the **left** of
+/// travel; only its sign is used.
+fn cross(dir_a: (i32, i32), dir_b: (i32, i32), at: (i32, i32), wp: (i32, i32), cl: f32) -> f32 {
+    let (ux, uy) = delta_m(dir_a, dir_b, cl);
+    let (vx, vy) = delta_m(at, wp, cl);
+    ux * vy - uy * vx
+}
+
+/// The stored lateral offset: `sqrt(d2)` metres carrying the side as its sign — negative left of
+/// travel, positive right. Saturates at the `i16` range rather than wrapping, so a waypoint dropped
+/// 40 km off route reads as "very far right", not "slightly left". A waypoint exactly on the line
+/// of travel (`cross == 0`, including the undetermined one-point-track case) takes the positive
+/// sign; at the magnitudes where the side is drawn at all, that case doesn't occur in practice.
+fn signed_offset_m(d2: f32, cross: f32) -> i16 {
+    let m = libm::roundf(libm::sqrtf(d2)).clamp(0.0, i16::MAX as f32) as i16;
+    if cross > 0.0 {
+        -m
+    } else {
+        m
+    }
 }
 
 /// Sort the placed waypoints by position along the route and write the fixed-record
-/// table (v2 §4) at `offset` (right after the chunk index). Returns the table's file
+/// table (spec §4) at `offset` (right after the chunk index). Returns the table's file
 /// offset for the header extension — 0 when there are no waypoints.
 fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
     if wps.is_empty() {
@@ -295,9 +438,10 @@ fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS
         put_i32(&mut rec, 4, w.wp.lon);
         put_i32(&mut rec, 8, w.wp.lat);
         put_i16(&mut rec, 12, w.wp.ele.map_or(WAYPOINT_ELE_NONE, |e| round_i16(e as f64)));
-        rec[14] = 0; // kind: generic — GPX <sym>/<type> mapping is the phone's job
+        rec[14] = w.category_id; // GPX pass: the mapped symbol; splice pass: the stored byte
         rec[15] = w.wp.name.len() as u8;
-        rec[16..16 + w.wp.name.len()].copy_from_slice(w.wp.name.as_bytes());
+        put_i16(&mut rec, 16, w.lateral_offset_m); // rec[18..20] reserved
+        rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + w.wp.name.len()].copy_from_slice(w.wp.name.as_bytes());
         sink.write(&rec)?;
     }
     Ok(offset)
@@ -470,8 +614,8 @@ fn build_header(
     index_offset: u32,
     wpt_offset: u32,
     s: &RouteStats,
-) -> [u8; HEADER_V2_LEN] {
-    let mut h = [0u8; HEADER_V2_LEN];
+) -> [u8; HEADER_FULL_LEN] {
+    let mut h = [0u8; HEADER_FULL_LEN];
     h[0..4].copy_from_slice(MAGIC);
     h[4] = VERSION;
     // h[5] flags = 0, h[7] reserved = 0
@@ -501,11 +645,23 @@ fn build_header(
     put_i16(&mut h, 50, s.max_ele_m);
     put_u32(&mut h, 52, s.chunk_count);
     put_u32(&mut h, 56, index_offset);
-    put_u32(&mut h, 60, HEADER_V2_LEN as u32); // data_offset
-                                               // v2 waypoint extension (§1.1): table offset + count; the rest reserved.
+    put_u32(&mut h, 60, HEADER_FULL_LEN as u32); // data_offset
+                                                 // Waypoint header extension (§1.1): table offset + count; the rest reserved.
     put_u32(&mut h, 112, wpt_offset);
     put_u16(&mut h, 116, s.waypoint_count);
     h
+}
+
+/// Does the path reverse direction at `b` (the heading turns by more than 90°)? A perfectly
+/// collinear out-and-back — a computed detour riding back to a junction, a turnaround at a
+/// dead end — has zero perpendicular distance everywhere, so the chord test alone would
+/// collapse the whole doubled-back stretch onto its endpoints and silently lose its length
+/// from the geometry (#882). A reversal vertex is always kept.
+fn reverses(a: Cand, b: Cand, c: Cand) -> bool {
+    let cl = cos_lat(a.lat);
+    let (ux, uy) = delta_m((a.lon, a.lat), (b.lon, b.lat), cl);
+    let (vx, vy) = delta_m((b.lon, b.lat), (c.lon, c.lat), cl);
+    ux * vx + uy * vy < 0.0
 }
 
 /// Perpendicular distance (m) from point `p` to the chord `a → c`, in local-equirectangular
