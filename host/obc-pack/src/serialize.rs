@@ -526,25 +526,16 @@ pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_s
     (data, features.len() - kept)
 }
 
-/// One node of an abstract quadtree, for the shared BFS-flatten [`flatten_tree`]:
-/// either a leaf that packs into (at most) one chunk, or a branch over its four
-/// NW/NE/SW/SE children. The geometry [`Node`] and the POI [`PoiNode`] both view
-/// as this so the index-byte layout (branch bit / empty-leaf sentinel / chunk id)
-/// lives in exactly one place.
-enum TreeNode<'a, N> {
-    /// A leaf. `pack` returns `None` for an empty leaf (→ [`EMPTY_LEAF`]) or the
-    /// leaf's chunk bytes + its own chunk-overflow drop count.
-    Leaf(&'a N),
-    /// A branch over its four children in NW/NE/SW/SE order.
-    Branch(&'a [N; 4]),
+/// A resident quadtree whose branches have four NW/NE/SW/SE children. Geometry,
+/// POI, graph-node, and snap-anchor trees all share this traversal contract; their
+/// leaf framing remains deliberately separate.
+trait TreeWalk: Sized {
+    fn children(&self) -> Option<&[Self; 4]>;
 }
 
-/// A quadtree the BFS-flatten can walk: classify a node into leaf/branch, and pack
-/// one leaf into its chunk. Implemented for the geometry [`Node`] and the POI
-/// [`PoiNode`], so [`flatten_tree`] serializes both to the identical index layout.
-trait FlattenTree: Sized {
-    /// View this node as a leaf or a branch over its four children.
-    fn classify(&self) -> TreeNode<'_, Self>;
+/// A quadtree whose leaf owns at most one chunk. Geometry and POI trees share this
+/// framing; graph and snap trees use first-fit leaf binning instead.
+trait FlattenTree: TreeWalk {
     /// Pack a leaf's payload into its chunk: `None` for an empty leaf (no chunk),
     /// else `(chunk_bytes, dropped)` where `dropped` is the chunk-overflow count.
     fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)>;
@@ -561,28 +552,14 @@ trait FlattenTree: Sized {
 /// while geometry chunks are tight and need their lengths to build the v11 offset table
 /// ([`serialize_tree`]).
 fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<Vec<u8>>, usize) {
-    // BFS in enqueue order. Children are appended contiguously, so a branch's
-    // first-child index is the length of `nodes` at the moment we expand it.
-    let mut nodes: Vec<&N> = vec![root];
-    let mut first_child: Vec<usize> = vec![0];
-    let mut i = 0;
-    while i < nodes.len() {
-        if let TreeNode::Branch(children) = nodes[i].classify() {
-            first_child[i] = nodes.len();
-            for c in children.iter() {
-                nodes.push(c);
-                first_child.push(0);
-            }
-        }
-        i += 1;
-    }
+    let (nodes, first_child) = bfs_nodes(root);
 
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let mut dropped: usize = 0;
     for (idx, node) in nodes.iter().enumerate() {
-        match node.classify() {
-            TreeNode::Leaf(leaf) => match leaf.pack_leaf(chunk_size) {
+        match node.children() {
+            None => match node.pack_leaf(chunk_size) {
                 None => index.push(EMPTY_LEAF),
                 Some((chunk, chunk_dropped)) => {
                     let chunk_id = chunks.len() as u32;
@@ -591,7 +568,7 @@ fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, V
                     index.push(chunk_id & !BRANCH_BIT);
                 }
             },
-            TreeNode::Branch(_) => index.push(first_child[idx] as u32 | BRANCH_BIT),
+            Some(_) => index.push(first_child[idx] as u32 | BRANCH_BIT),
         }
     }
 
@@ -602,13 +579,35 @@ fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, V
     (index_bytes, index.len() as u32, chunks, dropped)
 }
 
-impl FlattenTree for Node {
-    fn classify(&self) -> TreeNode<'_, Node> {
+/// Enumerate a resident quadtree in wire-order BFS while recording each branch's
+/// first child. Children are appended contiguously, so `first_child > parent`.
+fn bfs_nodes<N: TreeWalk>(root: &N) -> (Vec<&N>, Vec<usize>) {
+    let mut nodes = vec![root];
+    let mut first_child = vec![0];
+    let mut i = 0;
+    while i < nodes.len() {
+        if let Some(children) = nodes[i].children() {
+            first_child[i] = nodes.len();
+            for child in children {
+                nodes.push(child);
+                first_child.push(0);
+            }
+        }
+        i += 1;
+    }
+    (nodes, first_child)
+}
+
+impl TreeWalk for Node {
+    fn children(&self) -> Option<&[Node; 4]> {
         match self {
-            Node::Leaf { .. } => TreeNode::Leaf(self),
-            Node::Branch(children) => TreeNode::Branch(children),
+            Node::Leaf { .. } => None,
+            Node::Branch(children) => Some(children),
         }
     }
+}
+
+impl FlattenTree for Node {
     fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)> {
         match self {
             Node::Leaf { bbox, features } if !features.is_empty() => Some(pack_chunk(features, *bbox, chunk_size)),
@@ -668,13 +667,16 @@ enum PoiNode {
     Branch(Box<[PoiNode; 4]>),
 }
 
-impl FlattenTree for PoiNode {
-    fn classify(&self) -> TreeNode<'_, PoiNode> {
+impl TreeWalk for PoiNode {
+    fn children(&self) -> Option<&[PoiNode; 4]> {
         match self {
-            PoiNode::Leaf(_) => TreeNode::Leaf(self),
-            PoiNode::Branch(children) => TreeNode::Branch(children),
+            PoiNode::Leaf(_) => None,
+            PoiNode::Branch(children) => Some(children),
         }
     }
+}
+
+impl FlattenTree for PoiNode {
     fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)> {
         match self {
             PoiNode::Leaf(points) if !points.is_empty() => Some(pack_poi_chunk(points, chunk_size)),
@@ -973,67 +975,64 @@ fn pack_nav_record(p: &NavPoint, out: &mut Vec<u8>) {
 /// index encoding are identical to [`flatten_tree`]; only the leaf→chunk assignment differs (many
 /// leaves per chunk instead of one).
 fn flatten_nav_tree(root: &NavTreeNode) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
-    // BFS in enqueue order — children appended contiguously, so a branch's first-child index is the
-    // node count when it is expanded (`child > idx`, the reader's `walk_leaves` invariant).
-    let mut nodes: Vec<&NavTreeNode> = vec![root];
-    let mut first_child: Vec<usize> = vec![0];
-    let mut i = 0;
-    while i < nodes.len() {
-        if let NavTreeNode::Branch(children) = nodes[i] {
-            first_child[i] = nodes.len();
-            for c in children.iter() {
-                nodes.push(c);
-                first_child.push(0);
-            }
-        }
-        i += 1;
-    }
+    flatten_binned_tree(root, NAV_CHUNK_SIZE)
+}
 
-    // Each open chunk is built as its own ≤ 512-byte record block; `bins[c]` is chunk `c`'s bytes so
-    // far. First-fit scans them in creation order for the first with room. (Grimsel/monaco pack a few
-    // thousand chunks — the O(leaves × chunks) scan is a blink at pack time.)
+/// A resident tree whose leaf records are first-fit packed without splitting a
+/// leaf across chunks. Graph nodes and snap anchors have the same traversal and
+/// binning invariants, but retain their own record sizing and wire encoding.
+trait FlattenBinnedTree: TreeWalk {
+    type Record;
+
+    fn records(&self) -> Option<&[Self::Record]>;
+    fn record_len(record: &Self::Record) -> usize;
+    fn pack_record(record: &Self::Record, out: &mut Vec<u8>);
+}
+
+fn flatten_binned_tree<N: FlattenBinnedTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+    let (nodes, first_child) = bfs_nodes(root);
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut bins: Vec<Vec<u8>> = Vec::new();
     let mut dropped: usize = 0;
     for (idx, node) in nodes.iter().enumerate() {
-        let points = match node {
-            NavTreeNode::Branch(_) => {
+        let records = match node.records() {
+            None => {
                 index.push(first_child[idx] as u32 | BRANCH_BIT);
                 continue;
             }
-            NavTreeNode::Leaf(points) if !points.is_empty() => points,
-            NavTreeNode::Leaf(_) => {
+            Some(records) if !records.is_empty() => records,
+            Some(_) => {
                 index.push(EMPTY_LEAF);
                 continue;
             }
         };
-        let leaf_len: usize = points.iter().map(NavPoint::record_len).sum();
+        let leaf_len: usize = records.iter().map(N::record_len).sum();
         // First-fit: the first open chunk whose remaining space holds the whole leaf; else a new one.
         // A leaf larger than a whole chunk can't fit anywhere, so it opens a fresh chunk and drops its
-        // overflow (build_nav_tree makes this effectively impossible).
-        let bin = match bins.iter().position(|b| b.len() + leaf_len <= NAV_CHUNK_SIZE) {
+        // overflow (the tree builders make this effectively impossible).
+        let bin = match bins.iter().position(|b| b.len() + leaf_len <= chunk_size) {
             Some(c) => c,
             None => {
-                bins.push(Vec::with_capacity(NAV_CHUNK_SIZE));
+                bins.push(Vec::with_capacity(chunk_size));
                 bins.len() - 1
             }
         };
         index.push((bin as u32) & !BRANCH_BIT);
-        for p in points {
-            if bins[bin].len() + p.record_len() > NAV_CHUNK_SIZE {
+        for record in records {
+            if bins[bin].len() + N::record_len(record) > chunk_size {
                 dropped += 1;
                 continue; // co-located overflow inside one leaf — effectively impossible in real OSM
             }
-            pack_nav_record(p, &mut bins[bin]);
+            N::pack_record(record, &mut bins[bin]);
         }
     }
 
     // Concatenate the bins, each 0xFF-padded to a full chunk (the padding's first byte lands on a
     // `degree` slot, giving the reader its end-of-chunk sentinel).
     let chunk_count = bins.len() as u32;
-    let mut chunks: Vec<u8> = Vec::with_capacity(bins.len() * NAV_CHUNK_SIZE);
+    let mut chunks: Vec<u8> = Vec::with_capacity(bins.len() * chunk_size);
     for mut b in bins {
-        b.resize(NAV_CHUNK_SIZE, CHUNK_END);
+        b.resize(chunk_size, CHUNK_END);
         chunks.extend_from_slice(&b);
     }
 
@@ -1042,6 +1041,34 @@ fn flatten_nav_tree(root: &NavTreeNode) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
         index_bytes.extend_from_slice(&v.to_le_bytes());
     }
     (index_bytes, index.len() as u32, chunks, chunk_count, dropped)
+}
+
+impl TreeWalk for NavTreeNode {
+    fn children(&self) -> Option<&[NavTreeNode; 4]> {
+        match self {
+            NavTreeNode::Leaf(_) => None,
+            NavTreeNode::Branch(children) => Some(children),
+        }
+    }
+}
+
+impl FlattenBinnedTree for NavTreeNode {
+    type Record = NavPoint;
+
+    fn records(&self) -> Option<&[NavPoint]> {
+        match self {
+            NavTreeNode::Leaf(points) => Some(points),
+            NavTreeNode::Branch(_) => None,
+        }
+    }
+
+    fn record_len(record: &NavPoint) -> usize {
+        record.record_len()
+    }
+
+    fn pack_record(record: &NavPoint, out: &mut Vec<u8>) {
+        pack_nav_record(record, out);
+    }
 }
 
 /// Build the node quadtree over the **global bbox** (§8.2), splitting a leaf once
@@ -1161,66 +1188,37 @@ fn build_snap_tree(points: Vec<SnapPoint>, bbox: (i64, i64, i64, i64)) -> SnapTr
 /// Flatten the anchor quadtree with the graph node tree's first-fit leaf bin packing. Records keep
 /// absolute coordinates because distinct spatial leaves may share one chunk.
 fn flatten_snap_tree(root: &SnapTreeNode) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
-    let mut nodes: Vec<&SnapTreeNode> = vec![root];
-    let mut first_child = vec![0usize];
-    let mut i = 0;
-    while i < nodes.len() {
-        if let SnapTreeNode::Branch(children) = nodes[i] {
-            first_child[i] = nodes.len();
-            for child in children.iter() {
-                nodes.push(child);
-                first_child.push(0);
-            }
-        }
-        i += 1;
-    }
+    flatten_binned_tree(root, NAV_CHUNK_SIZE)
+}
 
-    let mut index = Vec::with_capacity(nodes.len());
-    let mut bins: Vec<Vec<u8>> = Vec::new();
-    let mut dropped = 0usize;
-    for (idx, node) in nodes.iter().enumerate() {
-        let points = match node {
-            SnapTreeNode::Branch(_) => {
-                index.push(BRANCH_BIT | first_child[idx] as u32);
-                continue;
-            }
-            SnapTreeNode::Leaf(points) if !points.is_empty() => points,
-            SnapTreeNode::Leaf(_) => {
-                index.push(EMPTY_LEAF);
-                continue;
-            }
-        };
-        let leaf_len = points.len() * NAV_SNAP_RECORD_LEN;
-        let bin = match bins.iter().position(|b| b.len() + leaf_len <= NAV_CHUNK_SIZE) {
-            Some(bin) => bin,
-            None => {
-                bins.push(Vec::with_capacity(NAV_CHUNK_SIZE));
-                bins.len() - 1
-            }
-        };
-        index.push(bin as u32 & !BRANCH_BIT);
-        for p in points {
-            if bins[bin].len() + NAV_SNAP_RECORD_LEN > NAV_CHUNK_SIZE {
-                dropped += 1;
-                continue;
-            }
-            bins[bin].extend_from_slice(&p.lat.to_le_bytes());
-            bins[bin].extend_from_slice(&p.lon.to_le_bytes());
-            bins[bin].extend_from_slice(&p.edge_id.to_le_bytes());
+impl TreeWalk for SnapTreeNode {
+    fn children(&self) -> Option<&[SnapTreeNode; 4]> {
+        match self {
+            SnapTreeNode::Leaf(_) => None,
+            SnapTreeNode::Branch(children) => Some(children),
+        }
+    }
+}
+
+impl FlattenBinnedTree for SnapTreeNode {
+    type Record = SnapPoint;
+
+    fn records(&self) -> Option<&[SnapPoint]> {
+        match self {
+            SnapTreeNode::Leaf(points) => Some(points),
+            SnapTreeNode::Branch(_) => None,
         }
     }
 
-    let chunk_count = bins.len() as u32;
-    let mut chunks = Vec::with_capacity(bins.len() * NAV_CHUNK_SIZE);
-    for mut bin in bins {
-        bin.resize(NAV_CHUNK_SIZE, CHUNK_END);
-        chunks.extend_from_slice(&bin);
+    fn record_len(_: &SnapPoint) -> usize {
+        NAV_SNAP_RECORD_LEN
     }
-    let mut index_bytes = Vec::with_capacity(index.len() * 4);
-    for value in index {
-        index_bytes.extend_from_slice(&value.to_le_bytes());
+
+    fn pack_record(record: &SnapPoint, out: &mut Vec<u8>) {
+        out.extend_from_slice(&record.lat.to_le_bytes());
+        out.extend_from_slice(&record.lon.to_le_bytes());
+        out.extend_from_slice(&record.edge_id.to_le_bytes());
     }
-    (index_bytes, nodes.len() as u32, chunks, chunk_count, dropped)
 }
 
 /// Densify one nav polyline: insert midpoints on any segment whose lon **or** lat
