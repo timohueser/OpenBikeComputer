@@ -1,12 +1,17 @@
 //! Visible-feature collection: fills the frame buffers with every visible feature's geometry plus
 //! its [`Span`], in strict global priority order.
 //!
-//! **Two-phase "stub-select" collect (issue #564).** The device streams map chunks off SPI SD
+//! **Optimistic one-pass collect, with stub-select fallback.** The device streams map chunks off SPI SD
 //! through a small cache, so the collect phase must touch each visible
-//! chunk as few times as possible. A single chunk-major walk that filled the frame buffers directly
-//! would break the priority-drop guarantee (an early chunk's low-priority features would take
-//! capacity a late chunk's high-priority feature needs), so selection is split from geometry
-//! retention:
+//! chunk as few times as possible. Most production frames have enough scratch for every candidate;
+//! those frames retain projected geometry directly during the source-native walk and never refetch
+//! a chunk. The spans remember priority temporarily, then receive the exact same stable
+//! priority-major painter sequence as stub-select.
+//!
+//! A direct walk cannot preserve the priority-drop guarantee once any frame budget fills (an early
+//! chunk's low-priority features may have taken capacity a late chunk's high-priority feature
+//! needs). On the first overflow it therefore abandons the attempt and runs the existing two-phase
+//! collector from clean buffers:
 //!
 //! - **Pass A** ([`FrameScratch::collect_stubs`]) — one chunk-major walk. Every visible feature is
 //!   decoded once (for its bbox cull) and recorded as a fixed-size [`Stub`]; geometry is *not* kept.
@@ -21,8 +26,9 @@
 //!   the winners, appending their geometry and rewriting each stub slot in place with its final
 //!   [`Span`]. Only chunks that own a winner are refetched.
 //!
-//! SD traffic drops from `4 × N` chunk fetches per frame (the old level-major collector's four
-//! priority passes) to `≤ 2 × N`. The stubs share the `slots` buffer the spans end up in (a [`Stub`]
+//! Unsaturated SD traffic is now `N` chunk fetches per frame; saturated frames retain the exact
+//! global priority guarantee at the cost of the failed attempt plus `≤ 2 × N` fallback fetches. The
+//! stubs share the `slots` buffer the spans end up in (a [`Stub`]
 //! fits a [`Span`] slot, asserted below), so the split costs no extra frame RAM.
 
 use heapless::Vec;
@@ -53,7 +59,7 @@ pub(crate) struct ScreenPoint {
 
 impl ScreenPoint {
     #[inline]
-    fn checked((x, y): (i32, i32)) -> Result<Self, ()> {
+    pub(crate) fn checked((x, y): (i32, i32)) -> Result<Self, ()> {
         Ok(Self { x: i16::try_from(x).map_err(|_| ())?, y: i16::try_from(y).map_err(|_| ())? })
     }
 
@@ -63,7 +69,7 @@ impl ScreenPoint {
     }
 
     #[inline]
-    fn tuple(self) -> (i32, i32) {
+    pub(crate) fn tuple(self) -> (i32, i32) {
         (i32::from(self.x), i32::from(self.y))
     }
 }
@@ -211,13 +217,13 @@ pub(crate) struct FrameScratch {
 
 impl FrameScratch {
     /// Fill the frame buffers with every visible feature, in strict global priority order, via the
-    /// two-phase stub-select collect (see the module docs). On return, [`FrameScratch::spans`] /
+    /// optimistic one-pass collector or its two-phase stub-select fallback (see the module docs). On return, [`FrameScratch::spans`] /
     /// [`FrameScratch::spans_mut`] expose the drawn features' [`Span`]s (unordered — the caller
     /// sorts them into painter order).
     ///
     /// `suppress_terrain` drops the whole **terrain layer** — every style carrying
     /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) — out of the visible
-    /// mask, so pass A never even asks the source to decode those features (see below).
+    /// mask, so neither source walk asks the source to decode those features (see below).
     pub(crate) fn collect<S: MapScene>(
         &mut self,
         scene: &S,
@@ -233,10 +239,10 @@ impl FrameScratch {
         self.spans_len = 0;
 
         // A single "is this style drawn at all?" mask (bit set ⇔ the id has a style), built once —
-        // the old per-priority-level masks are gone: pass A decodes every drawn feature in one walk.
+        // the old per-priority-level masks are gone: each source walk decodes every drawn feature once.
         //
         // The terrain-layer suppression (#1096) is applied **here**, by clearing those styles' mask
-        // bits, and nowhere else: the mask is what pass A hands the source as its `should_decode`
+        // bits, and nowhere else: the mask is what collection hands the source as its `should_decode`
         // filter, so a suppressed contour is skipped before its geometry is decoded, never drawn and
         // painted over. It costs no span, no point, no ring — a hidden terrain layer therefore also
         // frees frame budget for everything else, which drawing-then-overpainting would not.
@@ -250,10 +256,28 @@ impl FrameScratch {
             }
         }
 
+        let mut direct_stats = *stats;
+        if let Some(drawn) = self.try_collect_direct(scene, lod, viewport, dec_points, &vis_mask, &mut direct_stats) {
+            *stats = direct_stats;
+            self.finish_collect(drawn, drawn, drawn, stats);
+            return;
+        }
+
+        // The direct attempt is deliberately all-or-nothing. Discard its feature accounting and
+        // restore clean frame buffers before the priority-preserving fallback. Source/cache timing
+        // around this method still includes the real cost of the failed attempt.
+        self.frame_points.clear();
+        self.frame_ring_lens.clear();
+        self.slots.clear();
+
         let candidates = self.collect_stubs(scene, lod, viewport, dec_points, &vis_mask, stats);
         let winners = self.select();
         let drawn = self.decode_winners(scene, lod, viewport, dec_points, winners, stats);
 
+        self.finish_collect(candidates, winners, drawn, stats);
+    }
+
+    fn finish_collect(&mut self, candidates: usize, winners: usize, drawn: usize, stats: &mut RenderStats) {
         self.spans_len = drawn;
         stats.features_drawn = drawn;
         // Every candidate that passed the cull is either drawn or dropped (evicted in pass A or cut
@@ -263,6 +287,134 @@ impl FrameScratch {
         stats.span_utilization = drawn as f32 / self.slots.capacity() as f32;
         stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
         stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
+    }
+
+    /// Retain every candidate's compacted geometry during the first source walk. Returns `None` as
+    /// soon as any frame buffer cannot hold the complete candidate; the caller then restarts with
+    /// stub-select so global priority dropping remains unchanged under saturation.
+    fn try_collect_direct<S: MapScene>(
+        &mut self,
+        scene: &S,
+        lod: usize,
+        viewport: &Viewport,
+        dec_points: &mut Vec<(i32, i32), MAX_DECODE_POINTS>,
+        vis_mask: &[u32; 8],
+        stats: &mut RenderStats,
+    ) -> Option<usize> {
+        let view = viewport.visible_bbox();
+        let FrameScratch { dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
+        let mut failed = false;
+        let mut level_counts = [0u16; 4];
+        let report = scene.visit_candidates(
+            lod,
+            &view,
+            dec_points,
+            dec_ring_lens,
+            |sid| vis_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0,
+            |Candidate { feature: f, .. }| {
+                if failed {
+                    return;
+                }
+                let pts = f.points();
+                stats.features_tried += 1;
+                stats.points_tried += pts.len();
+                let Some(style) = scene.style(f.style_id) else {
+                    stats.malformed_features = stats.malformed_features.saturating_add(1);
+                    return;
+                };
+                if !f.has_valid_rings() || !(1..=4).contains(&style.priority) {
+                    stats.malformed_features = stats.malformed_features.saturating_add(1);
+                    return;
+                }
+                if !f.bbox().intersects(&view) {
+                    return;
+                }
+                let margin = if f.kind == Kind::Line || style.color2.is_some() { MAX_LINE_PX as i32 } else { 0 };
+                if !viewport.bbox_might_be_visible(&f.bbox(), margin)
+                    || !viewport.geometry_might_be_visible(pts, f.ring_lens(), f.kind == Kind::Polygon, margin)
+                {
+                    return;
+                }
+                if slots.is_full() {
+                    failed = true;
+                    return;
+                }
+
+                let pt_start = frame_points.len();
+                let ring_start = frame_ring_lens.len();
+                let appended = match f.kind {
+                    Kind::Line => append_visible_line(viewport, pts, f.ring_lens(), frame_points, frame_ring_lens),
+                    Kind::Polygon => {
+                        append_visible_polygon(viewport, pts, f.ring_lens(), margin, frame_points, frame_ring_lens)
+                    }
+                };
+                if appended.is_err() {
+                    // This may be either a hostile feature or a frame-capacity failure. Falling back
+                    // handles both through the established typed decode/selection path and prevents
+                    // publishing the partially appended geometry.
+                    frame_points.truncate(pt_start);
+                    frame_ring_lens.truncate(ring_start);
+                    failed = true;
+                    return;
+                }
+
+                let point_count = frame_points.len() - pt_start;
+                let ring_count = frame_ring_lens.len() - ring_start;
+                let level = style.priority as usize - 1;
+                level_counts[level] += 1;
+                let span = Span {
+                    kind: f.kind,
+                    z: style.z_index,
+                    weight: style.weight,
+                    style_id: f.style_id,
+                    pt_start: pt_start as u16,
+                    ring_start: ring_start as u16,
+                    ring_count: ring_count as u16,
+                    // Temporary tag. Finalized below without moving geometry or slots.
+                    seq: style.priority as u16,
+                };
+                let _ = slots.push(Slot::of_span(span));
+                stats.points_drawn += point_count;
+                match f.kind {
+                    Kind::Line => {
+                        stats.line_spans += 1;
+                        stats.line_rings += ring_count;
+                        stats.line_points += point_count;
+                    }
+                    Kind::Polygon => {
+                        stats.poly_spans += 1;
+                        stats.poly_rings += ring_count;
+                        stats.poly_points += point_count;
+                    }
+                }
+            },
+        );
+        stats.feature_decode_capacity_drops =
+            stats.feature_decode_capacity_drops.saturating_add(report.capacity_dropped);
+        stats.malformed_features = stats.malformed_features.saturating_add(report.malformed_features);
+        record_read_failures(stats, report.read_failures);
+        stats.chunks_visited = report.chunks_visited;
+        if failed {
+            return None;
+        }
+
+        // Current select order is stable `(priority, encounter)`. Slots are already in encounter
+        // order, so prefix counts plus one linear pass reproduce its exact seq assignment.
+        let bases = [
+            0u16,
+            level_counts[0],
+            level_counts[0] + level_counts[1],
+            level_counts[0] + level_counts[1] + level_counts[2],
+        ];
+        let mut ranks = [0u16; 4];
+        for slot in slots.iter_mut() {
+            let mut span = slot.span();
+            let level = span.seq as usize - 1;
+            span.seq = bases[level] + ranks[level];
+            ranks[level] += 1;
+            *slot = Slot::of_span(span);
+        }
+        Some(slots.len())
     }
 
     /// **Pass A.** One source-native walk over the viewport, decoding every visible feature once

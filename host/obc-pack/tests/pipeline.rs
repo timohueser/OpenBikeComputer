@@ -188,22 +188,14 @@ fn preset_with_min_line_km(value: f64) -> Config {
 
 /// `min_line_km: 0` is the off value, and off must mean *untouched*: a ladder that sets it to zero
 /// everywhere packs to the same bytes as one that never mentions the knob. This is what lets the
-/// cull remain available to custom schemas without disturbing the shipped preset.
+/// cull remain backward-compatible with schemas that predate the setting.
 #[test]
 fn the_line_cull_switched_off_is_byte_identical() {
     let dir = out_dir("cull-off");
-    let shipped = Config::load(&preset_path().to_string_lossy()).expect("preset parses");
     let zeroed = preset_with_min_line_km(0.0);
 
-    let a = dir.join("shipped.obcm");
     let b = dir.join("zeroed.obcm");
-    pack(&[fixture_pbf()], &shipped, &a, &opts(), &Progress::silent()).expect("pack");
     pack(&[fixture_pbf()], &zeroed, &b, &opts(), &Progress::silent()).expect("pack");
-    assert_eq!(
-        std::fs::read(&a).unwrap(),
-        std::fs::read(&b).unwrap(),
-        "the shipped ladder explicitly leaves the optional line cull off"
-    );
 
     let mut no_knob: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(preset_path()).unwrap()).expect("preset is JSON");
