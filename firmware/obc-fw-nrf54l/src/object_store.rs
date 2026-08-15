@@ -48,9 +48,8 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
+use obc_storage::route_name;
 use obc_storage::weather as weather_store;
-use obc_storage::ObjectIdSequence;
-use obc_storage::{route_name, trip_name};
 
 use crate::sd::Storage;
 use crate::SharedStore;
@@ -433,16 +432,8 @@ pub struct ObjectStore {
     /// mid-session and this catalog must follow (it feeds the `rideList` object the phone syncs
     /// against).
     rides: Vec<ObjectSlot, MAX_RIDES>,
-    /// The trip catalog (epic #526 TR4): `TP{id}.OBT` files scanned at boot + on every trip
-    /// commit/delete, the wire-facing twin of the app's trip folders. Each slot's `byte_len` is the
-    /// stored trip-object size; the `tripList` build reads each file's stages fresh (like routes read
-    /// their header) to sum resolvable-stage stats.
-    trips: Vec<ObjectSlot, MAX_TRIPS>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
-    /// The next fresh **trip** id — a device counter separate from routes/rides (spec §4.1), floored
-    /// by its own RRAM high-water line so a deleted trip id is never re-issued across a reboot.
-    next_trip_id: ObjectIdSequence<SIDELOAD_ID_BASE>,
     /// The store revision: monotonic per boot, bumped on every route/ride commit/delete.
     revision: u32,
     /// The **trip** store revision — monotonic per boot, its own counter (spec §4.3: a trip
@@ -454,8 +445,6 @@ pub struct ObjectStore {
     route_total: u16,
     /// Full ride-catalog size before the [`MAX_RIDES`] cap — the `rideList` header's `total`.
     ride_total: u16,
-    /// Full trip-catalog size before the [`MAX_TRIPS`] cap — the `tripList` header's `total`.
-    trip_total: u16,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
     /// The **volume set** being received, if any (issue #1039). A set is several transfers, so
@@ -518,14 +507,11 @@ impl ObjectStore {
         settings: Settings::DEFAULT,
         routes: Vec::new(),
         rides: Vec::new(),
-        trips: Vec::new(),
         next_id: 0,
-        next_trip_id: ObjectIdSequence::new(),
         revision: 1,
         trip_revision: 1,
         route_total: 0,
         ride_total: 0,
-        trip_total: 0,
         list_buf: [0; LIST_BUF_LEN],
         set_upload: None,
     };
@@ -538,7 +524,13 @@ impl ObjectStore {
         self.settings = shared.settings.load().unwrap_or_default();
         self.rescan(shared);
         self.rescan_rides(shared);
-        self.rescan_trips(shared);
+        // Seed the canonical trip repository for every link-store composition point. Normal boot
+        // already scanned once to build the pre-link App, but map-recovery USB calls `init_store`
+        // before App construction and depends on this scan for trip visibility and id recovery.
+        // Both scans finish before a link plane is published; runtime App reloads stay scan-free.
+        if let Some(storage) = &mut shared.storage {
+            storage.trips().scan();
+        }
         // The durable id floor (#450): fresh upload ids start at `max(scan_max + 1, stored floor)`,
         // so an id deleted last session can't be re-issued (the phone's persisted `deviceObjectID`s
         // key on it). A blank/torn line is "no floor" → exactly the old scan-derived start.
@@ -547,7 +539,15 @@ impl ObjectStore {
         }
         // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
         if let Some(floor) = shared.settings.load_trip_mark() {
-            self.next_trip_id.observe_floor(floor);
+            if let Some(storage) = &mut shared.storage {
+                storage.trips().observe_floor(floor);
+            }
+        }
+        if let Some(storage) = &mut shared.storage {
+            let trips = storage.trips();
+            let len = trips.len();
+            let candidate = trips.candidate().unwrap_or(SIDELOAD_ID_BASE);
+            defmt::info!("store: {=usize} trip object(s), next trip id {=u16}", len, candidate);
         }
     }
 
@@ -639,48 +639,6 @@ impl ObjectStore {
         defmt::info!("store: {=usize} ride object(s)", self.rides.len());
     }
 
-    /// (Re)build the **trip** catalog from the card (epic #526 TR4) — the trip twin of [`rescan`]:
-    /// scan `TP{id}.OBT` (durable id in the name) + side-loaded `.obt` (session id), record each
-    /// slot's byte length, and resume `next_trip_id` past the highest stored upload id. A trip whose
-    /// header doesn't validate is skipped; a torn commit (held-back zero version) is swept like an
-    /// aborted route commit (same zeroed-first-bytes signature, same `/routes` dir).
-    fn rescan_trips(&mut self, shared: &mut SharedStore) {
-        self.trips.clear();
-        self.trip_total = 0;
-        let Some(storage) = &mut shared.storage else { return };
-        let mut names: Vec<ShortFileName, MAX_TRIPS> = Vec::new();
-        let mut over_cap: u16 = 0;
-        storage.for_each_trip_file(|n| {
-            if names.push(n.clone()).is_err() {
-                over_cap = over_cap.saturating_add(1);
-            }
-        });
-        for name in &names {
-            match storage.read_trip(name) {
-                Some((byte_len, _meta, _stage_count)) => {
-                    let uploaded = trip_name::uploaded_id(name.base_name(), name.extension());
-                    let Some(id) = uploaded.or_else(|| storage.sideload_id(name)) else { continue };
-                    if uploaded.is_some() {
-                        self.next_trip_id.observe_committed(id);
-                    }
-                    let _ = self.trips.push(ObjectSlot { id, file: name.clone(), byte_len });
-                }
-                None => {
-                    if storage.is_aborted_commit(name) {
-                        defmt::info!("store: sweeping aborted trip commit {}", defmt::Debug2Format(name));
-                        let _ = storage.delete_trip_file(name);
-                    }
-                }
-            }
-        }
-        self.trip_total = (self.trips.len() as u16).saturating_add(over_cap);
-        defmt::info!(
-            "store: {=usize} trip object(s), next trip id {=u16}",
-            self.trips.len(),
-            self.next_trip_id.candidate().unwrap_or(SIDELOAD_ID_BASE)
-        );
-    }
-
     /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
     /// stamps it into the `storeChanged` status message (protocol v2's sole change signal — the
     /// `objectStore` digest characteristic is retired).
@@ -713,13 +671,9 @@ impl ObjectStore {
         self.trip_revision
     }
 
-    fn trip_index(&self, id: u16) -> Option<usize> {
-        self.trips.iter().position(|s| s.id == id)
-    }
-
     /// Whether a trip object with this id exists (the control plane's cheap `notFound` check).
-    pub fn has_trip(&self, id: u16) -> bool {
-        self.trip_index(id).is_some()
+    pub fn has_trip(&self, shared: &mut SharedStore, id: u16) -> bool {
+        shared.storage.as_mut().is_some_and(|storage| storage.trips().contains(id))
     }
 
     fn slot_index(&self, id: u16) -> Option<usize> {
@@ -736,14 +690,6 @@ impl ObjectStore {
         let storage = shared.storage.as_ref()?;
         let crcs = storage.load_route_crcs();
         self.routes.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
-    }
-
-    /// The trip twin of [`find_route_by_content`](Self::find_route_by_content), against the
-    /// trip-CRC sidecar (`upload_finish_trip`'s dedup lookup).
-    fn find_trip_by_content(&self, shared: &SharedStore, crc: u32, byte_len: u32) -> Option<u16> {
-        let storage = shared.storage.as_ref()?;
-        let crcs = storage.load_trip_crcs();
-        self.trips.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
     }
 
     /// Whether a route object with this id exists (the control plane's cheap `notFound` check).
@@ -871,14 +817,10 @@ impl ObjectStore {
     /// (never the route store, §4.3). `true` = deleted; an unknown id → `false` (the handler answers
     /// `notFound`).
     pub fn delete_trip(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.trip_index(id) else { return false };
         let Some(storage) = &mut shared.storage else { return false };
-        if !storage.delete_trip_file(&self.trips[idx].file) {
+        if !storage.trips().delete(id) {
             return false;
         }
-        storage.forget_trip_crc(id);
-        self.trips.remove(idx);
-        self.trip_total = self.trip_total.saturating_sub(1);
         self.bump_trip_revision();
         true
     }
@@ -896,10 +838,12 @@ impl ObjectStore {
     /// the BLE plane's `trip_cascade_task`, mirroring the `request_route_delete` →
     /// [`delete_route`](Self::delete_route) seam.
     pub fn delete_trip_cascade(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.trip_index(id) else { return false };
-        // Resolve the member stage ids from the stored trip file before deleting anything.
-        let file = self.trips[idx].file.clone();
-        let stages = shared.storage.as_ref().and_then(|s| s.read_trip(&file)).map(|(_, meta, _)| meta.stage_ids);
+        // Snapshot member ids before any route delete re-borrows Storage; the Trips view never
+        // survives a nested repository mutation (and never crosses an await).
+        let stages = shared.storage.as_mut().and_then(|storage| storage.trips().stage_ids(id));
+        if stages.is_none() && !self.has_trip(shared, id) {
+            return false;
+        }
         if let Some(stages) = stages {
             for stage_id in stages {
                 let _ = self.delete_route(shared, stage_id); // dangling → false, skipped
@@ -1028,16 +972,15 @@ impl ObjectStore {
     /// (spec §4.2) — here [`MAX_TRIPS`], the resident cap on this memory profile.
     pub fn upload_open_trip(
         &mut self,
-        shared: &SharedStore,
+        shared: &mut SharedStore,
         desc: &TransferControl,
     ) -> Result<Receiver, TransferStatus> {
-        let catalog_full = self.trips.is_full() || self.next_trip_id.candidate().is_none();
-        let id_known = self.trip_index(desc.object_id).is_some();
+        let Some(storage) = shared.storage.as_mut() else { return Err(TransferStatus::Error) };
+        let trips = storage.trips();
+        let catalog_full = trips.is_full() || trips.candidate().is_none();
+        let id_known = trips.contains(desc.object_id);
         if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, id_known, catalog_full) {
             return Err(status);
-        }
-        if shared.storage.is_none() {
-            return Err(TransferStatus::Error);
         }
         Receiver::new(desc).map_err(|_| TransferStatus::Error)
     }
@@ -1227,62 +1170,70 @@ impl ObjectStore {
         // were exactly the on-glass duplicate-trip bug. Before the storage-full backstop for the same
         // reason (a dedup hit consumes no trip slot).
         if fresh {
-            if let Some(id) = self.find_trip_by_content(shared, whole_crc, rx.total_len()) {
+            let duplicate =
+                shared.storage.as_mut().and_then(|storage| storage.trips().find_by_content(whole_crc, rx.total_len()));
+            if let Some(id) = duplicate {
                 self.upload_discard(shared);
                 return (id, TransferStatus::Committed);
             }
         }
-        if fresh && (self.trips.is_full() || self.next_trip_id.candidate().is_none()) {
+        let Some(storage) = shared.storage.as_mut() else { return (rx.object_id(), TransferStatus::Error) };
+        let (catalog_full, candidate) = {
+            let trips = storage.trips();
+            (trips.is_full(), trips.candidate())
+        };
+        if fresh && (catalog_full || candidate.is_none()) {
             // Storage-full backstop: the catalog or id band filled during the transfer
             // (`upload_open_trip` already rejects at descriptor-open). Same typed status either way.
             self.upload_discard(shared);
             return (rx.object_id(), TransferStatus::StorageFull);
         }
-        let replace_idx = if fresh { None } else { self.trip_index(rx.object_id()) };
-        let Some(storage) = &mut shared.storage else { return (rx.object_id(), TransferStatus::Error) };
-        let replace_file = replace_idx.map(|i| self.trips[i].file.clone());
+        let replace_file =
+            if fresh { None } else { shared.storage.as_mut().and_then(|storage| storage.trips().file(rx.object_id())) };
+        let replaced = replace_file.is_some();
         // Exhaustion is possible only for a replacement, where the storage path keeps the existing
         // filename and ignores this value.
-        let candidate = self.next_trip_id.candidate().unwrap_or(SIDELOAD_ID_BASE);
-        match storage.upload_commit_trip(replace_file.as_ref(), candidate) {
-            Some((file, byte_len)) => {
-                let id = match replace_idx {
-                    Some(i) => {
-                        self.trips[i].byte_len = byte_len;
-                        self.trips[i].file = file;
-                        self.trips[i].id
-                    }
-                    None => {
-                        // The media commit made `candidate` visible. This is the sequence's only
-                        // advance; it also owns the persisted-floor handoff, so abort/validation
-                        // failures above cannot burn an id.
-                        let id = self.next_trip_id.commit(|floor| shared.settings.save_trip_mark(floor));
-                        debug_assert_eq!(id, candidate);
-                        let _ = self.trips.push(ObjectSlot { id, file, byte_len });
-                        self.trip_total = self.trip_total.saturating_add(1);
-                        id
-                    }
+        let candidate = candidate.unwrap_or(SIDELOAD_ID_BASE);
+        let committed =
+            shared.storage.as_mut().and_then(|storage| storage.trips().promote_temp(replace_file.as_ref(), candidate));
+        match committed {
+            Some(commit) => {
+                let id = if replaced {
+                    rx.object_id()
+                } else {
+                    // The media commit made `candidate` visible. This is the sequence's only
+                    // advance; it also owns the persisted-floor handoff, so abort/validation
+                    // failures above cannot burn an id.
+                    let SharedStore { storage, settings } = shared;
+                    let id = storage
+                        .as_mut()
+                        .expect("trip media commit requires mounted storage")
+                        .trips()
+                        .commit(|floor| settings.save_trip_mark(floor));
+                    debug_assert_eq!(id, candidate);
+                    id
                 };
-                // Persist the verified whole-object CRC into the trip-CRC sidecar in the same movement,
-                // so the trip's `tripList` entry serves its fingerprint immediately (never lazily).
-                storage.set_trip_crc(id, whole_crc);
+                let recorded = shared
+                    .storage
+                    .as_mut()
+                    .is_some_and(|storage| storage.trips().record_commit(id, replaced, commit, whole_crc));
+                debug_assert!(recorded, "validated trip commit must fit its reserved catalog row");
                 // The app-UI trip upload event: the committed id + fresh-vs-replace, published
                 // before the revision bump so the STORE_WAKE'd pass sees the rescan edge and this
                 // event together. Only a *fresh* trip pops the "TRIP RECEIVED" card — the app
                 // suppresses the replace case, a host-side edit (see [`TRIP_UPLOAD_EVENT`]).
-                TRIP_UPLOAD_EVENT.store(
-                    UPLOAD_EVENT_PRESENT | ((replace_idx.is_some() as u32) << 16) | id as u32,
-                    Ordering::Relaxed,
-                );
+                TRIP_UPLOAD_EVENT
+                    .store(UPLOAD_EVENT_PRESENT | ((replaced as u32) << 16) | id as u32, Ordering::Relaxed);
                 self.bump_trip_revision();
                 (id, TransferStatus::Committed)
             }
             None => {
-                if let Some(i) = replace_idx {
-                    let gone = shared.storage.as_ref().is_none_or(|s| s.read_trip(&self.trips[i].file).is_none());
+                if replaced {
+                    let gone = shared
+                        .storage
+                        .as_mut()
+                        .is_none_or(|storage| storage.trips().repair_failed_replace(rx.object_id()));
                     if gone {
-                        self.trips.remove(i);
-                        self.trip_total = self.trip_total.saturating_sub(1);
                         self.bump_trip_revision();
                     }
                 }
@@ -1964,10 +1915,10 @@ impl ObjectStore {
             // A trip detail download is the same verbatim stream as a route — the stored `TP{id}.OBT`
             // *is* the wire object — out of `/routes` (`ride = false`).
             ObjectType::Trip => {
-                let Some(idx) = self.trip_index(desc.object_id) else {
+                let Some(file) = shared.storage.as_mut().and_then(|storage| storage.trips().file(desc.object_id))
+                else {
                     return Err(TransferStatus::NotFound);
                 };
-                let file = self.trips[idx].file.clone();
                 self.open_object_download(shared, desc, &file, false)
             }
             // A ride download is the same verbatim stream — the stored `RD{id}.ORD` *is* the wire
@@ -2040,7 +1991,7 @@ impl ObjectStore {
         let Some(len) = opened else {
             return Err(TransferStatus::Error);
         };
-        let Some(crc) = object_crc(storage, len) else {
+        let Some(crc) = storage.object_crc(len) else {
             storage.close_object();
             return Err(TransferStatus::Error);
         };
@@ -2131,11 +2082,7 @@ impl ObjectStore {
                 Some(c) => c,
                 // Lazy fill: stream the whole file once through the detail-download handle slot
                 // (idle during a list build) to compute the CRC, then remember it as dirty.
-                None => match storage.open_object(&file).and_then(|len| {
-                    let computed = object_crc(storage, len);
-                    storage.close_object();
-                    computed
-                }) {
+                None => match storage.file_crc(&file) {
                     Some(c) => {
                         if crcs.insert(id, c) {
                             crcs_dirty = true;
@@ -2212,62 +2159,29 @@ impl ObjectStore {
         let Some(storage) = shared.storage.as_mut() else {
             return Some((ListHeader::ENCODED_LEN, 0, 0, TripListEntry::ENTRY_LEN as u8));
         };
-        let mut crcs = storage.load_trip_crcs();
-        let mut crcs_dirty = false;
         let mut off = ListHeader::ENCODED_LEN;
-        let mut count: u16 = 0;
-        for i in 0..self.trips.len() {
-            let id = self.trips[i].id;
-            let file = self.trips[i].file.clone();
-            let (byte_len, meta, stage_count) = storage.read_trip(&file)?; // transient → fail whole list
-                                                                           // Sum distance/ascent over the trip's resolvable stages; a dangling stage id (no route
-                                                                           // with it) is skipped, contributing nothing.
-            let mut total_distance_m: u32 = 0;
-            let mut total_ascent_m: u32 = 0;
-            for stage_id in &meta.stage_ids {
-                if let Some(route_file) = self.routes.iter().find(|s| s.id == *stage_id).map(|s| s.file.clone()) {
-                    if let Some((_, info)) = storage.route_object_info(&route_file) {
-                        total_distance_m = total_distance_m.saturating_add(info.distance_m);
-                        total_ascent_m = total_ascent_m.saturating_add(info.ascent_m);
-                    }
+        let routes = &self.routes;
+        let list_buf = &mut self.list_buf;
+        let mut trips = storage.trips();
+        let total = trips.total();
+        let count = trips.for_each_list_row(
+            |stage_id| routes.iter().find(|slot| slot.id == stage_id).map(|slot| slot.file.clone()),
+            |id, byte_len, total_distance_m, total_ascent_m, stage_count, meta, crc| {
+                let entry = TripListEntry {
+                    object_id: id,
+                    byte_len,
+                    total_distance_m,
+                    total_ascent_m,
+                    stage_count,
+                    name: meta.name.as_bytes(),
+                    crc32: crc,
                 }
-            }
-            let crc = match crcs.get(id) {
-                Some(c) => c,
-                // Lazy fill: stream the whole trip file once to compute its CRC (the tiny file is a
-                // fast pass), then remember it as dirty for the single persist below.
-                None => match storage.open_object(&file).and_then(|len| {
-                    let computed = object_crc(storage, len);
-                    storage.close_object();
-                    computed
-                }) {
-                    Some(c) => {
-                        if crcs.insert(id, c) {
-                            crcs_dirty = true;
-                        }
-                        c
-                    }
-                    None => TripListEntry::CRC_UNKNOWN,
-                },
-            };
-            let entry = TripListEntry {
-                object_id: id,
-                byte_len,
-                total_distance_m,
-                total_ascent_m,
-                stage_count,
-                name: meta.name.as_bytes(),
-                crc32: crc,
-            }
-            .encode();
-            self.list_buf[off..off + TripListEntry::ENTRY_LEN].copy_from_slice(&entry);
-            off += TripListEntry::ENTRY_LEN;
-            count += 1;
-        }
-        if crcs_dirty {
-            storage.write_trip_crcs(&crcs);
-        }
-        Some((off, count, self.trip_total, TripListEntry::ENTRY_LEN as u8))
+                .encode();
+                list_buf[off..off + TripListEntry::ENTRY_LEN].copy_from_slice(&entry);
+                off += TripListEntry::ENTRY_LEN;
+            },
+        )?;
+        Some((off, count, total, TripListEntry::ENTRY_LEN as u8))
     }
 }
 
@@ -2309,21 +2223,4 @@ pub enum DownloadSource {
     List,
     /// The open route / ride file on the card.
     Object,
-}
-
-/// The whole-object CRC pre-pass over the open detail-download file: one sequential read of
-/// `len` bytes in card-block-sized chunks. Synchronous (the caller yields between GATT events,
-/// not mid-CRC) — ~0.5 s/MB at the 8 MHz bus, and a route object is typically well under one.
-fn object_crc(storage: &Storage, len: u32) -> Option<u32> {
-    let src = storage.object_source()?;
-    let mut crc = Crc32::new();
-    let mut buf = [0u8; 512];
-    let mut off = 0u32;
-    while off < len {
-        let n = ((len - off) as usize).min(buf.len());
-        obc_formats::io::ByteSource::read_at(&src, off, &mut buf[..n]).ok()?;
-        crc.update(&buf[..n]);
-        off += n as u32;
-    }
-    Some(crc.finalize())
 }
