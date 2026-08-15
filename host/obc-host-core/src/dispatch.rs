@@ -36,7 +36,7 @@ pub enum InflightPlan {
 }
 
 /// Plan requests a host deliberately consumes without starting. This is only needed by deterministic
-/// hosts that must freeze a planning screen (for example the simulator's `--nav-hold` snapshots);
+/// hosts that must freeze a planning screen (for example the simulator's `--hold nav` snapshots);
 /// ordinary frame loops use [`PlanHold::NONE`]. Cancels and every non-planning command still drain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlanHold {
