@@ -190,7 +190,7 @@ fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
     gauge.value = 60;
     assert!(!beat(&mut app, &mut gauge, 45_000), "still inside the window since the last read");
     assert!(beat(&mut app, &mut gauge, 60_000), "a changed level repaints Home");
-    assert_eq!(app.state.battery_pct, 60, "and the new level is stored");
+    assert_eq!(app.state.device.battery_pct, 60, "and the new level is stored");
 }
 
 /// The #209 flip side: the riding views don't draw the gauge, so a battery-level change must not
@@ -217,5 +217,5 @@ fn a_battery_change_does_not_redraw_the_riding_views() {
     // the gauge isn't on it, so the riding render-on-demand budget isn't spent on a battery tick.
     gauge.value = 60;
     assert!(!beat(&mut app, &mut gauge, 30_000), "a battery delta must not dirty the riding map (#209)");
-    assert_eq!(app.state.battery_pct, 60, "the new level is still stored, just not drawn on the riding view");
+    assert_eq!(app.state.device.battery_pct, 60, "the new level is still stored, just not drawn on the riding view");
 }

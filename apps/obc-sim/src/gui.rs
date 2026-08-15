@@ -276,7 +276,7 @@ impl SimGui {
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         let mut state = AppState::new(cx, cy, zoom);
         if let Some(b) = args.battery {
-            state.battery_pct = b;
+            state.device.battery_pct = b;
         }
         // Start in Free so the mouse drives the camera; the fix is still seeded (map center)
         // so the loop and user marker have something to track.

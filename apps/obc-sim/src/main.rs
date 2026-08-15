@@ -1078,7 +1078,7 @@ fn main() {
         zoom *= args.zoom_mul;
         let mut state = AppState::new(cx, cy, zoom);
         if let Some(b) = args.battery {
-            state.battery_pct = b;
+            state.device.battery_pct = b;
         }
         // `--heading` renders a rotated (heading-up) frame; the rotation derives from the
         // fix's course, so seed one at the map center.
