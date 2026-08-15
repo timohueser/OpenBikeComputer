@@ -4,9 +4,11 @@
 use crate::VecSink;
 
 /// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
-/// in-memory sink. A live host holds one and steps it **once per frame**, so the frame loop stays
-/// fully interactive while a route computes (exactly how the board steps once per ride-loop pass);
-/// `obc-sim`'s headless path loops it to completion via `plan_route` instead.
+/// in-memory sink. [`HostLoop`](crate::HostLoop) owns it under both host cadences: a live host calls
+/// [`HostLoop::reconcile`](crate::HostLoop::reconcile) once per frame so the UI stays interactive,
+/// while a scripted/headless host calls
+/// [`HostLoop::reconcile_to_completion`](crate::HostLoop::reconcile_to_completion) to step the same
+/// resident plan until it reaches a terminal result.
 ///
 /// The A* table is the capped sim/LM20 size (`NAV_MAX_NODES` = 1536 ⇒ ~39 KB — the final
 /// device's 40 kB nav budget, deliberately emulated so sim range = final-device range) and is

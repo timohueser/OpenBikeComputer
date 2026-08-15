@@ -35,7 +35,7 @@ mod weather_companion;
 mod weather_live;
 mod weather_store;
 use framebuffer::Framebuffer;
-use obc_host_core::{finish_nav_plan, initial_camera, replay_step, ReplaySensors, VecSink};
+use obc_host_core::{initial_camera, replay_step, HostLoop, PlanHold, ReplaySensors};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
 use rides::RideStore;
@@ -651,77 +651,6 @@ fn color_of(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// Headless one-shot for a drained request: loop the planner to completion (`plan_route`), then
-/// commit through the shared [`finish_nav_plan`] — scripted flows don't need frame-interleaved
-/// stepping (the live GUI holds an [`obc_host_core::NavPlan`] instead).
-fn run_nav_request(
-    app: &mut obc_app::App,
-    store: &mut RouteStore,
-    reader: &Reader,
-    elev: &mut dyn obc_route::ElevationSource,
-    req: &obc_app::NavRequest,
-) {
-    use obc_route::nav::{plan_route, NavScratch};
-    // Zeroed heap allocation, no giant stack temp (invariant owned by `NavScratch::new_boxed`).
-    // The `NavScratch` annotation pins the default `NAV_MAX_NODES` table (an assoc-fn call can't
-    // infer the struct's const-generic default the way a type in position does).
-    let mut scratch: Box<NavScratch> = NavScratch::new_boxed();
-    let mut tiles = obc_reader::NavTileCache::new();
-    let mut sink = VecSink::default();
-    // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
-    let profile_idx = app.settings().bike_profile_idx;
-    let outcome =
-        plan_route(reader, req.from, req.to, req.name(), profile_idx, &mut scratch, &mut tiles, elev, &mut sink);
-    let stats = tiles.stats();
-    finish_nav_plan(app, store, outcome, sink.bytes(), stats);
-}
-
-/// Headless one-shot for a drained **detour-plan** request (#882): resolve the rejoin + corridor
-/// off the active route, loop the corridor-aware planner to completion, and answer through the
-/// shared [`finish_detour_plan`] — returning the planned-but-uncommitted bytes the caller holds
-/// until `CommitDetour`/`CancelDetour` (the live GUI steps an
-/// [`InflightPlan::Detour`](obc_host_core::HostLoop) instead).
-fn run_detour_request(
-    app: &mut obc_app::App,
-    store: &mut RouteStore,
-    reader: &Reader,
-    elev: &mut dyn obc_route::ElevationSource,
-    req: &obc_app::DetourRequest,
-) -> Option<obc_host_core::DetourReady> {
-    use obc_host_core::{finish_detour_plan, DetourPlan};
-    // The scripted flow can plan before the post-script route open — make the active bytes real.
-    store.sync_active(app.active_route_index());
-    // Bind the original route's source/index/reader at fn scope: the reader both seeds the plan's
-    // corridor *and* is handed to `finish_detour_plan` for the first-tail-contact trim (#882), so it
-    // must outlive the step loop — not a closure temporary.
-    let src = store.active_source();
-    let idx = src.as_ref().and_then(|s| obc_route::RouteIndex::read(s).ok());
-    let orig = match (idx.as_ref(), src.as_ref()) {
-        (Some(idx), Some(s)) => Some(obc_route::RouteReader::new(idx, s)),
-        _ => None,
-    };
-    let plan = orig.as_ref().and_then(|orig| DetourPlan::start(req, app.settings().bike_profile_idx, orig));
-    let (Some(mut plan), Some(orig)) = (plan, orig.as_ref()) else {
-        app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath)));
-        return None;
-    };
-    loop {
-        match plan.step(reader, elev) {
-            obc_route::Step::Running => {}
-            obc_route::Step::Done(stats) => return finish_detour_plan(app, Ok(stats), plan, Some(orig)),
-            obc_route::Step::Failed(e) => return finish_detour_plan(app, Err(e), plan, Some(orig)),
-        }
-    }
-}
-
-/// Headless one-shot for a drained **detour commit** (#882): splice + write + rescan + answer
-/// through the shared [`finish_detour_commit`] tail.
-fn run_detour_commit(app: &mut obc_app::App, store: &mut RouteStore, ready: Option<obc_host_core::DetourReady>) {
-    store.sync_active(app.active_route_index());
-    let orig_index = store.active_source().and_then(|src| obc_route::RouteIndex::read(&src).ok());
-    obc_host_core::finish_detour_commit(app, store, orig_index.as_ref(), ready);
-}
-
 /// The fixed card-free stand-in the sim answers a card-free scan with (the sim has no FAT to scan):
 /// ~1.2 GiB → the System screen reads "1.2 GB".
 const SIM_CARD_FREE: u64 = 1_288_490_188;
@@ -740,74 +669,33 @@ fn fake_scan_hits() -> [obc_app::SensorScanHit; 4] {
     ]
 }
 
-/// Drain the app's pending host commands (FAR-19, #812) and apply them against the headless `--png`
-/// harness's folder-backed stores — the typed successor to its per-adapter `take_*` drains (the
-/// interactive GUI drives the identical protocol through `obc-host-core::HostLoop`). Handles the
-/// commands the snapshot flow models: plan a route synchronously (the shared `run_nav_request`),
-/// cascade/route/ride delete + catalog re-feed, and the card-free scan. `hold_nav` discards a
-/// `PlanRoute` un-run so the `--hold nav` / `--inject nav-fail=...` snapshots keep their spinner up for
-/// the injected answer. A drained `FinishTrack` is re-posted to the activity slot so the
-/// replay/save-track paths' `reconcile_tracks` (which reads that slot directly, not the drain) still
-/// sees it. The two derived fill levels and the host-specific commands the sim has no analogue for
-/// are ignored.
-#[allow(clippy::too_many_arguments)] // the headless drain's per-pass context, one value per seam
-fn apply_host_commands(
+/// Drive one headless pass through the same host protocol object as the interactive simulator.
+/// The tuple keeps the three folder-backed catalogs visibly one repository family; the only
+/// headless-only behavior is selective planning-screen holds and the deferred track-folder open.
+fn reconcile_headless(
+    host: &mut HostLoop,
     app: &mut App,
-    store: &mut RouteStore,
-    ride_store: &mut RideStore,
-    trip_store: &mut TripStore,
+    stores: (&mut RouteStore, &mut RideStore, &mut TripStore),
     reader: &Reader,
     elev: &mut dyn obc_route::ElevationSource,
-    hold_nav: bool,
-    hold_detour: bool,
-    detour_ready: &mut Option<obc_host_core::DetourReady>,
+    hold: PlanHold,
 ) {
-    let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mailbox);
-    while let Some(cmd) = mailbox.pop() {
-        match cmd {
-            obc_app::HostCommand::PlanRoute(req) => {
-                if !hold_nav {
-                    run_nav_request(app, store, reader, elev, &req);
-                }
-            }
-            obc_app::HostCommand::PlanDetour(req) => {
-                if !hold_detour {
-                    *detour_ready = run_detour_request(app, store, reader, elev, &req);
-                }
-            }
-            obc_app::HostCommand::CommitDetour => run_detour_commit(app, store, detour_ready.take()),
-            obc_app::HostCommand::CancelDetour => *detour_ready = None,
-            obc_app::HostCommand::DeleteRoute { id } => {
-                if store.delete_by_id(id) {
-                    app.set_routes_with_ids(store.catalog(), store.ids());
-                }
-            }
-            obc_app::HostCommand::DeleteRide { id } => {
-                if ride_store.delete_by_id(id) {
-                    app.set_rides(ride_store.catalog(), ride_store.ids());
-                }
-            }
-            obc_app::HostCommand::DeleteTrip { id } => {
-                // Cascade: remove the member route files, then the trip's `.obt`, then re-feed both
-                // catalogs (routes first, so the trip's stage ids resolve).
-                for rid in trip_store.member_route_ids(id) {
-                    store.delete_by_id(rid);
-                }
-                trip_store.delete_by_id(id);
-                app.set_routes_with_ids(store.catalog(), store.ids());
-                app.set_trips(&trip_store.inputs());
-            }
-            obc_app::HostCommand::ScanCardFree => {
-                app.apply_event(obc_app::HostEvent::CardScanned { free_bytes: Some(SIM_CARD_FREE) });
-            }
-            // The scripted single-frame flow reconciles the ride log through the activity slot
-            // (`reconcile_tracks`), not here — re-post a drained Finish so that path still sees it.
-            obc_app::HostCommand::FinishTrack(action) => app.activity.request_track(action),
-            // Derived fill levels + host-specific commands the sim doesn't model.
-            _ => {}
+    let (routes, rides, trips) = stores;
+    let changed = routes.sync_active(app.active_route_index());
+    host.session.reparse(changed, routes);
+
+    let finish = host.reconcile_to_completion(app, routes, rides, trips, reader, elev, hold, |app, cmd| {
+        if matches!(cmd, obc_app::HostCommand::ScanCardFree) {
+            app.apply_event(obc_app::HostEvent::CardScanned { free_bytes: Some(SIM_CARD_FREE) });
         }
+    });
+    if let Some(action) = finish {
+        app.activity.request_track(action);
     }
+
+    // A completed route plan or detour commit can replace the active bytes under this pass.
+    let changed = routes.sync_active(app.active_route_index());
+    host.session.reparse(changed, routes);
 }
 
 /// Reconcile the track store to the app's tracking intent (drains the one-shot action,
@@ -1291,9 +1179,9 @@ fn main() {
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes_with_ids(store.catalog(), store.ids());
-        // A planned-but-uncommitted detour (#882), held between the plan drain and commit/cancel —
-        // the headless twin of `HostLoop::detour_ready`.
-        let mut detour_ready: Option<obc_host_core::DetourReady> = None;
+        // The same host-protocol owner the interactive simulator drives. Headless runs each plan
+        // to completion inside a pass; its planned detour stays resident here until commit/cancel.
+        let mut host = HostLoop::new();
         // `--route-retention` (epic #638 S5): overlay every route's retention meta so the Route
         // overview's expiry row renders (the board reads this from the SD retention sidecar). The
         // `last_used` stamp is anchored to the wall clock — `AGE` seconds before now — so the
@@ -1336,8 +1224,10 @@ fn main() {
             let (rw, rh) = (args.width, args.height);
             // `--hold nav` / `--inject nav-fail=...` consume the request without starting it so the
             // planning screen stays up (for its own snapshot, or for the injected answer to land in).
-            let hold_nav = args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_)));
-            let hold_detour = args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_)));
+            let hold = PlanHold::new(
+                args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_))),
+                args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_))),
+            );
             // One render scratch for the whole script run, lent to each throwaway frame — the
             // host owns it since #1146, and ~90 KB is not something to re-allocate per token.
             let mut scratch = Box::new(obc_render::RenderScratch::new());
@@ -1378,16 +1268,13 @@ fn main() {
                     // Drain the typed host protocol each `f` (mirroring the GUI's per-frame dispatch):
                     // a create-route request's answer swaps the confirm for the overview/failure card
                     // so the next token acts on it; a scripted delete re-feeds the catalog.
-                    apply_host_commands(
+                    reconcile_headless(
+                        &mut host,
                         app,
-                        &mut store,
-                        &mut ride_store,
-                        &mut trip_store,
+                        (&mut store, &mut ride_store, &mut trip_store),
                         &reader,
                         &mut *elev,
-                        hold_nav,
-                        hold_detour,
-                        &mut detour_ready,
+                        hold,
                     );
                 }
                 ScriptHook::Tick => {
@@ -1432,16 +1319,13 @@ fn main() {
             // Anything the script's last press recorded with no trailing `f`: drain + apply it now so
             // the final render reflects the answer (the create-route commit, the detour plan/commit,
             // the hold-to-delete re-feed, the trip cascade — all in the canonical order).
-            apply_host_commands(
+            reconcile_headless(
+                &mut host,
                 &mut app,
-                &mut store,
-                &mut ride_store,
-                &mut trip_store,
+                (&mut store, &mut ride_store, &mut trip_store),
                 &reader,
                 &mut *elev,
-                hold_nav,
-                hold_detour,
-                &mut detour_ready,
+                hold,
             );
             // An open Ride detail's track request left by the script's last press (no trailing
             // `f`): fill the resident ride profile now so the final render draws the band.
@@ -1489,7 +1373,7 @@ fn main() {
             app.apply_event(obc_app::HostEvent::Warning(w));
         }
 
-        // The System screen's card-free scan (T8 item 6) is answered by `apply_host_commands` above
+        // The System screen's card-free scan (T8 item 6) is answered by `reconcile_headless` above
         // when the `ScanCardFree` command drains (the sim has no FAT — a fixed 1.2 GB stand-in).
 
         // DFU sideload snapshots (epic #615 S5, #620). The scan runs board-side on the device; here

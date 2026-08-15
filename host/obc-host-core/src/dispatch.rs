@@ -35,6 +35,25 @@ pub enum InflightPlan {
     Detour(DetourPlan),
 }
 
+/// Plan requests a host deliberately consumes without starting. This is only needed by deterministic
+/// hosts that must freeze a planning screen (for example the simulator's `--hold nav` snapshots);
+/// ordinary frame loops use [`PlanHold::NONE`]. Cancels and every non-planning command still drain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlanHold {
+    route: bool,
+    detour: bool,
+}
+
+impl PlanHold {
+    /// Run every plan request.
+    pub const NONE: Self = Self { route: false, detour: false };
+
+    /// Hold route and/or detour requests while the rest of the canonical mailbox drains.
+    pub const fn new(route: bool, detour: bool) -> Self {
+        Self { route, detour }
+    }
+}
+
 /// The shared host-loop state: the drain mailbox, the in-flight plan (stepped once per pass), a
 /// planned-but-uncommitted detour, and the resident active-route parse. A host owns one for its
 /// lifetime.
@@ -88,9 +107,39 @@ impl HostLoop {
         // fresh `NavPlan` (its ~4 KB inline tile cache) and `step_plan` reaches `finish_nav_plan`'s
         // ~8 KB `RouteIndex` parse — nesting them in one frame stacked both and overflowed the deep
         // sim tour test's thread stack. Sequential calls keep only one large frame live at a time.
-        let finish = self.dispatch_commands(app, routes, rides, tracks, trips, host);
+        let finish = self.dispatch_commands(app, routes, rides, trips, PlanHold::NONE, host);
         self.step_plan(app, routes, reader, elev);
         reconcile_track(app, rides, tracks, finish);
+    }
+
+    /// The run-to-completion counterpart to [`reconcile`](Self::reconcile): drain the same mailbox
+    /// through the same dispatcher, then step the same resident plan until it reaches a terminal
+    /// result. Scripted/headless hosts use this when there is no display frame to yield between
+    /// bounded planner steps.
+    ///
+    /// `hold` is the small deterministic-harness escape hatch: selected plan requests are consumed
+    /// but not started, while all other commands retain their canonical order and behavior. A
+    /// drained track finish is returned because a headless host can physically open its track store
+    /// later than its scripted command pass; frame loops use [`reconcile`](Self::reconcile) to apply
+    /// the finish immediately.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_to_completion(
+        &mut self,
+        app: &mut App,
+        routes: &mut dyn RouteRepository,
+        rides: &mut dyn RideRepository,
+        trips: &mut dyn TripCatalog,
+        reader: &obc_reader::Reader,
+        elev: &mut dyn obc_route::ElevationSource,
+        hold: PlanHold,
+        host: impl FnMut(&mut App, HostCommand),
+    ) -> Option<TrackAction> {
+        // Keep these calls separate for the same stack-frame reason documented in `reconcile`.
+        let finish = self.dispatch_commands(app, routes, rides, trips, hold, host);
+        while self.plan.is_some() {
+            self.step_plan(app, routes, reader, elev);
+        }
+        finish
     }
 
     /// Phase 1 — drain the typed protocol once in canonical order and apply each command. Returns the
@@ -103,13 +152,10 @@ impl HostLoop {
         app: &mut App,
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
-        tracks: &mut dyn TrackRepository,
         trips: &mut dyn TripCatalog,
+        hold: PlanHold,
         mut host: impl FnMut(&mut App, HostCommand),
     ) -> Option<TrackAction> {
-        // Reserved for future track commands; keeps the repository set uniform per phase.
-        let _ = tracks;
-
         // The mailbox is popped empty at the end of every pass and sized `HOST_COMMAND_CLASSES`
         // (the `HostMailbox` default), so a full drain is guaranteed by construction — keep the
         // invariant loud rather than suppressing the drain's `#[must_use]` status.
@@ -156,7 +202,9 @@ impl HostLoop {
                     }
                 }
                 HostCommand::PlanRoute(req) => {
-                    self.plan = Some(InflightPlan::Nav(NavPlan::start(&req, app.settings().bike_profile_idx)));
+                    if !hold.route {
+                        self.plan = Some(InflightPlan::Nav(NavPlan::start(&req, app.settings().bike_profile_idx)));
+                    }
                 }
                 HostCommand::CancelDetour => {
                     // Drop both the in-flight detour plan and any planned-but-uncommitted bytes.
@@ -166,16 +214,20 @@ impl HostLoop {
                     self.detour_ready = None;
                 }
                 HostCommand::PlanDetour(req) => {
-                    self.detour_ready = None;
-                    let started = self.session.index().and_then(|index| {
-                        let src = routes.active_source()?;
-                        let orig = obc_route::RouteReader::new(index, &src);
-                        DetourPlan::start(&req, app.settings().bike_profile_idx, &orig)
-                    });
-                    match started {
-                        Some(plan) => self.plan = Some(InflightPlan::Detour(plan)),
-                        // The active route vanished / can't resolve the rejoin — answer now.
-                        None => app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath))),
+                    if !hold.detour {
+                        self.detour_ready = None;
+                        let started = self.session.index().and_then(|index| {
+                            let src = routes.active_source()?;
+                            let orig = obc_route::RouteReader::new(index, &src);
+                            DetourPlan::start(&req, app.settings().bike_profile_idx, &orig)
+                        });
+                        match started {
+                            Some(plan) => self.plan = Some(InflightPlan::Detour(plan)),
+                            // The active route vanished / can't resolve the rejoin — answer now.
+                            None => {
+                                app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath)))
+                            }
+                        }
                     }
                 }
                 HostCommand::CommitDetour => {
