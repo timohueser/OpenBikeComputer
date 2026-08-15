@@ -48,6 +48,7 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
+use obc_storage::trip_name;
 use obc_storage::weather as weather_store;
 use obc_storage::ObjectIdSequence;
 
@@ -657,16 +658,11 @@ impl ObjectStore {
         for name in &names {
             match storage.read_trip(name) {
                 Some((byte_len, _meta, _stage_count)) => {
-                    let id = match crate::sd::uploaded_trip_id(name) {
-                        Some(id) => {
-                            self.next_trip_id.observe_committed(id);
-                            id
-                        }
-                        None => match storage.sideload_id(name) {
-                            Some(id) => id,
-                            None => continue,
-                        },
-                    };
+                    let uploaded = trip_name::uploaded_id(name.base_name(), name.extension());
+                    let Some(id) = uploaded.or_else(|| storage.sideload_id(name)) else { continue };
+                    if uploaded.is_some() {
+                        self.next_trip_id.observe_committed(id);
+                    }
                     let _ = self.trips.push(ObjectSlot { id, file: name.clone(), byte_len });
                 }
                 None => {
