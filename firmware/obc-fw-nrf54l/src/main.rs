@@ -134,12 +134,8 @@ use {defmt_rtt as _, panic_probe as _};
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 
-use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-// The shared GPS/altimeter I²C bus — real-sensor build only.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -151,7 +147,6 @@ use embassy_sync::mutex::Mutex;
 use obc_app::InputPlane;
 use obc_app::{App, AppState};
 use obc_display::ls021::{RowDiff, FRAME_H, FRAME_W};
-use obc_platform::ButtonInput;
 use obc_reader::{MapCache, MapTables, MountedSet};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
@@ -176,14 +171,7 @@ use map_plane::{show_boot_fault, MapDisplay};
 // J-Link VCOM. `BufferedUarte` keeps RX DMA continuously armed into a ring driven by the SERIAL20
 // interrupt, so the tens-of-ms map render never drops a streamed byte. 8N1 @ 115200.
 #[cfg(feature = "debug-uart")]
-use embassy_nrf::buffered_uarte::{BufferedUarte, BufferedUarteRx, BufferedUarteTx};
-#[cfg(feature = "debug-uart")]
-use embassy_nrf::uarte;
-
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use board::SensorIrqs;
-#[cfg(feature = "debug-uart")]
-use board::UartIrqs;
+use embassy_nrf::buffered_uarte::{BufferedUarteRx, BufferedUarteTx};
 // ============================ Board memory budget ============================
 // The nRF54L15 has 256 KB RAM and no external RAM, so the whole resident working set of a full map
 // redraw must fit there. This build-time assert fails the build — rather than overflowing RAM on
@@ -945,41 +933,19 @@ async fn main(_spawner: Spawner) {
                     init_static(core::ptr::addr_of_mut!(TX_BUF), [0; 256]),
                 )
             };
-            let uart = BufferedUarte::new(
-                p.SERIAL20,
-                p.P1_17, // RXD: host → device (fixes / input injection)
-                p.P1_16, // TXD: device → host (telemetry)
-                UartIrqs,
-                uarte::Config::default(), // 8N1 @ 115200 — matches `obc-usb-host`'s default baud
-                rx_buf,
-                tx_buf,
-            );
+            let uart = board::input_hardware!(uart p, rx_buf, tx_buf);
             let (rx, tx) = uart.split();
             _spawner.spawn(defmt::unwrap!(vcom_rx_task(rx, SENSOR_HUB.injector())));
             _spawner.spawn(defmt::unwrap!(vcom_tx_task(tx)));
             info!("VCOM debug sensors up on UARTE20 (J-Link VCOM 'UART1', TX P1_16 / RX P1_17) @ 115200");
         }
 
-        // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
-        // mapping: BTN0 UP, BTN1 DOWN, BTN3 SELECT, BTN2 BACK — `new(up, down, select, back)`.
-        // The typed order and pins are pinned in `board`; they clash with neither panel bus.
-        let buttons = ButtonInput::new(
-            Input::new(p.P1_26, Pull::Up), // BTN0 UP     → Step(-1)
-            Input::new(p.P1_09, Pull::Up), // BTN1 DOWN   → Step(+1)
-            Input::new(p.P0_05, Pull::Up), // BTN3 SELECT → Select press / hold
-            Input::new(p.P1_08, Pull::Up), // BTN2 BACK   → back / back-hold
-        );
-        // The high-priority plane(s) run at P3 — above thread mode (so they preempt the map render) and
-        // below the P0 GRTC time-driver (so their `Timer`s still wake mid-render). Shared vector (SWI01
-        // — SWI00 is MPSL's low-prio lane on `ble` builds).
-        interrupt::SWI01.set_priority(Priority::P3);
+        // The board owns active-low/pull-up pin order; the input plane owns gesture semantics.
+        let buttons = board::input_hardware!(buttons p);
 
-        // --- Real GPS + altimeter on the shared TWIM22 I²C bus. Default build only (neither `synth` nor
-        // `debug-uart`). Build the bus + the TX-Ready interrupt line on the free P1 pins and spawn the
-        // event-driven sensor task on the thread-mode executor; it probes both chips, configures the M10,
-        // and publishes coherent (fix, altitude, temperature) datapoints through its
-        // `SensorTaskLink` into `SENSOR_HUB`, which `run_app`'s consumer sources drain. The task is
-        // fully async (TWIM is DMA-backed). SERIAL22's ISR runs at P3. ---
+        // --- Real GPS + altimeter, default build only. The event-driven sensor task probes both
+        // chips and publishes coherent datapoints into `SENSOR_HUB`; board owns TWIM22/TX-ready and
+        // its P3 interrupt policy. ---
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         {
             // EasyDMA can't fetch a write buffer from flash, so byte-literal register writes need a RAM
@@ -988,16 +954,7 @@ async fn main(_spawner: Spawner) {
             static mut TWIM_TX_BUF: MaybeUninit<[u8; 32]> = MaybeUninit::uninit();
             // SAFETY: written once here, then owned solely by the `Twim` for the program's life.
             let twim_tx = unsafe { init_static(core::ptr::addr_of_mut!(TWIM_TX_BUF), [0u8; 32]) };
-            let mut twim_cfg = twim::Config::default();
-            twim_cfg.frequency = twim::Frequency::K400; // fast-mode; both chips' DDC/I²C support it
-            twim_cfg.sda_pullup = true; // belt-and-braces over the Qwiic board's external pull-ups
-            twim_cfg.scl_pullup = true;
-            // SDA P1.04 sits beside the clock-capable SCL P1.03 (the datasheet's data-near-clock rule).
-            let twim = Twim::new(p.SERIAL22, SensorIrqs, p.P1_04, p.P1_03, twim_cfg, twim_tx);
-            interrupt::SERIAL22.set_priority(Priority::P3);
-            // TX-Ready (DDC data-ready) on the lone spare GPIO. Active-high, so pull down: a floating
-            // / unconfigured line then reads low and the task's poll fallback drives fixes instead.
-            let txready = Input::new(p.P1_05, Pull::Down);
+            let (twim, txready) = board::input_hardware!(sensors p, twim_tx);
             _spawner.spawn(defmt::unwrap!(sensors::sensor_task(twim, txready, SENSOR_HUB.task_link())));
             info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM22 (SDA P1.04 / SCL P1.03, TX-Ready P1.05)");
         }
