@@ -86,6 +86,7 @@ impl TransferGate {
     /// Release the gate — **only if `owner` is the one holding it**. A teardown on the wire that
     /// is not transferring is a no-op, which is the whole point: it must not open the door on a
     /// transfer the other wire is still running.
+    #[inline(never)]
     pub fn release(&self, owner: GateOwner) {
         let _ = self.state.compare_exchange(owner.tag(), IDLE, Ordering::Relaxed, Ordering::Relaxed);
     }
