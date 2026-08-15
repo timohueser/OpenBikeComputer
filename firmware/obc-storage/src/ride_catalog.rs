@@ -68,13 +68,9 @@ impl<const N: usize> RideCatalog<N> {
     }
 
     #[inline(always)]
+    #[allow(clippy::len_without_is_empty)] // no production consumer needs the boolean convenience
     pub fn len(&self) -> usize {
         self.files.len()
-    }
-
-    #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
     }
 
     #[inline(always)]
