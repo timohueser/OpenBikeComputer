@@ -81,9 +81,9 @@ public struct TransferControl: Equatable, Sendable {
         var data = Data(capacity: Self.encodedLength)
         data.append(op.rawValue)
         data.append(type.rawValue)
-        data.appendLE(objectID)
-        data.appendLE(totalLen)
-        data.appendLE(crc32)
+        data.appendUInt16LE(objectID)
+        data.appendUInt32LE(totalLen)
+        data.appendUInt32LE(crc32)
         return data
     }
 
@@ -95,9 +95,9 @@ public struct TransferControl: Equatable, Sendable {
         self.init(
             op: op,
             type: type,
-            objectID: data.readLE(at: b + 2),
-            totalLen: data.readLE(at: b + 4),
-            crc32: data.readLE(at: b + 8)
+            objectID: data.readUInt16LE(at: b + 2),
+            totalLen: data.readUInt32LE(at: b + 4),
+            crc32: data.readUInt32LE(at: b + 8)
         )
     }
 }
@@ -213,13 +213,13 @@ public enum StatusMessage: Equatable, Sendable {
         switch self {
         case .transferResult(let r):
             data.append(1)
-            data.appendLE(r.objectID?.raw ?? TransferControl.newObjectID)
+            data.appendUInt16LE(r.objectID?.raw ?? TransferControl.newObjectID)
             data.append(r.status.rawValue)
-            data.appendLE(r.committedOffset)
+            data.appendUInt32LE(r.committedOffset)
         case .storeChanged(let s):
             data.append(2)
             data.append(s.type.rawValue)
-            data.appendLE(s.revision)
+            data.appendUInt32LE(s.revision)
         case .commandResult(let c):
             data.append(3)
             data.append(c.command)
@@ -248,15 +248,15 @@ public enum StatusMessage: Equatable, Sendable {
             // rather than throwing (which would silently drop the message and wedge
             // the transfer, since the notification handler decodes with `try?`).
             let status = TransferResult.Status(rawValue: data[b + 3]) ?? .error
-            let rawID: UInt16 = data.readLE(at: b + 1)
+            let rawID = data.readUInt16LE(at: b + 1)
             self = .transferResult(TransferResult(
                 objectID: rawID == TransferControl.newObjectID ? nil : DeviceObjectID(rawID),
-                status: status, committedOffset: data.readLE(at: b + 4)
+                status: status, committedOffset: data.readUInt32LE(at: b + 4)
             ))
         case 2:
             guard data.count >= 6 else { throw DescriptorError.truncated }
             guard let type = ObjectType(rawValue: data[b + 1]) else { throw DescriptorError.unknownType(data[b + 1]) }
-            self = .storeChanged(StoreChanged(type: type, revision: data.readLE(at: b + 2)))
+            self = .storeChanged(StoreChanged(type: type, revision: data.readUInt32LE(at: b + 2)))
         case 3:
             guard data.count >= 4 else { throw DescriptorError.truncated }
             guard let status = CommandResult.Status(rawValue: data[b + 2]) else {
@@ -285,26 +285,4 @@ public enum DescriptorError: Error, Equatable, Sendable {
     case unknownOp(UInt8)
     case unknownType(UInt8)
     case unknownStatus(UInt8)
-}
-
-// MARK: - Little-endian (de)serialization
-
-extension Data {
-    fileprivate mutating func appendLE(_ value: UInt16) {
-        append(UInt8(value & 0xFF)); append(UInt8((value >> 8) & 0xFF))
-    }
-
-    fileprivate mutating func appendLE(_ value: UInt32) {
-        append(UInt8(value & 0xFF)); append(UInt8((value >> 8) & 0xFF))
-        append(UInt8((value >> 16) & 0xFF)); append(UInt8((value >> 24) & 0xFF))
-    }
-
-    fileprivate func readLE(at index: Index) -> UInt16 {
-        UInt16(self[index]) | (UInt16(self[index + 1]) << 8)
-    }
-
-    fileprivate func readLE(at index: Index) -> UInt32 {
-        UInt32(self[index]) | (UInt32(self[index + 1]) << 8)
-            | (UInt32(self[index + 2]) << 16) | (UInt32(self[index + 3]) << 24)
-    }
 }

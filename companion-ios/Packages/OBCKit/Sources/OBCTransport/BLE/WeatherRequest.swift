@@ -385,8 +385,8 @@ public enum WeatherRequestEvent: Equatable, Sendable {
 
 // MARK: - Little-endian access
 
-// Local to this file: `TransferDescriptor`'s equivalents are `fileprivate` there, and the two
-// layouts are pinned independently on purpose — a shared helper is one edit away from moving both.
+// Local to this independently pinned 52-byte request layout: unlike the common `Data` helpers,
+// this writer targets an `[UInt8]` at fixed offsets and also owns the layout's `UInt64` fields.
 extension Array where Element == UInt8 {
     fileprivate mutating func writeLE(_ value: UInt16, at index: Int) {
         self[index] = UInt8(value & 0xFF)
