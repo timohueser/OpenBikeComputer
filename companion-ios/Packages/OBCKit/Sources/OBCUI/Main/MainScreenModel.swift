@@ -5,8 +5,8 @@ import OBCTransport
 
 /// The main-screen state (B3, design C1/C2): the route/ride lists, the live
 /// device cluster (name · battery · connection), search, and the phone-side
-/// library edits (rename/delete/import landing). Depends only on
-/// `DeviceTransport` (the golden rule).
+/// library edits (rename/delete/import landing). Depends only on link, battery,
+/// stored-object, and retention capabilities (the golden rule).
 ///
 /// **Sync (B7)** lives in `RideSyncCoordinator` (#358), exposed whole as
 /// `sync` — the view reads `sync.syncState` etc. directly rather than through
@@ -139,7 +139,7 @@ public final class MainScreenModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceRetention
     private let library: any LibraryStore
     /// The app-local default-retention preference (epic #638) — read to seed a
     /// new upload's level and the upload sheet's picker, written by Settings.
@@ -216,7 +216,7 @@ public final class MainScreenModel {
     /// The default `library` keeps persistence out of previews and tests that
     /// don't care; the composition root always passes its chosen store.
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceRetention,
         library: any LibraryStore = InMemoryLibraryStore(),
         retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),

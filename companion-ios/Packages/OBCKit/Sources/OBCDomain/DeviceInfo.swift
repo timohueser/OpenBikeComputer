@@ -6,7 +6,7 @@ import Foundation
 /// **B-S0 skeleton.** The fields track DIS (see `companion-ios/OBCProtocol.md` →
 /// *Control plane*); `B1` finalizes the type as it wires `BLETransport`. New
 /// fields are defaulted so the scaffold's two-arg call sites keep compiling.
-/// Kept a plain `Sendable` value type so it crosses the `DeviceTransport`
+/// Kept a plain `Sendable` value type so it crosses the `DeviceLink`
 /// boundary freely.
 public struct DeviceInfo: Equatable, Sendable {
     /// User-facing device name. Renamable via `DeviceConfig.name` (H3) — the
