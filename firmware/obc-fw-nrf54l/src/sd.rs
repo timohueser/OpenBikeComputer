@@ -75,8 +75,8 @@ use obc_route::{
 use obc_storage::fat_extents::{
     BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
 };
-use obc_storage::{route_name, trip_name};
 use obc_storage::weather::{self as weather_store, WeatherSlotIo};
+use obc_storage::{route_name, trip_name};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
@@ -1364,8 +1364,7 @@ impl Storage {
         for n in &names {
             // Id first: a route without an id can't be listed (the remap and the BLE catalog both
             // key on it) — only the exhausted side-load band hits this, warned in `sideload_id`.
-            let Some(id) = route_name::uploaded_id(n.base_name(), n.extension()).or_else(|| self.sideload_id(n))
-            else {
+            let Some(id) = route_name::uploaded_id(n.base_name(), n.extension()).or_else(|| self.sideload_id(n)) else {
                 defmt::warn!("SD: scan: {} has no object id — not listed", defmt::Debug2Format(n));
                 continue;
             };

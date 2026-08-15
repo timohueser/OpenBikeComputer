@@ -48,9 +48,9 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
-use obc_storage::{route_name, trip_name};
 use obc_storage::weather as weather_store;
 use obc_storage::ObjectIdSequence;
+use obc_storage::{route_name, trip_name};
 
 use crate::sd::Storage;
 use crate::SharedStore;
