@@ -412,7 +412,7 @@ async fn run_download(
     let diag = crate::link::diag_input(fw.as_str(), serial.as_str(), Instant::now().as_secs() as u32);
     let opened = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().download_open(&mut guard, desc, &diag)
+        store.borrow_mut().download_open(&mut guard, crate::link::gate_owner(crate::link::Transport::Ble), desc, &diag)
     };
     let (mut tx, source) = match opened {
         Ok(open) => open,
@@ -444,7 +444,7 @@ async fn run_download(
         warn!("ble: [coc] download announce notify failed/timed out — abandoning download");
         {
             let mut guard = shared.lock().await;
-            store.borrow_mut().download_close(&mut guard);
+            store.borrow_mut().download_close(&mut guard, source);
         }
         close_transfer();
         return TransferOutcome::Answered;
@@ -453,7 +453,7 @@ async fn run_download(
         if TRANSFER_ABORT.try_take().is_some() {
             {
                 let mut guard = shared.lock().await;
-                store.borrow_mut().download_close(&mut guard);
+                store.borrow_mut().download_close(&mut guard, source);
             }
             info!("ble: [coc] download aborted by the app");
             close_transfer();
@@ -469,7 +469,7 @@ async fn run_download(
         if !read_ok {
             {
                 let mut guard = shared.lock().await;
-                store.borrow_mut().download_close(&mut guard);
+                store.borrow_mut().download_close(&mut guard, source);
             }
             warn!("ble: [coc] SD read failed — download abandoned");
             close_transfer();
@@ -485,7 +485,7 @@ async fn run_download(
                 info!("ble: [coc] download send ended: {:?}", defmt::Debug2Format(&e));
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().download_close(&mut guard);
+                    store.borrow_mut().download_close(&mut guard, source);
                 }
                 close_transfer();
                 return TransferOutcome::ChannelDropped;
@@ -493,7 +493,7 @@ async fn run_download(
             Either::Second(()) => {
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().download_close(&mut guard);
+                    store.borrow_mut().download_close(&mut guard, source);
                 }
                 info!("ble: [coc] download aborted by the app (mid-send)");
                 close_transfer();
@@ -511,7 +511,7 @@ async fn run_download(
     {
         let mut guard = shared.lock().await;
         let mut st = store.borrow_mut();
-        st.download_close(&mut guard);
+        st.download_close(&mut guard, source);
         // A **ride** download that reached completion is the unsynced-guard's commit point (epic #447
         // P7 / #454): flag this ride id as "downloaded at least once" in the `/tracks` synced sidecar
         // so the Rides screen drops its "not synced" delete cue. A no-op if already flagged; when it

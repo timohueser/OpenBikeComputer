@@ -96,6 +96,7 @@ pub(crate) type StoredRideCatalog = obc_storage::RideCatalog<RIDE_CATALOG_CAP>;
 pub(crate) type StoredRouteCatalog = obc_storage::Catalog<u32, MAX_ROUTES, SIDELOAD_ID_BASE>;
 type StoredTripCatalog = obc_storage::Catalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>;
 pub(crate) type UploadSession = SinkSession<RawFile>;
+pub(crate) type DownloadSession = SinkSession<RawFile>;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -199,6 +200,15 @@ enum UploadOwner {
     Set,
     /// The inactive `/WEATHER.A` or `/WEATHER.B` generation. It never uses `/routes/UPLOAD.TMP`.
     Weather(WeatherSlot),
+}
+
+/// One retained route/trip/ride detail handle. The name lets repositories borrow it for scans;
+/// owner scopes link teardown, while the raw-file capability keys every stream read and close.
+struct OpenObject {
+    name: ShortFileName,
+    owner: GateOwner,
+    file: RawFile,
+    len: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -608,13 +618,13 @@ pub struct Storage {
     /// makes a freshly-finished ride reach the Rides menu (and, on `ble`, the phone's catalog)
     /// without a reboot.
     ride_saved: bool,
-    /// The BLE object plane's open route/ride file (a detail download in flight): `(filename,
-    /// handle, length)`. A separate slot from `open_route` so a download can't disturb an active
+    /// The companion object's open route/ride file (a detail download in flight). A separate slot
+    /// from `open_route` so a download can't disturb an active
     /// ride's geometry. The name is kept so the catalog scan can recognise (and read through)
     /// this handle instead of a second open — embedded-sdmmc refuses every second open of an
     /// open file (`FileAlreadyOpen`, even ReadOnly), which would silently drop the route from
     /// the catalog (issue #480).
-    open_object: Option<(ShortFileName, RawFile, u32)>,
+    open_object: Option<OpenObject>,
     /// The in-flight upload's open file handle **and which path owns it** — the temp staging file,
     /// a single map's final `MP{id}.OBM`, or one file of a volume set. See [`UploadOwner`]: the tag
     /// is what stops one transport's teardown closing a handle the other transport is streaming
@@ -2797,9 +2807,9 @@ impl Storage {
         name: &ShortFileName,
         read: impl FnOnce(&Source<'_>, u32) -> Option<T>,
     ) -> Option<T> {
-        if let Some((open_name, file, len)) = &self.open_object {
-            if name == open_name {
-                return read(&SdByteSource::new(&self.vmgr, *file, *len), *len);
+        if let Some(open) = &self.open_object {
+            if name == &open.name {
+                return read(&SdByteSource::new(&self.vmgr, open.file, open.len), open.len);
             }
         }
         let file = self.vmgr.open_file_in_dir(self.routes_dir?, name, Mode::ReadOnly).ok()?;
@@ -3778,40 +3788,56 @@ impl Storage {
 
     /// Open a stored route for a detail download (the OBCR bytes verbatim), returning its byte
     /// length. Held in a slot separate from the ride's `open_route`.
-    pub fn open_object(&mut self, name: &ShortFileName) -> Option<u32> {
-        self.open_object_in(self.routes_dir, name)
+    pub fn open_object(&mut self, owner: GateOwner, name: &ShortFileName) -> Option<(u32, DownloadSession)> {
+        self.open_object_in(owner, self.routes_dir, name)
     }
 
     /// Open a stored ride object for a download (the stored bytes *are* the wire object) — the
     /// `/tracks` twin of [`open_object`](Self::open_object), sharing the same handle slot (one
     /// transfer at a time).
-    pub fn open_ride_object(&mut self, name: &ShortFileName) -> Option<u32> {
-        self.open_object_in(self.tracks_dir, name)
+    pub fn open_ride_object(&mut self, owner: GateOwner, name: &ShortFileName) -> Option<(u32, DownloadSession)> {
+        self.open_object_in(owner, self.tracks_dir, name)
     }
 
-    fn open_object_in(&mut self, dir: Option<RawDirectory>, name: &ShortFileName) -> Option<u32> {
-        self.close_object();
+    fn open_object_in(
+        &mut self,
+        owner: GateOwner,
+        dir: Option<RawDirectory>,
+        name: &ShortFileName,
+    ) -> Option<(u32, DownloadSession)> {
+        if let Some(open) = &self.open_object {
+            if open.owner != owner {
+                return None;
+            }
+            self.close_object_owner(owner);
+        }
         let file = self.vmgr.open_file_in_dir(dir?, name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
-        self.open_object = Some((name.clone(), file, len));
-        Some(len)
+        self.open_object = Some(OpenObject { name: name.clone(), owner, file, len });
+        Some((len, SinkSession::new(file)))
     }
 
     /// A [`ByteSource`](obc_formats::io::ByteSource) over the open object — the CRC pre-pass and the
     /// chunked sends both read through it.
-    pub fn object_source(&self) -> Option<Source<'_>> {
-        self.open_object.as_ref().map(|(_, f, len)| SdByteSource::new(&self.vmgr, *f, *len))
+    pub fn object_source(&self, session: DownloadSession) -> Option<Source<'_>> {
+        let open = self.open_object.as_ref()?;
+        session.matches_key(open.file).then(|| SdByteSource::new(&self.vmgr, open.file, open.len))
     }
 
     /// Whole-object CRC over the retained detail handle.
-    pub(crate) fn object_crc(&self, len: u32) -> Option<u32> {
-        let src = self.object_source()?;
+    pub(crate) fn object_crc(&self, session: DownloadSession, len: u32) -> Option<u32> {
+        let src = self.object_source(session)?;
+        Self::source_crc(&src, len)
+    }
+
+    #[inline(never)]
+    fn source_crc(src: &Source<'_>, len: u32) -> Option<u32> {
         let mut crc = Crc32::new();
         let mut buf = [0u8; 512];
         let mut offset = 0u32;
         while offset < len {
             let n = ((len - offset) as usize).min(buf.len());
-            ByteSource::read_at(&src, offset, &mut buf[..n]).ok()?;
+            ByteSource::read_at(src, offset, &mut buf[..n]).ok()?;
             crc.update(&buf[..n]);
             offset += n as u32;
         }
@@ -3819,16 +3845,28 @@ impl Storage {
     }
 
     /// Open, checksum, and always close one `/routes` object.
-    pub(crate) fn file_crc(&mut self, name: &ShortFileName) -> Option<u32> {
-        let computed = self.open_object(name).and_then(|len| self.object_crc(len));
-        self.close_object();
-        computed
+    pub(crate) fn file_crc(&self, name: &ShortFileName) -> Option<u32> {
+        self.with_routes_object(name, Self::source_crc)
     }
 
-    /// Close the detail-download handle (transfer done, aborted, or superseded).
-    pub fn close_object(&mut self) {
-        if let Some((_, file, _)) = self.open_object.take() {
-            let _ = self.vmgr.close_file(file);
+    /// Close exactly this detail-download handle; stale tokens are no-ops.
+    pub fn close_object(&mut self, session: DownloadSession) {
+        if self.open_object.as_ref().is_some_and(|open| session.matches_key(open.file)) {
+            self.close_open_object();
+        }
+    }
+
+    /// Close only the retained detail owned by this wire.
+    pub fn close_object_owner(&mut self, owner: GateOwner) {
+        if self.open_object.as_ref().is_some_and(|open| open.owner == owner) {
+            self.close_open_object();
+        }
+    }
+
+    #[inline(never)]
+    fn close_open_object(&mut self) {
+        if let Some(open) = self.open_object.take() {
+            let _ = self.vmgr.close_file(open.file);
         }
     }
 }

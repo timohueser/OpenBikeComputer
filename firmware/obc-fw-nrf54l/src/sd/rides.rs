@@ -170,7 +170,7 @@ impl<'a> Rides<'a> {
         let (file, len, borrowed) = match self.storage.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) {
             Ok(file) => (file, self.storage.vmgr.file_length(file).unwrap_or(0), false),
             Err(_) => match &self.storage.open_object {
-                Some((open_name, open_file, open_len)) if open_name == name => (*open_file, *open_len, true),
+                Some(open) if &open.name == name => (open.file, open.len, true),
                 _ => return None,
             },
         };

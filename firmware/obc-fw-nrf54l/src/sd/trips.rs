@@ -325,8 +325,9 @@ impl<'a> Trips<'a> {
     }
 
     fn close_object_if(&mut self, name: &ShortFileName) {
-        if matches!(&self.storage.open_object, Some((ref open_name, ..)) if open_name == name) {
-            self.storage.close_object();
+        if let Some(owner) = self.storage.open_object.as_ref().filter(|open| &open.name == name).map(|open| open.owner)
+        {
+            self.storage.close_object_owner(owner);
         }
     }
 

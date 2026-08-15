@@ -889,7 +889,7 @@ async fn run_download(
     let diag = crate::link::diag_input(fw.as_str(), serial.as_str(), Instant::now().as_secs() as u32);
     let opened = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().download_open(&mut guard, desc, &diag)
+        store.borrow_mut().download_open(&mut guard, crate::link::gate_owner(crate::link::Transport::Usb), desc, &diag)
     };
     let (mut sender, source) = match opened {
         Ok(open) => open,
@@ -911,7 +911,7 @@ async fn run_download(
         if TRANSFER_ABORT.try_take().is_some() {
             {
                 let mut guard = shared.lock().await;
-                store.borrow_mut().download_close(&mut guard);
+                store.borrow_mut().download_close(&mut guard, source);
             }
             info!("usb: [bulk] download aborted by the host");
             close_transfer();
@@ -926,7 +926,7 @@ async fn run_download(
         if !read_ok {
             {
                 let mut guard = shared.lock().await;
-                store.borrow_mut().download_close(&mut guard);
+                store.borrow_mut().download_close(&mut guard, source);
             }
             warn!("usb: [bulk] SD read failed — download abandoned");
             close_transfer();
@@ -942,7 +942,7 @@ async fn run_download(
                 info!("usb: [bulk] download send ended: {:?}", defmt::Debug2Format(&e));
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().download_close(&mut guard);
+                    store.borrow_mut().download_close(&mut guard, source);
                 }
                 close_transfer();
                 return TransferOutcome::LinkDropped;
@@ -950,7 +950,7 @@ async fn run_download(
             Either::Second(()) => {
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().download_close(&mut guard);
+                    store.borrow_mut().download_close(&mut guard, source);
                 }
                 info!("usb: [bulk] download aborted by the host (mid-send)");
                 close_transfer();
@@ -974,7 +974,7 @@ async fn run_download(
     {
         let mut guard = shared.lock().await;
         let mut st = store.borrow_mut();
-        st.download_close(&mut guard);
+        st.download_close(&mut guard, source);
         // A **ride** download that reached completion is the unsynced-guard's commit point (epic
         // #447 P7 / #454). Note this only clears the device's "not synced" delete cue; the durable
         // `synced` **ack** is a separate `ackRides` command the host issues *after* its own fsync,

@@ -52,7 +52,7 @@ use obc_ble::{
 use obc_ports::SettingsStore;
 use obc_storage::weather as weather_store;
 
-use crate::sd::{MapTransfers, UploadSession};
+use crate::sd::{DownloadSession, MapTransfers, UploadSession};
 use crate::SharedStore;
 
 /// The outcome of a `setRouteRetention` command (finding #876-5) — replaces the old `Option<bool>`
@@ -883,7 +883,7 @@ impl ObjectStore {
     pub fn link_reset(&mut self, shared: &mut SharedStore, owner: GateOwner) {
         self.upload_discard_owner(shared, owner);
         if let Some(storage) = &mut shared.storage {
-            storage.close_object();
+            storage.close_object_owner(owner);
         }
     }
 
@@ -1340,6 +1340,7 @@ impl ObjectStore {
     pub fn download_open(
         &mut self,
         shared: &mut SharedStore,
+        owner: GateOwner,
         desc: &TransferControl,
         diag: &DiagInput<'_>,
     ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
@@ -1357,7 +1358,7 @@ impl ObjectStore {
                 };
                 let crc = Crc32::checksum(&self.list_buf[..len]);
                 let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
-                Ok((tx, DownloadSource::List))
+                Ok((tx, DownloadSource::Buffer))
             }
             ObjectType::Route => {
                 let file = shared
@@ -1367,7 +1368,7 @@ impl ObjectStore {
                 let Some(file) = file else {
                     return Err(TransferStatus::NotFound);
                 };
-                self.open_object_download(shared, desc, &file, false)
+                self.open_object_download(shared, owner, desc, &file, false)
             }
             // A trip detail download is the same verbatim stream as a route — the stored `TP{id}.OBT`
             // *is* the wire object — out of `/routes` (`ride = false`).
@@ -1376,7 +1377,7 @@ impl ObjectStore {
                 else {
                     return Err(TransferStatus::NotFound);
                 };
-                self.open_object_download(shared, desc, &file, false)
+                self.open_object_download(shared, owner, desc, &file, false)
             }
             // A ride download is the same verbatim stream — the stored `RD{id}.ORD` *is* the wire
             // object — just out of `/tracks`.
@@ -1388,7 +1389,7 @@ impl ObjectStore {
                 let Some(file) = file else {
                     return Err(TransferStatus::NotFound);
                 };
-                self.open_object_download(shared, desc, &file, true)
+                self.open_object_download(shared, owner, desc, &file, true)
             }
             // Diagnostics: render the text blob into the object buffer and stream it like a list.
             // Deliberately **card-independent** — diagnostics must be readable exactly
@@ -1398,7 +1399,7 @@ impl ObjectStore {
                 let len = self.build_diagnostics(shared, diag);
                 let crc = Crc32::checksum(&self.list_buf[..len]);
                 let tx = StreamSender::new(desc, len as u32, crc).map_err(|_| TransferStatus::Error)?;
-                Ok((tx, DownloadSource::List))
+                Ok((tx, DownloadSource::Buffer))
             }
             _ => Err(TransferStatus::NotFound),
         }
@@ -1447,28 +1448,34 @@ impl ObjectStore {
     fn open_object_download(
         &mut self,
         shared: &mut SharedStore,
+        owner: GateOwner,
         desc: &TransferControl,
         file: &ShortFileName,
         ride: bool,
     ) -> Result<(StreamSender, DownloadSource), TransferStatus> {
         let Some(storage) = &mut shared.storage else { return Err(TransferStatus::Error) };
-        let opened = if ride { storage.open_ride_object(file) } else { storage.open_object(file) };
-        let Some(len) = opened else {
+        let opened = if ride { storage.open_ride_object(owner, file) } else { storage.open_object(owner, file) };
+        let Some((len, session)) = opened else {
             return Err(TransferStatus::Error);
         };
-        let Some(crc) = storage.object_crc(len) else {
-            storage.close_object();
+        let Some(crc) = storage.object_crc(session, len) else {
+            storage.close_object(session);
             return Err(TransferStatus::Error);
         };
-        let tx = StreamSender::new(desc, len, crc).map_err(|_| TransferStatus::Error)?;
-        Ok((tx, DownloadSource::Object))
+        match StreamSender::new(desc, len, crc) {
+            Ok(tx) => Ok((tx, DownloadSource::Object(session))),
+            Err(_) => {
+                storage.close_object(session);
+                Err(TransferStatus::Error)
+            }
+        }
     }
 
     /// Read the chunk at `offset` into `buf` from the opened download source. False = read
     /// failure (the caller answers `error`).
     pub fn download_read(&self, shared: &SharedStore, source: DownloadSource, offset: u32, buf: &mut [u8]) -> bool {
         match source {
-            DownloadSource::List => {
+            DownloadSource::Buffer => {
                 let (start, end) = (offset as usize, offset as usize + buf.len());
                 if end > self.list_buf.len() {
                     return false;
@@ -1476,18 +1483,18 @@ impl ObjectStore {
                 buf.copy_from_slice(&self.list_buf[start..end]);
                 true
             }
-            DownloadSource::Object => shared
+            DownloadSource::Object(session) => shared
                 .storage
                 .as_ref()
-                .and_then(|s| s.object_source())
+                .and_then(|s| s.object_source(session))
                 .is_some_and(|src| obc_formats::io::ByteSource::read_at(&src, offset, buf).is_ok()),
         }
     }
 
     /// Close the download's storage handle (done, dropped, or superseded).
-    pub fn download_close(&mut self, shared: &mut SharedStore) {
-        if let Some(storage) = &mut shared.storage {
-            storage.close_object();
+    pub fn download_close(&mut self, shared: &mut SharedStore, source: DownloadSource) {
+        if let (DownloadSource::Object(session), Some(storage)) = (source, &mut shared.storage) {
+            storage.close_object(session);
         }
     }
 
@@ -1661,7 +1668,7 @@ impl core::fmt::Write for BufWriter<'_> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DownloadSource {
     /// The built list / diagnostics object in [`ObjectStore::list_buf`].
-    List,
+    Buffer,
     /// The open route / ride file on the card.
-    Object,
+    Object(DownloadSession),
 }

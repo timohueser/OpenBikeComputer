@@ -419,11 +419,14 @@ impl<'a> Routes<'a> {
             let active = self.storage.open_route.and_then(|(id, _, _)| {
                 self.catalog.get(id).is_some_and(|(_, name, _)| name == final_name).then_some(id)
             });
-            let retained =
-                close_retained && matches!(&self.storage.open_object, Some((name, ..)) if name == final_name);
+            let retained = close_retained
+                .then_some(self.storage.open_object.as_ref())
+                .flatten()
+                .filter(|open| &open.name == final_name)
+                .map(|open| open.owner);
             self.close_geometry_if(final_name);
-            if retained {
-                self.storage.close_object();
+            if let Some(owner) = retained {
+                self.storage.close_object_owner(owner);
             }
             if let Err(error) = self.storage.vmgr.delete_file_in_dir(dir, final_name) {
                 defmt::warn!("SD: route replace delete failed: {}", defmt::Debug2Format(&error));
@@ -431,8 +434,8 @@ impl<'a> Routes<'a> {
                     if let Some(id) = active {
                         self.reconcile(Some(id));
                     }
-                    if retained {
-                        let _ = self.storage.open_object(final_name);
+                    if let Some(owner) = retained {
+                        let _ = self.storage.open_object(owner, final_name);
                     }
                     let _ = self.storage.vmgr.close_file(src);
                     let _ = self.storage.vmgr.delete_file_in_dir(dir, stage);
