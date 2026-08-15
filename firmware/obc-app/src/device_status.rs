@@ -8,7 +8,8 @@
 
 use crate::BleLink;
 
-/// The platform-fed device facts shared by ordinary app chrome.
+/// The platform-fed device facts shared by ordinary app chrome. [`AppState`](crate::AppState)
+/// stores this as its single [`device`](crate::AppState::device) field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceStatus {
     /// Battery charge on the app's `0..=100` percent scale.

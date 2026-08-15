@@ -103,7 +103,8 @@ pub struct Pan {
 }
 
 /// The device's view state: where the camera looks, how zoomed in it is, what mode it's in, and
-/// the last known user fix.
+/// the last known user fix. Small platform-fed facts shown by app chrome live together in
+/// [`device`](AppState::device); weather, catalogs, navigation, and transfers keep their own state.
 ///
 /// The shared core the host renders. The host owns the display size and the
 /// [`obc_render::RenderScratch`]/draw target; each frame it calls [`update`] with the platform's
@@ -139,12 +140,8 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Battery charge, 0–100 %; the battery fact in [`device_status`](AppState::device_status).
-    pub battery_pct: u8,
-    /// The phone link phase; the link fact in [`device_status`](AppState::device_status).
-    pub ble_link: crate::BleLink,
-    /// Whether a phone bond is stored; the bond fact in [`device_status`](AppState::device_status).
-    pub ble_paired: bool,
+    /// Small, current platform-fed facts rendered by ordinary app chrome.
+    pub device: DeviceStatus,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
     /// guarded hold, drained by the host via [`App::drain_host_commands`] — which clears the RRAM bond
     /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
@@ -190,26 +187,19 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
-            // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
-            battery_pct: 75,
-            // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
-            ble_link: crate::BleLink::Advertising,
-            ble_paired: false,
+            device: DeviceStatus {
+                // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
+                battery_pct: 75,
+                // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
+                ble_link: crate::BleLink::Advertising,
+                ble_paired: false,
+            },
             ble_forget_pending: false,
             has_nav_graph: false,
             rain_step: 0,
             rain_steps_ahead: 0,
             rain_zoom_min: 0.0,
         }
-    }
-
-    /// The focused snapshot of small platform-fed facts rendered by app chrome.
-    ///
-    /// The existing public fields remain the storage/API; commands and domain state stay outside
-    /// this narrower [`DeviceStatus`] vocabulary.
-    #[inline]
-    pub const fn device_status(&self) -> DeviceStatus {
-        DeviceStatus { battery_pct: self.battery_pct, ble_link: self.ble_link, ble_paired: self.ble_paired }
     }
 
     /// Clamp the camera to the rain map's zoom-out floor ([`rain_zoom_min`](AppState::rain_zoom_min)).
@@ -219,12 +209,6 @@ impl AppState {
         if self.rain_zoom_min > 0.0 && self.zoom < self.rain_zoom_min {
             self.zoom = self.rain_zoom_min;
         }
-    }
-
-    /// Whether a phone holds the BLE link — the connected indicator's one question
-    /// ([`ble_link`](AppState::ble_link) == [`Connected`](crate::BleLink::Connected)).
-    pub fn ble_connected(&self) -> bool {
-        self.device_status().ble_connected()
     }
 
     /// Advance one tick: poll the location source and, in [`Follow`](CameraMode::Follow) mode,
@@ -750,8 +734,8 @@ impl App {
         // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
         if self.ride.battery_poll_due(now_ms) {
             if let Some(soc) = fuel.and_then(|f| f.poll()) {
-                if soc != self.state.battery_pct {
-                    self.state.battery_pct = soc;
+                if soc != self.state.device.battery_pct {
+                    self.state.device.battery_pct = soc;
                     let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
                     if matches!(self.ui.stack.get(base), Some(Screen::Home(_))) {
                         self.ui.map_dirty = true;
@@ -761,7 +745,7 @@ impl App {
         }
         // The state before this tick's *fix*, snapshotted **after** the battery poll so a pure
         // battery delta is never mistaken for a fix that moved the camera / marker / heading (which
-        // one `AppState` comparison below detects). `battery_pct` lives in `AppState` but is drawn
+        // one `AppState` comparison below detects). `device.battery_pct` is drawn
         // only on Home, so it has the Home-only gate above; counting it toward `shows_live_data`
         // would force a full ~97 ms map render every 30 s on the riding views that don't draw it.
         let state_before = self.state;
@@ -1914,8 +1898,8 @@ impl App {
     /// state is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
         let state_before = self.state;
-        self.state.ble_link = status.link;
-        self.state.ble_paired = status.paired;
+        self.state.device.ble_link = status.link;
+        self.state.device.ble_paired = status.paired;
         // The link state lives in `AppState` but is drawn only on Home, the menu title bars, and
         // the Bluetooth screen, so — like the Home-only battery gate — a change dirties the map
         // only when one of those is the base screen. Counting it toward `shows_live_data` would

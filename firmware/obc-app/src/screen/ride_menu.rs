@@ -73,7 +73,7 @@ impl RideMenuScreen {
             rx.t(Msg::RideMenuMainMenu),
         ];
         let mut batt: heapless::String<8> = heapless::String::new();
-        let device = rx.state.device_status();
+        let device = rx.state.device;
         let _ = write!(batt, "{}%", device.battery_pct);
         self.dial.draw(
             cv,

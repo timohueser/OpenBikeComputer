@@ -1017,7 +1017,7 @@ impl Screen {
             Screen::RouteSwap(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
-            Screen::Bluetooth(s) => s.selection_is_guarded(state.device_status().ble_paired),
+            Screen::Bluetooth(s) => s.selection_is_guarded(state.device.ble_paired),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
