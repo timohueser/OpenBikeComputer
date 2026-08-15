@@ -14,7 +14,7 @@ public struct TransferHandle: Sendable {
     /// Progress updates as the transfer advances. Finishes when the transfer
     /// completes or is canceled. A **drop** does *not* finish it — the stream
     /// stalls open so a restart can continue into it (the observable drop signal
-    /// is `DeviceTransport.state` → `.outOfRange`).
+    /// is `DeviceLink.state` → `.outOfRange`).
     public let progress: AsyncStream<TransferProgress>
 
     private let outcomePromise: AsyncPromise<TransferOutcome>
@@ -39,7 +39,7 @@ public struct TransferHandle: Sendable {
     /// The terminal state — resolves when the transfer completes, is canceled, or
     /// fails for good, so the UI never infers success from byte counts. A drop
     /// keeps it unresolved (the transfer is still restartable); pair with
-    /// `progress` + `DeviceTransport.state` for the interrupted (F/H10)
+    /// `progress` + `DeviceLink.state` for the interrupted (F/H10)
     /// presentation.
     public var outcome: TransferOutcome {
         get async { await outcomePromise.value }

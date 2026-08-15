@@ -130,7 +130,7 @@ public struct Ride: Identifiable, Equatable, Sendable {
 }
 
 /// Everything the ride-detail screen (E3) renders beyond the list summary.
-/// Served by `DeviceTransport.rideDetail(_:)`; like `RouteDetail`, the wire
+/// Served by `DeviceObjects.rideDetail(_:)`; like `RouteDetail`, the wire
 /// mapping is provisional until firmware `S0` pins it.
 public struct RideDetail: Equatable, Sendable {
     public var summary: RideSummary

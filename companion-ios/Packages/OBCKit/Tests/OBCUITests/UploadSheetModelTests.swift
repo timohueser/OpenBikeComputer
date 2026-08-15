@@ -285,11 +285,10 @@ final class UploadSheetModelTests: XCTestCase {
 /// (and device-id) promises are held here so the completion↔dismiss race can be
 /// sequenced deterministically, which the timing-driven `MockTransport` can't do.
 /// Only `state` + `uploadRoute` are exercised; the rest is inert.
-private final class ControlledUploadTransport: DeviceTransport, @unchecked Sendable {
+private final class ControlledUploadTransport: DeviceLink, DeviceObjects, @unchecked Sendable {
     let outcomePromise = AsyncPromise<TransferOutcome>()
     let assignedID = AsyncPromise<DeviceObjectID?>()
     private let stateMulticast = AsyncMulticast<ConnectionState>(.connected)
-    private let batteryMulticast = AsyncMulticast<Int>(100)
     private let finishedProgress: AsyncStream<TransferProgress>
 
     init() {
@@ -299,8 +298,6 @@ private final class ControlledUploadTransport: DeviceTransport, @unchecked Senda
     }
 
     var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
-    var battery: AsyncStream<Int> { batteryMulticast.stream() }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
 
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         TransferHandle(
@@ -316,13 +313,10 @@ private final class ControlledUploadTransport: DeviceTransport, @unchecked Senda
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { fatalError("unused") }
-    func readConfig() async throws -> DeviceConfig { fatalError("unused") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { fatalError("unused") }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { fatalError("unused") }
     func downloadRides(_ ids: [RideID]) -> RideDownload { fatalError("unused") }
-    func readDiagnostics() async throws -> Data { Data() }
 }
