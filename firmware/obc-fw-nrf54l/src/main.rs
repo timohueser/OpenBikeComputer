@@ -542,7 +542,7 @@ static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 fn mount_terrain(
     storage: &mut sd::Storage,
 ) -> Option<&'static mut obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> {
-    let src = storage.open_terrain()?;
+    let src = storage.maps().open_terrain()?;
     let terrain = obc_elevation::TerrainElevation::parse(src).ok()?;
     // SAFETY: sole owner of TERRAIN, written at most once per boot before any reference escapes.
     Some(unsafe { init_static(core::ptr::addr_of_mut!(TERRAIN), terrain) })
@@ -1187,20 +1187,20 @@ async fn main(_spawner: Spawner) {
         // card forever, invisible to the one surface that could explain them. The map twin of the
         // object store's `is_aborted_commit` sweep over `/routes`, and it must run **before**
         // `open_map` so the selection never lands on a corpse.
-        storage.sweep_aborted_maps();
+        storage.maps().sweep_aborted_maps();
 
         // The same reclaim for a torn **volume set** (issue #1039): a set is `1..=32` shard files
         // plus a manifest, so its abandoned upload is gigabytes rather than hundreds of megabytes,
         // and the file that identifies it is the zero-magic `MS{id}.OBS` token the upload writes
         // before the first shard. Runs before `open_map` for the same reason the map sweep does —
         // and after it, so a card carrying both kinds of corpse is clean in one boot.
-        storage.sweep_aborted_sets();
+        storage.maps().sweep_aborted_sets();
 
         // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
         // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
         // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
         // `Catalog` never sits on `main`'s stack beneath the long-lived ride loop.)
-        storage.open_map();
+        storage.maps().open();
 
         // The map's terrain sidecar (EL7): mounted right behind the map, on the same one-open-at-boot
         // rule, and folded into the `.bss` `TERRAIN` slot — via `mount_terrain`, whose
@@ -1229,12 +1229,12 @@ async fn main(_spawner: Spawner) {
         // looking for a file that is right there. `Storage::boot_fault` is NO MAP only when the card
         // held nothing; the rule itself is `obc_app::boot_fault`, tested where tests run. Read before
         // the `map_source` borrow so the `else` arm is free of it.
-        let map_fault = storage.boot_fault();
+        let map_fault = storage.maps().boot_fault();
         let map_tables: &MapTables = unsafe {
             // Keep the source in a lexical scope: the recovery arm needs `&mut storage`, and the
             // temporary map source must have released its borrow before that async call begins.
             let parsed = {
-                let Some(init_src) = storage.map_source() else {
+                let Some(init_src) = sd::Maps::source(&storage) else {
                     defmt::error!(
                         "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
                         defmt::Debug2Format(&map_fault)
@@ -1335,7 +1335,7 @@ async fn main(_spawner: Spawner) {
                 let mut fw: heapless::String<32> = heapless::String::new();
                 let _ = write!(fw, "{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
                 app.set_fw_version(&fw);
-                app.set_map_info(storage.map_name(), map_tables.version);
+                app.set_map_info(storage.maps().name(), map_tables.version);
             }
             // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
             // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a

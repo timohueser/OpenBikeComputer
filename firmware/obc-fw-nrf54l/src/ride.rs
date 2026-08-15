@@ -437,7 +437,7 @@ fn nav_step(
     nav: &mut NavBuffers,
     file: embedded_sdmmc::RawFile,
 ) -> obc_route::Step {
-    let Some(map_src) = storage.map_source() else {
+    let Some(map_src) = sd::Maps::source(storage) else {
         return obc_route::Step::Failed(obc_route::NavError::NoPath);
     };
     let reader = Reader::new(&map_src, map_tables, map_cache);
@@ -2110,11 +2110,8 @@ pub(crate) async fn run_app(
                 // A single map rebuilds its cheap Reader view from the held-open handle. A volume
                 // set was mounted once at boot: geometry uses the MountedSet directly and
                 // POI/hours use its core reader. Both are skipped on chrome-only frames.
-                let map_src = if needs_map && mounted_set.is_none() {
-                    storage.as_ref().and_then(|s| s.map_source())
-                } else {
-                    None
-                };
+                let map_src =
+                    if needs_map && mounted_set.is_none() { storage.as_ref().and_then(sd::Maps::source) } else { None };
                 let reader = if needs_map {
                     mounted_set
                         .as_ref()

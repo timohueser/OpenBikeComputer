@@ -75,7 +75,7 @@ pub(crate) fn finish_idle_abort(store: &RefCell<ObjectStore>, shared: &mut Share
     store.borrow_mut().upload_discard_owner(shared, abort.owner);
     if abort.abandon_set {
         info!("link: [ctl] idle abort names the set — abandoning every staged file of it");
-        store.borrow_mut().set_upload_abort(shared);
+        store.borrow_mut().map_transfers(shared).abort_set();
     }
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn classify_transfer(
         // room to spare. All three refuse **before any byte streams**, because a several-hundred-
         // megabyte transfer that fails at the end has cost the rider minutes.
         (Op::Upload, ObjectType::Map) if transport == Transport::Usb => {
-            match store.borrow_mut().map_upload_open(shared, &desc) {
+            match store.borrow_mut().map_transfers(shared).map_open(&desc) {
                 Ok(rx) => {
                     log_transfer_arm(&desc);
                     TransferDisposition::Arm(Armed::Upload(desc, rx))
@@ -248,7 +248,7 @@ pub(crate) fn classify_transfer(
         // agreement with the set already in flight. The part travels with the arm because the data
         // plane needs it to name the file at the first byte.
         (Op::Upload, ObjectType::MapShard) if transport == Transport::Usb => {
-            match store.borrow().set_shard_open(shared, &desc) {
+            match store.borrow_mut().map_transfers(shared).shard_open(&desc) {
                 Ok((rx, part)) => {
                     log_transfer_arm(&desc);
                     TransferDisposition::Arm(Armed::SetShard(desc, rx, part))
@@ -272,7 +272,7 @@ pub(crate) fn classify_transfer(
         // expects — and the manifest is refused at the very last transfer of a multi-gigabyte
         // upload.
         (Op::Upload, ObjectType::TerrainShard) if transport == Transport::Usb => {
-            match store.borrow().set_terrain_open(shared, &desc) {
+            match store.borrow_mut().map_transfers(shared).terrain_open(&desc) {
                 Ok(rx) => {
                     log_transfer_arm(&desc);
                     TransferDisposition::Arm(Armed::SetTerrain(desc, rx))
@@ -289,7 +289,7 @@ pub(crate) fn classify_transfer(
         // refused *before a byte streams*, so a host that gets the order wrong learns in
         // milliseconds instead of after gigabytes.
         (Op::Upload, ObjectType::MapSet) if transport == Transport::Usb => {
-            match store.borrow().set_manifest_open(shared, &desc) {
+            match store.borrow_mut().map_transfers(shared).manifest_open(&desc) {
                 Ok(rx) => {
                     log_transfer_arm(&desc);
                     TransferDisposition::Arm(Armed::SetManifest(desc, rx))

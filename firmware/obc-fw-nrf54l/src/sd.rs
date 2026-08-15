@@ -84,6 +84,8 @@ use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelect
 
 mod rides;
 pub(crate) use rides::Rides;
+mod maps;
+pub(crate) use maps::{MapTransfers, Maps};
 mod routes;
 pub(crate) use routes::{NavCommit, Routes};
 mod trips;
@@ -1243,6 +1245,10 @@ impl BlockDevice for SemmcCard {
 }
 
 impl Storage {
+    pub(crate) fn maps(&mut self) -> Maps<'_> {
+        Maps::new(self)
+    }
+
     /// Iterate `dir`'s entries with their long filenames, running `f` per entry. Wraps
     /// `iterate_dir_lfn`'s [`LfnBuffer`] scratch setup (a 256-byte buffer is ample for an 8.3 dir),
     /// so the `.obcm`/`.obcr` scans below don't each repeat it. The iteration error is ignored —
@@ -1607,7 +1613,7 @@ impl Storage {
     /// is sitting in the root must not be told to go and add one. That covers a failed set mount,
     /// both single-file open failures, and — via `scan_maps_into`'s count — files the catalog never
     /// saw because their header would not parse.
-    pub fn open_map(&mut self) -> Option<u32> {
+    fn open_map(&mut self) -> Option<u32> {
         if let Some((_, len)) = self.open_map {
             return Some(len);
         }
@@ -1705,7 +1711,7 @@ impl Storage {
     /// manifest's judgement without changing which file is opened.
     #[cfg(has_nav)]
     #[inline(never)]
-    pub fn open_terrain(&mut self) -> Option<&'static dyn ByteSource> {
+    fn open_terrain(&mut self) -> Option<&'static dyn ByteSource> {
         // What the manifest says about a mounted set, and `None` (no terrain) when it says nothing.
         let recorded = match &self.open_set {
             Some(set) if self.open_map_name.is_none() => Some(set.terrain_bytes?),
@@ -1897,7 +1903,7 @@ impl Storage {
     /// **NO MAP** unless [`open_map`](Storage::open_map) found a map-named file and could not stream
     /// from it — see [`map_boot_fault`](Storage::map_boot_fault) and `obc_app::boot_fault`, where the
     /// rule lives and is tested.
-    pub fn boot_fault(&self) -> obc_app::BootFault {
+    fn boot_fault(&self) -> obc_app::BootFault {
         self.map_boot_fault.unwrap_or(obc_app::BootFault::NoMap)
     }
 
@@ -2353,7 +2359,7 @@ impl Storage {
 
     /// The card's recorded map selection ([`MAP_SELECTED`]), or `None` for absent / torn / a name
     /// this device would never have written — all of which mean **no preference**.
-    pub fn load_selected_map(&self) -> Option<ShortFileName> {
+    fn load_selected_map(&self) -> Option<ShortFileName> {
         let name = ShortFileName::create_from_str(MAP_SELECTED).ok()?;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
         let mut buf = [0u8; obc_app::store_meta::SELECTED_MAP_LEN];
@@ -2366,7 +2372,7 @@ impl Storage {
     /// [`MAP_SELECTED`]. Best-effort by design: a failed write leaves the previous selection (or
     /// none), and the loader's fallback still lands on a map — so a map upload never fails because
     /// the *preference* couldn't be persisted, it just may not come up first.
-    pub fn save_selected_map(&mut self, name: &ShortFileName) -> bool {
+    fn save_selected_map(&mut self, name: &ShortFileName) -> bool {
         let mut text: String<16> = String::new();
         for &b in name.base_name().iter().take_while(|&&b| b != b' ') {
             let _ = text.push(b as char);
@@ -2403,7 +2409,7 @@ impl Storage {
     }
 
     /// The loaded map's display name (T8 item 6) — its filename stem, or `""` before a map opens.
-    pub fn map_name(&self) -> &str {
+    fn map_name(&self) -> &str {
         self.map_name.as_str()
     }
 
@@ -2508,7 +2514,7 @@ impl Storage {
     /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
     /// route/track operations. Extent-mapped direct block reads when the table built (#500), the
     /// manager's seek path otherwise.
-    pub fn map_source(&self) -> Option<MapSource<'_>> {
+    fn map_source(&self) -> Option<MapSource<'_>> {
         if let Some(set) = &self.open_set {
             let core = set.shards.get(set.core_index as usize)?;
             return Some(MapSource::Set(core.source));
@@ -3041,7 +3047,7 @@ impl Storage {
     /// Volume sets are skipped: `MP{id}.OBM` and `MS{id}.OBS` (`OBCA_Spec.md` §5.2) are separate
     /// namespaces with separate allocators, so a set on the card must not push this counter — the
     /// two conventions coexist precisely because neither constrains the other.
-    pub fn next_map_id_from_scan(&self) -> u16 {
+    fn next_map_id_from_scan(&self) -> u16 {
         let mut next: u32 = 0;
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
         // The scan's unlistable count is the fault card's business, not the allocator's: a torn
@@ -3060,7 +3066,7 @@ impl Storage {
     /// for the held-back magic, so the file is length-correct from the first appended byte and inert
     /// from the moment it exists. `false` = the card refused; the caller answers `error` and no file
     /// is left behind that a scan would show.
-    pub fn map_upload_begin(&mut self, id: u16) -> bool {
+    fn map_upload_begin(&mut self, id: u16) -> bool {
         self.upload_close();
         let Some(name) = map_file_name_for(id) else { return false };
         // `name_is_free` is the same discipline as `fresh_upload_name`: only a confirmed `NotFound`
@@ -3101,7 +3107,7 @@ impl Storage {
     /// direct analogue of the route path's OBCR parse and the fwImage path's OBCU decode, and it
     /// rejects a map built for another OBCM version too: the device would only reach the *MAP
     /// UNREADABLE* fault screen on the next boot, which is a much worse way to learn it.
-    pub fn map_upload_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
+    fn map_upload_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
         self.upload_close();
         let name = map_file_name_for(id)?;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadWriteAppend).ok()?;
@@ -3146,7 +3152,7 @@ impl Storage {
     /// power cycle, on the device least able to spare it. Deleting is cheap by comparison — a FAT
     /// chain walk, not a rewrite — so the sweep is left to do only what nothing running can: clean up
     /// after a power cut.
-    pub fn map_upload_abort(&mut self, id: u16) {
+    fn map_upload_abort(&mut self, id: u16) {
         self.upload_close();
         let Some(name) = map_file_name_for(id) else { return };
         // Never delete a *committed* map: `map_upload_commit` may have already patched the magic in
@@ -3170,7 +3176,7 @@ impl Storage {
     /// `is_aborted_commit` sweep — without it an interrupted transfer's hundreds of megabytes would
     /// sit on the card forever, invisible to every catalog that could explain them. Returns how many
     /// were reclaimed.
-    pub fn sweep_aborted_maps(&mut self) -> usize {
+    fn sweep_aborted_maps(&mut self) -> usize {
         let mut candidates: Vec<ShortFileName, MAX_MAPS> = Vec::new();
         self.iter_dir_lfn(self.root, |e, long| {
             if is_map_entry(e, long) && uploaded_map_id(&e.name).is_some() {
@@ -3278,7 +3284,7 @@ impl Storage {
     /// would hand back an id a card holding `MS999` is *already using* — and the caller clears an id
     /// before it writes to it, which would delete a good map. `1000` has no 8.3 name, so it can only
     /// ever be refused.
-    pub fn next_set_id_from_scan(&self) -> u16 {
+    fn next_set_id_from_scan(&self) -> u16 {
         let mut next: u32 = 0;
         self.iter_dir_lfn(self.root, |e, _| {
             let short = short_name_bytes(&e.name);
@@ -3296,7 +3302,7 @@ impl Storage {
     /// zero-magic `MS{id}.OBS` token that marks the set as in-flight.
     ///
     /// `false` = the card refused; the caller answers `error` and the session never opens.
-    pub fn set_upload_begin(&mut self, id: u16) -> bool {
+    fn set_upload_begin(&mut self, id: u16) -> bool {
         self.upload_close();
         self.delete_set(id);
         let Some(name) = obc_formats::obcs::manifest_name(id) else { return false };
@@ -3328,7 +3334,7 @@ impl Storage {
     /// id belongs to that session — [`set_upload_begin`] cleared the id before the first byte, so
     /// the only file this can truncate is one this same upload wrote (a re-sent shard, which §5.4's
     /// independent files make the cheapest possible recovery).
-    pub fn set_shard_begin(&mut self, id: u16, index: usize) -> bool {
+    fn set_shard_begin(&mut self, id: u16, index: usize) -> bool {
         self.upload_close();
         let Some(name) = obc_formats::obcs::shard_name(id, index) else { return false };
         match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
@@ -3355,7 +3361,7 @@ impl Storage {
     /// A failed shard does not tear the set down: shards are independent files, so the host may
     /// simply re-send this one. What it must not leave is a zero-magic decoy the manifest commit
     /// would then have to reason about — the set's own token is the only in-flight marker.
-    pub fn set_shard_commit(&mut self, id: u16, index: usize, magic: [u8; 4]) -> Option<u32> {
+    fn set_shard_commit(&mut self, id: u16, index: usize, magic: [u8; 4]) -> Option<u32> {
         self.upload_close();
         let derived = obc_formats::obcs::shard_name(id, index)?;
         let name = ShortFileName::create_from_str(derived.as_str()).ok()?;
@@ -3390,7 +3396,7 @@ impl Storage {
     /// The name is derived, not indexed: there is at most one terrain shard per set, and
     /// `MS{id}.OBD` is exactly the `OBCT_Spec.md` §4.6 sidecar of `MS{id}.OBS`, which is what lets
     /// the read side resolve it by the sidecar convention without consulting the manifest at all.
-    pub fn set_terrain_begin(&mut self, id: u16) -> bool {
+    fn set_terrain_begin(&mut self, id: u16) -> bool {
         self.upload_close();
         let Some(name) = obc_formats::obcs::terrain_name(id) else { return false };
         match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
@@ -3419,7 +3425,7 @@ impl Storage {
     /// zero-magic decoy the manifest commit would then have to reason about. What differs is the
     /// format it is checked against — an OBCT container, not an OBCM file — and that is the whole
     /// reason terrain needed its own object type rather than a shard index (#1044).
-    pub fn set_terrain_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
+    fn set_terrain_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
         self.upload_close();
         let derived = obc_formats::obcs::terrain_name(id)?;
         let name = ShortFileName::create_from_str(derived.as_str()).ok()?;
@@ -3449,7 +3455,7 @@ impl Storage {
 
     /// Drop the in-flight terrain shard: close the streaming handle and delete just that
     /// `MS{id}.OBD`. The set's session survives, exactly as it does for a failed OBCM shard.
-    pub fn set_terrain_discard(&mut self, id: u16) {
+    fn set_terrain_discard(&mut self, id: u16) {
         self.upload_close();
         let Some(derived) = obc_formats::obcs::terrain_name(id) else { return };
         let Ok(name) = ShortFileName::create_from_str(derived.as_str()) else { return };
@@ -3467,7 +3473,7 @@ impl Storage {
     /// zero bytes. The manifest is the **last** file of the set (§5.4), and it is written into the
     /// same name the token already occupies, so the set is never without its in-flight marker —
     /// not even for the width of one create.
-    pub fn set_manifest_begin(&mut self, id: u16) -> bool {
+    fn set_manifest_begin(&mut self, id: u16) -> bool {
         self.upload_close();
         let Some(name) = obc_formats::obcs::manifest_name(id) else { return false };
         match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
@@ -3499,7 +3505,7 @@ impl Storage {
     /// manifest that does not describe the files beside it is not a map, and leaving the shards
     /// would leave gigabytes no surface can explain.
     #[inline(never)]
-    pub fn set_manifest_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u64> {
+    fn set_manifest_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u64> {
         self.upload_close();
         let outcome = self.validate_committed_manifest(id, magic);
         let Some(total) = outcome else {
@@ -3584,7 +3590,7 @@ impl Storage {
     /// Drop one in-flight shard: close the streaming handle and delete just that
     /// `MS{id}S{kk}.OBM`. The set's session survives — a shard that failed validation is one file the
     /// host can re-send, and the gigabytes already committed beside it are still good.
-    pub fn set_shard_discard(&mut self, id: u16, index: usize) {
+    fn set_shard_discard(&mut self, id: u16, index: usize) {
         self.upload_close();
         let Some(derived) = obc_formats::obcs::shard_name(id, index) else { return };
         let Ok(name) = ShortFileName::create_from_str(derived.as_str()) else { return };
@@ -3606,7 +3612,7 @@ impl Storage {
     /// eventually. Waiting is as wrong here as it is for a single map, and worse by two orders of
     /// magnitude: a set is *gigabytes*, and a retry mints a fresh id only if this one is still
     /// occupied, so leaving the corpse would strand the card's whole free space in a few attempts.
-    pub fn set_upload_abort(&mut self, id: u16) {
+    fn set_upload_abort(&mut self, id: u16) {
         self.upload_close();
         let removed = self.delete_set(id);
         defmt::info!("SD: abandoned volume set MS{=u16} reclaimed ({=usize} files)", id, removed);
@@ -3651,7 +3657,7 @@ impl Storage {
     /// caps it at 1,000, so 125 bytes covers every set that can exist), and every name is derivable
     /// from an id, so nothing has to be remembered to be reclaimed.
     #[inline(never)]
-    pub fn sweep_aborted_sets(&mut self) -> usize {
+    fn sweep_aborted_sets(&mut self) -> usize {
         let mut manifests = SetIdBits::new();
         let mut shard_ids = SetIdBits::new();
         self.iter_dir_lfn(self.root, |e, long| {

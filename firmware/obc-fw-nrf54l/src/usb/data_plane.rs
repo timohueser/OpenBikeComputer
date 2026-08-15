@@ -410,7 +410,7 @@ pub(crate) async fn run(
         {
             let mut guard = shared.lock().await;
             store.borrow_mut().link_reset(&mut guard, crate::link::gate_owner(crate::link::Transport::Usb));
-            store.borrow_mut().set_upload_abort(&mut guard);
+            store.borrow_mut().map_transfers(&mut guard).abort_set();
         }
         super::release_stage(); // the arena's staging arm, if this teardown interrupted a transfer
         TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
@@ -518,10 +518,10 @@ async fn run_upload(
                 }
                 session.map(|_| 0)
             }
-            MapTarget::Map => store.borrow_mut().map_upload_begin(&mut guard),
-            MapTarget::Shard(part) => store.borrow_mut().set_shard_begin(&mut guard, part),
-            MapTarget::Terrain => store.borrow_mut().set_terrain_begin(&mut guard),
-            MapTarget::Manifest => store.borrow_mut().set_manifest_begin(&mut guard),
+            MapTarget::Map => store.borrow_mut().map_transfers(&mut guard).map_begin(),
+            MapTarget::Shard(part) => store.borrow_mut().map_transfers(&mut guard).shard_begin(part),
+            MapTarget::Terrain => store.borrow_mut().map_transfers(&mut guard).terrain_begin(),
+            MapTarget::Manifest => store.borrow_mut().map_transfers(&mut guard).manifest_begin(),
         };
         match opened {
             Some(id) => {
@@ -734,7 +734,7 @@ async fn run_upload(
             MapTarget::Map => {
                 let map_id = upload_key.expect_err("map id");
                 let status = match held.take() {
-                    Some(magic) => st.map_upload_finish(&mut guard, &rx, map_id, magic),
+                    Some(magic) => st.map_transfers(&mut guard).map_finish(&rx, map_id, magic),
                     None => TransferStatus::Error,
                 };
                 (map_id, status)
@@ -745,7 +745,7 @@ async fn run_upload(
             MapTarget::Shard(part) => {
                 let map_id = upload_key.expect_err("set id");
                 let status = match held.take() {
-                    Some(magic) => st.set_shard_finish(&mut guard, &rx, map_id, part, magic),
+                    Some(magic) => st.map_transfers(&mut guard).shard_finish(&rx, map_id, part, magic),
                     None => TransferStatus::Error,
                 };
                 (part.encode(), status)
@@ -756,7 +756,7 @@ async fn run_upload(
             MapTarget::Terrain => {
                 let map_id = upload_key.expect_err("set id");
                 let status = match held.take() {
-                    Some(magic) => st.set_terrain_finish(&mut guard, &rx, map_id, magic),
+                    Some(magic) => st.map_transfers(&mut guard).terrain_finish(&rx, map_id, magic),
                     None => TransferStatus::Error,
                 };
                 (map_id, status)
@@ -766,7 +766,7 @@ async fn run_upload(
             MapTarget::Manifest => {
                 let map_id = upload_key.expect_err("set id");
                 let status = match held.take() {
-                    Some(magic) => st.set_manifest_finish(&mut guard, &rx, map_id, magic),
+                    Some(magic) => st.map_transfers(&mut guard).manifest_finish(&rx, map_id, magic),
                     None => TransferStatus::Error,
                 };
                 (map_id, status)
@@ -863,13 +863,11 @@ fn discard_upload(
         MapTarget::Object => store.upload_discard(shared, upload_key.expect("object session")),
         MapTarget::Map => {
             crate::link::map_transfer_ended(None);
-            if let Some(storage) = &mut shared.storage {
-                storage.map_upload_abort(upload_key.expect_err("map id"));
-            }
+            store.map_transfers(shared).abort_map(upload_key.expect_err("map id"));
         }
         MapTarget::Shard(_) | MapTarget::Terrain | MapTarget::Manifest => {
             crate::link::map_transfer_ended(None);
-            store.set_upload_abort(shared);
+            store.map_transfers(shared).abort_set();
         }
     }
 }
