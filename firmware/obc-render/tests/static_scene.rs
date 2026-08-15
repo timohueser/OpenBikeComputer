@@ -519,7 +519,6 @@ fn saturated_fallback_omits_a_hostile_pass_b_feature_without_stealing_later_capa
         assert_eq!(stats.points_drawn, (MAX_SPANS - 1) * 2);
         assert_eq!(stats.features_dropped, 1);
         assert_eq!(stats.malformed_features, 1);
-        assert_eq!(stats.collect_passes, 3);
         assert_eq!(stats.feature_decode_capacity_drops, 0);
         assert_eq!(target.count(Rgb888::RED), 0);
         assert!(target.count(Rgb888::BLUE) > 0);
@@ -538,7 +537,6 @@ fn renders_static_scene_without_reader_or_map_bytes() {
     assert_eq!(stats.lod, 0);
     assert_eq!(stats.features_tried, 1);
     assert_eq!(stats.features_drawn, 1);
-    assert_eq!(stats.collect_passes, 1);
     assert_eq!(stats.points_drawn, 4);
     assert!(target.count(Rgb888::RED) > 200);
 }

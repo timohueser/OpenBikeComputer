@@ -313,9 +313,6 @@ pub struct RenderStats {
     /// Quadtree leaves overlapping the viewport this frame (uncapped). Counted by the successful
     /// direct source walk or the stub-select fallback's pass A (see [`collect`](crate::collect)).
     pub chunks_visited: usize,
-    /// Number of source walks used by collection: `1` for the optimistic direct path and `3` when
-    /// that path overflowed and restarted through the two-pass priority-preserving fallback.
-    pub collect_passes: u8,
     pub features_tried: usize,
     pub features_drawn: usize,
     /// Complete features rejected by the fixed span/point/ring frame budgets.
@@ -380,12 +377,6 @@ pub struct RenderStats {
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
-    /// Diagnostic-only wall time spent inside the line and polygon span rasterizers. These are
-    /// subsets of `draw_us`; clear and draw-loop overhead remain outside both counters.
-    #[cfg(feature = "kind-profile")]
-    pub line_draw_us: u32,
-    #[cfg(feature = "kind-profile")]
-    pub poly_draw_us: u32,
     /// Rain overlay accounting (WX10): tiles decoded through the per-frame cache (== the source's
     /// own fetch count; each visible tile at most once per frame), pixels actually painted, and the
     /// overlay's wall time in µs (inside `draw_us`, timed only on the rain-lending path).
@@ -731,8 +722,6 @@ impl RenderScratch {
                 color_fn,
                 wscale,
                 &outlined_mask,
-                clock,
-                stats,
                 &spans[..rain_at],
             );
             let t_rain = clock.now_us();
@@ -751,20 +740,7 @@ impl RenderScratch {
         };
 
         // (1) Everything below the road band, exactly as the base pass.
-        Self::draw_spans(
-            frame,
-            draw,
-            target,
-            scene,
-            is_finest,
-            vp,
-            color_fn,
-            wscale,
-            &outlined_mask,
-            clock,
-            stats,
-            &spans[..split],
-        );
+        Self::draw_spans(frame, draw, target, scene, is_finest, vp, color_fn, wscale, &outlined_mask, &spans[..split]);
 
         // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
         // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
@@ -803,20 +779,7 @@ impl RenderScratch {
         }
 
         // (3) The road band and above, exactly as the base pass, on top of the casings.
-        Self::draw_spans(
-            frame,
-            draw,
-            target,
-            scene,
-            is_finest,
-            vp,
-            color_fn,
-            wscale,
-            &outlined_mask,
-            clock,
-            stats,
-            &spans[split..],
-        );
+        Self::draw_spans(frame, draw, target, scene, is_finest, vp, color_fn, wscale, &outlined_mask, &spans[split..]);
     }
 
     /// Draw a contiguous, painter-ordered `spans` slice: polygons even-odd fill, lines the view-clipped
@@ -851,8 +814,6 @@ impl RenderScratch {
         color_fn: &F,
         wscale: f32,
         outlined_mask: &[u32; 8],
-        clock: &dyn Clock,
-        stats: &mut RenderStats,
         spans: &[Span],
     ) where
         D: DrawTarget,
@@ -865,20 +826,8 @@ impl RenderScratch {
         let any_outlined = is_finest && outlined_mask.iter().any(|&w| w != 0);
         if !any_outlined {
             for span in spans {
-                #[cfg(feature = "kind-profile")]
-                let t_span = clock.now_us();
                 Self::draw_span(frame, draw, target, scene, vp, color_fn, wscale, span);
-                #[cfg(feature = "kind-profile")]
-                {
-                    let elapsed = clock.now_us().saturating_sub(t_span) as u32;
-                    match span.kind {
-                        Kind::Line => stats.line_draw_us = stats.line_draw_us.saturating_add(elapsed),
-                        Kind::Polygon => stats.poly_draw_us = stats.poly_draw_us.saturating_add(elapsed),
-                    }
-                }
             }
-            #[cfg(not(feature = "kind-profile"))]
-            let _ = (clock, stats);
             return;
         }
 
@@ -896,17 +845,7 @@ impl RenderScratch {
             // pass 1 — every span exactly as the base pass, tracking whether this group needs pass 2.
             let mut group_has_outline = false;
             for span in group {
-                #[cfg(feature = "kind-profile")]
-                let t_span = clock.now_us();
                 Self::draw_span(frame, draw, target, scene, vp, color_fn, wscale, span);
-                #[cfg(feature = "kind-profile")]
-                {
-                    let elapsed = clock.now_us().saturating_sub(t_span) as u32;
-                    match span.kind {
-                        Kind::Line => stats.line_draw_us = stats.line_draw_us.saturating_add(elapsed),
-                        Kind::Polygon => stats.poly_draw_us = stats.poly_draw_us.saturating_add(elapsed),
-                    }
-                }
                 group_has_outline |= span.kind == Kind::Polygon && is_outlined(span.style_id);
             }
             if !group_has_outline {

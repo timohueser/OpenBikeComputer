@@ -258,7 +258,6 @@ impl FrameScratch {
 
         let mut direct_stats = *stats;
         if let Some(drawn) = self.try_collect_direct(scene, lod, viewport, dec_points, &vis_mask, &mut direct_stats) {
-            direct_stats.collect_passes = 1;
             *stats = direct_stats;
             self.finish_collect(drawn, drawn, drawn, stats);
             return;
@@ -274,7 +273,6 @@ impl FrameScratch {
         let candidates = self.collect_stubs(scene, lod, viewport, dec_points, &vis_mask, stats);
         let winners = self.select();
         let drawn = self.decode_winners(scene, lod, viewport, dec_points, winners, stats);
-        stats.collect_passes = 3;
 
         self.finish_collect(candidates, winners, drawn, stats);
     }

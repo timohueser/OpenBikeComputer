@@ -112,23 +112,6 @@ cargo run -p obc-bench --release -- --write-hashes host/obc-bench/hashes.txt
 One-off runs against a real map:
 `cargo run -p obc-bench --release -- --map freiburg.obcm --mpp 4 --heading 35`.
 
-### On-device far-zoom profiler
-
-The board-only `farzoom-bench` feature boots with synthetic location input, waits eight seconds for
-RTT to attach, then forces 30 map frames at each of 20, 50, 100, 200, and 400 m/px. Each `farzoom
-bench:` line splits collection, painter sorting, line/polygon rasterization, and remaining overlay
-time; the adjacent `map SD bench:` and `map frame:` lines provide physical-card and display-push
-timings.
-
-```sh
-cd firmware/obc-fw-nrf54l
-cargo run --release --features farzoom-bench
-```
-
-This is a diagnostic image, not a shipping configuration. Record the BLE radio state from RTT with
-the results: radio activity can materially change SD reliability and therefore invalidate a timing
-comparison.
-
 The frozen firmware resource numbers, dependency-direction contract, benchmark
 reference host, and repeatable on-device capture procedure live in
 [`docs/ARCHITECTURE_RESOURCE_BASELINE.md`](docs/ARCHITECTURE_RESOURCE_BASELINE.md). Read it
