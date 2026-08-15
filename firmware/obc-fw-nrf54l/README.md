@@ -338,13 +338,9 @@ builds on it:
   MPSL's recommended calibration (4 s cadence, ±500 ppm class) — solid, negotiates 2M PHY.
   Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
   before MPSL init — a filed follow-up.
-- **Interrupts/peripherals MPSL+SDC claim.** Vectors: `RADIO_0`, `TIMER10`, `GRTC_3` (high-prio),
-  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why the firmware's high-priority
-  `InterruptExecutor` (`src/planes.rs`) sits on **SWI01** (every build; the full priority ladder
-  is in `main.rs`'s module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
-  (LL crypto RNG), and a raft of PPI/PPIB channels (grouped in `main.rs`, consumed by
-  `ble::run`). The HF **crystal** is an MPSL hard requirement (`HfclkSource::ExternalXtal`) —
-  the `ble` build's boot config sets it; non-BLE builds keep the internal RC.
+- **MPSL/SDC hardware.** `board.rs` owns the five production MPSL vectors and 31 MPSL/SDC
+  timing/PPI claims. `main.rs` intentionally retains CRACEN so store-epoch minting can reborrow it
+  before `ble::run` consumes it as the link layer's crypto RNG; `ble::run` owns runtime/stack policy.
 - **RAM.** The map plane compiles into every build now (#270), so on the `ble` build the map and
   BLE stack are resident together. The budget assert in `main.rs` sums the map-plane residents
   (`MAP_RESIDENT`) and the BLE stack's (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this

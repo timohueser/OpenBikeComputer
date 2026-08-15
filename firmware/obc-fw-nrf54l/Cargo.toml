@@ -125,7 +125,8 @@ embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54lm20-app-s", "tim
 # embassy-executor 0.10. `executor-thread`
 # is the thread-mode executor `#[embassy_executor::main]` runs on; `executor-interrupt` adds the
 # high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (#126 — pended from
-# the SWI00 vector, see the module doc). `platform-cortex-m` for the Cortex-M arch backend.
+# SWI01; see `src/board.rs`'s interrupt ladder and `src/input_plane.rs`'s executor contract).
+# `platform-cortex-m` supplies the Cortex-M architecture backend.
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 # Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
 # high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared SD +
