@@ -174,15 +174,16 @@ impl ByteSource for FailNthReadAt<'_> {
 }
 
 #[test]
-fn transient_cased_winner_refetch_failure_publishes_no_empty_span() {
-    // A chunk one byte past the cache-slot size is deliberately uncached, so pass A reads it once
-    // and pass B must read it again. Fail exactly that second read. Before transactional span
-    // publication this left a zero-ring cased Line span whose casing pass indexed ring_lens[0].
+fn unsaturated_cased_feature_needs_no_failure_prone_refetch() {
+    // A chunk one byte past the cache-slot size is deliberately uncached. The optimistic collector
+    // must still read it only once: fail a hypothetical second read and prove the complete cased
+    // feature was already published. (The saturated fallback's transactional pass-B publication is
+    // covered by the collector saturation fixtures.)
     //
     // v11 chunks are tight, so the *chunk* has to exceed the slot — a large declared `chunk_size` no
     // longer makes a small chunk uncached. One cased line with 1025 vertices does it (7-byte compact
     // header + 1024 × 4 int16-delta bytes = 4103), and keeping it to a single feature keeps the
-    // failed pass-B refetch to the single read the assertion counts.
+    // hypothetical second read unambiguous.
     const CHUNK_SIZE: usize = 8192;
     let zigzag: Vec<(i16, i16)> = (0..1024).map(|i| if i % 2 == 0 { (20, 0) } else { (-20, 0) }).collect();
     let chunk = pack_line16(1, 100, 100, &zigzag);
@@ -209,9 +210,9 @@ fn transient_cased_winner_refetch_failure_publishes_no_empty_span() {
     let reader = Reader::new(&src, &tables, &cache);
 
     let (stats, buf) = render(&reader);
-    assert_eq!(stats, RenderStatsView { drawn: 0, capacity: 0, malformed: 0, structure: 0, reads: 1 });
-    assert_eq!(buf.count(Rgb888::new(255, 0, 0)), 0);
-    assert_eq!(buf.count(Rgb888::new(0, 255, 0)), 0);
+    assert_eq!(stats, RenderStatsView { drawn: 1, capacity: 0, malformed: 0, structure: 0, reads: 0 });
+    assert!(buf.count(Rgb888::new(255, 0, 0)) > 0);
+    assert!(buf.count(Rgb888::new(0, 255, 0)) > 0);
 }
 
 struct FailSecondIndexWalk<'a> {
