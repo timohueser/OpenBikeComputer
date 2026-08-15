@@ -1781,11 +1781,11 @@ pub(crate) async fn run_app(
             // Not gated on rendering — the matcher in `tick` needs the index on every fresh fix.
             if runtime.route_index_needs_rebuild(active) {
                 match active {
-                    Some(_) => {
+                    Some(active_route) => {
                         // In place into the resident slot — see its declaration; a by-value build here
                         // is the stack-overflow footgun.
                         if storage.as_ref().is_some_and(|s| s.build_route_index_into(&mut route_index)) {
-                            runtime.route_index_built(active); // cached — no rebuild until the route changes
+                            runtime.route_index_built(active_route); // cached until the route changes
                         } else {
                             // Transient SD glitch: leave the key mismatched so every frame retries, hiding
                             // the route this frame rather than the whole ride.
@@ -1802,7 +1802,7 @@ pub(crate) async fn run_app(
             // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
             // on a fresh fix, the renderer on a redraw frame.
             let route_src = storage.as_ref().and_then(|s| s.route_source());
-            let route = match (runtime.route_index_ready().then_some(&route_index), route_src.as_ref()) {
+            let route = match (runtime.route_index_ready(active).then_some(&route_index), route_src.as_ref()) {
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
