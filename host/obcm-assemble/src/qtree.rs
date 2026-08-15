@@ -221,19 +221,10 @@ pub fn flatten<T: Point>(
     bin_pack: bool,
     pack_one: &dyn Fn(&T, &mut Vec<u8>),
 ) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
-    let mut nodes: Vec<&Tree<T>> = vec![root];
-    let mut first_child: Vec<usize> = vec![0];
-    let mut i = 0;
-    while i < nodes.len() {
-        if let Tree::Branch(children) = nodes[i] {
-            first_child[i] = nodes.len();
-            for c in children.iter() {
-                nodes.push(c);
-                first_child.push(0);
-            }
-        }
-        i += 1;
-    }
+    let (nodes, first_child) = obc_tree_walk::breadth_first(root, |node| match node {
+        Tree::Leaf(_) => None,
+        Tree::Branch(children) => Some(children),
+    });
 
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut bins: Vec<Vec<u8>> = Vec::new();

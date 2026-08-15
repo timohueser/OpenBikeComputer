@@ -6,13 +6,16 @@
 //! cell, a co-baked border cell with two sources, a nested region, a skin with a
 //! preview, and a terrain artifact class on its own revision track.
 
+use std::collections::BTreeSet;
 use std::fs;
 
 use serde_json::Value;
 
 use super::cells::{KnownEmptyState, CELL_EXT, CELL_SIDECAR_EXT};
 use super::regions::{REGIONS_DIR, REGION_DOC, REGION_POLY};
-use super::schema::{CELL_ID_PATTERN, ID_PATTERN, PINNED_URL_PATTERN, SHA256_PATTERN, TIMESTAMP_PATTERN};
+use super::schema::{
+    read_schema_doc, skin_styles, CELL_ID_PATTERN, ID_PATTERN, PINNED_URL_PATTERN, SHA256_PATTERN, TIMESTAMP_PATTERN,
+};
 use super::terrain::{TERRAIN_DOC, TERRAIN_EXT, TERRAIN_SIDECAR_EXT};
 use super::*;
 

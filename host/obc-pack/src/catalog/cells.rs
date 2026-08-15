@@ -9,11 +9,13 @@ use obc_formats::obcm::VERSION as OBCM_VERSION;
 
 use crate::grid::CellId;
 
+use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
+use super::model::{BandEntry, CellEntry, CellSource, KnownEmptyRun};
+use super::schema::SchemaDoc;
+use super::validate::{parse_strict_id, validate_date, validate_region_id, validate_timestamp};
 use super::{
-    content_addressed_rel_path, file_name, hash_file, inclusive_run_count, parse_strict_id, read_obcm_header,
-    rel_url_path, sorted_entries, validate_date, validate_region_id, validate_timestamp, BandEntry, CellEntry,
-    CellSource, KnownEmptyRun, PinnedArtifact, SchemaDoc, CELLS_DIR, CELL_INDEX_NAME, KNOWN_EMPTY_STATE_NAME,
-    SCHEMA_DOC, TERRAIN_DIR,
+    content_addressed_rel_path, file_name, hash_file, read_obcm_header, rel_url_path, sorted_entries, PinnedArtifact,
+    CELLS_DIR, CELL_INDEX_NAME, KNOWN_EMPTY_STATE_NAME, SCHEMA_DOC, TERRAIN_DIR,
 };
 
 pub(super) const CELL_EXT: &str = ".obcm";
@@ -47,39 +49,17 @@ pub(super) struct KnownEmptyState {
     pub(super) known_empty: Vec<KnownEmptyRun>,
 }
 
-/// Lookup used while validating region satellites. A present cell is either a
-/// downloadable artifact or a verified-empty grid square; only the former has
-/// bytes or can be partial.
-pub(super) struct BandIndex<'a> {
-    cells: BTreeMap<String, &'a CellEntry>,
-    empty_by_row: BTreeMap<i64, Vec<(i64, i64)>>,
-}
+pub(super) type BandIndex<'a> = CoverageIndex<'a, CellEntry>;
+pub(super) type IndexedCell<'a> = IndexedCoverage<'a, CellEntry>;
 
-pub(super) enum IndexedCell<'a> {
-    Artifact(&'a CellEntry),
-    KnownEmpty,
-}
-
-impl<'a> BandIndex<'a> {
-    pub(super) fn new(cells: &'a [CellEntry], known_empty: &[KnownEmptyRun]) -> Result<Self, String> {
-        let mut empty_by_row: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
-        for run in known_empty {
-            let start = parse_strict_id(&run.start)?;
-            let end = parse_strict_id(&run.end)?;
-            empty_by_row.entry(start.i).or_default().push((start.j, end.j));
-        }
-        Ok(Self { cells: cells.iter().map(|cell| (cell.id.clone(), cell)).collect(), empty_by_row })
-    }
-
-    pub(super) fn get(&self, id: &str) -> Result<Option<IndexedCell<'_>>, String> {
-        if let Some(cell) = self.cells.get(id) {
-            return Ok(Some(IndexedCell::Artifact(cell)));
-        }
-        let cell = parse_strict_id(id)?;
-        let Some(runs) = self.empty_by_row.get(&cell.i) else { return Ok(None) };
-        let at = runs.partition_point(|(_, end)| *end < cell.j);
-        Ok(runs.get(at).filter(|(start, end)| *start <= cell.j && cell.j <= *end).map(|_| IndexedCell::KnownEmpty))
-    }
+pub(super) fn build_band_index<'a>(
+    cells: &'a [CellEntry],
+    known_empty: &[KnownEmptyRun],
+) -> Result<BandIndex<'a>, String> {
+    CoverageIndex::new(
+        cells.iter().map(|cell| (cell.id.as_str(), cell)),
+        known_empty.iter().map(|run| (run.start.as_str(), run.end.as_str())),
+    )
 }
 
 /// The facts a cell's bytes cannot state. Band is **not** among them: band membership
@@ -119,7 +99,7 @@ pub(super) fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Res
         let name = file_name(&band_dir)?;
         if name.starts_with('.') || name == TERRAIN_DIR {
             // `cells/terrain/` is the other artifact class, on its own revision track
-            // and read by `read_terrain`. It is deliberately not a band (§13.1).
+            // and owned by the terrain scanner. It is deliberately not a band (§13.1).
             continue;
         }
         if !band_dir.is_dir() {
@@ -438,7 +418,7 @@ fn reject_known_empty_artifact_overlap(
     entries: &[CellEntry],
     runs: &[KnownEmptyRun],
 ) -> Result<(), String> {
-    let index = BandIndex::new(&[], runs)?;
+    let index = build_band_index(&[], runs)?;
     for entry in entries {
         if matches!(index.get(&entry.id)?, Some(IndexedCell::KnownEmpty)) {
             return Err(format!(
