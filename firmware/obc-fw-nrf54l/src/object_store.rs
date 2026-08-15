@@ -48,6 +48,7 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
+use obc_storage::object_id;
 use obc_storage::weather as weather_store;
 
 use crate::sd::Storage;
@@ -545,7 +546,7 @@ impl ObjectStore {
         }
         // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
         if let Some(floor) = shared.settings.load_trip_mark() {
-            self.next_trip_id = self.next_trip_id.max(floor);
+            object_id::observe_floor(&mut self.next_trip_id, floor);
         }
     }
 
@@ -658,7 +659,7 @@ impl ObjectStore {
                 Some((byte_len, _meta, _stage_count)) => {
                     let id = match crate::sd::uploaded_trip_id(name) {
                         Some(id) => {
-                            self.next_trip_id = self.next_trip_id.max(id.saturating_add(1));
+                            object_id::observe_committed(&mut self.next_trip_id, id);
                             id
                         }
                         None => match storage.sideload_id(name) {
@@ -1030,7 +1031,7 @@ impl ObjectStore {
         shared: &SharedStore,
         desc: &TransferControl,
     ) -> Result<Receiver, TransferStatus> {
-        let catalog_full = self.trips.is_full() || self.next_trip_id >= SIDELOAD_ID_BASE;
+        let catalog_full = self.trips.is_full() || object_id::candidate(self.next_trip_id, SIDELOAD_ID_BASE).is_none();
         let id_known = self.trip_index(desc.object_id).is_some();
         if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, id_known, catalog_full) {
             return Err(status);
