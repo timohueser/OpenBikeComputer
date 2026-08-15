@@ -130,6 +130,9 @@ impl<'a> MapTransfers<'a> {
     }
 
     pub(crate) fn terrain_open(&self, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        if self.storage.is_none() {
+            return Err(TransferStatus::Error);
+        }
         if desc.object_id != TransferControl::NEW_OBJECT_ID {
             return Err(TransferStatus::NotFound);
         }
