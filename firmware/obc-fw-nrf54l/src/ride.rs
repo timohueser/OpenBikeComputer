@@ -20,7 +20,7 @@ use embedded_graphics::prelude::{Point, Size};
 use embedded_graphics::primitives::Rectangle;
 // `SettingsStore` (the load/save trait) is the ride loop's seam over the RRAM store; the `ble`
 // build's store lives inside `object_store` (which imports it itself).
-use obc_app::App;
+use obc_app::{App, RideRuntime};
 use obc_ports::{InputClock, RideClock, Sensors, SettingsStore, TrackSink};
 // The instance-owned sensor hub's control handle + GPS power enum (#808): the ride loop sets the
 // rate/power latches the `sensors::sensor_task` awaits. Real-sensor build only.
@@ -720,14 +720,13 @@ pub(crate) async fn run_app(
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
-    // - `prev_active`/`prev_session` gate the SD reconcile on actual change;
-    // - `route_index`/`index_route` cache the active route's chunk index, rebuilt only on a route change;
+    // - `runtime` owns the route/session reconcile edges and the active route-index key;
+    // - `route_index` is the placement-sensitive resident chunk-index slot itself;
     // - `pending_map_redraw` re-arms a redraw a transient SD glitch couldn't service;
     // - `last_telem*` throttle the host telemetry (debug-uart only).
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut prev_route: Option<usize> = None;
-    let mut prev_active: Option<usize> = None;
-    let mut prev_session: Option<u32> = None;
+    let mut runtime = RideRuntime::new();
     // The in-flight route plan's bookkeeping (#499): `Some` while a plan is being stepped, one
     // bounded step per pass. Guards the planner slot's initialization.
     #[cfg(has_nav)]
@@ -750,8 +749,6 @@ pub(crate) async fn run_app(
     // the pass's deepest point — which is what overflowed the 44 KB main stack on the post-upload
     // rescan (STKOF HardFault, 2026-07-12). `build_route_index_into` fills it in place.
     let mut route_index: RouteIndex = RouteIndex::empty();
-    let mut route_index_valid = false;
-    let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
@@ -1436,8 +1433,7 @@ pub(crate) async fn run_app(
                     // and re-feed the folders (resolved against the freshly-scanned route catalog above).
                     load_trips(s, app);
                 }
-                prev_active = None; // force reconcile_route/track to re-run against the new indexing
-                index_route = None; // and the chunk index to rebuild off the freshly-opened file
+                runtime.invalidate_route(); // reopen geometry and rebuild the index from the fresh scan
             }
 
             // ── On-device route delete (epic #447, P6), on the hold-to-delete edge only ──
@@ -1619,8 +1615,7 @@ pub(crate) async fn run_app(
                             let run = nav_run.take().expect("just borrowed it");
                             nav_finish(s, app, &mut bufs, run, step, now);
                             search_ended = true;
-                            prev_active = None; // reopen geometry / rebuild the index off the fresh scan
-                            index_route = None;
+                            runtime.invalidate_route(); // reopen geometry / rebuild the index off the fresh scan
                         }
                     }
                 }
@@ -1763,7 +1758,7 @@ pub(crate) async fn run_app(
             // top; reading it here is equivalent to the old peek-then-take (a drained action is consumed
             // exactly once, this pass, only when the reconcile runs).
             let session = app.activity.session();
-            if active != prev_active || session != prev_session || host_pass.finish.is_some() {
+            if runtime.storage_reconcile_due(active, session, host_pass.finish.is_some()) {
                 let action = host_pass.finish;
                 let mut name: heapless::String<64> = heapless::String::new();
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
@@ -1778,31 +1773,28 @@ pub(crate) async fn run_app(
                     s.reconcile_route(active);
                     s.reconcile_track(action, session, &name, stats.as_ref(), settings_store);
                 }
-                prev_active = active;
-                prev_session = session;
+                runtime.storage_reconciled(active, session);
             }
 
             // Cache the active route's chunk index across frames: rebuild it (the header + full chunk-meta
             // walk off SD) only when the route changes, or retry if a prior build failed on a flaky link.
             // Not gated on rendering — the matcher in `tick` needs the index on every fresh fix.
-            if index_route != active {
-                route_index_valid = false;
+            if runtime.route_index_needs_rebuild(active) {
                 match active {
                     Some(_) => {
                         // In place into the resident slot — see its declaration; a by-value build here
                         // is the stack-overflow footgun.
                         if storage.as_ref().is_some_and(|s| s.build_route_index_into(&mut route_index)) {
-                            route_index_valid = true;
-                            index_route = active; // cached — no more rebuilds until the route changes
+                            runtime.route_index_built(active); // cached — no rebuild until the route changes
                         } else {
                             // Transient SD glitch: leave the key mismatched so every frame retries, hiding
                             // the route this frame rather than the whole ride.
-                            index_route = None;
+                            runtime.route_index_unavailable();
                             defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
                         }
                     }
                     None => {
-                        index_route = None;
+                        runtime.route_index_unavailable();
                     }
                 }
             }
@@ -1810,7 +1802,7 @@ pub(crate) async fn run_app(
             // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
             // on a fresh fix, the renderer on a redraw frame.
             let route_src = storage.as_ref().and_then(|s| s.route_source());
-            let route = match (route_index_valid.then_some(&route_index), route_src.as_ref()) {
+            let route = match (runtime.route_index_ready().then_some(&route_index), route_src.as_ref()) {
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };

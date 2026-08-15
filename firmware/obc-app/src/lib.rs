@@ -52,6 +52,7 @@ pub mod reroute_freeze;
 pub mod retention;
 pub mod ride;
 pub(crate) mod ride_engine;
+pub mod ride_runtime;
 pub mod route;
 pub mod screen;
 pub mod sensors;
@@ -97,6 +98,7 @@ pub use retention::{
     RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,
 };
 pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
+pub use ride_runtime::RideRuntime;
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen, WeatherAlertKind};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
