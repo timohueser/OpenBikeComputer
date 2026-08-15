@@ -47,7 +47,8 @@ remaining option.
 - `--stat-fields LIST` replaces the Statistics grid with comma-separated field ids.
 - `--physical` uses saved physical-size calibration for the GUI. Open calibration and choose any
   housing colorway in the GUI control panel.
-- `--ble connected|paired|passkey=N` selects one BLE snapshot state; passkeys are 0–999999.
+- `--ble connected|paired|passkey=N` sets typed BLE facts; join independent facts with `+` (for
+  example, `connected+paired`). Passkeys are 0–999999.
 - `--sensors demo|screen` selects either fixed live HR/power/cadence tiles or the saved-sensor and
   scan-list fixture.
 
@@ -57,7 +58,8 @@ remaining option.
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
 - `--expect-screen NAME` refuses the render if the script lands on another screen.
-- `--hold nav|detour` leaves exactly one planner request un-drained for its spinner snapshot.
+- `--hold nav|detour` consumes exactly one planner request without starting it, preserving its
+  spinner snapshot.
 - `--inject EVENT` injects one mutually-exclusive host event:
   `nav-fail=exhausted|nopath`, `detour-fail=exhausted|nopath`, `upload=ID`,
   `upload-replace=ID`, or `warning=LIST`. Warning tokens are
@@ -83,7 +85,8 @@ These are independent product controls, not part of the simulator-fixture consol
 - `--weather-radius-km KM` changes the live corridor radius.
 - `--weather-offline` forces the live client offline.
 - `--weather-fault corrupt-request=N|truncate-request=N|fail-from=N:CODE|latency=MS` applies one
-  mutually-exclusive live-client fault.
+  typed live-client fault. Repeat the option to compose independent faults, matching the former
+  independent flags.
 - `--no-card` simulates no writable companion storage, suppressing weather requests.
 
 ## Help

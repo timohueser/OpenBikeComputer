@@ -43,11 +43,11 @@ use routes::RouteStore;
 use track::TrackStore;
 use trips::TripStore;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BleSeed {
-    Connected,
-    Paired,
-    Passkey(u32),
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct BleSeed {
+    connected: bool,
+    paired: bool,
+    passkey: Option<u32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -198,11 +198,11 @@ struct Args {
     /// unknown name fails with the full list). Stands in for walking the Fields editor with a
     /// twenty-token script just to place a tile.
     stat_fields: Option<std::vec::Vec<obc_app::StatField>>,
-    /// One mutually-exclusive BLE fixture state for headless snapshots.
+    /// One typed BLE fixture state for headless snapshots; `+` composes independent link facts.
     ble: Option<BleSeed>,
     /// One mutually-exclusive sensor fixture for headless snapshots.
     sensors: Option<SensorSeed>,
-    /// Keep one host request un-drained so its planning spinner stays visible.
+    /// Consume one host request without starting it so its planning spinner stays visible.
     hold: Option<Hold>,
     /// One mutually-exclusive host event injection for headless snapshots.
     inject: Option<Injection>,
@@ -444,16 +444,23 @@ fn parse_warning(s: &str) -> Result<obc_app::WarningFlags, String> {
 }
 
 fn parse_ble(s: &str) -> Result<BleSeed, String> {
-    match s {
-        "connected" => Ok(BleSeed::Connected),
-        "paired" => Ok(BleSeed::Paired),
-        _ => s
-            .strip_prefix("passkey=")
-            .and_then(|n| n.parse().ok())
-            .filter(|&n| n <= 999_999)
-            .map(BleSeed::Passkey)
-            .ok_or_else(|| "--ble needs connected|paired|passkey=N (N is 0..=999999)".into()),
+    let mut seed = BleSeed::default();
+    for part in s.split('+') {
+        match part {
+            "connected" => seed.connected = true,
+            "paired" => seed.paired = true,
+            _ if part.starts_with("passkey=") && seed.passkey.is_none() => {
+                seed.passkey = Some(
+                    part.strip_prefix("passkey=")
+                        .and_then(|n| n.parse().ok())
+                        .filter(|&n| n <= 999_999)
+                        .ok_or("--ble passkey needs 0..=999999")?,
+                );
+            }
+            _ => return Err("--ble needs connected, paired, and/or passkey=N joined by + (N is 0..=999999)".into()),
+        }
     }
+    Ok(seed)
 }
 
 fn parse_injection(s: &str) -> Result<Injection, String> {
@@ -972,13 +979,13 @@ Device state:
   --lang LANG             UI language: en|de|fr|es
   --stat-fields LIST      Comma-separated Statistics field ids
   --physical              Use saved physical-size calibration in the GUI
-  --ble STATE             connected|paired|passkey=N
+  --ble STATE             connected|paired|passkey=N (join independent facts with +)
   --sensors MODE          demo|screen
 
 Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
   --expect-screen NAME    Refuse unless the script lands on this screen
-  --hold PLAN             Keep one request pending: nav|detour
+  --hold PLAN             Consume without starting one request: nav|detour
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
                           upload-replace=ID|warning=LIST
   --dfu STATE             scan=KIND|progress=KIND|installing=KIND|
@@ -995,7 +1002,7 @@ Weather (independent product controls):
   --weather-radius-km KM  Live corridor radius
   --weather-offline       Force the live service offline
   --weather-fault FAULT   corrupt-request=N|truncate-request=N|
-                          fail-from=N:CODE|latency=MS
+                          fail-from=N:CODE|latency=MS (repeat to compose)
   --no-card               Simulate no writable companion storage
 
 Other:
@@ -1307,20 +1314,13 @@ fn main() {
         // synced flags.
         let mut ride_store = RideStore::open(args.tracks_dir());
         app.set_rides(ride_store.catalog(), ride_store.ids());
-        // Inject the BLE link state (epic #447) **before** the script runs: `--ble connected` shows
-        // the connected indicator, `--ble passkey=N` puts the host-pushed passkey card up (P2), and
-        // `--ble paired` a stored bond — so a scripted gesture on the Bluetooth screen (its Forget
-        // hold arms only while paired) sees the bond, exactly as the control panel drives it live.
-        let link = if args.ble == Some(BleSeed::Connected) {
-            obc_app::BleLink::Connected
-        } else {
-            obc_app::BleLink::Advertising
-        };
-        let passkey = match args.ble {
-            Some(BleSeed::Passkey(n)) => Some(n),
-            _ => None,
-        };
-        app.set_ble_status(obc_app::BleStatus { link, passkey, paired: args.ble == Some(BleSeed::Paired) });
+        // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.
+        let ble = args.ble.unwrap_or_default();
+        app.set_ble_status(obc_app::BleStatus {
+            link: if ble.connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising },
+            passkey: ble.passkey,
+            paired: ble.paired,
+        });
         // The map's terrain (EL7), mounted **once** for the whole headless run like the map itself:
         // the `.obcd` sidecar beside the `.obcm`, or the null source when there is none. Two
         // consumers share it — a scripted route plan fills its elevation from it (EL7), and the
@@ -1334,8 +1334,8 @@ fn main() {
             // script can walk the whole POI→route flow: the request's answer swaps the confirm for
             // the overview / failure card, which the next token (or the final render) sees.
             let (rw, rh) = (args.width, args.height);
-            // `--hold nav` / `--inject nav-fail=...` leave the request un-drained so the planning
-            // screen stays up (for its own snapshot, or for the injected answer to land in).
+            // `--hold nav` / `--inject nav-fail=...` consume the request without starting it so the
+            // planning screen stays up (for its own snapshot, or for the injected answer to land in).
             let hold_nav = args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_)));
             let hold_detour = args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_)));
             // One render scratch for the whole script run, lent to each throwaway frame — the
@@ -1782,7 +1782,10 @@ mod cli_tests {
 
     #[test]
     fn grouped_flags_parse_typed_states() {
-        assert!(matches!(parse(&["--ble", "passkey=42"]).unwrap().ble, Some(BleSeed::Passkey(42))));
+        assert_eq!(parse(&["--ble", "passkey=42"]).unwrap().ble.unwrap().passkey, Some(42));
+        let linked_bond = parse(&["--ble", "connected+paired"]).unwrap().ble.unwrap();
+        assert!(linked_bond.connected);
+        assert!(linked_bond.paired);
         assert!(matches!(
             parse(&["--inject", "upload-replace=7"]).unwrap().inject,
             Some(Injection::Upload { id: 7, replaced: true })
@@ -1793,6 +1796,9 @@ mod cli_tests {
         ));
         let weather = parse(&["--weather-fault", "fail-from=3:503"]).unwrap();
         assert_eq!(weather.live.controls.fail_from, Some((3, 503)));
+        let faults = parse(&["--weather-fault", "latency=10", "--weather-fault", "fail-from=2:503"]).unwrap();
+        assert_eq!(faults.live.controls.latency, std::time::Duration::from_millis(10));
+        assert_eq!(faults.live.controls.fail_from, Some((2, 503)));
     }
 
     #[test]
