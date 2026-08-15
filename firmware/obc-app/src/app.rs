@@ -1141,7 +1141,7 @@ impl App {
     /// screen" half of the arena's `render ⊥ usb` rule. Modal and opaque, so while it is up the base
     /// draws no map; both facts are checked here rather than assumed, since the card is host-pushed
     /// and the rule must hold whatever else the stack is doing.
-    pub fn transfer_screen_up(&self) -> bool {
+    fn transfer_screen_up(&self) -> bool {
         self.ui.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_))) && !self.base_draws_map()
     }
 
@@ -1973,18 +1973,6 @@ impl App {
         self.ui.set_sensor_scan_hits(hits);
     }
 
-    /// The per-slot sensor status as last fed to [`set_sensor_status`](App::set_sensor_status) — the
-    /// Sensors screen's row source, and how a test observes the seam end to end.
-    pub fn sensor_status(&self) -> &[crate::sensors::SensorStatus] {
-        &self.ui.sensor_status
-    }
-
-    /// The live sensor scan hits as last fed to [`set_sensor_scan_hits`](App::set_sensor_scan_hits) —
-    /// the scan-list screen's rows.
-    pub fn sensor_scan_hits(&self) -> &[crate::sensors::SensorScanHit] {
-        &self.ui.sensor_scan_hits
-    }
-
     /// Whether the rider is on the **scan-list** screen and a scan should run (SE7) — the level the
     /// Sensors screen raises on entry to a row and lowers on exit/Back
     /// ([`Activity::request_sensor_scan`](crate::activity::Activity)). The host reads it each pass (the
@@ -2165,12 +2153,6 @@ impl App {
     /// the current units / clock / GPS-interval outside the screen draw path.
     pub fn settings(&self) -> &Settings {
         &self.settings
-    }
-
-    /// The last ambient temperature (°C), or `None` before the first reading / no thermometer. No
-    /// screen draws it yet; exposed for a future readout and host introspection.
-    pub fn temperature_c(&self) -> Option<f32> {
-        self.ride.temp_c
     }
 
     /// The live wall-clock time right now (see [`WallClock`]). What a screen draws as `HH:MM`;
@@ -3006,11 +2988,6 @@ impl App {
         self.ui.input.last_gesture()
     }
 
-    /// In-flight Select hold-progress (0.0–1.0) for the confirm-ring readout.
-    pub fn select_hold_progress(&self) -> f32 {
-        self.ui.input.select_hold_progress()
-    }
-
     /// Feed the live Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar). The **two-plane firmware** calls this each frame from its high-priority
     /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
@@ -3032,11 +3009,6 @@ impl App {
     /// sim) never call this.
     pub fn set_render_clip(&mut self, clip: Option<Rectangle>) {
         self.ui.render_clip = clip;
-    }
-
-    /// In-flight Back hold-progress (0.0–1.0).
-    pub fn back_hold_progress(&self) -> f32 {
-        self.ui.input.back_hold_progress()
     }
 
     /// The current operating mode.
