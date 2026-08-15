@@ -48,7 +48,7 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
-use obc_storage::trip_name;
+use obc_storage::{route_name, trip_name};
 use obc_storage::weather as weather_store;
 use obc_storage::ObjectIdSequence;
 
@@ -572,7 +572,7 @@ impl ObjectStore {
         for name in &names {
             match storage.route_object_info(name) {
                 Some((byte_len, _)) => {
-                    let id = match crate::sd::uploaded_route_id(name) {
+                    let id = match route_name::uploaded_id(name.base_name(), name.extension()) {
                         Some(id) => {
                             self.next_id = self.next_id.max(id.saturating_add(1));
                             id
