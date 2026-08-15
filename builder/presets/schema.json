@@ -15,8 +15,8 @@
         "palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the web builder picker and the device agree. OSM/Komoot conventions on a cream 'paper' base (the only near-white tint the gamut offers): warm = through-roads, white with a grey casing = local streets, brown = trails, indigo = cycleways (a cycling computer's key feature, lifted out of the brown trail group), green = vegetation, azure = water, light grey = built-up landuse fill (residential / commercial / industrial / retail — towns read as a quiet grey wash), with darker grey buildings on top at the closest zoom only. Verify the gamut with `obc-sim --palette`."
     },
     "lods": [
-        {"max_mpp": null, "simplify": 600, "line_simplify": 1400, "merge_line_trails": true, "semantic_coverage": true},
-        {"max_mpp": 400, "simplify": 600, "line_simplify": 1400, "merge_line_trails": true, "semantic_coverage": true},
+        {"max_mpp": null, "simplify": 600, "line_simplify": 1400, "min_line_km": 1.0, "merge_line_trails": true, "semantic_coverage": true},
+        {"max_mpp": 400, "simplify": 600, "line_simplify": 1400, "min_line_km": 1.0, "merge_line_trails": true, "semantic_coverage": true},
         {"max_mpp": 260, "simplify": 390, "line_simplify": 1400, "merge_line_trails": true, "semantic_coverage": true},
         {"max_mpp": 180, "simplify": 270, "semantic_coverage": true},
         {"max_mpp": 110, "simplify": 130, "line_simplify": 500, "merge_line_trails": true, "semantic_coverage": true},

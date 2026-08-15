@@ -11,7 +11,7 @@ use obc_map_scene::{
     BBox, Candidate, CandidateReport, DecodeReport, Feature, FeatureError, FeatureToken, Kind, MapScene,
     SelectedFeatures, Style, StyleFlags,
 };
-use obc_render::{RenderConfig, RenderScratch, Viewport};
+use obc_render::{RenderConfig, RenderScratch, Viewport, MAX_SPANS};
 
 use common::Buf;
 
@@ -207,6 +207,11 @@ impl MapScene for HostileScene {
                 points.extend_from_slice(&LINE_POINTS).unwrap();
                 ring_lens.extend_from_slice(&LINE_RING).unwrap();
                 Self::visit_one(TOKEN2, GOOD2.id, Kind::Line, points, ring_lens, &mut visit);
+                // Force the optimistic collector to overflow its span reservoir. The retry must
+                // enter stub-select/pass B, where the hostile second decode below remains covered.
+                for _ in 0..MAX_SPANS - 1 {
+                    Self::visit_one(TOKEN2, GOOD2.id, Kind::Line, points, ring_lens, &mut visit);
+                }
             }
         }
         CandidateReport { chunks_visited: 1, ..Default::default() }
@@ -253,7 +258,7 @@ impl MapScene for HostileScene {
             | Hostility::PassBRingCountMismatch
             | Hostility::PassBMissingStyle
             | Hostility::PassBIdentityMismatch) => {
-                assert_eq!(selected.len(), 2);
+                assert_eq!(selected.len(), MAX_SPANS);
                 points.clear();
                 ring_lens.clear();
                 match mode {
@@ -288,7 +293,9 @@ impl MapScene for HostileScene {
                 ring_lens.clear();
                 points.extend_from_slice(&LINE_POINTS).unwrap();
                 ring_lens.extend_from_slice(&LINE_RING).unwrap();
-                assert!(selected.decoded(1, Feature::new(GOOD2.id, Kind::Line, points, ring_lens, BOUNDS)));
+                for index in 1..selected.len() {
+                    assert!(selected.decoded(index, Feature::new(GOOD2.id, Kind::Line, points, ring_lens, BOUNDS)));
+                }
             }
         }
         DecodeReport { chunks_refetched: 1, ..Default::default() }
@@ -421,11 +428,11 @@ fn selected_publication_is_bounds_checked_and_duplicate_success_is_a_noop() {
 }
 
 #[test]
-fn duplicate_failure_is_a_noop_after_the_first_completion() {
+fn direct_collect_does_not_invoke_a_duplicate_second_pass_failure() {
     let (stats, target) = hostile_render(Hostility::DuplicateFailure);
-    assert_eq!(stats.features_drawn, 0);
-    assert_eq!(stats.malformed_features, 1);
-    assert_eq!(target.count(Rgb888::RED), 0);
+    assert_eq!(stats.features_drawn, 1);
+    assert_eq!(stats.malformed_features, 0);
+    assert!(target.count(Rgb888::RED) > 200);
 }
 
 #[test]
@@ -498,7 +505,7 @@ fn out_of_range_selected_lod_is_clamped_and_reported() {
 }
 
 #[test]
-fn hostile_pass_b_feature_is_omitted_without_stealing_later_winner_capacity() {
+fn saturated_fallback_omits_a_hostile_pass_b_feature_without_stealing_later_capacity() {
     for mode in [
         Hostility::PassBSizeMismatch,
         Hostility::PassBMalformedRings,
@@ -507,9 +514,10 @@ fn hostile_pass_b_feature_is_omitted_without_stealing_later_winner_capacity() {
         Hostility::PassBIdentityMismatch,
     ] {
         let (stats, target) = hostile_render(mode);
-        assert_eq!(stats.features_tried, 2);
-        assert_eq!(stats.features_drawn, 1);
-        assert_eq!(stats.points_drawn, 2);
+        assert_eq!(stats.features_tried, MAX_SPANS + 1);
+        assert_eq!(stats.features_drawn, MAX_SPANS - 1);
+        assert_eq!(stats.points_drawn, (MAX_SPANS - 1) * 2);
+        assert_eq!(stats.features_dropped, 1);
         assert_eq!(stats.malformed_features, 1);
         assert_eq!(stats.feature_decode_capacity_drops, 0);
         assert_eq!(target.count(Rgb888::RED), 0);
