@@ -333,9 +333,8 @@ pub(crate) async fn wait_stage_request() {
 /// handshake. `true` = stage into the arena; `false` = stream unstaged.
 ///
 /// Called once per transfer, right after the target file is open and (for a map) the on-glass card
-/// has been published — which is what makes the loop's
-/// [`transfer_screen_up`](obc_app::App::transfer_screen_up) precondition answerable on its very next
-/// pass.
+/// has been published — which lets the loop's `App::usb_arena_precondition` evaluate the
+/// transfer-card half of the arena contract on its very next pass.
 pub(crate) async fn request_stage() -> bool {
     STAGE_REQ.store(true, core::sync::atomic::Ordering::Relaxed);
     STAGE_EDGE.reset();
