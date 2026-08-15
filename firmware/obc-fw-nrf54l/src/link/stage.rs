@@ -54,7 +54,10 @@
 use core::cell::RefCell;
 
 use crate::object_store::ObjectStore;
+use crate::sd::UploadSession;
 use crate::SharedStoreMutex;
+
+type Sink<'a> = (&'a RefCell<ObjectStore>, &'a SharedStoreMutex, Option<UploadSession>);
 
 /// One upload's staged bytes: fill from the transport, drain to the store in aligned batches.
 ///
@@ -144,16 +147,11 @@ impl Stage {
     /// A revoked arena arm (the ride loop took the staging arm back mid-transfer — an unplug) also
     /// returns `false`: to the caller it is indistinguishable from a card that refused the append,
     /// and the response is the same one, discarding the partial upload.
-    pub(crate) async fn push(
-        &mut self,
-        mut bytes: &[u8],
-        store: &RefCell<ObjectStore>,
-        shared: &SharedStoreMutex,
-    ) -> bool {
+    pub(crate) async fn push(&mut self, mut bytes: &[u8], sink: Sink<'_>) -> bool {
         // Unstaged: no arena arm, so there is nothing to batch into — hand each chunk to the card as
         // it lands, exactly as both data planes did before staging existed.
         if !self.staged {
-            return self.append(bytes, store, shared).await;
+            return self.append(bytes, sink).await;
         }
         while !bytes.is_empty() {
             let target = self.target();
@@ -174,13 +172,13 @@ impl Stage {
                 // append joins that DMA before starting this half's successor. In particular, do
                 // not leave the just-filled half merely parked while swapping back to the older
                 // half: the older half may still be the DMA source and must not be overwritten.
-                if !self.drain(store, shared).await {
+                if !self.drain(sink).await {
                     return false;
                 }
                 self.parked = self.used;
                 self.used = 0;
                 self.fill ^= 1;
-                if !self.drain(store, shared).await {
+                if !self.drain(sink).await {
                     return false;
                 }
             }
@@ -190,7 +188,7 @@ impl Stage {
 
     /// Append whatever is staged, in order, whether or not it reached a target — the transfer's last
     /// flush, where the tail is short by definition. Idempotent on an empty stage.
-    pub(crate) async fn flush(&mut self, store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> bool {
+    pub(crate) async fn flush(&mut self, sink: Sink<'_>) -> bool {
         if !self.staged {
             // Every chunk already went straight to the card; there is nothing held back.
             return true;
@@ -198,29 +196,30 @@ impl Stage {
         // The parked half is older than the filling one, so it goes first — and it must go even when
         // the fill half is empty, which is exactly what a transfer ending on a half boundary looks
         // like.
-        if !self.drain(store, shared).await {
+        if !self.drain(sink).await {
             return false;
         }
         if self.used != 0 {
             let (at, len) = (Self::base(self.fill), self.used);
-            if !self.append_arm(at, len, store, shared).await {
+            if !self.append_arm(at, len, sink).await {
                 return false;
             }
             self.used = 0;
         }
+        let (store, shared, _) = sink;
         self.sync(store, shared).await
     }
 
     /// Hand the parked half to the card, if there is one. The whole of the double buffer's ordering
     /// rule lives in the two call sites of this: drain **before** parking a new half, and drain
     /// **before** the tail.
-    async fn drain(&mut self, store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> bool {
+    async fn drain(&mut self, sink: Sink<'_>) -> bool {
         if self.parked == 0 {
             return true;
         }
         // The parked half is the one the transport is *not* filling.
         let (at, len) = (Self::base(self.fill ^ 1), self.parked);
-        if !self.append_arm(at, len, store, shared).await {
+        if !self.append_arm(at, len, sink).await {
             return false;
         }
         self.parked = 0;
@@ -237,19 +236,16 @@ impl Stage {
     /// makes the data planes' "the map render interleaves between chunks" doc claim actually true
     /// under load. It is also what keeps #1014's WDT fix honest: the feed rides the ride loop's
     /// pass, so a flush that never yielded would starve it.
-    async fn append_arm(
-        &mut self,
-        at: usize,
-        len: usize,
-        store: &RefCell<ObjectStore>,
-        shared: &SharedStoreMutex,
-    ) -> bool {
+    async fn append_arm(&mut self, at: usize, len: usize, sink: Sink<'_>) -> bool {
+        let (store, shared, session) = sink;
         let appended = {
             // The store lock is taken **before** the arena access, so nothing borrowed from the
             // arena is live across the `.await`.
             let mut guard = shared.lock().await;
-            crate::arena::with_usb_stage(|buf| store.borrow_mut().upload_append(&mut guard, &buf[at..at + len]))
-                .unwrap_or(false)
+            crate::arena::with_usb_stage(|buf| {
+                store.borrow_mut().upload_append(&mut guard, session, &buf[at..at + len])
+            })
+            .unwrap_or(false)
         };
         let should_yield = if appended {
             self.offset += len;
@@ -277,13 +273,14 @@ impl Stage {
     /// Append `bytes` straight to the card — the unstaged path's whole implementation, and the
     /// bookkeeping half of [`append_arm`](Stage::append_arm) without the buffer. Keeps the same
     /// trailing `yield_now` for the same liveness reason.
-    async fn append(&mut self, bytes: &[u8], store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> bool {
+    async fn append(&mut self, bytes: &[u8], sink: Sink<'_>) -> bool {
+        let (store, shared, session) = sink;
         if bytes.is_empty() {
             return true;
         }
         let appended = {
             let mut guard = shared.lock().await;
-            store.borrow_mut().upload_append(&mut guard, bytes)
+            store.borrow_mut().upload_append(&mut guard, session, bytes)
         };
         if appended {
             self.offset += bytes.len();

@@ -409,7 +409,7 @@ pub(crate) async fn run(
         // not a map, and there is no way to resume it on the next enumeration (spec §1 principle 4).
         {
             let mut guard = shared.lock().await;
-            store.borrow_mut().link_reset(&mut guard);
+            store.borrow_mut().link_reset(&mut guard, crate::link::gate_owner(crate::link::Transport::Usb));
             store.borrow_mut().set_upload_abort(&mut guard);
         }
         super::release_stage(); // the arena's staging arm, if this teardown interrupted a transfer
@@ -496,7 +496,9 @@ async fn run_upload(
         rx = Receiver::new_link_checked(desc).expect("an armed upload descriptor is an upload");
     }
     let mut held = obc_ble::HeldMagic::new();
-    let mut map_id = 0u16;
+    // Exactly one of these identities is live. Keeping it as a union avoids growing the USB task
+    // frame with an independent optional object token beside the existing map/set id.
+    let mut upload_key: Result<crate::sd::UploadSession, u16> = Err(0);
     // Open the SD file here — at the first real byte — rather than when the control plane armed it:
     // a host that sends `transferControl` and then never writes holds no storage handle (it only
     // wedges its own one-transfer gate until it unplugs).
@@ -505,7 +507,17 @@ async fn run_upload(
         let opened: Option<u16> = match target {
             // The temp path has no id to hand back; `0` stands in and is never reported (the
             // commit's own `upload_finish` returns the assigned one).
-            MapTarget::Object => store.borrow_mut().upload_begin(&mut guard).then_some(0),
+            MapTarget::Object => {
+                let session = store.borrow_mut().upload_begin(
+                    &mut guard,
+                    crate::link::gate_owner(crate::link::Transport::Usb),
+                    desc.ty,
+                );
+                if let Some(session) = session {
+                    upload_key = Ok(session);
+                }
+                session.map(|_| 0)
+            }
             MapTarget::Map => store.borrow_mut().map_upload_begin(&mut guard),
             MapTarget::Shard(part) => store.borrow_mut().set_shard_begin(&mut guard, part),
             MapTarget::Terrain => store.borrow_mut().set_terrain_begin(&mut guard),
@@ -513,12 +525,14 @@ async fn run_upload(
         };
         match opened {
             Some(id) => {
-                map_id = id;
+                if target != MapTarget::Object {
+                    upload_key = Err(id);
+                }
                 // Reserve the whole chain now that the length is known and the file is open, under
                 // the lock that opened it. Advisory — a refusal costs throughput, never correctness
                 // — and the point is *when* it runs: every cluster it books here is four
                 // single-block FAT writes that would otherwise land between the staged bursts.
-                store.borrow_mut().upload_reserve(&mut guard, rx.total_len());
+                store.borrow_mut().upload_reserve(&mut guard, upload_key.ok(), rx.total_len());
                 true
             }
             None => false,
@@ -603,7 +617,7 @@ async fn run_upload(
                 // answer, and a late `aborted` could be consumed as the next descriptor's result.
                 {
                     let mut guard = shared.lock().await;
-                    discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, upload_key, target);
                 }
                 info!("usb: [bulk] upload interrupted ({:?}) — discarded", defmt::Debug2Format(&e));
                 close_transfer();
@@ -619,7 +633,7 @@ async fn run_upload(
                 drain_bulk_out(ep, buf).await;
                 {
                     let mut guard = shared.lock().await;
-                    discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, upload_key, target);
                 }
                 info!(
                     "usb: [bulk] split over {} B: usb-wait {} ms, receive {} ms, store {} ms, total {} ms",
@@ -659,12 +673,12 @@ async fn run_upload(
         // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one
         // multi-block burst instead of a CMD24 per 512 B. It is what makes the fork worth having.
         let store_began = Instant::now();
-        let appended = stage.push(write, store, shared).await;
+        let appended = stage.push(write, (store, shared, upload_key.ok())).await;
         store_time += store_began.elapsed();
         if !appended {
             {
                 let mut guard = shared.lock().await;
-                discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+                discard_upload(&mut store.borrow_mut(), &mut guard, upload_key, target);
             }
             warn!("usb: [bulk] SD append failed — upload rejected");
             if holds_magic {
@@ -687,12 +701,12 @@ async fn run_upload(
     // The tail. An object almost never ends on a batch boundary, so the last flush is short by
     // definition — and until it lands, those bytes exist only in RAM.
     let store_began = Instant::now();
-    let flushed = stage.flush(store, shared).await;
+    let flushed = stage.flush((store, shared, upload_key.ok())).await;
     store_time += store_began.elapsed();
     if !flushed {
         {
             let mut guard = shared.lock().await;
-            discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+            discard_upload(&mut store.borrow_mut(), &mut guard, upload_key, target);
         }
         warn!("usb: [bulk] SD append failed on the final flush — upload rejected");
         if holds_magic {
@@ -718,6 +732,7 @@ async fn run_upload(
             // below a full OBCM header — but the codec is total, so answer `error` rather than
             // fabricate one.
             MapTarget::Map => {
+                let map_id = upload_key.expect_err("map id");
                 let status = match held.take() {
                     Some(magic) => st.map_upload_finish(&mut guard, &rx, map_id, magic),
                     None => TransferStatus::Error,
@@ -728,6 +743,7 @@ async fn run_upload(
             // its slot against (§4.1's "a correlated close"), and it is what says *which* file of
             // the set just committed.
             MapTarget::Shard(part) => {
+                let map_id = upload_key.expect_err("set id");
                 let status = match held.take() {
                     Some(magic) => st.set_shard_finish(&mut guard, &rx, map_id, part, magic),
                     None => TransferStatus::Error,
@@ -738,6 +754,7 @@ async fn run_upload(
             // no part to correlate against, and the set id is the only identity it has. The host
             // sends it as `new`, so it correlates on the transfer slot rather than the id.
             MapTarget::Terrain => {
+                let map_id = upload_key.expect_err("set id");
                 let status = match held.take() {
                     Some(magic) => st.set_terrain_finish(&mut guard, &rx, map_id, magic),
                     None => TransferStatus::Error,
@@ -747,15 +764,20 @@ async fn run_upload(
             // The manifest's result carries the **assigned set id** — the one moment the set's
             // identity crosses the wire, and the answer to "what did my upload become".
             MapTarget::Manifest => {
+                let map_id = upload_key.expect_err("set id");
                 let status = match held.take() {
                     Some(magic) => st.set_manifest_finish(&mut guard, &rx, map_id, magic),
                     None => TransferStatus::Error,
                 };
                 (map_id, status)
             }
-            MapTarget::Object if is_fwimage => (rx.object_id(), st.fwimage_finish(&mut guard, &rx)),
-            MapTarget::Object if is_trip => st.upload_finish_trip(&mut guard, &rx, desc.crc32),
-            MapTarget::Object => st.upload_finish(&mut guard, &rx, desc.crc32),
+            MapTarget::Object if is_fwimage => {
+                (rx.object_id(), st.fwimage_finish(&mut guard, upload_key.expect("object session"), &rx))
+            }
+            MapTarget::Object if is_trip => {
+                st.upload_finish_trip(&mut guard, upload_key.expect("object session"), &rx, desc.crc32)
+            }
+            MapTarget::Object => st.upload_finish(&mut guard, upload_key.expect("object session"), &rx, desc.crc32),
         }
     };
     if holds_magic {
@@ -831,13 +853,18 @@ async fn run_upload(
 /// disconnect, and the protocol never offered that (§1 principle 4: transfers restart, never
 /// resume); what it does *not* cost is resume within a session, because a failed shard drops only
 /// itself (`ObjectStore::set_shard_finish`).
-fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, target: MapTarget, map_id: u16) {
+fn discard_upload(
+    store: &mut ObjectStore,
+    shared: &mut crate::SharedStore,
+    upload_key: Result<crate::sd::UploadSession, u16>,
+    target: MapTarget,
+) {
     match target {
-        MapTarget::Object => store.upload_discard(shared),
+        MapTarget::Object => store.upload_discard(shared, upload_key.expect("object session")),
         MapTarget::Map => {
             crate::link::map_transfer_ended(None);
             if let Some(storage) = &mut shared.storage {
-                storage.map_upload_abort(map_id);
+                storage.map_upload_abort(upload_key.expect_err("map id"));
             }
         }
         MapTarget::Shard(_) | MapTarget::Terrain | MapTarget::Manifest => {

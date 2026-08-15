@@ -207,23 +207,24 @@ async fn run_upload(
     // `ch.receive`/`ch.send` await — so the ride loop's map render interleaves between chunks (#270).
     // The guard is always bound *before* `store.borrow_mut()` so the RefCell borrow never spans the
     // lock's `.await`.
-    let began = {
+    let session = {
         let mut guard = shared.lock().await;
-        let opened = store.borrow_mut().upload_begin(&mut guard);
-        if opened {
+        let opened =
+            store.borrow_mut().upload_begin(&mut guard, crate::link::gate_owner(crate::link::Transport::Ble), desc.ty);
+        if let Some(session) = opened {
             // Same reservation the cable's twin makes, for the same reason: the announced length is
             // known here, and every cluster booked now is four single-block FAT writes that would
             // otherwise land in the middle of the transfer. Advisory — a refusal only costs pace.
-            store.borrow_mut().upload_reserve(&mut guard, rx.total_len());
+            store.borrow_mut().upload_reserve(&mut guard, Some(session), rx.total_len());
         }
         opened
     };
-    if !began {
+    let Some(session) = session else {
         warn!("ble: [coc] cannot open upload temp — rejecting");
         close_transfer();
         notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
-    }
+    };
     while !rx.is_complete() {
         let n = match select(ch.receive(stack, buf), TRANSFER_ABORT.wait()).await {
             Either::First(Ok(n)) if n > 0 => n,
@@ -232,7 +233,7 @@ async fn run_upload(
                 // Discard the partial; the app re-uploads from the start.
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().upload_discard(&mut guard);
+                    store.borrow_mut().upload_discard(&mut guard, session);
                 }
                 info!("ble: [coc] upload interrupted — discarded (uploads restart)");
                 // The peer closed this CoC to reset the unframed stream. There
@@ -245,7 +246,7 @@ async fn run_upload(
                 // The app aborted (op 3): discard and confirm.
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().upload_discard(&mut guard);
+                    store.borrow_mut().upload_discard(&mut guard, session);
                 }
                 info!("ble: [coc] upload aborted by the app");
                 close_transfer();
@@ -256,12 +257,12 @@ async fn run_upload(
         let consumed = rx.push(&buf[..n]);
         let appended = {
             let mut guard = shared.lock().await;
-            store.borrow_mut().upload_append(&mut guard, &buf[..consumed])
+            store.borrow_mut().upload_append(&mut guard, Some(session), &buf[..consumed])
         };
         if !appended {
             {
                 let mut guard = shared.lock().await;
-                store.borrow_mut().upload_discard(&mut guard);
+                store.borrow_mut().upload_discard(&mut guard, session);
             }
             warn!("ble: [coc] SD append failed — upload rejected");
             close_transfer();
@@ -279,15 +280,15 @@ async fn run_upload(
         let mut guard = shared.lock().await;
         let mut st = store.borrow_mut();
         if is_fwimage {
-            (rx.object_id(), st.fwimage_finish(&mut guard, &rx))
+            (rx.object_id(), st.fwimage_finish(&mut guard, session, &rx))
         } else if is_trip {
             // `desc.crc32` is the whole-object CRC the Receiver just verified — persist it into the
             // trip content-CRC sidecar in the same commit (epic #526 TR4).
-            st.upload_finish_trip(&mut guard, &rx, desc.crc32)
+            st.upload_finish_trip(&mut guard, session, &rx, desc.crc32)
         } else {
             // `desc.crc32` is the whole-object CRC the Receiver just verified — persist it into the
             // route content-CRC sidecar in the same commit (epic #632 item 6).
-            st.upload_finish(&mut guard, &rx, desc.crc32)
+            st.upload_finish(&mut guard, session, &rx, desc.crc32)
         }
     };
     let committed = status == TransferStatus::Committed;

@@ -155,10 +155,13 @@ impl<'a> Trips<'a> {
     /// [`record_commit`](Self::record_commit) makes the row and CRC visible together.
     pub(crate) fn promote_temp(
         &mut self,
+        session: UploadSession,
         replace: Option<&ShortFileName>,
         fresh_id: u16,
     ) -> Option<(ShortFileName, Option<TripMeta>)> {
-        self.storage.upload_close();
+        if !self.storage.upload_take(session, UploadDestination::Trip) {
+            return None;
+        }
         let dir = self.storage.routes_dir?;
         let src_file = self.storage.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadOnly).ok()?;
         let len = self.storage.vmgr.file_length(src_file).unwrap_or(0);

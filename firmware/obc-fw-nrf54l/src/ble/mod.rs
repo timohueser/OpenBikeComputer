@@ -620,7 +620,7 @@ pub async fn run(
                     // `link_reset` closes the temp handle only if the temp is what is open.
                     {
                         let mut guard = shared.lock().await;
-                        store.borrow_mut().link_reset(&mut guard);
+                        store.borrow_mut().link_reset(&mut guard, crate::link::gate_owner(crate::link::Transport::Ble));
                         // The weather transaction is the radio's own (§11.5 binds it to the CoC),
                         // so *this* teardown releases a cancelled one — deliberately not inside
                         // `link_reset`, which also runs on the cable's teardown (#1039's rule:

@@ -62,6 +62,30 @@ impl GateOwner {
     }
 }
 
+/// Opaque capability for one open upload sink.
+///
+/// The token deliberately carries only the sink's raw key. Ownership and destination remain with
+/// the live board slot; terminal operations must match both this key and their expected destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SinkSession<K>(K);
+
+impl<K: Copy + Eq> SinkSession<K> {
+    /// Bind a token to the newly opened sink key.
+    pub const fn new(key: K) -> Self {
+        Self(key)
+    }
+
+    /// Whether this token still names the live sink.
+    pub fn matches_key(self, key: K) -> bool {
+        self.0 == key
+    }
+
+    /// Match the live key and require that the repository taking it owns its destination.
+    pub fn matches<D: Eq>(self, key: K, actual: D, expected: D) -> bool {
+        self.matches_key(key) && actual == expected
+    }
+}
+
 /// The gate: idle, or held by one wire.
 ///
 /// Every plane runs as a cooperative future on one executor, so `Relaxed` is the honest ordering —
@@ -153,6 +177,21 @@ impl Default for TransferGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sink_session_rejects_stale_keys_and_wrong_destinations() {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Destination {
+            Route,
+            Trip,
+        }
+
+        let session = SinkSession::new(7u32);
+        assert!(session.matches(7, Destination::Route, Destination::Route));
+        assert!(!session.matches(8, Destination::Route, Destination::Route));
+        assert!(!session.matches(7, Destination::Route, Destination::Trip));
+        assert_eq!(core::mem::size_of_val(&session), core::mem::size_of::<u32>());
+    }
 
     #[test]
     fn a_claimed_gate_refuses_a_second_claim_from_either_wire() {

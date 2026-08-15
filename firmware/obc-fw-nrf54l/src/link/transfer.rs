@@ -62,6 +62,7 @@ pub(crate) struct IdleAbort {
     pub(crate) bytes: StatusBytes,
     /// Whether this abort also abandons the staged volume set.
     pub(crate) abandon_set: bool,
+    owner: obc_app::GateOwner,
 }
 
 /// The store-side half of an idle abort, run by the transport **after** it has quiesced its pipe.
@@ -71,7 +72,7 @@ pub(crate) struct IdleAbort {
 /// even started emptying — the sequencing `usb::data_plane::DRAIN_BUDGET_MS` documents.
 pub(crate) fn finish_idle_abort(store: &RefCell<ObjectStore>, shared: &mut SharedStore, abort: &IdleAbort) {
     // Any stray temp from a transfer that never reached its commit. A no-op when there is none.
-    store.borrow_mut().upload_discard(shared);
+    store.borrow_mut().upload_discard_owner(shared, abort.owner);
     if abort.abandon_set {
         info!("link: [ctl] idle abort names the set — abandoning every staged file of it");
         store.borrow_mut().set_upload_abort(shared);
@@ -138,6 +139,7 @@ pub(crate) fn classify_transfer(
         return TransferDisposition::AnswerIdleAbort(IdleAbort {
             bytes: transfer_result(desc.object_id, TransferStatus::Aborted),
             abandon_set,
+            owner: super::gate_owner(transport),
         });
     }
     // `busy()`, not `in_flight()` (#1146 P2): the gate arbitrates a second resource now — the

@@ -63,7 +63,8 @@ use obc_app::retention::{
 use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
 use obc_app::route::{decode_route_crcs, encode_route_crcs, RouteCrcs, ROUTE_CRCS_MAX_LEN};
 use obc_app::store_meta::{decode_store_epoch, encode_store_epoch, STORE_EPOCH_LEN};
-use obc_app::{Retention, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, UI_RIDES_CAP};
+use obc_app::{GateOwner, Retention, SinkSession, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, UI_RIDES_CAP};
+use obc_ble::ObjectType;
 use obc_crc::Crc32;
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_formats::io::ByteSource;
@@ -92,6 +93,7 @@ const RIDE_CATALOG_CAP: usize = MAX_RIDES;
 pub(crate) type StoredRideCatalog = obc_storage::RideCatalog<RIDE_CATALOG_CAP>;
 pub(crate) type StoredRouteCatalog = obc_storage::Catalog<u32, MAX_ROUTES, SIDELOAD_ID_BASE>;
 type StoredTripCatalog = obc_storage::Catalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>;
+pub(crate) type UploadSession = SinkSession<RawFile>;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -183,29 +185,36 @@ pub const MAP_FREE_HEADROOM: u64 = 16 << 20;
 /// promotes it. Truncated-and-reused per upload.
 const UPLOAD_TMP: &str = "UPLOAD.TMP";
 
-/// Which upload path owns [`Storage::open_upload`] (issue #1039).
-///
-/// There is exactly one streaming handle because there is exactly one transfer
-/// ([`crate::link::TRANSFER_ACTIVE`]), but "one transfer" is not "one transport": both links can be
-/// *connected* at once, and each tears its own state down when it drops. Before this tag, the temp
-/// path's [`upload_abort`](Storage::upload_abort) — which every link teardown runs, on **either**
-/// wire — closed whatever handle happened to be open. A phone walking out of range therefore closed
-/// the file the cable was streaming a map or a multi-gigabyte volume set into, and the next append
-/// failed into a discard that deleted it.
-///
-/// So the handle says who it belongs to, and a teardown only closes its own. The alternative —
-/// three handle slots — would encode the same fact with more state and one more way for the slots
-/// to disagree with the one-transfer gate.
+/// The one upload handle's strategy owner. Ordinary temps additionally carry the exact wire and
+/// repository; stale or other-wire actions cannot match that keyed session (#1292).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UploadOwner {
     /// `/routes/UPLOAD.TMP`: routes, trips and firmware images, staged and then promoted.
-    Temp,
+    Temp(GateOwner, UploadDestination),
     /// A single map streaming straight into its final `MP{id}.OBM` with the magic held back (#927).
     Map,
     /// One file of a volume set — a shard or the manifest (`OBCA_Spec.md` §5, #1039).
     Set,
     /// The inactive `/WEATHER.A` or `/WEATHER.B` generation. It never uses `/routes/UPLOAD.TMP`.
     Weather(WeatherSlot),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UploadDestination {
+    Route,
+    Trip,
+    Firmware,
+}
+
+impl UploadDestination {
+    const fn from_object_type(ty: ObjectType) -> Option<Self> {
+        match ty {
+            ObjectType::Route => Some(Self::Route),
+            ObjectType::Trip => Some(Self::Trip),
+            ObjectType::FwImage => Some(Self::Firmware),
+            _ => None,
+        }
+    }
 }
 
 /// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
@@ -2815,27 +2824,38 @@ impl Storage {
         .unwrap_or(false)
     }
 
-    /// Open (truncating) the upload temp for a fresh transfer, dropping any stale handle.
-    pub fn upload_begin(&mut self) -> bool {
-        self.upload_close();
-        let Some(dir) = self.routes_dir_or_create() else { return false };
+    /// Open the ordinary upload temp for one exact wire and repository. A live slot is busy rather
+    /// than being stolen; the returned raw-handle capability keys every later operation.
+    pub fn upload_begin(&mut self, owner: GateOwner, ty: ObjectType) -> Option<UploadSession> {
+        if self.open_upload.is_some() {
+            return None;
+        }
+        let destination = UploadDestination::from_object_type(ty)?;
+        let dir = self.routes_dir_or_create()?;
         match self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadWriteCreateOrTruncate) {
             Ok(file) => {
-                self.open_upload = Some((file, UploadOwner::Temp));
-                true
+                self.open_upload = Some((file, UploadOwner::Temp(owner, destination)));
+                Some(SinkSession::new(file))
             }
             Err(e) => {
                 defmt::warn!("SD: cannot open upload temp: {}", defmt::Debug2Format(&e));
-                false
+                None
             }
         }
     }
 
-    /// Append streamed payload bytes to whichever file the in-flight upload opened — the temp, a
-    /// map, or one file of a set. The [`UploadOwner`] does not gate the *write*: the data plane
-    /// that opened the handle is the only thing that appends to it.
-    pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
-        let Some((file, _)) = self.open_upload else { return false };
+    fn upload_file(&self, session: Option<UploadSession>) -> Option<RawFile> {
+        match (self.open_upload, session) {
+            (Some((file, UploadOwner::Temp(..))), Some(session)) if session.matches_key(file) => Some(file),
+            (Some((file, owner)), None) if !matches!(owner, UploadOwner::Temp(..)) => Some(file),
+            _ => None,
+        }
+    }
+
+    /// Append only when the ordinary session matches, or when the typed map/set path supplies no
+    /// ordinary token.
+    pub fn upload_append(&mut self, session: Option<UploadSession>, bytes: &[u8]) -> bool {
+        let Some(file) = self.upload_file(session) else { return false };
         if upload_pipe_enabled() && upload_pipe_finish_active().is_err() {
             let _ = upload_pipe_end();
             return false;
@@ -2860,26 +2880,14 @@ impl Storage {
 
     /// Join the last deferred write before format validation or magic commit.
     pub fn upload_sync(&mut self) -> bool {
-        !upload_pipe_enabled() || upload_pipe_flush().is_ok()
+        self.open_upload.is_some() && (!upload_pipe_enabled() || upload_pipe_flush().is_ok())
     }
 
-    /// **Reserve the whole of an announced upload's cluster chain before the first payload byte.**
-    ///
-    /// `false` = nothing was reserved; the caller carries on regardless, because a refusal costs
-    /// throughput and never correctness — `VolumeManager::write` still extends the chain a cluster
-    /// at a time, exactly as it did before this existed.
-    ///
-    /// Without it, every 32 KiB cluster of a streaming upload costs **four** single-block writes
-    /// (`update_fat` twice, each mirrored across both FATs), and each of those is a whole internal
-    /// program cycle landing *between* the multi-block bursts the stage exists to produce. With it,
-    /// a FAT block's worth of entries is chained and written back once — 128 clusters, i.e. 4 MiB of
-    /// map, for the same four writes.
-    ///
-    /// `total_len` is the announced object length (`TransferControl::total_len`), which for a map
-    /// includes the four magic bytes already on the card, so the reservation is exact and no
-    /// allocated-but-unused tail survives the commit.
-    pub fn upload_reserve(&mut self, total_len: u32) -> bool {
-        let Some((file, _)) = self.open_upload else { return false };
+    /// Preallocate the announced chain before streaming. A refusal only costs throughput:
+    /// `VolumeManager::write` still extends it cluster by cluster. `total_len` includes a map's
+    /// already-written magic, so a successful reservation has no unused tail.
+    pub fn upload_reserve(&mut self, session: Option<UploadSession>, total_len: u32) -> bool {
+        let Some(file) = self.upload_file(session) else { return false };
         match self.vmgr.preallocate(file, total_len) {
             Ok(clusters) => {
                 defmt::info!("SD: reserved {=u32} cluster(s) for a {=u32} B upload", clusters, total_len);
@@ -2896,7 +2904,7 @@ impl Storage {
 
     /// Flush + close the streaming handle, keeping the bytes on the card before its repository or
     /// map/set commit re-opens it to validate and publish.
-    pub fn upload_close(&mut self) {
+    fn upload_close(&mut self) {
         if upload_pipe_enabled() && !upload_pipe_end() {
             defmt::warn!("SD: deferred upload write failed while closing — target remains inert");
         }
@@ -2906,28 +2914,33 @@ impl Storage {
         }
     }
 
-    /// Abort the **temp** upload: close and delete the partial.
-    ///
-    /// A handle owned by a map or a volume set is left strictly alone (issue #1039), and that is
-    /// the whole reason [`UploadOwner`] exists. This runs from `ObjectStore::link_reset`, which
-    /// runs on *either* transport's teardown — so without the check, a phone dropping off the
-    /// radio closed the file the cable was streaming a multi-gigabyte set into, and the failing
-    /// append that followed discarded the set. The cable's own teardown discards what the cable
-    /// owns; nothing else may.
-    pub fn upload_abort(&mut self) {
-        match self.open_upload {
-            Some((_, owner)) if owner != UploadOwner::Temp => {
-                defmt::debug!("SD: upload_abort ignored — the open handle belongs to a map/set stream");
-                return;
-            }
-            Some((file, _)) => {
-                self.open_upload = None;
-                let _ = self.vmgr.close_file(file);
-            }
-            None => {}
+    /// Close exactly this ordinary session for repository validation/promotion.
+    fn upload_take(&mut self, session: UploadSession, expected: UploadDestination) -> bool {
+        let Some((file, UploadOwner::Temp(_, actual))) = self.open_upload else { return false };
+        if !session.matches(file, actual, expected) {
+            return false;
         }
+        self.upload_close();
+        true
+    }
+
+    /// Abort exactly this ordinary session; stale, wrong-wire and map/set tokens are no-ops.
+    pub fn upload_abort(&mut self, session: UploadSession) {
+        if self.upload_file(Some(session)).is_none() {
+            return;
+        }
+        self.upload_close();
         if let Some(dir) = self.routes_dir {
             let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+        }
+    }
+
+    /// Tear down only the ordinary session owned by this wire; an idle or stale other-wire reset is
+    /// a no-op.
+    pub fn upload_abort_owner(&mut self, owner: GateOwner) {
+        let Some((file, UploadOwner::Temp(actual, _))) = self.open_upload else { return };
+        if actual == owner {
+            self.upload_abort(SinkSession::new(file));
         }
     }
 
@@ -2943,8 +2956,10 @@ impl Storage {
     /// slot. Returns the promoted byte length, or `None` with the temp dropped (invalid container /
     /// torn copy — a retry is a whole fresh upload). The temp lives in `/routes` like a route upload;
     /// only the promote target differs.
-    pub fn commit_fwimage(&mut self) -> Option<u32> {
-        self.upload_close();
+    pub fn commit_fwimage(&mut self, session: UploadSession) -> Option<u32> {
+        if !self.upload_take(session, UploadDestination::Firmware) {
+            return None;
+        }
         let dir = self.routes_dir?; // UPLOAD.TMP sinks into /routes (route-upload path, unchanged)
 
         // Validate: the temp must decode as an OBCU container header. The transfer CRC only proved the
@@ -3132,9 +3147,7 @@ impl Storage {
     /// chain walk, not a rewrite — so the sweep is left to do only what nothing running can: clean up
     /// after a power cut.
     pub fn map_upload_abort(&mut self, id: u16) {
-        if let Some((file, _)) = self.open_upload.take() {
-            let _ = self.vmgr.close_file(file);
-        }
+        self.upload_close();
         let Some(name) = map_file_name_for(id) else { return };
         // Never delete a *committed* map: `map_upload_commit` may have already patched the magic in
         // and this call be a late cleanup, and the sweep's rule applies here too — only the exact
@@ -3437,9 +3450,7 @@ impl Storage {
     /// Drop the in-flight terrain shard: close the streaming handle and delete just that
     /// `MS{id}.OBD`. The set's session survives, exactly as it does for a failed OBCM shard.
     pub fn set_terrain_discard(&mut self, id: u16) {
-        if let Some((file, _)) = self.open_upload.take() {
-            let _ = self.vmgr.close_file(file);
-        }
+        self.upload_close();
         let Some(derived) = obc_formats::obcs::terrain_name(id) else { return };
         let Ok(name) = ShortFileName::create_from_str(derived.as_str()) else { return };
         match self.vmgr.delete_file_in_dir(self.root, &name) {
@@ -3574,9 +3585,7 @@ impl Storage {
     /// `MS{id}S{kk}.OBM`. The set's session survives — a shard that failed validation is one file the
     /// host can re-send, and the gigabytes already committed beside it are still good.
     pub fn set_shard_discard(&mut self, id: u16, index: usize) {
-        if let Some((file, _)) = self.open_upload.take() {
-            let _ = self.vmgr.close_file(file);
-        }
+        self.upload_close();
         let Some(derived) = obc_formats::obcs::shard_name(id, index) else { return };
         let Ok(name) = ShortFileName::create_from_str(derived.as_str()) else { return };
         match self.vmgr.delete_file_in_dir(self.root, &name) {
@@ -3598,9 +3607,7 @@ impl Storage {
     /// magnitude: a set is *gigabytes*, and a retry mints a fresh id only if this one is still
     /// occupied, so leaving the corpse would strand the card's whole free space in a few attempts.
     pub fn set_upload_abort(&mut self, id: u16) {
-        if let Some((file, _)) = self.open_upload.take() {
-            let _ = self.vmgr.close_file(file);
-        }
+        self.upload_close();
         let removed = self.delete_set(id);
         defmt::info!("SD: abandoned volume set MS{=u16} reclaimed ({=usize} files)", id, removed);
     }

@@ -219,10 +219,13 @@ impl<'a> Routes<'a> {
     /// Promote the validated upload temp using the existing copy/held-magic replacement behavior.
     pub(crate) fn promote_temp(
         &mut self,
+        session: UploadSession,
         replace: Option<&ShortFileName>,
         fresh_id: u16,
     ) -> Option<(ShortFileName, u32)> {
-        self.storage.upload_close();
+        if !self.storage.upload_take(session, UploadDestination::Route) {
+            return None;
+        }
         let dir = self.storage.routes_dir?;
         let len = self.validate_stage(UPLOAD_TMP)?;
         let final_name = match replace {

@@ -43,6 +43,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use obc_app::settings::DeviceName;
+use obc_app::GateOwner;
 use obc_app::{Retention, Settings, MAX_RIDES, MAX_ROUTES, MAX_TRIPS};
 use obc_ble::{
     Crc32, ListHeader, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender, TransferControl,
@@ -51,7 +52,7 @@ use obc_ble::{
 use obc_ports::SettingsStore;
 use obc_storage::weather as weather_store;
 
-use crate::sd::Storage;
+use crate::sd::UploadSession;
 use crate::SharedStore;
 
 /// The outcome of a `setRouteRetention` command (finding #876-5) — replaces the old `Option<bool>`
@@ -868,61 +869,56 @@ impl ObjectStore {
     /// Open (truncating) the SD upload temp — called by the data plane when the transfer's bytes
     /// actually start flowing (see [`upload_open`](Self::upload_open)). False = no card / open
     /// failure (the caller answers `error`).
-    pub fn upload_begin(&mut self, shared: &mut SharedStore) -> bool {
-        shared.storage.as_mut().is_some_and(|s| s.upload_begin())
+    pub fn upload_begin(
+        &mut self,
+        shared: &mut SharedStore,
+        owner: GateOwner,
+        ty: ObjectType,
+    ) -> Option<UploadSession> {
+        shared.storage.as_mut()?.upload_begin(owner, ty)
     }
 
     /// Reserve the announced object's cluster chain before the first payload byte, so the FAT's
     /// per-cluster writes leave the streaming path. Advisory: `false` only means the upload runs at
     /// the old pace. See [`Storage::upload_reserve`](crate::sd::Storage::upload_reserve).
-    pub fn upload_reserve(&mut self, shared: &mut SharedStore, total_len: u32) -> bool {
-        shared.storage.as_mut().is_some_and(|s| s.upload_reserve(total_len))
+    pub fn upload_reserve(&mut self, shared: &mut SharedStore, session: Option<UploadSession>, total_len: u32) -> bool {
+        shared.storage.as_mut().is_some_and(|s| s.upload_reserve(session, total_len))
     }
 
     /// Arm the map-only deferred writer after the scratch arena granted two stable halves.
     pub fn upload_fast_begin(&mut self, shared: &mut SharedStore) -> bool {
-        shared.storage.as_mut().is_some_and(Storage::upload_fast_begin)
+        shared.storage.as_mut().is_some_and(crate::sd::Storage::upload_fast_begin)
     }
 
     /// Join the last deferred card write before a map's header/magic commit.
     pub fn upload_sync(&mut self, shared: &mut SharedStore) -> bool {
-        shared.storage.as_mut().is_some_and(Storage::upload_sync)
+        shared.storage.as_mut().is_some_and(crate::sd::Storage::upload_sync)
     }
 
     /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
-    pub fn upload_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
-        shared.storage.as_mut().is_some_and(|s| s.upload_append(bytes))
+    pub fn upload_append(&mut self, shared: &mut SharedStore, session: Option<UploadSession>, bytes: &[u8]) -> bool {
+        shared.storage.as_mut().is_some_and(|s| s.upload_append(session, bytes))
     }
 
-    /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
-    /// the partial upload and release any open storage handles a cancelled future couldn't.
-    /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
-    ///
-    /// **This runs on *either* transport's teardown**, which is the fact everything below turns on:
-    /// a phone walking out of range must not disturb a transfer the cable is running. Two things
-    /// follow, and both are load-bearing rather than tidy (issue #1039):
-    ///
-    /// - A volume set is **not** torn down here, for the same reason `map_upload_abort` is not: it
-    ///   is gigabytes, and only the cable's own teardown knows the cable went away. The USB data
-    ///   plane owns that cleanup at the two points that know it — `discard_upload` mid-transfer,
-    ///   and `set_upload_abort` beside this call on endpoint disable.
-    /// - `upload_discard` no longer *means* "close whatever file is open". The storage handle
-    ///   carries its owner (`sd::UploadOwner`), so this closes the temp and only the temp; a map or
-    ///   a set streaming on the other wire keeps its handle. Before that, this call closed the
-    ///   cable's file and the next append failed into a discard that deleted the whole upload —
-    ///   the same bug the set teardown above was moved out of here to avoid, one layer down.
-    pub fn link_reset(&mut self, shared: &mut SharedStore) {
-        self.upload_discard(shared);
+    /// Release only this wire's ordinary temp on link teardown. USB separately owns map/set abort;
+    /// the other wire and stale retries are untouched.
+    pub fn link_reset(&mut self, shared: &mut SharedStore, owner: GateOwner) {
+        self.upload_discard_owner(shared, owner);
         if let Some(storage) = &mut shared.storage {
             storage.close_object();
         }
     }
 
-    /// Abort/interrupt: discard the in-flight **temp**. A map or set stream owns its own handle and
-    /// its own teardown (`sd::UploadOwner`) — see [`link_reset`](Self::link_reset).
-    pub fn upload_discard(&mut self, shared: &mut SharedStore) {
+    /// Abort/interrupt exactly this ordinary session.
+    pub fn upload_discard(&mut self, shared: &mut SharedStore, session: UploadSession) {
         if let Some(storage) = &mut shared.storage {
-            storage.upload_abort();
+            storage.upload_abort(session);
+        }
+    }
+
+    pub fn upload_discard_owner(&mut self, shared: &mut SharedStore, owner: GateOwner) {
+        if let Some(storage) = &mut shared.storage {
+            storage.upload_abort_owner(owner);
         }
     }
 
@@ -935,13 +931,19 @@ impl ObjectStore {
     /// only reaches [`TransferStatus::Committed`] when the streamed bytes matched it), persisted into
     /// the `/routes` content-CRC sidecar under the committed id in the **same movement** (epic #632
     /// item 6) so the next `routeList` carries the route's fingerprint without a lazy re-read.
-    pub fn upload_finish(&mut self, shared: &mut SharedStore, rx: &Receiver, whole_crc: u32) -> (u16, TransferStatus) {
+    pub fn upload_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        session: UploadSession,
+        rx: &Receiver,
+        whole_crc: u32,
+    ) -> (u16, TransferStatus) {
         let outcome = match rx.outcome() {
             Some(o) => o,
             None => return (rx.object_id(), TransferStatus::Error), // caller bug: not complete
         };
         if outcome.status != TransferStatus::Committed {
-            self.upload_discard(shared);
+            self.upload_discard(shared, session);
             return (rx.object_id(), outcome.status);
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
@@ -958,7 +960,7 @@ impl ObjectStore {
                 .as_mut()
                 .and_then(|storage| storage.routes(shared.routes).find_by_content(whole_crc, rx.total_len()));
             if let Some(id) = duplicate {
-                self.upload_discard(shared);
+                self.upload_discard(shared, session);
                 return (id, TransferStatus::Committed);
             }
         }
@@ -972,13 +974,13 @@ impl ObjectStore {
             // Storage-full backstop: `upload_open` already rejects new uploads at descriptor-open
             // time (before any byte streams), so reaching here means the catalog filled *during* the
             // transfer. Same typed status, so the phone's handling is identical either way.
-            self.upload_discard(shared);
+            self.upload_discard(shared, session);
             return (rx.object_id(), TransferStatus::StorageFull);
         }
         let fresh_id = candidate.unwrap_or(SIDELOAD_ID_BASE);
         let SharedStore { storage, routes, settings, .. } = shared;
         let Some(storage) = storage else { return (rx.object_id(), TransferStatus::Error) };
-        match storage.routes(routes).promote_temp(replace_file.as_ref(), fresh_id) {
+        match storage.routes(routes).promote_temp(session, replace_file.as_ref(), fresh_id) {
             Some((file, byte_len)) => {
                 let replaced = replace_file.is_some();
                 let id = storage
@@ -1016,6 +1018,7 @@ impl ObjectStore {
     pub fn upload_finish_trip(
         &mut self,
         shared: &mut SharedStore,
+        session: UploadSession,
         rx: &Receiver,
         whole_crc: u32,
     ) -> (u16, TransferStatus) {
@@ -1024,7 +1027,7 @@ impl ObjectStore {
             None => return (rx.object_id(), TransferStatus::Error),
         };
         if outcome.status != TransferStatus::Committed {
-            self.upload_discard(shared);
+            self.upload_discard(shared, session);
             return (rx.object_id(), outcome.status);
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
@@ -1036,7 +1039,7 @@ impl ObjectStore {
             let duplicate =
                 shared.storage.as_mut().and_then(|storage| storage.trips().find_by_content(whole_crc, rx.total_len()));
             if let Some(id) = duplicate {
-                self.upload_discard(shared);
+                self.upload_discard(shared, session);
                 return (id, TransferStatus::Committed);
             }
         }
@@ -1048,7 +1051,7 @@ impl ObjectStore {
         if fresh && (catalog_full || candidate.is_none()) {
             // Storage-full backstop: the catalog or id band filled during the transfer
             // (`upload_open_trip` already rejects at descriptor-open). Same typed status either way.
-            self.upload_discard(shared);
+            self.upload_discard(shared, session);
             return (rx.object_id(), TransferStatus::StorageFull);
         }
         let replace_file =
@@ -1057,8 +1060,10 @@ impl ObjectStore {
         // Exhaustion is possible only for a replacement, where the storage path keeps the existing
         // filename and ignores this value.
         let candidate = candidate.unwrap_or(SIDELOAD_ID_BASE);
-        let committed =
-            shared.storage.as_mut().and_then(|storage| storage.trips().promote_temp(replace_file.as_ref(), candidate));
+        let committed = shared
+            .storage
+            .as_mut()
+            .and_then(|storage| storage.trips().promote_temp(session, replace_file.as_ref(), candidate));
         match committed {
             Some(commit) => {
                 let id = if replaced {
@@ -1137,17 +1142,22 @@ impl ObjectStore {
     /// Deliberately does **not** bump the store revision or notify `storeChanged`: `/UPDATE.BIN` is not
     /// a listed object, and staging is not installing — the install is armed later by the
     /// `installFw` command's on-glass-confirmed request, never by this commit (spec §7.6).
-    pub fn fwimage_finish(&mut self, shared: &mut SharedStore, rx: &Receiver) -> TransferStatus {
+    pub fn fwimage_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        session: UploadSession,
+        rx: &Receiver,
+    ) -> TransferStatus {
         let outcome = match rx.outcome() {
             Some(o) => o,
             None => return TransferStatus::Error, // caller bug: not complete
         };
         if outcome.status != TransferStatus::Committed {
-            self.upload_discard(shared); // CRC mismatch / not committed ⇒ no UPDATE.BIN
+            self.upload_discard(shared, session); // CRC mismatch / not committed ⇒ no UPDATE.BIN
             return outcome.status;
         }
         let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
-        match storage.commit_fwimage() {
+        match storage.commit_fwimage(session) {
             Some(_len) => TransferStatus::Committed,
             None => TransferStatus::Error, // invalid OBCU container or a torn promote (temp dropped)
         }
