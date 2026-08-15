@@ -114,7 +114,7 @@ A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and 
 Each host owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
 
 <figure class="fig">
-<svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out: both hosts render into a resident RGB222 framebuffer and present it through the shared display contracts — a native-frame format paired with a presenter (the device's FLPR scans the frame to the panel; the simulator self-diffs it and uploads the changed rows to a texture). The colour function maps a 16-bit colour to a pixel — native RGB222 (64-colour) on both; the simulator's un-quantized true-colour reference stays on the headless PNG path. ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
+<svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out: both hosts render into a resident RGB222 framebuffer and present it through the shared display contracts — a native-frame format paired with a presenter (the device's FLPR scans the frame to the panel; the simulator self-diffs it and uploads the changed rows to a texture). The colour function maps a 16-bit colour to native RGB222 (64-colour) on both hosts. ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
   <text class="d-tag" x="20" y="22">Everything device-specific lives at four seams</text>
 
   <!-- column headers -->
@@ -144,7 +144,7 @@ Each host owns its window/panel, its storage, and its sensors — and hands the 
   <text class="d-label" x="360" y="187" text-anchor="middle" style="font-size:11px">color_fn</text>
   <text class="d-sub" x="360" y="200" text-anchor="middle">u16 → pixel</text>
   <rect class="d-panel" x="20" y="170" width="180" height="38" rx="9" />
-  <text class="d-sub" x="110" y="193" text-anchor="middle">64-colour (PNG: true-colour)</text>
+  <text class="d-sub" x="110" y="193" text-anchor="middle">native RGB222 (64)</text>
   <rect class="d-panel" x="520" y="170" width="180" height="38" rx="9" />
   <text class="d-sub" x="610" y="193" text-anchor="middle">native RGB222 (64)</text>
   <line class="d-stroke" x1="200" y1="189" x2="298" y2="189" /><line class="d-stroke" x1="422" y1="189" x2="520" y2="189" />

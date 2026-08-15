@@ -109,6 +109,7 @@ fn sign_matches_wrap_sign_seed() {
     let bin_path = scratch("late.bin");
     let unsigned_path = scratch("LATE-UNSIGNED.BIN");
     let signed_path = scratch("LATE-SIGNED.BIN");
+    let alias_path = scratch("LATE-ALIAS.BIN");
     let one_shot_path = scratch("LATE-ONESHOT.BIN");
     std::fs::write(&bin_path, fake_image(b"signed after the fact")).unwrap();
 
@@ -127,11 +128,24 @@ fn sign_matches_wrap_sign_seed() {
         .arg(&unsigned_path)
         .arg("--out")
         .arg(&signed_path)
-        .arg("--seed")
+        .arg("--sign-seed")
         .arg(test_key("seed"))
         .output()
         .unwrap();
     assert!(s.status.success(), "sign failed: {}", String::from_utf8_lossy(&s.stderr));
+
+    // The former spelling remains a hidden compatibility alias, but help presents only the
+    // canonical wrap/sign vocabulary.
+    let alias = bin()
+        .args(["sign", "--in"])
+        .arg(&unsigned_path)
+        .arg("--out")
+        .arg(&alias_path)
+        .arg("--seed")
+        .arg(test_key("seed"))
+        .output()
+        .unwrap();
+    assert!(alias.status.success());
 
     let w2 = bin()
         .args(["wrap", "--bin"])
@@ -144,13 +158,24 @@ fn sign_matches_wrap_sign_seed() {
         .unwrap();
     assert!(w2.status.success());
     assert_eq!(std::fs::read(&signed_path).unwrap(), std::fs::read(&one_shot_path).unwrap());
+    assert_eq!(std::fs::read(&alias_path).unwrap(), std::fs::read(&signed_path).unwrap());
 
     let i = bin().arg("inspect").arg(&signed_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
     assert!(i.status.success());
 
-    for p in [&bin_path, &unsigned_path, &signed_path, &one_shot_path] {
+    for p in [&bin_path, &unsigned_path, &signed_path, &alias_path, &one_shot_path] {
         let _ = std::fs::remove_file(p);
     }
+}
+
+#[test]
+fn help_uses_one_signing_seed_vocabulary() {
+    let help = bin().arg("--help").output().unwrap();
+    assert!(help.status.success());
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    assert!(stdout.contains("sign-seed"));
+    assert!(!stdout.contains("--seed <"));
+    assert!(!stdout.contains("--seed-env"));
 }
 
 /// The seed can come from the environment instead of a file — how CI signs without ever writing the

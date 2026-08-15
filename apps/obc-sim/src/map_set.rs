@@ -601,7 +601,7 @@ mod tests {
             None,
             obc_app::WeatherFeed::NONE,
             (w as f32, h as f32),
-            |c| crate::color_of(c, true),
+            crate::color_of,
         );
         fb.as_rgb888().to_vec()
     }

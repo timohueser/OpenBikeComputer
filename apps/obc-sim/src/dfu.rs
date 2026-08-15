@@ -20,7 +20,7 @@ pub const SIM_INSTALLED_VERSION: &str = "v0.9.0-0-gsim0000";
 /// The staged version an install would apply (a newer build than [`SIM_INSTALLED_VERSION`]).
 const SIM_STAGED_VERSION: &str = "v1.0.0-2-gnew1234";
 
-/// Which confirm-screen shape a `--dfu-scan` snapshot renders.
+/// Which confirm-screen shape a `--dfu scan=...` snapshot renders.
 #[derive(Debug, Clone, Copy)]
 pub enum DfuScanKind {
     /// A newer version with a rollback available — no warnings.
@@ -38,7 +38,7 @@ impl DfuScanKind {
             "normal" => Ok(DfuScanKind::Normal),
             "same" => Ok(DfuScanKind::Same),
             "first" => Ok(DfuScanKind::First),
-            other => Err(format!("--dfu-scan needs normal|same|first, got `{other}`")),
+            other => Err(format!("--dfu scan needs normal|same|first, got `{other}`")),
         }
     }
 

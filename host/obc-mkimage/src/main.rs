@@ -6,7 +6,7 @@
 //! obc-mkimage keygen  --out-dir keys/ --name obcu-release
 //! obc-mkimage wrap    --bin app.bin --version "$(git describe --always --dirty)" \
 //!                     --out UPDATE.BIN --sign-seed-env OBCU_SIGNING_SEED
-//! obc-mkimage sign    --in UPDATE.BIN --out UPDATE.BIN --seed-env OBCU_SIGNING_SEED
+//! obc-mkimage sign    --in UPDATE.BIN --out UPDATE.BIN --sign-seed-env OBCU_SIGNING_SEED
 //! obc-mkimage inspect UPDATE.BIN
 //! ```
 //!
@@ -50,7 +50,8 @@ usage:
   obc-mkimage keygen  --out-dir <dir> [--name <base>]
   obc-mkimage wrap    --bin <app.bin> --version <str> --out <UPDATE.BIN>
                       [--sign-seed <file> | --sign-seed-env <VAR>]
-  obc-mkimage sign    --in <UPDATE.BIN> --out <file> (--seed <file> | --seed-env <VAR>)
+  obc-mkimage sign    --in <UPDATE.BIN> --out <file>
+                      (--sign-seed <file> | --sign-seed-env <VAR>)
   obc-mkimage inspect <UPDATE.BIN> [--pubkey <file>] [--allow-unsigned]
 
 Keys are 64 lowercase hex characters (32 raw bytes) on one line. `keygen` writes
@@ -202,6 +203,10 @@ fn sign(args: &[String]) -> Result<(), String> {
         match flag.as_str() {
             "--in" => input = Some(next_value(&mut it, "--in")?.into()),
             "--out" => out = Some(next_value(&mut it, "--out")?.into()),
+            "--sign-seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--sign-seed")?.into())),
+            "--sign-seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--sign-seed-env")?)),
+            // Pre-AR16 compatibility aliases. Deliberately absent from USAGE/help so both
+            // subcommands present one canonical signing vocabulary.
             "--seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--seed")?.into())),
             "--seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--seed-env")?)),
             other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
@@ -209,7 +214,7 @@ fn sign(args: &[String]) -> Result<(), String> {
     }
     let input = input.ok_or("sign: missing --in")?;
     let out = out.ok_or("sign: missing --out")?;
-    let seed = seed_src.ok_or("sign: need --seed <file> or --seed-env <VAR>")?.read()?;
+    let seed = seed_src.ok_or("sign: need --sign-seed <file> or --sign-seed-env <VAR>")?.read()?;
 
     let container = split_container(&input)?;
     let blob = build_signed(container.header, container.image(), &seed);

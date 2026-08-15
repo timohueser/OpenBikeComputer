@@ -1522,22 +1522,6 @@ impl App {
         }
     }
 
-    /// **Debug / snapshot only** (epic #506, C4): open the [`Climb`](crate::screen::ClimbScreen)
-    /// screen directly. The screen isn't reachable through any gesture until C5 wires its Back-cycle
-    /// and auto-switch, so the UI-snapshot sweep drives it through this seam (the sim's `--open-climb`
-    /// flag) to capture the striped-profile PNG. Replaces the current base riding view (Map) rather
-    /// than stacking over it, so the frame is exactly the Climb screen; a no-op if a climb isn't
-    /// active (nothing to draw). No production path reaches this.
-    pub fn debug_open_climb(&mut self) {
-        if self.activity.active_climb.is_none() {
-            return;
-        }
-        if let Some(top) = self.ui.stack.last_mut() {
-            *top = Screen::Climb(crate::screen::ClimbScreen::new());
-        }
-        self.ui.map_dirty = true;
-    }
-
     /// Feed the frame's **weather view state** (WX11): the rain map's time-step range and the
     /// product's zoom floor, refreshed by the host alongside the snapshot (the sim per frame /
     /// per render; WX8's board mount the same way). Beyond storing the fields this **re-clamps

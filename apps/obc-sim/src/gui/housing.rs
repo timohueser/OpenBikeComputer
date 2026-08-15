@@ -24,7 +24,7 @@ pub fn background() -> Color32 {
 /// window, so it floats in a little charcoal instead of touching the edges.
 pub const WINDOW_MARGIN: f32 = 18.0;
 
-/// The body colors the device ships in. Selectable in the control panel (and via `--colorway`).
+/// The body colors the device ships in, selectable in the control panel.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Colorway {
     Petrol,
@@ -47,11 +47,6 @@ impl Colorway {
             Colorway::Aubergine => "aubergine",
             Colorway::Stealth => "stealth",
         }
-    }
-
-    /// Parse a `--colorway` value (case-insensitive); `None` if unrecognized.
-    pub fn from_label(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.label().eq_ignore_ascii_case(s.trim()))
     }
 
     /// The upper-shell color; the rest of the palette is derived from it + shared dark tones.
