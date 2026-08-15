@@ -333,7 +333,7 @@ pub(crate) fn classify_transfer(
             let known = match desc.ty {
                 ObjectType::Route => store.borrow().has_route(desc.object_id),
                 ObjectType::Ride => store.borrow().has_ride(desc.object_id),
-                ObjectType::Trip => store.borrow().has_trip(desc.object_id),
+                ObjectType::Trip => store.borrow().has_trip(shared, desc.object_id),
                 _ => true,
             };
             if !known {
