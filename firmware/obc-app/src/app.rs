@@ -597,6 +597,60 @@ pub struct App {
 /// fixed ~512 B resident buffer here rather than a route-sized one.
 pub const NAV_PREVIEW_MAX: usize = 64;
 
+// `App` has two construction modes with different physical requirements: hosts may build it by
+// value, while firmware must initialize the large resident object directly in its reserved region.
+// Keep the field plan single-sourced even though those write mechanisms remain different. A field
+// with an `=> init_in_place` arm uses its component's placement constructor on firmware; every
+// other field is a small direct write of the same expression used by `new_idle`.
+//
+// The generated struct literal and tail destructure are both exhaustive. Adding an `App` field
+// therefore fails this one declaration until its value and placement rule are supplied; there is no
+// second constructor list to remember.
+macro_rules! initialize_app_field {
+    ($slot:ident, $field:ident, $value:expr => $init_in_place:path) => {
+        // SAFETY: the generated `init_idle` contract gives us an owned, aligned `App` slot, and
+        // this field appears exactly once in the exhaustive plan.
+        unsafe { $init_in_place(core::ptr::addr_of_mut!((*$slot).$field)) };
+    };
+    ($slot:ident, $field:ident, $value:expr) => {
+        // SAFETY: the generated `init_idle` contract gives us an owned, aligned `App` slot, and
+        // this field appears exactly once in the exhaustive plan.
+        unsafe { core::ptr::addr_of_mut!((*$slot).$field).write($value) };
+    };
+}
+
+macro_rules! define_idle_constructors {
+    ($state:ident; $( $field:ident: $value:expr $(=> $init_in_place:path)? ),+ $(,)?) => {
+        /// Build the app at the device's real power-on state: the Home screensaver,
+        /// Idle, no route loaded. Loading a route (Home → Menu → Routes → `press`) starts
+        /// riding and opens the Map.
+        pub fn new_idle($state: AppState) -> Self {
+            App { $( $field: $value ),+ }
+        }
+
+        /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
+        /// [`new_idle`](App::new_idle), used by firmware to construct the resident `App` without
+        /// materializing it on the stack.
+        ///
+        /// The same exhaustive field plan generates this function and `new_idle`. KB-scale
+        /// components retain their own field-by-field placement constructors; small fields are
+        /// written directly. The render scratch is not part of `App` and remains host-owned.
+        ///
+        /// # Safety
+        /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a
+        /// full `App` may be written. On return the slot is fully initialized; read it via
+        /// `&mut *slot`.
+        pub unsafe fn init_idle(slot: *mut App, $state: AppState) {
+            $( initialize_app_field!(slot, $field, $value $(=> $init_in_place)?); )+
+
+            // Exhaustiveness guard for the raw-pointer path. No moves or drops; this optimizes to
+            // nothing. It deliberately stays after every generated write so borrowing `*slot` is
+            // sound.
+            let App { $( $field: _ ),+ } = unsafe { &*slot };
+        }
+    };
+}
+
 impl App {
     /// Build the app straight onto the live map: stack `[Home, Map]`, Home the always-present root
     /// that Finish / Discard return to, no route loaded. The map-first constructor the simulator
@@ -609,114 +663,26 @@ impl App {
         app
     }
 
-    /// Build the app at the device's real power-on state: the Home screensaver,
-    /// Idle, no route loaded. Loading a route (Home → Menu → Routes → `press`) starts
-    /// riding and opens the Map.
-    pub fn new_idle(state: AppState) -> Self {
-        App {
-            state,
-            activity: Activity::new(Mode::Idle),
-            catalogs: CatalogState::new(),
-            ride: RideEngine::new(),
-            ui: UiRuntime::new(),
-            nav_profiles: crate::NavProfiles::new(),
-            settings: Settings::default(),
-            // The wall clock starts from the same default set-point at the boot origin; the host's
-            // `set_settings` re-stamps it from the persisted clock a moment later.
-            wall_clock: WallClock::new(Settings::default().local_clock()),
-            // No real time source has stamped the clock yet this boot — the persisted set-point is
-            // display-only until GPS (or, in S2, BLE) re-establishes it. See `ClockTrust`.
-            clock_trust: ClockTrust::Untrusted,
-            retention: crate::retention::RetentionRuntime::new(),
-            host: HostPending::new(),
-            freeze: crate::reroute_freeze::RerouteFreeze::new(),
-            fw_version: heapless::String::new(),
-            map_name: heapless::String::new(),
-            map_obcm_version: 0,
-            card_free_bytes: None,
-        }
-    }
-
-    /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
-    /// [`new_idle`](App::new_idle), the placement path the firmware uses to construct the resident
-    /// `App` straight into its reserved region without materializing it on the 192 KB stack.
-    ///
-    /// `new_idle` returns by value and only stays off the stack via return-value optimization — a
-    /// fragile guarantee a debug build or different toolchain could drop, overflowing the stack.
-    /// This writes each field through `addr_of_mut!` exactly once, so no by-value `App` is ever
-    /// formed; the KB-scale components (catalogs, ride caches, UI runtime) initialize themselves in
-    /// place, one level down. The render scratch is **not** among them since #1146 — the host owns
-    /// it and places it itself (see [`RenderScratch::init_zeroed`](obc_render::RenderScratch::init_zeroed)).
-    ///
-    /// The end state is identical to `new_idle`'s — keep the two in sync. A destructuring
-    /// exhaustiveness guard at the tail (naming every field with no `..`) makes a field added to
-    /// `App` but missed here a **compile error** in this function, not a silent uninitialized read.
-    ///
-    /// # Safety
-    /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a full
-    /// `App` may be written. On return the slot is fully initialized; read it via `&mut *slot`.
-    pub unsafe fn init_idle(slot: *mut App, state: AppState) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: `slot` is a valid, owned, aligned `App` region (caller's contract).
-        // Every field below is written exactly once before any read, in declaration
-        // order, so the slot is fully initialized on return and no field is read while
-        // uninitialized.
-        unsafe {
-            addr_of_mut!((*slot).state).write(state);
-            addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
-            // The several-KB catalogs + view caches are initialized field-by-field in place by
-            // their own component (the same discipline, one level down).
-            CatalogState::init_in_place(addr_of_mut!((*slot).catalogs));
-            // The KB-scale ride caches (waypoint table, climb caches, breadcrumb) are initialized
-            // field-by-field in place by their own component.
-            RideEngine::init_in_place(addr_of_mut!((*slot).ride));
-            // The KB-scale UI runtime (screen stack, input plane, POI scratch, modal state) is
-            // initialized field-by-field in place by its own component.
-            UiRuntime::init_in_place(addr_of_mut!((*slot).ui));
-            // (Was missing until #678 rework 3's field audit, like #680's `update_failed` catch:
-            // the profile-name mirror must be initialized like every other, or the board's first
-            // render reads uninit memory through it.)
-            addr_of_mut!((*slot).nav_profiles).write(crate::NavProfiles::new());
-            addr_of_mut!((*slot).settings).write(Settings::default());
-            addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
-            addr_of_mut!((*slot).clock_trust).write(ClockTrust::Untrusted);
-            addr_of_mut!((*slot).retention).write(crate::retention::RetentionRuntime::new());
-            addr_of_mut!((*slot).host).write(HostPending::new());
-            addr_of_mut!((*slot).freeze).write(crate::reroute_freeze::RerouteFreeze::new());
-            addr_of_mut!((*slot).fw_version).write(heapless::String::new());
-            addr_of_mut!((*slot).map_name).write(heapless::String::new());
-            addr_of_mut!((*slot).map_obcm_version).write(0);
-            addr_of_mut!((*slot).card_free_bytes).write(None);
-
-            // Exhaustiveness guard. The `addr_of_mut!` writes above are raw-pointer stores the
-            // compiler cannot check for completeness, so a field added to `App` can silently skip
-            // initialization here and leave the board's first render reading uninitialized memory —
-            // it has happened three times (`update_failed`, then `nav_profiles`/`nav_preview`/
-            // `nav_preview_route`). This destructures the now-fully-written slot naming **every**
-            // field with no `..`, so adding a field to `App` fails to compile *right here* until it
-            // is listed — the reminder to also add its `addr_of_mut!(...).write(...)` above. Binds
-            // to `_` only (no moves, no drops); optimizes to nothing. Keep it last, after every
-            // write, so the shared borrow of `*slot` is sound.
-            let App {
-                state: _,
-                activity: _,
-                catalogs: _,
-                ride: _,
-                ui: _,
-                nav_profiles: _,
-                settings: _,
-                wall_clock: _,
-                clock_trust: _,
-                retention: _,
-                host: _,
-                freeze: _,
-                fw_version: _,
-                map_name: _,
-                map_obcm_version: _,
-                card_free_bytes: _,
-            } = &*slot;
-        }
-    }
+    define_idle_constructors!(state;
+        state: state,
+        activity: Activity::new(Mode::Idle),
+        catalogs: CatalogState::new() => CatalogState::init_in_place,
+        ride: RideEngine::new() => RideEngine::init_in_place,
+        ui: UiRuntime::new() => UiRuntime::init_in_place,
+        nav_profiles: crate::NavProfiles::new(),
+        settings: Settings::default(),
+        // The clock starts from the default set-point; the host re-stamps the persisted value.
+        wall_clock: WallClock::new(Settings::default().local_clock()),
+        // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
+        clock_trust: ClockTrust::Untrusted,
+        retention: crate::retention::RetentionRuntime::new(),
+        host: HostPending::new(),
+        freeze: crate::reroute_freeze::RerouteFreeze::new(),
+        fw_version: heapless::String::new(),
+        map_name: heapless::String::new(),
+        map_obcm_version: 0,
+        card_free_bytes: None,
+    );
 
     /// Build the **map-first** [`App`] in place at `slot` — the by-reference twin of
     /// [`new`](App::new), as [`init_idle`](App::init_idle) is the twin of
@@ -3985,7 +3951,7 @@ mod tests {
     // --- in-place placement into the reserved region ---
 
     /// `init_idle` writing field-by-field into a slot must land the same power-on state `new_idle`
-    /// builds by value, with the renderer zeroed in place. Guards against a forgotten field.
+    /// builds by value, including the KB-scale components. Guards the shared field plan end to end.
     #[test]
     fn init_idle_matches_new_idle() {
         use core::mem::MaybeUninit;
