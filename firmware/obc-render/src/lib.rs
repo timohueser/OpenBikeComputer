@@ -48,7 +48,7 @@ pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
 pub use viewport::{mpp_for_zoom, round_coord, zoom_for_mpp, Viewport};
 
 use collect::{FrameScratch, ScreenPoint, Span};
-use fill::fill_polygon;
+use fill::{fill_polygon_edges, PackedEdge};
 use stroke::{draw_line, Stroker};
 
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
@@ -214,6 +214,7 @@ pub(crate) fn line_px(weight: u8, scale: f32, fixed_width: bool) -> u32 {
 union SharedPoints {
     decode: ManuallyDrop<Vec<(i32, i32), MAX_DECODE_POINTS>>,
     screen: ManuallyDrop<Vec<Point, MAX_SCREEN_POINTS>>,
+    edges: ManuallyDrop<Vec<PackedEdge, MAX_SCREEN_POINTS>>,
 }
 
 impl Default for SharedPoints {
@@ -236,6 +237,12 @@ impl SharedPoints {
         // SAFETY: `screen` was initialized as the active member immediately above.
         unsafe { &mut self.screen }
     }
+
+    fn edges(&mut self) -> &mut Vec<PackedEdge, MAX_SCREEN_POINTS> {
+        self.edges = ManuallyDrop::new(Vec::new());
+        // SAFETY: `edges` was initialized as the active member immediately above.
+        unsafe { &mut self.edges }
+    }
 }
 
 const _: () = assert!(
@@ -244,6 +251,9 @@ const _: () = assert!(
 const _: () = assert!(
     core::mem::align_of::<Vec<(i32, i32), MAX_DECODE_POINTS>>()
         == core::mem::align_of::<Vec<Point, MAX_SCREEN_POINTS>>()
+);
+const _: () = assert!(
+    core::mem::size_of::<Vec<PackedEdge, MAX_SCREEN_POINTS>>() == core::mem::size_of::<Vec<Point, MAX_SCREEN_POINTS>>()
 );
 
 /// The renderer's draw scratch: phase-shared decoded/projected points and the scanline crossings.
@@ -300,9 +310,12 @@ fn diagnostics<S: MapScene>(scene: &S, stats: &mut RenderStats, fallback: Diagno
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
     pub lod: usize,
-    /// Quadtree leaves overlapping the viewport this frame (uncapped). Counted once — the
-    /// stub-select collect's pass A walks the leaves a single time (see [`collect`](crate::collect)).
+    /// Quadtree leaves overlapping the viewport this frame (uncapped). Counted by the successful
+    /// direct source walk or the stub-select fallback's pass A (see [`collect`](crate::collect)).
     pub chunks_visited: usize,
+    /// Number of source walks used by collection: `1` for the optimistic direct path and `3` when
+    /// that path overflowed and restarted through the two-pass priority-preserving fallback.
+    pub collect_passes: u8,
     pub features_tried: usize,
     pub features_drawn: usize,
     /// Complete features rejected by the fixed span/point/ring frame budgets.
@@ -346,9 +359,9 @@ pub struct RenderStats {
     pub poly_spans: usize,
     pub poly_points: usize,
     pub poly_rings: usize,
-    /// Streamed-map cache accounting for this frame. Stub-select reads each visible chunk once in
-    /// pass A; pass B decodes winners directly from resident slots and only re-reads chunks that
-    /// were evicted. `map_chunk_hits` are requests served from RAM and `map_chunk_misses` the ones
+    /// Streamed-map cache accounting for this frame. Direct collection reads each visible chunk
+    /// once; the saturated stub-select fallback may refetch admitted winners in pass B.
+    /// `map_chunk_hits` are requests served from RAM and `map_chunk_misses` the ones
     /// that read from SD. `map_sd_reads` / `map_bytes_read` are the raw source overhead (index
     /// blocks + chunk fills). Hit rate is `hits / (hits + misses)`.
     pub map_chunk_hits: u32,
@@ -367,6 +380,12 @@ pub struct RenderStats {
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
+    /// Diagnostic-only wall time spent inside the line and polygon span rasterizers. These are
+    /// subsets of `draw_us`; clear and draw-loop overhead remain outside both counters.
+    #[cfg(feature = "kind-profile")]
+    pub line_draw_us: u32,
+    #[cfg(feature = "kind-profile")]
+    pub poly_draw_us: u32,
     /// Rain overlay accounting (WX10): tiles decoded through the per-frame cache (== the source's
     /// own fetch count; each visible tile at most once per frame), pixels actually painted, and the
     /// overlay's wall time in µs (inside `draw_us`, timed only on the rain-lending path).
@@ -712,6 +731,8 @@ impl RenderScratch {
                 color_fn,
                 wscale,
                 &outlined_mask,
+                clock,
+                stats,
                 &spans[..rain_at],
             );
             let t_rain = clock.now_us();
@@ -730,7 +751,20 @@ impl RenderScratch {
         };
 
         // (1) Everything below the road band, exactly as the base pass.
-        Self::draw_spans(frame, draw, target, scene, is_finest, vp, color_fn, wscale, &outlined_mask, &spans[..split]);
+        Self::draw_spans(
+            frame,
+            draw,
+            target,
+            scene,
+            is_finest,
+            vp,
+            color_fn,
+            wscale,
+            &outlined_mask,
+            clock,
+            stats,
+            &spans[..split],
+        );
 
         // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
         // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
@@ -769,7 +803,20 @@ impl RenderScratch {
         }
 
         // (3) The road band and above, exactly as the base pass, on top of the casings.
-        Self::draw_spans(frame, draw, target, scene, is_finest, vp, color_fn, wscale, &outlined_mask, &spans[split..]);
+        Self::draw_spans(
+            frame,
+            draw,
+            target,
+            scene,
+            is_finest,
+            vp,
+            color_fn,
+            wscale,
+            &outlined_mask,
+            clock,
+            stats,
+            &spans[split..],
+        );
     }
 
     /// Draw a contiguous, painter-ordered `spans` slice: polygons even-odd fill, lines the view-clipped
@@ -804,6 +851,8 @@ impl RenderScratch {
         color_fn: &F,
         wscale: f32,
         outlined_mask: &[u32; 8],
+        clock: &dyn Clock,
+        stats: &mut RenderStats,
         spans: &[Span],
     ) where
         D: DrawTarget,
@@ -816,8 +865,20 @@ impl RenderScratch {
         let any_outlined = is_finest && outlined_mask.iter().any(|&w| w != 0);
         if !any_outlined {
             for span in spans {
+                #[cfg(feature = "kind-profile")]
+                let t_span = clock.now_us();
                 Self::draw_span(frame, draw, target, scene, vp, color_fn, wscale, span);
+                #[cfg(feature = "kind-profile")]
+                {
+                    let elapsed = clock.now_us().saturating_sub(t_span) as u32;
+                    match span.kind {
+                        Kind::Line => stats.line_draw_us = stats.line_draw_us.saturating_add(elapsed),
+                        Kind::Polygon => stats.poly_draw_us = stats.poly_draw_us.saturating_add(elapsed),
+                    }
+                }
             }
+            #[cfg(not(feature = "kind-profile"))]
+            let _ = (clock, stats);
             return;
         }
 
@@ -835,7 +896,17 @@ impl RenderScratch {
             // pass 1 — every span exactly as the base pass, tracking whether this group needs pass 2.
             let mut group_has_outline = false;
             for span in group {
+                #[cfg(feature = "kind-profile")]
+                let t_span = clock.now_us();
                 Self::draw_span(frame, draw, target, scene, vp, color_fn, wscale, span);
+                #[cfg(feature = "kind-profile")]
+                {
+                    let elapsed = clock.now_us().saturating_sub(t_span) as u32;
+                    match span.kind {
+                        Kind::Line => stats.line_draw_us = stats.line_draw_us.saturating_add(elapsed),
+                        Kind::Polygon => stats.poly_draw_us = stats.poly_draw_us.saturating_add(elapsed),
+                    }
+                }
                 group_has_outline |= span.kind == Kind::Polygon && is_outlined(span.style_id);
             }
             if !group_has_outline {
@@ -880,14 +951,7 @@ impl RenderScratch {
         let DrawScratch { points, xs } = draw;
         match span.kind {
             Kind::Polygon => {
-                let screen = points.screen();
-                // A retained feature can never exceed the per-feature decode cap, which is equal
-                // to this buffer's cap (asserted above). Unpacking is infallible and replaces the
-                // old second projection of every frame vertex.
-                for p in pts {
-                    assert!(screen.push(p.point()).is_ok(), "screen buffer matches decode cap");
-                }
-                fill_polygon(target, screen, ring_lens, color, vp.w as i32, vp.h as i32, xs);
+                fill_polygon_edges(target, pts, ring_lens, color, vp.w as i32, vp.h as i32, points.edges(), xs);
             }
             Kind::Line => {
                 // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;

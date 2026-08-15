@@ -4,12 +4,101 @@ use heapless::Vec;
 
 use embedded_graphics::{prelude::*, primitives::Rectangle};
 
-use crate::{MAX_CROSSINGS, MAX_DECODE_RINGS};
+use crate::{collect::ScreenPoint, MAX_CROSSINGS, MAX_DECODE_RINGS, MAX_SCREEN_POINTS};
 
 #[cfg(test)]
 use crate::viewport::Viewport;
-#[cfg(test)]
-use crate::MAX_SCREEN_POINTS;
+/// One non-horizontal polygon edge in the exact `i`/previous-`j` orientation used by
+/// [`fill_polygon`]. Four packed panel coordinates keep an entire feature's edge table in the same
+/// phase-shared 16 KiB backing as the old `Point` buffer; no render-arena bytes are added.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct PackedEdge {
+    xi: i16,
+    yi: i16,
+    xj: i16,
+    yj: i16,
+}
+
+const _: () = assert!(core::mem::size_of::<PackedEdge>() == core::mem::size_of::<Point>());
+const _: () = assert!(core::mem::align_of::<PackedEdge>() <= core::mem::align_of::<Point>());
+
+/// Scan-convert retained screen-space rings after building their non-horizontal edges once. This
+/// removes ring partitioning, horizontal-edge rejection, and point loads from every scanline while
+/// retaining the old crossing expression and half-open edge rule bit for bit.
+pub(crate) fn fill_polygon_edges<D, L>(
+    target: &mut D,
+    points: &[ScreenPoint],
+    ring_lens: &[L],
+    color: D::Color,
+    w: i32,
+    h: i32,
+    edges: &mut Vec<PackedEdge, MAX_SCREEN_POINTS>,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+) where
+    D: DrawTarget,
+    L: Copy + Into<usize>,
+{
+    edges.clear();
+    let mut ymin = i32::MAX;
+    let mut ymax = i32::MIN;
+    let mut base = 0usize;
+    for &len in ring_lens {
+        let len = len.into();
+        let ring = &points[base..base + len];
+        base += len;
+        if ring.len() < 2 {
+            continue;
+        }
+        let mut previous = ring[ring.len() - 1].tuple();
+        for point in ring {
+            let current = point.tuple();
+            ymin = ymin.min(current.1);
+            ymax = ymax.max(current.1);
+            if current.1 != previous.1 {
+                // A retained feature cannot exceed MAX_SCREEN_POINTS, so removing horizontal edges
+                // makes this push infallible.
+                let _ = edges.push(PackedEdge {
+                    xi: current.0 as i16,
+                    yi: current.1 as i16,
+                    xj: previous.0 as i16,
+                    yj: previous.1 as i16,
+                });
+            }
+            previous = current;
+        }
+    }
+    ymin = ymin.max(0);
+    ymax = ymax.min(h - 1);
+    if ymin > ymax {
+        return;
+    }
+
+    for y in ymin..=ymax {
+        let yc = y as f32 + 0.5;
+        xs.clear();
+        let mut saturated = false;
+        for edge in edges.iter() {
+            let (xi, yi) = (edge.xi as f32, edge.yi as f32);
+            let (xj, yj) = (edge.xj as f32, edge.yj as f32);
+            if (yi <= yc && yc < yj) || (yj <= yc && yc < yi) {
+                if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
+                    saturated = true;
+                    break;
+                }
+            }
+        }
+        if saturated || xs.len() < 2 {
+            continue;
+        }
+        xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut k = 0;
+        while k + 1 < xs.len() {
+            fill_span(target, xs[k], xs[k + 1], y, w, color);
+            k += 2;
+        }
+    }
+}
 
 /// Project a feature's microdegree rings into `screen` and scanline-fill them. The draw phase's
 /// former `Kind::Polygon` path, retained as the framebuffer-equivalence oracle for the collector's
@@ -267,9 +356,38 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::fill_polygon;
-    use crate::MAX_CROSSINGS;
+    use super::{fill_polygon, fill_polygon_edges, PackedEdge};
+    use crate::{collect::ScreenPoint, MAX_CROSSINGS, MAX_SCREEN_POINTS};
     use heapless::Vec;
+
+    #[test]
+    fn packed_edge_scan_is_pixel_identical_on_pseudo_random_polygons() {
+        use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor, prelude::*};
+
+        let mut state = 0x51f1_5e1du32;
+        for case in 0..1_000 {
+            let len = 3 + (state as usize % 29);
+            let mut points: std::vec::Vec<Point> = std::vec::Vec::with_capacity(len);
+            let mut packed: std::vec::Vec<ScreenPoint> = std::vec::Vec::with_capacity(len);
+            for _ in 0..len {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let x = (state as i32).rem_euclid(96) - 16;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let y = (state as i32).rem_euclid(96) - 16;
+                points.push(Point::new(x, y));
+                packed.push(ScreenPoint::checked((x, y)).unwrap());
+            }
+            let mut expected = MockDisplay::<BinaryColor>::new();
+            let mut actual = MockDisplay::<BinaryColor>::new();
+            expected.set_allow_overdraw(true);
+            actual.set_allow_overdraw(true);
+            let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
+            let mut edges: Vec<PackedEdge, MAX_SCREEN_POINTS> = Vec::new();
+            fill_polygon(&mut expected, &points, &[len as u16], BinaryColor::On, 64, 64, &mut xs);
+            fill_polygon_edges(&mut actual, &packed, &[len as u16], BinaryColor::On, 64, 64, &mut edges, &mut xs);
+            assert_eq!(actual, expected, "scan conversion drift in case {case}");
+        }
+    }
 
     #[test]
     fn fill_polygon_skips_rows_that_overflow_the_crossing_buffer() {
