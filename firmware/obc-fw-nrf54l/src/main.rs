@@ -1474,51 +1474,9 @@ async fn main(_spawner: Spawner) {
             link::LinkStores { shared: shared_store, objects, epoch: _store_epoch }
         };
 
-        // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
-        // + TEMP + its PPI/PPIB lanes; SDC: the PPI10 fan-out + PPIB bridges; CRACEN for the LL's crypto
-        // RNG) and spawn [`spawn_ble_stack`] — the trampoline that spawns [`ble::run`] from a shallow
-        // poll frame (see its doc: constructing the ~31 KB `ble::run` future in `main` put a ~31 KB
-        // temporary slot in **`main`'s poll frame**, allocated at frame entry, which overflowed the
-        // combined build's ~40 KB stack before the first line of `main` ran — #270). Nothing here
-        // clashes with the rest of `main` (embassy's GRTC time driver allocates channels from CH0 up;
-        // TIMER10/20 and the PPI lanes are otherwise unused). ---
         #[cfg(feature = "ble")]
         {
-            let mpsl_p = nrf_sdc::mpsl::Peripherals::new(
-                p.GRTC_CH7,
-                p.GRTC_CH8,
-                p.GRTC_CH9,
-                p.GRTC_CH10,
-                p.GRTC_CH11,
-                p.TIMER10,
-                p.TIMER20,
-                p.TEMP,
-                p.PPI10_CH0,
-                p.PPI20_CH1,
-                p.PPIB11_CH0,
-                p.PPIB21_CH0,
-            );
-            let sdc_p = nrf_sdc::Peripherals::new(
-                p.PPI00_CH1,
-                p.PPI00_CH3,
-                p.PPI10_CH1,
-                p.PPI10_CH2,
-                p.PPI10_CH3,
-                p.PPI10_CH4,
-                p.PPI10_CH5,
-                p.PPI10_CH6,
-                p.PPI10_CH7,
-                p.PPI10_CH8,
-                p.PPI10_CH9,
-                p.PPI10_CH10,
-                p.PPI10_CH11,
-                p.PPIB00_CH1,
-                p.PPIB00_CH2,
-                p.PPIB00_CH3,
-                p.PPIB10_CH1,
-                p.PPIB10_CH2,
-                p.PPIB10_CH3,
-            );
+            let (mpsl_p, sdc_p) = board::radio_hardware!(p);
             // CRACEN goes to the LL's crypto RNG — already partial-moved out of `p` by the
             // store-epoch mint pass above (which only reborrowed it; see its comment). `store_epoch`
             // is the mint pass's outcome (the value the pre-pairing `protocolVersion` read serves;
