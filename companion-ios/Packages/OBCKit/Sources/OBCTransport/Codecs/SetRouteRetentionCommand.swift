@@ -21,11 +21,8 @@ public enum SetRouteRetentionCommand {
 
     /// Encode the 4-byte `setRouteRetention` write, all little-endian.
     public static func encode(objectID: DeviceObjectID, retention: Retention) -> Data {
-        Data([
-            commandByte,
-            UInt8(objectID.raw & 0xFF),
-            UInt8(objectID.raw >> 8),
-            retention.rawValue,
-        ])
+        var data = Data([commandByte, 0, 0, retention.rawValue])
+        data.writeUInt16LE(objectID.raw, at: 1)
+        return data
     }
 }

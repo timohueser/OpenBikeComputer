@@ -28,8 +28,7 @@ public enum AckRidesCommand {
             let slice = ids[start..<min(start + maxIDsPerWrite, ids.count)]
             var data = Data([commandByte, UInt8(slice.count)])
             for id in slice {
-                data.append(UInt8(id.raw & 0xFF))
-                data.append(UInt8(id.raw >> 8))
+                data.appendUInt16LE(id.raw)
             }
             return data
         }
