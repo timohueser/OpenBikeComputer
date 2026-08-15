@@ -430,10 +430,9 @@ pub struct ObjectStore {
     /// documented — see `obc_app::set_upload`. Eight bytes.
     ///
     /// Deliberately **not** dropped by [`link_reset`](Self::link_reset), which runs on either
-    /// transport's teardown. It is closed by [`set_manifest_finish`](Self::set_manifest_finish)
-    /// (the set committed, or its manifest was refused and the set deleted with it) and by
-    /// [`set_upload_abort`](Self::set_upload_abort) — the cable's own teardown, and the `op=3`
-    /// abort that reaches it.
+    /// transport's teardown. It is closed by [`MapTransfers::manifest_finish`] (the set committed,
+    /// or its manifest was refused and the set deleted with it) and by [`MapTransfers::abort_set`]
+    /// — the cable's own teardown, and the `op=3` abort that reaches it.
     set_upload: Option<obc_app::SetUpload>,
 }
 
