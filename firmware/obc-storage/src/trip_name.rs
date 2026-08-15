@@ -1,19 +1,14 @@
 //! Durable and side-loaded trip filename policy.
 
+use crate::object_name;
+
 /// Whether a non-directory FAT entry belongs to the trip catalog.
 ///
 /// The short `.OBT` arm deliberately accepts non-`TP` names as side-loads, preserving the
 /// existing catalog rule. A dot-prefixed long name is host clutter and suppresses both arms.
 #[inline(always)]
 pub fn is_admitted(short_ext: &[u8], long: Option<&str>) -> bool {
-    if long.is_some_and(|name| name.starts_with('.')) {
-        return false;
-    }
-    let long_is_trip = long.is_some_and(|name| {
-        let bytes = name.as_bytes();
-        bytes.len() >= 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".obt")
-    });
-    short_ext == b"OBT" || long_is_trip
+    object_name::is_admitted(short_ext, b"OBT", long, b".obt")
 }
 
 /// The durable id of an admitted `TP{id}.OBT`, or `None` for a side-loaded trip.
@@ -22,28 +17,7 @@ pub fn is_admitted(short_ext: &[u8], long: Option<&str>) -> bool {
 /// alias cannot carry an uploaded id, so every admitted name except `TP{id}.OBT` is side-loaded.
 #[inline(always)]
 pub fn uploaded_id(short_base: &[u8], short_ext: &[u8]) -> Option<u16> {
-    if short_ext != b"OBT" {
-        return None;
-    }
-    decimal_id(short_base.strip_prefix(b"TP")?)
-}
-
-#[inline(always)]
-fn decimal_id(digits: &[u8]) -> Option<u16> {
-    if digits.is_empty() {
-        return None;
-    }
-    let mut id = 0u32;
-    for &digit in digits {
-        if !digit.is_ascii_digit() {
-            return None;
-        }
-        id = id * 10 + u32::from(digit - b'0');
-        if id > u32::from(u16::MAX) {
-            return None;
-        }
-    }
-    Some(id as u16)
+    object_name::uploaded_id(short_base, short_ext, b"TP", b"OBT")
 }
 
 #[cfg(test)]
