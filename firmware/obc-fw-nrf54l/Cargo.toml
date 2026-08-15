@@ -52,11 +52,6 @@ synth = []
 # camera generates repeatable cold/warm map frames without the debug-UART control path.
 sd-bench = []
 
-# Unattended far-zoom render profiler. Boots to Map through `sd-bench`, pins five exact scales,
-# and emits 30 consecutive frames at each scale with the renderer's stage/budget breakdown over
-# RTT. Diagnostic only: it composes the synthetic-location source so no VCOM or live GPS is needed.
-farzoom-bench = ["sd-bench", "synth", "obc-render/kind-profile"]
-
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_16 / RX P1_17);

@@ -559,13 +559,6 @@ struct RenderedFrame {
     render_us: u64,
 }
 
-#[cfg(feature = "farzoom-bench")]
-const FARZOOM_MPPS: [f32; 5] = [20.0, 50.0, 100.0, 200.0, 400.0];
-#[cfg(feature = "farzoom-bench")]
-const FARZOOM_SAMPLES_PER_MPP: usize = 30;
-#[cfg(feature = "farzoom-bench")]
-const FARZOOM_START_MS: u32 = 8_000;
-
 /// Everything this pass's [`App::drain_host_commands`](obc_app::App::drain_host_commands) produced,
 /// popped off the caller-owned [`HostMailbox`](obc_app::HostMailbox) **synchronously** into
 /// board-local storage before the pass's first `.await` (FAR-19, #812). The mailbox itself — a
@@ -768,10 +761,6 @@ pub(crate) async fn run_app(
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
-    #[cfg(feature = "farzoom-bench")]
-    let mut farzoom_sample = 0usize;
-    #[cfg(feature = "farzoom-bench")]
-    let mut farzoom_frame_sample: Option<usize>;
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]
@@ -918,11 +907,6 @@ pub(crate) async fn run_app(
         // in-flight recognition.
         let mut holds_cancelled = false;
         while let Ok(g) = GESTURES.try_receive() {
-            // A profiling run must stay on Map even if the connected desk harness is touched.
-            // Drain the queue so it cannot fill, but deliberately ignore every gesture.
-            if cfg!(feature = "farzoom-bench") {
-                continue;
-            }
             if holds_cancelled && matches!(g, obc_app::Gesture::Hold | obc_app::Gesture::BackHold) {
                 defmt::info!("input: {=str} dropped (stack changed mid-hold)", gesture_name(g));
                 continue;
@@ -1991,20 +1975,6 @@ pub(crate) async fn run_app(
             let hold_p = display.hold_progress();
             app.set_hold_progress(hold_p);
 
-            // Unattended, exact-scale profiler: one forced redraw per pass, grouped by scale so
-            // sample 0 captures the LOD/zoom transition and the remaining samples expose the warm path.
-            // The feature implies `sd-bench` + `synth` and is absent from every shipping image.
-            #[cfg(feature = "farzoom-bench")]
-            {
-                farzoom_frame_sample = None;
-                if now >= FARZOOM_START_MS && farzoom_sample < FARZOOM_MPPS.len() * FARZOOM_SAMPLES_PER_MPP {
-                    let mpp = FARZOOM_MPPS[farzoom_sample / FARZOOM_SAMPLES_PER_MPP];
-                    app.set_map_mpp(mpp);
-                    farzoom_frame_sample = Some(farzoom_sample);
-                    farzoom_sample += 1;
-                }
-            }
-
             // Drain the per-frame dirty signal now that input + tick have run, and fold back a redraw a
             // previous frame couldn't service on a transient reader-build failure. Every board-level
             // demand folded in below is full-frame, so each also drops a region-scoped tick's clip
@@ -2327,39 +2297,6 @@ pub(crate) async fn run_app(
             // A map frame carries the map render stats; a non-map (menu / Statistics / Home) frame
             // is just a screen redraw + push, so log it as such — no meaningless lod/feat/chunks.
             if rf.needs_map {
-                #[cfg(feature = "farzoom-bench")]
-                if let Some(sample) = farzoom_frame_sample {
-                    let mpp_milli =
-                        (app.state.viewport(FRAME_W as f32, FRAME_H as f32).meters_per_pixel() * 1000.0) as u32;
-                    defmt::info!(
-                        "farzoom bench: sample {=usize} mpp_milli {=u32} | render {=u64} us = collect {=u32} + sort {=u32} + draw {=u32} (line {=u32} poly {=u32}) + other {=u64} | feat {=usize}/{=usize} drop {=usize} chunks {=usize} passes {=u8} refetch {=u32} | points line {=usize} poly {=usize} | spans line {=usize} poly {=usize} | rings line {=usize} poly {=usize}",
-                        sample,
-                        mpp_milli,
-                        rf.render_us,
-                        rf.stats.collect_us,
-                        rf.stats.sort_us,
-                        rf.stats.draw_us,
-                        rf.stats.line_draw_us,
-                        rf.stats.poly_draw_us,
-                        rf.render_us.saturating_sub(
-                            (rf.stats.collect_us as u64)
-                                .saturating_add(rf.stats.sort_us as u64)
-                                .saturating_add(rf.stats.draw_us as u64)
-                        ),
-                        rf.stats.features_drawn,
-                        rf.stats.features_tried,
-                        rf.stats.features_dropped,
-                        rf.stats.chunks_visited,
-                        rf.stats.collect_passes,
-                        rf.stats.chunks_refetched,
-                        rf.stats.line_points,
-                        rf.stats.poly_points,
-                        rf.stats.line_spans,
-                        rf.stats.poly_spans,
-                        rf.stats.line_rings,
-                        rf.stats.poly_rings,
-                    );
-                }
                 defmt::info!(
                     "map frame: render {=u64} us + push {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
                     rf.render_us,
