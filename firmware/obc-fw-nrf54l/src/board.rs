@@ -40,27 +40,32 @@
 //! ## Interrupt ladder
 //!
 //! - P0: GRTC time driver and MPSL's timing-critical radio lane.
-//! - P1: embassy peripheral default, including VCOM and VPR00; MPSL SWI00/CLOCK_POWER with BLE.
+//! - P1: embassy peripheral default, including VCOM, USBHS/VREGUSB and VPR00;
+//!   MPSL SWI00/CLOCK_POWER with BLE.
 //! - P3: SWI01 input/overlay executor and the SERIAL22 sensor bus.
 //! - thread mode: ride loop, BLE task, and sensor task.
 //!
 //! SWI01 is deliberately stable across builds because SWI00 belongs to MPSL. VPR00 is the sEMMC
 //! completion vector and is re-armed during every soft-peripheral boot.
 
-use embassy_nrf::interrupt;
-
-#[cfg(any(feature = "ble", feature = "debug-uart", not(feature = "synth")))]
-use embassy_nrf::bind_interrupts;
 #[cfg(feature = "debug-uart")]
 use embassy_nrf::buffered_uarte;
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use embassy_nrf::twim;
+use embassy_nrf::{bind_interrupts, interrupt};
 
 /// sEMMC completion event: VEVIF event 20 is routed to `VPR00_IRQn` by the FLPR firmware.
 #[interrupt]
 unsafe fn VPR00() {
     crate::semmc::on_vpr00_irq();
 }
+
+// USBHS plus VBUS-edge detection. The USB service supplies its edge-only wake handler; the board
+// owns which vectors it shares with embassy's driver handlers.
+bind_interrupts!(pub(crate) struct UsbIrqs {
+    USBHS => embassy_nrf::usb::InterruptHandler<embassy_nrf::peripherals::USBHS>;
+    VREGUSB => crate::usb::VbusEdge, embassy_nrf::usb::vbus_detect::InterruptHandler;
+});
 
 // VCOM UARTE20 RX/TX interrupt binding.
 #[cfg(feature = "debug-uart")]
