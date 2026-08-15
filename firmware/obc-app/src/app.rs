@@ -2618,32 +2618,6 @@ impl App {
         stats
     }
 
-    /// Render a frame whose geometry comes from any [`MapScene`], while POI/hours acquisition
-    /// reads the set's core [`Reader`]. For a single OBCM both arguments are the same `Reader`;
-    /// for an OBCA volume set `scene` is its `MountedSet` and `core_reader` is
-    /// `MountedSet::core_reader()`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_frame<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: &S,
-        core_reader: &Reader,
-        route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        let stats = self.render_scene_map(scratch, target, scene, core_reader, route, w, h, &color_fn);
-        self.render_overlay(target, w, h, &color_fn);
-        stats
-    }
-
     /// [`render_frame`](App::render_frame) plus the optional **rain overlay lease** (WX10) — the
     /// frame-level entry a host with a mounted weather store uses; `None` is byte-identical to
     /// [`render_frame`](App::render_frame).
@@ -2681,44 +2655,6 @@ impl App {
         stats
     }
 
-    /// [`render_scene_frame`](App::render_scene_frame) plus the optional **rain overlay lease**
-    /// (WX10), for the volume-set scene seam; `None` is byte-identical to the plain call.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_frame_with_rain<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: &S,
-        core_reader: &Reader,
-        route: Option<&RouteReader>,
-        rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: crate::weather::WeatherFeed,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        let stats = self.render_scene_map_rain_timed(
-            scratch,
-            target,
-            Some(scene),
-            Some(core_reader),
-            route,
-            rain,
-            weather,
-            w,
-            h,
-            &color_fn,
-            &NoopClock,
-        );
-        self.render_overlay(target, w, h, &color_fn);
-        stats
-    }
-
     /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
     /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
@@ -2743,28 +2679,6 @@ impl App {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
         // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
         self.render_scene_map_timed(scratch, target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
-    }
-
-    /// Render only the map plane from any [`MapScene`]. `core_reader` remains the authority for
-    /// POIs and hours, which live only in a volume set's core shard.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: &S,
-        core_reader: &Reader,
-        route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        self.render_scene_map_timed(scratch, target, Some(scene), Some(core_reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
@@ -2818,7 +2732,7 @@ impl App {
     /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
     /// so chrome-only frames can skip every map source.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_timed<D, F, S>(
+    fn render_scene_map_timed<D, F, S>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
@@ -2850,8 +2764,8 @@ impl App {
         )
     }
 
-    /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
-    /// lease** (WX10): a host that mounted a weather store passes the frame's
+    /// Generic timed scene-map rendering plus the optional **rain overlay lease** (WX10): a host
+    /// that mounted a weather store passes the frame's
     /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) every
     /// frame and the base screen renders precipitation below the road band **if its
     /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay) says it wants it** — today only
