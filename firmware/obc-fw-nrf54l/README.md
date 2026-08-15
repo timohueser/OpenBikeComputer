@@ -338,7 +338,9 @@ builds on it:
   MPSL's recommended calibration (4 s cadence, ±500 ppm class) — solid, negotiates 2M PHY.
   Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
   before MPSL init — a filed follow-up.
-- **MPSL/SDC hardware.** `board.rs` owns radio vectors and peripheral claims; `ble::run` owns stack policy.
+- **MPSL/SDC hardware.** `board.rs` owns the five production MPSL vectors and 31 MPSL/SDC
+  timing/PPI claims. `main.rs` intentionally retains CRACEN so store-epoch minting can reborrow it
+  before `ble::run` consumes it as the link layer's crypto RNG; `ble::run` owns runtime/stack policy.
 - **RAM.** The map plane compiles into every build now (#270), so on the `ble` build the map and
   BLE stack are resident together. The budget assert in `main.rs` sums the map-plane residents
   (`MAP_RESIDENT`) and the BLE stack's (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this
