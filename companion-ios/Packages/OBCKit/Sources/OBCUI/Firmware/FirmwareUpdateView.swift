@@ -438,25 +438,13 @@ public struct FirmwareUpdateView: View {
 }
 
 /// Inert transport for the preview — a connected device on v0.4.2.
-private struct PreviewFirmwareTransport: DeviceTransport {
+private struct PreviewFirmwareTransport: DeviceLink, DeviceUpdates {
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
-    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Trailhead", firmwareVersion: "0.4.2") }
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
-    func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
-    func deleteRoute(_ id: DeviceObjectID) async throws {}
-    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 
     /// A minimal valid OBCU container for the staged preview: 64-byte header + a
     /// tiny raw image, both CRCs correct.

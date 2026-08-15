@@ -76,6 +76,7 @@ use obc_storage::fat_extents::{
     BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
 };
 use obc_storage::weather::{self as weather_store, WeatherSlotIo};
+use obc_storage::{route_name, trip_name};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
@@ -524,7 +525,7 @@ pub struct Storage {
     /// (`RT{id}.OBR`); side-loaded `.obcr` files get a session id from [`sideload_id`](Storage::sideload_id).
     route_ids: Vec<u16, MAX_ROUTES>,
     /// 8.3 filename of each *ride* catalog entry, parallel to the ride order
-    /// [`scan_rides`](Storage::scan_rides) last returned — so a ride's durable object id resolves back
+    /// [`scan_rides_into`](Storage::scan_rides_into) last returned — so a ride's durable object id resolves back
     /// to the `RD{id}.ORD` file for detail reads and object-store deletes.
     ride_files: Vec<ShortFileName, UI_RIDES_CAP>,
     /// Each ride catalog entry's **durable object id**, parallel to [`ride_files`](Storage::ride_files)
@@ -1363,7 +1364,7 @@ impl Storage {
         for n in &names {
             // Id first: a route without an id can't be listed (the remap and the BLE catalog both
             // key on it) — only the exhausted side-load band hits this, warned in `sideload_id`.
-            let Some(id) = uploaded_route_id(n).or_else(|| self.sideload_id(n)) else {
+            let Some(id) = route_name::uploaded_id(n.base_name(), n.extension()).or_else(|| self.sideload_id(n)) else {
                 defmt::warn!("SD: scan: {} has no object id — not listed", defmt::Debug2Format(n));
                 continue;
             };
@@ -1409,7 +1410,7 @@ impl Storage {
         defmt::info!("SD: {=usize} route(s) in /routes", catalog.len());
     }
 
-    /// Each catalog entry's object id, parallel to the catalog [`scan_routes`](Storage::scan_routes)
+    /// Each catalog entry's object id, parallel to the catalog [`scan_routes_into`](Storage::scan_routes_into)
     /// last returned — the second argument to
     /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn route_ids(&self) -> &[u16] {
@@ -1421,7 +1422,8 @@ impl Storage {
     /// held resident in [`trip_metas`](Storage::trip_metas), parallel to its durable/​session id in
     /// [`trip_ids`](Storage::trip_ids). Feed the app via [`trip_inputs`](Storage::trip_inputs) →
     /// [`App::set_trips`](obc_app::App::set_trips), which resolves each stage id against the route
-    /// catalog. Called at boot and on every store-changed edge, next to [`scan_routes`](Storage::scan_routes).
+    /// catalog. Called at boot and on every store-changed edge, next to
+    /// [`scan_routes_into`](Storage::scan_routes_into).
     ///
     /// Trips live flat in `/routes` beside the routes (no subdirectories, spec §7.7). A trip whose
     /// stored `stage_count` exceeds the resident cap ([`obc_route::MAX_TRIP_STAGES`]) reads its first
@@ -1451,7 +1453,7 @@ impl Storage {
         for n in &names {
             // A trip without a resolvable id can't be listed (the app's folder remap keys on it) —
             // only the exhausted side-load band hits this, warned in `sideload_id`.
-            let Some(id) = uploaded_trip_id(n).or_else(|| self.sideload_id(n)) else {
+            let Some(id) = trip_name::uploaded_id(n.base_name(), n.extension()).or_else(|| self.sideload_id(n)) else {
                 defmt::warn!("SD: scan: trip {} has no object id — not listed", defmt::Debug2Format(n));
                 continue;
             };
@@ -1583,7 +1585,7 @@ impl Storage {
     }
 
     /// Each ride catalog entry's durable object id, parallel to the catalog
-    /// [`scan_rides`](Storage::scan_rides) last returned — the second argument to
+    /// [`scan_rides_into`](Storage::scan_rides_into) last returned — the second argument to
     /// [`App::set_rides`](obc_app::App::set_rides).
     pub fn ride_ids(&self) -> &[u16] {
         &self.ride_ids
@@ -1904,7 +1906,7 @@ impl Storage {
     /// (~448 B per SD read, no whole-track buffer — the ~36 KB stack budget's discipline; the
     /// returned `Profile` is the nrf-mem ~3 KB build). An in-flight BLE download's open handle is
     /// read through rather than re-opened (embedded-sdmmc refuses a second open, #480), exactly as
-    /// [`scan_rides`](Storage::scan_rides) does. `None` = unknown id / unopenable / torn file —
+    /// [`scan_rides_into`](Storage::scan_rides_into) does. `None` = unknown id / unopenable / torn file —
     /// the caller parks the failure so the read isn't ground against every pass.
     pub fn ride_profile_by_id(&mut self, id: u16) -> Option<Profile> {
         let pos = self.ride_ids.iter().position(|&x| x == id)?;
@@ -3022,7 +3024,7 @@ impl Storage {
     }
 
     /// The committed nav route's object id, resolved against the tables the **last catalog scan**
-    /// filled — call after the post-plan [`scan_routes`](Storage::scan_routes). `None` when the
+    /// filled — call after the post-plan [`scan_routes_into`](Storage::scan_routes_into). `None` when the
     /// reserved file isn't in the catalog (the emit failed, or the scan couldn't read it).
     pub fn nav_route_id(&self) -> Option<u16> {
         let nav = ShortFileName::create_from_str(NAV_ROUTE_FILE).ok()?;
@@ -5043,18 +5045,7 @@ fn resolve_extents(
 /// clutter is excluded on both arms (an AppleDouble `._x.OBR` also fails the header read at
 /// scan, but why open it at all).
 fn is_route_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
-    if e.attributes.is_directory() {
-        return false;
-    }
-    long_has_ext(long, b".obcr") || (e.name.extension() == b"OBR" && !long.is_some_and(|n| n.starts_with('.')))
-}
-
-/// The **durable object id** encoded in a BLE-uploaded route's filename — `RT{id}.OBR` → `id` (ids
-/// are stable for the life of the stored object, across reboots — the phone persists the id an
-/// upload commits under). `None` for anything else (side-loaded `.obcr` files carry no id and get a
-/// session-scoped one from the reserved band — see `object_store`).
-pub fn uploaded_route_id(name: &ShortFileName) -> Option<u16> {
-    id_in_name(name, b"RT", b"OBR")
+    !e.attributes.is_directory() && route_name::is_admitted(e.name.extension(), long)
 }
 
 /// The **durable ride object id** in a stored ride's filename — `RD{id}.ORD` → `id`. The same
@@ -5064,15 +5055,13 @@ pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RD", b"ORD")
 }
 
-/// Whether a `/routes` directory entry is a trip file (epic #526 TR4): a BLE-uploaded `TP{id}.OBT`
-/// (plain 8.3 like the route uploads' `.OBR`) **or** a side-loaded `.obt` (long-filename match, the
-/// trip twin of `.obcr`). Dot-prefixed clutter is excluded on both arms. (The ride log's `TRACK.OBT`
-/// shares the `OBT` extension but lives in `/tracks`, never `/routes`, so it can't collide here.)
+/// Bind a FAT entry to the host-tested trip filename classifier. The ride log's `TRACK.OBT` lives
+/// in `/tracks`, so it never reaches this `/routes` binding.
 fn is_trip_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
     if e.attributes.is_directory() {
         return false;
     }
-    long_has_ext(long, b".obt") || (e.name.extension() == b"OBT" && !long.is_some_and(|n| n.starts_with('.')))
+    trip_name::is_admitted(e.name.extension(), long)
 }
 
 /// Whether a card-root directory entry belongs to the **map** catalog (issue #927): a side-loaded
@@ -5274,13 +5263,6 @@ fn choose_map_index(maps: &[MapSummary]) -> Option<usize> {
     obc_app::choose_map(&map_choices(maps))
 }
 
-/// The **durable trip object id** in an uploaded trip's filename — `TP{id}.OBT` → `id` (spec §7.7;
-/// trip ids draw from a device counter separate from routes/rides, §4.1). `None` for a side-loaded
-/// `.obt` (no id in the name — it gets a session-scoped one from the reserved band).
-pub fn uploaded_trip_id(name: &ShortFileName) -> Option<u16> {
-    id_in_name(name, b"TP", b"OBT")
-}
-
 /// Parse `{prefix}{decimal u16}.{ext}` from an 8.3 name; `None` for anything else.
 fn id_in_name(name: &ShortFileName, prefix: &[u8], ext: &[u8]) -> Option<u16> {
     if name.extension() != ext {
@@ -5301,15 +5283,4 @@ fn id_in_name(name: &ShortFileName, prefix: &[u8], ext: &[u8]) -> Option<u16> {
         }
     }
     Some(id as u16)
-}
-
-/// Whether a directory entry's **long** name ends with `ext` (e.g. `b".obcr"`, case-
-/// insensitive) and isn't a dot-prefixed file (macOS `._*` AppleDouble / `.DS_Store`). The long
-/// name is required because the 8.3 short name can't represent a 4-char extension — both
-/// `.obcr` and `.obcm` truncate to `OBC`. A `None` long name (a plain 8.3 file) never matches,
-/// which is fine: every `.obcr`/`.obcm` forces a long-filename entry.
-fn long_has_ext(long: Option<&str>, ext: &[u8]) -> bool {
-    let Some(name) = long else { return false };
-    let b = name.as_bytes();
-    !b.starts_with(b".") && b.len() >= ext.len() && b[b.len() - ext.len()..].eq_ignore_ascii_case(ext)
 }

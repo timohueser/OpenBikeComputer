@@ -6,7 +6,7 @@ import Testing
 ///
 /// The suite's real subject is the epic's law — *adding a source is a baker deploy*. Every assertion
 /// below is about the client crediting sources it has never heard of, reading the deadlines the
-/// document states, and refusing to invent freshness. What it no longer asserts is a per-product
+/// document states, and refusing to invent freshness. It does not assert a per-source
 /// story: there is one dataset, so "which product answered" is not a question the screen can ask
 /// (#1244).
 struct WeatherServiceStatusTests {

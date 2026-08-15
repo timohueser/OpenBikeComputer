@@ -59,6 +59,9 @@ Run the result in the simulator:
 target/release/obc-sim region.obcm
 ```
 
+The [simulator guide](apps/obc-sim/README.md) covers headless PNGs, GPX replay, the interactive
+control panel, and every CLI option.
+
 The hosted and desktop builders select digest-pinned cells from the published catalog and assemble
 the same OBCM bytes in a WebAssembly worker. Maintainer baking, incremental planet updates and R2
 publication are documented in the [packer and routing guide](https://openbikecomputer.com/software/packer-routing/)

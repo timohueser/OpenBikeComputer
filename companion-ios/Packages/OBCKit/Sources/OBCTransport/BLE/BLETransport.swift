@@ -1369,34 +1369,48 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     // MARK: DeviceTransport — data plane
 
+    /// The shared upload service for route, trip, and firmware objects. It borrows this
+    /// transport's queue-confined connection/channel engine; it does not own another manager,
+    /// queue, channel, or transfer slot. Keeping descriptor construction and handle lifecycle in
+    /// one place also keeps restart/cancel semantics identical across every upload capability.
+    private enum UploadService {
+        static func start(
+            over transport: BLETransport, payload: Data, type: ObjectType,
+            objectID: UInt16, reportsAssignedID: Bool
+        ) -> TransferHandle {
+            guard !payload.isEmpty else {
+                return .immediatelyFinished(.failed(.transferRejected))
+            }
+            let descriptor = TransferControl(
+                op: .upload, type: type, objectID: objectID,
+                totalLen: UInt32(payload.count), crc32: CRC32.checksum(payload)
+            )
+            let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+            let outcome = AsyncPromise<TransferOutcome>()
+            let assignedID = AsyncPromise<DeviceObjectID?>()
+            let runner = UploadRunner(
+                transport: transport, payload: payload, descriptor: descriptor,
+                progress: continuation, outcome: outcome, assignedID: assignedID
+            )
+            Task { await runner.start() }
+            return TransferHandle(
+                progress: stream, outcome: outcome,
+                assignedObjectID: reportsAssignedID ? assignedID : nil,
+                onCancel: { Task { await runner.cancel() } },
+                onResume: { Task { await runner.start() } }
+            )
+        }
+    }
+
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         // A fresh upload sends objectID 0xFFFF = "new" (the device assigns one);
         // re-uploading an edited route sends its stored id, which replaces that
         // object in place (spec §4.1/§4.2). Success is the device's closing
         // `transferResult` — never the local byte flush.
-        guard !route.payload.isEmpty else {
-            // Nothing to send is a caller bug (a route without geometry must not
-            // offer Upload) — fail loudly instead of "committing" nothing.
-            return .immediatelyFinished(.failed(.transferRejected))
-        }
-        let descriptor = TransferControl(
-            op: .upload, type: .route, objectID: route.targetObjectID?.raw ?? TransferControl.newObjectID,
-            totalLen: UInt32(route.payload.count), crc32: CRC32.checksum(route.payload)
-        )
-        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let outcome = AsyncPromise<TransferOutcome>()
-        let assignedID = AsyncPromise<DeviceObjectID?>()
-        let runner = UploadRunner(
-            transport: self, payload: route.payload, descriptor: descriptor,
-            progress: continuation, outcome: outcome, assignedID: assignedID
-        )
-        Task { await runner.start() }
-        return TransferHandle(
-            progress: stream,
-            outcome: outcome,
-            assignedObjectID: assignedID,
-            onCancel: { Task { await runner.cancel() } },
-            onResume: { Task { await runner.start() } }
+        UploadService.start(
+            over: self, payload: route.payload, type: .route,
+            objectID: route.targetObjectID?.raw ?? TransferControl.newObjectID,
+            reportsAssignedID: true
         )
     }
 
@@ -1405,27 +1419,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // the same runner; only the descriptor's type differs. Fresh sends 0xFFFF
         // (the device mints a trip id); a re-push / adoption sends the stored id
         // to replace in place (spec §4.1/§4.2). Uploaded last in a whole-trip push.
-        guard !trip.payload.isEmpty else {
-            return .immediatelyFinished(.failed(.transferRejected))
-        }
-        let descriptor = TransferControl(
-            op: .upload, type: .trip, objectID: trip.targetObjectID?.raw ?? TransferControl.newObjectID,
-            totalLen: UInt32(trip.payload.count), crc32: CRC32.checksum(trip.payload)
-        )
-        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let outcome = AsyncPromise<TransferOutcome>()
-        let assignedID = AsyncPromise<DeviceObjectID?>()
-        let runner = UploadRunner(
-            transport: self, payload: trip.payload, descriptor: descriptor,
-            progress: continuation, outcome: outcome, assignedID: assignedID
-        )
-        Task { await runner.start() }
-        return TransferHandle(
-            progress: stream,
-            outcome: outcome,
-            assignedObjectID: assignedID,
-            onCancel: { Task { await runner.cancel() } },
-            onResume: { Task { await runner.start() } }
+        UploadService.start(
+            over: self, payload: trip.payload, type: .trip,
+            objectID: trip.targetObjectID?.raw ?? TransferControl.newObjectID,
+            reportsAssignedID: true
         )
     }
 
@@ -1435,28 +1432,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // upload's runner — the descriptor is the only difference. Success is the
         // device's committed `transferResult`, which promotes the bytes to
         // `/UPDATE.BIN`; staging never installs (that's `installFirmware`).
-        guard !container.isEmpty else {
-            return .immediatelyFinished(.failed(.transferRejected))
-        }
-        let descriptor = TransferControl(
-            op: .upload, type: .firmware, objectID: 0,
-            totalLen: UInt32(container.count), crc32: CRC32.checksum(container)
-        )
-        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let outcome = AsyncPromise<TransferOutcome>()
-        // The singleton stage assigns no id; the runner still takes a promise (it
-        // fulfills it with the echoed `0`), which no firmware caller reads.
-        let assignedID = AsyncPromise<DeviceObjectID?>()
-        let runner = UploadRunner(
-            transport: self, payload: container, descriptor: descriptor,
-            progress: continuation, outcome: outcome, assignedID: assignedID
-        )
-        Task { await runner.start() }
-        return TransferHandle(
-            progress: stream,
-            outcome: outcome,
-            onCancel: { Task { await runner.cancel() } },
-            onResume: { Task { await runner.start() } }
+        UploadService.start(
+            over: self, payload: container, type: .firmware,
+            objectID: 0, reportsAssignedID: false
         )
     }
 
@@ -2256,7 +2234,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
 /// One route upload from `uploadRoute` to its terminal outcome. An interrupted
 /// attempt (link/CoC drop) leaves the outcome unresolved — the F sheet shows
-/// "interrupted" via `DeviceTransport.state` — and `start()` (the handle's
+/// "interrupted" via `DeviceLink.state` — and `start()` (the handle's
 /// `resume()`) runs a **whole fresh attempt**: descriptor + all bytes from 0
 /// (uploads restart, not resume — spec §1 principle 4).
 private actor UploadRunner {

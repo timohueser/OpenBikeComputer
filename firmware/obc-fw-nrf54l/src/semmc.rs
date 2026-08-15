@@ -270,18 +270,18 @@ static WARNED_NO_IRQ: AtomicBool = AtomicBool::new(false);
 
 /// **The `VPR00_IRQn` handler body** — call this from the vector.
 ///
-/// Kept as a plain function rather than an `#[interrupt] fn VPR00` because `main.rs` owns the
-/// vector table alongside the display side's `EGU20`; it declares
+/// Kept as a plain function so the transfer-state mutation stays with the sEMMC driver while
+/// `board.rs` owns the hardware vector binding. The board module declares
 ///
 /// ```ignore
 /// #[interrupt]
 /// unsafe fn VPR00() {
-///     semmc::on_vpr00_irq();
+///     crate::semmc::on_vpr00_irq();
 /// }
 /// ```
 ///
-/// and arms the NVIC line (`interrupt::VPR00.set_priority(Priority::P1); .enable()`) once, next to
-/// the display's. The VRI-side gate (`INTEN`) and the VEVIF gate (`VPR00.INTENSET` bit 20) are
+/// `main.rs` arms the NVIC line (`interrupt::VPR00.set_priority(Priority::P1); .enable()`) once,
+/// next to the display's. The VRI-side gate (`INTEN`) and the VEVIF gate (`VPR00.INTENSET` bit 20) are
 /// armed by [`Semmc::boot_firmware`] on every boot — **`INTENSET` writes are silently dropped while
 /// the VPR core is stopped** (measured), which is exactly why they live there and not here.
 ///

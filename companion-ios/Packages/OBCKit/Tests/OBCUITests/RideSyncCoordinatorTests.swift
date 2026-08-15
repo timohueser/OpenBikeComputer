@@ -398,24 +398,19 @@ final class RideSyncCoordinatorTests: XCTestCase {
 /// Forwards everything to the mock, but reports the device's `rideList` as
 /// **truncated** (`hiddenRideCount` rides beyond what the list carried) — the
 /// v2 header's `total > count` signal the mock's fixture catalog never trips.
-private struct TruncatedRideListTransport: DeviceTransport {
+private struct TruncatedRideListTransport: DeviceLink, DeviceObjects {
     let base: MockTransport
     let hiddenRideCount: Int
 
     var state: AsyncStream<ConnectionState> { base.state }
-    var battery: AsyncStream<Int> { base.battery }
-    var storeChanges: AsyncStream<StoreChanged> { base.storeChanges }
     func connect() async throws { try await base.connect() }
     func disconnect() async { await base.disconnect() }
     func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
-    func readConfig() async throws -> DeviceConfig { try await base.readConfig() }
-    func writeConfig(_ config: DeviceConfig) async throws { try await base.writeConfig(config) }
     func listRoutes() async throws -> [RouteCatalogEntry] { try await base.listRoutes() }
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
-    func readDiagnostics() async throws -> Data { try await base.readDiagnostics() }
     func downloadRides(_ ids: [RideID]) -> RideDownload { base.downloadRides(ids) }
 
     func listRides() async throws -> RideCatalog {
@@ -428,25 +423,20 @@ private struct TruncatedRideListTransport: DeviceTransport {
 /// Forwards everything to the mock, but hands back a download whose rides
 /// stream **throws** after a couple of rides — the hard `crcMismatch` failure
 /// the mock's drop knob (a stall, resumable by design) can't stage.
-private struct HardFailingDownloadTransport: DeviceTransport {
+private struct HardFailingDownloadTransport: DeviceLink, DeviceObjects {
     let base: MockTransport
     let yieldedRides: [DownloadedRide]
 
     var state: AsyncStream<ConnectionState> { base.state }
-    var battery: AsyncStream<Int> { base.battery }
-    var storeChanges: AsyncStream<StoreChanged> { base.storeChanges }
     func connect() async throws { try await base.connect() }
     func disconnect() async { await base.disconnect() }
     func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
-    func readConfig() async throws -> DeviceConfig { try await base.readConfig() }
-    func writeConfig(_ config: DeviceConfig) async throws { try await base.writeConfig(config) }
     func listRoutes() async throws -> [RouteCatalogEntry] { try await base.listRoutes() }
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func listRides() async throws -> RideCatalog { try await base.listRides() }
     func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
-    func readDiagnostics() async throws -> Data { try await base.readDiagnostics() }
 
     func downloadRides(_ ids: [RideID]) -> RideDownload {
         let (stream, continuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()

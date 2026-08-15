@@ -63,18 +63,18 @@ public struct OBCUHeader: Equatable, Sendable {
         guard bytes.count >= length else { return nil }
         let b = bytes.startIndex
         guard Array(bytes[b ..< b + 4]) == magic else { return nil }
-        guard bytes.readLE(at: b + 4) as UInt16 == version else { return nil }
-        let storedCRC: UInt32 = bytes.readLE(at: b + 60)
+        guard bytes.readUInt16LE(at: b + 4) == version else { return nil }
+        let storedCRC = bytes.readUInt32LE(at: b + 60)
         guard storedCRC == CRC32.checksum(bytes[b ..< b + headerCRCLength]) else { return nil }
         let versionField = bytes[b + 16 ..< b + 16 + fwVersionFieldLength]
         let end = versionField.firstIndex(of: 0) ?? versionField.endIndex
         let fw = String(decoding: versionField[versionField.startIndex ..< end], as: UTF8.self)
         return OBCUHeader(
-            imageLength: bytes.readLE(at: b + 8),
-            imageCRC32: bytes.readLE(at: b + 12),
+            imageLength: bytes.readUInt32LE(at: b + 8),
+            imageCRC32: bytes.readUInt32LE(at: b + 12),
             fwVersion: fw,
-            sigScheme: bytes.readLE(at: b + 48),
-            sigLength: bytes.readLE(at: b + 50)
+            sigScheme: bytes.readUInt16LE(at: b + 48),
+            sigLength: bytes.readUInt16LE(at: b + 50)
         )
     }
 }
@@ -178,18 +178,5 @@ extension FirmwareInstallResult {
         case .error: self = .rejected
         case .unknownCommand: self = .unsupported
         }
-    }
-}
-
-// MARK: - Little-endian reads (mirrors TransferDescriptor's private helpers)
-
-extension Data {
-    fileprivate func readLE(at index: Index) -> UInt16 {
-        UInt16(self[index]) | (UInt16(self[index + 1]) << 8)
-    }
-
-    fileprivate func readLE(at index: Index) -> UInt32 {
-        UInt32(self[index]) | (UInt32(self[index + 1]) << 8)
-            | (UInt32(self[index + 2]) << 16) | (UInt32(self[index + 3]) << 24)
     }
 }

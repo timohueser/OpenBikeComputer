@@ -30,94 +30,6 @@
 //! `ble` builds additionally source HFCLK from the **crystal** (an MPSL hard requirement) and
 //! leave LFCLK on the MPSL-calibrated internal RC (see `ble.rs` — the unprogrammed XO INTCAPs).
 //!
-//! ============================ Peripheral / pin plan ============================
-//! Pin names are the embassy-nrf `P{port}_{pin}` form (e.g. `P2_09` = GPIO port 2, pin 9).
-//! LED/button/VCOM assignments are the nRF54LM20-DK's. The three GPIO ports have different reach: P2 =
-//! MCU domain (fast, ≤64 MHz — the FLPR's toggle domain), P1 = PERI domain (≤8 MHz), P0 = LP domain.
-//!
-//! ## On-board LEDs (active-HIGH)
-//!   LED1 **P1_25** is the liveness heartbeat. (LED0's pin P1.22 carries `VCOM`, so its buffered LED
-//!   shimmers at 60 Hz — a free "COM is alive" light.)
-//!
-//! ## Push-buttons (active-LOW, internal pull-up) — the UI input
-//!   BTN0 P1_26 UP | BTN1 P1_09 DOWN | BTN2 P1_08 BACK | BTN3 P0_05 SELECT
-//! Map to obc-platform's board-agnostic `ButtonInput` debouncer → the shared gesture recogniser.
-//! Roles: BTN0/1 → Up/Down Step∓1, BTN3 → Select press/hold, BTN2 → Back/back-hold
-//! (`ButtonInput::new` order is up, down, select, back). Read as plain **polled** `gpio::Input`
-//! (the debouncer samples levels each loop — no GPIOTE async wait needed). They stay free because
-//! the display lives on P2 (below).
-//!
-//! ## Display — LS021B7DD02 via the FLPR coprocessor
-//!   The reflective memory-LCD is driven by the nRF's **FLPR** (VPR RISC-V) coprocessor, which
-//!   scans the resident RGB222 framebuffer straight out of shared SRAM and packs each line to the
-//!   panel's parallel gate/source wire itself — no SPIM, no full-frame second buffer (issue #347).
-//!   The M33 holds the panel's gate + source + COM lines as plain GPIO for the program's life. The
-//!   panel's logic wants 3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V**
-//!   (VDDM, in the Board Configurator — HW guide §2.2.1). The display path presents through the
-//!   board-agnostic display contracts (`obc_display::display_contracts`), so the rendering stack
-//!   never couples to the panel.
-//!
-//! ## P2 — the one fast port, shared between the panel and the card (epic #1158)
-//!   All 11 P2 pins are in use. The microSD card's six pads are **fixed** by Nordic's sEMMC soft
-//!   peripheral; the panel's six source-data lines take the four pins the retired SD-SPI path freed
-//!   plus two pads time-shared with the card:
-//! ```text
-//!   sEMMC:    P2_00 D3   P2_01 CLK  P2_02 D0   P2_03 D2   P2_04 D1   P2_05 CMD
-//!   display:  R0 P2_06   R1 P2_08   G0 P2_09   G1 P2_10   B0 P2_00*  B1 P2_04*   BCK P2_07
-//!             (* shared — CTRLSEL flips per mode: GPIO for the display blob, VPR for sEMMC)
-//!   gate:     GSP P1_10  GCK P1_11  GEN P1_12  INTB P1_13     BSP P1_14
-//!   COM:      P1_22/23/24  (M33-driven, or GPIOTE toggles with `com-hw`)
-//! ```
-//!   `main` claims the display's six data lines + `BCK` as plain `Output`s so the M33 owns their
-//!   direction and drive for the program's life. The four **card-only** pads (P2.01/02/03/05) are
-//!   deliberately *not* embassy peripherals: they belong to the soft peripheral, which configures
-//!   them per mode itself (`semmc::configure_storage_pads` / `configure_display_pads`). Two owners
-//!   for one pad would mean an `Output` drop could re-drive a card line mid-transfer.
-//!
-//!   The DK's on-board QSPI flash also lands on P2.00–P2.05; we never use it (maps live on the
-//!   card), so the **Board Configurator** electronically disconnects it ("external memory → GPIO on
-//!   the P2 header") — no soldering on current board revisions.
-//!
-//! ## microSD — map/route/track storage, in native 4-bit SD mode
-//!   **No SPI instance, no chip-select.** The FLPR runs Nordic's sEMMC image and *is* the SD host
-//!   controller: 4-bit, 32 MHz reads (14.7 MB/s measured) and 21.3 MHz writes (8.2 MB/s), against
-//!   1.07 MB/s over the SPI path this replaced. `semmc.rs` is the M33-side driver, `flpr_mux.rs`
-//!   decides which of the two soft-peripheral images owns the coprocessor at any instant (29 µs to
-//!   storage, 138 µs back; the card keeps its state across a switch), and `sd.rs` is unchanged above
-//!   its `BlockDevice`. Bring-up is deliberately **synchronous** — see `sd::init`'s frame note.
-//!
-//! ## VCOM UARTE — debug-sensor / telemetry stream
-//!   Instance **SERIAL20 / UARTE20**, the DK's `chosen` console wired to the onboard J-Link's
-//!   USB-CDC VCOM: TX P1_04 | RX P1_05. Brought up **2-wire (no RTS/CTS)**, so the DK's VCOM
-//!   **hardware flow control must be disabled** (Board Configurator — see the crate README);
-//!   otherwise device→host telemetry still flows but host→device (the fake-sensor feed + input
-//!   injection) is silently gated off on the un-driven RTS. The nRF54L15 has **no USB peripheral**,
-//!   so the fake GPS/baro/compass feed and ride telemetry ride this UART; defmt logs ride RTT on
-//!   the same cable. obc-platform's debug-source protocol is transport-agnostic, so it runs over
-//!   the UART unchanged.
-//!
-//! ## Spare interrupt for the high-priority InterruptExecutor
-//!   Input + the overlay run on a high-priority `InterruptExecutor` that preempts the map render,
-//!   pended from a dedicated **software-interrupt vector**: **SWI01** (**SWI00 belongs to MPSL**
-//!   on `ble` builds — see the ladder below — so the executor sits on SWI01 in every build). Runs
-//!   at **P3** — above thread mode (so it preempts the map render) but below the P0 GRTC
-//!   time-driver (so `Timer`s still wake mid-render).
-//!
-//! ## Interrupt priority ladder (reconciled with the BLE stack)
-//!   - **P0 (highest)**: the GRTC time driver (`GRTC_0`) — and, on `ble` builds, MPSL's
-//!     timing-critical lane (`RADIO_0`, `TIMER10`, `GRTC_3`; MPSL raises these itself).
-//!   - **P1 (embassy default)**: on `ble` builds MPSL's low-priority scheduling (**`SWI00`** — why
-//!     the input executor sits on SWI01) + `CLOCK_POWER`; plus the default-priority peripheral
-//!     ISRs every build has (VCOM UARTE, RRAMC, the EGU20 frame-ack — the FLPR's per-frame doorbell
-//!     the async present awaits, #347 — and `VPR00`, the sEMMC completion event, #1158).
-//!   - **P3**: the SWI01 `InterruptExecutor` (input/bulge plane + the DK COM task) and the
-//!     SERIAL22 sensor-bus ISR.
-//!   - **Thread mode**: the map plane (`run_app`), the BLE stack (`ble::run`, `ble` builds), and the sensor task.
-//!
-//!   MPSL's P0 lane preempts everything, including the P3 planes — safe by construction for the
-//!   panel: the FLPR scans the framebuffer autonomously (#347), so M33 preemption can no longer
-//!   stretch a frame push at all (only the ack's delivery, which is untimed).
-//!
 //! ## Flash / RAM
 //!   From the `memory.x` build.rs emits (#617): the app's FLASH is 1484K @ **0x0000_8000** — the
 //!   32K below is the `obc-boot` bootloader (flash it once, then iterate here exactly as before;
@@ -130,6 +42,7 @@
 #![no_std]
 #![no_main]
 
+mod board;
 mod sd;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
 // native 4-bit SD mode, 32 MHz reads / 21.3 MHz writes. `sd.rs`'s whole transport.
@@ -150,13 +63,10 @@ mod arena;
 mod com;
 // Zero-CPU hardware COM: drive the COM square wave from a TIMER→DPPI→GPIOTE toggle chain instead of
 // the M33 `com_task`, so the panel's anti-DC-bias COM keeps alternating with no core wakes and the M33
-// can WFI between events. Opt-in (`com-hw`) + production-board-only — the DK wires COM on P2, which has
-// no GPIOTE — so the default DK build keeps `com::com_task`. See `com_hw.rs`.
+// can WFI between events. The opt-in path and the default `com::com_task` both own the canonical
+// P1.22/P1.23/P1.24 COM nets; hardware-waveform verification is why `com-hw` stays off by default.
 #[cfg(feature = "com-hw")]
 mod com_hw;
-// (`com-hw`'s COM pins moved to P1.06/07/13 on the LM20 — GPIOTE20-capable and clash-free with
-// the VCOM UART on P1.16/17, so `com-hw` + `debug-uart` now compose. The whole harness rides
-// two DK headers: port P1 for gates+sensors+COM, port P2 for display data + SD.)
 // The LS021/FLPR panel — this crate's display-contract presenter backend (the impls are folded in
 // at the bottom of the module), the single screen-write interface the map plane drives through
 // (`fb_mut` + `present`). The seam itself + the other backend (the simulator) live in obc-platform.
@@ -179,7 +89,7 @@ mod settings;
 // the debug-link status stream, and the ride loop's trial confirm. In every build; the
 // `dfu-install` trigger itself rides the `debug-uart` link until S5's UI lands.
 mod dfu;
-// Real GPS (SAM-M10Q) + altimeter (BMP581) on a shared TWIM30 I²C bus — the concrete transport + the
+// Real GPS (SAM-M10Q) + altimeter (BMP581) on the shared TWIM22 I²C bus — the concrete transport + the
 // event-driven sensor task. Compiled only on the **real-sensor** build (the default: neither `synth`
 // nor `debug-uart`), since `synth`/`debug-uart` supply the location source instead.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
@@ -216,21 +126,16 @@ mod object_store;
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
-#[cfg(any(feature = "debug-uart", not(feature = "synth")))]
-use embassy_nrf::{bind_interrupts, peripherals};
+#[cfg(feature = "debug-uart")]
+use embassy_nrf::peripherals;
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 
-use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-use embassy_nrf::wdt;
-// The shared GPS/altimeter I²C bus — real-sensor build only.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use embassy_nrf::twim::{self, Twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -242,7 +147,6 @@ use embassy_sync::mutex::Mutex;
 use obc_app::InputPlane;
 use obc_app::{App, AppState};
 use obc_display::ls021::{RowDiff, FRAME_H, FRAME_W};
-use obc_platform::ButtonInput;
 use obc_reader::{MapCache, MapTables, MountedSet};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
@@ -267,38 +171,7 @@ use map_plane::{show_boot_fault, MapDisplay};
 // J-Link VCOM. `BufferedUarte` keeps RX DMA continuously armed into a ring driven by the SERIAL20
 // interrupt, so the tens-of-ms map render never drops a streamed byte. 8N1 @ 115200.
 #[cfg(feature = "debug-uart")]
-use embassy_nrf::buffered_uarte::{self, BufferedUarte, BufferedUarteRx, BufferedUarteTx};
-#[cfg(feature = "debug-uart")]
-use embassy_nrf::uarte;
-
-/// **The sEMMC completion vector** (epic #1158). VEVIF event 20 → `VPR00_IRQn`: the soft
-/// peripheral's transfer-complete signal, the short circuit in `Semmc::wait_completion`'s bounded
-/// poll. Bound raw (not through `bind_interrupts!`) for the same reason the display's `EGU20` is —
-/// there is no embassy driver behind it, just a VRI event and a latched VEVIF flag the handler must
-/// clear or the level-triggered line re-fires forever.
-///
-/// The NVIC line is enabled once at bring-up (below, beside `EGU20`'s); the *gates* — the VRI
-/// `INTEN` and `VPR00.INTENSET` bit 20 — are armed by `Semmc::boot_firmware` on every boot, because
-/// `INTENSET` writes are silently dropped while the VPR core is stopped (measured 2026-08-05).
-#[interrupt]
-unsafe fn VPR00() {
-    semmc::on_vpr00_irq();
-}
-
-// VCOM UARTE20 RX/TX → the `BufferedUarte`'s interrupt-fed ring buffers.
-#[cfg(feature = "debug-uart")]
-bind_interrupts!(struct UartIrqs {
-    SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
-});
-
-// TWIM22 (== SERIAL22) backs the shared GPS + altimeter I²C bus on P1 — one header for the whole
-// harness; bound only on the real-sensor build. (TWIM30 would force the bus onto P0: the LP-domain
-// instance is P0-only.)
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-bind_interrupts!(struct SensorIrqs {
-    SERIAL22 => twim::InterruptHandler<peripherals::SERIAL22>;
-});
-
+use embassy_nrf::buffered_uarte::{BufferedUarteRx, BufferedUarteTx};
 // ============================ Board memory budget ============================
 // The nRF54L15 has 256 KB RAM and no external RAM, so the whole resident working set of a full map
 // redraw must fit there. This build-time assert fails the build — rather than overflowing RAM on
@@ -1001,23 +874,7 @@ static SENSOR_HUB: obc_platform::SensorHub = obc_platform::SensorHub::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    // Run the M33 at its full **128 MHz** — embassy-nrf's `Config::default()` boots it at only
-    // 64 MHz (`ClockSpeed::CK64`), which halves the M33's map render (the CPU-bound `render_map` +
-    // the RGB222 quantise into the framebuffer). The FLPR then scans that framebuffer itself, so the
-    // render is the M33's biggest per-frame cost — this is the single biggest frame-time lever.
-    let p = {
-        let mut config = embassy_nrf::config::Config::default();
-        config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
-        // BLE: the HF **crystal** is an MPSL hard requirement (radio timing); LFCLK stays the internal
-        // RC, MPSL-calibrated — NOT the 32 k crystal, whose internal load caps nothing programs on the
-        // nRF54L yet (off-frequency LFXO → HCI 0x3E on every connect). See `ble.rs`.
-        #[cfg(feature = "ble")]
-        {
-            config.hfclk_source = embassy_nrf::config::HfclkSource::ExternalXtal;
-            config.lfclk_source = embassy_nrf::config::LfclkSource::InternalRC;
-        }
-        embassy_nrf::init(config)
-    };
+    let p = board::init!();
 
     // Arm the hardware stack limit first (#677 — overflow = an immediate, precise fault, never
     // silent corruption of the statics below the stack), then paint the stack (still shallow) so
@@ -1030,18 +887,10 @@ async fn main(_spawner: Spawner) {
     // the staged version after an install (epic #615 S4).
     info!("obc-fw-nrf54l {=str}+{=str}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
 
-    // Why did this boot happen? (#349) `RESETREAS` @ 0x5010_E600 (the secure RESET block; raw MMIO
-    // — the same precedent as the VPR00/EGU20 registers in `ls021_flpr`). A **watchdog** reset
-    // (dog0 = our WDT31/`WDT0` instance) is logged distinctly — it means a plane wedged and the
-    // dog fired last session. Write-1-to-clear, cleared here so the *next* boot reads only its own
-    // cause; the raw mask is also annotated onto the RRAM boot-counter line below.
     let reset_reas = {
-        const RESETREAS: *mut u32 = 0x5010_E600 as *mut u32;
-        let v = unsafe { RESETREAS.read_volatile() };
-        unsafe { RESETREAS.write_volatile(v) }; // W1C
+        let v = board::take_reset_reason!();
         if v & 0x6 != 0 {
-            // bits 1..2 = the two watchdogs. On-glass: the `WDT0` instance this build feeds
-            // (= the WDT31 block) reports as **bit 2** — don't trust the PAC's dog0/dog1 naming.
+            // Bits 1..2 are the two watchdogs. The WDT31/WDT0 instance used here reports as bit 2.
             defmt::error!("boot: WATCHDOG reset (RESETREAS=0x{=u32:08x}) — a plane wedged last session", v);
         } else {
             defmt::info!("boot: RESETREAS=0x{=u32:08x}", v);
@@ -1062,7 +911,7 @@ async fn main(_spawner: Spawner) {
         // live while the SD card + panel come up; the parsed fixes land in obc-platform's signals, ready
         // for the app's sensor poll in the loop below. The nRF54L15 has no USB peripheral, so the fake
         // GPS/baro/compass feed and ride telemetry ride UARTE20 on the DK's onboard J-Link VCOM (TX
-        // P1_04 / RX P1_05); defmt logs share the same cable over RTT. The RX ring is interrupt-fed
+        // P1_16 / RX P1_17); defmt logs share the same cable over RTT. The RX ring is interrupt-fed
         // (`BufferedUarte`), so the tens-of-ms map render never drops a byte. Without the feature the app
         // rides the always-on `SynthLocation` stand-in. ---
         #[cfg(feature = "debug-uart")]
@@ -1084,41 +933,19 @@ async fn main(_spawner: Spawner) {
                     init_static(core::ptr::addr_of_mut!(TX_BUF), [0; 256]),
                 )
             };
-            let uart = BufferedUarte::new(
-                p.SERIAL20,
-                p.P1_17, // RXD: host → device (fixes / input injection)
-                p.P1_16, // TXD: device → host (telemetry)
-                UartIrqs,
-                uarte::Config::default(), // 8N1 @ 115200 — matches `obc-usb-host`'s default baud
-                rx_buf,
-                tx_buf,
-            );
+            let uart = board::input_hardware!(uart p, rx_buf, tx_buf);
             let (rx, tx) = uart.split();
             _spawner.spawn(defmt::unwrap!(vcom_rx_task(rx, SENSOR_HUB.injector())));
             _spawner.spawn(defmt::unwrap!(vcom_tx_task(tx)));
             info!("VCOM debug sensors up on UARTE20 (J-Link VCOM 'UART1', TX P1_16 / RX P1_17) @ 115200");
         }
 
-        // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
-        // mapping: BTN0 UP, BTN1 DOWN, BTN3 SELECT, BTN2 BACK — `new(up, down, select, back)`.
-        // Shared by both backends — their pins (P1.13/09/08, P0.04) clash with neither panel's bus.
-        let buttons = ButtonInput::new(
-            Input::new(p.P1_26, Pull::Up), // BTN0 UP     → Step(-1)
-            Input::new(p.P1_09, Pull::Up), // BTN1 DOWN   → Step(+1)
-            Input::new(p.P0_05, Pull::Up), // BTN3 SELECT → Select press / hold
-            Input::new(p.P1_08, Pull::Up), // BTN2 BACK   → back / back-hold
-        );
-        // The high-priority plane(s) run at P3 — above thread mode (so they preempt the map render) and
-        // below the P0 GRTC time-driver (so their `Timer`s still wake mid-render). Shared vector (SWI01
-        // — SWI00 is MPSL's low-prio lane on `ble` builds).
-        interrupt::SWI01.set_priority(Priority::P3);
+        // The board owns active-low/pull-up pin order; the input plane owns gesture semantics.
+        let buttons = board::input_hardware!(buttons p);
 
-        // --- Real GPS + altimeter on the shared TWIM30 I²C bus. Default build only (neither `synth` nor
-        // `debug-uart`). Build the bus + the TX-Ready interrupt line on the free P0 pins and spawn the
-        // event-driven sensor task on the thread-mode executor; it probes both chips, configures the M10,
-        // and publishes coherent (fix, altitude, temperature) datapoints through its
-        // `SensorTaskLink` into `SENSOR_HUB`, which `run_app`'s consumer sources drain. The task is
-        // fully async (TWIM is DMA-backed). SERIAL22's ISR runs at P3. ---
+        // --- Real GPS + altimeter, default build only. The event-driven sensor task probes both
+        // chips and publishes coherent datapoints into `SENSOR_HUB`; board owns TWIM22/TX-ready and
+        // its P3 interrupt policy. ---
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         {
             // EasyDMA can't fetch a write buffer from flash, so byte-literal register writes need a RAM
@@ -1127,16 +954,7 @@ async fn main(_spawner: Spawner) {
             static mut TWIM_TX_BUF: MaybeUninit<[u8; 32]> = MaybeUninit::uninit();
             // SAFETY: written once here, then owned solely by the `Twim` for the program's life.
             let twim_tx = unsafe { init_static(core::ptr::addr_of_mut!(TWIM_TX_BUF), [0u8; 32]) };
-            let mut twim_cfg = twim::Config::default();
-            twim_cfg.frequency = twim::Frequency::K400; // fast-mode; both chips' DDC/I²C support it
-            twim_cfg.sda_pullup = true; // belt-and-braces over the Qwiic board's external pull-ups
-            twim_cfg.scl_pullup = true;
-            // SDA P1.04 sits beside the clock-capable SCL P1.03 (the datasheet's data-near-clock rule).
-            let twim = Twim::new(p.SERIAL22, SensorIrqs, p.P1_04, p.P1_03, twim_cfg, twim_tx);
-            interrupt::SERIAL22.set_priority(Priority::P3);
-            // TX-Ready (DDC data-ready) on the lone spare GPIO. Active-high, so pull down: a floating
-            // / unconfigured line then reads low and the task's poll fallback drives fixes instead.
-            let txready = Input::new(p.P1_05, Pull::Down);
+            let (twim, txready) = board::input_hardware!(sensors p, twim_tx);
             _spawner.spawn(defmt::unwrap!(sensors::sensor_task(twim, txready, SENSOR_HUB.task_link())));
             info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM22 (SDA P1.04 / SCL P1.03, TX-Ready P1.05)");
         }
@@ -1148,8 +966,8 @@ async fn main(_spawner: Spawner) {
         // share the one high-priority executor (COM must keep alternating whatever the map plane does).
         //
         // ⚠️ These five P1 gate/BSP lines **must match `src/flpr/flpr_scan.c`'s masks** — confirm
-        // each is broken out on your DK and remap all three together if not (the source bus, BCK, and
-        // COM stay on P2).
+        // each is broken out on your DK and remap all three together if not (the source bus and BCK
+        // stay on P2; COM is the P1.22–24 group pinned in `board`).
         let mut display = {
             // Gate + frame lines: one contiguous P1.10–14 run (with BSP below) so the gate harness
             // is a single uninterrupted cable on the DK's port-1 header. (P1.01/02 stay NFC.)
@@ -1186,13 +1004,10 @@ async fn main(_spawner: Spawner) {
             // init-black frame below, then started. Default (DK): three plain `Output`s the M33
             // `com_task` toggles at 60 Hz — VCOM=P1.22, VB=P1.23 in phase, VA=P1.24 inverse. COM lived
             // on P2.07/08/10 until the #1158 rehome gave the whole of P2 to the source bus + the microSD
-            // card (those three are `BCK`/`R1`/`G1` now); P1.22–24 have no GPIOTE either, so the default
-            // build still drives them from the M33. With `com-hw` (production board): the COM lines are
-            // GPIOTE **toggle** channels a TIMER+DPPI free-runs with zero CPU (so the M33 can WFI
-            // between events) — GPIOTE-capable P1 pins, all on GPIOTE20, so one DPPI channel toggles
-            // them in lockstep. Those pins are **placeholders** (P1.04/05/15) to be matched to the
-            // production board's COM routing. `HwCom::start` establishes VA's inverse phase before
-            // enabling the toggle.
+            // card (those three are `BCK`/`R1`/`G1` now). With `com-hw`, the same P1.22–24 nets become
+            // GPIOTE20 **toggle** channels that a TIMER+DPPI chain free-runs with zero CPU (so the M33
+            // can WFI between events). `HwCom::start` establishes VA's inverse phase before enabling
+            // the toggle.
             #[cfg(not(feature = "com-hw"))]
             let (vcom, vb, va) = (
                 Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive),
@@ -1305,7 +1120,7 @@ async fn main(_spawner: Spawner) {
         // Arm the completion vector first: P1, the default peripheral lane, beside the display's
         // EGU20 frame-ack (the ISR is one store + a latched-event clear, so priority only has to
         // stay under the P0 GRTC driver). The per-boot *gates* are `Semmc::boot_firmware`'s.
-        // SAFETY: enabling an NVIC line whose handler is the `VPR00` vector above.
+        // SAFETY: enabling an NVIC line whose handler is bound in `board::VPR00`.
         unsafe {
             interrupt::VPR00.set_priority(Priority::P1);
             interrupt::VPR00.enable();
@@ -1525,20 +1340,6 @@ async fn main(_spawner: Spawner) {
         // one-shot read of a page this store already owns — see `dfu::seed_firmware_revision`.
         dfu::seed_firmware_revision(&mut settings_store);
 
-        // The hardware watchdog (#349): the last-resort net under both planes, fed by the ride
-        // loop (gated on the input plane's heartbeat) in every build. 24 s is generous on purpose: the
-        // dog must never fire on a slow frame or a long SD reconcile, only on a genuine wedge. It
-        // counts through sleep but **pauses under a debugger halt** (`HaltConfig::Pause`) so a
-        // breakpoint doesn't cascade into a reset — and so probe-rs can flash with the dog live.
-        // Once started a WDT can never be stopped; a warm reset carries it over, in which case
-        // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
-        // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
-        // period fires once and the next boot starts clean. Since DR1 (#729) the bootloader plays
-        // the same game from its side: it adopts + pets this dog across a DFU install (the arm's
-        // warm reset carries it in) and pre-starts an identical one before jumping into a trial
-        // boot — which is then exactly what this `try_new` adopts. The config contract (timeout,
-        // halt/sleep behavior, one handle) is documented on `obc_dfu::WDT_TIMEOUT_TICKS`.
-        //
         // INVARIANT (#729): because EVERY trial boot now enters with the dog already counting,
         // everything between app entry and this line must complete well inside one WDT period
         // (24 s) on a trial boot — or the dog resets a perfectly healthy trial image and the
@@ -1546,16 +1347,11 @@ async fn main(_spawner: Spawner) {
         // upstream (a missing/slow card does NOT block boot — the build idles without one).
         // Keep it that way: never move a blocking or open-ended retry loop (SD mount, sensor
         // bring-up) above this point.
-        let wdt_handle = {
-            let mut cfg = wdt::Config::default();
-            cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;
-            cfg.action_during_debug_halt = wdt::HaltConfig::Pause;
-            match wdt::Watchdog::try_new::<_, 1>(p.WDT0, cfg) {
-                Ok((_wdt, [handle])) => Some(handle),
-                Err(_) => {
-                    defmt::warn!("WDT: already running with a foreign config — cannot feed it; expect one reset");
-                    None
-                }
+        let wdt_handle = match board::watchdog!(p.WDT0, ride::WDT_TIMEOUT_TICKS) {
+            Ok((_wdt, [handle])) => Some(handle),
+            Err(_) => {
+                defmt::warn!("WDT: already running with a foreign config — cannot feed it; expect one reset");
+                None
             }
         };
 
@@ -1678,51 +1474,9 @@ async fn main(_spawner: Spawner) {
             link::LinkStores { shared: shared_store, objects, epoch: _store_epoch }
         };
 
-        // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
-        // + TEMP + its PPI/PPIB lanes; SDC: the PPI10 fan-out + PPIB bridges; CRACEN for the LL's crypto
-        // RNG) and spawn [`spawn_ble_stack`] — the trampoline that spawns [`ble::run`] from a shallow
-        // poll frame (see its doc: constructing the ~31 KB `ble::run` future in `main` put a ~31 KB
-        // temporary slot in **`main`'s poll frame**, allocated at frame entry, which overflowed the
-        // combined build's ~40 KB stack before the first line of `main` ran — #270). Nothing here
-        // clashes with the rest of `main` (embassy's GRTC time driver allocates channels from CH0 up;
-        // TIMER10/20 and the PPI lanes are otherwise unused). ---
         #[cfg(feature = "ble")]
         {
-            let mpsl_p = nrf_sdc::mpsl::Peripherals::new(
-                p.GRTC_CH7,
-                p.GRTC_CH8,
-                p.GRTC_CH9,
-                p.GRTC_CH10,
-                p.GRTC_CH11,
-                p.TIMER10,
-                p.TIMER20,
-                p.TEMP,
-                p.PPI10_CH0,
-                p.PPI20_CH1,
-                p.PPIB11_CH0,
-                p.PPIB21_CH0,
-            );
-            let sdc_p = nrf_sdc::Peripherals::new(
-                p.PPI00_CH1,
-                p.PPI00_CH3,
-                p.PPI10_CH1,
-                p.PPI10_CH2,
-                p.PPI10_CH3,
-                p.PPI10_CH4,
-                p.PPI10_CH5,
-                p.PPI10_CH6,
-                p.PPI10_CH7,
-                p.PPI10_CH8,
-                p.PPI10_CH9,
-                p.PPI10_CH10,
-                p.PPI10_CH11,
-                p.PPIB00_CH1,
-                p.PPIB00_CH2,
-                p.PPIB00_CH3,
-                p.PPIB10_CH1,
-                p.PPIB10_CH2,
-                p.PPIB10_CH3,
-            );
+            let (mpsl_p, sdc_p) = board::radio_hardware!(p);
             // CRACEN goes to the LL's crypto RNG — already partial-moved out of `p` by the
             // store-epoch mint pass above (which only reborrowed it; see its comment). `store_epoch`
             // is the mint pass's outcome (the value the pre-pairing `protocolVersion` read serves;

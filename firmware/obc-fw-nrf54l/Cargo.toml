@@ -25,7 +25,7 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # blob, so the build needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and the Board-Configurator
 # settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
 # The default build also drives the **real sensors** (issue #218): a u-blox SAM-M10Q GPS + a Bosch
-# BMP581 altimeter on a shared TWIM30 I²C bus (P0.01/02/03). `obc-platform/sensor-link` pulls the
+# BMP581 altimeter on a shared TWIM22 I²C bus (P1.04/03/05). `obc-platform/sensor-link` pulls the
 # embassy-sync `Signal` hand-off the board's `sensors::sensor_task` publishes through. Real sensors
 # are the *baseline* — selected by the **absence** of `synth`/`debug-uart` — so a board with no Qwiic
 # hardware attached still builds and idles waiting for a fix (RTT shows the probes); for indoor work
@@ -54,7 +54,7 @@ sd-bench = []
 
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
-# telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);
+# telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_16 / RX P1_17);
 # defmt logs share the same cable over RTT. Brings up a `BufferedUarte` (interrupt-fed RX ring so a
 # long map render never drops bytes) and feeds `obc-platform`'s transport-agnostic debug codec +
 # fresh-fix sources into the app, replacing the real-sensor path with a recorded host ride. Off by
@@ -68,10 +68,9 @@ debug-uart = ["obc-platform/debug-link"]
 # Zero-CPU hardware COM driver (issue #219): generate the LS021 `VCOM`/`VB`/`VA` square wave from a
 # **TIMER → DPPI → GPIOTE** toggle chain instead of the M33 `com_task` GPIO toggle, so the panel's
 # anti-DC-bias COM keeps alternating with **no CPU wakes** and the M33 can WFI between events — the
-# lever that turns the event-driven loop into a real idle-power win. Requires the three COM lines on
-# **GPIOTE-capable pins** (P1/P3 → GPIOTE20, or P0 → GPIOTE30); on the DK they're stuck on P2 (no
-# GPIOTE), so this is **off by default** (the DK keeps `com_task`) and is the path the production
-# board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
+# lever that turns the event-driven loop into a real idle-power win. It owns the same canonical
+# P1.22/P1.23/P1.24 COM nets as the default driver, through GPIOTE20. This stays **off by default**
+# until its waveform is verified on glass and a logic analyzer. See `src/com_hw.rs` + `src/board.rs`.
 com-hw = []
 
 # Developer/CI-only compile-time allocation report. This adds a self-describing
@@ -126,7 +125,8 @@ embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54lm20-app-s", "tim
 # embassy-executor 0.10. `executor-thread`
 # is the thread-mode executor `#[embassy_executor::main]` runs on; `executor-interrupt` adds the
 # high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (#126 — pended from
-# the SWI00 vector, see the module doc). `platform-cortex-m` for the Cortex-M arch backend.
+# SWI01; see `src/board.rs`'s interrupt ladder and `src/input_plane.rs`'s executor contract).
+# `platform-cortex-m` supplies the Cortex-M architecture backend.
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 # Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
 # high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared SD +

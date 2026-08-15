@@ -3,13 +3,6 @@
 Everything needed to build, run, watch, repair and rebuild the weather bakery. WX18 (#1206) of
 epic #1185.
 
-> **The mosaic cutover has not been executed yet (WXR8 #1247).** The repository builds a baker that
-> publishes **only** the one mosaic dataset at `wx/v2/`; the **deployed VPS is still running the
-> previous build**, so `wx/v1` is what is actually being served right now. Everything below
-> describes the service *after* the cutover. **[The cutover](#the-cutover--do-this-once-in-this-order)
-> is the section to read first**, and it is the only place the two states are both described.
-> Delete that section, and this banner, once it has been executed.
-
 The service is **one stateless publisher**: a small VPS runs `obc-wx-bake` on a systemd timer, each
 tick fetches upstream radar/model data, mosaics them onto one global lattice, and swaps one
 `manifest.json` in R2. Nothing else exists — no database, no accounts, no per-request compute, no
@@ -49,217 +42,16 @@ On the box:
 
 ---
 
-## The cutover — do this once, in this order
+## Deployed shape
 
-**Status: not executed.** Ordering matters even pre-release, because the bucket is live, the timers
-are live, and there are shipped clients reading `wx/v1`. Do not improvise the order: the two
-irreversible-feeling steps (retiring the per-adapter timers, deleting the v1 tree) are both late,
-and everything before them is a rehearsal you can walk away from.
+Production has one publisher, one schedule, and one public dataset:
 
-**C0 — Silence the alarm honestly, before this repository's probe reaches the runner.**
-The probe reads `wx/v2/manifest.json` and nothing else now, and the live service does not publish
-one yet, so the first scheduled run after this lands would report **UNREACHABLE** and open an alert
-issue about a service that is working fine. Clear the repository variable `OBC_WX_BASE_URL`
-(GitHub → *Settings* → *Secrets and variables* → *Actions* → *Variables*). The workflow reports
-"skipped" and passes — that is the same contract that covers a project with no service deployed at
-all. **C8 restores it.** While it is cleared, the only weather monitoring is your own eyes on the
-journal; do not leave it cleared overnight.
+- `/usr/local/bin/obc-wx-bake cycle --r2` is the only deployed publisher.
+- `obc-wx-bake@cycle.timer` runs every 15 minutes.
+- R2 serves `wx/v2/`; no compatibility tree or parallel publisher is maintained.
 
-**C1 — Rehearse into a directory, on the box, publishing nothing — and rehearse the *sweep*.**
-`--store <dir>` is a first-class destination, not a debug mode: it writes the identical tree R2
-gets. One run is not enough: a fresh directory has no predecessor manifest, so the sweep has nothing
-to do, and repeating the command inside the same quarter hour only re-bakes the same generation.
-`--now` is what makes four *distinct* generations, which is the point at which the first deletion
-happens.
-
-Two things differ from an `--r2` cycle, both on purpose. A directory publish writes its objects
-**sequentially** rather than eight at a time, and it is **unbudgeted** — the 240 s publish and 120 s
-sweep limits an `--r2` cycle holds itself to do not apply. Both exist to bound a retry ladder over a
-network, and a local write has no ladder, no request timeout and no peer that can decline to answer;
-a deadline there would turn a slow disk into a failed rehearsal without making anything faster. So a
-rehearsal that takes its time is a disk to look at, not a publish to worry about — and conversely,
-a rehearsal cannot demonstrate that the real publish fits inside its budget.
-
-```sh
-ssh root@wx
-export PATH="$HOME/.cargo/bin:$PATH"      # cargo is NOT on root's default PATH — see C2
-REH=/var/lib/obc-wx/rehearsal; rm -rf $REH
-# Four anchors walking *forward* to now, so upstream actually has data for each and each cycle is
-# newer than the last (a cycle older than the published manifest refuses to publish — by design).
-for M in 45 30 15 0; do
-  sudo -u obc-wx /tmp/obc-wx-bake cycle --store $REH --now "$(date -u -d "-$M min" +%Y-%m-%dT%H:%M:00Z)"
-done
-ls $REH/wx/v2/                # EXACTLY three generation directories + manifest.json
-python3 ops/weather/freshness_probe.py --manifest $REH/wx/v2/manifest.json
-```
-
-The fourth run must print `retired <the first generation> (N objects)` and the listing must show
-**three** generations, not four — that is the whole retention contract executed end to end, against
-a store you can delete with `rm -rf`, before the first destructive operation this crate has ever had
-runs against live R2. The probe must exit `0`.
-
-Then read the tree the way a client does — `rclone serve` answers Range requests, which
-`python3 -m http.server` does not, and Range is the whole of corridor extraction:
-
-```sh
-rclone serve http --addr 127.0.0.1:8080 $REH &
-obc-wx-client --service http://127.0.0.1:8080 --lat 48.0 --lon 7.85   # or the sim's --weather live
-```
-
-Nothing has touched R2 at this point, and nothing has to.
-
-**C2 — Deploy the binary.** Build on the box or copy one in (§2). The PATH line above is not
-optional advice: `cargo` lives in `$HOME/.cargo/bin` and is not on root's default PATH, so a
-rebuild without it fails with `cargo: command not found` and nothing else.
-
-```sh
-sudo cp /usr/local/bin/obc-wx-bake /usr/local/bin/obc-wx-bake.prev    # your rollback, C9
-export PATH="$HOME/.cargo/bin:$PATH"
-sudo ops/weather/install.sh --from-source develop      # or --binary /tmp/obc-wx-bake
-```
-
-**C3 — Re-run `install.sh` and let it retire the old timers.** The command above already did; if
-you deployed the binary by hand, run it now. One run does both halves: it installs
-`obc-wx-bake@cycle.timer` from `adapters.conf`'s single row, and disables and removes every
-per-adapter timer that row replaced.
-
-`install.sh` **refuses to run against a binary that predates #1246**, and that check is
-load-bearing rather than belt-and-braces. `cycle` is also the name of a subcommand the *old* binary
-had — one that baked four v1 products — so the installer's usual "skip a subcommand this binary does
-not know" probe cannot tell a misordered cutover from a correct one, and a misordered run would
-quietly replace every per-adapter timer with a v1 multi-product cycle on a 15-minute timer. It
-therefore tests for a subcommand only the old binary has (`dwd-rv`) and dies with the reason if it
-finds one. If you see that message, you skipped C2.
-
-Verify the timer set is exactly one row:
-
-```sh
-systemctl list-timers --all 'obc-wx-bake@*'    # expect obc-wx-bake@cycle.timer, *:0/15, and nothing else
-```
-
-**C4 — Watch the first real cycle.**
-
-```sh
-sudo systemctl start obc-wx-bake@cycle.service      # ALWAYS through the unit — never `obc-wx-bake cycle --r2`
-sudo journalctl -u obc-wx-bake@cycle.service -n 80 --no-pager
-```
-
-A healthy first publish prints `publishing to r2 bucket obc-wx via https://<account>.r2…`, a line
-per mosaic source, then `published … objects / … bytes`. There is **no** `retired …` line on the
-first three cycles and that is correct: nothing has fallen off the retention chain yet.
-
-Two things about that command are worth knowing before you type it anywhere else in this runbook.
-**Start bakes through the unit, always.** The `flock` that stops two cycles overlapping lives in the
-unit's `ExecStart`, not in the binary, so a bare `obc-wx-bake cycle --r2` runs outside it — and the
-loser of that race republishes an older manifest over a newer one, naming generations the newer
-cycle's sweep already deleted. The baker refuses to publish a manifest older than the one at the key,
-so the mistake costs a tick rather than an outage, but the lock is what stops it arising.
-**And a hand-started bake trips the cadence guard once** (§5): it stamps whatever phase of the
-15-minute step you happened to run it at. That is a true statement about the live manifest, and it
-clears itself on the next scheduled tick.
-
-**C5 — Verify the first generation on R2, by hand.** These are §4's checks against the new tree; do
-them now rather than trusting the journal.
-
-```sh
-BASE=https://wx.openbikecomputer.com
-curl -sI $BASE/wx/v2/manifest.json                       # 200, cache-control: public, max-age=60, must-revalidate
-curl -s  $BASE/wx/v2/manifest.json | head -c 400         # "version": 2, a generation, key_prefix wx/v2
-GEN=$(curl -s $BASE/wx/v2/manifest.json | sed -n 's/.*"generation": "\([^"]*\)".*/\1/p' | head -1)
-curl -sI $BASE/wx/v2/$GEN/f0/s0-0.obcg                   # 200, cache-control: …immutable
-curl -s -r 0-127 -o /dev/null -w '%{http_code} %{size_download}\n' $BASE/wx/v2/$GEN/f0/s0-0.obcg
-                                                          # 206 128 — Range is all corridor extraction is
-```
-
-`s0-0` is the shard to check because it is the one guaranteed to exist in every generation: shard
-row 0 reaches below `covered_rows.start`, so it always holds no-data cells, and only an
-*entirely dry* shard is omitted (`OBCG_Spec.md` §10.3).
-
-**C6 — Move the clients.** The phone app and the simulator have been v2-only since WXR5 (#1244) —
-there is no v1 reader left in this repository — so this step is releasing/installing those builds,
-not editing anything. Until an installed app is updated it is still reading `wx/v1`, which is why
-C7 comes after it and not before.
-
-**C7 — Watch the sweep, then delete the v1 tree by hand.** Wait for **four** cycles (~45 minutes,
-one full retention window). By then the fourth publish has retired the first generation, and the
-journal says so:
-
-```sh
-journalctl -u obc-wx-bake@cycle.service --since -1h --no-pager | grep -E 'retired|retention sweep'
-```
-
-Expect one `retired <generation> (N objects)` line per cycle from the fourth on, and **no**
-`retention sweep:` warning. Confirm from outside too — this is the check that the sweep is really
-collecting rather than reporting that it did:
-
-```sh
-python3 ops/weather/freshness_probe.py --url $BASE     # expect "ok  swept: … is gone"
-```
-
-Only now delete the old tree. It is a few GB, it has no readers left, and **nothing automatic will
-ever do this**: the baker's sweep only touches keys it published, under `wx/v2`, named by a manifest
-it wrote. Load the environment exactly as in §4 step 5 (as root, and close the shell afterwards):
-
-```sh
-set -a; . /etc/obc-wx/r2.env; set +a
-export RCLONE_CONFIG_OBCWX_TYPE=s3 RCLONE_CONFIG_OBCWX_PROVIDER=Cloudflare \
-       RCLONE_CONFIG_OBCWX_REGION=auto \
-       RCLONE_CONFIG_OBCWX_ENDPOINT="${OBC_WX_R2_ENDPOINT:-https://$OBC_WX_R2_ACCOUNT_ID.r2.cloudflarestorage.com}" \
-       RCLONE_CONFIG_OBCWX_ACCESS_KEY_ID="$OBC_WX_R2_ACCESS_KEY_ID" \
-       RCLONE_CONFIG_OBCWX_SECRET_ACCESS_KEY="$OBC_WX_R2_SECRET_ACCESS_KEY"
-
-# 1. Re-prove the blast radius. This token must NOT be able to see any other bucket — it is the
-#    only thing that bounds a slip of these commands to the weather bucket.
-rclone lsd obcwx:obc-maps                    # MUST fail with AccessDenied/403. If it succeeds, STOP.
-
-# 2. Look at what you are about to delete, twice, two different ways.
-rclone size obcwx:obc-wx/wx/v1/              # note the object count and the total
-rclone purge --dry-run obcwx:obc-wx/wx/v1/   # read the LAST line: same count, and every key under wx/v1/
-
-# 3. Only if step 2's two counts agree and every path printed starts with `wx/v1/`:
-rclone purge obcwx:obc-wx/wx/v1/
-rclone lsd   obcwx:obc-wx/wx/                # expect only v2/
-```
-
-The dangerous mistake here is **not** a typo — it is a *shortened* prefix. `obcwx:obc-wx/wx/` is a
-plausible thing to type and takes v2 with it, and a bare `rclone size` on it would print a
-believable number rather than an obvious error. That is what the `--dry-run` is for: it names keys,
-and `wx/v2/…` appearing in that output is unmissable in a way a byte total is not. The `lsd` in step
-1 is the outer bound — if the token can only see `obc-wx`, the worst a slip can reach is a tree the
-baker rebuilds within one tick.
-
-`purge` is the right verb here and the wrong one anywhere else: it is a prefix operation, typed by
-a human, once, against a prefix nothing publishes to any more. The baker has no such operation and
-must never grow one.
-
-**C8 — Turn the alarm back on.** In the same *Variables* screen:
-
-* set `OBC_WX_EXPECT_SOURCES` = `dwd-rv,mrms,opera-cirrus,opera-nimbus,hrrr,icon-eu,gfs` (every row
-  of `source::MOSAIC_PRIORITY`);
-* **delete** `OBC_WX_EXPECT` — it named v1 products and has nothing left to mean. The probe accepts
-  and ignores `--expect` rather than crashing, so a forgotten variable is harmless, but leaving it
-  is leaving a lie in the configuration;
-* restore `OBC_WX_BASE_URL`.
-
-Then run the workflow once by hand (*Actions → Weather freshness → Run workflow*) and read the
-summary rather than waiting for the schedule.
-
-**C9 — Rollback, and what it costs *the clients*, not the baker.** No published object has any
-state in it, so the box is trivially reversible at every step — but that is the least interesting
-half. What decides how expensive a rollback is, is which tree the phones in people's pockets are
-reading, and that changes at **C6**:
-
-| You are at | Rollback | Cost to riders |
-| :-- | :-- | :-- |
-| before C2 | nothing to undo | none |
-| C2–C5 (v2 publishing, clients still on v1) | `cp /usr/local/bin/obc-wx-bake.prev /usr/local/bin/obc-wx-bake`, then re-run `install.sh` **from the old checkout** — it reads `adapters.conf` from the tree it is run out of, so the old per-adapter rows come back with it | **none.** Every shipped client is still reading `wx/v1`, which never stopped being published. The orphaned `wx/v2` tree is collected by the 1-day lifecycle rule (T4); nothing sweeps it, because nothing publishes to it |
-| **after C6** (clients updated), v1 still there | the same command | **a weather outage for everyone who updated**, lasting until you roll forward — not one tick. Their build reads `wx/v2` only (v2-only since WXR5), and the rolled-back baker does not publish it. Riders see MET's hourly data and **WEATHER UPDATE NEEDED**, never wrong weather, but they see it for as long as the rollback lasts |
-| after C7, v1 deleted | the same command. The old baker is stateless: it finds no `wx/v1/manifest.json`, rebakes from upstream and republishes the tree within one tick of each timer | the same outage as the row above, and **the deletion adds nothing to it** — there is no state in that tree to lose, only one tick to rebuild it. The people *not* affected are the ones who never updated, which after C6 is the minority |
-
-**C6 is the one-way-ish boundary**, and it is the step to be sure about — not C8's variable edit,
-which is one-way only in the sense that you have to remember to redo it, and not C7's deletion,
-which costs a tick. Roll forward rather than back once clients have moved: the fix for a bad v2
-baker is a better v2 baker.
+Deployments converge on that shape: `install.sh` installs the one-dataset binary and retires any
+timer not present in `adapters.conf`.
 
 ---
 
@@ -419,14 +211,11 @@ or the binary. It:
 * creates the `obc-wx` system user (no shell, no home) and `/var/lib/obc-wx`;
 * writes `/etc/obc-wx/r2.env` **only if it does not exist**, at 0600 root:root, and never rewrites
   it — your credentials survive every upgrade;
-* **refuses outright if the installed binary predates #1246** (it tests for the `dwd-rv` subcommand
-  only the old multi-product binary has). See the cutover's C3 for why that check exists and why it
-  must not be removed to "unblock" a deploy;
+* requires the binary to expose the canonical one-dataset manifest schema;
 * installs the unit template and generates one timer per row in `adapters.conf` — one row, `cycle`
   — **skipping any row this binary does not know**, which is what lets a row land in the table
   before the binary that answers to it is deployed;
-* removes and disables timers for rows that left the table, which is how the per-adapter timers
-  retire themselves on the cutover run;
+* removes and disables timers for rows that left the table;
 * caps the journal at 200 MB / 1 month;
 * finishes with a dry-run bake (fetch + decode, publishes nothing) so a broken upstream or a wrong
   architecture is visible immediately.
@@ -576,10 +365,8 @@ python3 ops/weather/freshness_probe.py --manifest ./manifest.json --now 2026-08-
 
 Exit codes: `0` fresh, `1` stale / over budget / not sweeping, `2` unreachable.
 
-`--manifest` skips the sweep check, because a local document has no origin to ask. `--mosaic` and
-`--expect` are accepted and ignored: they were the two-tree window's flags, and the probe declining
-to crash on a stale `OBC_WX_PROBE_ARGS` is worth more than the tidiness of removing them. The probe
-has self-tests — `python3 -m unittest discover -s ops/weather/tests` — and CI runs them, because an
+`--manifest` skips the sweep check, because a local document has no origin to ask. The probe has
+self-tests — `python3 -m unittest discover -s ops/weather/tests` — and CI runs them, because an
 unattended alarm's cases are the only thing standing between it and confident silence.
 
 ### Drill it (WX15 gate, epic closeout)
@@ -697,6 +484,26 @@ journalctl -u obc-wx-bake@cycle.service -p err --since -24h   # only failures
 journalctl -u obc-wx-bake@cycle.service --since -6h | grep -E 'retired|retention sweep'
 systemctl show -p NRestarts -p ExecMainStatus obc-wx-bake@cycle.service
 ```
+
+From a maintainer checkout, the same inventory and the pause/resume controls are:
+
+```sh
+# Set OBC_WX_SSH_TARGET=root@<VPS hostname-or-IP> in tools/obc.local once.
+obc weather status
+obc weather stop       # disable the cycle timer and stop an in-flight bake
+obc weather start      # enable obc-wx-bake@cycle.timer
+```
+
+`stop` is persistent across a VPS reboot. `start` refuses to run unless the canonical binary and
+cycle unit are installed. While stopped, the published data expires honestly and the freshness
+alarm fires.
+
+**If R2 shows roughly 2,500 Class A and Class B operations an hour, the 15-minute cadence is not
+the explanation by itself.** A full wet cycle intentionally performs at most 217 writes and about
+219 verification reads, so four cycles are at most about **868 Class A** and **876 Class B**
+operations an hour before rider reads. First run `obc weather status` and confirm there is exactly
+one 15-minute cycle timer. The installed in-process S3 publisher reuses connections and should keep
+the bucket near the request counts above without sacrificing weather cadence.
 
 Every tick prints its own report: one line per mosaic source with its priority rank and how many
 frames it contributed, bytes fetched, objects published, dry shards omitted, elapsed ms, then —

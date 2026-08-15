@@ -124,7 +124,7 @@ public struct RouteSummary: Identifiable, Equatable, Sendable {
 
 /// Everything the route-detail screen (E2) renders beyond the list summary:
 /// the waypoints (W1) and the elevation-profile data. Served by
-/// `DeviceTransport.routeDetail(_:)` — the wire mapping is provisional until
+/// `DeviceObjects.routeDetail(_:)` — the wire mapping is provisional until
 /// firmware `S0` pins the detail read (see `OBCProtocol.md`).
 public struct RouteDetail: Equatable, Sendable {
     public var summary: RouteSummary

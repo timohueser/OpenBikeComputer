@@ -96,7 +96,7 @@ impl RideStartScreen {
         // Battery the same `NN%` Home shows. (The static Card `OK` row was dropped in owner review
         // round 1 — the screen is unreachable without a mounted card, so it informed nothing.)
         let mut batt: heapless::String<8> = heapless::String::new();
-        let _ = write!(batt, "{}%", rx.state.battery_pct);
+        let _ = write!(batt, "{}%", rx.state.device.battery_pct);
         let gps = if rx.no_fix { rx.t(Msg::RideStartSearching) } else { rx.t(Msg::RideStartFix) };
         let rows = [(rx.t(Msg::RideStartGps), gps), (rx.t(Msg::RideStartBattery), batt.as_str())];
         for (i, (label, value)) in rows.into_iter().enumerate() {

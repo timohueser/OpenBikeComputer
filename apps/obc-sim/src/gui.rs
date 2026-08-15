@@ -6,9 +6,8 @@
 //! contracts' render-vs-present split — the same shape as the firmware's map plane), presents it
 //! through the presenter's self-diffing engine, and blits the reconstructed texture to a GPU
 //! texture at integer scale (nearest-neighbor, so the pixel grid stays crisp). The firmware does
-//! the same with a real GPS driver and the LS021B7DD02 panel. Because the GUI now goes through the device-64 backend, the interactive window shows the
-//! panel's true 64-colour gamut; `--true-color` (the un-quantized reference) stays on the headless
-//! `--png` path.
+//! the same with a real GPS driver and the LS021B7DD02 panel. Both the interactive window and
+//! headless PNG path show the panel's true 64-colour gamut.
 //!
 //! The second "Controls" viewport (the simulated GPS fix + emulated buttons) lives
 //! in [`panel`]; its zoom / formatting helpers live in [`units`].
@@ -238,9 +237,6 @@ struct SimGui {
     /// Set when the Controls window is closed; quits the whole app next frame.
     quit: bool,
     texture: Option<egui::TextureHandle>,
-    /// `--screenshot`: save the first composited frame here, then close.
-    screenshot: Option<String>,
-    screenshot_requested: bool,
     last_stats: obc_render::RenderStats,
     /// The shared render-on-demand dirty signal ([`App::take_dirty`]), drained once per frame for
     /// the stats panel. The sim always redraws, so this is informational — a live readout of the
@@ -276,7 +272,7 @@ impl SimGui {
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         let mut state = AppState::new(cx, cy, zoom);
         if let Some(b) = args.battery {
-            state.battery_pct = b;
+            state.device.battery_pct = b;
         }
         // Start in Free so the mouse drives the camera; the fix is still seeded (map center)
         // so the loop and user marker have something to track.
@@ -367,10 +363,10 @@ impl SimGui {
         // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
-        // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
+        // `--physical` only takes effect with a saved calibration; the panel opens calibration.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
-        let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Forest);
+        let colorway = Colorway::Forest;
         // `--weather` (WX10/WX14): the store built above — a store root, a `demo[:scenario]`
         // bundle over the map's bbox, or a live service fetch.
         let weather = wx_source.store;
@@ -397,27 +393,18 @@ impl SimGui {
             points_per_mm,
             physical,
             physical_resize_pending: physical,
-            calib: args.calibrate.then(CalibState::default),
+            calib: None,
             calib_error: None,
             panel,
             input: DeviceInput::new(),
             gpx: None,
-            baro: {
-                // `--baro-drift` (EL8, #1076): synthetic weather drift on the replayed altimeter,
-                // so the map-referenced altimeter's correction is visible in the GUI too. 0 = the
-                // plain replay.
-                let mut b = BaroSensor::new();
-                b.set_drift(args.baro_drift.unwrap_or(0.0));
-                b
-            },
+            baro: BaroSensor::new(),
             compass: SimCompass::new(),
             sim_sensors: crate::sim_sensors::SimSensors::new(),
             gpx_label: None,
             gpx_error: None,
             quit: false,
             texture: None,
-            screenshot: args.screenshot,
-            screenshot_requested: false,
             elevation: map.elevation(),
             map,
             last_stats: obc_render::RenderStats::default(),
@@ -1031,10 +1018,6 @@ impl eframe::App for SimGui {
         // The Controls window (the development tool driving fix/sensors/BLE).
         self.show_control_panel(ctx);
 
-        if self.screenshot.is_some() {
-            self.run_screenshot(ctx);
-        }
-
         // Closing the Controls window quits (otherwise a controls-less window lingers with no
         // way to drive the fix).
         if self.quit {
@@ -1043,46 +1026,5 @@ impl eframe::App for SimGui {
 
         // Repaint continuously so control-panel / GPX changes show without a mouse event.
         ctx.request_repaint();
-    }
-}
-
-/// Save an egui `ColorImage` (the captured frame) to a PNG.
-fn save_color_image(img: &egui::ColorImage, path: &str) -> Result<(), String> {
-    let (w, h) = (img.size[0] as u32, img.size[1] as u32);
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for p in &img.pixels {
-        rgba.extend_from_slice(&[p.r(), p.g(), p.b(), p.a()]);
-    }
-    image::RgbaImage::from_raw(w, h, rgba)
-        .ok_or_else(|| "screenshot size mismatch".to_string())?
-        .save(path)
-        .map_err(|e| format!("screenshot save failed: {e}"))
-}
-
-impl SimGui {
-    /// `--screenshot` flow: request a viewport capture on the first frame, save it when egui
-    /// delivers it next frame, then close. Captures what the GPU actually displays (texture
-    /// upload + draw), not just the framebuffer the headless `--png` path dumps.
-    fn run_screenshot(&mut self, ctx: &egui::Context) {
-        if !self.screenshot_requested {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
-            self.screenshot_requested = true;
-            return;
-        }
-        let shot = ctx.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
-        if let Some(image) = shot {
-            if let Some(path) = &self.screenshot {
-                match save_color_image(&image, path) {
-                    Ok(()) => eprintln!("wrote {path}"),
-                    Err(e) => eprintln!("{e}"),
-                }
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
     }
 }

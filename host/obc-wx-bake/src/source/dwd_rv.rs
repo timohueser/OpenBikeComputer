@@ -23,7 +23,7 @@ pub const ID: &str = "dwd-rv";
 pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
 
 /// The **source window**: a regular lat/lon rectangle over the composite's trapezoid, and — since
-/// #1246 deleted the live per-product tree that used to publish on it — **a window of the canonical
+/// This source does not publish independently — **a window of the canonical
 /// lattice**. The pitch is [`crate::canonical::CELL_UDEG`] in both axes and the origin is a whole
 /// number of canonical cells from [`crate::canonical::CANONICAL`]'s -90/-180 origin, so every cell
 /// here *is* a canonical cell: the nearest-neighbour pick `Mosaic::fill` makes for a lattice cell

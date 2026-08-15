@@ -4,14 +4,16 @@ Keep this file as an on-ramp. The canonical wire contract is
 [`../specs/obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md); the compact
 [`OBCProtocol.md`](OBCProtocol.md) records only iOS-facing mappings and deltas.
 
-The app imports planned routes, pushes them to the device, and syncs recorded rides back. It is
-built against `DeviceTransport`, so the same UI runs against CoreBluetooth on a device and the
-deterministic mock in tests and the simulator.
+The app imports planned routes, pushes them to the device, and syncs recorded rides back. Feature
+view models depend on capability-sized protocols from `OBCTransport`, so the same UI runs against
+CoreBluetooth on a device and the deterministic mock in tests and the simulator. Use the broad
+`DeviceTransport` aggregate only for true aggregate consumers and composition-root wiring.
 
 ## Architecture
 
-View models depend only on `DeviceTransport`. CoreBluetooth stays in `OBCTransport/BLE/`, and
-mock/dev-panel code stays in `OBCMock` behind `#if DEBUG`. Tests enforce both boundaries.
+View models depend on capability-sized protocols declared by `OBCTransport`; `DeviceTransport` is
+reserved for true aggregate consumers and composition. CoreBluetooth stays in `OBCTransport/BLE/`,
+and mock/dev-panel code stays in `OBCMock` behind `#if DEBUG`. Tests enforce these boundaries.
 
 The dependency direction is:
 

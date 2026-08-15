@@ -22,6 +22,7 @@ use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFl
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::{UiRuntime, UploadEvent};
 use crate::wall_clock::WallClock;
+use crate::DeviceStatus;
 use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors, TrackPoint};
 
@@ -102,7 +103,8 @@ pub struct Pan {
 }
 
 /// The device's view state: where the camera looks, how zoomed in it is, what mode it's in, and
-/// the last known user fix.
+/// the last known user fix. Small platform-fed facts shown by app chrome live together in
+/// [`device`](AppState::device); weather, catalogs, navigation, and transfers keep their own state.
 ///
 /// The shared core the host renders. The host owns the display size and the
 /// [`obc_render::RenderScratch`]/draw target; each frame it calls [`update`] with the platform's
@@ -138,20 +140,8 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](obc_ports::FuelGauge);
-    /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
-    pub battery_pct: u8,
-    /// The BLE link phase (Off / Advertising / Connected). [`App::set_ble_status`] writes it from
-    /// the host's [`BleStatus`](crate::BleStatus); the connected indicator (the menu title bar's
-    /// right slot and the Home battery row) draws on [`Connected`](crate::BleLink::Connected) only
-    /// — see [`ble_connected`](AppState::ble_connected) — while the Bluetooth settings screen's
-    /// status line shows all three states. It lives **on** `AppState` — unlike `temp_c` — precisely
-    /// because drawn views react to it: a change is meant to gate a repaint, and the
-    /// `state != state_before` comparison already routes that to the screen that draws it.
-    pub ble_link: crate::BleLink,
-    /// A BLE bond is stored (the board's RRAM bond slot / the sim's injected flag) — the Bluetooth
-    /// screen's "Paired: yes/no" row. Fed by [`App::set_ble_status`] like [`ble_link`](AppState::ble_link).
-    pub ble_paired: bool,
+    /// Small, current platform-fed facts rendered by ordinary app chrome.
+    pub device: DeviceStatus,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
     /// guarded hold, drained by the host via [`App::drain_host_commands`] — which clears the RRAM bond
     /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
@@ -197,11 +187,13 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
-            // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
-            battery_pct: 75,
-            // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
-            ble_link: crate::BleLink::Advertising,
-            ble_paired: false,
+            device: DeviceStatus {
+                // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
+                battery_pct: 75,
+                // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
+                ble_link: crate::BleLink::Advertising,
+                ble_paired: false,
+            },
             ble_forget_pending: false,
             has_nav_graph: false,
             rain_step: 0,
@@ -217,12 +209,6 @@ impl AppState {
         if self.rain_zoom_min > 0.0 && self.zoom < self.rain_zoom_min {
             self.zoom = self.rain_zoom_min;
         }
-    }
-
-    /// Whether a phone holds the BLE link — the connected indicator's one question
-    /// ([`ble_link`](AppState::ble_link) == [`Connected`](crate::BleLink::Connected)).
-    pub fn ble_connected(&self) -> bool {
-        self.ble_link == crate::BleLink::Connected
     }
 
     /// Advance one tick: poll the location source and, in [`Follow`](CameraMode::Follow) mode,
@@ -376,7 +362,7 @@ impl AppState {
     pub fn pan_step(&mut self, steps: i32, route_total_m: u32) {
         let Some(pan) = self.pan else { return };
         if pan.tool == PanTool::Zoom {
-            self.zoom_step(steps);
+            self.zoom = step_zoom(self.zoom, steps, MIN_ZOOM, MAX_ZOOM);
             return;
         }
         if pan.basis == PanBasis::Route {
@@ -394,17 +380,6 @@ impl AppState {
             let d = steps as f32 * PAN_STEP_PX;
             self.pan_by_pixels(ux * d, uy * d);
         }
-    }
-
-    /// Multiply zoom once per signed Up/Down step. Positive (Down) zooms in, matching the normal
-    /// map binding; negative (Up) zooms out.
-    pub(crate) fn zoom_step(&mut self, steps: i32) {
-        let step = if steps >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-        let mut zoom = self.zoom;
-        for _ in 0..steps.unsigned_abs() {
-            zoom *= step;
-        }
-        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
     /// Resolve a dirty route inspection cursor to its coordinate. Called once at the App's
@@ -452,6 +427,15 @@ pub(crate) const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps (pixels per microdegree-lat), shared by both map modes.
 pub(crate) const MIN_ZOOM: f32 = 1e-6;
 pub(crate) const MAX_ZOOM: f32 = 1e4;
+
+/// Apply the app's signed multiplicative zoom step within a caller-owned range.
+pub(crate) fn step_zoom(mut zoom: f32, steps: i32, min: f32, max: f32) -> f32 {
+    let step = if steps >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+    for _ in 0..steps.unsigned_abs() {
+        zoom *= step
+    }
+    zoom.clamp(min, max)
+}
 
 /// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer. One frame yields at
 /// most one gesture per raw event (the input queue is bounded — `ButtonInput`'s is 8) plus the
@@ -597,6 +581,60 @@ pub struct App {
 /// fixed ~512 B resident buffer here rather than a route-sized one.
 pub const NAV_PREVIEW_MAX: usize = 64;
 
+// `App` has two construction modes with different physical requirements: hosts may build it by
+// value, while firmware must initialize the large resident object directly in its reserved region.
+// Keep the field plan single-sourced even though those write mechanisms remain different. A field
+// with an `=> init_in_place` arm uses its component's placement constructor on firmware; every
+// other field is a small direct write of the same expression used by `new_idle`.
+//
+// The generated struct literal and tail destructure are both exhaustive. Adding an `App` field
+// therefore fails this one declaration until its value and placement rule are supplied; there is no
+// second constructor list to remember.
+macro_rules! initialize_app_field {
+    ($slot:ident, $field:ident, $value:expr => $init_in_place:path) => {
+        // SAFETY: the generated `init_idle` contract gives us an owned, aligned `App` slot, and
+        // this field appears exactly once in the exhaustive plan.
+        unsafe { $init_in_place(core::ptr::addr_of_mut!((*$slot).$field)) };
+    };
+    ($slot:ident, $field:ident, $value:expr) => {
+        // SAFETY: the generated `init_idle` contract gives us an owned, aligned `App` slot, and
+        // this field appears exactly once in the exhaustive plan.
+        unsafe { core::ptr::addr_of_mut!((*$slot).$field).write($value) };
+    };
+}
+
+macro_rules! define_idle_constructors {
+    ($state:ident; $( $field:ident: $value:expr $(=> $init_in_place:path)? ),+ $(,)?) => {
+        /// Build the app at the device's real power-on state: the Home screensaver,
+        /// Idle, no route loaded. Loading a route (Home → Menu → Routes → `press`) starts
+        /// riding and opens the Map.
+        pub fn new_idle($state: AppState) -> Self {
+            App { $( $field: $value ),+ }
+        }
+
+        /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
+        /// [`new_idle`](App::new_idle), used by firmware to construct the resident `App` without
+        /// materializing it on the stack.
+        ///
+        /// The same exhaustive field plan generates this function and `new_idle`. KB-scale
+        /// components retain their own field-by-field placement constructors; small fields are
+        /// written directly. The render scratch is not part of `App` and remains host-owned.
+        ///
+        /// # Safety
+        /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a
+        /// full `App` may be written. On return the slot is fully initialized; read it via
+        /// `&mut *slot`.
+        pub unsafe fn init_idle(slot: *mut App, $state: AppState) {
+            $( initialize_app_field!(slot, $field, $value $(=> $init_in_place)?); )+
+
+            // Exhaustiveness guard for the raw-pointer path. No moves or drops; this optimizes to
+            // nothing. It deliberately stays after every generated write so borrowing `*slot` is
+            // sound.
+            let App { $( $field: _ ),+ } = unsafe { &*slot };
+        }
+    };
+}
+
 impl App {
     /// Build the app straight onto the live map: stack `[Home, Map]`, Home the always-present root
     /// that Finish / Discard return to, no route loaded. The map-first constructor the simulator
@@ -609,114 +647,26 @@ impl App {
         app
     }
 
-    /// Build the app at the device's real power-on state: the Home screensaver,
-    /// Idle, no route loaded. Loading a route (Home → Menu → Routes → `press`) starts
-    /// riding and opens the Map.
-    pub fn new_idle(state: AppState) -> Self {
-        App {
-            state,
-            activity: Activity::new(Mode::Idle),
-            catalogs: CatalogState::new(),
-            ride: RideEngine::new(),
-            ui: UiRuntime::new(),
-            nav_profiles: crate::NavProfiles::new(),
-            settings: Settings::default(),
-            // The wall clock starts from the same default set-point at the boot origin; the host's
-            // `set_settings` re-stamps it from the persisted clock a moment later.
-            wall_clock: WallClock::new(Settings::default().local_clock()),
-            // No real time source has stamped the clock yet this boot — the persisted set-point is
-            // display-only until GPS (or, in S2, BLE) re-establishes it. See `ClockTrust`.
-            clock_trust: ClockTrust::Untrusted,
-            retention: crate::retention::RetentionRuntime::new(),
-            host: HostPending::new(),
-            freeze: crate::reroute_freeze::RerouteFreeze::new(),
-            fw_version: heapless::String::new(),
-            map_name: heapless::String::new(),
-            map_obcm_version: 0,
-            card_free_bytes: None,
-        }
-    }
-
-    /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
-    /// [`new_idle`](App::new_idle), the placement path the firmware uses to construct the resident
-    /// `App` straight into its reserved region without materializing it on the 192 KB stack.
-    ///
-    /// `new_idle` returns by value and only stays off the stack via return-value optimization — a
-    /// fragile guarantee a debug build or different toolchain could drop, overflowing the stack.
-    /// This writes each field through `addr_of_mut!` exactly once, so no by-value `App` is ever
-    /// formed; the KB-scale components (catalogs, ride caches, UI runtime) initialize themselves in
-    /// place, one level down. The render scratch is **not** among them since #1146 — the host owns
-    /// it and places it itself (see [`RenderScratch::init_zeroed`](obc_render::RenderScratch::init_zeroed)).
-    ///
-    /// The end state is identical to `new_idle`'s — keep the two in sync. A destructuring
-    /// exhaustiveness guard at the tail (naming every field with no `..`) makes a field added to
-    /// `App` but missed here a **compile error** in this function, not a silent uninitialized read.
-    ///
-    /// # Safety
-    /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a full
-    /// `App` may be written. On return the slot is fully initialized; read it via `&mut *slot`.
-    pub unsafe fn init_idle(slot: *mut App, state: AppState) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: `slot` is a valid, owned, aligned `App` region (caller's contract).
-        // Every field below is written exactly once before any read, in declaration
-        // order, so the slot is fully initialized on return and no field is read while
-        // uninitialized.
-        unsafe {
-            addr_of_mut!((*slot).state).write(state);
-            addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
-            // The several-KB catalogs + view caches are initialized field-by-field in place by
-            // their own component (the same discipline, one level down).
-            CatalogState::init_in_place(addr_of_mut!((*slot).catalogs));
-            // The KB-scale ride caches (waypoint table, climb caches, breadcrumb) are initialized
-            // field-by-field in place by their own component.
-            RideEngine::init_in_place(addr_of_mut!((*slot).ride));
-            // The KB-scale UI runtime (screen stack, input plane, POI scratch, modal state) is
-            // initialized field-by-field in place by its own component.
-            UiRuntime::init_in_place(addr_of_mut!((*slot).ui));
-            // (Was missing until #678 rework 3's field audit, like #680's `update_failed` catch:
-            // the profile-name mirror must be initialized like every other, or the board's first
-            // render reads uninit memory through it.)
-            addr_of_mut!((*slot).nav_profiles).write(crate::NavProfiles::new());
-            addr_of_mut!((*slot).settings).write(Settings::default());
-            addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
-            addr_of_mut!((*slot).clock_trust).write(ClockTrust::Untrusted);
-            addr_of_mut!((*slot).retention).write(crate::retention::RetentionRuntime::new());
-            addr_of_mut!((*slot).host).write(HostPending::new());
-            addr_of_mut!((*slot).freeze).write(crate::reroute_freeze::RerouteFreeze::new());
-            addr_of_mut!((*slot).fw_version).write(heapless::String::new());
-            addr_of_mut!((*slot).map_name).write(heapless::String::new());
-            addr_of_mut!((*slot).map_obcm_version).write(0);
-            addr_of_mut!((*slot).card_free_bytes).write(None);
-
-            // Exhaustiveness guard. The `addr_of_mut!` writes above are raw-pointer stores the
-            // compiler cannot check for completeness, so a field added to `App` can silently skip
-            // initialization here and leave the board's first render reading uninitialized memory —
-            // it has happened three times (`update_failed`, then `nav_profiles`/`nav_preview`/
-            // `nav_preview_route`). This destructures the now-fully-written slot naming **every**
-            // field with no `..`, so adding a field to `App` fails to compile *right here* until it
-            // is listed — the reminder to also add its `addr_of_mut!(...).write(...)` above. Binds
-            // to `_` only (no moves, no drops); optimizes to nothing. Keep it last, after every
-            // write, so the shared borrow of `*slot` is sound.
-            let App {
-                state: _,
-                activity: _,
-                catalogs: _,
-                ride: _,
-                ui: _,
-                nav_profiles: _,
-                settings: _,
-                wall_clock: _,
-                clock_trust: _,
-                retention: _,
-                host: _,
-                freeze: _,
-                fw_version: _,
-                map_name: _,
-                map_obcm_version: _,
-                card_free_bytes: _,
-            } = &*slot;
-        }
-    }
+    define_idle_constructors!(state;
+        state: state,
+        activity: Activity::new(Mode::Idle),
+        catalogs: CatalogState::new() => CatalogState::init_in_place,
+        ride: RideEngine::new() => RideEngine::init_in_place,
+        ui: UiRuntime::new() => UiRuntime::init_in_place,
+        nav_profiles: crate::NavProfiles::new(),
+        settings: Settings::default(),
+        // The clock starts from the default set-point; the host re-stamps the persisted value.
+        wall_clock: WallClock::new(Settings::default().local_clock()),
+        // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
+        clock_trust: ClockTrust::Untrusted,
+        retention: crate::retention::RetentionRuntime::new(),
+        host: HostPending::new(),
+        freeze: crate::reroute_freeze::RerouteFreeze::new(),
+        fw_version: heapless::String::new(),
+        map_name: heapless::String::new(),
+        map_obcm_version: 0,
+        card_free_bytes: None,
+    );
 
     /// Build the **map-first** [`App`] in place at `slot` — the by-reference twin of
     /// [`new`](App::new), as [`init_idle`](App::init_idle) is the twin of
@@ -784,8 +734,8 @@ impl App {
         // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
         if self.ride.battery_poll_due(now_ms) {
             if let Some(soc) = fuel.and_then(|f| f.poll()) {
-                if soc != self.state.battery_pct {
-                    self.state.battery_pct = soc;
+                if soc != self.state.device.battery_pct {
+                    self.state.device.battery_pct = soc;
                     let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
                     if matches!(self.ui.stack.get(base), Some(Screen::Home(_))) {
                         self.ui.map_dirty = true;
@@ -795,7 +745,7 @@ impl App {
         }
         // The state before this tick's *fix*, snapshotted **after** the battery poll so a pure
         // battery delta is never mistaken for a fix that moved the camera / marker / heading (which
-        // one `AppState` comparison below detects). `battery_pct` lives in `AppState` but is drawn
+        // one `AppState` comparison below detects). `device.battery_pct` is drawn
         // only on Home, so it has the Home-only gate above; counting it toward `shows_live_data`
         // would force a full ~97 ms map render every 30 s on the riding views that don't draw it.
         let state_before = self.state;
@@ -1191,7 +1141,7 @@ impl App {
     /// screen" half of the arena's `render ⊥ usb` rule. Modal and opaque, so while it is up the base
     /// draws no map; both facts are checked here rather than assumed, since the card is host-pushed
     /// and the rule must hold whatever else the stack is doing.
-    pub fn transfer_screen_up(&self) -> bool {
+    fn transfer_screen_up(&self) -> bool {
         self.ui.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_))) && !self.base_draws_map()
     }
 
@@ -1572,22 +1522,6 @@ impl App {
         }
     }
 
-    /// **Debug / snapshot only** (epic #506, C4): open the [`Climb`](crate::screen::ClimbScreen)
-    /// screen directly. The screen isn't reachable through any gesture until C5 wires its Back-cycle
-    /// and auto-switch, so the UI-snapshot sweep drives it through this seam (the sim's `--open-climb`
-    /// flag) to capture the striped-profile PNG. Replaces the current base riding view (Map) rather
-    /// than stacking over it, so the frame is exactly the Climb screen; a no-op if a climb isn't
-    /// active (nothing to draw). No production path reaches this.
-    pub fn debug_open_climb(&mut self) {
-        if self.activity.active_climb.is_none() {
-            return;
-        }
-        if let Some(top) = self.ui.stack.last_mut() {
-            *top = Screen::Climb(crate::screen::ClimbScreen::new());
-        }
-        self.ui.map_dirty = true;
-    }
-
     /// Feed the frame's **weather view state** (WX11): the rain map's time-step range and the
     /// product's zoom floor, refreshed by the host alongside the snapshot (the sim per frame /
     /// per render; WX8's board mount the same way). Beyond storing the fields this **re-clamps
@@ -1948,8 +1882,8 @@ impl App {
     /// state is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
         let state_before = self.state;
-        self.state.ble_link = status.link;
-        self.state.ble_paired = status.paired;
+        self.state.device.ble_link = status.link;
+        self.state.device.ble_paired = status.paired;
         // The link state lives in `AppState` but is drawn only on Home, the menu title bars, and
         // the Bluetooth screen, so — like the Home-only battery gate — a change dirties the map
         // only when one of those is the base screen. Counting it toward `shows_live_data` would
@@ -2021,18 +1955,6 @@ impl App {
     /// map so a freshly-found sensor appears without waiting for another input.
     pub fn set_sensor_scan_hits(&mut self, hits: &[crate::sensors::SensorScanHit]) {
         self.ui.set_sensor_scan_hits(hits);
-    }
-
-    /// The per-slot sensor status as last fed to [`set_sensor_status`](App::set_sensor_status) — the
-    /// Sensors screen's row source, and how a test observes the seam end to end.
-    pub fn sensor_status(&self) -> &[crate::sensors::SensorStatus] {
-        &self.ui.sensor_status
-    }
-
-    /// The live sensor scan hits as last fed to [`set_sensor_scan_hits`](App::set_sensor_scan_hits) —
-    /// the scan-list screen's rows.
-    pub fn sensor_scan_hits(&self) -> &[crate::sensors::SensorScanHit] {
-        &self.ui.sensor_scan_hits
     }
 
     /// Whether the rider is on the **scan-list** screen and a scan should run (SE7) — the level the
@@ -2215,12 +2137,6 @@ impl App {
     /// the current units / clock / GPS-interval outside the screen draw path.
     pub fn settings(&self) -> &Settings {
         &self.settings
-    }
-
-    /// The last ambient temperature (°C), or `None` before the first reading / no thermometer. No
-    /// screen draws it yet; exposed for a future readout and host introspection.
-    pub fn temperature_c(&self) -> Option<f32> {
-        self.ride.temp_c
     }
 
     /// The live wall-clock time right now (see [`WallClock`]). What a screen draws as `HH:MM`;
@@ -2668,32 +2584,6 @@ impl App {
         stats
     }
 
-    /// Render a frame whose geometry comes from any [`MapScene`], while POI/hours acquisition
-    /// reads the set's core [`Reader`]. For a single OBCM both arguments are the same `Reader`;
-    /// for an OBCA volume set `scene` is its `MountedSet` and `core_reader` is
-    /// `MountedSet::core_reader()`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_frame<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: &S,
-        core_reader: &Reader,
-        route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        let stats = self.render_scene_map(scratch, target, scene, core_reader, route, w, h, &color_fn);
-        self.render_overlay(target, w, h, &color_fn);
-        stats
-    }
-
     /// [`render_frame`](App::render_frame) plus the optional **rain overlay lease** (WX10) — the
     /// frame-level entry a host with a mounted weather store uses; `None` is byte-identical to
     /// [`render_frame`](App::render_frame).
@@ -2731,44 +2621,6 @@ impl App {
         stats
     }
 
-    /// [`render_scene_frame`](App::render_scene_frame) plus the optional **rain overlay lease**
-    /// (WX10), for the volume-set scene seam; `None` is byte-identical to the plain call.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_frame_with_rain<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: &S,
-        core_reader: &Reader,
-        route: Option<&RouteReader>,
-        rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: crate::weather::WeatherFeed,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        let stats = self.render_scene_map_rain_timed(
-            scratch,
-            target,
-            Some(scene),
-            Some(core_reader),
-            route,
-            rain,
-            weather,
-            w,
-            h,
-            &color_fn,
-            &NoopClock,
-        );
-        self.render_overlay(target, w, h, &color_fn);
-        stats
-    }
-
     /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
     /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
@@ -2793,28 +2645,6 @@ impl App {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
         // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
         self.render_scene_map_timed(scratch, target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
-    }
-
-    /// Render only the map plane from any [`MapScene`]. `core_reader` remains the authority for
-    /// POIs and hours, which live only in a volume set's core shard.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: &S,
-        core_reader: &Reader,
-        route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        self.render_scene_map_timed(scratch, target, Some(scene), Some(core_reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
@@ -2868,7 +2698,7 @@ impl App {
     /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
     /// so chrome-only frames can skip every map source.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_timed<D, F, S>(
+    fn render_scene_map_timed<D, F, S>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
@@ -2900,8 +2730,8 @@ impl App {
         )
     }
 
-    /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
-    /// lease** (WX10): a host that mounted a weather store passes the frame's
+    /// Generic timed scene-map rendering plus the optional **rain overlay lease** (WX10): a host
+    /// that mounted a weather store passes the frame's
     /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) every
     /// frame and the base screen renders precipitation below the road band **if its
     /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay) says it wants it** — today only
@@ -3142,11 +2972,6 @@ impl App {
         self.ui.input.last_gesture()
     }
 
-    /// In-flight Select hold-progress (0.0–1.0) for the confirm-ring readout.
-    pub fn select_hold_progress(&self) -> f32 {
-        self.ui.input.select_hold_progress()
-    }
-
     /// Feed the live Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar). The **two-plane firmware** calls this each frame from its high-priority
     /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
@@ -3168,11 +2993,6 @@ impl App {
     /// sim) never call this.
     pub fn set_render_clip(&mut self, clip: Option<Rectangle>) {
         self.ui.render_clip = clip;
-    }
-
-    /// In-flight Back hold-progress (0.0–1.0).
-    pub fn back_hold_progress(&self) -> f32 {
-        self.ui.input.back_hold_progress()
     }
 
     /// The current operating mode.
@@ -3985,7 +3805,7 @@ mod tests {
     // --- in-place placement into the reserved region ---
 
     /// `init_idle` writing field-by-field into a slot must land the same power-on state `new_idle`
-    /// builds by value, with the renderer zeroed in place. Guards against a forgotten field.
+    /// builds by value, including the KB-scale components. Guards the shared field plan end to end.
     #[test]
     fn init_idle_matches_new_idle() {
         use core::mem::MaybeUninit;
