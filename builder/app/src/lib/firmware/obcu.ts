@@ -31,7 +31,7 @@ import { viewOf } from "../usb/protocol";
 export const OBCU_HEADER_LEN = 64;
 
 /** The only header version readers accept (§1.1 — a version change is a hard reject). */
-export const OBCU_HEADER_VERSION = 1;
+const OBCU_HEADER_VERSION = 1;
 
 /**
  * The app-slot ceiling on the raw image (§1.1), and the container ceiling that follows from it.
@@ -41,12 +41,12 @@ export const OBCU_HEADER_VERSION = 1;
  * disagree, which is why the check here is a courtesy rather than the gate.
  */
 /** `sig_scheme` (§1.1, header bytes 48..50): 0 = unsigned/v1, 1 = Ed25519/v2. */
-export const OBCU_SIG_SCHEME_NONE = 0;
-export const OBCU_SIG_SCHEME_ED25519 = 1;
+const OBCU_SIG_SCHEME_NONE = 0;
+const OBCU_SIG_SCHEME_ED25519 = 1;
 /** Bytes of the Ed25519 signature trailer (§1.3). */
 export const OBCU_SIG_LEN = 64;
 
-export const OBCU_MAX_IMAGE_LEN = 1_480_000;
+const OBCU_MAX_IMAGE_LEN = 1_480_000;
 
 const MAGIC = 0x4f424355; // "OBCU"
 

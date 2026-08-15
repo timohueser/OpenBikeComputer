@@ -165,7 +165,7 @@ function describe(cause: unknown): string {
 
 /** A ride, converted and ready to hand to the browser. Nothing here is written anywhere by this
  *  module — the caller saves it, or does not. */
-export interface ExportedRide {
+interface ExportedRide {
     /** What the file should be called in a Downloads folder. */
     readonly filename: string;
     /** The GPX 1.1 document, exactly as the native exporter would have written it. */
