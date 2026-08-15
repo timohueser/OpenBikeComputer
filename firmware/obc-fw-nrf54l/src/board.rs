@@ -1,8 +1,7 @@
 //! nRF54LM20-DK pin, electrical, peripheral, and interrupt contract.
 //!
 //! Pin names use embassy-nRF's `P{port}_{pin}` form. P2 is the fast MCU domain used by the FLPR;
-//! P1 is the PERI domain; P0 is the low-power domain. Service/task composition stays beside its
-//! owning driver; boot policy, move-only input construction, board assignments and IRQ policy live here.
+//! P1 is the PERI domain; P0 is the low-power domain. Drivers own service/task composition; this module owns hardware policy.
 //!
 //! ## User input and diagnostics
 //!
@@ -50,12 +49,12 @@
 
 use embassy_nrf::interrupt;
 
+#[cfg(any(feature = "ble", feature = "debug-uart", not(feature = "synth")))]
+use embassy_nrf::bind_interrupts;
 #[cfg(feature = "debug-uart")]
 use embassy_nrf::buffered_uarte;
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 use embassy_nrf::twim;
-#[cfg(any(feature = "debug-uart", not(feature = "synth")))]
-use embassy_nrf::{bind_interrupts, peripherals};
 
 /// sEMMC completion event: VEVIF event 20 is routed to `VPR00_IRQn` by the FLPR firmware.
 #[interrupt]
@@ -66,19 +65,28 @@ unsafe fn VPR00() {
 // VCOM UARTE20 RX/TX interrupt binding.
 #[cfg(feature = "debug-uart")]
 bind_interrupts!(pub(crate) struct UartIrqs {
-    SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
+    SERIAL20 => buffered_uarte::InterruptHandler<embassy_nrf::peripherals::SERIAL20>;
 });
 
 // TWIM22 sensor-bus interrupt binding.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 bind_interrupts!(pub(crate) struct SensorIrqs {
-    SERIAL22 => twim::InterruptHandler<peripherals::SERIAL22>;
+    SERIAL22 => twim::InterruptHandler<embassy_nrf::peripherals::SERIAL22>;
+});
+
+#[cfg(feature = "ble")]
+bind_interrupts!(pub(crate) struct BleIrqs {
+    SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
+    CLOCK_POWER => nrf_sdc::mpsl::ClockInterruptHandler;
+    RADIO_0 => nrf_sdc::mpsl::HighPrioInterruptHandler;
+    TIMER10 => nrf_sdc::mpsl::HighPrioInterruptHandler;
+    GRTC_3 => nrf_sdc::mpsl::HighPrioInterruptHandler;
 });
 
 /// Run the M33 at 128 MHz: embassy's CK64 default materially regresses the CPU-bound map render.
 /// MPSL radio timing requires the external HF crystal. LFCLK deliberately remains on the calibrated
 /// internal RC because the unprogrammed LFXO load caps put its crystal off-frequency and cause HCI
-/// 0x3E connection failures; see `ble.rs`.
+/// 0x3E connection failures; see `ble/mod.rs`.
 macro_rules! init {
     () => {{
         let mut config = embassy_nrf::config::Config::default();
@@ -158,3 +166,49 @@ macro_rules! input_hardware {
     }};
 }
 pub(crate) use input_hardware;
+
+// Move-only radio values expand at their original point; no call frame or reordered initialization.
+#[cfg(feature = "ble")]
+macro_rules! radio_hardware {
+    ($p:ident) => {
+        (
+            nrf_sdc::mpsl::Peripherals::new(
+                $p.GRTC_CH7,
+                $p.GRTC_CH8,
+                $p.GRTC_CH9,
+                $p.GRTC_CH10,
+                $p.GRTC_CH11,
+                $p.TIMER10,
+                $p.TIMER20,
+                $p.TEMP,
+                $p.PPI10_CH0,
+                $p.PPI20_CH1,
+                $p.PPIB11_CH0,
+                $p.PPIB21_CH0,
+            ),
+            nrf_sdc::Peripherals::new(
+                $p.PPI00_CH1,
+                $p.PPI00_CH3,
+                $p.PPI10_CH1,
+                $p.PPI10_CH2,
+                $p.PPI10_CH3,
+                $p.PPI10_CH4,
+                $p.PPI10_CH5,
+                $p.PPI10_CH6,
+                $p.PPI10_CH7,
+                $p.PPI10_CH8,
+                $p.PPI10_CH9,
+                $p.PPI10_CH10,
+                $p.PPI10_CH11,
+                $p.PPIB00_CH1,
+                $p.PPIB00_CH2,
+                $p.PPIB00_CH3,
+                $p.PPIB10_CH1,
+                $p.PPIB10_CH2,
+                $p.PPIB10_CH3,
+            ),
+        )
+    };
+}
+#[cfg(feature = "ble")]
+pub(crate) use radio_hardware;

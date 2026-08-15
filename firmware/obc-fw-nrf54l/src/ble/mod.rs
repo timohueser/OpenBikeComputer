@@ -14,12 +14,7 @@
 //! - [`data_plane`] — the L2CAP CoC bulk-transfer plane (echo, route upload, download, ride).
 //! - [`state`] — the shared link-status snapshot, BAS cell, and the one-transfer arming channel.
 //!
-//! ## Interrupts / priorities
-//!
-//! MPSL claims `RADIO_0` / `TIMER10` / `GRTC_3` at **P0** (timing-critical), `CLOCK_POWER` and its
-//! low-prio scheduling on **`SWI00`** at default priority. `SWI00` is why `main.rs`'s high-priority
-//! `InterruptExecutor` lives on **`SWI01`** (every build). The full ladder is documented in `main.rs`'s
-//! module doc.
+//! Radio peripheral/interrupt selection lives in [`crate::board`]; this module owns MPSL/SDC runtime policy.
 //!
 //! ## RAM
 //!
@@ -87,7 +82,7 @@ use embassy_executor::Spawner;
 use embassy_futures::join::{join, join3, join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
-use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
+use embassy_nrf::{cracen, peripherals, Peri};
 use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
@@ -106,14 +101,6 @@ use gatt::{
 };
 use lifecycle::{advertise_lifecycle, negotiate_link, AdvertisingIntent};
 use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ARM};
-
-bind_interrupts!(struct Irqs {
-    SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
-    CLOCK_POWER => nrf_sdc::mpsl::ClockInterruptHandler;
-    RADIO_0 => nrf_sdc::mpsl::HighPrioInterruptHandler;
-    TIMER10 => nrf_sdc::mpsl::HighPrioInterruptHandler;
-    GRTC_3 => nrf_sdc::mpsl::HighPrioInterruptHandler;
-});
 
 /// Concurrent **sensor** links the central role holds (SE6, epic #707) — the HR/power/cadence
 /// straps the manager connects to beside the phone link. 3 on the LM20 — HR, power, and cadence
@@ -301,8 +288,8 @@ fn build_sdc<'d, const N: usize>(
 /// Bring the whole stack up and run it forever: MPSL (spawned — it must outlive everything),
 /// SDC, the TrouBLE host, then the S0 advertise → connect → re-advertise loop, publishing every
 /// link edge for the status UI. Joined against `run_status` on the thread-mode executor in
-/// `main.rs`. The MPSL/SDC peripheral sets are built in `main` (where the `Peripherals` struct
-/// is split) and handed in whole.
+/// `main.rs`. The board-owned MPSL/SDC peripheral sets are expanded at the composition point and
+/// handed in whole.
 /// An **embassy task**, not a plain future: its state machine must live in this task's
 /// `.bss` pool static, built **in place** by the spawn. As a `join`-ed local future in `main` it
 /// was a giant stack temporary inside `main`'s poll frame — which overflowed the combined build's
@@ -353,7 +340,7 @@ pub async fn run(
     let mpsl: &'static MultiprotocolServiceLayer = unsafe {
         init_static(
             core::ptr::addr_of_mut!(MPSL),
-            unwrap!(mpsl::MultiprotocolServiceLayer::new(mpsl_p, Irqs, lfclk_cfg)),
+            unwrap!(mpsl::MultiprotocolServiceLayer::new(mpsl_p, crate::board::BleIrqs, lfclk_cfg)),
         )
     };
     spawner.spawn(unwrap!(mpsl_task(mpsl)));
