@@ -16,7 +16,7 @@
 #![cfg(feature = "external-fixtures")]
 
 use obc_app::{App, AppState};
-use obc_host_core::{HostLoop, MemRideStore, MemRouteStore, MemTrackStore};
+use obc_host_core::{HostLoop, MemRideStore, MemRouteStore, MemTrackStore, PlanHold};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
 /// Run one dispatcher pass against a fresh map reader (the frame loop's `reconcile`, minus the tick).
@@ -30,6 +30,27 @@ fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore, map
     let mut no_trips = ();
     let mut elev = obc_route::NullElevation;
     host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, &reader, &mut elev, |_app, _cmd| {});
+}
+
+/// Run the scripted-host shape: the same drain and planner, without yielding between steps.
+fn reconcile_to_completion(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore, map: &[u8]) {
+    let src = SliceSource(map);
+    let tables = MapTables::parse(&src).expect("grimsel map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut rides = MemRideStore::new(Vec::new());
+    let mut no_trips = ();
+    let mut elev = obc_route::NullElevation;
+    host.reconcile_to_completion(
+        app,
+        routes,
+        &mut rides,
+        &mut no_trips,
+        &reader,
+        &mut elev,
+        PlanHold::NONE,
+        |_app, _cmd| {},
+    );
 }
 
 /// The board rescans the object store on a store-changed edge and re-feeds the catalog; the
@@ -74,6 +95,36 @@ fn plan_route_enters_the_resumable_planner_like_the_board() {
     assert!(!host.is_planning(), "nothing planning before the pass");
     reconcile(&mut host, &mut app, &mut routes, &map);
     assert!(host.is_planning(), "the dispatcher consumed PlanRoute into the resumable planner");
+}
+
+/// A headless completion pass emits the exact same reserved route bytes as repeated frame passes;
+/// only the yield cadence differs.
+#[test]
+fn completion_matches_repeated_frame_steps() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let route =
+        obc_fixtures::read("sim-grimsel", "routes/grimsel-climb.obcr").expect("full fixture suite requires route");
+    let run = |complete: bool| {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut routes = MemRouteStore::new(&[&route]);
+        app.set_routes_with_ids(routes.catalog(), routes.ids());
+        app.debug_start_nav((8_169_610, 46_694_536), (8_217_309, 46_706_261), "Same Plan");
+        let mut host = HostLoop::new();
+        if complete {
+            reconcile_to_completion(&mut host, &mut app, &mut routes, &map);
+        } else {
+            for _ in 0..10_000 {
+                reconcile(&mut host, &mut app, &mut routes, &map);
+                if !host.is_planning() {
+                    break;
+                }
+            }
+        }
+        assert!(!host.is_planning(), "planner reaches a terminal result");
+        routes.sync_active(app.active_route_index());
+        routes.active_source().expect("route committed").0.to_vec()
+    };
+    assert_eq!(run(false), run(true), "yield cadence must not change the committed OBCR");
 }
 
 /// A `debug_start_nav` immediately dismissed (the confirm→Back annihilation, #837) leaves the
