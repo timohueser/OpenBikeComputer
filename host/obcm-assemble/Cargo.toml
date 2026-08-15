@@ -27,6 +27,8 @@ required-features = ["cli"]
 # Normative OBCM constants and the neutral byte-source/sink seam. The engine's I/O never touches a
 # filesystem: everything crosses `obc_formats::io`.
 obc-formats = { path = "../../firmware/obc-formats" }
+# Resident quadtree BFS numbering shared with the packer and byte-fixture oracle.
+obc-tree-walk = { path = "../obc-tree-walk" }
 # The real reader — the same crate the firmware runs. Used to parse every input cell's directories
 # and, in the verify pass, to walk the finished output exactly as a device would (OBCA §4.8). `alloc`
 # is on for `MapCache::new_boxed`: the ~277 KB cache must not land on a small (wasm) stack.

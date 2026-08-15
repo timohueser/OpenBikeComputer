@@ -2850,6 +2850,7 @@ dependencies = [
  "obc-formats",
  "obc-map-scene",
  "obc-reader",
+ "obc-tree-walk",
  "obc-vectors",
  "obcm-testkit",
  "osmpbf",
@@ -2996,6 +2997,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-tree-walk"
+version = "0.1.0"
+
+[[package]]
 name = "obc-usb-host"
 version = "0.1.0"
 dependencies = [
@@ -3129,6 +3134,7 @@ dependencies = [
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obc-tree-walk",
  "obcm-testkit",
  "serde",
  "serde_json",
@@ -3140,6 +3146,7 @@ name = "obcm-testkit"
 version = "0.1.0"
 dependencies = [
  "obc-formats",
+ "obc-tree-walk",
 ]
 
 [[package]]

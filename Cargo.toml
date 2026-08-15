@@ -30,6 +30,7 @@ members = [
     "host/obc-mkimage",
     "host/obc-bench",
     "host/obc-vectors",
+    "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
     "host/obc-replay",

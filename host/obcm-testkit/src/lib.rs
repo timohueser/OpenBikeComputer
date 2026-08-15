@@ -425,21 +425,12 @@ fn serialize_poi_category(
     let capacity = chunk_size / POI_RECORD_LEN;
     let root = build(pois.to_vec(), bbox, capacity);
 
-    // BFS-flatten exactly like the packer: children appended contiguously, chunk ids in BFS leaf
-    // order, empty leaves → EMPTY_LEAF, branches → BRANCH_BIT | first-child index.
-    let mut nodes: Vec<&PoiNode> = vec![&root];
-    let mut first_child: Vec<usize> = vec![0];
-    let mut i = 0;
-    while i < nodes.len() {
-        if let PoiNode::Branch(kids) = nodes[i] {
-            first_child[i] = nodes.len();
-            for k in kids.iter() {
-                nodes.push(k);
-                first_child.push(0);
-            }
-        }
-        i += 1;
-    }
+    // The shared resident walk fixes child numbering; this oracle retains its independent tree
+    // construction, leaf policy, record encoding, and chunk framing.
+    let (nodes, first_child) = obc_tree_walk::breadth_first(&root, |node| match node {
+        PoiNode::Leaf(_) => None,
+        PoiNode::Branch(children) => Some(children),
+    });
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
     let mut chunks: Vec<u8> = Vec::new();
     let mut chunk_count = 0u32;

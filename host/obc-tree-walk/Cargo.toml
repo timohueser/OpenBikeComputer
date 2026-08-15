@@ -1,0 +1,8 @@
+[package]
+name = "obc-tree-walk"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Shared resident quadtree breadth-first numbering for OpenBikeComputer host writers"
+
+[dependencies]
