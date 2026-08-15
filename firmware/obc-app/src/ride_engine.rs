@@ -181,7 +181,8 @@ pub(crate) struct RideEngine {
     /// Last ambient temperature (°C), or `None` before the first sample / no thermometer. Held
     /// across ticks. No screen consumes it yet, so it lives **off**
     /// [`AppState`](crate::AppState) — storing it there would gate a needless map redraw on every
-    /// reading, breaking render-on-demand. Read via [`App::temperature_c`](crate::App).
+    /// reading, breaking render-on-demand. No screen or public app façade consumes the cached
+    /// sample yet; the tick path only updates this ride-owned state.
     pub(crate) temp_c: Option<f32>,
     /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever. Drives the
     /// "No GPS Fix" banner via [`has_live_fix`](RideEngine::has_live_fix). Lives **off**

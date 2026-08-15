@@ -54,8 +54,8 @@ scratch.render(target, scene, vp, bg, cfg, color_fn)
   <!-- host: simulator -->
   <rect class="d-panel" x="40" y="120" width="150" height="66" rx="11" />
   <text class="d-label" x="115" y="146" text-anchor="middle">obc-sim</text>
-  <text class="d-sub" x="115" y="164" text-anchor="middle">RGB888 framebuffer</text>
-  <text class="d-sub" x="115" y="178" text-anchor="middle">true colour</text>
+  <text class="d-sub" x="115" y="164" text-anchor="middle">RGB222 framebuffer</text>
+  <text class="d-sub" x="115" y="178" text-anchor="middle">64 colours</text>
   <line class="d-flow" x1="244" y1="153" x2="192" y2="153" marker-end="url(#aS)" />
 
   <!-- host: device -->
@@ -70,7 +70,7 @@ scratch.render(target, scene, vp, bg, cfg, color_fn)
 
 The base-map input is the allocation-free [`obc-map-scene`](src:firmware/obc-map-scene/src/lib.rs) seam: LOD and style metadata, a visible-candidate visit, complete selected-feature decode into caller-owned scratch, and optional source counters. It exposes no OBCM offsets, quadtree records, cache slots, or retained scene graph. The production [`Reader` adapter](src:firmware/obc-reader/src/scene.rs) keeps streaming the same chunks through the same cache; its opaque six-byte candidate token replaces the same six bytes the renderer's stub formerly devoted to chunk and offset, so neither the 14-byte slot nor resident RAM grows.
 
-Styles in the map store **device-independent RGB565**; the host's `color_fn` resolves each to a concrete pixel — true colour in the simulator, [64-colour RGB222 quantisation](src:firmware/obc-reader/src/color.rs) on the device. Because of these seams, the simulator you can [run in your browser](../../) is not a mock-up: it is the device's exact rendering code, so the two can never drift apart.
+Styles in the map store **device-independent RGB565**; each host's `color_fn` resolves it through the same [64-colour RGB222 quantisation](src:firmware/obc-reader/src/color.rs). Because of these seams, the simulator you can [run in your browser](../../) is not a mock-up: it is the device's exact rendering code, so the two can never drift apart.
 
 ## The frame, end to end
 
@@ -736,7 +736,7 @@ Each is just another polyline through the stroker or a triangle through the poly
 
 ## To the panel: the banded push
 
-Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where the *transport* parts, because the device has neither the memory nor the display hardware a desktop takes for granted. The device has **512 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So it does two things a PC never has to: it draws into a *device-native* RGB222 framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time. The **simulator's interactive window is the second backend of the very same [display contracts](src:firmware/obc-display/src/display_contracts/mod.rs)**: it renders into the identical RGB222 framebuffer and runs the identical self-diffing present, differing only in the final hop — it uploads the changed rows to an `egui` texture instead of scanning them to a panel. (The headless `--png` dump is the one path that still writes a full true-colour framebuffer in one blit — the un-quantized reference.)
+Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where the *transport* parts, because the device has neither the memory nor the display hardware a desktop takes for granted. The device has **512 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So it does two things a PC never has to: it draws into a *device-native* RGB222 framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time. The **simulator's interactive window is the second backend of the very same [display contracts](src:firmware/obc-display/src/display_contracts/mod.rs)**: it renders into the identical RGB222 framebuffer and runs the identical self-diffing present, differing only in the final hop — it uploads the changed rows to an `egui` texture instead of scanning them to a panel. The headless `--png` path writes that same device-gamut frame in one blit.
 
 ### The RGB222 framebuffer
 

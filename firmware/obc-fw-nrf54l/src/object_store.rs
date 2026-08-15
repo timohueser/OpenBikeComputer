@@ -48,7 +48,9 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
+use obc_storage::trip_name;
 use obc_storage::weather as weather_store;
+use obc_storage::ObjectIdSequence;
 
 use crate::sd::Storage;
 use crate::SharedStore;
@@ -440,7 +442,7 @@ pub struct ObjectStore {
     next_id: u16,
     /// The next fresh **trip** id — a device counter separate from routes/rides (spec §4.1), floored
     /// by its own RRAM high-water line so a deleted trip id is never re-issued across a reboot.
-    next_trip_id: u16,
+    next_trip_id: ObjectIdSequence<SIDELOAD_ID_BASE>,
     /// The store revision: monotonic per boot, bumped on every route/ride commit/delete.
     revision: u32,
     /// The **trip** store revision — monotonic per boot, its own counter (spec §4.3: a trip
@@ -518,7 +520,7 @@ impl ObjectStore {
         rides: Vec::new(),
         trips: Vec::new(),
         next_id: 0,
-        next_trip_id: 0,
+        next_trip_id: ObjectIdSequence::new(),
         revision: 1,
         trip_revision: 1,
         route_total: 0,
@@ -545,7 +547,7 @@ impl ObjectStore {
         }
         // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
         if let Some(floor) = shared.settings.load_trip_mark() {
-            self.next_trip_id = self.next_trip_id.max(floor);
+            self.next_trip_id.observe_floor(floor);
         }
     }
 
@@ -656,16 +658,11 @@ impl ObjectStore {
         for name in &names {
             match storage.read_trip(name) {
                 Some((byte_len, _meta, _stage_count)) => {
-                    let id = match crate::sd::uploaded_trip_id(name) {
-                        Some(id) => {
-                            self.next_trip_id = self.next_trip_id.max(id.saturating_add(1));
-                            id
-                        }
-                        None => match storage.sideload_id(name) {
-                            Some(id) => id,
-                            None => continue,
-                        },
-                    };
+                    let uploaded = trip_name::uploaded_id(name.base_name(), name.extension());
+                    let Some(id) = uploaded.or_else(|| storage.sideload_id(name)) else { continue };
+                    if uploaded.is_some() {
+                        self.next_trip_id.observe_committed(id);
+                    }
                     let _ = self.trips.push(ObjectSlot { id, file: name.clone(), byte_len });
                 }
                 None => {
@@ -677,7 +674,11 @@ impl ObjectStore {
             }
         }
         self.trip_total = (self.trips.len() as u16).saturating_add(over_cap);
-        defmt::info!("store: {=usize} trip object(s), next trip id {=u16}", self.trips.len(), self.next_trip_id);
+        defmt::info!(
+            "store: {=usize} trip object(s), next trip id {=u16}",
+            self.trips.len(),
+            self.next_trip_id.candidate().unwrap_or(SIDELOAD_ID_BASE)
+        );
     }
 
     /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
@@ -1030,7 +1031,7 @@ impl ObjectStore {
         shared: &SharedStore,
         desc: &TransferControl,
     ) -> Result<Receiver, TransferStatus> {
-        let catalog_full = self.trips.is_full() || self.next_trip_id >= SIDELOAD_ID_BASE;
+        let catalog_full = self.trips.is_full() || self.next_trip_id.candidate().is_none();
         let id_known = self.trip_index(desc.object_id).is_some();
         if let Some(status) = TransferStatus::upload_open_reject(desc.object_id, id_known, catalog_full) {
             return Err(status);
@@ -1231,16 +1232,19 @@ impl ObjectStore {
                 return (id, TransferStatus::Committed);
             }
         }
-        if fresh && (self.trips.is_full() || self.next_trip_id >= SIDELOAD_ID_BASE) {
-            // Storage-full backstop: the catalog filled during the transfer (upload_open_trip already
-            // rejects at descriptor-open). Same typed status either way.
+        if fresh && (self.trips.is_full() || self.next_trip_id.candidate().is_none()) {
+            // Storage-full backstop: the catalog or id band filled during the transfer
+            // (`upload_open_trip` already rejects at descriptor-open). Same typed status either way.
             self.upload_discard(shared);
             return (rx.object_id(), TransferStatus::StorageFull);
         }
         let replace_idx = if fresh { None } else { self.trip_index(rx.object_id()) };
         let Some(storage) = &mut shared.storage else { return (rx.object_id(), TransferStatus::Error) };
         let replace_file = replace_idx.map(|i| self.trips[i].file.clone());
-        match storage.upload_commit_trip(replace_file.as_ref(), self.next_trip_id) {
+        // Exhaustion is possible only for a replacement, where the storage path keeps the existing
+        // filename and ignores this value.
+        let candidate = self.next_trip_id.candidate().unwrap_or(SIDELOAD_ID_BASE);
+        match storage.upload_commit_trip(replace_file.as_ref(), candidate) {
             Some((file, byte_len)) => {
                 let id = match replace_idx {
                     Some(i) => {
@@ -1249,11 +1253,11 @@ impl ObjectStore {
                         self.trips[i].id
                     }
                     None => {
-                        let id = self.next_trip_id;
-                        self.next_trip_id += 1;
-                        // Advance the persisted trip-id floor (its own RRAM line, spec §4.1) so this id
-                        // stays reserved across deletes + reboots.
-                        shared.settings.save_trip_mark(self.next_trip_id);
+                        // The media commit made `candidate` visible. This is the sequence's only
+                        // advance; it also owns the persisted-floor handoff, so abort/validation
+                        // failures above cannot burn an id.
+                        let id = self.next_trip_id.commit(|floor| shared.settings.save_trip_mark(floor));
+                        debug_assert_eq!(id, candidate);
                         let _ = self.trips.push(ObjectSlot { id, file, byte_len });
                         self.trip_total = self.trip_total.saturating_add(1);
                         id

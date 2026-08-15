@@ -661,8 +661,8 @@ impl SimGui {
     /// The **map-referenced altimeter** readout (elevation epic #1068, EL8) — the simulator half of
     /// the device's `altfuse:` RTT line, and the inspection surface #529 was waiting on.
     ///
-    /// Raw vs. fused is the whole story: with `--baro-drift` injected the raw row walks away from
-    /// the terrain while the fused row stays on it, and `Offset` is the number doing the work.
+    /// Raw vs. fused is the whole story: when replay conditions move the raw row away from the
+    /// terrain, the fused row stays on it, and `Offset` is the number doing the work.
     /// `Reference P` is the sea-level-reduced pressure — the trend a storm heuristic would read,
     /// with the ride's own climbing already subtracted out. Nothing here is drawn on the device.
     fn show_altimeter(&self, ui: &mut egui::Ui) {
