@@ -1,33 +1,62 @@
 //! Monotonic ids for immutable catalog objects.
 //!
 //! A candidate is a reservation, not a mutation: validation failure, abort, or a retry before the
-//! object becomes visible gets the same id. Only a successful media commit advances the sequence,
-//! and that next value is what the board persists as its reboot floor. Mount recovery feeds valid
-//! committed filenames through [`observe_committed`]; inert staged files are reclaimed by the
-//! object policy and do not consume an id.
-//!
-//! These small functions deliberately operate on the board owner's existing `u16`. That keeps the
-//! policy host-testable without changing the owner layout or obscuring release-code range proofs.
+//! object becomes visible gets the same id. Only [`ObjectIdSequence::commit`] advances the sequence
+//! and hands its new reboot floor to the caller for persistence.
 
-/// Raise `next` to a persisted exclusive floor.
-#[inline(always)]
-pub fn observe_floor(next: &mut u16, floor: u16) {
-    *next = (*next).max(floor);
+/// The candidate and reboot-floor state machine for one immutable-object id band.
+///
+/// `LIMIT` is exclusive. Recovery observes only validated committed filenames; an inert staged
+/// file is swept by the media owner without reaching this sequence, so it cannot consume an id.
+pub struct ObjectIdSequence<const LIMIT: u16> {
+    next: u16,
 }
 
-/// Recover past a valid committed id found during a catalog scan.
-#[inline(always)]
-pub fn observe_committed(next: &mut u16, id: u16) {
-    observe_floor(next, id.saturating_add(1));
+impl<const LIMIT: u16> ObjectIdSequence<LIMIT> {
+    /// An empty sequence whose first candidate is zero.
+    #[inline(always)]
+    pub const fn new() -> Self {
+        Self { next: 0 }
+    }
+
+    /// Raise the next candidate to a persisted exclusive floor.
+    #[inline(always)]
+    pub fn observe_floor(&mut self, floor: u16) {
+        self.next = self.next.max(floor);
+    }
+
+    /// Recover past a valid committed id found during a catalog scan.
+    #[inline(always)]
+    pub fn observe_committed(&mut self, id: u16) {
+        self.observe_floor(id.saturating_add(1));
+    }
+
+    /// Reserve the current candidate without consuming it.
+    #[inline(always)]
+    pub const fn candidate(&self) -> Option<u16> {
+        if self.next < LIMIT {
+            Some(self.next)
+        } else {
+            None
+        }
+    }
+
+    /// Advance after the reserved candidate became visible, then persist the new exclusive floor.
+    /// The caller must have obtained that candidate through [`candidate`](Self::candidate); this is
+    /// the only advancing operation, and is called only after the media commit succeeds.
+    #[inline(always)]
+    pub fn commit(&mut self, persist_floor: impl FnOnce(u16)) -> u16 {
+        debug_assert!(self.next < LIMIT);
+        let id = self.next;
+        self.next = id + 1;
+        persist_floor(self.next);
+        id
+    }
 }
 
-/// Reserve the current candidate without consuming it. `limit` is exclusive.
-#[inline(always)]
-pub const fn candidate(next: u16, limit: u16) -> Option<u16> {
-    if next < limit {
-        Some(next)
-    } else {
-        None
+impl<const LIMIT: u16> Default for ObjectIdSequence<LIMIT> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -38,33 +67,34 @@ mod tests {
     const UPLOAD_LIMIT: u16 = 0x8000;
 
     #[test]
-    fn reservation_does_not_burn_on_abort_validation_failure_or_retry() {
-        let next = 0;
-        let first = candidate(next, UPLOAD_LIMIT);
-        assert_eq!(candidate(next, UPLOAD_LIMIT), first);
-        assert_eq!(next, 0);
+    fn abort_validation_failure_and_retry_do_not_advance_or_persist() {
+        let mut ids = ObjectIdSequence::<UPLOAD_LIMIT>::new();
+        let candidate = ids.candidate();
+        let mut persisted = None;
+
+        // Abort and validation failure deliberately do not call `commit`.
+        assert_eq!(ids.candidate(), candidate);
+        assert_eq!(persisted, None);
+
+        assert_eq!(Some(ids.commit(|floor| persisted = Some(floor))), candidate);
+        assert_eq!(persisted, Some(1));
+        assert_eq!(ids.candidate(), Some(1));
     }
 
     #[test]
     fn boot_recovery_combines_valid_catalog_ids_with_the_persisted_floor() {
-        let mut next = 0;
-        observe_committed(&mut next, 7);
-        observe_committed(&mut next, 3);
-        observe_floor(&mut next, 12);
-        observe_floor(&mut next, 10);
-        assert_eq!(candidate(next, UPLOAD_LIMIT), Some(12));
+        let mut ids = ObjectIdSequence::<UPLOAD_LIMIT>::new();
+        ids.observe_committed(7);
+        ids.observe_committed(3);
+        ids.observe_floor(12);
+        ids.observe_floor(10);
+        assert_eq!(ids.candidate(), Some(12));
     }
 
     #[test]
-    fn an_inert_swept_candidate_is_not_observed_or_burned() {
-        let mut next = 0;
-        observe_committed(&mut next, 4);
-        assert_eq!(candidate(next, UPLOAD_LIMIT), Some(5));
-    }
-
-    #[test]
-    fn limit_refuses_a_new_candidate_without_wraparound() {
-        let next = UPLOAD_LIMIT;
-        assert_eq!(candidate(next, UPLOAD_LIMIT), None);
+    fn limit_refuses_a_candidate_without_wraparound() {
+        let mut ids = ObjectIdSequence::<UPLOAD_LIMIT>::new();
+        ids.observe_floor(UPLOAD_LIMIT);
+        assert_eq!(ids.candidate(), None);
     }
 }

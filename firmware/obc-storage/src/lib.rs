@@ -12,7 +12,7 @@
 //! |---|---|---|
 //! | [`sd`] | FatFs [`ByteSource`](obc_formats::io::ByteSource)/[`ByteSink`](obc_formats::io::ByteSink) and [`TrackSink`](obc_ports::TrackSink) adapters over an [`embedded_sdmmc`] volume — the general seek-per-read path plus the track record encode | `obc-formats`, `obc-ports`, `embedded-sdmmc` |
 //! | [`fat_extents`] | the map file's FAT chain resolved once into extent runs → direct-block `read_at` (#500): the fast path for the one big read-only file (`.obcm`) whose scattered reads dominate | `embedded-sdmmc` |
-//! | [`object_id`] | monotonic durable-object id candidates: scan/floor recovery and non-burning reservation | none |
+//! | [`ObjectIdSequence`] | monotonic durable-object id candidate, recovery, commit, and persisted-floor handoff | none |
 //! | [`weather`] | transport-neutral inactive-slot upload transaction: running outer CRC, held magic, canonical post-close validation and magic-flush commit | `obc-weather`, `obc-crc` |
 
 #![no_std]
@@ -21,9 +21,10 @@
 extern crate std;
 
 pub mod fat_extents;
-pub mod object_id;
+mod object_id;
 pub mod sd;
 pub mod weather;
 
 pub use fat_extents::{ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity};
+pub use object_id::ObjectIdSequence;
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
