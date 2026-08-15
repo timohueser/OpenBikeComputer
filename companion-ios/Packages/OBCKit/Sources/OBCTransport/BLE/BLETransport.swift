@@ -2256,7 +2256,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
 /// One route upload from `uploadRoute` to its terminal outcome. An interrupted
 /// attempt (link/CoC drop) leaves the outcome unresolved — the F sheet shows
-/// "interrupted" via `DeviceTransport.state` — and `start()` (the handle's
+/// "interrupted" via `DeviceLink.state` — and `start()` (the handle's
 /// `resume()`) runs a **whole fresh attempt**: descriptor + all bytes from 0
 /// (uploads restart, not resume — spec §1 principle 4).
 private actor UploadRunner {

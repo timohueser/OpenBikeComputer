@@ -16,7 +16,8 @@ import OBCTransport
     /// A device with a mutable identity (serial, epoch) and ride store; its
     /// `listRides()` mints ids scoped to the identity the *last `deviceInfo()`
     /// read* returned — the same order-of-truth as the real transport.
-    final class ScopedStubDevice: DeviceTransport, @unchecked Sendable {
+    final class ScopedStubDevice: DeviceLink, DeviceBattery, DeviceObjects, DeviceRetention,
+        @unchecked Sendable {
         private let stateMulticast = AsyncMulticast<ConnectionState>(.connected)
         private let lock = NSLock()
         private var _serial: String
@@ -49,10 +50,9 @@ import OBCTransport
             stateMulticast.send(.connected)
         }
 
-        // DeviceTransport.
+        // Main-screen capabilities.
         var state: AsyncStream<ConnectionState> { stateMulticast.stream() }
         var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-        var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
         func connect() async throws {}
         func disconnect() async {}
 
@@ -63,8 +63,6 @@ import OBCTransport
                               storeEpoch: epoch)
         }
 
-        func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
-        func writeConfig(_ config: DeviceConfig) async throws {}
         func listRoutes() async throws -> [RouteCatalogEntry] { [] }
         func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
             throw DeviceError.readFailed
@@ -74,8 +72,6 @@ import OBCTransport
         }
         func deleteRoute(_ id: DeviceObjectID) async throws {}
         func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
-        func readDiagnostics() async throws -> Data { Data() }
-
         /// Scoped minting, like `BLETransport.listRides()` (#769).
         func listRides() async throws -> RideCatalog {
             let (rides, scope) = lock.withLock {

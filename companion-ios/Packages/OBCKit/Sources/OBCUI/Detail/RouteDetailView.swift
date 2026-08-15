@@ -486,15 +486,11 @@ public struct ImportLandingView: View {
 }
 
 /// Inert transport for `#Preview` construction only.
-private struct PreviewNoopTransport: DeviceTransport {
+private struct PreviewNoopTransport: DeviceLink, DeviceObjects {
     var state: AsyncStream<ConnectionState> { AsyncStream { $0.finish() } }
-    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
-    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Preview", firmwareVersion: "0") }
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Preview") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
@@ -502,6 +498,5 @@ private struct PreviewNoopTransport: DeviceTransport {
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
-    func readDiagnostics() async throws -> Data { Data() }
 }
 #endif

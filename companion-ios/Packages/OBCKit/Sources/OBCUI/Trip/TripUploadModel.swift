@@ -125,7 +125,7 @@ public final class TripUploadModel: Identifiable {
 
     // MARK: Wiring
 
-    private let transport: any DeviceTransport
+    private let transport: any DeviceLink
     private let steps: [QueueStep]
     private let precheck: TripUploadPrecheck
     private let timing: Timing
@@ -139,7 +139,7 @@ public final class TripUploadModel: Identifiable {
     @ObservationIgnored private var linkUp = true
 
     public init(
-        transport: any DeviceTransport,
+        transport: any DeviceLink,
         tripName: String,
         deviceName: String,
         precheck: TripUploadPrecheck,

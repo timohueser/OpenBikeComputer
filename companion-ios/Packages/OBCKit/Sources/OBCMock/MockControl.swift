@@ -23,7 +23,7 @@ public enum PairingFail: Sendable, Equatable {
 /// A mid-session push the device (or radio) can originate. `emit(_:)` routes each
 /// onto the live streams / fixture set so the UI updates without a re-fetch where a
 /// stream exists (connection, battery); `rideAdded` mutates the enumerable set so
-/// the next `listRides()` reflects it (there is no rides stream in `DeviceTransport`).
+/// the next `listRides()` reflects it (there is no rides stream in `DeviceObjects`).
 public enum DeviceEvent: Sendable {
     case connected
     case disconnected
@@ -45,7 +45,7 @@ public final class MockControl: @unchecked Sendable {
     let stateMulticast: AsyncMulticast<ConnectionState>
     let batteryMulticast: AsyncMulticast<Int>
     /// `nil` seed = no replay, matching the real transport: a `storeChanged` is
-    /// an edge, not a state (see `DeviceTransport.storeChanges`).
+    /// an edge, not a state (see `DeviceObjects.storeChanges`).
     let storeChangedMulticast = AsyncMulticast<StoreChanged?>(nil)
 
     private let lock = NSLock()
