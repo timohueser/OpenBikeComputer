@@ -1479,7 +1479,8 @@ mod tests {
         assert!(cfg.lods[..=8].iter().all(|lod| lod.semantic_coverage));
         assert!(cfg.lods[9..].iter().all(|lod| !lod.semantic_coverage));
         assert!(cfg.lods.iter().all(|lod| !lod.coverage_simplify));
-        assert!(cfg.lods.iter().all(|lod| lod.min_line_km == 0.0));
+        assert!(cfg.lods[..2].iter().all(|lod| lod.min_line_km == 1.0));
+        assert!(cfg.lods[2..].iter().all(|lod| lod.min_line_km == 0.0));
         assert_eq!((cfg.lods[0].line_simplify_m, cfg.lods[1].line_simplify_m), (1400.0, 1400.0));
         assert!(cfg.lods[..=2].iter().all(|lod| lod.merge_line_trails));
         assert!(cfg.lods[4].merge_line_trails);

@@ -951,7 +951,7 @@ impl RenderScratch {
         let DrawScratch { points, xs } = draw;
         match span.kind {
             Kind::Polygon => {
-                fill_polygon_edges(target, pts, ring_lens, color, vp.w as i32, vp.h as i32, points.edges(), xs);
+                fill_polygon_edges(target, pts, ring_lens, color, (vp.w as i32, vp.h as i32), points.edges(), xs);
             }
             Kind::Line => {
                 // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;

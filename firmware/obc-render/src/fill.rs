@@ -31,8 +31,7 @@ pub(crate) fn fill_polygon_edges<D, L>(
     points: &[ScreenPoint],
     ring_lens: &[L],
     color: D::Color,
-    w: i32,
-    h: i32,
+    (w, h): (i32, i32),
     edges: &mut Vec<PackedEdge, MAX_SCREEN_POINTS>,
     xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
@@ -81,11 +80,11 @@ pub(crate) fn fill_polygon_edges<D, L>(
         for edge in edges.iter() {
             let (xi, yi) = (edge.xi as f32, edge.yi as f32);
             let (xj, yj) = (edge.xj as f32, edge.yj as f32);
-            if (yi <= yc && yc < yj) || (yj <= yc && yc < yi) {
-                if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
-                    saturated = true;
-                    break;
-                }
+            if ((yi <= yc && yc < yj) || (yj <= yc && yc < yi))
+                && xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err()
+            {
+                saturated = true;
+                break;
             }
         }
         if saturated || xs.len() < 2 {
@@ -384,7 +383,7 @@ mod tests {
             let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
             let mut edges: Vec<PackedEdge, MAX_SCREEN_POINTS> = Vec::new();
             fill_polygon(&mut expected, &points, &[len as u16], BinaryColor::On, 64, 64, &mut xs);
-            fill_polygon_edges(&mut actual, &packed, &[len as u16], BinaryColor::On, 64, 64, &mut edges, &mut xs);
+            fill_polygon_edges(&mut actual, &packed, &[len as u16], BinaryColor::On, (64, 64), &mut edges, &mut xs);
             assert_eq!(actual, expected, "scan conversion drift in case {case}");
         }
     }
