@@ -161,7 +161,7 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p p p f" --png "$OUT/nav-overview.png"
 # The planning screen (#499): accepting the confirm swaps to the spinning-needle wait while the
-# host steps the resumable planner. `--nav-hold` leaves the recorded request un-drained so the
+# host steps the resumable planner. `--nav-hold` consumes the request without starting it so the
 # screen stays up for the snapshot (needle at its deterministic initial angle).
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p p p" --nav-hold --png "$OUT/nav-planning.png"
@@ -187,8 +187,8 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE B d p w" --png "$OUT/detour-chooser.png"
-# (b) The planning spinner (detour copy; Back would cancel). `--detour-hold` leaves the request
-# un-drained so the screen stays up, exactly like `--nav-hold`.
+# (b) The planning spinner (detour copy; Back would cancel). `--detour-hold` consumes the request
+# without starting it so the screen stays up, exactly like `--nav-hold`.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE B d p w p" --detour-hold --png "$OUT/detour-planning.png"
 # (c) The preview: a real corridor-blacklisted A* plan over the monaco graph — the detour polyline

@@ -38,7 +38,7 @@ mod sink;
 mod stores;
 pub mod terrain;
 
-pub use dispatch::HostLoop;
+pub use dispatch::{HostLoop, PlanHold};
 pub use frame::RgbaFrame;
 pub use nav::{finish_detour_commit, finish_detour_plan, finish_nav_plan, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_step, ReplaySensors};
