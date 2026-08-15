@@ -15,6 +15,7 @@
 //! | [`ObjectIdSequence`] | monotonic durable-object id candidate, recovery, commit, and persisted-floor handoff | none |
 //! | [`route_name`] | classify uploaded/side-loaded route filenames and durable ids | none |
 //! | [`trip_name`] | classify uploaded/side-loaded trip filenames and durable ids | none |
+//! | [`TripCatalog`] | fixed-capacity aligned trip id/file/metadata ownership and scan mutation policy | `embedded-sdmmc`, `heapless` |
 //! | [`weather`] | transport-neutral inactive-slot upload transaction: running outer CRC, held magic, canonical post-close validation and magic-flush commit | `obc-weather`, `obc-crc` |
 
 #![no_std]
@@ -27,9 +28,11 @@ mod object_id;
 mod object_name;
 pub mod route_name;
 pub mod sd;
+mod trip_catalog;
 pub mod trip_name;
 pub mod weather;
 
 pub use fat_extents::{ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity};
 pub use object_id::ObjectIdSequence;
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
+pub use trip_catalog::{trip_crc, TripCatalog, TripRemoveAction, TripScanAction, TripScanRead};

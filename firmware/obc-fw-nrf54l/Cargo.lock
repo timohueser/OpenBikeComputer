@@ -1320,6 +1320,7 @@ dependencies = [
  "nrf-sdc",
  "obc-app",
  "obc-ble",
+ "obc-crc",
  "obc-dfu",
  "obc-display",
  "obc-elevation",

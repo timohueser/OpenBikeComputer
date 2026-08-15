@@ -210,16 +210,24 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     app.set_ride_retention_inventory(&storage.ride_retention_inventory());
 }
 
-/// Scan the card's `/routes` **trip catalog** (`TP{id}.OBT` files) into the app's trip folders (epic
-/// #526 TR4), carrying each trip's durable object id + stage route ids; [`App::set_trips`] resolves
-/// each stage against the route catalog into a folder with summed stats. Called at boot and on every
-/// store-changed edge — **after** [`load_routes`], so a route deleted individually re-resolves the
-/// trip's stage totals against the fresh route catalog (a dangling stage then contributes nothing).
-/// Its own `#[inline(never)]` frame for the same stack reason as [`load_routes`]/[`load_rides`].
+/// Perform the one boot-time media scan that seeds the canonical trip repository. Runtime trip
+/// commits/deletes mutate that repository directly; a route-only store edge must never rescan trip
+/// media behind the trip revision advertised to the phone. Keep its directory-name scratch in this
+/// popped frame rather than letting it become part of `main`'s async frame.
+#[inline(never)]
+pub(crate) fn scan_trips_at_boot(storage: &mut sd::Storage) {
+    storage.trips().scan();
+}
+
+/// Reload the app's trip folders from the canonical repository without scanning or mutating it.
+/// Called at boot and on every store-changed edge — **after** [`load_routes`], so a route deleted
+/// individually re-resolves trip stage totals against the fresh route catalog (a dangling stage
+/// then contributes nothing). Its own `#[inline(never)]` frame for the same stack reason as
+/// [`load_routes`]/[`load_rides`].
 #[inline(never)]
 pub(crate) fn load_trips(storage: &mut sd::Storage, app: &mut App) {
-    storage.scan_trips();
-    app.set_trips(&storage.trip_inputs());
+    let trips = storage.trips();
+    app.set_trips(&trips.inputs());
 }
 
 /// Fill an open Ride detail's pending **track-profile request** (epic #678 T2 / #680): drain the
