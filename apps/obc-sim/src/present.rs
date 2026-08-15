@@ -115,7 +115,8 @@ impl Present {
     }
 
     /// The RGB888 texture reconstructed from this session's partial pushes — what the GUI uploads to
-    /// its egui texture (and `--screenshot` captures). `width * height * 3` bytes.
+    /// its egui texture. Headless screenshot tests use the device-64 `--png` path instead.
+    /// `width * height * 3` bytes.
     pub fn texture(&self) -> &[u8] {
         &self.tex
     }

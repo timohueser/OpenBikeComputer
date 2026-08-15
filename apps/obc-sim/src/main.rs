@@ -2,8 +2,8 @@
 //!
 //! All map drawing lives in `obc_render`, the same code the nRF54L firmware runs
 //! against the LS021B7DD02. This binary owns only the host concerns: argument
-//! parsing, the eframe window + pan/zoom event loop, PNG output, and the color
-//! policy (device 64-color quantization by default, or `--true-color`).
+//! parsing, the eframe window + pan/zoom event loop, PNG output, and the device's
+//! 64-color display policy.
 //!
 //! Host logic shared with the landing page's wasm host (`obc-web-demo`) — replay stepping, the
 //! frame-interleaved `NavPlan`, the in-memory byte sink — lives in `obc-host-core`, not here.
@@ -13,7 +13,7 @@ use std::time::Instant;
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackSink};
-use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
+use obc_reader::{rgb565_to_device64, Reader};
 
 mod calib;
 mod device_input;
@@ -43,6 +43,55 @@ use routes::RouteStore;
 use track::TrackStore;
 use trips::TripStore;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BleSeed {
+    Connected,
+    Paired,
+    Passkey(u32),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SensorSeed {
+    Demo,
+    Screen,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    Nav,
+    Detour,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavFailure {
+    Exhausted,
+    NoPath,
+}
+
+#[derive(Clone, Copy)]
+enum Injection {
+    NavFail(NavFailure),
+    DetourFail(NavFailure),
+    Upload { id: u16, replaced: bool },
+    Warning(obc_app::WarningFlags),
+}
+
+#[derive(Clone)]
+enum DfuSeed {
+    Scan(dfu::DfuScanKind),
+    Progress(dfu::DfuScanKind),
+    Installing(dfu::DfuScanKind),
+    Error(obc_app::DfuScanError),
+    Confirmed(String),
+}
+
+enum WeatherFault {
+    CorruptRequest(u32),
+    TruncateRequest(u32),
+    FailFrom(u32, u16),
+    Latency(u64),
+}
+
 struct Args {
     map: String,
     /// `--set MS<id>.OBS`: open an OBCA **volume set** (`specs/OBCA_Spec.md` §5) instead of a single
@@ -53,9 +102,6 @@ struct Args {
     height: u32,
     scale: u32,
     png: Option<String>,
-    /// Launch the GUI, save its first composited frame to this path, then exit.
-    screenshot: Option<String>,
-    true_color: bool,
     /// Start in heading-up orientation with this course (degrees CW from north).
     heading: Option<f32>,
     /// Preload this GPX track for replay.
@@ -96,13 +142,8 @@ struct Args {
     /// Render the device window at the panel's true physical size (needs a saved
     /// calibration). Falls back to the scaled view if uncalibrated.
     physical: bool,
-    /// Open the GUI straight into the 1:1 size-calibration screen.
-    calibrate: bool,
     /// Show the device's 64-color gamut and nothing else. Needs no map.
     palette: bool,
-    /// Initial housing colorway: `petrol` | `forest` | `wine` | `aubergine` | `stealth`
-    /// (default forest).
-    colorway: Option<String>,
     /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
     /// wired fuel gauge. Defaults to full.
     battery: Option<u8>,
@@ -144,8 +185,7 @@ struct Args {
     live: weather_live::LiveConfig,
     /// `--no-card`: the device has no storage the companion could write a bundle to. §11.7's rule
     /// is that such a device raises **no** weather request at all — urgent included — because
-    /// every upload would be answered `error` and the phone would burn on the retry loop. This is
-    /// the control that makes that arm exercisable; `--boot-fault nocard` only draws a screen.
+    /// every upload would be answered `error` and the phone would burn on the retry loop.
     no_card: bool,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
@@ -158,104 +198,22 @@ struct Args {
     /// unknown name fails with the full list). Stands in for walking the Fields editor with a
     /// twenty-token script just to place a tile.
     stat_fields: Option<std::vec::Vec<obc_app::StatField>>,
-    /// Headless `--png` only: render with a phone linked over BLE, so the connected indicator
-    /// shows (the menu title bar / Home). Stands in for the sim control panel's "Phone connected"
-    /// toggle when capturing a snapshot.
-    ble_connected: bool,
-    /// Headless `--png` only: inject a BLE pairing passkey so the host-pushed passkey card is up
-    /// (epic #447, P2), for the `passkey-card.png` snapshot. Stands in for the sim control panel's
-    /// "Pairing" toggle.
-    ble_passkey: Option<u32>,
-    /// Headless `--png` only: render with a stored bond, so the Bluetooth screen's Paired row
-    /// reads "yes" (and its Forget row arms). Stands in for the control panel's "Paired" toggle.
-    ble_paired: bool,
-    /// Headless `--png` only: drive the **Sensors settings screen** (epic #707, SE7) with a canned
-    /// fake central manager — two saved sensors (HR Connected · 78 %, Power Searching) with Cadence
-    /// Not set on the three-row list, plus a filtered scan-hit set for the scan-list screen. Stands in
-    /// for the GUI host's fake manager. (Distinct from `--sensors-demo`, which pins the SE5 stat tiles.)
-    sensors_screen: bool,
-    /// Headless `--png` only: leave a recorded create-route request **un-drained**, so the
-    /// planning screen (spinner) stays on top for its snapshot instead of the plan completing
-    /// before the render. Implied by `--inject-nav-fail`.
-    nav_hold: bool,
-    /// Headless `--png` only: inject a **routing failure** (`exhausted` | `nopath`) after the
-    /// script runs, through the real `App::apply_event` seam — so the two failure cards
-    /// render deterministically for the snapshot net. Needed because the range tier ("Too far to
-    /// route here." = the router's fixed table exhausting) is unreachable on the small fixture
-    /// graphs: grimsel plans even ~25 km routes inside the 1536-node table and monaco spans ~4 km.
-    /// The script must leave the CREATE ROUTE confirm on top (the card replaces it).
-    inject_nav_fail: Option<String>,
-    /// Headless `--png` only: leave a recorded **detour-plan** request un-drained (#882), so the
-    /// detour planning spinner stays on top for its snapshot. Implied by `--inject-detour-fail`.
-    detour_hold: bool,
-    /// Headless `--png` only: inject a **detour-planning failure** (`exhausted` | `nopath`) after
-    /// the script runs, through the real `DetourPlanned` seam — the fail card with the "try a
-    /// farther rejoin" hint renders deterministically. The script must leave the detour planning
-    /// screen on top (the card replaces it).
-    inject_detour_fail: Option<String>,
-    /// Headless `--png` only: inject a committed route upload `(object id, replaced-existing)`
-    /// after the script runs (epic #447, P4), so the three upload popups render — the idle
-    /// "ROUTE RECEIVED" prompt, the mid-ride swap prompt, or (`--inject-upload-replace` of the
-    /// navigated id) the "ROUTE UPDATED" info card. Stands in for the control panel's inject
-    /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
-    /// order.
-    inject_upload: Option<(u16, bool)>,
-    /// Headless `--png` only: raise device warnings through the real `App::apply_event` seam
-    /// after the script, so the advisory warning card renders. A comma-list of `gps` / `altimeter`
-    /// / `compass` / `map` (issue #504) / `rec` (the mid-ride ride-log write error, issue #11) —
-    /// e.g. `gps,map`. Stands in for hardware the sim can't trip for real. `rec` here renders the
-    /// card directly.
-    inject_warning: Option<obc_app::WarningFlags>,
-    /// Headless `--png` only: render the standalone **boot fault** screen (`nocard` | `nomap` |
-    /// `badmap`) instead of the app — the undismissable storage-failure screen `main` shows before
-    /// the app exists. Snapshots the three fatal SD/map sites without needing a bad card.
-    boot_fault: Option<obc_app::BootFault>,
-    /// Headless `--png` only: after the track replay, open the [`Climb`](obc_app::screen) screen
-    /// directly (epic #506, C4) via `App::debug_open_climb`, so the striped-profile snapshot renders
-    /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
-    /// (so pair it with a `--gpx`/`--at` that reaches one).
-    open_climb: bool,
+    /// One mutually-exclusive BLE fixture state for headless snapshots.
+    ble: Option<BleSeed>,
+    /// One mutually-exclusive sensor fixture for headless snapshots.
+    sensors: Option<SensorSeed>,
+    /// Keep one host request un-drained so its planning spinner stays visible.
+    hold: Option<Hold>,
+    /// One mutually-exclusive host event injection for headless snapshots.
+    inject: Option<Injection>,
     /// Headless `--png` only: engage the **Recalculating freeze** (#1146 P2) after the script, via
     /// `App::debug_set_plan_live`, so the overlay-plane banner renders over whatever map base the
     /// script left showing. The freeze's visible state is otherwise unreachable headlessly: the
     /// flows that start a plan leave the opaque planning spinner as the base (no map to freeze),
     /// and the one gesture that puts a map base back under a live search also cancels the plan.
     freeze: bool,
-    /// `--gpx` replay (headless **and** GUI): inject a synthetic **barometric weather drift** of
-    /// this many metres of apparent altitude per hour of playback time — the one error a GPX replay
-    /// otherwise cannot show, since the replayed baro is fed the track's own true elevation. The
-    /// map-referenced altimeter (elevation epic #1068, EL8) exists to cancel exactly this, so
-    /// `--baro-drift -60` is how you watch it do so: the raw barometer walks off by 60 m/h while
-    /// the Elevation tile stays on the terrain. Real weather is ~8 m/h (1 hPa/h).
-    baro_drift: Option<f32>,
-    /// Headless `--gpx` replay only: feed a **fixed synthetic HR/power/cadence** through SE2's HAL
-    /// sensor traits for one final tick (epic #707, SE5), and pin the three new sensor stat tiles
-    /// (HR/PWR/RPM) onto the Statistics grid, so the tiles render live values in the snapshot. A
-    /// minimal stub — SE8 replaces it with the sim control panel's real sensor sliders. Requires a
-    /// `--gpx` (the fixed source rides on the replay's location + clock).
-    sensors_demo: bool,
-    /// Headless `--png` only: after the script left the "Checking card..." wait on top (System menu
-    /// → Install), answer the DFU scan (epic #615 S5, #620) through the real
-    /// `App::apply_event` seam, swapping the wait for the confirm screen. The flavour
-    /// selects which warnings render: `normal` (a newer version, rollback available), `same` (the
-    /// installed version restaged → same-version warning), or `first` (no rollback → no-undo
-    /// warning). The board runs the scan for real; the sim stages a synthetic `UPDATE.BIN`.
-    dfu_scan: Option<dfu::DfuScanKind>,
-    /// Headless `--png` only: with `--dfu-scan`, press Install on the confirm so the "Preparing
-    /// update..." progress spinner renders (the sim never drains the arm, so it stays up).
-    dfu_progress: bool,
-    /// Headless `--png` only: with `--dfu-scan --dfu-progress`, run the board drain's terminal
-    /// swap (`App::apply_event`) so the static "Installing update" card renders — the
-    /// pre-reset frame the MIP panel holds through the whole install.
-    dfu_installing: bool,
-    /// Headless `--png` only: answer the DFU scan with a typed error so the error card renders
-    /// (`notfound` | `unreadable` | `damaged` | `toolarge` | `fragmented`). Needs the "Checking
-    /// card..." wait on top (System menu → Install), like `--dfu-scan`.
-    dfu_error: Option<obc_app::DfuScanError>,
-    /// Headless `--png` only: raise the one-time post-update toast through the real
-    /// `App::apply_event` seam, tagged with this version, so the "Updated to vX" card
-    /// renders (the first-healthy-boot toast).
-    dfu_confirmed: Option<String>,
+    /// One mutually-exclusive DFU fixture state for headless snapshots.
+    dfu: Option<DfuSeed>,
     /// Headless `--png` only: stamp every loaded route's retention meta (epic #638 S5), so the
     /// Route overview's expiry row renders for a snapshot. `LEVEL:AGE` — `LEVEL` is the retention
     /// `u8` (0 Never · 1 1d · 2 1wk · 3 2wk · 4 1mo · 5 2mo), `AGE` the route's `last_used` as a
@@ -277,8 +235,6 @@ impl Default for Args {
             height: obc_display::ls021::FRAME_H as u32,
             scale: 1,
             png: None,
-            screenshot: None,
-            true_color: false,
             heading: None,
             gpx: None,
             at: None,
@@ -291,9 +247,7 @@ impl Default for Args {
             tracks_dir: None,
             import: None,
             physical: false,
-            calibrate: false,
             palette: false,
-            colorway: None,
             battery: None,
             clock: None,
             weather: None,
@@ -305,26 +259,12 @@ impl Default for Args {
             no_card: false,
             lang: None,
             stat_fields: None,
-            ble_connected: false,
-            ble_passkey: None,
-            ble_paired: false,
-            sensors_screen: false,
-            nav_hold: false,
-            inject_nav_fail: None,
-            detour_hold: false,
-            inject_detour_fail: None,
-            inject_upload: None,
-            inject_warning: None,
-            boot_fault: None,
-            open_climb: false,
+            ble: None,
+            sensors: None,
+            hold: None,
+            inject: None,
             freeze: false,
-            baro_drift: None,
-            sensors_demo: false,
-            dfu_scan: None,
-            dfu_progress: false,
-            dfu_installing: false,
-            dfu_error: None,
-            dfu_confirmed: None,
+            dfu: None,
             route_retention: None,
         }
     }
@@ -431,7 +371,7 @@ fn stat_field_id(f: obc_app::StatField) -> &'static str {
 }
 
 /// An empty [`StatFieldList`](obc_app::StatFieldList) — the grid selection every `--stat-fields`
-/// (and `--sensors-demo`) list is built onto, since the type starts at the device's default six and
+/// (and `--sensors demo`) list is built onto, since the type starts at the device's default six and
 /// only shrinks by index.
 fn empty_stat_field_list() -> obc_app::StatFieldList {
     let mut sf = obc_app::StatFieldList::default();
@@ -468,9 +408,111 @@ fn parse_stat_fields(s: &str) -> Result<std::vec::Vec<obc_app::StatField>, Strin
     Ok(fields)
 }
 
-fn parse_args() -> Result<Args, String> {
+fn parse_nav_failure(s: &str, flag: &str) -> Result<NavFailure, String> {
+    match s {
+        "exhausted" => Ok(NavFailure::Exhausted),
+        "nopath" => Ok(NavFailure::NoPath),
+        _ => Err(format!("{flag} needs exhausted|nopath")),
+    }
+}
+
+fn parse_dfu_error(s: &str) -> Result<obc_app::DfuScanError, String> {
+    match s {
+        "notfound" => Ok(obc_app::DfuScanError::NotFound),
+        "unreadable" => Ok(obc_app::DfuScanError::Unreadable),
+        "damaged" => Ok(obc_app::DfuScanError::Damaged),
+        "toolarge" => Ok(obc_app::DfuScanError::TooLarge),
+        "fragmented" => Ok(obc_app::DfuScanError::TooFragmented),
+        "untrusted" => Ok(obc_app::DfuScanError::Untrusted),
+        other => Err(format!("--dfu error: unknown variant `{other}`")),
+    }
+}
+
+fn parse_warning(s: &str) -> Result<obc_app::WarningFlags, String> {
+    let mut warnings = obc_app::WarningFlags::NONE;
+    for token in s.split(',') {
+        warnings |= match token.trim() {
+            "gps" => obc_app::WarningFlags::NO_GPS,
+            "altimeter" | "baro" => obc_app::WarningFlags::NO_ALTIMETER,
+            "compass" | "imu" => obc_app::WarningFlags::NO_COMPASS,
+            "map" => obc_app::WarningFlags::MAP_SLOW,
+            "rec" | "record" => obc_app::WarningFlags::REC_ERROR,
+            _ => return Err("--inject warning tokens: gps|altimeter|compass|map|rec".into()),
+        };
+    }
+    Ok(warnings)
+}
+
+fn parse_ble(s: &str) -> Result<BleSeed, String> {
+    match s {
+        "connected" => Ok(BleSeed::Connected),
+        "paired" => Ok(BleSeed::Paired),
+        _ => s
+            .strip_prefix("passkey=")
+            .and_then(|n| n.parse().ok())
+            .filter(|&n| n <= 999_999)
+            .map(BleSeed::Passkey)
+            .ok_or_else(|| "--ble needs connected|paired|passkey=N (N is 0..=999999)".into()),
+    }
+}
+
+fn parse_injection(s: &str) -> Result<Injection, String> {
+    let (kind, value) = s
+        .split_once('=')
+        .ok_or("--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|warning=LIST")?;
+    match kind {
+        "nav-fail" => Ok(Injection::NavFail(parse_nav_failure(value, "--inject nav-fail")?)),
+        "detour-fail" => Ok(Injection::DetourFail(parse_nav_failure(value, "--inject detour-fail")?)),
+        "upload" | "upload-replace" => Ok(Injection::Upload {
+            id: value.parse().map_err(|_| "--inject upload needs a u16 object id")?,
+            replaced: kind == "upload-replace",
+        }),
+        "warning" => Ok(Injection::Warning(parse_warning(value)?)),
+        _ => Err("--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|warning=LIST".into()),
+    }
+}
+
+fn parse_dfu(s: &str) -> Result<DfuSeed, String> {
+    let (state, value) =
+        s.split_once('=').ok_or("--dfu needs scan=KIND|progress=KIND|installing=KIND|error=ERR|confirmed=VERSION")?;
+    match state {
+        "scan" => Ok(DfuSeed::Scan(dfu::DfuScanKind::parse(value)?)),
+        "progress" => Ok(DfuSeed::Progress(dfu::DfuScanKind::parse(value)?)),
+        "installing" => Ok(DfuSeed::Installing(dfu::DfuScanKind::parse(value)?)),
+        "error" => Ok(DfuSeed::Error(parse_dfu_error(value)?)),
+        "confirmed" => Ok(DfuSeed::Confirmed(value.to_string())),
+        _ => Err("--dfu needs scan=KIND|progress=KIND|installing=KIND|error=ERR|confirmed=VERSION".into()),
+    }
+}
+
+fn parse_weather_fault(s: &str) -> Result<WeatherFault, String> {
+    let (kind, value) = s
+        .split_once('=')
+        .ok_or("--weather-fault needs corrupt-request=N|truncate-request=N|fail-from=N:CODE|latency=MS")?;
+    match kind {
+        "corrupt-request" => Ok(WeatherFault::CorruptRequest(
+            value.parse().map_err(|_| "--weather-fault corrupt-request needs an index")?,
+        )),
+        "truncate-request" => Ok(WeatherFault::TruncateRequest(
+            value.parse().map_err(|_| "--weather-fault truncate-request needs an index")?,
+        )),
+        "fail-from" => {
+            let (n, code) = value.split_once(':').ok_or("--weather-fault fail-from needs N:CODE")?;
+            Ok(WeatherFault::FailFrom(
+                n.parse().map_err(|_| "--weather-fault fail-from: bad request index")?,
+                code.parse().map_err(|_| "--weather-fault fail-from: bad status code")?,
+            ))
+        }
+        "latency" => {
+            Ok(WeatherFault::Latency(value.parse().map_err(|_| "--weather-fault latency needs milliseconds")?))
+        }
+        _ => Err("--weather-fault needs corrupt-request=N|truncate-request=N|fail-from=N:CODE|latency=MS".into()),
+    }
+}
+
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut a = Args::default();
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--size" => {
@@ -482,8 +524,6 @@ fn parse_args() -> Result<Args, String> {
             "--set" => a.set = Some(it.next().ok_or("--set needs a path to MS<id>.OBS")?),
             "--scale" => a.scale = it.next().and_then(|s| s.parse().ok()).ok_or("bad --scale")?,
             "--png" => a.png = Some(it.next().ok_or("--png needs a path")?),
-            "--screenshot" => a.screenshot = Some(it.next().ok_or("--screenshot needs a path")?),
-            "--true-color" => a.true_color = true,
             "--heading" => a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?),
             "--gpx" => a.gpx = Some(it.next().ok_or("--gpx needs a path")?),
             "--at" => a.at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --at")?),
@@ -503,9 +543,7 @@ fn parse_args() -> Result<Args, String> {
             "--tracks-dir" => a.tracks_dir = Some(it.next().ok_or("--tracks-dir needs a path")?),
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
             "--physical" => a.physical = true,
-            "--calibrate" => a.calibrate = true,
             "--palette" => a.palette = true,
-            "--colorway" => a.colorway = Some(it.next().ok_or("--colorway needs a name")?),
             "--battery" => {
                 a.battery = Some(
                     it.next().and_then(|s| s.parse().ok()).filter(|&b| b <= 100).ok_or("--battery needs 0..=100")?,
@@ -528,26 +566,12 @@ fn parse_args() -> Result<Args, String> {
             }
             "--no-card" => a.no_card = true,
             "--weather-offline" => a.live.controls.offline = true,
-            "--weather-latency" => {
-                let ms: u64 = it.next().and_then(|s| s.parse().ok()).ok_or("--weather-latency needs milliseconds")?;
-                a.live.controls.latency = std::time::Duration::from_millis(ms);
-            }
-            "--weather-fail-from" => {
-                let spec = it.next().ok_or("--weather-fail-from needs N:CODE")?;
-                let (n, code) = spec.split_once(':').ok_or("--weather-fail-from needs N:CODE")?;
-                a.live.controls.fail_from = Some((
-                    n.parse().map_err(|_| "--weather-fail-from: bad request index")?,
-                    code.parse().map_err(|_| "--weather-fail-from: bad status code")?,
-                ));
-            }
-            "--weather-corrupt-request" => {
-                a.live.controls.corrupt_request =
-                    Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-corrupt-request needs an index")?);
-            }
-            "--weather-truncate-request" => {
-                a.live.controls.truncate_request =
-                    Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-truncate-request needs an index")?);
-            }
+            "--weather-fault" => match parse_weather_fault(&it.next().ok_or("--weather-fault needs a value")?)? {
+                WeatherFault::CorruptRequest(n) => a.live.controls.corrupt_request = Some(n),
+                WeatherFault::TruncateRequest(n) => a.live.controls.truncate_request = Some(n),
+                WeatherFault::FailFrom(n, code) => a.live.controls.fail_from = Some((n, code)),
+                WeatherFault::Latency(ms) => a.live.controls.latency = std::time::Duration::from_millis(ms),
+            },
             "--weather-alert" => {
                 let spec = it.next().ok_or("--weather-alert needs rain[:MIN], storm[:MIN] or gust[:MIN]")?;
                 let (kind, min) = spec.split_once(':').unwrap_or((spec.as_str(), "28"));
@@ -571,88 +595,25 @@ fn parse_args() -> Result<Args, String> {
             "--stat-fields" => {
                 a.stat_fields = Some(parse_stat_fields(&it.next().ok_or("--stat-fields needs a comma list")?)?);
             }
-            "--ble-connected" => a.ble_connected = true,
-            "--nav-hold" => a.nav_hold = true,
-            "--open-climb" => a.open_climb = true,
+            "--ble" => a.ble = Some(parse_ble(&it.next().ok_or("--ble needs a value")?)?),
+            "--hold" => {
+                a.hold = Some(match it.next().ok_or("--hold needs nav|detour")?.as_str() {
+                    "nav" => Hold::Nav,
+                    "detour" => Hold::Detour,
+                    _ => return Err("--hold needs nav|detour".into()),
+                });
+            }
             "--freeze" => a.freeze = true,
-            "--baro-drift" => {
-                a.baro_drift = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --baro-drift (m per hour)")?)
-            }
-            "--sensors-demo" => a.sensors_demo = true,
-            "--dfu-scan" => {
-                a.dfu_scan = Some(dfu::DfuScanKind::parse(&it.next().ok_or("--dfu-scan needs normal|same|first")?)?);
-            }
-            "--dfu-progress" => a.dfu_progress = true,
-            "--dfu-installing" => a.dfu_installing = true,
-            "--dfu-error" => {
-                a.dfu_error = Some(match it.next().ok_or("--dfu-error needs a variant")?.as_str() {
-                    "notfound" => obc_app::DfuScanError::NotFound,
-                    "unreadable" => obc_app::DfuScanError::Unreadable,
-                    "damaged" => obc_app::DfuScanError::Damaged,
-                    "toolarge" => obc_app::DfuScanError::TooLarge,
-                    "fragmented" => obc_app::DfuScanError::TooFragmented,
-                    "untrusted" => obc_app::DfuScanError::Untrusted,
-                    other => return Err(format!("--dfu-error: unknown variant `{other}`")),
+            "--sensors" => {
+                a.sensors = Some(match it.next().ok_or("--sensors needs demo|screen")?.as_str() {
+                    "demo" => SensorSeed::Demo,
+                    "screen" => SensorSeed::Screen,
+                    _ => return Err("--sensors needs demo|screen".into()),
                 });
             }
-            "--dfu-confirmed" => a.dfu_confirmed = Some(it.next().ok_or("--dfu-confirmed needs a version")?),
-            "--inject-nav-fail" => {
-                let kind = it.next().ok_or("--inject-nav-fail needs exhausted|nopath")?;
-                if kind != "exhausted" && kind != "nopath" {
-                    return Err("--inject-nav-fail needs exhausted|nopath".into());
-                }
-                a.inject_nav_fail = Some(kind);
-            }
-            "--detour-hold" => a.detour_hold = true,
-            "--inject-detour-fail" => {
-                let kind = it.next().ok_or("--inject-detour-fail needs exhausted|nopath")?;
-                if kind != "exhausted" && kind != "nopath" {
-                    return Err("--inject-detour-fail needs exhausted|nopath".into());
-                }
-                a.inject_detour_fail = Some(kind);
-            }
-            "--inject-upload" => {
-                let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload needs an object id")?;
-                a.inject_upload = Some((id, false));
-            }
-            "--inject-upload-replace" => {
-                let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload-replace needs an object id")?;
-                a.inject_upload = Some((id, true));
-            }
-            "--inject-warning" => {
-                let spec = it.next().ok_or("--inject-warning needs gps,altimeter,compass,map")?;
-                let mut w = obc_app::WarningFlags::NONE;
-                for tok in spec.split(',') {
-                    w |= match tok.trim() {
-                        "gps" => obc_app::WarningFlags::NO_GPS,
-                        "altimeter" | "baro" => obc_app::WarningFlags::NO_ALTIMETER,
-                        "compass" | "imu" => obc_app::WarningFlags::NO_COMPASS,
-                        "map" => obc_app::WarningFlags::MAP_SLOW,
-                        "rec" | "record" => obc_app::WarningFlags::REC_ERROR,
-                        _ => return Err("--inject-warning tokens: gps|altimeter|compass|map|rec".into()),
-                    };
-                }
-                a.inject_warning = Some(w);
-            }
-            "--boot-fault" => {
-                let kind = it.next().ok_or("--boot-fault needs nocard|nomap|badmap")?;
-                a.boot_fault = Some(match kind.as_str() {
-                    "nocard" => obc_app::BootFault::NoCard,
-                    "nomap" => obc_app::BootFault::NoMap,
-                    "badmap" => obc_app::BootFault::BadMap,
-                    _ => return Err("--boot-fault needs nocard|nomap|badmap".into()),
-                });
-            }
-            "--ble-passkey" => {
-                a.ble_passkey = Some(
-                    it.next()
-                        .and_then(|s| s.parse().ok())
-                        .filter(|&n| n <= 999_999)
-                        .ok_or("--ble-passkey needs 0..=999999")?,
-                )
-            }
-            "--ble-paired" => a.ble_paired = true,
-            "--sensors-screen" => a.sensors_screen = true,
+            "--dfu" => a.dfu = Some(parse_dfu(&it.next().ok_or("--dfu needs a value")?)?),
+            "--inject" => a.inject = Some(parse_injection(&it.next().ok_or("--inject needs a value")?)?),
+            other if other.starts_with('-') => return Err(format!("unexpected option: {other}")),
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -674,8 +635,12 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
-fn color_of(c: u16, true_color: bool) -> Rgb888 {
-    let (r, g, b) = if true_color { rgb565_to_rgb888(c) } else { rgb565_to_device64(c) };
+fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn color_of(c: u16) -> Rgb888 {
+    let (r, g, b) = rgb565_to_device64(c);
     Rgb888::new(r, g, b)
 }
 
@@ -773,7 +738,7 @@ fn fake_scan_hits() -> [obc_app::SensorScanHit; 4] {
 /// interactive GUI drives the identical protocol through `obc-host-core::HostLoop`). Handles the
 /// commands the snapshot flow models: plan a route synchronously (the shared `run_nav_request`),
 /// cascade/route/ride delete + catalog re-feed, and the card-free scan. `hold_nav` discards a
-/// `PlanRoute` un-run so the `--nav-hold` / `--inject-nav-fail` snapshots keep their spinner up for
+/// `PlanRoute` un-run so the `--hold nav` / `--inject nav-fail=...` snapshots keep their spinner up for
 /// the injected answer. A drained `FinishTrack` is re-posted to the activity slot so the
 /// replay/save-track paths' `reconcile_tracks` (which reads that slot directly, not the drain) still
 /// sees it. The two derived fill levels and the host-specific commands the sim has no analogue for
@@ -975,11 +940,81 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
     }
 }
 
+const HELP: &str = r#"OpenBikeComputer desktop simulator
+
+Usage: obc-sim <MAP.obcm> [OPTIONS]
+       obc-sim --set <MS7.OBS> [OPTIONS]
+       obc-sim --palette [--png OUT]
+       obc-sim --import TRACK.gpx [--routes-dir DIR]
+
+Map and output:
+  --set PATH              Open an OBCA volume-set manifest instead of one map
+  --size WxH              Frame size (default: device 240x320)
+  --scale N               Integer PNG/window scale (default: 1)
+  --png PATH              Render one device frame to PNG and exit
+  --palette               Show or save the device 64-colour palette
+  --center LON,LAT        Headless camera centre in microdegrees
+  --zoom MULT             Headless bbox-fit zoom multiplier
+  --heading DEG           Start in heading-up mode at this course
+
+Ride and storage fixtures:
+  --gpx PATH              Replay a GPX track
+  --at SECONDS            GPX playback time for a headless render
+  --routes-dir DIR        Route-store directory (default: routes/)
+  --tracks-dir DIR        Ride/track-store directory (default: tracks/)
+  --import PATH           Convert a GPX into the route store and exit
+  --route-retention L:A   Set route retention LEVEL and AGE (for example 3:2d)
+
+Device state:
+  --boot                  Start headless rendering at the power-on Home screen
+  --battery PCT           Initial battery charge, 0..=100
+  --clock DATE            UTC anchor, YYYY-MM-DDTHH:MM
+  --lang LANG             UI language: en|de|fr|es
+  --stat-fields LIST      Comma-separated Statistics field ids
+  --physical              Use saved physical-size calibration in the GUI
+  --ble STATE             connected|paired|passkey=N
+  --sensors MODE          demo|screen
+
+Scripted snapshots:
+  --script TOKENS         Apply device-button script tokens before rendering
+  --expect-screen NAME    Refuse unless the script lands on this screen
+  --hold PLAN             Keep one request pending: nav|detour
+  --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
+                          upload-replace=ID|warning=LIST
+  --dfu STATE             scan=KIND|progress=KIND|installing=KIND|
+                          error=ERR|confirmed=VERSION
+  --freeze                Show the live recalculation freeze over the map
+
+Weather (independent product controls):
+  --weather SOURCE        DIR|demo[:SCENARIO]|live (see README for scenarios)
+  --weather-now UNIX      Freshness instant
+  --weather-refreshing    Show the non-blocking refresh cue
+  --weather-alert ALERT   rain[:MIN]|storm[:MIN]|gust[:MIN]
+  --weather-decide        Run the production route-projected alert decision
+  --weather-service URL   Live weather-service origin
+  --weather-radius-km KM  Live corridor radius
+  --weather-offline       Force the live service offline
+  --weather-fault FAULT   corrupt-request=N|truncate-request=N|
+                          fail-from=N:CODE|latency=MS
+  --no-card               Simulate no writable companion storage
+
+Other:
+  -h, --help              Print this help
+
+`--set` and a positional map are mutually exclusive. `--png` always renders the
+device's RGB222/64-colour output. Housing colorways and display calibration remain
+available from the GUI control panel.
+"#;
+
 fn main() {
+    if std::env::args().skip(1).any(|arg| arg == "--help" || arg == "-h") {
+        print!("{HELP}");
+        return;
+    }
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--expect-screen NAME] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|stormahead|rainahead|gusty|hourly]|live] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]|gust[:MIN]] [--weather-decide] [--weather-service URL] [--weather-radius-km KM] [--weather-offline] [--weather-latency MS] [--weather-fail-from N:CODE] [--weather-corrupt-request N] [--weather-truncate-request N] [--no-card]\n\n  --weather-decide run the production ride-decision path for the rendered frame: sample the\n                   bundle route-projected (App::ride_projection -> sample_along) and run the\n                   real alert engine (thresholds, dedup, cooldown), as the GUI does every\n                   frame. Source-agnostic: it decides over whichever bundle is loaded, demo\n                   or live. Opt-in, so every existing fixture render stays byte-identical.\n\n  --weather live   fetch the real OpenBikeComputer weather service for the rider's position:\n                   the manifest, OBCG corridor Range reads and MET hourly — the same bytes the\n                   phone consumes — assembled into an OBCW bundle and fed through the production\n                   reader/renderer/screens. The only network path in the simulator; fixtures and\n                   CI never reach it. The service receives no coordinate (every request is a\n                   Range read of a static object); MET is the one third party that does, rounded\n                   to four decimals. The failure controls above inject latency, HTTP status,\n                   truncation, corruption and offline against that same path. The corridor is\n                   the phone's 90 km disc around the fix — one dataset, so nothing is selected\n                   and a heading changes no answer; --weather-radius-km resizes it.\n\n  --no-card        the device has no storage to write a bundle to: per §11.7 the scheduler then\n                   raises no weather request at all, urgent included, so the simulator issues no\n                   HTTP request either. (--boot-fault nocard only draws a screen.)\n\n  clock rules      --clock always wins. Without it, a DIR/demo store anchors the app clock on\n                   its own first frame, so fixture renders are deterministic; --weather live\n                   anchors on the real wall clock instead, because anchoring on the newest frame\n                   would hide a stalled service behind a fresh-looking nowcast. --weather-now\n                   overrides the freshness instant in every mode — the stale-scenario tool.\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\n\n{HELP}");
             std::process::exit(2);
         }
     };
@@ -1179,8 +1214,7 @@ fn main() {
             || weather_clock.is_some()
             || args.lang.is_some()
             || args.stat_fields.is_some()
-            || args.sensors_demo
-            || args.sensors_screen
+            || args.sensors.is_some()
         {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
@@ -1191,10 +1225,10 @@ fn main() {
             if let Some(lang) = args.lang {
                 settings.language = lang;
             }
-            // `--sensors-demo` (epic #707, SE5): pin the three new sensor tiles onto the visible
+            // `--sensors demo` (epic #707, SE5): pin the three new sensor tiles onto the visible
             // Statistics page so the snapshot shows them. A dedicated demo selection — HR / PWR /
             // RPM first, then a few live neighbours — replacing the default six.
-            if args.sensors_demo {
+            if args.sensors == Some(SensorSeed::Demo) {
                 use obc_app::StatField;
                 let mut sf = settings.stat_fields;
                 while !sf.is_empty() {
@@ -1214,7 +1248,7 @@ fn main() {
             }
             // `--stat-fields` (epic #946, U5): replace the grid selection wholesale, so a snapshot can
             // put a `Next: <category>` tile (or any other field) on the visible page without walking
-            // the Fields editor. Applied after `--sensors-demo` so an explicit list always wins.
+            // the Fields editor. Applied after `--sensors demo` so an explicit list always wins.
             if let Some(fields) = &args.stat_fields {
                 let mut sf = empty_stat_field_list();
                 for f in fields {
@@ -1225,10 +1259,10 @@ fn main() {
                 }
                 settings.stat_fields = sf;
             }
-            // `--sensors-screen` (SE7): two saved slots so the row screen reads Connected / Searching
+            // `--sensors screen` (SE7): two saved slots so the row screen reads Connected / Searching
             // (the Not-set third stays empty). A settings write, so it survives into the row status
             // gate; the live phase + battery come from the status snapshot pushed after the script.
-            if args.sensors_screen {
+            if args.sensors == Some(SensorSeed::Screen) {
                 settings.saved_sensors[0] = obc_app::SavedSensor::saved(1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
                 settings.saved_sensors[1] = obc_app::SavedSensor::saved(0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]);
             }
@@ -1273,12 +1307,20 @@ fn main() {
         // synced flags.
         let mut ride_store = RideStore::open(args.tracks_dir());
         app.set_rides(ride_store.catalog(), ride_store.ids());
-        // Inject the BLE link state (epic #447) **before** the script runs: `--ble-connected` shows
-        // the connected indicator, `--ble-passkey N` puts the host-pushed passkey card up (P2), and
-        // `--ble-paired` a stored bond — so a scripted gesture on the Bluetooth screen (its Forget
+        // Inject the BLE link state (epic #447) **before** the script runs: `--ble connected` shows
+        // the connected indicator, `--ble passkey=N` puts the host-pushed passkey card up (P2), and
+        // `--ble paired` a stored bond — so a scripted gesture on the Bluetooth screen (its Forget
         // hold arms only while paired) sees the bond, exactly as the control panel drives it live.
-        let link = if args.ble_connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising };
-        app.set_ble_status(obc_app::BleStatus { link, passkey: args.ble_passkey, paired: args.ble_paired });
+        let link = if args.ble == Some(BleSeed::Connected) {
+            obc_app::BleLink::Connected
+        } else {
+            obc_app::BleLink::Advertising
+        };
+        let passkey = match args.ble {
+            Some(BleSeed::Passkey(n)) => Some(n),
+            _ => None,
+        };
+        app.set_ble_status(obc_app::BleStatus { link, passkey, paired: args.ble == Some(BleSeed::Paired) });
         // The map's terrain (EL7), mounted **once** for the whole headless run like the map itself:
         // the `.obcd` sidecar beside the `.obcm`, or the null source when there is none. Two
         // consumers share it — a scripted route plan fills its elevation from it (EL7), and the
@@ -1291,11 +1333,11 @@ fn main() {
             // the active route. It then drains a pending create-route request (epic #116, R4), so a
             // script can walk the whole POI→route flow: the request's answer swaps the confirm for
             // the overview / failure card, which the next token (or the final render) sees.
-            let (rw, rh, rtc) = (args.width, args.height, args.true_color);
-            // `--nav-hold` / `--inject-nav-fail` leave the request un-drained so the planning
+            let (rw, rh) = (args.width, args.height);
+            // `--hold nav` / `--inject nav-fail=...` leave the request un-drained so the planning
             // screen stays up (for its own snapshot, or for the injected answer to land in).
-            let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
-            let hold_detour = args.detour_hold || args.inject_detour_fail.is_some();
+            let hold_nav = args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_)));
+            let hold_detour = args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_)));
             // One render scratch for the whole script run, lent to each throwaway frame — the
             // host owns it since #1146, and ~90 KB is not something to re-allocate per token.
             let mut scratch = Box::new(obc_render::RenderScratch::new());
@@ -1330,7 +1372,7 @@ fn main() {
                             route.as_ref(),
                             rw as f32,
                             rh as f32,
-                            |c| color_of(c, rtc),
+                            color_of,
                         );
                     }
                     // Drain the typed host protocol each `f` (mirroring the GUI's per-frame dispatch):
@@ -1413,23 +1455,29 @@ fn main() {
         // confirm on top: the answer goes through the real `NavPlanned` seam, so the snapshot pins
         // the exact error→tier mapping (`exhausted` → "Too far to route here.", anything else →
         // "Couldn't find a route.").
-        if let Some(kind) = &args.inject_nav_fail {
-            let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
+        if let Some(Injection::NavFail(kind)) = args.inject {
+            let err = match kind {
+                NavFailure::Exhausted => obc_route::NavError::Exhausted,
+                NavFailure::NoPath => obc_route::NavError::NoPath,
+            };
             app.apply_event(obc_app::HostEvent::NavPlanned(Err(err)));
         }
 
         // Inject a detour-planning failure (#882) after the script left the detour planning
         // screen on top: the answer goes through the real `DetourPlanned` seam, so the snapshot
         // pins the fail card with its "try a farther rejoin" hint.
-        if let Some(kind) = &args.inject_detour_fail {
-            let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
+        if let Some(Injection::DetourFail(kind)) = args.inject {
+            let err = match kind {
+                NavFailure::Exhausted => obc_route::NavError::Exhausted,
+                NavFailure::NoPath => obc_route::NavError::NoPath,
+            };
             app.apply_event(obc_app::HostEvent::DetourPlanned(Err(err)));
         }
 
         // Inject a committed route upload (epic #447, P4) after the script (so a `p p p` script
         // is already riding when the event lands): the catalog above is the "already rescanned"
         // store, and this is the upload event with the id — the device's exact order.
-        if let Some((id, replaced)) = args.inject_upload {
+        if let Some(Injection::Upload { id, replaced }) = args.inject {
             // Build the route's mini elevation band from the committed OBCR at "commit time",
             // exactly the seam the board fills (#682) — the idle card draws it.
             let elevation = store.elevation_sparkline(id);
@@ -1437,7 +1485,7 @@ fn main() {
         }
         // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
-        if let Some(w) = args.inject_warning {
+        if let Some(Injection::Warning(w)) = args.inject {
             app.apply_event(obc_app::HostEvent::Warning(w));
         }
 
@@ -1449,9 +1497,15 @@ fn main() {
         // answer it through the real `DfuScanned` / `UpdateConfirmed` seams — so the confirm /
         // progress / error / toast screens render off the same app state the device reaches. The sim
         // stages a synthetic `UPDATE.BIN` and runs the real `obc-dfu` scan.
-        if let Some(kind) = args.dfu_scan {
-            app.apply_event(obc_app::HostEvent::DfuScanned(kind.report()));
-            if args.dfu_progress {
+        if let Some(dfu) = &args.dfu {
+            let kind = match dfu {
+                DfuSeed::Scan(kind) | DfuSeed::Progress(kind) | DfuSeed::Installing(kind) => Some(*kind),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                app.apply_event(obc_app::HostEvent::DfuScanned(kind.report()));
+            }
+            if matches!(dfu, DfuSeed::Progress(_) | DfuSeed::Installing(_)) {
                 // Confirm (Install is the default selection) → the arm one-shot + the progress
                 // spinner. A tap: down, then up 80 ms later, well under the long-press threshold.
                 let now = 500_000u32;
@@ -1459,25 +1513,25 @@ fn main() {
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
                 // The board drain's terminal swap: spinner → the static "Installing update" card
                 // (the pre-reset frame), through the same `DfuInstallBegan` seam the device uses.
-                if args.dfu_installing {
+                if matches!(dfu, DfuSeed::Installing(_)) {
                     app.apply_event(obc_app::HostEvent::DfuInstallBegan);
                 }
             }
-        }
-        if let Some(e) = args.dfu_error {
-            app.apply_event(obc_app::HostEvent::DfuScanned(Err(e)));
+            if let DfuSeed::Error(e) = dfu {
+                app.apply_event(obc_app::HostEvent::DfuScanned(Err(*e)));
+            }
         }
         // The one-time post-update toast: raise the confirmed-update fact, then run one animation
         // pass — `reconcile_update_toast` pushes the "Updated to vX" card there, like the device.
-        if let Some(version) = &args.dfu_confirmed {
+        if let Some(DfuSeed::Confirmed(version)) = &args.dfu {
             app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(version)));
             app.advance_animations(InputClock(500_000));
         }
-        // `--sensors-screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
+        // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
         // scan list), push the per-slot status + the canned scan-hit set — the fake central manager,
         // so the three-row screen reads Connected · 78 % / Searching / Not set and the scan list shows
         // filtered hits. The row screen ignores the hits; the scan-list screen ignores the status.
-        if args.sensors_screen {
+        if args.sensors == Some(SensorSeed::Screen) {
             let status = [
                 obc_app::SensorStatus { phase: obc_app::SensorPhase::Connected, battery: Some(78), last_value_ms: 0 },
                 obc_app::SensorStatus { phase: obc_app::SensorPhase::Searching, battery: None, last_value_ms: 0 },
@@ -1512,9 +1566,6 @@ fn main() {
         // bounded step keeps long tracks fast while staying under the dropout/teleport gates.
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
-            // `--baro-drift` (EL8, #1076): the synthetic weather the map-referenced altimeter is
-            // there to cancel. Off by default, so every existing snapshot replays unchanged.
-            baro.set_drift(args.baro_drift.unwrap_or(0.0));
             p.seek(0.0);
             p.play();
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
@@ -1529,31 +1580,14 @@ fn main() {
                 app.sample_terrain(&mut *elev);
                 t += step;
             }
-            // With drift injected, report what the map-referenced altimeter made of it — the
-            // headless twin of the GUI's Altimeter panel (and of the board's `altfuse:` RTT line).
-            // Gated on the flag so an ordinary snapshot run stays silent.
-            if args.baro_drift.is_some() {
-                let a = app.activity.altitude();
-                let baro = app.activity.baro_elevation_m().unwrap_or(f32::NAN);
-                eprintln!(
-                    "altfuse: raw={baro:.1} m fused={} offset={} map_ref={} p_ref={} acc={} gated={} reseeds={}",
-                    a.fused_m(baro).map_or("--".into(), |m| format!("{m:.1} m")),
-                    a.offset_m().map_or("--".into(), |m| format!("{m:+.1} m")),
-                    a.map_reference_m().map_or("--".into(), |m| format!("{m:.0} m")),
-                    a.reference_pressure_hpa(baro).map_or("--".to_string(), |p| format!("{p:.2} hPa")),
-                    a.accepted(),
-                    a.gated(),
-                    a.reseeds(),
-                );
-            }
         }
 
-        // `--sensors-demo` (epic #707, SE5): one final tick fed a **fixed synthetic** HR/power/
+        // `--sensors demo` (epic #707, SE5): one final tick fed a **fixed synthetic** HR/power/
         // cadence through SE2's HAL sensor traits, so the three new stat tiles render live values in
         // the Statistics-grid snapshot (the grid was pinned to HR/PWR/RPM in the settings seed
         // above). Stamped at the replay's own `now_ms` so `Activity`'s 5 s staleness gate reads them
         // fresh. Deliberately minimal — SE8 replaces this with the sim control panel's real sliders.
-        if args.sensors_demo {
+        if args.sensors == Some(SensorSeed::Demo) {
             if let Some(p) = player.as_mut() {
                 struct DemoHr;
                 impl obc_ports::HeartRateSource for DemoHr {
@@ -1585,13 +1619,6 @@ fn main() {
             }
         }
 
-        // `--open-climb` (epic #506, C4): swap the base riding view for the Climb screen now the
-        // replay has driven the matcher onto a climb, so the snapshot captures the striped profile.
-        // C5 makes it reachable by gesture; until then this debug seam is the only way in.
-        if args.open_climb {
-            app.debug_open_climb();
-        }
-
         // `--freeze` (#1146 P2): engage the Recalculating freeze through the same seam a drained
         // plan command takes, so the snapshot shows the real banner over the real frozen map.
         if args.freeze {
@@ -1617,21 +1644,6 @@ fn main() {
         }
 
         let mut fb = Framebuffer::new(args.width, args.height);
-        let tc = args.true_color;
-
-        // The standalone boot-fault screen (issue #504): drawn *without* the app — at boot there may
-        // be no map to build one around — so it bypasses `render_frame`, exactly as `main` does at
-        // the fatal SD/map sites.
-        if let Some(fault) = args.boot_fault {
-            obc_app::draw_boot_fault(&mut fb, args.width as i32, args.height as i32, |c| color_of(c, tc), fault);
-            if let Err(e) = write_png(&fb, args.scale, path) {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-            eprintln!("wrote {path}");
-            return;
-        }
-
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
@@ -1677,7 +1689,7 @@ fn main() {
                 rain,
                 weather_feed,
                 (args.width as f32, args.height as f32),
-                |c| color_of(c, tc),
+                color_of,
             )
         };
         let wx_wall_now = app.wall_unix_now() as i64;
@@ -1755,5 +1767,97 @@ fn main() {
     if let Err(e) = gui::run(map, args) {
         eprintln!("gui error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn parse(options: &[&str]) -> Result<Args, String> {
+        let mut args = vec!["map.obcm".to_string()];
+        args.extend(options.iter().map(|s| (*s).to_string()));
+        parse_args_from(args)
+    }
+
+    #[test]
+    fn grouped_flags_parse_typed_states() {
+        assert!(matches!(parse(&["--ble", "passkey=42"]).unwrap().ble, Some(BleSeed::Passkey(42))));
+        assert!(matches!(
+            parse(&["--inject", "upload-replace=7"]).unwrap().inject,
+            Some(Injection::Upload { id: 7, replaced: true })
+        ));
+        assert!(matches!(
+            parse(&["--dfu", "installing=normal"]).unwrap().dfu,
+            Some(DfuSeed::Installing(dfu::DfuScanKind::Normal))
+        ));
+        let weather = parse(&["--weather-fault", "fail-from=3:503"]).unwrap();
+        assert_eq!(weather.live.controls.fail_from, Some((3, 503)));
+    }
+
+    #[test]
+    fn removed_flags_are_rejected() {
+        for flag in [
+            "--true-color",
+            "--colorway",
+            "--calibrate",
+            "--screenshot",
+            "--boot-fault",
+            "--open-climb",
+            "--baro-drift",
+        ] {
+            assert!(parse(&[flag]).is_err(), "{flag} must stay removed");
+        }
+    }
+
+    #[test]
+    fn help_lists_every_parser_flag_and_no_removed_flag() {
+        let readme = include_str!("../README.md");
+        for flag in [
+            "--set",
+            "--size",
+            "--scale",
+            "--png",
+            "--heading",
+            "--gpx",
+            "--at",
+            "--center",
+            "--zoom",
+            "--script",
+            "--expect-screen",
+            "--boot",
+            "--routes-dir",
+            "--tracks-dir",
+            "--import",
+            "--physical",
+            "--palette",
+            "--battery",
+            "--clock",
+            "--weather",
+            "--weather-now",
+            "--weather-refreshing",
+            "--weather-service",
+            "--weather-radius-km",
+            "--no-card",
+            "--weather-offline",
+            "--weather-fault",
+            "--weather-alert",
+            "--weather-decide",
+            "--route-retention",
+            "--lang",
+            "--stat-fields",
+            "--ble",
+            "--hold",
+            "--freeze",
+            "--sensors",
+            "--dfu",
+            "--inject",
+        ] {
+            assert!(HELP.contains(flag), "help is missing {flag}");
+            assert!(readme.contains(flag), "README is missing {flag}");
+        }
+        for removed in ["--true-color", "--colorway", "--calibrate", "--screenshot", "--boot-fault"] {
+            assert!(!HELP.contains(removed), "help still advertises {removed}");
+        }
     }
 }
