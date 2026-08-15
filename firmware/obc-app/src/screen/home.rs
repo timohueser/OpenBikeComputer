@@ -125,7 +125,7 @@ impl HomeScreen {
 
         // The battery group, nudged 6 px below its old h*64/100 anchor (owner review round 1: a
         // little more air between the date line and the gauge).
-        let device = rx.state.device_status();
+        let device = rx.state.device;
         battery(cv, w, h * 64 / 100 + 6, device.battery_pct);
 
         // The BLE connected rune lives in a fixed top-right status slot — 10 px inset from both

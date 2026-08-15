@@ -67,7 +67,7 @@ impl BluetoothScreen {
             Gesture::Step(n) => {
                 // The bond vanishing from under the cursor (a completed forget) clamps it back
                 // onto the toggle before the step, so a step never walks a hidden row.
-                let len = rows(cx.state.device_status().ble_paired);
+                let len = rows(cx.state.device.ble_paired);
                 self.selected = self.selected.min(len - 1);
                 self.selected = crate::screen::list::step_selection(self.selected, n, len);
                 Transition::None
@@ -80,7 +80,7 @@ impl BluetoothScreen {
             }
             // Forget phone: the guarded hold, live only while a bond is stored. Records the
             // one-shot request for the host ([`App::drain_host_commands`](crate::App::drain_host_commands)).
-            Gesture::Hold if self.selected == FORGET && cx.state.device_status().ble_paired => {
+            Gesture::Hold if self.selected == FORGET && cx.state.device.ble_paired => {
                 cx.state.ble_forget_pending = true;
                 Transition::None
             }
@@ -95,7 +95,7 @@ impl BluetoothScreen {
         title_frame(cv, w, h, rx.t(Msg::BluetoothTitle), "");
 
         // A stale below-the-end cursor (the bond was just forgotten) reads as the toggle row.
-        let device = rx.state.device_status();
+        let device = rx.state.device;
         let selected = self.selected.min(rows(device.ble_paired) - 1);
 
         // Row 0 — the radio switch.
@@ -187,7 +187,7 @@ mod tests {
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
         assert!(!st.ble_forget_pending, "unpaired: a hold does nothing (nothing to forget)");
 
-        st.ble_paired = true;
+        st.device.ble_paired = true;
         run(&mut scr, &mut st, &mut s, Gesture::Step(1)); // → the (now present) Forget row
         assert_eq!(scr.selected, FORGET);
         assert!(scr.selection_is_guarded(true), "paired + selected: the hold fill is live");
@@ -210,10 +210,10 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = BluetoothScreen::new();
-        st.ble_paired = true;
+        st.device.ble_paired = true;
         run(&mut scr, &mut st, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, FORGET);
-        st.ble_paired = false; // the host drained the forget; the bond is gone
+        st.device.ble_paired = false; // the host drained the forget; the bond is gone
         assert!(!scr.selection_is_guarded(false), "no fill on a hidden row");
         run(&mut scr, &mut st, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, TOGGLE, "the step lands on the one remaining row");

@@ -185,7 +185,7 @@ impl MenuScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        let device = rx.state.device_status();
+        let device = rx.state.device;
         let ble = device.ble_connected();
         let txt = MenuText::resolve(rx);
         // The title bar's right readout: the battery percentage, in Home's `NN%` formatting.
