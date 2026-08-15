@@ -120,7 +120,7 @@ export interface RouteListEntry {
     retention: number;
 }
 
-export function decodeRouteListEntry(slot: Uint8Array): RouteListEntry {
+function decodeRouteListEntry(slot: Uint8Array): RouteListEntry {
     const view = viewOf(slot);
     return {
         objectId: view.getUint16(0, true),
@@ -171,7 +171,7 @@ export interface RideListEntry {
     name: string;
 }
 
-export function decodeRideListEntry(slot: Uint8Array): RideListEntry {
+function decodeRideListEntry(slot: Uint8Array): RideListEntry {
     const view = viewOf(slot);
     return {
         objectId: view.getUint16(0, true),
@@ -218,7 +218,7 @@ export interface TripListEntry {
     crc32: number;
 }
 
-export function decodeTripListEntry(slot: Uint8Array): TripListEntry {
+function decodeTripListEntry(slot: Uint8Array): TripListEntry {
     const view = viewOf(slot);
     return {
         objectId: view.getUint16(0, true),
