@@ -1,6 +1,5 @@
 //! Terrain-store traversal, validation, and lookup.
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,9 +10,11 @@ use obc_formats::obct;
 
 use crate::grid::CellId;
 
+use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
+use super::model::{TerrainCellEntry, TerrainEmptyRun};
+use super::validate::{parse_strict_id, validate_id, validate_timestamp};
 use super::{
-    content_addressed_rel_path, file_name, hash_file, inclusive_run_count, parse_strict_id, rel_url_path,
-    sorted_entries, validate_id, validate_timestamp, PinnedArtifact, TerrainCellEntry, TerrainEmptyRun, CELLS_DIR,
+    content_addressed_rel_path, file_name, hash_file, rel_url_path, sorted_entries, PinnedArtifact, CELLS_DIR,
     CELL_INDEX_NAME, KNOWN_EMPTY_STATE_NAME, TERRAIN_DIR,
 };
 
@@ -68,38 +69,17 @@ pub(super) struct TerrainStore {
     pub(super) pinned_artifacts: Vec<PinnedArtifact>,
 }
 
-/// Lookup over the terrain index, the same shape a band index has: an artifact or a
-/// verified-empty square, and nothing else is a published cell.
-pub(super) struct TerrainIndex<'a> {
-    cells: BTreeMap<&'a str, &'a TerrainCellEntry>,
-    empty_by_row: BTreeMap<i64, Vec<(i64, i64)>>,
-}
+pub(super) type TerrainIndex<'a> = CoverageIndex<'a, TerrainCellEntry>;
+pub(super) type IndexedTerrain<'a> = IndexedCoverage<'a, TerrainCellEntry>;
 
-pub(super) enum IndexedTerrain<'a> {
-    Artifact(&'a TerrainCellEntry),
-    KnownEmpty,
-}
-
-impl<'a> TerrainIndex<'a> {
-    pub(super) fn new(cells: &'a [TerrainCellEntry], known_empty: &[TerrainEmptyRun]) -> Result<Self, String> {
-        let mut empty_by_row: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
-        for run in known_empty {
-            let start = parse_strict_id(&run.start)?;
-            let end = parse_strict_id(&run.end)?;
-            empty_by_row.entry(start.i).or_default().push((start.j, end.j));
-        }
-        Ok(Self { cells: cells.iter().map(|cell| (cell.id.as_str(), cell)).collect(), empty_by_row })
-    }
-
-    pub(super) fn get(&self, id: &str) -> Result<Option<IndexedTerrain<'_>>, String> {
-        if let Some(cell) = self.cells.get(id) {
-            return Ok(Some(IndexedTerrain::Artifact(cell)));
-        }
-        let cell = parse_strict_id(id)?;
-        let Some(runs) = self.empty_by_row.get(&cell.i) else { return Ok(None) };
-        let at = runs.partition_point(|(_, end)| *end < cell.j);
-        Ok(runs.get(at).filter(|(start, end)| *start <= cell.j && cell.j <= *end).map(|_| IndexedTerrain::KnownEmpty))
-    }
+pub(super) fn build_terrain_index<'a>(
+    cells: &'a [TerrainCellEntry],
+    known_empty: &[TerrainEmptyRun],
+) -> Result<TerrainIndex<'a>, String> {
+    CoverageIndex::new(
+        cells.iter().map(|cell| (cell.id.as_str(), cell)),
+        known_empty.iter().map(|run| (run.start.as_str(), run.end.as_str())),
+    )
 }
 
 /// Walk `terrain.json` + `cells/terrain/` into the terrain store, or `None` when the
@@ -168,7 +148,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
 
     // The same rule §8 states for a band: a square is an artifact or it is empty, never
     // both. A catalog that said both would leave a consumer to pick one.
-    let index = TerrainIndex::new(&[], &known_empty)?;
+    let index = build_terrain_index(&[], &known_empty)?;
     for cell in &cells {
         if matches!(index.get(&cell.id)?, Some(IndexedTerrain::KnownEmpty)) {
             return Err(format!(

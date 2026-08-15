@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::cells::{BandIndex, IndexedCell};
+use super::model::{Boundary, RegionCellsDocument, RegionEntry, RegionTerrain};
+use super::schema::SchemaDoc;
 use super::terrain::{IndexedTerrain, TerrainIndex};
-use super::{
-    boundary, document_json, file_name, parse_strict_id, sorted_entries, validate_id, Boundary, RegionCellsDocument,
-    RegionEntry, RegionTerrain, Satellite, SchemaDoc, CATALOG_SCHEMA_VERSION, SCHEMA_DOC,
-};
+use super::validate::{parse_strict_id, validate_id};
+use super::{boundary, document_json, file_name, sorted_entries, Satellite, CATALOG_SCHEMA_VERSION, SCHEMA_DOC};
 
 /// A boundary bigger than this is worth a warning: §7 budgets "a few KB" per
 /// region, and the root carries one per region *before* a consumer knows anything
