@@ -18,9 +18,12 @@ device, pull tracked rides back, rename the device, read its diagnostics. Once
 you've paired, powered, and are in range, it just works — no accounts, no cloud,
 nothing leaves the two devices.
 
-This page is the *shape* of that link. The normative, byte-level reference is the
-[BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as the
-[`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); here we
+This page is the *shape* of that link. The normative, byte-level reference **for the legacy link
+described here** is the [BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as
+the [`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); for Device
+Object System v2 the normative reference is instead the
+[`Device_Object_System_v2.md`](src:specs/Device_Object_System_v2.md) suite, whose wire half is
+[`Device_Object_Protocol_v3.md`](src:specs/Device_Object_Protocol_v3.md). Here we
 cover the design and the *why*. Five ideas run through all of it:
 
 - **Two planes.** Small typed control state rides GATT; bulk bytes ride a single

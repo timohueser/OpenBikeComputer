@@ -76,8 +76,10 @@ cd firmware/obc-fw-nrf54l && cargo build --release --no-default-features --featu
 
 The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
 `cargo test` below already exercises it. The wire contract those bytes cross to the phone
-is [`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md); the concepts are on the docs
-site under [the companion link](https://openbikecomputer.com/software/companion-link/).
+is [`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md) (legacy wire v2 — superseded for
+DOS v2 by the [`Device_Object_System_v2.md`](../specs/Device_Object_System_v2.md) suite); the
+concepts are on the docs site under
+[the companion link](https://openbikecomputer.com/software/companion-link/).
 
 ## Test
 
