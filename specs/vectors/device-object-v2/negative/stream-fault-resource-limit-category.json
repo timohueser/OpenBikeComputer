@@ -1,0 +1,14 @@
+{
+  "name": "stream-fault-resource-limit-category",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "resourceLimit is outside the ten-category transport set: every bounded resource a stream could exhaust is reserved at admission, so an attached session has no resource-limit condition to report.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "01000000000000000000000018000301140003000000000000000000000000000000000000000000"
+}
