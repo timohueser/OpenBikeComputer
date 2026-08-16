@@ -1,0 +1,87 @@
+{
+  "name": "slot-strides",
+  "suite": "device-object-v2",
+  "kind": "storage",
+  "storage_format": 1,
+  "section": "OBC2_Storage_Format.md §1.1, §6, §7, §7.1, §10, §12",
+  "description": "Every slot is one 16,384-byte program page and its pad is zero; a nonzero pad is rejected, which is what makes a torn page detectable.",
+  "caseCount": 5,
+  "cases": [
+  {
+    "name": "journal-pad",
+    "note": "A journal slot's 14,336-byte pad.",
+    "subject": "journalSlot",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "ea961220d4018148734e00101a698db9f8ea0962e64c6ecda336b49f7c2f89da",
+    "reject": "Reserved",
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b100100000000000000010000000000000000000100a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111f80400000100000001000400000001" },
+      { "offset": 128, "hex": "2b00000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220001010003100000070000000000000000000000000000002a0000000000000003" },
+      { "offset": 1532, "hex": "950422324f324a470100000001000000000000000100000000000000950422326afbddcd66b94e49" },
+      { "offset": 16383, "hex": "01" }
+    ]
+  },
+  {
+    "name": "work-pad",
+    "note": "A WORK slot's 15,360-byte pad.",
+    "subject": "workSlot",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "43a3eab3c0434da3cdae5e66a7964964b71902f3347fb09a964c33b6345d4e88",
+    "reject": "Reserved",
+    "runs": [
+      { "offset": 0, "hex": "4f32574b0100b0003c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111" },
+      { "offset": 104, "hex": "2a00000000000000000001000000000078563412010000000010000000000000f0debc9a0100000003000000000000000100010000000000000000000010" },
+      { "offset": 508, "hex": "08f5869d4f325747010000002a00000000000000010000000000000008f5869df70a796249ef9999" },
+      { "offset": 16383, "hex": "01" }
+    ]
+  },
+  {
+    "name": "ride-pad",
+    "note": "A RIDE.ACT slot's pad.",
+    "subject": "rideSlot",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "d3f9c47748d2f50bc148f519779e0be6ec75d0fb00cda9490cb36bc8416852b3",
+    "reject": "Reserved",
+    "runs": [
+      { "offset": 0, "hex": "4f32524101008c003c92000099164ebaabc2342fe08f6b100c00000000000000c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c14d00000000000000010000000000000000f15365" },
+      { "offset": 89, "hex": "100000000000003333222200000000000100000000000060ea" },
+      { "offset": 137, "hex": "10" },
+      { "offset": 508, "hex": "d514bbcc4f325247010000004d000000000000000000000000000000d514bbcc2aeb4433be0eef0c" },
+      { "offset": 2000, "hex": "01" }
+    ]
+  },
+  {
+    "name": "arm-pad",
+    "note": "An ARM file's pad.",
+    "subject": "armFile",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "88bdc8926f8545212d58f71a3ca47aa91cccf6fb6306a55811f2561f1b271124",
+    "reject": "Reserved",
+    "runs": [
+      { "offset": 0, "hex": "4f325548010040003c92000099164ebaabc2342fe08f6b100400000000000000f0" },
+      { "offset": 64, "hex": "04000000000000000100000000000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e555555555555555555555555555555555555555555555555555555555555555551f0000000000000000000400000000008888999907000000666666666666666666666666666666666666666666666666666666666666666677777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777" },
+      { "offset": 288, "hex": "030000000000000005" },
+      { "offset": 508, "hex": "cdd425e34f3248470100000004000000000000000100000000000000cdd425e3322bda1c5967080f" },
+      { "offset": 16383, "hex": "01" }
+    ]
+  },
+  {
+    "name": "init-pad",
+    "note": "INIT.REC's pad.",
+    "subject": "initRecord",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "bfd89b97be0984e4259b47a241485daec338351960d55e7b868df7555ce1964c",
+    "reject": "Reserved",
+    "runs": [
+      { "offset": 0, "hex": "4f32494e010018003c92000099164ebaabc2342fe08f6b10" },
+      { "offset": 508, "hex": "1d863d474f324947010000003c92000099164ebaabc2342fe08f6b101d863d47e279c2b8b290fcb9" },
+      { "offset": 9000, "hex": "01" }
+    ]
+  }
+  ]
+}

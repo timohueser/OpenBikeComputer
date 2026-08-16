@@ -1,0 +1,27 @@
+{
+  "name": "checkpoint-first",
+  "suite": "device-object-v2",
+  "kind": "storage",
+  "storage_format": 1,
+  "section": "OBC2_Storage_Format.md §5, §12",
+  "description": "The first checkpoint a fresh card is born with, at its exact 65,536 bytes.",
+  "caseCount": 1,
+  "cases": [
+  {
+    "name": "first-checkpoint",
+    "note": "Epoch 1, through-sequence 0, next GenerationId 0, weather logical ID zero reserved.",
+    "subject": "checkpoint",
+    "slot": 0,
+    "length": 65536,
+    "sha256": "78a223ec48e5e62fae05363093fd7463ef537b8fa6409e15580720e96a0fcbbb",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f32434b010080003c92000099164ebaabc2342fe08f6b1001" },
+      { "offset": 48, "hex": "01" },
+      { "offset": 69, "hex": "fe" },
+      { "offset": 128, "hex": "0400000000000000000000000000000001" },
+      { "offset": 65020, "hex": "0ef6809c4f32434701000000010000000000000000000000000000000ef6809cf1097f630338c042" }
+    ]
+  }
+  ]
+}

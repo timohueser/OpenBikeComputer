@@ -34,6 +34,14 @@ and synchronize an old gate before reusing its body, synchronize the complete ne
 and synchronize the new gate. Journal slots are the single exemption: a slot's gate carries the
 epoch, so every slot of an earlier epoch is already inert against the selected checkpoint and is
 rewritten body-then-gate with no preceding invalidation, saving one write and one sync per commit.
+
+Every gated-slot body write covers the record's whole 16,384-byte stride: the body bytes, 512 zero
+bytes over the slot's own gate sector, and zeros to the next stride boundary. A slot a previous cut
+tore holds arbitrary bytes across its whole program page, and a reader rejects a nonzero pad, so a
+writer that rewrote only the body bytes could never return a torn slot to validity. Because the
+stride write already zeroes the gate sector, it is the invalidation section 4 defines, and the
+journal's exemption is unaffected: the slot still costs one write and one sync fewer than a
+non-exempt record.
 Checkpoint, WORK, RIDE, ARM, and INIT slots are not exempt. Readers require both CRCs and all
 structural invariants. Together with the fault model in section 1.1 this detects every torn-write
 case that model admits, with CRC-32's residual collision probability; CRC is not an authenticity
@@ -356,8 +364,13 @@ A catalog head is keyed by `(ObjectKind, LogicalObjectId)`:
 | 144 | 8 | resolution `GenerationId`; zero and unused unless the resolution-present flag is set |
 | 152 | 8 | zero |
 
-The 96-byte envelope reservation is exactly the catalog-projection ceiling of the metadata
-registry; a larger envelope is a registry and format-version change, not a runtime overflow.
+The 96-byte envelope reservation is the catalog-projection *class* ceiling — the same 96 bytes the
+wire contract's §5.1 reports as its catalog metadata limit — and is deliberately larger than any
+registered schema needs: the largest catalog projection the metadata registry defines today is
+route's 82 bytes. Both numbers are real and they answer different questions. 96 is what a head entry
+reserves and what a decoder admits, inclusive; 82 is what the current registry actually produces. A
+schema may grow into the reservation without a format change; a larger envelope is a registry and
+format-version change, not a runtime overflow.
 
 The head-entry flags byte at offset 1 is zero for every kind whose payload names no children. A
 published volume manifest sets **resolution present** bit 0 and carries at offset 144 the
@@ -827,8 +840,10 @@ valid checkpoints at the same sequence are corruption. It replays only journal r
 StoreId and epoch match and whose sequences begin exactly at `through_sequence + 1`. Replay stops
 at the first missing, invalid, torn, duplicate, wrong-slot, or noncontiguous record. Two differing
 valid records claiming the same sequence are corruption, not a choice. Within an epoch, physical
-journal slot `i` must carry sequence `checkpoint through_sequence + i + 1`; another mapping is
-invalid even when its CRCs pass.
+journal slot `i` must carry sequence `checkpoint through_sequence + i + 1`; another mapping is not
+replayable even when its CRCs pass. Such a record remains structurally valid for the purposes of the
+two fail-closed rules below: its gate and body prove it was written, so a same-epoch record at the
+wrong slot is evidence of loss, not a record to skip.
 
 Recovery then scans all 256 slots before mounting, because stopping is not by itself evidence that
 nothing later was committed. Two conditions fail closed — mount recovery-failed and read-only, all

@@ -1,0 +1,96 @@
+{
+  "name": "gate-sector",
+  "suite": "device-object-v2",
+  "kind": "storage",
+  "storage_format": 1,
+  "section": "OBC2_Storage_Format.md §4",
+  "description": "The one 512-byte gate layout every record shares, its invalidated form, and the checks that make it all-or-nothing.",
+  "caseCount": 7,
+  "cases": [
+  {
+    "name": "valid-journal-gate",
+    "note": "Magic, slot, scope, sequence, CRC and complement all agree.",
+    "subject": "gate",
+    "slot": 0,
+    "length": 512,
+    "sha256": "2009184d16783d10dfede3c83cd5075167459c222f148208daf13d75a58ce259",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f324a470100000007000000000000002a00000000000000efbeadde1041522119f7fc16" }
+    ]
+  },
+  {
+    "name": "invalidated-sector",
+    "note": "512 zero bytes: invalidation needs no sentinel because it fails magic and CRC.",
+    "subject": "gate",
+    "slot": 0,
+    "length": 512,
+    "sha256": "076a27c79e5ace2a3d47f9dd2e83e4ff6ea8872b3c2218f66c92b89b55f36560",
+    "reject": "Magic",
+    "runs": [
+
+    ]
+  },
+  {
+    "name": "wrong-slot-index",
+    "note": "The same gate read at slot 1 is not a gate.",
+    "subject": "gate",
+    "slot": 1,
+    "length": 512,
+    "sha256": "2009184d16783d10dfede3c83cd5075167459c222f148208daf13d75a58ce259",
+    "reject": "SlotIndex",
+    "runs": [
+      { "offset": 0, "hex": "4f324a470100000007000000000000002a00000000000000efbeadde1041522119f7fc16" }
+    ]
+  },
+  {
+    "name": "complement-not-exact",
+    "note": "The one's complement copy of the body CRC is off by one bit.",
+    "subject": "gate",
+    "slot": 0,
+    "length": 512,
+    "sha256": "377ee6d8449886bb60739b0fb9a49fca67f404a6e2e79517f6e180c0eff4d6e4",
+    "reject": "Complement",
+    "runs": [
+      { "offset": 0, "hex": "4f324a470100000007000000000000002a00000000000000efbeadde11415221b02f4c7e" }
+    ]
+  },
+  {
+    "name": "unknown-version",
+    "note": "Format version 2 is not a version this build knows.",
+    "subject": "gate",
+    "slot": 0,
+    "length": 512,
+    "sha256": "12960ba47026557280e31297488ab4ab6b93d92033090b1dd5a822baff1fc4d3",
+    "reject": "Version",
+    "runs": [
+      { "offset": 0, "hex": "4f324a470200000007000000000000002a00000000000000efbeadde10415221bb3c1985" }
+    ]
+  },
+  {
+    "name": "nonzero-reserved-tail",
+    "note": "Bytes 36..512 are reserved and must be zero when read.",
+    "subject": "gate",
+    "slot": 0,
+    "length": 512,
+    "sha256": "e0a370d90c0be1170c30b43332c19341452999d5bbc3d1621bda1e83337ea5e7",
+    "reject": "Reserved",
+    "runs": [
+      { "offset": 0, "hex": "4f324a470100000007000000000000002a00000000000000efbeadde1041522126c70427" },
+      { "offset": 400, "hex": "01" }
+    ]
+  },
+  {
+    "name": "gate-crc-mismatch",
+    "note": "The gate's own CRC does not cover its 512 bytes.",
+    "subject": "gate",
+    "slot": 0,
+    "length": 512,
+    "sha256": "2e2d0c18b1abf53d7c98cf1eca9483535e9496342de1c6ced73613cfe8472274",
+    "reject": "GateCrc",
+    "runs": [
+      { "offset": 0, "hex": "4f324a470100000007000000000000002a00000000000000efbeadde10415221e6f7fc16" }
+    ]
+  }
+  ]
+}

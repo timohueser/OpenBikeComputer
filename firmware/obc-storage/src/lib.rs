@@ -20,10 +20,14 @@
 
 #![no_std]
 
-#[cfg(test)]
+// Tests, and the host-only halves of the OBC2 kernel — the faulting-media harness and the storage
+// fixture producer — are the only things in this crate that see `std`. The device image links
+// neither: `default = []`.
+#[cfg(any(test, feature = "std"))]
 extern crate std;
 
 pub mod fat_extents;
+pub mod obc2;
 mod object_id;
 mod object_name;
 pub mod route_name;

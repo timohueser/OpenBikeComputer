@@ -24,15 +24,15 @@
 //! ## Scope
 //!
 //! This producer emits the **wire** inventory: control vectors, stream vectors, canonical-intent
-//! goldens, rejection fixtures, and the transcripts of issue #1358. The `storage` array of the
-//! manifest is present and empty: §6's storage vectors are cut points and record layouts of
-//! `OBC2_Storage_Format.md`, which no wire codec can produce and which belong to the storage slice
-//! that implements them.
+//! goldens, rejection fixtures, and the transcripts of issue #1358. §6's storage vectors are cut
+//! points and record layouts of `OBC2_Storage_Format.md`, which no wire codec can produce:
+//! `obc-storage`'s own spec-derived producer writes them under `storage/`, and this manifest only
+//! *indexes* them by name and digest, because §1 gives the suite one manifest. Regenerate that side
+//! first, then this one.
 
 use std::format;
 use std::path::PathBuf;
 use std::string::{String, ToString};
-use std::vec;
 use std::vec::Vec;
 
 use crate::frame::{Opcode, HEADER_LEN};
@@ -1206,6 +1206,41 @@ pub fn fixtures() -> Vec<Fixture> {
     all
 }
 
+/// The `storage` array, read from the checked-in `storage/` directory.
+///
+/// This producer does not build those bytes — `obc-storage`'s does, because §6's storage vectors are
+/// OBC2 record layouts and crash cuts that no wire codec can produce. What belongs here is the
+/// *index*, since `Device_Object_Vectors_v2.md` §1 gives the suite one manifest. Listing them by
+/// digest of the file on disk keeps the guard honest in both directions: editing a storage fixture
+/// without regenerating fails this crate's manifest check, and regenerating them without updating
+/// the manifest fails `obc-storage`'s.
+fn storage_entries() -> Vec<Json> {
+    let directory = dir().join("storage");
+    let Ok(read) = std::fs::read_dir(&directory) else { return Vec::new() };
+    let mut names: Vec<String> = read
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let bytes = std::fs::read(directory.join(&name)).ok()?;
+            let stem = name.trim_end_matches(".json").to_string();
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            Some(
+                Json::new()
+                    .str("name", &stem)
+                    .str("file", &format!("storage/{name}"))
+                    .str("sha256", &hex(&hasher.finalize())),
+            )
+        })
+        .collect()
+}
+
 /// The suite manifest: `Device_Object_Vectors_v2.md` §1's four scalars and five arrays.
 pub fn manifest(fixtures: &[Fixture]) -> String {
     let entries = |category: Category| -> Vec<Json> {
@@ -1224,12 +1259,14 @@ pub fn manifest(fixtures: &[Fixture]) -> String {
         .num("storage_format", 1)
         .str(
             "storage_note",
-            "The storage array is empty here: Device_Object_Vectors_v2.md section 6 covers OBC2 record \
-             layouts and crash cuts, which no wire codec can produce. They land with the storage slice.",
+            "The storage array indexes files under storage/, which obc-storage's own spec-derived producer \
+             writes: Device_Object_Vectors_v2.md section 6 covers OBC2 record layouts and crash cuts, which \
+             no wire codec can produce. This manifest lists them by name and digest; obc-storage owns their \
+             bytes and holds its own guard over them.",
         )
         .array("controls", entries(Category::Control))
         .array("streams", entries(Category::Stream))
-        .array("storage", vec![])
+        .array("storage", storage_entries())
         .array("negative", entries(Category::Negative))
         .array("transcripts", entries(Category::Transcript))
         .render_file()

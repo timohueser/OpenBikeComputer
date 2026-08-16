@@ -70,10 +70,18 @@ struct ManifestCoverageTests {
             "manifest rows with no file: \(listed.subtracting(onDisk).sorted())")
     }
 
-    /// §6 of the vectors contract lands with the storage slice; the manifest says so itself, and
-    /// this pins that the wire suite is not silently expected to carry storage rows.
-    @Test("the storage section is empty and says why")
-    func storageSectionIsDeferred() {
-        #expect(DeviceObjectVectors.manifest.sections["storage"]?.isEmpty == true)
+    /// §6's storage fixtures are OBC2 on-card records, and there is deliberately no Swift codec for
+    /// them: the format is private to `CardStore` and no client ever sees it. What this side pins
+    /// is that they are present, indexed, and *reconstructable* — the exerciser rebuilds each case
+    /// from its runs and checks the digest — because a fixture only Rust can read is not a
+    /// cross-language contract.
+    @Test("the storage section is populated and every row is reconstructable")
+    func storageSectionIsCarried() throws {
+        let storage = DeviceObjectVectors.manifest.sections["storage"] ?? []
+        #expect(!storage.isEmpty, "the storage section is empty; §6 fixtures land with the storage slice")
+        for entry in storage {
+            #expect(entry.file.hasPrefix("storage/"), "\(entry) is not under storage/")
+            try VectorExerciser.exercise(entry)
+        }
     }
 }
