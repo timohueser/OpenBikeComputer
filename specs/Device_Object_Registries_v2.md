@@ -293,9 +293,10 @@ may relax.
 
 A value outside a field's registered range is refused by the kind of range it left: an enumerated
 field — retention, update state — reports `invalidDescriptor/unknownEnum`, and a continuous quantity
-— a coverage centre, a radius in metres — reports `invalidDescriptor/invalidCombination`. Widths and
-text keep the wire contract's `noncanonicalMetadata`, because those are rules about the encoding
-rather than about the registered value space.
+— a coverage centre, a radius in metres — reports `invalidDescriptor/invalidCombination`. Widths,
+booleans, and text keep the wire contract's `noncanonicalMetadata`: a boolean is a one-byte encoding
+whose only legal spellings are `0` and `1`, so a third value is a malformed encoding, not a value
+outside an enumerated space.
 
 Every field below carries an explicit required/optional status, which is the status the wire
 contract's "every registered required field appears exactly once" rule refers to. Put and catalog

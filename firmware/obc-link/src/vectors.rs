@@ -253,7 +253,7 @@ impl Json {
         self
     }
 
-    /// A nested object. An empty one renders as `{}`, which is what the four empty-payload
+    /// A nested object. An empty one renders as `{}`, which is what the five empty-payload
     /// messages' semantic bodies are.
     pub fn obj(mut self, key: &str, value: Json) -> Self {
         if value.parts.is_empty() {
