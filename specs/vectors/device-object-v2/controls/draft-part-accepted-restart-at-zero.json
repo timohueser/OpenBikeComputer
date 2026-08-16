@@ -17,6 +17,19 @@
   },
   "boundary": "",
   "note": "Restart-at-zero is emitted only after the durable restart record is synchronized.",
+  "body": {
+    "disposition": 0,
+    "flags": 2,
+    "childOperationId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "sessionId": 49,
+    "partKind": 2,
+    "partKey": "7",
+    "durableNextOffset": "0",
+    "checkpointGranule": 1024,
+    "maxStreamPayload": 1008,
+    "finalizedPrefixCrc32": 0
+  },
   "payload": "00000200d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c331000000020000000700000000000000000000000000000000040000f003000000000000",
   "frame": "4f42435003003101010048003d00000000000200d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c331000000020000000700000000000000000000000000000000040000f003000000000000"
 }

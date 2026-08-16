@@ -17,6 +17,17 @@
   },
   "boundary": "",
   "note": "Outcome 4 is emitted only after the boot handoff is durable.",
+  "body": {
+    "resultType": 1,
+    "operationId": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "objectKind": 1,
+    "outcome": 4,
+    "logicalObjectId": "9",
+    "revision": "43",
+    "length": "3000",
+    "crc32": 287454020
+  },
   "payload": "01000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100040009000000000000002b00000000000000b80b00000000000044332211",
   "frame": "4f42435003001003010044001e00000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100040009000000000000002b00000000000000b80b00000000000044332211"
 }

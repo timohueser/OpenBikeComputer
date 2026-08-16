@@ -3,6 +3,8 @@
   "suite": "device-object-v2",
   "kind": "negative",
   "target": "metadataEnvelope",
+  "class": "patch",
+  "maximumEncodedLength": 128,
   "note": "Base tags are unique; changing only the critical bit does not create another field.",
   "expect": {
     "category": "invalidDescriptor",

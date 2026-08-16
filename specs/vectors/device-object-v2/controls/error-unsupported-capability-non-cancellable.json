@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "AbortOperation naming an InstallUpdate target, refused in preflight with both claim-status bits clear.",
+  "body": {
+    "category": 2,
+    "detailNamespace": 0,
+    "detail": 6,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "020000000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020303003000c8000000020000000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

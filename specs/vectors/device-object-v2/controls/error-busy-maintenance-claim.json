@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "When the reserved slot is occupied, a different new AbortOperation is refused rather than partially cancelling.",
+  "body": {
+    "category": 5,
+    "detailNamespace": 0,
+    "detail": 7,
+    "guidance": 3,
+    "owner": 5,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "050000000700030500000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020303003000c8000000050000000700030500000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

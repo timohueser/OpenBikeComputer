@@ -158,7 +158,12 @@ Validation order is fixed so that an envelope failing more than one rule reports
 error: canonical form first (this paragraph), then the schema's field rules (identity, version,
 required/optional, widths, ranges, text validity), and the per-kind registered maximum last. An
 envelope is measured against that maximum only after its fields validate, so an unknown critical
-field in an oversized envelope reports the field error, not the size.
+field in an oversized envelope reports the field error, not the size. Within canonical form the
+order is fixed as well: the class ceiling of the paragraph above — 120 encoded field bytes for a put
+or patch envelope, 88 for a catalog projection — is checked before the declared field length is
+compared with the bytes actually present, so an envelope that merely claims to exceed its ceiling is
+`invalidDescriptor/nestedLength` rather than a truncation, and that ceiling follows from the
+envelope's position in its message rather than from the version byte it carries.
 
 Schema integers use their exact registered width and little-endian encoding; signed values use
 two's-complement at that width. Booleans are one byte and exactly `0` or `1`. Byte strings are

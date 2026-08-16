@@ -27,6 +27,28 @@ A control fixture contains:
 - for errors, category/detail/retry/presence and whether the operation was durably claimed;
 - applicable minimum/maximum boundary label.
 
+The semantic body is the `body` object, and it is what makes a control fixture a *field* pin rather
+than only a byte pin: three codecs can agree on every byte and still disagree about which field a
+byte belongs to, and one that transposes two adjacent same-width fields re-encodes perfectly. It is
+one flat object whose keys are field paths — `metadata.field[0].tag`, `entries[1].revision`,
+`resourceLimits.routeHeads` — never a nested object, so an implementation in any language can build
+the same map without a shared schema. Values follow the same rules as the rest of the file: JSON
+numbers only for fields of at most 32 bits, canonical decimal strings for every `u64`/`i64`, and
+lower-case hex for opaque byte fields including diagnostic text and metadata field values. An
+enumerated field carries its wire number rather than a name, because a name is an implementation's
+vocabulary rather than the contract's; a reserved field never appears, since a decoder proves it
+zero and has nothing to report. A message with an empty payload carries `{}`. Each suite decodes the
+frame with its own codec, rebuilds this map from the decoded values, and compares it to the fixture
+in both directions: a fixture without a body, a body field the suite does not check, and a field the
+suite reports that the fixture does not state are all failures.
+
+A rejection fixture whose `target` is a bare metadata envelope also carries `class` — `put`, `patch`,
+or `catalog` — and the `maximumEncodedLength` that class imposes. The class is the position the
+envelope is being decoded in, which is what the wire contract's §2.2 makes the ceiling a fact about;
+a suite takes the ceiling from that class and from its own constant for it, never from the version
+byte the envelope carries, and an envelope that lies about its version is measured against the
+ceiling of the position it actually occupies.
+
 A transcript is an ordered event list. Each event names actor/principal, link and connection
 generation, request or stream bytes, injected disconnect/reset/cut, durable offset, visible catalog
 revision/head, active session owner, QueryOperation state, terminal result, and expected response.

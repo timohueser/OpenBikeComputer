@@ -75,6 +75,56 @@ enum VectorExerciser {
         guard try frame.encoded() == frameBytes else {
             throw VectorError("\(entry): re-encoded frame differs\n  \(try frame.encoded().hexString)")
         }
+
+        // §1's semantic body. Required, not optional: the frame hex above pins only the bytes, and
+        // two codecs can agree on every byte while disagreeing about which field each byte belongs
+        // to. A fixture with no `body`, or one this builder cannot reproduce key for key, fails.
+        guard let expected = json["body"] as? [String: Any] else {
+            throw VectorError("\(entry): a control fixture must carry a semantic body")
+        }
+        try compareSemanticBody(entry, ControlBodySemantics.body(of: frame), expected)
+    }
+
+    /// Compares the built body against the fixture's in both directions — same key set, same values,
+    /// number-versus-string typing included, since §1 makes that typing part of the contract rather
+    /// than a JSON convenience.
+    private static func compareSemanticBody(
+        _ entry: DeviceObjectVectors.Entry, _ built: SemanticBody, _ expected: [String: Any]
+    ) throws {
+        let actual = try built.keyed()
+        var problems: [String] = []
+        for (key, value) in actual.sorted(by: { $0.key < $1.key }) {
+            guard let fixture = expected[key] else {
+                problems.append("\(key): decoded \(value), absent from the fixture")
+                continue
+            }
+            switch value {
+            case .number(let number):
+                // A JSON string here would mean the fixture calls the field wider than 32 bits.
+                guard let boxed = fixture as? NSNumber else {
+                    problems.append("\(key): decoded the number \(number), fixture has \(fixture)")
+                    continue
+                }
+                // Both comparisons: `int64Value` alone would silently accept a fractional literal.
+                if boxed.int64Value != number || boxed.doubleValue != Double(number) {
+                    problems.append("\(key): decoded \(number), fixture has \(boxed)")
+                }
+            case .text(let text):
+                guard let fixtureText = fixture as? String else {
+                    problems.append("\(key): decoded \"\(text)\", fixture has \(fixture)")
+                    continue
+                }
+                if fixtureText != text {
+                    problems.append("\(key): decoded \"\(text)\", fixture has \"\(fixtureText)\"")
+                }
+            }
+        }
+        for key in expected.keys.sorted() where actual[key] == nil {
+            problems.append("\(key): in the fixture, never decoded")
+        }
+        guard problems.isEmpty else {
+            throw VectorError("\(entry): semantic body\n  " + problems.joined(separator: "\n  "))
+        }
     }
 
     // MARK: canonical intent
@@ -189,10 +239,9 @@ enum VectorExerciser {
         else { throw VectorError("\(entry): no expectation") }
         let detailName = expect["detail"] as? String
         let detailValue = expect["detailValue"] as? Int ?? 0
-        let target = json["target"] as? String ?? ""
 
         do {
-            try decodeNegativeTarget(target, bytes)
+            try decodeNegativeTarget(json, bytes)
             throw VectorError("\(entry): decoded, but the vector requires a rejection")
         } catch let fault as WireFault {
             guard Int(fault.category.rawValue) == categoryValue else {
@@ -215,9 +264,41 @@ enum VectorExerciser {
         }
     }
 
-    private static func decodeNegativeTarget(_ target: String, _ bytes: [UInt8]) throws {
+    /// A raw-envelope fixture's declared class, mapped to *this* codec's ceiling for that class.
+    ///
+    /// §2.2 makes the envelope ceiling a **call-site** fact: a Put or patch envelope sits in a
+    /// StartUpload or SetMetadata descriptor and is bounded at 128, a catalog projection sits in a
+    /// page entry and is bounded at 96. A harness that fed one ceiling to every raw-envelope vector
+    /// would measure Put-class fixtures against the catalog bound and could report a size error
+    /// where the contract requires a version error. So the class comes from the fixture, the ceiling
+    /// comes from the codec, and the fixture's own `maximumEncodedLength` is asserted against it —
+    /// which is the pin that keeps the two constants from drifting apart.
+    private static func envelopeCeiling(_ json: [String: Any]) throws -> Int {
+        guard let declared = json["class"] as? String else {
+            throw VectorError("a raw metadataEnvelope vector must declare its class")
+        }
+        let schemaClass: SchemaClass
+        switch declared {
+        case "put": schemaClass = .put
+        case "patch": schemaClass = .patch
+        case "catalog": schemaClass = .catalogProjection
+        default: throw VectorError("unknown metadata envelope class \(declared)")
+        }
+        let ceiling = schemaClass.envelopeCeiling
+        guard json["maximumEncodedLength"] as? Int == ceiling else {
+            throw VectorError(
+                "class \(declared): this codec bounds it at \(ceiling), the fixture declares \(json["maximumEncodedLength"] ?? "nothing")"
+            )
+        }
+        return ceiling
+    }
+
+    private static func decodeNegativeTarget(_ json: [String: Any], _ bytes: [UInt8]) throws {
+        let target = json["target"] as? String ?? ""
         switch target {
-        case "metadataEnvelope": _ = try MetadataEnvelope.decode(bytes, maximumEncodedLength: WireLimits.catalogMetadataCeiling)
+        case "metadataEnvelope":
+            _ = try MetadataEnvelope.decode(
+                bytes, maximumEncodedLength: try envelopeCeiling(json))
         case "errorBody": _ = try ErrorBody.decode(bytes)
         case "capabilities": _ = try CapabilitiesPage.decode(bytes)
         case "subjectEntry": _ = try SubjectEntry.decode(bytes)

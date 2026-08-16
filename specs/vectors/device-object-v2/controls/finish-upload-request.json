@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "FinishUpload is exactly a SessionId.",
+  "body": {
+    "sessionId": 17
+  },
   "payload": "11000000",
   "frame": "4f42435003000201000004001500000011000000"
 }

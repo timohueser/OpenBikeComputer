@@ -1,0 +1,16 @@
+{
+  "name": "metadata-zero-base-tag-and-the-wrong-role-version",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
+  "note": "A zero base tag is a canonical-form fault, reported ahead of a catalog version byte in a Put position.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "01004000050001000080010002"
+}

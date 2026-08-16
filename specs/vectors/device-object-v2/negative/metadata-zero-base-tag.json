@@ -3,6 +3,8 @@
   "suite": "device-object-v2",
   "kind": "negative",
   "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
   "note": "The tag's low 15 bits are a nonzero base tag.",
   "expect": {
     "category": "invalidDescriptor",

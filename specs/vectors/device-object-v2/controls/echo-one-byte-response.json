@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "The response payload is those bytes byte-identical.",
+  "body": {
+    "payload": "00"
+  },
   "payload": "00",
   "frame": "4f42435003000504010001007e00000000"
 }

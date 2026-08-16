@@ -17,6 +17,10 @@
   },
   "boundary": "",
   "note": "The 16-byte request: epoch seconds and the offered source.",
+  "body": {
+    "epochSeconds": "1763000000",
+    "source": 1
+  },
   "payload": "c03e1569000000000100000000000000",
   "frame": "4f42435003000304000010007b000000c03e1569000000000100000000000000"
 }

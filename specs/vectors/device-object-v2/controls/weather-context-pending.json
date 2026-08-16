@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "The singleton identity and repository revision remain authoritative with no head.",
+  "body": {
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "currentWeatherRequestId": "42",
+    "contextRevision": "3",
+    "flags": 0,
+    "weatherLogicalObjectId": "0",
+    "repositoryRevision": "88",
+    "headWeatherRequestId": "0",
+    "centreLatitudeE7": 480000000,
+    "centreLongitudeE7": 77000000,
+    "radiusMetres": 50000,
+    "earliestIssuedUtc": "1700000000",
+    "requiredValidUntilUtc": "1700086400",
+    "state": 1
+  },
   "payload": "3c92000099164ebaabc2342fe08f6b102a0000000000000003000000000000000000000000000000000000005800000000000000000000000000000000389c1c40ed960450c3000000f153650000000080425565000000000100000000000000",
   "frame": "4f4243500300030201006000640000003c92000099164ebaabc2342fe08f6b102a0000000000000003000000000000000000000000000000000000005800000000000000000000000000000000389c1c40ed960450c3000000f153650000000080425565000000000100000000000000"
 }

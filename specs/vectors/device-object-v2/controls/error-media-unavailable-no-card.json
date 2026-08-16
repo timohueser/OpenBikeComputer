@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "ResetStore is the one device-control member that needs the medium.",
+  "body": {
+    "category": 15,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 9,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "0f0000000100090000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300060403003000c80000000f0000000100090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

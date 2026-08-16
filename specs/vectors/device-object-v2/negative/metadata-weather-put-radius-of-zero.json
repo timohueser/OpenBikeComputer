@@ -1,0 +1,14 @@
+{
+  "name": "metadata-weather-put-radius-of-zero",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "The required radius is nonzero and at most 100,000 metres.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030000010000740001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a104000000000000000000000000000000000000008403000000000000cdab0000040001003c000600018008002a000000000000000280040000389c1c0380040040ed960404800400000000000580080000f1536500000000068008008042556500000000"
+}

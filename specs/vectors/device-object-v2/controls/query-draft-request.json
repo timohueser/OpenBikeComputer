@@ -17,6 +17,16 @@
   },
   "boundary": "",
   "note": "The requested limit is 1 through 6 and the snapshot token is the draft revision.",
+  "body": {
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "flags": 0,
+    "requestedLimit": 6,
+    "expectedRevision": "0",
+    "cursor.revision": "0",
+    "cursor.nextEntryIndex": 0,
+    "cursor.kindCode": 0,
+    "cursor.crc32": 0
+  },
   "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000600000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020200002c005a000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000600000000000000000000000000000000000000000000000000"
 }

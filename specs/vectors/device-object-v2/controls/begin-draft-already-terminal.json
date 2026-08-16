@@ -17,6 +17,18 @@
   },
   "boundary": "",
   "note": "A terminal parent replays its ObjectResult behind the same four-byte prefix.",
+  "body": {
+    "disposition": 1,
+    "result.resultType": 1,
+    "result.operationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "result.storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "result.objectKind": 6,
+    "result.outcome": 0,
+    "result.logicalObjectId": "2",
+    "result.revision": "51",
+    "result.length": "264",
+    "result.crc32": 468353363
+  },
   "payload": "0100000001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c33c92000099164ebaabc2342fe08f6b10060000000200000000000000330000000000000008010000000000005381ea1b",
   "frame": "4f42435003003001010048003c0000000100000001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c33c92000099164ebaabc2342fe08f6b10060000000200000000000000330000000000000008010000000000005381ea1b"
 }

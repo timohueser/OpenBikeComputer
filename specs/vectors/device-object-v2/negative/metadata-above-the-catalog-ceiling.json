@@ -3,6 +3,8 @@
   "suite": "device-object-v2",
   "kind": "negative",
   "target": "metadataEnvelope",
+  "class": "catalog",
+  "maximumEncodedLength": 96,
   "note": "Catalog envelopes are at most 96 bytes, so their encoded fields are at most 88.",
   "expect": {
     "category": "invalidDescriptor",

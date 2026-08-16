@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "A client advertising exactly the two protocol minima.",
+  "body": {
+    "minimumMajor": 3,
+    "maximumMajor": 3,
+    "clientMaxControlFrame": 192,
+    "clientMaxStreamFrame": 64,
+    "clientFeatureFlags": 0,
+    "pageKind": 0,
+    "pageIndex": 0
+  },
   "payload": "0303c0004000000000000000",
   "frame": "4f4243500300010000000c00040000000303c0004000000000000000"
 }

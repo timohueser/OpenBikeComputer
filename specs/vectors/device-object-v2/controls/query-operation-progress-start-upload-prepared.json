@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "StartUpload: ID-present set, the offset is the durable payload prefix and the declared length in phases 2..4, and a session is attached only while one exists.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 1,
+    "progress.phase": 0,
+    "progress.flags": 5,
+    "progress.subjectKind": 1,
+    "progress.logicalObjectId": "9",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000010005000100000009000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010005000100000009000000000000000000000000000000"
 }

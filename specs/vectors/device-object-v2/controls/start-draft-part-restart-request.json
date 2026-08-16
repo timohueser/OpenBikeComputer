@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "Section 6.1's resume table governs a part unchanged, read against the DraftPartKind subject.",
+  "body": {
+    "childOperationId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "partKind": 2,
+    "partKey": "7",
+    "declaredLength": "65536",
+    "expectedCrc32": 1115940256,
+    "resume": 0
+  },
   "payload": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30200000007000000000000000000010000000000a0e583420000000000000000",
   "frame": "4f42435003003101000040003e000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30200000007000000000000000000010000000000a0e583420000000000000000"
 }

@@ -17,6 +17,16 @@
   },
   "boundary": "",
   "note": "An empty page is the 44-byte prefix alone.",
+  "body": {
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "objectKind": 1,
+    "entryCount": 0,
+    "revision": "42",
+    "nextCursor.revision": "0",
+    "nextCursor.nextEntryIndex": 0,
+    "nextCursor.kindCode": 0,
+    "nextCursor.crc32": 0
+  },
   "payload": "3c92000099164ebaabc2342fe08f6b10010000002a0000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010201002c00500000003c92000099164ebaabc2342fe08f6b10010000002a0000000000000000000000000000000000000000000000"
 }

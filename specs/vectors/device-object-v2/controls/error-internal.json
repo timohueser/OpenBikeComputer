@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A stable category detail is reported when known.",
+  "body": {
+    "category": 22,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 2,
+    "owner": 0,
+    "presence": 1,
+    "retryAfterMs": 1000,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "16000000010002000100e803000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020103003000c800000016000000010002000100e803000000000000000000000000000000000000000000000000000000000000000000000000"
 }

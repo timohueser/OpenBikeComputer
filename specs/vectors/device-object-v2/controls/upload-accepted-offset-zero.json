@@ -17,6 +17,19 @@
   },
   "boundary": "minimum",
   "note": "64 bytes, no durable work: both flags clear, offset zero, prefix CRC zero.",
+  "body": {
+    "disposition": 0,
+    "targetMode": 0,
+    "flags": 0,
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "sessionId": 17,
+    "logicalObjectId": "9",
+    "admissionRevision": "41",
+    "durableNextOffset": "0",
+    "checkpointGranule": 1024,
+    "maxStreamPayload": 1008,
+    "finalizedPrefixCrc32": 0
+  },
   "payload": "00000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000000000000000000040000f00300000000000000000000",
   "frame": "4f42435003000001010040000b00000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000000000000000000040000f00300000000000000000000"
 }

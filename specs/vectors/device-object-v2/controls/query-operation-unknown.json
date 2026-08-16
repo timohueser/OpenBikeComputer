@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "Unknown means only that the ID is neither active nor retained; it cannot distinguish never-claimed from evicted.",
+  "body": {
+    "state": 0
+  },
   "payload": "00000000",
   "frame": "4f42435003000002010004004600000000000000"
 }

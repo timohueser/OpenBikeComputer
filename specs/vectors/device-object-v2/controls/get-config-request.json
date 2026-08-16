@@ -17,6 +17,7 @@
   },
   "boundary": "",
   "note": "The request payload is empty.",
+  "body": {},
   "payload": "",
   "frame": "4f424350030001040000000079000000"
 }
