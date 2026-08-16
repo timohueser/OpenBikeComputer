@@ -152,8 +152,11 @@ impl CatalogModel {
         }
 
         if let Some(repository) = &mutation.repository {
-            let row = match self.repositories.iter_mut().find(|row| row.kind == repository.kind) {
-                Some(row) => row,
+            // A repository row appears the first time a record advances that kind's cursors; it is
+            // never removed. Working in indices rather than in a re-`find` keeps this whole arm
+            // free of a panic path.
+            let index = match self.repositories.iter().position(|row| row.kind == repository.kind) {
+                Some(index) => index,
                 None => {
                     let fresh = RepositoryState {
                         kind: repository.kind,
@@ -163,9 +166,10 @@ impl CatalogModel {
                     };
                     let position = self.repositories.iter().position(|row| row.kind > repository.kind);
                     insert(&mut self.repositories, position, fresh, Record::RepositoryState)?;
-                    self.repositories.iter_mut().find(|row| row.kind == repository.kind).expect("just inserted")
+                    position.unwrap_or(self.repositories.len() - 1)
                 }
             };
+            let row = &mut self.repositories[index];
             if let Some(revision) = repository.revision {
                 row.revision = obc_link::ids::Revision::new(revision);
             }
