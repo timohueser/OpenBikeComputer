@@ -17,6 +17,23 @@
   },
   "boundary": "",
   "note": "Every present field is applied in one catalog commit; metadata never changes through a sidecar.",
+  "body": {
+    "operationId": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "objectKind": 1,
+    "flags": 1,
+    "logicalObjectId": "9",
+    "expectedRevision": "42",
+    "patch.schemaId": 1,
+    "patch.schemaVersion": 128,
+    "patch.encodedFieldBytes": 30,
+    "patch.fieldCount": 3,
+    "patch.field[0].tag": 32769,
+    "patch.field[0].value": "03",
+    "patch.field[1].tag": 32770,
+    "patch.field[1].value": "01",
+    "patch.field[2].tag": 32771,
+    "patch.field[2].value": "4b6169736572737475686c206c6f6f70"
+  },
   "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000010080001e00030001800100030280010001038010004b6169736572737475686c206c6f6f70",
   "frame": "4f4243500300010300004a006f000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000010080001e00030001800100030280010001038010004b6169736572737475686c206c6f6f70"
 }

@@ -10,7 +10,12 @@ import Testing
 ///
 /// Detail convention, shared across the three languages: a **continuous** quantity out of bounds is
 /// `invalidDescriptor/invalidCombination`; a value that is not a member of an **enumerated** set is
-/// `invalidDescriptor/unknownEnum`.
+/// `invalidDescriptor/unknownEnum`; and anything §2.2's *encoding* paragraph governs — a wrong
+/// registered width, a boolean byte that is neither `0` nor `1`, text that is not clean UTF-8 — is
+/// `invalidDescriptor/noncanonicalMetadata`, because those are rules about the encoding rather than
+/// about the registered value space. The last of the three is pinned at the bottom of this suite:
+/// no checked-in fixture exercises it, and the first draft of this codec answered `unknownEnum` for
+/// a bad boolean, which diverged from the Rust codec.
 @Suite("Device Object v3 — weather Put ranges")
 struct WeatherPutRangeTests {
     static func envelope(
@@ -197,6 +202,42 @@ struct WeatherPutRangeTests {
             Issue.record("retention 6 was accepted")
         } catch let fault as WireFault {
             #expect(fault.detailName == "unknownEnum")
+        }
+    }
+
+    /// The third arm of the convention. A route patch carries a boolean at tag `2` and text at tag
+    /// `3`; a byte of `2` in the boolean, a control scalar in the text, and a two-byte value where
+    /// the registry fixes one are all faults of *encoding*, so all three answer
+    /// `noncanonicalMetadata` — not `unknownEnum`, which would claim the value space had a registered
+    /// set this value is missing from.
+    @Test("encoding rules report noncanonicalMetadata")
+    func encodingRulesAreNoncanonical() throws {
+        func routePatch(_ tag: UInt16, _ value: [UInt8]) -> [UInt8] {
+            var writer = ByteWriter()
+            writer.u16(ObjectKind.route.rawValue)
+            writer.u8(SchemaClass.patch.version)
+            writer.u8(0)
+            writer.u16(UInt16(4 + value.count))
+            writer.u16(1)
+            writer.u16(tag)
+            writer.u16(UInt16(value.count))
+            writer.raw(value)
+            return writer.bytes
+        }
+        for bytes in [
+            routePatch(0x8002, [2]),  // boolean byte outside 0…1
+            routePatch(0x8003, [0x6C, 0x07, 0x6F]),  // BEL inside the display name
+            routePatch(0x8001, [1, 0]),  // two bytes for a one-byte retention
+        ] {
+            let envelope = try MetadataEnvelope.decode(
+                bytes, maximumEncodedLength: SchemaClass.patch.envelopeCeiling)
+            do {
+                try envelope.validated(kind: .route, schemaClass: .patch, mutating: true)
+                Issue.record("\(bytes.count)-byte patch was accepted")
+            } catch let fault as WireFault {
+                #expect(fault.category == .invalidDescriptor)
+                #expect(fault.detailName == "noncanonicalMetadata")
+            }
         }
     }
 }

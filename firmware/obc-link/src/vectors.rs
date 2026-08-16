@@ -36,6 +36,7 @@ use std::vec;
 use std::vec::Vec;
 
 use crate::frame::{Opcode, HEADER_LEN};
+use crate::metadata::SchemaClass;
 
 /// Hand-built little-endian byte assembly. Deliberately tiny and deliberately not the codec.
 pub mod raw {
@@ -252,8 +253,13 @@ impl Json {
         self
     }
 
-    /// A nested object.
+    /// A nested object. An empty one renders as `{}`, which is what the four empty-payload
+    /// messages' semantic bodies are.
     pub fn obj(mut self, key: &str, value: Json) -> Self {
+        if value.parts.is_empty() {
+            self.push(key, "{}".to_string());
+            return self;
+        }
         self.push(key, continuation(&value.render(2), 2));
         self
     }
@@ -871,6 +877,11 @@ impl ControlVector {
         control_frame(self.opcode.to_u16(), self.flags, self.request_id, &self.payload)
     }
 
+    /// The semantic body §1 requires, read from the payload at the protocol's own offsets.
+    pub fn body(&self) -> semantics::Body {
+        semantics::control_body(self.direction, self.opcode, self.flags, &self.payload)
+    }
+
     fn to_fixture(&self) -> Fixture {
         let frame = self.frame();
         let json = Json::new()
@@ -891,6 +902,7 @@ impl ControlVector {
             )
             .str("boundary", self.boundary)
             .str("note", &self.note)
+            .obj("body", self.body().to_json())
             .str("payload", &hex(&self.payload))
             .str("frame", &hex(&frame))
             .render_file();
@@ -907,8 +919,14 @@ pub enum NegativeTarget {
     ControlBody(Opcode, bool),
     /// A whole stream record.
     StreamFrame,
-    /// A bare metadata envelope, against its ceiling.
-    MetadataEnvelope(usize),
+    /// A bare metadata envelope, against the ceiling its declared class imposes.
+    ///
+    /// §2.2 makes that ceiling a **call-site** fact: an envelope's position in its message fixes
+    /// the bound, and deriving it from the version byte instead would measure an envelope that lies
+    /// about its version against the ceiling it claims rather than the one its position imposes. A
+    /// raw-envelope fixture therefore declares the class it is decoded in, and a harness that
+    /// hard-codes one ceiling for every such fixture is testing a rule the contract does not have.
+    MetadataEnvelope(SchemaClass),
     /// A bare `ErrorBody`.
     ErrorBody,
     /// A bare Capabilities payload.
@@ -962,11 +980,17 @@ pub struct NegativeVector {
 
 impl NegativeVector {
     fn to_fixture(&self) -> Fixture {
-        let json = Json::new()
+        let mut json = Json::new()
             .str("name", &self.name)
             .str("suite", "device-object-v2")
             .str("kind", "negative")
-            .str("target", &self.target.name())
+            .str("target", &self.target.name());
+        if let NegativeTarget::MetadataEnvelope(class) = self.target {
+            // The class is the fixture's own declaration of the position it is decoded in; the
+            // length is the ceiling that follows from it, so a suite can check its own constant.
+            json = json.str("class", class.name()).num("maximumEncodedLength", class.ceiling() as i64);
+        }
+        let json = json
             .str("note", &self.note)
             .obj(
                 "expect",
@@ -1165,8 +1189,10 @@ impl Transcript {
 }
 
 mod inventory;
+pub mod semantics;
 
 pub use inventory::{controls, derivations, intents, negatives, progress_matrix, streams, transcripts};
+pub use semantics::{control_body, Body, Value};
 
 /// Every fixture the suite contains, in manifest order.
 pub fn fixtures() -> Vec<Fixture> {

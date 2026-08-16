@@ -112,6 +112,51 @@ fn the_production_codec_decodes_and_re_encodes_every_control_vector() {
 }
 
 #[test]
+fn the_production_codec_assigns_every_control_vector_the_semantic_body_the_fixture_states() {
+    // The defect this test exists for, and the reason §1 asks for a semantic body at all: a codec
+    // that reads two adjacent same-width fields the wrong way round round-trips every byte of
+    // every fixture and is still wrong. Byte equality cannot see it; field equality can.
+    //
+    // The comparison is exact in both directions — every field the fixture states is checked, and
+    // a field the codec reports that the fixture does not state fails too — so a body cannot be
+    // partially checked and a fixture cannot quietly stop covering a field.
+    let mut checked = 0usize;
+    for vector in controls() {
+        let record = vector.frame();
+        let frame = ControlFrame::decode(&record).unwrap_or_else(|error| panic!("{}: {error:?}", vector.name));
+        let observed = observed::body_of(&frame).unwrap_or_else(|error| panic!("{}: {error:?}", vector.name));
+        let stated = vector.body();
+        assert_eq!(
+            observed.fields.iter().map(|(key, _)| key.clone()).collect::<BTreeSet<_>>(),
+            stated.fields.iter().map(|(key, _)| key.clone()).collect::<BTreeSet<_>>(),
+            "{}: the decoded field set differs from the fixture's semantic body",
+            vector.name
+        );
+        for (key, value) in &stated.fields {
+            let seen = observed.fields.iter().find(|(name, _)| name == key).map(|(_, value)| value);
+            assert_eq!(seen, Some(value), "{}: field {key} decoded as {seen:?}, not {value:?}", vector.name);
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, controls().len());
+}
+
+#[test]
+fn every_control_fixture_on_disk_carries_a_semantic_body() {
+    // The drift guard for the body itself: a fixture that lost its body, or a producer that
+    // stopped emitting one, has to fail rather than silently weaken every suite that reads it.
+    let root = dir();
+    for vector in controls() {
+        let path = root.join(format!("controls/{}.json", vector.name));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} is missing", path.display()));
+        assert!(text.contains("\"body\":"), "{} carries no semantic body", vector.name);
+        for (key, _) in &vector.body().fields {
+            assert!(text.contains(&format!("\"{key}\":")), "{} does not state field {key}", vector.name);
+        }
+    }
+}
+
+#[test]
 fn the_production_codec_decodes_and_re_encodes_every_stream_vector() {
     let mut buffer = std::vec![0u8; 4096];
     for vector in streams() {
@@ -138,7 +183,9 @@ fn the_production_codec_rejects_every_negative_vector_in_the_stated_category() {
                 Err(error) => Some(error),
             },
             NegativeTarget::StreamFrame => StreamFrame::decode(&vector.bytes).err(),
-            NegativeTarget::MetadataEnvelope(ceiling) => MetadataEnvelope::decode(&vector.bytes, ceiling).err(),
+            // The ceiling comes from the fixture's own declared class, never from the version byte
+            // the envelope carries: §2.2 makes it a call-site fact.
+            NegativeTarget::MetadataEnvelope(class) => MetadataEnvelope::decode(&vector.bytes, class.ceiling()).err(),
             NegativeTarget::ErrorBody => ErrorBody::decode(&vector.bytes).err(),
             NegativeTarget::CapabilitiesPayload => Capabilities::decode(&vector.bytes).err(),
             NegativeTarget::SubjectEntry => SubjectEntry::decode(&vector.bytes).err(),
@@ -392,6 +439,85 @@ fn every_error_category_and_registered_detail_appears_in_a_vector() {
     for owner in crate::error::Owner::ALL {
         assert!(owners.contains(&owner), "no vector carries owner {}", owner.name());
     }
+}
+
+#[test]
+fn every_registered_domain_semantic_detail_appears_in_a_vector() {
+    // The other half of the detail space. §6's rows are scoped by ObjectKind, so
+    // `semanticValidation/4` is `payloadFactsMismatch` under weather and `downgradeDenied` under
+    // update package: a client that reads the code without the namespace reports the wrong reason.
+    let mut seen = BTreeSet::new();
+    for vector in controls() {
+        if vector.flags & crate::frame::FrameFlags::ERROR == 0 {
+            continue;
+        }
+        let body = ErrorBody::decode(&vector.payload).expect("every error vector decodes");
+        if body.category == crate::ErrorCategory::SEMANTIC_VALIDATION && body.detail_namespace != 0 {
+            seen.insert((body.detail_namespace, body.detail));
+        }
+    }
+    for row in crate::registry::semantic::table() {
+        assert!(
+            seen.contains(&(row.kind.to_u16(), row.code)),
+            "no vector carries the {} semantic detail {}",
+            row.kind.name(),
+            row.name
+        );
+        // And the name a fixture would print really is the registry's, rather than a common-table
+        // row that happens to share the number.
+        assert_eq!(
+            crate::error::detail_name(crate::ErrorCategory::SEMANTIC_VALIDATION, row.kind.to_u16(), row.code),
+            row.name
+        );
+    }
+}
+
+#[test]
+fn every_draft_part_kind_and_capability_policy_bit_appears_in_a_vector() {
+    use crate::registry::{policy_flags, DraftPartKind};
+
+    // Both are §2 requirements of the vectors contract — "every ObjectKind, DraftPartKind, metadata
+    // version, catalog projection, capability operation/policy bit ... appears in at least one
+    // positive or rejection vector" — and both were partly unmet: DraftPartKind 4 and policy bit 2
+    // existed only in the registry.
+    let mut part_kinds = BTreeSet::new();
+    let mut policy_bits = 0u16;
+    for vector in controls() {
+        let record = vector.frame();
+        let frame = ControlFrame::decode(&record).expect("decodes");
+        if frame.flags.is_error() {
+            continue;
+        }
+        if vector.direction == "request" {
+            if let Ok(Request::StartDraftPart(part)) = Request::decode(&frame) {
+                part_kinds.insert(part.part_kind);
+            }
+            continue;
+        }
+        match Response::decode(&frame) {
+            Ok(Response::DraftPartAccepted(crate::upload::Disposition::Accepted(accepted))) => {
+                part_kinds.insert(accepted.part_kind);
+            }
+            Ok(Response::DraftPage(page)) => {
+                for entry in page.entries() {
+                    part_kinds.insert(entry.part_kind);
+                }
+            }
+            Ok(Response::Capabilities(page)) => {
+                for entry in page.page.entries() {
+                    policy_bits |= entry.policy_flags;
+                    if let crate::hello::Subject::DraftPart(kind) = entry.subject {
+                        part_kinds.insert(kind);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for kind in DraftPartKind::ALL {
+        assert!(part_kinds.contains(&kind), "no vector carries DraftPartKind {}", kind.name());
+    }
+    assert_eq!(policy_bits, policy_flags::ALL, "the subject pages do not between them set every policy bit");
 }
 
 #[test]
@@ -887,6 +1013,526 @@ fn every_finalized_prefix_crc_covers_exactly_the_prefix_its_message_reports() {
         raw::crc32(&route),
         "a prefix CRC must not equal the whole-object CRC"
     );
+}
+
+/// The other side of the semantic-body contract: the body as the *production codec* sees it.
+///
+/// Everything here reads decoded types — [`Request`], [`Response`], and the structures they carry —
+/// and never the payload bytes. That is the whole point: the producer wrote the body from the
+/// specification's byte tables, this reads it back out of the codec's own understanding, and the
+/// test compares the two. A field the codec places at the wrong offset, or drops, or swaps with
+/// its neighbour, cannot agree with the producer here no matter how perfectly it re-encodes.
+mod observed {
+    use std::format;
+
+    use super::*;
+    use crate::control::ConfigBlock;
+    use crate::draft::{DraftParentState, DraftPartAccepted, FinalizeDraftAccepted};
+    use crate::hello::CapabilityPage;
+    use crate::metadata::MetadataEnvelope;
+    use crate::query::{CatalogCursor, CatalogPage, DraftPage, OperationStatus, WeatherRequestContext};
+    use crate::result::ResultEnvelope;
+    use crate::upload::{Disposition, UploadAccepted};
+    use crate::vectors::Body;
+
+    /// The body of one whole control record, in whichever direction its flags name.
+    pub fn body_of(frame: &ControlFrame<'_>) -> crate::Result<Body> {
+        if frame.flags.is_error() {
+            let Response::Error(error) = Response::decode(frame)? else { panic!("an error frame is an ErrorBody") };
+            return Ok(error_body(&error));
+        }
+        if frame.flags.is_response() {
+            Ok(response_body(&Response::decode(frame)?))
+        } else {
+            Ok(request_body(&Request::decode(frame)?))
+        }
+    }
+
+    fn request_body(request: &Request<'_>) -> Body {
+        let mut body = Body::new();
+        match request {
+            Request::Hello(hello) => {
+                body.num("minimumMajor", hello.minimum_major);
+                body.num("maximumMajor", hello.maximum_major);
+                body.num("clientMaxControlFrame", hello.client_max_control_frame);
+                body.num("clientMaxStreamFrame", hello.client_max_stream_frame);
+                body.num("clientFeatureFlags", hello.client_feature_flags);
+                body.num("pageKind", hello.page_kind.to_u8());
+                body.num("pageIndex", hello.page_index);
+            }
+            Request::StartUpload(upload) => {
+                body.hex("operationId", upload.operation_id.as_bytes());
+                body.num("objectKind", upload.kind.to_u16());
+                body.num("targetMode", upload.target.mode().to_u8());
+                body.num("resume", upload.resume.to_u8());
+                body.u64("logicalObjectId", upload.target.logical_object_id().get());
+                body.u64("expectedRevision", upload.target.expected_revision().get());
+                body.u64("declaredLength", upload.declared_length);
+                body.num("expectedCrc32", upload.expected_crc32);
+                nest(&mut body, "metadata.", metadata(&upload.metadata));
+            }
+            Request::CheckpointUpload(checkpoint) => {
+                body.num("sessionId", checkpoint.session_id.get());
+                body.u64("receivedNextOffset", checkpoint.received_next_offset);
+            }
+            Request::FinishUpload(finish) => body.num("sessionId", finish.session_id.get()),
+            Request::StartDownload(download) => {
+                body.num("objectKind", download.kind.to_u16());
+                body.num("flags", if download.start_offset.is_some() { 1 << 1 } else { 0 });
+                body.u64("logicalObjectId", download.logical_object_id.get());
+                body.u64("startOffset", download.start_offset.unwrap_or(0));
+            }
+            Request::FinishDownload(finish) => {
+                body.num("sessionId", finish.session_id.get());
+                body.u64("receivedLength", finish.received_length);
+                body.num("wholeSourceCrc32", finish.whole_source_crc32);
+            }
+            Request::AbortSession(abort) => {
+                body.num("sessionId", abort.session_id.get());
+                body.num("reason", abort.reason.to_u8());
+            }
+            Request::AbortOperation(abort) => {
+                body.hex("operationId", abort.operation_id.as_bytes());
+                body.hex("targetOperationId", abort.target_operation_id.as_bytes());
+                body.num("reason", abort.reason.to_u8());
+            }
+            Request::BeginDraft(begin) => {
+                body.hex("parentOperationId", begin.parent_operation_id.as_bytes());
+                body.num("objectKind", begin.kind.to_u16());
+                body.num("targetMode", begin.target.mode().to_u8());
+                body.u64("logicalObjectId", begin.target.logical_object_id().get());
+                body.u64("expectedRevision", begin.target.expected_revision().get());
+                body.u64("declaredManifestLength", begin.declared_manifest_length);
+                body.num("declaredManifestCrc32", begin.declared_manifest_crc32);
+                body.num("expectedPartCount", begin.expected_part_count);
+            }
+            Request::StartDraftPart(part) => {
+                body.hex("childOperationId", part.child_operation_id.as_bytes());
+                body.hex("parentOperationId", part.parent_operation_id.as_bytes());
+                body.num("partKind", part.part_kind.to_u16());
+                body.u64("partKey", part.part_key);
+                body.u64("declaredLength", part.declared_length);
+                body.num("expectedCrc32", part.expected_crc32);
+                body.num("resume", part.resume.to_u8());
+            }
+            Request::FinalizeDraft(finalize) => body.hex("parentOperationId", finalize.parent_operation_id.as_bytes()),
+            Request::QueryOperation(query) => body.hex("operationId", query.operation_id.as_bytes()),
+            Request::QueryCatalog(query) => {
+                body.num("objectKind", query.kind.to_u16());
+                body.num("flags", query.page.flags());
+                body.u64("expectedRevision", query.page.expected_revision());
+                nest(&mut body, "cursor.", cursor(&query.page.cursor()));
+            }
+            Request::QueryDraft(query) => {
+                body.hex("parentOperationId", query.parent_operation_id.as_bytes());
+                body.num("flags", query.page.flags());
+                body.num("requestedLimit", query.requested_limit);
+                body.u64("expectedRevision", query.page.expected_revision());
+                nest(&mut body, "cursor.", cursor(&query.page.cursor()));
+            }
+            Request::QueryWeatherRequest | Request::GetDeviceStatus | Request::GetConfig => {}
+            Request::DeleteObject(delete) => nest(&mut body, "", mutation_target(&delete.target)),
+            Request::SetMetadata(set) => {
+                nest(&mut body, "", mutation_target(&set.target));
+                nest(&mut body, "patch.", metadata(&set.patch));
+            }
+            Request::InstallUpdate(install) => {
+                body.hex("operationId", install.operation_id.as_bytes());
+                body.u64("logicalObjectId", install.logical_object_id.get());
+                body.u64("expectedRevision", install.expected_revision.get());
+            }
+            Request::AcknowledgeRideImported(acknowledge) => {
+                body.hex("operationId", acknowledge.operation_id.as_bytes());
+                body.u64("logicalObjectId", acknowledge.logical_object_id.get());
+                body.u64("expectedRevision", acknowledge.expected_revision.get());
+            }
+            Request::SetConfig(config) => nest(&mut body, "", config_block(config)),
+            Request::SetClock(clock) => {
+                body.i64("epochSeconds", clock.epoch_seconds);
+                body.num("source", clock.source.to_u8());
+            }
+            Request::ForgetBond(forget) => body.num("scope", forget.scope.to_u8()),
+            Request::Echo(echo) => body.hex("payload", echo.payload),
+            Request::ResetStore(reset) => body.hex("echoStoreId", reset.echoed_store_id.as_bytes()),
+        }
+        body
+    }
+
+    fn response_body(response: &Response<'_>) -> Body {
+        let mut body = Body::new();
+        match response {
+            Response::Capabilities(page) => {
+                body.num("selectedMajor", page.selected_major);
+                body.num("storageFormatVersion", page.storage_format_version);
+                body.num("statusFlags", page.status_flags);
+                body.hex("storeId", page.store_id.as_bytes());
+                body.num("negotiatedControlFrame", page.negotiated_control_frame);
+                body.num("negotiatedStreamFrame", page.negotiated_stream_frame);
+                body.num("checkpointGranule", page.checkpoint_granule);
+                body.num("retainedResultCapacity", page.retained_result_capacity);
+                body.num("metadataEnvelopeLimit", page.metadata_envelope_limit);
+                body.num("catalogMetadataLimit", page.catalog_metadata_limit);
+                body.num("protocolMinimumControlFrame", page.protocol_min_control_frame);
+                body.num("protocolMinimumStreamFrame", page.protocol_min_stream_frame);
+                body.num("linkKind", page.link_kind.to_u8());
+                body.num("authenticated", u8::from(page.authenticated));
+                body.num("capabilityRevision", page.capability_revision);
+                body.num("commandFlags", page.command_flags);
+                body.num("totalSubjectCount", page.total_subject_count);
+                body.num("pageKind", page.page.kind().to_u8());
+                body.num("pageIndex", page.page_index);
+                body.num("returnedSubjectCount", page.page.entries().len() as i64);
+                body.num("totalPages", page.total_pages);
+                body.num("deviceWireMinor", page.device_wire_minor);
+                match &page.page {
+                    CapabilityPage::Resources(limits) => {
+                        let mut inner = Body::new();
+                        inner.num("codecVersion", crate::hello::ResourceLimits::CODEC_VERSION);
+                        inner.num("blockLength", crate::hello::RESOURCE_LIMITS_LEN as i64);
+                        inner.num("logicalCatalogHeads", limits.logical_catalog_heads);
+                        inner.num("normalClaims", limits.normal_claims);
+                        inner.num("uploadWorkSlots", limits.upload_work_slots);
+                        inner.num("draftParents", limits.draft_parents);
+                        inner.num("draftParts", limits.draft_parts);
+                        inner.num("manifestChildren", limits.manifest_children);
+                        inner.num("mountedFiles", limits.mounted_files);
+                        inner.num("readerLeases", limits.reader_leases);
+                        inner.num("retainedGenerations", limits.retained_generations);
+                        inner.num("retainedResults", limits.retained_results);
+                        inner.num("inactiveWorkHorizon", limits.inactive_work_horizon);
+                        inner.u64("maxGenerationLength", limits.max_generation_length);
+                        inner.u64("availableReservationBytes", limits.available_reservation_bytes);
+                        inner.num("routeHeads", limits.route_heads);
+                        inner.num("tripHeads", limits.trip_heads);
+                        inner.num("rideHeads", limits.ride_heads);
+                        inner.num("weatherHeads", limits.weather_heads);
+                        inner.num("volumeManifestHeads", limits.volume_manifest_heads);
+                        inner.num("updatePackageHeads", limits.update_package_heads);
+                        inner.num("heavyStreamSessions", limits.heavy_stream_sessions);
+                        inner.num("maintenanceClaims", limits.maintenance_claims);
+                        inner.num("rideSlots", limits.ride_slots);
+                        nest(&mut body, "resourceLimits.", inner);
+                    }
+                    CapabilityPage::Subjects { .. } => {
+                        for (index, entry) in page.page.entries().iter().enumerate() {
+                            let mut inner = Body::new();
+                            inner.num("namespace", entry.subject.namespace());
+                            inner.num("kindCode", entry.subject.kind_code());
+                            inner.num("operationFlags", entry.operation_flags);
+                            inner.num("policyFlags", entry.policy_flags);
+                            inner.num("putSchemaVersion", entry.put_schema_version);
+                            inner.num("patchSchemaVersion", entry.patch_schema_version);
+                            inner.num("catalogSchemaVersion", entry.catalog_schema_version);
+                            inner.u64("maxLength", entry.max_length);
+                            nest(&mut body, &format!("subjects[{index}]."), inner);
+                        }
+                    }
+                }
+            }
+            Response::UploadAccepted(accepted) => match accepted {
+                UploadAccepted::Accepted(acceptance) => {
+                    body.num("disposition", 0);
+                    body.num("targetMode", acceptance.target_mode.to_u8());
+                    body.num("flags", acceptance.flags.bits());
+                    body.hex("operationId", acceptance.operation_id.as_bytes());
+                    body.num("sessionId", acceptance.session_id.get());
+                    body.u64("logicalObjectId", acceptance.logical_object_id.get());
+                    body.u64("admissionRevision", acceptance.admission_revision.get());
+                    body.u64("durableNextOffset", acceptance.durable_next_offset);
+                    body.num("checkpointGranule", acceptance.checkpoint_granule);
+                    body.num("maxStreamPayload", acceptance.max_stream_payload);
+                    body.num("finalizedPrefixCrc32", acceptance.finalized_prefix_crc32);
+                }
+                UploadAccepted::AlreadyTerminal(envelope) => {
+                    body.num("disposition", 1);
+                    nest(&mut body, "result.", result_envelope(envelope));
+                }
+            },
+            Response::CheckpointAccepted(checkpoint) => {
+                body.num("sessionId", checkpoint.session_id.get());
+                body.u64("durableNextOffset", checkpoint.durable_next_offset);
+                body.num("finalizedPrefixCrc32", checkpoint.finalized_prefix_crc32);
+                body.num("checkpointSequence", checkpoint.checkpoint_sequence);
+            }
+            Response::UploadResult(envelope) | Response::MutationResult(envelope) => {
+                nest(&mut body, "", result_envelope(envelope))
+            }
+            Response::DownloadAccepted(accepted) => {
+                body.hex("storeId", accepted.store_id.as_bytes());
+                body.num("sessionId", accepted.session_id.get());
+                body.u64("logicalObjectId", accepted.logical_object_id.get());
+                body.u64("pinnedRevision", accepted.pinned_revision.get());
+                body.u64("totalLength", accepted.total_length);
+                body.num("wholeSourceCrc32", accepted.whole_source_crc32);
+                body.u64("acceptedStartOffset", accepted.accepted_start_offset);
+                body.num("maxStreamPayload", accepted.max_stream_payload);
+            }
+            Response::DownloadFinished | Response::BondForgotten => {}
+            Response::SessionAborted(outcome) => body.num("outcome", outcome.encode()[0]),
+            Response::BeginDraftAccepted(accepted) => match accepted {
+                Disposition::Accepted(acceptance) => {
+                    body.num("disposition", 0);
+                    body.hex("parentOperationId", acceptance.parent_operation_id.as_bytes());
+                    body.u64("draftRevision", acceptance.draft_revision);
+                    body.num("expectedPartCount", acceptance.expected_part_count);
+                    body.num(
+                        "state",
+                        match acceptance.state {
+                            DraftParentState::Open => 0,
+                        },
+                    );
+                }
+                Disposition::AlreadyTerminal(envelope) => {
+                    body.num("disposition", 1);
+                    nest(&mut body, "result.", result_envelope(envelope));
+                }
+            },
+            Response::DraftPartAccepted(accepted) => match accepted {
+                DraftPartAccepted::Accepted(acceptance) => {
+                    body.num("disposition", 0);
+                    body.num("flags", acceptance.flags.bits());
+                    body.hex("childOperationId", acceptance.child_operation_id.as_bytes());
+                    body.hex("parentOperationId", acceptance.parent_operation_id.as_bytes());
+                    body.num("sessionId", acceptance.session_id.get());
+                    body.num("partKind", acceptance.part_kind.to_u16());
+                    body.u64("partKey", acceptance.part_key);
+                    body.u64("durableNextOffset", acceptance.durable_next_offset);
+                    body.num("checkpointGranule", acceptance.checkpoint_granule);
+                    body.num("maxStreamPayload", acceptance.max_stream_payload);
+                    body.num("finalizedPrefixCrc32", acceptance.finalized_prefix_crc32);
+                }
+                DraftPartAccepted::AlreadyTerminal(envelope) => {
+                    body.num("disposition", 1);
+                    nest(&mut body, "result.", result_envelope(envelope));
+                }
+            },
+            Response::FinalizeDraftAccepted(accepted) => match accepted {
+                FinalizeDraftAccepted::Accepted(acceptance) => {
+                    body.num("disposition", 0);
+                    body.num("flags", acceptance.flags.bits());
+                    body.hex("parentOperationId", acceptance.parent_operation_id.as_bytes());
+                    body.num("sessionId", acceptance.session_id.get());
+                    body.u64("logicalObjectId", acceptance.logical_object_id.get());
+                    body.u64("admissionRevision", acceptance.admission_revision.get());
+                    body.u64("durableManifestOffset", acceptance.durable_manifest_offset);
+                    body.num("checkpointGranule", acceptance.checkpoint_granule);
+                    body.num("maxStreamPayload", acceptance.max_stream_payload);
+                    body.num("finalizedPrefixCrc32", acceptance.finalized_prefix_crc32);
+                }
+                FinalizeDraftAccepted::AlreadyTerminal(envelope) => {
+                    body.num("disposition", 1);
+                    nest(&mut body, "result.", result_envelope(envelope));
+                }
+            },
+            Response::OperationStatus(status) => {
+                body.num("state", status.state());
+                match status {
+                    OperationStatus::Unknown => {}
+                    OperationStatus::InProgress(progress) => {
+                        let mut inner = Body::new();
+                        inner.num("namespace", progress.namespace.to_u8());
+                        inner.num("phase", progress.phase.to_u8());
+                        inner.num("flags", progress.flags);
+                        inner.num("subjectKind", progress.subject_kind);
+                        inner.u64("logicalObjectId", progress.logical_object_id.get());
+                        inner.u64("durableOffset", progress.durable_offset);
+                        nest(&mut body, "progress.", inner);
+                    }
+                    OperationStatus::Committed(envelope) => nest(&mut body, "result.", result_envelope(envelope)),
+                    OperationStatus::Aborted(error) => nest(&mut body, "error.", error_body(error)),
+                }
+            }
+            Response::CatalogPage(page) => nest(&mut body, "", catalog_page(page)),
+            Response::DraftPage(page) => nest(&mut body, "", draft_page(page)),
+            Response::WeatherRequestContext(context) => nest(&mut body, "", weather_context(context)),
+            Response::DeviceStatus(status) => {
+                body.num("firmwareMajor", status.firmware_major);
+                body.num("firmwareMinor", status.firmware_minor);
+                body.num("firmwarePatch", status.firmware_patch);
+                body.num("hardwareRevision", status.hardware_revision);
+                body.hex("deviceSerial", &status.device_serial);
+                body.num("bootCount", status.boot_count);
+                body.u64("uptimeSeconds", status.uptime_seconds);
+                body.num("stackHighWater", status.stack_high_water);
+                body.num("statusFlags", status.status_flags);
+                body.num("mountClass", status.mount_class.to_u8());
+                body.num("firmwareBuild", status.firmware_build);
+                body.hex("storeId", status.store_id.as_bytes());
+            }
+            Response::Config(config) => nest(&mut body, "", config_block(config)),
+            Response::ClockStatus(clock) => {
+                body.i64("epochSeconds", clock.epoch_seconds);
+                body.num("source", clock.source.to_u8());
+                body.num("state", clock.state.to_u8());
+            }
+            Response::Echo(echo) => body.hex("payload", echo.payload),
+            Response::ResetStoreResult(result) => body.hex("newStoreId", result.new_store_id.as_bytes()),
+            Response::Error(error) => nest(&mut body, "", error_body(error)),
+        }
+        body
+    }
+
+    fn nest(body: &mut Body, prefix: &str, other: Body) {
+        for (key, value) in other.fields {
+            body.fields.push((format!("{prefix}{key}"), value));
+        }
+    }
+
+    fn metadata(envelope: &MetadataEnvelope<'_>) -> Body {
+        let mut body = Body::new();
+        body.num("schemaId", envelope.schema_id);
+        body.num("schemaVersion", envelope.schema_version);
+        body.num("encodedFieldBytes", (envelope.encoded_len() - 8) as i64);
+        body.num("fieldCount", envelope.field_count);
+        for (index, field) in envelope.fields().enumerate() {
+            body.num(format!("field[{index}].tag"), field.tag());
+            body.hex(format!("field[{index}].value"), field.value);
+        }
+        body
+    }
+
+    fn cursor(cursor: &CatalogCursor) -> Body {
+        let mut body = Body::new();
+        body.u64("revision", cursor.revision);
+        body.num("nextEntryIndex", cursor.next_entry_index);
+        body.num("kindCode", cursor.kind_code);
+        body.num("crc32", cursor.crc32);
+        body
+    }
+
+    fn error_body(error: &crate::error::ErrorBody<'_>) -> Body {
+        let mut body = Body::new();
+        body.num("category", error.category.get());
+        body.num("detailNamespace", error.detail_namespace);
+        body.num("detail", error.detail);
+        body.num("guidance", error.guidance.get());
+        body.num("owner", error.owner.get());
+        body.num("presence", error.presence);
+        body.num("retryAfterMs", error.retry_after_ms);
+        body.u64("expectedOffset", error.expected_offset);
+        body.u64("currentRevision", error.current_revision.get());
+        body.u64("requiredBytes", error.required_bytes);
+        body.u64("availableBytes", error.available_bytes);
+        body.num("textLength", error.text.len() as i64);
+        body.hex("text", error.text);
+        body
+    }
+
+    fn result_envelope(envelope: &ResultEnvelope) -> Body {
+        let mut body = Body::new();
+        body.num("resultType", envelope.result_type());
+        match envelope {
+            ResultEnvelope::Object(result) => {
+                body.hex("operationId", result.operation_id.as_bytes());
+                body.hex("storeId", result.store_id.as_bytes());
+                body.num("objectKind", result.kind.to_u16());
+                body.num("outcome", result.outcome.to_u16());
+                body.u64("logicalObjectId", result.logical_object_id.get());
+                body.u64("revision", result.revision.get());
+                body.u64("length", result.length);
+                body.num("crc32", result.crc32);
+            }
+            ResultEnvelope::DraftPart(result) => {
+                body.hex("childOperationId", result.child_operation_id.as_bytes());
+                body.hex("storeId", result.store_id.as_bytes());
+                body.hex("parentOperationId", result.parent_operation_id.as_bytes());
+                body.hex("draftPartRef", result.draft_part_ref.as_bytes());
+                body.num("partKind", result.part_kind.to_u16());
+                body.u64("partKey", result.part_key);
+                body.u64("length", result.length);
+                body.num("crc32", result.crc32);
+            }
+            ResultEnvelope::Abort(result) => {
+                body.hex("operationId", result.operation_id.as_bytes());
+                body.hex("storeId", result.store_id.as_bytes());
+                body.hex("targetOperationId", result.target_operation_id.as_bytes());
+                body.num("disposition", result.disposition.to_u8());
+            }
+        }
+        body
+    }
+
+    fn mutation_target(target: &crate::mutate::MutationTarget) -> Body {
+        let mut body = Body::new();
+        body.hex("operationId", target.operation_id.as_bytes());
+        body.num("objectKind", target.kind.to_u16());
+        // The expected-revision flag is mandatory on both direct mutations, so the codec models it
+        // as always set rather than as a field.
+        body.num("flags", 1);
+        body.u64("logicalObjectId", target.logical_object_id.get());
+        body.u64("expectedRevision", target.expected_revision.get());
+        body
+    }
+
+    fn catalog_page(page: &CatalogPage<'_>) -> Body {
+        let mut body = Body::new();
+        body.hex("storeId", page.store_id.as_bytes());
+        body.num("objectKind", page.kind.to_u16());
+        body.num("entryCount", page.entry_count);
+        body.u64("revision", page.revision.get());
+        nest(&mut body, "nextCursor.", cursor(&page.next_cursor));
+        for (index, entry) in page.entries().enumerate() {
+            let mut inner = Body::new();
+            inner.u64("logicalObjectId", entry.logical_object_id.get());
+            inner.u64("revision", entry.revision.get());
+            inner.u64("length", entry.length);
+            inner.num("crc32", entry.crc32);
+            nest(&mut inner, "metadata.", metadata(&entry.metadata));
+            nest(&mut body, &format!("entries[{index}]."), inner);
+        }
+        body
+    }
+
+    fn draft_page(page: &DraftPage) -> Body {
+        let mut body = Body::new();
+        body.hex("parentOperationId", page.parent_operation_id.as_bytes());
+        body.u64("draftRevision", page.draft_revision);
+        nest(&mut body, "nextCursor.", cursor(&page.next_cursor));
+        body.num("entryCount", page.count);
+        body.num("flags", page.flags);
+        for (index, entry) in page.entries().iter().enumerate() {
+            let mut inner = Body::new();
+            inner.hex("childOperationId", entry.child_operation_id.as_bytes());
+            inner.hex("draftPartRef", entry.draft_part_ref.as_bytes());
+            inner.num("partKind", entry.part_kind.to_u16());
+            inner.u64("partKey", entry.part_key);
+            inner.num("state", entry.state.to_u8());
+            inner.u64("durableOffset", entry.durable_offset);
+            inner.u64("declaredLength", entry.declared_length);
+            inner.num("crc32", entry.crc32);
+            nest(&mut body, &format!("entries[{index}]."), inner);
+        }
+        body
+    }
+
+    fn weather_context(context: &WeatherRequestContext) -> Body {
+        let mut body = Body::new();
+        body.hex("storeId", context.store_id.as_bytes());
+        body.u64("currentWeatherRequestId", context.current_request_id.get());
+        body.u64("contextRevision", context.context_revision);
+        body.num("flags", i64::from(u32::from(context.head_request_id.is_some())));
+        body.u64("weatherLogicalObjectId", context.weather_logical_object_id.get());
+        body.u64("repositoryRevision", context.repository_revision.get());
+        body.u64("headWeatherRequestId", context.head_request_id.map_or(0, |id| id.get()));
+        body.num("centreLatitudeE7", context.centre_latitude_e7);
+        body.num("centreLongitudeE7", context.centre_longitude_e7);
+        body.num("radiusMetres", context.radius_metres);
+        body.i64("earliestIssuedUtc", context.earliest_issued_utc);
+        body.i64("requiredValidUntilUtc", context.required_valid_until_utc);
+        body.num("state", context.state.to_u8());
+        body
+    }
+
+    fn config_block(config: &ConfigBlock) -> Body {
+        let mut body = Body::new();
+        body.num("codecVersion", ConfigBlock::CODEC_VERSION);
+        body.num("blockLength", crate::control::CONFIG_BLOCK_LEN as i64);
+        body.num("nameLength", config.name_len);
+        body.num("unitFlags", config.unit_flags);
+        body.num("weatherRefresh", config.weather_refresh.to_u8());
+        body.hex("name", config.name());
+        body
+    }
 }
 
 /// Which of the suite's three payloads a message's durable offset is measured into.

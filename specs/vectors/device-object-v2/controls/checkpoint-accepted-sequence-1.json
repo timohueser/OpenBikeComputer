@@ -17,6 +17,12 @@
   },
   "boundary": "",
   "note": "The sequence starts at 1, strictly increases, and is scoped to the work record rather than the session.",
+  "body": {
+    "sessionId": 17,
+    "durableNextOffset": "1024",
+    "finalizedPrefixCrc32": 2078597072,
+    "checkpointSequence": 1
+  },
   "payload": "110000000004000000000000d0dfe47b01000000",
   "frame": "4f424350030001010100140014000000110000000004000000000000d0dfe47b01000000"
 }

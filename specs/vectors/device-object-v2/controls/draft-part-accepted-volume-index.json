@@ -1,0 +1,35 @@
+{
+  "name": "draft-part-accepted-volume-index",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartDraftPart",
+    "value": 305
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 72,
+    "requestId": 64
+  },
+  "boundary": "",
+  "note": "The acceptance echoes the volume-index part kind and key it was claimed under.",
+  "body": {
+    "disposition": 0,
+    "flags": 0,
+    "childOperationId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "sessionId": 50,
+    "partKind": 4,
+    "partKey": "1",
+    "durableNextOffset": "0",
+    "checkpointGranule": 1024,
+    "maxStreamPayload": 1008,
+    "finalizedPrefixCrc32": 0
+  },
+  "payload": "00000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c332000000040000000100000000000000000000000000000000040000f003000000000000",
+  "frame": "4f42435003003101010048004000000000000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c332000000040000000100000000000000000000000000000000040000f003000000000000"
+}

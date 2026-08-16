@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "The device-control plane owns no ObjectKind, so its one semantic refusal uses namespace zero.",
+  "body": {
+    "category": 14,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "0e0000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300030403003000c80000000e0000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

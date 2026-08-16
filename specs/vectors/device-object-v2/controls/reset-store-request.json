@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "The echo is the confirmation, checked before anything is deleted.",
+  "body": {
+    "echoStoreId": "3c92000099164ebaabc2342fe08f6b10"
+  },
   "payload": "3c92000099164ebaabc2342fe08f6b10",
   "frame": "4f42435003000604000010007f0000003c92000099164ebaabc2342fe08f6b10"
 }

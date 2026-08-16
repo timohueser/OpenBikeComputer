@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "Pagination is snapshot-bound to the draft revision and rejects a changed one instead of mixing child sets.",
+  "body": {
+    "category": 21,
+    "detailNamespace": 0,
+    "detail": 2,
+    "guidance": 7,
+    "owner": 0,
+    "presence": 4,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "10",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "150000000200070004000000000000000000000000000a00000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020203003000c8000000150000000200070004000000000000000000000000000a00000000000000000000000000000000000000000000000000"
 }
