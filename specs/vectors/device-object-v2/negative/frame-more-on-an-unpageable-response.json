@@ -1,0 +1,14 @@
+{
+  "name": "frame-more-on-an-unpageable-response",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "`more` is valid only on a paged Capabilities, QueryCatalog, or QueryDraft response.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f42435003000002050004000100000000000000"
+}

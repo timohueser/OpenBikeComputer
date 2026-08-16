@@ -1,0 +1,22 @@
+{
+  "name": "error-busy-ride-slot",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "An occupied ride slot is an owner, not a capacity the client can plan around.",
+  "payload": "050000000900030400000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c8000000050000000900030400000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

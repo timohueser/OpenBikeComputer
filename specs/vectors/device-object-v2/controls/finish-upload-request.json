@@ -1,0 +1,22 @@
+{
+  "name": "finish-upload-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 4,
+    "requestId": 21
+  },
+  "boundary": "",
+  "note": "FinishUpload is exactly a SessionId.",
+  "payload": "11000000",
+  "frame": "4f42435003000201000004001500000011000000"
+}

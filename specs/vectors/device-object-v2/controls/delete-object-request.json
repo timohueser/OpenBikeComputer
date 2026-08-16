@@ -1,0 +1,22 @@
+{
+  "name": "delete-object-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "DeleteObject",
+    "value": 768
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 36,
+    "requestId": 110
+  },
+  "boundary": "",
+  "note": "Delete is an idempotent catalog transaction with a mandatory expected revision.",
+  "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000",
+  "frame": "4f42435003000003000024006e000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000"
+}

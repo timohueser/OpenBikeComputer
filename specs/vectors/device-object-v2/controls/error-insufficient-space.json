@@ -1,0 +1,22 @@
+{
+  "name": "error-insufficient-space",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 70,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "insufficientSpace reports required and available bytes.",
+  "payload": "0c000000010009001800000000000000000000000000000000000000000000008000000000000000100000000000160066726565207370616365206f6e207468652063617264",
+  "frame": "4f4243500300000103004600c80000000c000000010009001800000000000000000000000000000000000000000000008000000000000000100000000000160066726565207370616365206f6e207468652063617264"
+}

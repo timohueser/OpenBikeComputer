@@ -1,0 +1,22 @@
+{
+  "name": "finalize-accepted-resumed",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinalizeDraft",
+    "value": 306
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 64,
+    "requestId": 63
+  },
+  "boundary": "",
+  "note": "A resumed manifest stream reports its durable prefix and that prefix's own CRC. The 264-byte manifest is shorter than one 1,024-byte granule, so §6.2 leaves it exactly two legal durable offsets — zero and the declared end — and this is the end.",
+  "payload": "00000100c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c34100000002000000000000003200000000000000080100000000000000040000f00300005381ea1b00000000",
+  "frame": "4f42435003003201010040003f00000000000100c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c34100000002000000000000003200000000000000080100000000000000040000f00300005381ea1b00000000"
+}

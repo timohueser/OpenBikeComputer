@@ -1,0 +1,22 @@
+{
+  "name": "error-semantic-validation-unsafe-runtime-state",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "InstallUpdate",
+    "value": 784
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A retryable domain precondition does not terminally claim the OperationId: both claim-status bits are clear.",
+  "payload": "0e00070007000200010060ea000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300100303003000c80000000e00070007000200010060ea000000000000000000000000000000000000000000000000000000000000000000000000"
+}

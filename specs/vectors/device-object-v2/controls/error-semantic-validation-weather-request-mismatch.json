@@ -1,0 +1,22 @@
+{
+  "name": "error-semantic-validation-weather-request-mismatch",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A bundle whose request context is no longer current aborts terminally in the weather namespace.",
+  "payload": "0e0004000500000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020103003000c80000000e0004000500000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -20,7 +20,7 @@ trees — one `Cargo.lock`, one `target/`:
 
 | Tree | Holds | Reached by the device image? |
 | :-- | :-- | :-- |
-| `firmware/` | `obc-crc`, `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-weather`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
+| `firmware/` | `obc-crc`, `obc-link`, `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-weather`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
 | `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the terrain baker (`obc-dem`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host`, the weather bakery (`obc-wx-bake`, which also ships `obc-wx-pack` — real past storms frozen into replayable fixture-registry event packs) and the weather client (`obc-wx-client`) | no |
 | `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-skin-preview`, `obc-desktop` | no |
 
@@ -80,6 +80,14 @@ is [`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md) (legacy wir
 DOS v2 by the [`Device_Object_System_v2.md`](../specs/Device_Object_System_v2.md) suite); the
 concepts are on the docs site under
 [the companion link](https://openbikecomputer.com/software/companion-link/).
+
+`obc-link` is that suite's Rust codec: OBCP wire major 3 control and stream frames, the
+mechanically distinct identities, metadata envelopes, typed results, error bodies, and the
+canonical-intent SHA-256. It is deliberately transport-free — no `obc-ble`, no embassy, no
+adapter — so an adapter hands it a record and gets a typed message back. Its golden vectors live
+in [`specs/vectors/device-object-v2/`](../specs/vectors/device-object-v2/), built by a producer
+that lays every byte down from the spec's own offset tables rather than through the codec;
+regenerate them deliberately with `cargo test -p obc-link regenerate -- --ignored`.
 
 ## Test
 

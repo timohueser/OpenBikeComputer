@@ -100,12 +100,13 @@ CoC establishment: an SDU below the 64-byte floor refuses the channel with
 effective limit at the SDU.
 
 QueryCatalog paging splits the old maximum case in two, because the two bounds are independent: a
-maximum-*count* page returning ten small entries at a large negotiated frame, and a maximum-*metadata*
-page at the 192-byte minimum. The metadata case is pinned twice, since the ceiling and the registry
-disagree: the producible positive is a 162-byte-payload route entry with `more` set, and the
-176-byte-payload ceiling entry is a decode-only vector that no conforming device emits. The maximum
-StartUpload is pinned the same way — a 116-byte weather request as the positive, the 176-byte
-schema ceiling as decode-only. No page in
+maximum-count page returning the most whole entries the largest frame carries — five ride entries at
+429 payload bytes, since ten cannot fit any conforming frame — and a maximum-metadata
+page at the 192-byte minimum. The metadata case's producible positive is a 162-byte-payload route
+entry with `more` set, and the maximum StartUpload's is a 116-byte weather request. Neither ceiling
+is a fixture: as the wire contract's §2.2 says, no legal envelope reaches one, so a ceiling vector
+would be a fixture a conforming decoder must reject. The `44 + 36 + 96` and `48 + 128` ceilings are
+asserted arithmetically instead. No page in
 any vector exceeds the negotiated frame, and no entry is split across pages.
 
 Both values of the StartUpload and StartDraftPart resume byte are pinned against both durable-work
@@ -144,11 +145,11 @@ negotiated payload; nonzero absolute offset; and offsets around `0xFFFF_FFFF` wi
 the preceding bytes. A resumed-prefix CRC vector fixes CRC as the finalized CRC-32/IEEE of exactly
 the durable prefix.
 
-Fault status frames are pinned positively, not only as rejections: the 24-byte body for every
-disposition — resume with a new session `0`, operation durably aborted `1`, and stream transport
-closed `2` — in both its nonterminal form (fault bit alone) and, for the two terminal dispositions,
-its terminal form (fault and terminal bits together). Their negatives are the combinations the flag
-table forbids: any nonzero flag on a data direction, and terminal without fault.
+Fault status frames are pinned positively, not only as rejections: disposition
+resume-with-a-new-session `0` in its nonterminal form (fault bit alone), and dispositions
+operation-durably-aborted `1` and stream-transport-closed `2` in their terminal form (fault and
+terminal bits together). Those three are the whole of the legal set; disposition `0` with the
+terminal bit, and `1` or `2` without it, are negatives.
 
 Negative stream vectors cover zero SessionId, wrong direction, zero payload, truncated/overlong
 payload, reserved flags, `offset + length` overflow, wrong offset, stale same-link session,

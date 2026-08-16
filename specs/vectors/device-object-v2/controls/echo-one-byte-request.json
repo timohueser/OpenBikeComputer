@@ -1,0 +1,22 @@
+{
+  "name": "echo-one-byte-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "Echo",
+    "value": 1029
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 1,
+    "requestId": 126
+  },
+  "boundary": "",
+  "note": "Echo's maximum is the negotiated control frame less the 16-byte header.",
+  "payload": "00",
+  "frame": "4f42435003000504000001007e00000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "download-accepted",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartDownload",
+    "value": 272
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 60,
+    "requestId": 40
+  },
+  "boundary": "",
+  "note": "Resolve and lease happen before this response; the accepted start offset always equals the requested one.",
+  "payload": "3c92000099164ebaabc2342fe08f6b102100000009000000000000002a00000000000000b80b00000000000085a936460000000000000000f0030000",
+  "frame": "4f4243500300100101003c00280000003c92000099164ebaabc2342fe08f6b102100000009000000000000002a00000000000000b80b00000000000085a936460000000000000000f0030000"
+}

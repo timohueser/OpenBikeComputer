@@ -1,0 +1,22 @@
+{
+  "name": "begin-draft-create-volume-manifest",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "BeginDraft",
+    "value": 304
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 52,
+    "requestId": 60
+  },
+  "boundary": "",
+  "note": "BeginDraft binds target, expected revision, manifest length and CRC, and the exact child count.",
+  "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3060000000000000000000000000000000000000008010000000000005381ea1b03000000",
+  "frame": "4f42435003003001000034003c000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3060000000000000000000000000000000000000008010000000000005381ea1b03000000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "capabilities-subject-page-index-beyond-the-end",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "capabilities",
+  "note": "For a zero-subject device only a subject page index above zero is invalid.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "030103003c92000099164ebaabc2342fe08f6b10f400000400040000400080006000c0004000020107000000ffff01000000010100000100"
+}

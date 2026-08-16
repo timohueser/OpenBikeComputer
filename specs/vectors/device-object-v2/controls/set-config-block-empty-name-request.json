@@ -1,0 +1,22 @@
+{
+  "name": "set-config-block-empty-name-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "SetConfig",
+    "value": 1026
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 56,
+    "requestId": 122
+  },
+  "boundary": "",
+  "note": "A zero length means the device advertises its factory default name.",
+  "payload": "0138000000050200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f42435003000204000038007a0000000138000000050200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

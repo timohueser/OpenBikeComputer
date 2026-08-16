@@ -1,0 +1,22 @@
+{
+  "name": "error-semantic-validation-clock-regression",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "SetClock",
+    "value": 1027
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "The device-control plane owns no ObjectKind, so its one semantic refusal uses namespace zero.",
+  "payload": "0e0000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300030403003000c80000000e0000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

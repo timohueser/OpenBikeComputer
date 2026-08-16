@@ -1,0 +1,22 @@
+{
+  "name": "draft-part-accepted-restart-at-zero",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartDraftPart",
+    "value": 305
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 72,
+    "requestId": 61
+  },
+  "boundary": "",
+  "note": "Restart-at-zero is emitted only after the durable restart record is synchronized.",
+  "payload": "00000200d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c331000000020000000700000000000000000000000000000000040000f003000000000000",
+  "frame": "4f42435003003101010048003d00000000000200d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c331000000020000000700000000000000000000000000000000040000f003000000000000"
+}

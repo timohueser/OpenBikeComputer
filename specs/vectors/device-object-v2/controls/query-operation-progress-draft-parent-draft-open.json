@@ -1,0 +1,22 @@
+{
+  "name": "query-operation-progress-draft-parent-draft-open",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryOperation",
+    "value": 512
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 28,
+    "requestId": 70
+  },
+  "boundary": "",
+  "note": "Draft-open has offset zero and no attached session.",
+  "payload": "01000000010604000600000002000000000000000000000000000000",
+  "frame": "4f4243500300000201001c004600000001000000010604000600000002000000000000000000000000000000"
+}

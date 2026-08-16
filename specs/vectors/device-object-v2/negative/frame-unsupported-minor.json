@@ -1,0 +1,14 @@
+{
+  "name": "frame-unsupported-minor",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "A frame minor above the device's is incompatibleVersion/unsupportedMinor.",
+  "expect": {
+    "category": "incompatibleVersion",
+    "categoryValue": 1,
+    "detail": "unsupportedMinor",
+    "detailValue": 2
+  },
+  "bytes": "4f42435003010201000004000100000011000000"
+}

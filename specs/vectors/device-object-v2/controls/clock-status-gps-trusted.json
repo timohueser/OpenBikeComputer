@@ -1,0 +1,22 @@
+{
+  "name": "clock-status-gps-trusted",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "SetClock",
+    "value": 1027
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 16,
+    "requestId": 123
+  },
+  "boundary": "",
+  "note": "The response reports the clock after the request and the source the device now trusts.",
+  "payload": "c03e1569000000000201000000000000",
+  "frame": "4f42435003000304010010007b000000c03e1569000000000201000000000000"
+}

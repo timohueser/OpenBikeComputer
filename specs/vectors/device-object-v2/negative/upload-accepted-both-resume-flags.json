@@ -1,0 +1,14 @@
+{
+  "name": "upload-accepted-both-resume-flags",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadResponse",
+  "note": "Restart-at-zero and resumed-work are never both set.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f42435003000001010040000100000000000300a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000009000000000000002900000000000000000000000000000000000400f00300000000000000000000"
+}

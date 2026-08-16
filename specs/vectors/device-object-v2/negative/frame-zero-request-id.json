@@ -1,0 +1,14 @@
+{
+  "name": "frame-zero-request-id",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "A zero-RequestId frame produces no response at all and closes the control record stream.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "zeroRequestId",
+    "detailValue": 9
+  },
+  "bytes": "4f42435003000201000004000000000011000000"
+}

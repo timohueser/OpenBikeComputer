@@ -1,0 +1,14 @@
+{
+  "name": "forget-bond-zero-scope",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "ForgetBondRequest",
+  "note": "The scope byte is this bond `1` or every bond `2`.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "4f4243500300040400000800010000000000000000000000"
+}

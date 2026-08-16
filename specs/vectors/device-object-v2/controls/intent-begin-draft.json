@@ -1,0 +1,15 @@
+{
+  "name": "intent-begin-draft",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "BeginDraft",
+    "value": 304
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 36,
+  "note": "BeginDraft's suffix ends with the exact part count and a zero u16.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1030010100060000000000000000000000000000000000000008010000000000005381ea1b03000000",
+  "sha256": "b408eb9af3eba15b358a9cc3a4ce1116bafa0529168094a36d868158b3dbbbea"
+}

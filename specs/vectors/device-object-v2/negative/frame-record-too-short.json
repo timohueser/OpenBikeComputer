@@ -1,0 +1,14 @@
+{
+  "name": "frame-record-too-short",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "A record shorter than the 16-byte header cannot be established as a frame.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "recordLength",
+    "detailValue": 2
+  },
+  "bytes": "4f4243500300020100000400010000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "stream-fault-domain-category",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "A revisionConflict is a domain outcome and uses a correlated control response, not a stream fault.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "010000000000000000000000180003010b0001000000000000000000000000000000000000000000"
+}

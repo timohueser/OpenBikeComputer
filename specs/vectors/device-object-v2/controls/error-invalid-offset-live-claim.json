@@ -1,0 +1,22 @@
+{
+  "name": "error-invalid-offset-live-claim",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "CheckpointUpload",
+    "value": 257
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "An error against a live claimed operation sets bit 5 and clears bit 6.",
+  "payload": "080000000100060022000000000000000400000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010103003000c8000000080000000100060022000000000000000400000000000000000000000000000000000000000000000000000000000000"
+}

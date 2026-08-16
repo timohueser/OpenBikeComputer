@@ -1,0 +1,22 @@
+{
+  "name": "reset-store-result",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "ResetStore",
+    "value": 1030
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 16,
+    "requestId": 127
+  },
+  "boundary": "",
+  "note": "The new StoreId is returned only after the first checkpoint gate of the new store is durable.",
+  "payload": "112233445566778899aabbccddeeff00",
+  "frame": "4f42435003000604010010007f000000112233445566778899aabbccddeeff00"
+}

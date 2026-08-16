@@ -1,0 +1,22 @@
+{
+  "name": "error-catalog-changed",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryCatalog",
+    "value": 513
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A revision mismatch is catalogChanged with the current revision and refresh guidance.",
+  "payload": "150000000100070004000000000000000000000000003d00000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010203003000c8000000150000000100070004000000000000000000000000003d00000000000000000000000000000000000000000000000000"
+}

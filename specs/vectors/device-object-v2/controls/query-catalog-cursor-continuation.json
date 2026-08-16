@@ -1,0 +1,22 @@
+{
+  "name": "query-catalog-cursor-continuation",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "QueryCatalog",
+    "value": 513
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 28,
+    "requestId": 82
+  },
+  "boundary": "",
+  "note": "A cursor requires both flags and an expected revision equal to the cursor revision.",
+  "payload": "010003002a000000000000002a00000000000000030001003069e299",
+  "frame": "4f4243500300010200001c0052000000010003002a000000000000002a00000000000000030001003069e299"
+}

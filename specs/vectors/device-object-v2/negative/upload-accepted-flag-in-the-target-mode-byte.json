@@ -1,0 +1,14 @@
+{
+  "name": "upload-accepted-flag-in-the-target-mode-byte",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadResponse",
+  "note": "Offset 1 is target mode here, and a flag written into it is rejected.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "4f42435003000001010040000100000000020000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000009000000000000002900000000000000000000000000000000000400f00300000000000000000000"
+}

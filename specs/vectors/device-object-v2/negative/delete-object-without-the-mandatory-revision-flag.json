@@ -1,0 +1,14 @@
+{
+  "name": "delete-object-without-the-mandatory-revision-flag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "DeleteObjectRequest",
+  "note": "Expected-revision bit 0 is mandatory.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030000030000240001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000009000000000000002a00000000000000"
+}

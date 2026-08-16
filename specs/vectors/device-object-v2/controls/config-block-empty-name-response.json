@@ -1,0 +1,22 @@
+{
+  "name": "config-block-empty-name-response",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "GetConfig",
+    "value": 1025
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 56,
+    "requestId": 121
+  },
+  "boundary": "",
+  "note": "A zero length means the device advertises its factory default name.",
+  "payload": "0138000000050200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010401003800790000000138000000050200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

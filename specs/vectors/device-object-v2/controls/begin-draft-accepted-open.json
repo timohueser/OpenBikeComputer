@@ -1,0 +1,22 @@
+{
+  "name": "begin-draft-accepted-open",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "BeginDraft",
+    "value": 304
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 32,
+    "requestId": 60
+  },
+  "boundary": "",
+  "note": "Disposition 0 is a four-byte prefix plus 28 bytes; the parent stays InProgress and consumes no result slot.",
+  "payload": "00000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3010000000000000003000000",
+  "frame": "4f42435003003001010020003c00000000000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3010000000000000003000000"
+}

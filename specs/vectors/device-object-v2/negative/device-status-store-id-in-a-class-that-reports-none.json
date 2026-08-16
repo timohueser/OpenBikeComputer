@@ -1,0 +1,14 @@
+{
+  "name": "device-status-store-id-in-a-class-that-reports-none",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "GetDeviceStatusResponse",
+  "note": "The StoreId is zero unless the mount class is 3, 4, or 6.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f42435003000004010040000100000001000400020003000bc00123456789abcdef1032547698ba9c01000080510100000000000060000000000000b72600003c92000099164ebaabc2342fe08f6b10"
+}

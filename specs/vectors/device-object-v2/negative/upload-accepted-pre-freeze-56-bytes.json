@@ -1,0 +1,14 @@
+{
+  "name": "upload-accepted-pre-freeze-56-bytes",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadResponse",
+  "note": "The 56-byte pre-freeze twin MUST fail decode rather than decode short.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "truncated",
+    "detailValue": 6
+  },
+  "bytes": "4f42435003000001010038000100000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000009000000000000002900000000000000000000000000000000000400f0030000"
+}

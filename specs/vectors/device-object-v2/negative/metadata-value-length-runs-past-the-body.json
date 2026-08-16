@@ -1,0 +1,14 @@
+{
+  "name": "metadata-value-length-runs-past-the-body",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "encoded_field_bytes equals the exact sum of every 4 + value_length.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "01000100050001000180090002"
+}

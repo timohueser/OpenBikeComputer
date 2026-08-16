@@ -1,0 +1,22 @@
+{
+  "name": "query-operation-aborted",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryOperation",
+    "value": 512
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 52,
+    "requestId": 70
+  },
+  "boundary": "",
+  "note": "Aborted is a successful query answer carrying the retained text-free body, with both claim-status bits set.",
+  "payload": "030000000e0000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f424350030000020100340046000000030000000e0000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

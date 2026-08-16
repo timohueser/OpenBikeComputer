@@ -1,0 +1,22 @@
+{
+  "name": "start-upload-replace-route-at-revision",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 61,
+    "requestId": 12
+  },
+  "boundary": "",
+  "note": "Replace carries the repository's exact identity and expected revision.",
+  "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010109000000000000002900000000000000b80b00000000000085a9364601000100050001000180010004",
+  "frame": "4f4243500300000100003d000c000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010109000000000000002900000000000000b80b00000000000085a9364601000100050001000180010004"
+}

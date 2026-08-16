@@ -1,0 +1,14 @@
+{
+  "name": "stream-offset-plus-length-overflows",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "offset + length must not overflow the u64 space.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "payloadLength",
+    "detailValue": 4
+  },
+  "bytes": "01000000ffffffffffffffff020001000102"
+}

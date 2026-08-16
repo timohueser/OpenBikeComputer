@@ -1,0 +1,81 @@
+{
+  "name": "set-metadata-compare-and-swap-and-lost-result",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "SetMetadata's compare-and-swap, its lost result recovered by query, and the absence of any sidecar state.",
+  "eventCount": 8,
+  "events": [
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "A patch carrying retention, selected, and a display name.",
+      "record": "4f4243500300010300004a0050000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100010009000000000000002a00000000000000010080001e00030001800100030280010001038010004b6169736572737475686c206c6f6f70"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The catalog commit succeeds; the response is lost.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "QueryOperation recovers it.",
+      "record": "4f424350030000020000100051000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Committed, outcome metadataChanged, at the new revision.",
+      "record": "4f4243500300000201004800510000000200000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100030009000000000000002d00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The catalog projection carries the new facts — there is no sidecar to read.",
+      "record": "4f4243500300010200001c005200000001000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The entry now reports the patched name, retention, and selected flag.",
+      "record": "4f4243500300010201008200520000003c92000099164ebaabc2342fe08f6b10010001002d000000000000000000000000000000000000000000000009000000000000002d00000000000000b80b00000000000085a936460000320000000000010040002a000400018010004b6169736572737475686c206c6f6f70028001000303000100010400080000f1536500000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "A second patch at the stale revision is a compare-and-swap failure.",
+      "record": "4f424350030001030000310053000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a0000000000000001008000050001000280010000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "revisionConflict reporting the authoritative current revision.",
+      "record": "4f4243500300010303003000530000000b0000000100070004000000000000000000000000002d00000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

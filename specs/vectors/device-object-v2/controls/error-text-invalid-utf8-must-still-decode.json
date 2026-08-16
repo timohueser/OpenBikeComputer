@@ -1,0 +1,22 @@
+{
+  "name": "error-text-invalid-utf8-must-still-decode",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 52,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A receiver MUST NOT reject a frame because its diagnostic text is malformed; it renders it lossily.",
+  "payload": "160000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000400fffefd80",
+  "frame": "4f4243500300020103003400c8000000160000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000400fffefd80"
+}
