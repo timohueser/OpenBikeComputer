@@ -1497,17 +1497,17 @@
     {
       "name": "checkpoint-negative",
       "file": "storage/checkpoint-negative.json",
-      "sha256": "8437bcc798edd6f35c574e424e934102aee27d12fe2d116b8fb2bf5931aab6b6"
+      "sha256": "9af7125f644fbbd242cdb817ae39c9f759a58a939c1b7a61ed0200351670ed80"
     },
     {
       "name": "checkpoint-populated",
       "file": "storage/checkpoint-populated.json",
-      "sha256": "84a4c66326557dea9c719b7108d824dddf996ef283eed4e192902c994e47b894"
+      "sha256": "33835b2aba3c4482c8a349916631baafec8f291acfa01edd078de57b308b9a82"
     },
     {
       "name": "crash-cut-transcripts",
       "file": "storage/crash-cut-transcripts.json",
-      "sha256": "0283a6655ec996163bfd5dcd06bda768e6966ac7ddba4d14aa3455f690abe2d3"
+      "sha256": "bb2196ce9715effbb6b5f19b56da3285eccf4262c150b0e76fdbfa13fceac9da"
     },
     {
       "name": "gate-sector",
@@ -1522,22 +1522,22 @@
     {
       "name": "journal-negative",
       "file": "storage/journal-negative.json",
-      "sha256": "34874fa9dd633b61799f0b01a81a64934fc3ff8e5b6b284c353528d7c9b0e430"
+      "sha256": "227383ab87219752148c05b43d430e441d2b2623b805aec75cf95b02323b2cb2"
     },
     {
       "name": "journal-record-kinds",
       "file": "storage/journal-record-kinds.json",
-      "sha256": "5f9096891c2ee1dc891066b8f155e2a8e4831407ad604d63ba1c0b27f1d5e8b1"
+      "sha256": "ebc02865f4cd2b8083dc0ace6eae953329a9bdeff7f8843e56a4f215fcf48302"
     },
     {
       "name": "journal-removal-keys",
       "file": "storage/journal-removal-keys.json",
-      "sha256": "81cfd79370bf85fb576ac56b83b0a14a3a57f9b7a6aabf3a30ad95793795cd5b"
+      "sha256": "1037a3327c48996bd124e7ae9aaaacd4e740e8040cbd1452d7ff3e7a227ad9b2"
     },
     {
       "name": "resolution-generation",
       "file": "storage/resolution-generation.json",
-      "sha256": "f583c3fd24bc07aa36e1f14a3070198e880b5b1d6f15710c59eddaa16ecd1613"
+      "sha256": "89cdae248fd89c898b30c6155e08ae75d6ec9e98c7c99056b1b3a35995ea0ca4"
     },
     {
       "name": "ride-slot",
@@ -1548,6 +1548,16 @@
       "name": "slot-strides",
       "file": "storage/slot-strides.json",
       "sha256": "da8beb1b3028c1ec57ff0e080af9f4b79f0e2e77995477f71574019f46bbfdc1"
+    },
+    {
+      "name": "storage-claim-tags",
+      "file": "storage/storage-claim-tags.json",
+      "sha256": "a177180cf2b696437d411e63418d1a734f9b9f168c118d5c9c7ccb5aa624f8d8"
+    },
+    {
+      "name": "terminal-result",
+      "file": "storage/terminal-result.json",
+      "sha256": "f52219b65b7a7fd9247935333263401dfee9c0980860c6d08a9c6ac22c4af379"
     },
     {
       "name": "work-slot",

@@ -199,6 +199,13 @@ impl CheckpointHeader {
         if u32_at(bytes, 68) as usize != CHECKPOINT_BODY_LEN {
             return Err(err(Reason::Overflow));
         }
+        // §6.3 maps physical slot `i` onto `through_sequence + i + 1`, so a header whose sequence
+        // cannot carry a full journal of successors is not a header this format can replay. §5.2:
+        // "Sequences and generation IDs never wrap"; refusing here is what keeps every later
+        // addition in this module total rather than merely unlikely to overflow.
+        if header.through_sequence > u64::MAX - super::limits::JOURNAL_SLOTS as u64 {
+            return Err(err(Reason::Overflow));
+        }
         if !is_zero(bytes, 72, 32) || !is_zero(bytes, 106, 22) {
             return Err(err(Reason::Reserved));
         }
@@ -499,5 +506,34 @@ mod tests {
         header.active_count = 0;
         header.result_start = 64;
         assert_eq!(CheckpointHeader::decode(&header.encode()).unwrap_err().reason, Reason::Count);
+    }
+
+    /// §5.2's "sequences never wrap", enforced where it can still be enforced: a header whose
+    /// through-sequence cannot carry a full journal of successors is refused, so every later
+    /// addition of a slot index to it is total.
+    #[test]
+    fn a_through_sequence_that_cannot_carry_a_journal_is_rejected() {
+        let mut header = CheckpointHeader {
+            store: StoreId::new([0x3C; 16]),
+            epoch: 1,
+            through_sequence: u64::MAX - super::super::limits::JOURNAL_SLOTS as u64,
+            next_generation: 0,
+            repository_count: 0,
+            head_count: 0,
+            active_count: 0,
+            draft_parent_count: 0,
+            draft_part_count: 0,
+            retained_count: 0,
+            result_start: 0,
+            result_count: 0,
+            handoff_count: 0,
+            flags: 0,
+            terminal_counter: 0,
+            weather_count: 0,
+            ride_count: 0,
+        };
+        assert_eq!(CheckpointHeader::decode(&header.encode()).unwrap().through_sequence, header.through_sequence);
+        header.through_sequence += 1;
+        assert_eq!(CheckpointHeader::decode(&header.encode()).unwrap_err().reason, Reason::Overflow);
     }
 }

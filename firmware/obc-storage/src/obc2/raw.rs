@@ -82,6 +82,15 @@ pub(crate) fn require_zero(
     }
 }
 
+/// The §1 CRC-32/IEEE of `bytes`.
+///
+/// One implementation, shared with the DFU container and the wire contract: reflected polynomial
+/// `0xEDB88320`, initial value and xor-out `0xFFFF_FFFF`. §7's finalized prefix CRC is this CRC over
+/// the payload's first `durable_offset` bytes.
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
+    obc_crc::crc32(bytes)
+}
+
 /// The §1 CRC-32/IEEE of a record whose own CRC field is inside the checksummed range: "A CRC field is
 /// treated as zero while its containing record is checksummed."
 ///

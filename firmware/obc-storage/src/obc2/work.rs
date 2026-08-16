@@ -24,7 +24,7 @@ use super::error::{DecodeError, Reason, Record, Result};
 use super::gate::{BodyBinding, Gate, MAGIC_RIDE, MAGIC_WORK};
 use super::limits::{SLOT_STRIDE, SMALL_BODY_CRC_OFFSET, SMALL_BODY_LEN, SMALL_GATE_OFFSET};
 use super::raw::{
-    bytes16_at, bytes32_at, crc32_with_hole, i64_at, is_zero, put_bytes, put_i64, put_u16, put_u32, put_u64,
+    bytes16_at, bytes32_at, crc32, crc32_with_hole, i64_at, is_zero, put_bytes, put_i64, put_u16, put_u32, put_u64,
     require_zero, u16_at, u32_at, u64_at,
 };
 
@@ -129,11 +129,19 @@ impl WorkRecord {
         out
     }
 
-    /// Encodes the complete 16,384-byte slot: body, gate, and the pad to the next stride.
-    pub fn encode_slot(&self, slot: u16) -> [u8; SLOT_STRIDE] {
-        let mut out = [0u8; SLOT_STRIDE];
+    /// Writes the complete 16,384-byte slot into `out`: body, gate, and the pad to the next stride.
+    ///
+    /// The in-place form is the one production code uses. A 16 KiB array returned by value is a
+    /// 16 KiB stack temporary at every call site, and the board's task stacks are measured in tens
+    /// of kilobytes. [`encode_slot`](Self::encode_slot) is the same bytes for a host that does not
+    /// care.
+    pub fn encode_slot_into(&self, out: &mut [u8], slot: u16) -> Result<()> {
+        if out.len() != SLOT_STRIDE {
+            return Err(DecodeError::new(Record::Work, Reason::Length));
+        }
+        out.fill(0);
         let body = self.encode_body();
-        put_bytes(&mut out, 0, &body);
+        put_bytes(out, 0, &body);
         let gate = Gate {
             magic: MAGIC_WORK,
             slot,
@@ -141,7 +149,15 @@ impl WorkRecord {
             sequence: u64::from(self.sequence),
             body_crc: u32_at(&body, SMALL_BODY_CRC_OFFSET),
         };
-        put_bytes(&mut out, SMALL_GATE_OFFSET, &gate.encode());
+        put_bytes(out, SMALL_GATE_OFFSET, &gate.encode());
+        Ok(())
+    }
+
+    /// The same slot, returned by value. Host-only: see [`encode_slot_into`](Self::encode_slot_into).
+    #[cfg(any(test, feature = "std"))]
+    pub fn encode_slot(&self, slot: u16) -> [u8; SLOT_STRIDE] {
+        let mut out = [0u8; SLOT_STRIDE];
+        self.encode_slot_into(&mut out, slot).expect("a stride-sized buffer");
         out
     }
 
@@ -328,11 +344,19 @@ impl RideRecord {
         out
     }
 
-    /// Encodes the complete 16,384-byte slot.
-    pub fn encode_slot(&self, slot: u16) -> [u8; SLOT_STRIDE] {
-        let mut out = [0u8; SLOT_STRIDE];
+    /// Writes the complete 16,384-byte slot into `out`: body, gate, and the pad to the next stride.
+    ///
+    /// The in-place form is the one production code uses. A 16 KiB array returned by value is a
+    /// 16 KiB stack temporary at every call site, and the board's task stacks are measured in tens
+    /// of kilobytes. [`encode_slot`](Self::encode_slot) is the same bytes for a host that does not
+    /// care.
+    pub fn encode_slot_into(&self, out: &mut [u8], slot: u16) -> Result<()> {
+        if out.len() != SLOT_STRIDE {
+            return Err(DecodeError::new(Record::RideSlot, Reason::Length));
+        }
+        out.fill(0);
         let body = self.encode_body();
-        put_bytes(&mut out, 0, &body);
+        put_bytes(out, 0, &body);
         let gate = Gate {
             magic: MAGIC_RIDE,
             slot,
@@ -340,7 +364,15 @@ impl RideRecord {
             sequence: u64::from(self.sequence),
             body_crc: u32_at(&body, SMALL_BODY_CRC_OFFSET),
         };
-        put_bytes(&mut out, SMALL_GATE_OFFSET, &gate.encode());
+        put_bytes(out, SMALL_GATE_OFFSET, &gate.encode());
+        Ok(())
+    }
+
+    /// The same slot, returned by value. Host-only: see [`encode_slot_into`](Self::encode_slot_into).
+    #[cfg(any(test, feature = "std"))]
+    pub fn encode_slot(&self, slot: u16) -> [u8; SLOT_STRIDE] {
+        let mut out = [0u8; SLOT_STRIDE];
+        self.encode_slot_into(&mut out, slot).expect("a stride-sized buffer");
         out
     }
 
@@ -451,6 +483,125 @@ pub fn select_by_reachable_sequence<T: Copy>(
     best
 }
 
+/// What §7 recovery decided about one generation's durable work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkRecovery {
+    /// No slot records a reachable offset: "the payload is truncated to zero and work restarts at
+    /// offset zero under the same GenerationId, which is the same state `BeginWork` leaves behind".
+    /// It is also what the restart-only profile recovers for every claimed unsealed generation,
+    /// which writes no streaming slot at all.
+    RestartAtZero,
+    /// Resume from this slot's durable offset. Its prefix CRC has been verified against the payload.
+    Resume(WorkRecord),
+    /// "If a qualifying slot's prefix CRC mismatches, the work is discarded and its operation
+    /// terminally aborted; nothing is ever resumed from an unverifiable prefix."
+    DiscardAndAbort,
+}
+
+/// §7's selection and verification, as one function.
+///
+/// `payload` is the generation's bytes as they are now. The selection rule and the verification are
+/// deliberately one step: §7 makes the rewind mandatory ("a durable offset above the observed
+/// length is not merely stale, it is unreachable") and then requires the prefix to be *proved*
+/// before a byte is accepted after it. A caller that selected a slot and skipped the CRC would
+/// resume from a prefix the card no longer holds.
+pub fn recover_work(slots: &[Option<WorkRecord>], payload: &[u8]) -> WorkRecovery {
+    let observed = payload.len() as u64;
+    let mut best: Option<WorkRecord> = None;
+    for record in slots.iter().flatten() {
+        if !record.offset_is_reachable(observed) {
+            continue;
+        }
+        match best {
+            Some(held) if held.sequence >= record.sequence => {}
+            _ => best = Some(*record),
+        }
+    }
+    let Some(record) = best else { return WorkRecovery::RestartAtZero };
+    let offset = record.durable_offset as usize;
+    if crc32(&payload[..offset]) == record.prefix_crc {
+        WorkRecovery::Resume(record)
+    } else {
+        WorkRecovery::DiscardAndAbort
+    }
+}
+
+/// What §7.1 recovery decided about the one active ride.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RideRecovery {
+    /// The checkpoint says no ride exists, so the RIDE file cannot invent one: "A RIDE file alone
+    /// cannot invent an active ride."
+    NoRide,
+    /// "A recording state with no matching slot is the initial durable offset zero; recovery
+    /// recreates or truncates the GEN payload to zero."
+    RestartAtZero,
+    /// Resume from this slot. Losing the newest slot to a torn page costs at most one checkpoint
+    /// interval of samples and elapsed time, which §1.1 accepts for a ride journal.
+    Resume(RideRecord),
+    /// Two valid slots claim one sequence with differing bodies (§7.1).
+    Corrupt,
+}
+
+/// The identity a `RIDE.ACT` slot must match to be this ride's evidence (§7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RideIdentity {
+    /// The store.
+    pub store: StoreId,
+    /// The local publication operation the initial domain record fixed.
+    pub operation: OperationId,
+    /// The prospective ride generation.
+    pub generation: GenerationId,
+    /// The ride-recovery revision.
+    pub recovery_revision: u64,
+}
+
+/// §7.1's selection, over the 16-slot ring.
+///
+/// `slots[i]` is `Some` only when ring position `i` validated completely — which already proves
+/// `sequence mod 16 == i`, since [`RideRecord::validate_slot`] makes the ring position part of
+/// validity. What is left is the identity match, the greatest reachable sequence, and the
+/// equal-sequence conflict rule.
+pub fn recover_ride(
+    slots: &[Option<RideRecord>],
+    identity: Option<RideIdentity>,
+    observed_payload_len: u64,
+) -> RideRecovery {
+    // "A RIDE file alone cannot invent an active ride": without ActiveRideState there is no ride,
+    // however many valid slots the file holds.
+    let Some(identity) = identity else { return RideRecovery::NoRide };
+
+    let mut best: Option<RideRecord> = None;
+    for record in slots.iter().flatten() {
+        let matches = record.store == identity.store
+            && record.operation == identity.operation
+            && record.generation == identity.generation
+            && record.recovery_revision == identity.recovery_revision;
+        if !matches {
+            continue;
+        }
+        // "equal-sequence differing bodies are corruption" — the ring maps one sequence onto one
+        // position, so two valid slots at one sequence can only differ.
+        if let Some(held) = best {
+            if held.sequence == record.sequence && held != *record {
+                return RideRecovery::Corrupt;
+            }
+        }
+        // §7.1 applies §7's rewind with the slot count changed: a slot recording an offset the
+        // payload cannot reach "is skipped as if invalid".
+        if !record.offset_is_reachable(observed_payload_len) {
+            continue;
+        }
+        match best {
+            Some(held) if held.sequence >= record.sequence => {}
+            _ => best = Some(*record),
+        }
+    }
+    match best {
+        Some(record) => RideRecovery::Resume(record),
+        None => RideRecovery::RestartAtZero,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::samples::{ride_slot as ride, work};
@@ -518,6 +669,99 @@ mod tests {
         assert_eq!(select_by_reachable_sequence(&candidates, 8_192).unwrap().2, 'a');
         // Neither is reachable: work restarts at offset zero, which is not a fault.
         assert!(select_by_reachable_sequence(&candidates, 0).is_none());
+    }
+
+    /// §7's prefix clause: a qualifying slot is resumed only after its finalized CRC is proved
+    /// against the bytes the payload actually holds.
+    #[test]
+    fn work_recovery_verifies_the_prefix_before_resuming() {
+        let payload = std::vec![0xABu8; 4_096];
+        let mut slot = work(1, 1_024, WorkState::Streaming);
+        slot.prefix_crc = super::super::raw::crc32(&payload[..1_024]);
+        assert_eq!(recover_work(&[Some(slot)], &payload), WorkRecovery::Resume(slot));
+
+        // "If a qualifying slot's prefix CRC mismatches, the work is discarded and its operation
+        // terminally aborted; nothing is ever resumed from an unverifiable prefix."
+        let mut mismatched = slot;
+        mismatched.prefix_crc ^= 1;
+        assert_eq!(recover_work(&[Some(mismatched)], &payload), WorkRecovery::DiscardAndAbort);
+    }
+
+    /// The restart-only profile writes no streaming slot at all, so its claimed generation recovers
+    /// as restartable work at offset zero — the same outcome as a pair whose offsets are all
+    /// unreachable.
+    #[test]
+    fn work_recovery_restarts_at_zero_without_a_reachable_slot() {
+        let payload = std::vec![0u8; 1_024];
+        assert_eq!(recover_work(&[None, None], &payload), WorkRecovery::RestartAtZero);
+        let unreachable = work(2, 8_192, WorkState::Streaming);
+        assert_eq!(recover_work(&[Some(unreachable)], &payload), WorkRecovery::RestartAtZero);
+    }
+
+    /// The newest reachable slot wins even when a newer one records an unreachable offset — §7's
+    /// mandatory rewind, now with the CRC proof attached.
+    #[test]
+    fn work_recovery_rewinds_to_the_newest_reachable_slot() {
+        let payload = std::vec![0x5Au8; 2_048];
+        let mut older = work(1, 1_024, WorkState::Streaming);
+        older.prefix_crc = super::super::raw::crc32(&payload[..1_024]);
+        let newer = work(2, 8_192, WorkState::Streaming);
+        assert_eq!(recover_work(&[Some(older), Some(newer)], &payload), WorkRecovery::Resume(older));
+    }
+
+    fn identity() -> RideIdentity {
+        let sample = ride(0, 0);
+        RideIdentity {
+            store: sample.store,
+            operation: sample.operation,
+            generation: sample.generation,
+            recovery_revision: sample.recovery_revision,
+        }
+    }
+
+    /// §7.1: the ring's greatest matching sequence wins, and a torn newest page costs at most one
+    /// checkpoint interval because recovery falls back to the newest valid earlier slot.
+    #[test]
+    fn ride_recovery_selects_the_greatest_matching_sequence_and_falls_back() {
+        let slots = [Some(ride(0, 1_024)), Some(ride(1, 2_048)), None];
+        assert_eq!(recover_ride(&slots, Some(identity()), 4_096), RideRecovery::Resume(ride(1, 2_048)));
+
+        // The newest slot's page was torn, so it is not a valid slot at all: the previous one is
+        // authoritative and one interval of samples is lost.
+        let torn = [Some(ride(0, 1_024)), None, None];
+        assert_eq!(recover_ride(&torn, Some(identity()), 4_096), RideRecovery::Resume(ride(0, 1_024)));
+    }
+
+    /// "A RIDE file alone cannot invent an active ride."
+    #[test]
+    fn ride_slots_without_active_ride_state_are_not_a_ride() {
+        let slots = [Some(ride(0, 1_024))];
+        assert_eq!(recover_ride(&slots, None, 4_096), RideRecovery::NoRide);
+    }
+
+    /// A slot whose identity does not match the checkpoint's ActiveRideState is another ride's
+    /// evidence, not this one's.
+    #[test]
+    fn ride_slots_from_another_ride_are_ignored() {
+        let mut foreign = ride(3, 2_048);
+        foreign.generation = GenerationId::new(999);
+        assert_eq!(recover_ride(&[Some(foreign)], Some(identity()), 4_096), RideRecovery::RestartAtZero);
+    }
+
+    /// §7.1 applies §7's rewind with the slot count changed.
+    #[test]
+    fn ride_recovery_skips_an_unreachable_offset_and_restarts_when_none_qualifies() {
+        let slots = [Some(ride(0, 1_024)), Some(ride(1, 12_288)), None];
+        assert_eq!(recover_ride(&slots, Some(identity()), 4_096), RideRecovery::Resume(ride(0, 1_024)));
+        assert_eq!(recover_ride(&slots, Some(identity()), 0), RideRecovery::RestartAtZero);
+    }
+
+    /// "equal-sequence differing bodies are corruption."
+    #[test]
+    fn two_differing_ride_slots_at_one_sequence_are_corruption() {
+        let mut other = ride(0, 2_048);
+        other.sample_count += 1;
+        assert_eq!(recover_ride(&[Some(ride(0, 1_024)), Some(other)], Some(identity()), 4_096), RideRecovery::Corrupt);
     }
 
     #[test]

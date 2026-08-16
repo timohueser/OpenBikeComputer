@@ -31,6 +31,8 @@ pub struct CheckpointObservation {
     pub epoch: u64,
     /// Its through-sequence.
     pub through_sequence: u64,
+    /// Its next-`GenerationId` cursor, which §5.2 also forbids wrapping.
+    pub next_generation: u64,
     /// Its body CRC, which is what distinguishes "the same checkpoint" from "a different one".
     pub body_crc: u32,
 }
@@ -65,6 +67,16 @@ pub enum FailClosed {
     },
 }
 
+/// Why a store mounts read-only without being corrupt (§5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnly {
+    /// "Sequences and generation IDs never wrap; reaching `u64::MAX` mounts the store read-only
+    /// until explicit reset." The journal sequence space is exhausted.
+    SequenceSpaceExhausted,
+    /// The same, for the `GenerationId` cursor.
+    GenerationSpaceExhausted,
+}
+
 /// What recovery decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -79,6 +91,17 @@ pub enum Decision {
         /// How many leading journal slots form the contiguous valid suffix.
         replay: usize,
     },
+    /// Mount and replay exactly as [`Mount`](Decision::Mount) says, but admit no mutation: the
+    /// store is intact and readable and has run out of a monotonic space §5.2 forbids wrapping.
+    /// This is not corruption and nothing is repaired; only an explicit reset clears it.
+    MountReadOnly {
+        /// Which checkpoint file, `0` or `1`.
+        checkpoint: usize,
+        /// How many leading journal slots form the contiguous valid suffix.
+        replay: usize,
+        /// Which space ran out.
+        reason: ReadOnly,
+    },
     /// Mount recovery-failed and read-only, preserving all evidence.
     Fail(FailClosed),
 }
@@ -90,7 +113,9 @@ pub enum Decision {
 /// invalid record contributes nothing at all: §6.3's fail-closed rules are about *valid* records,
 /// because a torn one proves only that a write was interrupted.
 pub fn choose(checkpoints: &[Option<CheckpointObservation>; 2], slots: &[Option<SlotObservation>]) -> Decision {
-    debug_assert!(slots.len() <= JOURNAL_SLOTS);
+    // A real bound, not an assertion: `COMMIT.JNL` has 256 slots and nothing above that index is a
+    // journal record, so a longer input is simply not evidence about this store.
+    let slots = &slots[..slots.len().min(JOURNAL_SLOTS)];
 
     // "Recovery chooses the structurally valid checkpoint with the greatest `through_sequence`;
     // differing valid checkpoints at the same sequence are corruption."
@@ -98,11 +123,15 @@ pub fn choose(checkpoints: &[Option<CheckpointObservation>; 2], slots: &[Option<
         (None, None) => return Decision::NoCheckpoint,
         (Some(a), None) => (0usize, a),
         (None, Some(b)) => (1usize, b),
+        // Two valid checkpoints must belong to the same store before their sequences can be
+        // compared at all: a card carrying a foreign checkpoint is not a store whose newer half
+        // this one gets to pick.
+        (Some(a), Some(b)) if a.store != b.store => return Decision::Fail(FailClosed::AmbiguousCheckpoint),
         (Some(a), Some(b)) => match a.through_sequence.cmp(&b.through_sequence) {
             core::cmp::Ordering::Greater => (0, a),
             core::cmp::Ordering::Less => (1, b),
             core::cmp::Ordering::Equal => {
-                if a.body_crc != b.body_crc || a.epoch != b.epoch || a.store != b.store {
+                if a.body_crc != b.body_crc || a.epoch != b.epoch {
                     return Decision::Fail(FailClosed::AmbiguousCheckpoint);
                 }
                 (0, a)
@@ -113,14 +142,14 @@ pub fn choose(checkpoints: &[Option<CheckpointObservation>; 2], slots: &[Option<
 
     // "It replays only journal records whose StoreId and epoch match and whose sequences begin
     // exactly at `through_sequence + 1` ... physical journal slot `i` must carry sequence
-    // `checkpoint through_sequence + i + 1`; another mapping is invalid even when its CRCs pass."
+    // `checkpoint through_sequence + i + 1`; another mapping is not replayable even when its CRCs
+    // pass."
     let mut replay = 0usize;
     while replay < slots.len() {
+        let Some(expected) = checkpoint.through_sequence.checked_add(replay as u64 + 1) else { break };
         match slots[replay] {
             Some(slot)
-                if slot.store == checkpoint.store
-                    && slot.epoch == checkpoint.epoch
-                    && slot.sequence == checkpoint.through_sequence + replay as u64 + 1 =>
+                if slot.store == checkpoint.store && slot.epoch == checkpoint.epoch && slot.sequence == expected =>
             {
                 replay += 1;
             }
@@ -129,7 +158,9 @@ pub fn choose(checkpoints: &[Option<CheckpointObservation>; 2], slots: &[Option<
     }
 
     // "Recovery then scans all 256 slots before mounting, because stopping is not by itself
-    // evidence that nothing later was committed."
+    // evidence that nothing later was committed." A record at the wrong slot is *not* skipped
+    // here: its gate and body prove it was written, so a same-epoch record beyond the stop is
+    // evidence of loss whether or not its sequence maps to its slot.
     for (position, slot) in slots.iter().enumerate() {
         let Some(slot) = slot else { continue };
         if slot.store != checkpoint.store {
@@ -141,6 +172,15 @@ pub fn choose(checkpoints: &[Option<CheckpointObservation>; 2], slots: &[Option<
         if slot.epoch == checkpoint.epoch && position >= replay {
             return Decision::Fail(FailClosed::RecordBeyondStop { slot: position as u16 });
         }
+    }
+
+    // §5.2: a store that has run out of a monotonic space is intact and readable, and admits no
+    // mutation until an explicit reset. It is not a fault and nothing about it is repaired.
+    if checkpoint.through_sequence == u64::MAX {
+        return Decision::MountReadOnly { checkpoint: index, replay, reason: ReadOnly::SequenceSpaceExhausted };
+    }
+    if checkpoint.next_generation == u64::MAX {
+        return Decision::MountReadOnly { checkpoint: index, replay, reason: ReadOnly::GenerationSpaceExhausted };
     }
 
     Decision::Mount { checkpoint: index, replay }
@@ -172,7 +212,13 @@ mod tests {
     const OTHER: StoreId = StoreId::new([0x11; 16]);
 
     fn checkpoint(epoch: u64, through: u64) -> CheckpointObservation {
-        CheckpointObservation { store: STORE, epoch, through_sequence: through, body_crc: 0xABCD_1234 }
+        CheckpointObservation {
+            store: STORE,
+            epoch,
+            through_sequence: through,
+            next_generation: 0,
+            body_crc: 0xABCD_1234,
+        }
     }
 
     fn slot(epoch: u64, sequence: u64) -> Option<SlotObservation> {
@@ -281,5 +327,58 @@ mod tests {
     fn recovery_compacts_when_the_headroom_is_gone() {
         assert!(!recovery_must_compact(191));
         assert!(recovery_must_compact(193));
+    }
+
+    /// The boundary itself: 192 valid records is the compaction trigger and is also exactly the
+    /// point where the recovery suffix's 64-slot headroom is consumed.
+    #[test]
+    fn the_192_boundary_is_the_same_slot_for_both_triggers() {
+        assert!(!compaction_required(JOURNAL_SLOTS - 65));
+        assert!(compaction_required(192));
+        assert!(!recovery_must_compact(192));
+        assert!(recovery_must_compact(JOURNAL_SLOTS - 63));
+        assert_eq!(JOURNAL_SLOTS - 192, 64);
+    }
+
+    /// Two valid checkpoints from different stores are not two halves of one alternation, whatever
+    /// their sequences say.
+    #[test]
+    fn checkpoints_from_two_stores_are_corruption_at_any_sequence() {
+        let mut foreign = checkpoint(1, 50);
+        foreign.store = OTHER;
+        assert_eq!(
+            choose(&[Some(checkpoint(1, 10)), Some(foreign)], &[None; 4]),
+            Decision::Fail(FailClosed::AmbiguousCheckpoint)
+        );
+    }
+
+    /// §5.2: an exhausted monotonic space is a read-only mount, not a fault — the store is intact,
+    /// replay is unchanged, and only an explicit reset clears it.
+    #[test]
+    fn an_exhausted_sequence_or_generation_space_mounts_read_only() {
+        let mut exhausted = checkpoint(1, u64::MAX);
+        assert_eq!(
+            choose(&[Some(exhausted), None], &[None; 4]),
+            Decision::MountReadOnly { checkpoint: 0, replay: 0, reason: ReadOnly::SequenceSpaceExhausted }
+        );
+
+        exhausted = checkpoint(1, 10);
+        exhausted.next_generation = u64::MAX;
+        assert_eq!(
+            choose(&[Some(exhausted), None], &[None; 4]),
+            Decision::MountReadOnly { checkpoint: 0, replay: 0, reason: ReadOnly::GenerationSpaceExhausted }
+        );
+    }
+
+    /// More observations than the journal has slots are not evidence about this store, and must not
+    /// reach an index that does not exist.
+    #[test]
+    fn observations_past_the_journal_are_ignored_rather_than_asserted_away() {
+        let checkpoints = [Some(checkpoint(1, 0)), None];
+        let mut slots: Vec<Option<SlotObservation>> = vec![None; JOURNAL_SLOTS + 8];
+        slots[0] = slot(1, 1);
+        // A "record" past slot 255 is not a journal record at all and changes nothing.
+        slots[JOURNAL_SLOTS + 3] = slot(1, 900);
+        assert_eq!(choose(&checkpoints, &slots), Decision::Mount { checkpoint: 0, replay: 1 });
     }
 }
