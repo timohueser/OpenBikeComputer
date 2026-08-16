@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "Outcome 0: the session was detached.",
+  "body": {
+    "outcome": 0
+  },
   "payload": "00",
   "frame": "4f42435003002001010001003200000000"
 }

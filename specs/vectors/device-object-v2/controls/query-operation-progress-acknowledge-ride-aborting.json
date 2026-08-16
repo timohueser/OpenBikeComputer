@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "AcknowledgeRideImported names the ride it acknowledges.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 1,
+    "progress.phase": 7,
+    "progress.flags": 4,
+    "progress.subjectKind": 3,
+    "progress.logicalObjectId": "5",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000010704000300000005000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010704000300000005000000000000000000000000000000"
 }

@@ -17,6 +17,20 @@
   },
   "boundary": "",
   "note": "The 64-byte status, pinned once per mount class; the StoreId field is zero except in classes 3, 4, and 6.",
+  "body": {
+    "firmwareMajor": 1,
+    "firmwareMinor": 4,
+    "firmwarePatch": 2,
+    "hardwareRevision": 3,
+    "deviceSerial": "0bc00123456789abcdef1032547698ba",
+    "bootCount": 412,
+    "uptimeSeconds": "86400",
+    "stackHighWater": 24576,
+    "statusFlags": 1,
+    "mountClass": 3,
+    "firmwareBuild": 9911,
+    "storeId": "3c92000099164ebaabc2342fe08f6b10"
+  },
   "payload": "01000400020003000bc00123456789abcdef1032547698ba9c01000080510100000000000060000001000300b72600003c92000099164ebaabc2342fe08f6b10",
   "frame": "4f42435003000004010040007800000001000400020003000bc00123456789abcdef1032547698ba9c01000080510100000000000060000001000300b72600003c92000099164ebaabc2342fe08f6b10"
 }

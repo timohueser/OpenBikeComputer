@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "Aborting has no attachment.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 2,
+    "progress.phase": 7,
+    "progress.flags": 1,
+    "progress.subjectKind": 2,
+    "progress.logicalObjectId": "0",
+    "progress.durableOffset": "32768"
+  },
   "payload": "01000000020701000200000000000000000000000080000000000000",
   "frame": "4f4243500300000201001c004600000001000000020701000200000000000000000000000080000000000000"
 }

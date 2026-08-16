@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "Registered so its number stays burned; reserved and never emitted in v3.0. Decode-only.",
+  "body": {
+    "category": 5,
+    "detailNamespace": 0,
+    "detail": 10,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "050000000a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c8000000050000000a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

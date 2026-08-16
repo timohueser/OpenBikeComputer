@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A compare-and-swap failure reports the authoritative current revision.",
+  "body": {
+    "category": 11,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 7,
+    "owner": 0,
+    "presence": 4,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "43",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "0b0000000100070004000000000000000000000000002b00000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c80000000b0000000100070004000000000000000000000000002b00000000000000000000000000000000000000000000000000"
 }

@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "Draft-open has offset zero and no attached session.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 1,
+    "progress.phase": 6,
+    "progress.flags": 4,
+    "progress.subjectKind": 6,
+    "progress.logicalObjectId": "2",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000010604000600000002000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010604000600000002000000000000000000000000000000"
 }

@@ -1,0 +1,14 @@
+{
+  "name": "metadata-weather-put-valid-until-equal-to-issued",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "The required valid-until time is later than the earliest issued time, so equality is refused too.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030000010000740001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a104000000000000000000000000000000000000008403000000000000cdab0000040001003c000600018008002a000000000000000280040000389c1c0380040040ed96040480040050c300000580080000f15365000000000680080000f1536500000000"
+}

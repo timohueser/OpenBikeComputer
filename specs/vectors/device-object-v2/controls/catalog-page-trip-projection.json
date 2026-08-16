@@ -17,6 +17,28 @@
   },
   "boundary": "",
   "note": "One catalog projection per registered kind.",
+  "body": {
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "objectKind": 2,
+    "entryCount": 1,
+    "revision": "12",
+    "nextCursor.revision": "0",
+    "nextCursor.nextEntryIndex": 0,
+    "nextCursor.kindCode": 0,
+    "nextCursor.crc32": 0,
+    "entries[0].logicalObjectId": "1",
+    "entries[0].revision": "12",
+    "entries[0].length": "4096",
+    "entries[0].crc32": 4660,
+    "entries[0].metadata.schemaId": 2,
+    "entries[0].metadata.schemaVersion": 64,
+    "entries[0].metadata.encodedFieldBytes": 25,
+    "entries[0].metadata.fieldCount": 2,
+    "entries[0].metadata.field[0].tag": 32769,
+    "entries[0].metadata.field[0].value": "416c70696e652063726f7373696e67",
+    "entries[0].metadata.field[1].tag": 32770,
+    "entries[0].metadata.field[1].value": "0400"
+  },
   "payload": "3c92000099164ebaabc2342fe08f6b10020001000c000000000000000000000000000000000000000000000001000000000000000c000000000000000010000000000000341200000000210000000000020040001900020001800f00416c70696e652063726f7373696e67028002000400",
   "frame": "4f4243500300010201007100540000003c92000099164ebaabc2342fe08f6b10020001000c000000000000000000000000000000000000000000000001000000000000000c000000000000000010000000000000341200000000210000000000020040001900020001800f00416c70696e652063726f7373696e67028002000400"
 }

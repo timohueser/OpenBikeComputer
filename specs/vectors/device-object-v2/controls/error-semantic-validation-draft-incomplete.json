@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "Missing or nonsealed children return a retryable domain-state error and create no session.",
+  "body": {
+    "category": 14,
+    "detailNamespace": 6,
+    "detail": 7,
+    "guidance": 1,
+    "owner": 0,
+    "presence": 32,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "0e0006000700010020000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300320103003000c80000000e0006000700010020000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

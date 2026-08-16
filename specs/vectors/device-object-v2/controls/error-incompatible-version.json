@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A legacy peer that reaches a parseable frame gets an explicit incompatible-version result.",
+  "body": {
+    "category": 1,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 9,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 26,
+    "text": "77697265206d616a6f722032206973206e6f7420736572766564"
+  },
   "payload": "010000000100090000000000000000000000000000000000000000000000000000000000000000000000000000001a0077697265206d616a6f722032206973206e6f7420736572766564",
   "frame": "4f4243500300010003004a00c8000000010000000100090000000000000000000000000000000000000000000000000000000000000000000000000000001a0077697265206d616a6f722032206973206e6f7420736572766564"
 }

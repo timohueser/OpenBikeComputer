@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "InstallUpdate occupies phases 3, 4, and 5 only and never enters aborting.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 1,
+    "progress.phase": 3,
+    "progress.flags": 4,
+    "progress.subjectKind": 7,
+    "progress.logicalObjectId": "3",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000010304000700000003000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010304000700000003000000000000000000000000000000"
 }

@@ -17,6 +17,16 @@
   },
   "boundary": "",
   "note": "Resolve and lease happen before this response; the accepted start offset always equals the requested one.",
+  "body": {
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "sessionId": 33,
+    "logicalObjectId": "9",
+    "pinnedRevision": "42",
+    "totalLength": "3000",
+    "wholeSourceCrc32": 1177987461,
+    "acceptedStartOffset": "0",
+    "maxStreamPayload": 1008
+  },
   "payload": "3c92000099164ebaabc2342fe08f6b102100000009000000000000002a00000000000000b80b00000000000085a936460000000000000000f0030000",
   "frame": "4f4243500300100101003c00280000003c92000099164ebaabc2342fe08f6b102100000009000000000000002a00000000000000b80b00000000000085a936460000000000000000f0030000"
 }

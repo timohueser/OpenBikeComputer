@@ -1,0 +1,14 @@
+{
+  "name": "metadata-boolean-with-a-third-value",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "SetMetadataRequest",
+  "note": "\"Booleans are one byte and exactly `0` or `1`\" is §2.2's encoding paragraph, so a third value is noncanonical rather than an unregistered member of an enumeration — the other side of the convention the registries' §4 records, and the one every codec had to be told twice.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "4f424350030001030000310001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100010009000000000000002a0000000000000001008000050001000280010002"
+}

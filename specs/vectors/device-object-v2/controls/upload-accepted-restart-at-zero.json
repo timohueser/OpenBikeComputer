@@ -17,6 +17,19 @@
   },
   "boundary": "",
   "note": "Restart-at-zero forces both the durable offset and the finalized prefix CRC to zero.",
+  "body": {
+    "disposition": 0,
+    "targetMode": 0,
+    "flags": 2,
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "sessionId": 17,
+    "logicalObjectId": "9",
+    "admissionRevision": "41",
+    "durableNextOffset": "0",
+    "checkpointGranule": 1024,
+    "maxStreamPayload": 1008,
+    "finalizedPrefixCrc32": 0
+  },
   "payload": "00000200a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000000000000000000040000f00300000000000000000000",
   "frame": "4f42435003000001010040000b00000000000200a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000000000000000000040000f00300000000000000000000"
 }

@@ -17,6 +17,17 @@
   },
   "boundary": "",
   "note": "Publication and terminal success are one durable commit.",
+  "body": {
+    "resultType": 1,
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "objectKind": 1,
+    "outcome": 0,
+    "logicalObjectId": "9",
+    "revision": "42",
+    "length": "3000",
+    "crc32": 1177987461
+  },
   "payload": "01000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646",
   "frame": "4f42435003000201010044001500000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
 }

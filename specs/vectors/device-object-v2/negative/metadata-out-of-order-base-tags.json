@@ -3,6 +3,8 @@
   "suite": "device-object-v2",
   "kind": "negative",
   "target": "metadataEnvelope",
+  "class": "patch",
+  "maximumEncodedLength": 128,
   "note": "Fields are strictly increasing by base tag.",
   "expect": {
     "category": "invalidDescriptor",
