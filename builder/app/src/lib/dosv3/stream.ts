@@ -29,10 +29,15 @@ export const FAULT_DISPOSITION = {
 const U64_MAX = (1n << 64n) - 1n;
 
 /**
- * §13: "Only namespace-zero transport category/details from Section 12 are valid in this compact
- * body; semantic/domain errors use a correlated control response." These are the §12 categories a
- * stream can raise about its own session — framing, ownership, offset, integrity, media, and
- * teardown. A domain outcome such as `revisionConflict` or `semanticValidation` is not one of them.
+ * §13's transport set: "exactly these ten categories and no others". It is a closed list rather
+ * than a rule of thumb about what feels transport-shaped, and the two exclusions are the reason it
+ * had to be written down.
+ *
+ * `resourceLimit` is out because "every bounded resource a stream could exhaust is reserved at
+ * admission, so an attached session has no resource-limit condition to report" — a fault can only
+ * be raised by a session that already holds its slots. `semanticValidation` is out because the
+ * compact body has no namespace field to scope its detail, so a domain outcome needs the correlated
+ * control response instead.
  */
 const TRANSPORT_CATEGORIES: readonly number[] = [
     CATEGORY.invalidFrame,
@@ -44,7 +49,6 @@ const TRANSPORT_CATEGORIES: readonly number[] = [
     CATEGORY.mediaIo,
     CATEGORY.cancelled,
     CATEGORY.linkLost,
-    CATEGORY.resourceLimit,
     CATEGORY.internal,
 ];
 

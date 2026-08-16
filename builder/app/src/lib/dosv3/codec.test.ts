@@ -39,8 +39,8 @@ import {
     type StoreId,
 } from "./ids";
 import { ENVELOPE_HEADER_BYTES, OBJECT_KIND, metadataSchema, type ObjectKindName, type SchemaRole } from "./registry";
-import { GUIDANCE, decoding, detailName } from "./result";
-import { decodeStreamFrame } from "./stream";
+import { CATEGORY, GUIDANCE, decoding, detailName, type CategoryName } from "./result";
+import { FAULT_BODY_BYTES, STREAM_DIRECTION, STREAM_FLAG, decodeStreamFrame } from "./stream";
 
 describe("the derived control-frame floor (§1, §2.2)", () => {
     it("is the sum of the two schema ceilings plus the header", () => {
@@ -261,6 +261,63 @@ describe("the retained terminal replay signature (§11)", () => {
         expect(decoded.guidance).toBe(GUIDANCE.rejectPermanently);
         expect(decoded.owner).toBe(0);
         expect(errorText(decoded)).toBe("");
+    });
+});
+
+describe("the stream fault-body transport set (§13)", () => {
+    /** A nonterminal fault status carrying one category/detail pair. */
+    const faultFrame = (category: number, detail: number): Uint8Array =>
+        new Writer(16 + FAULT_BODY_BYTES)
+            .u32(17)
+            .u64(0n)
+            .u16(FAULT_BODY_BYTES)
+            .u8(STREAM_DIRECTION.status)
+            .u8(STREAM_FLAG.fault)
+            .u16(category)
+            .u16(detail)
+            .u64(4n)
+            .u64(4n)
+            .u8(0)
+            .zeros(3)
+            .finish();
+
+    const TRANSPORT: readonly CategoryName[] = [
+        "invalidFrame",
+        "invalidDescriptor",
+        "invalidOffset",
+        "invalidSession",
+        "checksumFailure",
+        "mediaUnavailable",
+        "mediaIo",
+        "cancelled",
+        "linkLost",
+        "internal",
+    ];
+
+    it("is exactly ten categories", () => {
+        expect(TRANSPORT.length).toBe(10);
+    });
+
+    it.each(TRANSPORT)("accepts %s", (category) => {
+        const decoded = decoding(() => decodeStreamFrame(faultFrame(CATEGORY[category], 1)));
+        expect(decoded.ok).toBe(true);
+        if (decoded.ok) expect(decoded.value.fault?.category).toBe(category);
+    });
+
+    it.each(
+        (Object.keys(CATEGORY) as CategoryName[]).filter((category) => !TRANSPORT.includes(category)),
+    )("rejects %s as unknownEnum", (category) => {
+        // §13 froze the set as closed, and `resourceLimit` is the boundary member: every bounded
+        // resource a stream could exhaust is reserved at admission, so an attached session has no
+        // resource-limit condition to report. It rejects exactly like the domain categories the
+        // checked-in negatives already pin.
+        const decoded = decoding(() => decodeStreamFrame(faultFrame(CATEGORY[category], 0)));
+        expect(decoded.ok).toBe(false);
+        if (!decoded.ok) {
+            expect(decoded.error.category).toBe("invalidDescriptor");
+            expect(decoded.error.detail).toBe("unknownEnum");
+            expect(decoded.error.detailValue).toBe(2);
+        }
     });
 });
 
