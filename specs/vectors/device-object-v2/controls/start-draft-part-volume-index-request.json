@@ -1,0 +1,31 @@
+{
+  "name": "start-draft-part-volume-index-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartDraftPart",
+    "value": 305
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 64,
+    "requestId": 64
+  },
+  "boundary": "",
+  "note": "DraftPartKind 4 is the volume index; it is claimed exactly like any other part kind.",
+  "body": {
+    "childOperationId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "partKind": 4,
+    "partKey": "1",
+    "declaredLength": "4096",
+    "expectedCrc32": 195948557,
+    "resume": 1
+  },
+  "payload": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c304000000010000000000000000100000000000000df0ad0b0100000000000000",
+  "frame": "4f424350030031010000400040000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c304000000010000000000000000100000000000000df0ad0b0100000000000000"
+}

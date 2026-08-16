@@ -295,6 +295,29 @@ pub fn controls() -> Vec<ControlVector> {
         capabilities(0b0001, Some(STORE), 3, false, 1, 1 << 10, 0, 1, 0, 0, 0, &[]),
         "A device advertising no subject answers page zero with count zero, total pages zero, and `more` clear.",
     ));
+    // Policy bit 2, authenticated-principal-required, is the one policy bit the eight subjects
+    // above never set, and §2 asks for every capability policy bit in a vector. A device that
+    // gates a kind on authentication advertises it here rather than only refusing at admission.
+    all.push(response(
+        "capabilities-subject-authenticated-principal-required",
+        Opcode::Hello,
+        7,
+        capabilities(
+            0b0011,
+            Some(STORE),
+            2,
+            true,
+            8,
+            ALL_COMMANDS,
+            1,
+            1,
+            0,
+            1,
+            1,
+            &subject(1, 3, GET | DELETE | RESUMABLE_DOWN, 1 << 2, 0, 0, 64, 64 * 1024 * 1024),
+        ),
+        "Policy bit 2 marks a kind the device serves only to an authenticated principal.",
+    ));
     all.push(response(
         "capabilities-unauthenticated-test-link",
         Opcode::Hello,
@@ -689,6 +712,41 @@ pub fn controls() -> Vec<ControlVector> {
         62,
         restart_part,
         "Section 6.1's resume table governs a part unchanged, read against the DraftPartKind subject.",
+    ));
+
+    // DraftPartKind `4`, the volume index, is the one registered part kind no other vector reaches,
+    // and §2 asks for every DraftPartKind in at least one vector. It is pinned as a claim and its
+    // acceptance together, because the kind is echoed in the acceptance and a codec that drops it
+    // on one side would still round-trip the other.
+    let mut volume_index_part = zeros(64);
+    bytes_at(&mut volume_index_part, 0, &OP_CHILD);
+    bytes_at(&mut volume_index_part, 16, &OP_PARENT);
+    u16_at(&mut volume_index_part, 32, 4);
+    u64_at(&mut volume_index_part, 36, 1);
+    u64_at(&mut volume_index_part, 44, 4096);
+    u32_at(&mut volume_index_part, 52, 0x0BAD_F00D);
+    volume_index_part[56] = 1;
+    all.push(request(
+        "start-draft-part-volume-index-request",
+        Opcode::StartDraftPart,
+        64,
+        volume_index_part,
+        "DraftPartKind 4 is the volume index; it is claimed exactly like any other part kind.",
+    ));
+    let mut volume_index_accepted = zeros(72);
+    bytes_at(&mut volume_index_accepted, 4, &OP_CHILD);
+    bytes_at(&mut volume_index_accepted, 20, &OP_PARENT);
+    u32_at(&mut volume_index_accepted, 36, 0x0000_0032);
+    u16_at(&mut volume_index_accepted, 40, 4);
+    u64_at(&mut volume_index_accepted, 44, 1);
+    u32_at(&mut volume_index_accepted, 60, FIXTURE_GRANULE);
+    u16_at(&mut volume_index_accepted, 64, 1008);
+    all.push(response(
+        "draft-part-accepted-volume-index",
+        Opcode::StartDraftPart,
+        64,
+        volume_index_accepted,
+        "The acceptance echoes the volume-index part kind and key it was claimed under.",
     ));
 
     let draft_accept = |name: &str, flags: u16, offset: u64, crc: u32, note: &str| {
@@ -2059,6 +2117,77 @@ fn error_vectors() -> Vec<ControlVector> {
     }
     all.extend(sweep);
 
+    // The same sweep over the *domain* half of the detail space. §2 of the vectors contract asks
+    // for every "domain semantic detail" in at least one vector, and those live in
+    // `Device_Object_Registries_v2.md` §6 rather than in the wire contract's common table: the
+    // detail namespace is the ObjectKind, so `semanticValidation/4` means one thing under weather
+    // and another under update package. A client that cannot tell them apart cannot report why a
+    // bundle was refused.
+    let covered_semantics: Vec<(u16, u16)> = all
+        .iter()
+        .filter(|vector| u16::from_le_bytes([vector.payload[0], vector.payload[1]]) == 14)
+        .map(|vector| {
+            (
+                u16::from_le_bytes([vector.payload[2], vector.payload[3]]),
+                u16::from_le_bytes([vector.payload[4], vector.payload[5]]),
+            )
+        })
+        .collect();
+    let mut domain_sweep = Vec::new();
+    for row in crate::registry::semantic::table() {
+        let namespace = row.kind.to_u16();
+        if covered_semantics.contains(&(namespace, row.code)) {
+            continue;
+        }
+        // §6 fixes the shape as tightly as the category matrix does: a terminal row is an Aborted
+        // claim and carries both claim-status bits, a row with a bounded delay carries one, and a
+        // reserved row is a decode-only number no v3.0 device sends.
+        let (guidance, presence, retry_after_ms, note) = if row.reserved {
+            (0u8, 0u16, 0u32, "Registered so its number stays burned; reserved and never emitted in v3.0. Decode-only.")
+        } else if !row.terminal && row.kind == crate::registry::ObjectKind::UpdatePackage {
+            // §6: the two nonterminal update-package rows are the unsafe power and runtime states,
+            // and they "use retry-after-delay when the device can supply a bounded delay".
+            (
+                RetryGuidance::RETRY_AFTER_DELAY.get(),
+                presence::RETRY_DELAY,
+                60_000,
+                "A retryable domain precondition with a bounded delay: neither claim-status bit is set.",
+            )
+        } else if !row.terminal {
+            (
+                RetryGuidance::RETRY_SAME_REQUEST.get(),
+                presence::DURABLE_CLAIM_EXISTS,
+                0,
+                "A nonterminal domain refusal: the claim exists and is not terminal.",
+            )
+        } else {
+            (
+                RetryGuidance::REJECT_PERMANENTLY.get(),
+                presence::DURABLE_CLAIM_EXISTS | presence::CLAIM_IS_TERMINAL,
+                0,
+                "A terminal domain refusal: reject-permanently, with both claim-status bits set.",
+            )
+        };
+        // The opcode is the one that reaches this validator, so the fixture is a frame a device
+        // could really answer with rather than a category attached to an arbitrary request.
+        let opcode = match row.kind {
+            crate::registry::ObjectKind::VolumeManifest => Opcode::FinalizeDraft,
+            crate::registry::ObjectKind::UpdatePackage => Opcode::InstallUpdate,
+            crate::registry::ObjectKind::Ride if row.name == "alreadyImported" => Opcode::AcknowledgeRideImported,
+            _ => Opcode::FinishUpload,
+        };
+        domain_sweep.push(control(
+            &format!("error-semantic-{}-{}", row.kind.name(), row.name),
+            "response",
+            opcode,
+            ERR,
+            202,
+            error_body(14, namespace, row.code, guidance, 0, presence, retry_after_ms, 0, 0, 0, 0, &[]),
+            note,
+        ));
+    }
+    all.extend(domain_sweep);
+
     all
 }
 
@@ -2756,7 +2885,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     let mut duplicate = envelope(1, 128, &[(0x8001, vec![1]), (0x8001, vec![1])]);
     push(
         "metadata-duplicate-base-tag",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Patch),
         duplicate.clone(),
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::DUPLICATE_FIELD,
@@ -2765,7 +2894,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     duplicate = envelope(1, 128, &[(0x8002, vec![1]), (0x8001, vec![1])]);
     push(
         "metadata-out-of-order-base-tags",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Patch),
         duplicate,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::OUT_OF_ORDER_FIELD,
@@ -2775,7 +2904,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     u16_at(&mut zero_tag, 8, 0x8000);
     push(
         "metadata-zero-base-tag",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
         zero_tag,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::NONCANONICAL_METADATA,
@@ -2785,7 +2914,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     u16_at(&mut bad_count, 6, 2);
     push(
         "metadata-field-count-disagrees",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
         bad_count,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::NONCANONICAL_METADATA,
@@ -2795,7 +2924,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     u16_at(&mut runs_past, 10, 9);
     push(
         "metadata-value-length-runs-past-the-body",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
         runs_past,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::NONCANONICAL_METADATA,
@@ -2806,7 +2935,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     padded.extend_from_slice(&[0, 0]);
     push(
         "metadata-trailing-padding",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
         padded,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::NONCANONICAL_METADATA,
@@ -2816,7 +2945,7 @@ pub fn negatives() -> Vec<NegativeVector> {
     nonzero_flags[3] = 1;
     push(
         "metadata-nonzero-header-flags",
-        NegativeTarget::MetadataEnvelope(128),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
         nonzero_flags,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::RESERVED_BITS,
@@ -2828,11 +2957,56 @@ pub fn negatives() -> Vec<NegativeVector> {
     u16_at(&mut oversized, 4, 89);
     push(
         "metadata-above-the-catalog-ceiling",
-        NegativeTarget::MetadataEnvelope(96),
+        NegativeTarget::MetadataEnvelope(SchemaClass::Catalog),
         oversized,
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::NESTED_LENGTH,
         "Catalog envelopes are at most 96 bytes, so their encoded fields are at most 88.",
+    );
+
+    // Envelopes that break two rules at once. §2.2 fixes the order — "canonical form first, then
+    // the schema's field rules, and the per-kind registered maximum last" — so each of these has
+    // exactly one right answer, and a codec that checks the schema before canonical form, or that
+    // reports the generic `noncanonicalMetadata` where the contract allocated a specific detail,
+    // fails here rather than in a later interop session. Three independent codecs passed the
+    // single-fault fixtures while disagreeing about precisely these.
+    push(
+        "metadata-out-of-order-base-tags-and-an-unregistered-version",
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
+        envelope(1, 2, &[(0x8002, vec![1]), (0x8001, vec![1])]),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::OUT_OF_ORDER_FIELD,
+        "Canonical form is checked before the schema, so the ordering fault is reported and the unregistered \
+         version byte is never reached.",
+    );
+    push(
+        "metadata-duplicate-base-tag-and-an-unregistered-schema-id",
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
+        envelope(99, 1, &[(0x8001, vec![1]), (0x8001, vec![1])]),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::DUPLICATE_FIELD,
+        "A duplicate base tag has its own detail and keeps it even when the schema identity is also wrong.",
+    );
+    push(
+        "metadata-zero-base-tag-and-the-wrong-role-version",
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
+        envelope(1, 64, &[(0x8000, vec![2])]),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::NONCANONICAL_METADATA,
+        "A zero base tag is a canonical-form fault, reported ahead of a catalog version byte in a Put position.",
+    );
+    push(
+        "metadata-field-count-lie-and-a-schema-id-mismatch",
+        NegativeTarget::MetadataEnvelope(SchemaClass::Put),
+        {
+            let mut bytes = envelope(2, 1, &[(0x8001, vec![1])]);
+            u16_at(&mut bytes, 6, 5);
+            bytes
+        },
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::NONCANONICAL_METADATA,
+        "field_count equals the number of fields; that is canonical form, and it is answered before the \
+         schema identity is compared with the containing kind.",
     );
 
     // ---- Descriptor bodies -----------------------------------------------------------------
@@ -3342,6 +3516,16 @@ pub fn negatives() -> Vec<NegativeVector> {
         "Put schemas are version 1, patch 128, catalog 64 — registry constants, not a negotiation.",
     );
     push(
+        "metadata-put-envelope-of-113-bytes-claiming-the-catalog-version",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(envelope(1, 64, &[(0x8001, vec![2]), (0x8002, vec![0x5A; 96])])),
+        ErrorCategory::UNSUPPORTED_CAPABILITY,
+        detail::capability::SCHEMA_VERSION,
+        "The ceiling is the one this envelope's position imposes, not the one its version byte claims: 113 bytes \
+         is legal in a 128-byte Put position, so the version is what fails. A decoder that measured it against \
+         the 96-byte catalog ceiling would answer invalidDescriptor/nestedLength instead.",
+    );
+    push(
         "metadata-missing-a-required-field",
         NegativeTarget::ControlBody(Opcode::StartUpload, false),
         put_with(envelope(1, 1, &[])),
@@ -3365,6 +3549,25 @@ pub fn negatives() -> Vec<NegativeVector> {
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::NONCANONICAL_METADATA,
         "The route display name is registered at 1-48 bytes; 49 is a schema-disallowed width.",
+    );
+    push(
+        "metadata-boolean-with-a-third-value",
+        NegativeTarget::ControlBody(Opcode::SetMetadata, false),
+        {
+            let mut body = zeros(36);
+            bytes_at(&mut body, 0, &OP_A);
+            u16_at(&mut body, 16, 1);
+            u16_at(&mut body, 18, 1);
+            u64_at(&mut body, 20, 9);
+            u64_at(&mut body, 28, 42);
+            body.extend_from_slice(&envelope(1, 128, &[(0x8002, vec![2])]));
+            control_frame(Opcode::SetMetadata.to_u16(), REQUEST, 1, &body)
+        },
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::NONCANONICAL_METADATA,
+        "\"Booleans are one byte and exactly `0` or `1`\" is §2.2's encoding paragraph, so a third value is \
+         noncanonical rather than an unregistered member of an enumeration — the other side of the convention \
+         the registries' §4 records, and the one every codec had to be told twice.",
     );
     push(
         "set-metadata-on-a-kind-with-no-patch-schema",
@@ -3439,6 +3642,134 @@ pub fn negatives() -> Vec<NegativeVector> {
         detail::descriptor::NESTED_LENGTH,
         "A decoder rejects a schema-specific envelope larger than the registry's per-kind maximum.",
     );
+
+    // ---- Cursor integrity (§8.2) ---------------------------------------------------------------
+    // A catalog page carries the StoreId it was minted under and a cursor whose CRC binds it to
+    // that same store, so the page is self-verifying: a reader that skips the check follows a
+    // cursor from another store or another snapshot into a page it cannot interpret.
+    push(
+        "catalog-page-next-cursor-with-a-broken-crc",
+        NegativeTarget::ControlBody(Opcode::QueryCatalog, true),
+        {
+            let entry = catalog_entry(9, 42, 3000, 0x1234, &route_catalog("Kaiserstuhl loop", 2, None, None));
+            let mut cursor = catalog_cursor(STORE, 42, 1, 1);
+            cursor[12] ^= 0x01;
+            control_frame(Opcode::QueryCatalog.to_u16(), OK_MORE, 1, &catalog_page(STORE, 1, 1, 42, &cursor, &entry))
+        },
+        ErrorCategory::CHECKSUM_FAILURE,
+        detail::checksum::CURSOR,
+        "The next cursor's CRC covers this page's own StoreId and the cursor's first twelve bytes; one flipped \
+         bit is checksumFailure/cursor rather than a silently followed cursor.",
+    );
+
+    // ---- Registered numeric ranges (§4 of the registries) ----------------------------------------
+    // §2.2 lists ranges among the schema's field rules, and the registries adjudicate which detail
+    // an out-of-range value earns: an enumerated field answers unknownEnum, a continuous quantity
+    // answers invalidCombination. Both ends of each range are pinned where the range has two.
+    push(
+        "metadata-route-retention-above-the-registered-enum",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(route_put(6)),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::UNKNOWN_ENUM,
+        "Retention is never `0` through two months `5`; `6` is an unregistered value of an enumerated field.",
+    );
+    for (state, name) in [(0u8, "below"), (7, "above")] {
+        push(
+            &format!("catalog-projection-update-state-{name}-the-registered-enum"),
+            NegativeTarget::ControlBody(Opcode::QueryCatalog, true),
+            {
+                let entry = catalog_entry(1, 12, 4096, 0x1234, &update_catalog("1.4.2", state, [0x7Fu8; 32]));
+                control_frame(Opcode::QueryCatalog.to_u16(), OK, 1, &catalog_page(STORE, 7, 1, 12, &[0u8; 16], &entry))
+            },
+            ErrorCategory::INVALID_DESCRIPTOR,
+            detail::descriptor::UNKNOWN_ENUM,
+            "Update states run VerifiedReady `1` through failed `6`; anything outside that is an unregistered \
+             value of an enumerated field.",
+        );
+    }
+    let weather_put_with = |envelope: Vec<u8>| {
+        control_frame(
+            Opcode::StartUpload.to_u16(),
+            REQUEST,
+            1,
+            &start_upload(OP_A, 4, 0, 0, 0, 0, 900, 0xABCD, &envelope),
+        )
+    };
+    for (name, latitude, longitude, radius, issued, until, why) in [
+        (
+            "latitude-above-its-range",
+            900_000_001i32,
+            77_000_000i32,
+            50_000u32,
+            1_700_000_000i64,
+            1_700_086_400i64,
+            "Latitude is degrees times 10,000,000 in -900,000,000 through 900,000,000.",
+        ),
+        (
+            "latitude-below-its-range",
+            -900_000_001,
+            77_000_000,
+            50_000,
+            1_700_000_000,
+            1_700_086_400,
+            "The same bound at the other end.",
+        ),
+        (
+            "longitude-below-its-range",
+            480_000_000,
+            -1_800_000_001,
+            50_000,
+            1_700_000_000,
+            1_700_086_400,
+            "Longitude is in -1,800,000,000 through 1,800,000,000.",
+        ),
+        (
+            "longitude-above-its-range",
+            480_000_000,
+            1_800_000_001,
+            50_000,
+            1_700_000_000,
+            1_700_086_400,
+            "The same bound at the other end.",
+        ),
+        (
+            "radius-of-zero",
+            480_000_000,
+            77_000_000,
+            0,
+            1_700_000_000,
+            1_700_086_400,
+            "The required radius is nonzero and at most 100,000 metres.",
+        ),
+        (
+            "radius-above-100000",
+            480_000_000,
+            77_000_000,
+            100_001,
+            1_700_000_000,
+            1_700_086_400,
+            "The same bound at the other end.",
+        ),
+        (
+            "valid-until-equal-to-issued",
+            480_000_000,
+            77_000_000,
+            50_000,
+            1_700_000_000,
+            1_700_000_000,
+            "The required valid-until time is later than the earliest issued time, so equality is refused too.",
+        ),
+    ] {
+        push(
+            &format!("metadata-weather-put-{name}"),
+            NegativeTarget::ControlBody(Opcode::StartUpload, false),
+            weather_put_with(weather_put(42, latitude, longitude, radius, issued, until)),
+            ErrorCategory::INVALID_DESCRIPTOR,
+            detail::descriptor::INVALID_COMBINATION,
+            why,
+        );
+    }
 
     // ---- ResetStore admission (§16) ------------------------------------------------------------
     push(

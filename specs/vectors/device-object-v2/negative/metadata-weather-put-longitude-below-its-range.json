@@ -1,0 +1,14 @@
+{
+  "name": "metadata-weather-put-longitude-below-its-range",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "Longitude is in -1,800,000,000 through 1,800,000,000.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030000010000740001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a104000000000000000000000000000000000000008403000000000000cdab0000040001003c000600018008002a000000000000000280040000389c1c03800400ff2db6940480040050c300000580080000f1536500000000068008008042556500000000"
+}

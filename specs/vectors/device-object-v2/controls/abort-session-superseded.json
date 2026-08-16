@@ -17,6 +17,10 @@
   },
   "boundary": "",
   "note": "Detaching a resumable upload preserves its durable work; a restart-only upload is durably aborted.",
+  "body": {
+    "sessionId": 17,
+    "reason": 2
+  },
   "payload": "1100000002000000",
   "frame": "4f4243500300200100000800320000001100000002000000"
 }

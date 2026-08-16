@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "Every error that reports a terminal outcome sets both claim-status bits.",
+  "body": {
+    "category": 17,
+    "detailNamespace": 0,
+    "detail": 4,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 96,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "110000000400000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020103003000c8000000110000000400000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

@@ -17,6 +17,11 @@
   },
   "boundary": "",
   "note": "Length and CRC include a locally retained prefix when the start offset was nonzero.",
+  "body": {
+    "sessionId": 33,
+    "receivedLength": "3000",
+    "wholeSourceCrc32": 1177987461
+  },
   "payload": "21000000b80b00000000000085a93646",
   "frame": "4f42435003001101000010002a00000021000000b80b00000000000085a93646"
 }

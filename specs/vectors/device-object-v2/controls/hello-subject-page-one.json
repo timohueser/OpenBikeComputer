@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "A repeated Hello may differ only in page kind and index; every negotiation field is byte-identical.",
+  "body": {
+    "minimumMajor": 3,
+    "maximumMajor": 3,
+    "clientMaxControlFrame": 244,
+    "clientMaxStreamFrame": 1024,
+    "clientFeatureFlags": 0,
+    "pageKind": 1,
+    "pageIndex": 1
+  },
   "payload": "0303f4000004000000000101",
   "frame": "4f4243500300010000000c00030000000303f4000004000000000101"
 }

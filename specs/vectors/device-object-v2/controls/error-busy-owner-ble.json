@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "Owner 1 is exactly the BLE link kind.",
+  "body": {
+    "category": 5,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 3,
+    "owner": 1,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "050000000100030100000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c8000000050000000100030100000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

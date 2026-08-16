@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "With neither flag, both fields are zero and the current first page is requested.",
+  "body": {
+    "objectKind": 1,
+    "flags": 0,
+    "expectedRevision": "0",
+    "cursor.revision": "0",
+    "cursor.nextEntryIndex": 0,
+    "cursor.kindCode": 0,
+    "cursor.crc32": 0
+  },
   "payload": "01000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010200001c005000000001000000000000000000000000000000000000000000000000000000"
 }

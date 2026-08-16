@@ -3,6 +3,8 @@
   "suite": "device-object-v2",
   "kind": "negative",
   "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
   "note": "Padding is forbidden.",
   "expect": {
     "category": "invalidDescriptor",

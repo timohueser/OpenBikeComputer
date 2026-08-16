@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "FinalizeDraft is exactly the parent OperationId; it computes no canonical intent and makes no second claim.",
+  "body": {
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+  },
   "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
   "frame": "4f42435003003201000010003f000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
 }

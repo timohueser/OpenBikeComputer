@@ -230,7 +230,29 @@ function applySchema(
             );
         }
     }
+    checkCrossFieldRules(schema, values);
     return values;
+}
+
+/**
+ * The one registered rule that spans two fields. Registry §3 fixes the required valid-until time as
+ * "later than earliest issued UTC", and a weather Put declares both — so each field is in range on
+ * its own and only the pair is illegal, which is `invalidCombination` by construction. Equality is
+ * refused with everything earlier: a bundle that expires the instant it was issued covers nothing.
+ *
+ * It runs after the per-field rules and before the registered maximum, which is the §2.2 order.
+ */
+function checkCrossFieldRules(schema: MetadataSchema, values: ReadonlyMap<string, MetadataValue>): void {
+    if (schema.kind !== "weather" || schema.role !== "put") return;
+    const issued = values.get("issuedUtc");
+    const validUntil = values.get("validUntilUtc");
+    if (typeof issued === "bigint" && typeof validUntil === "bigint" && validUntil <= issued) {
+        reject(
+            "invalidDescriptor",
+            "invalidCombination",
+            `validUntilUtc ${validUntil} is not later than issuedUtc ${issued}`,
+        );
+    }
 }
 
 function widthOf(spec: MetadataFieldSpec): number | undefined {
@@ -301,7 +323,11 @@ function decodeFieldValue(spec: MetadataFieldSpec, value: Uint8Array): MetadataV
             return numeric(view.getBigInt64(0, true));
         case "bool": {
             const raw = view.getUint8(0);
-            if (raw > 1) reject("invalidDescriptor", "unknownEnum", `${spec.name} is exactly 0 or 1`);
+            // §2.2 defines the boolean's *encoding* as the byte `0` or `1`, so a third value is a
+            // noncanonical encoding rather than an unregistered member of a value space —
+            // `noncanonicalMetadata`, the same detail an unclean text field earns, and not the
+            // `unknownEnum` a registered enumeration answers with.
+            if (raw > 1) reject("invalidDescriptor", "noncanonicalMetadata", `${spec.name} is encoded 0 or 1`);
             return raw === 1;
         }
         case "bytes":

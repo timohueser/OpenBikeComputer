@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "An error against a live claimed operation sets bit 5 and clears bit 6.",
+  "body": {
+    "category": 8,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 6,
+    "owner": 0,
+    "presence": 34,
+    "retryAfterMs": 0,
+    "expectedOffset": "262144",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "080000000100060022000000000000000400000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010103003000c8000000080000000100060022000000000000000400000000000000000000000000000000000000000000000000000000000000"
 }

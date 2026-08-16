@@ -88,18 +88,30 @@ impl SchemaClass {
 pub enum FieldType {
     /// One byte, any value.
     U8,
-    /// One byte, inclusive range.
-    U8Range(u8, u8),
+    /// One byte carrying an enumerated value, over an inclusive range of registered ones.
+    ///
+    /// Out of range is `invalidDescriptor/unknownEnum`: the registries adjudicate an out-of-range
+    /// *enumerated* value as an unregistered member of that enumeration, which is exactly what the
+    /// detail names. A continuous quantity uses [`U32Range`](Self::U32Range) or
+    /// [`I32Range`](Self::I32Range) instead and answers `invalidCombination`.
+    U8Enum(u8, u8),
     /// One byte, exactly `0` or `1` (§2.2's boolean).
     Bool,
     /// Two little-endian bytes.
     U16,
     /// Four little-endian bytes.
     U32,
+    /// Four little-endian bytes over an inclusive range of a continuous quantity.
+    ///
+    /// Out of range is `invalidDescriptor/invalidCombination`, not `unknownEnum`: nothing is
+    /// enumerated about a radius in metres.
+    U32Range(u32, u32),
     /// Eight little-endian bytes.
     U64,
     /// Four little-endian two's-complement bytes.
     I32,
+    /// Four little-endian two's-complement bytes over an inclusive range of a continuous quantity.
+    I32Range(i32, i32),
     /// Eight little-endian two's-complement bytes.
     I64,
     /// UTF-8 text, inclusive encoded-byte bounds. Empty is legal only when the minimum is zero.
@@ -112,9 +124,9 @@ impl FieldType {
     /// True when `len` is a legal encoded length for this type.
     pub const fn accepts_len(self, len: u16) -> bool {
         match self {
-            FieldType::U8 | FieldType::U8Range(_, _) | FieldType::Bool => len == 1,
+            FieldType::U8 | FieldType::U8Enum(_, _) | FieldType::Bool => len == 1,
             FieldType::U16 => len == 2,
-            FieldType::U32 | FieldType::I32 => len == 4,
+            FieldType::U32 | FieldType::U32Range(_, _) | FieldType::I32 | FieldType::I32Range(_, _) => len == 4,
             FieldType::U64 | FieldType::I64 => len == 8,
             FieldType::Text(min, max) => len >= min && len <= max,
             FieldType::Bytes(exact) => len == exact,
@@ -125,22 +137,39 @@ impl FieldType {
     /// envelope lengths.
     pub const fn max_len(self) -> u16 {
         match self {
-            FieldType::U8 | FieldType::U8Range(_, _) | FieldType::Bool => 1,
+            FieldType::U8 | FieldType::U8Enum(_, _) | FieldType::Bool => 1,
             FieldType::U16 => 2,
-            FieldType::U32 | FieldType::I32 => 4,
+            FieldType::U32 | FieldType::U32Range(_, _) | FieldType::I32 | FieldType::I32Range(_, _) => 4,
             FieldType::U64 | FieldType::I64 => 8,
             FieldType::Text(_, max) => max,
             FieldType::Bytes(exact) => exact,
         }
     }
 
-    /// Checks a value's bytes against the type's range and text rules. Length is already checked.
-    fn accepts_value(self, value: &[u8]) -> bool {
+    /// The refusal a value's bytes earn, or `None` when they are in range. Length is already
+    /// checked, so every arm below reads a value of the width its type fixed.
+    ///
+    /// The three answers are deliberately different, and `Device_Object_Registries_v2.md` §4 is
+    /// what adjudicates between them: an enumerated field's unregistered value is `unknownEnum`, a
+    /// continuous quantity outside its bounds is `invalidCombination`, and everything §2.2's
+    /// encoding paragraph governs — a boolean that is neither `0` nor `1`, text that is not clean
+    /// shortest-form UTF-8 — is `noncanonicalMetadata`, because those are rules about the encoding
+    /// rather than about the registered value space.
+    fn value_fault(self, value: &[u8]) -> Option<DecodeError> {
+        let noncanonical = || DecodeError::invalid_descriptor(detail::descriptor::NONCANONICAL_METADATA);
         match self {
-            FieldType::Bool => value[0] <= 1,
-            FieldType::U8Range(min, max) => value[0] >= min && value[0] <= max,
-            FieldType::Text(_, _) => text_is_clean(value),
-            _ => true,
+            FieldType::Bool if value[0] > 1 => Some(noncanonical()),
+            FieldType::Text(_, _) if !text_is_clean(value) => Some(noncanonical()),
+            FieldType::U8Enum(min, max) if value[0] < min || value[0] > max => Some(DecodeError::unknown_enum()),
+            FieldType::U32Range(min, max) => {
+                let raw = u32::from_le_bytes(value.try_into().ok()?);
+                (raw < min || raw > max).then(DecodeError::invalid_combination)
+            }
+            FieldType::I32Range(min, max) => {
+                let raw = i32::from_le_bytes(value.try_into().ok()?);
+                (raw < min || raw > max).then(DecodeError::invalid_combination)
+            }
+            _ => None,
         }
     }
 }
@@ -189,13 +218,16 @@ pub struct Schema {
     pub fields: &'static [FieldSpec],
 }
 
-const ROUTE_PUT: [FieldSpec; 1] = [FieldSpec::new(0x8001, FieldType::U8Range(0, 5), true, "retention")];
+const ROUTE_PUT: [FieldSpec; 1] = [FieldSpec::new(0x8001, FieldType::U8Enum(0, 5), true, "retention")];
 
+// The three coverage facts carry the registries' §3 ranges, which are the same bounds the durable
+// request context is held to: a Put that declares coverage the context could never have asked for
+// is refused at the schema rather than at the typed validator.
 const WEATHER_PUT: [FieldSpec; 6] = [
     FieldSpec::new(0x8001, FieldType::U64, true, "weatherRequestId"),
-    FieldSpec::new(0x8002, FieldType::I32, true, "coverageCentreLatitude"),
-    FieldSpec::new(0x8003, FieldType::I32, true, "coverageCentreLongitude"),
-    FieldSpec::new(0x8004, FieldType::U32, true, "coverageRadiusMetres"),
+    FieldSpec::new(0x8002, FieldType::I32Range(-900_000_000, 900_000_000), true, "coverageCentreLatitude"),
+    FieldSpec::new(0x8003, FieldType::I32Range(-1_800_000_000, 1_800_000_000), true, "coverageCentreLongitude"),
+    FieldSpec::new(0x8004, FieldType::U32Range(1, 100_000), true, "coverageRadiusMetres"),
     FieldSpec::new(0x8005, FieldType::I64, true, "issuedUtc"),
     FieldSpec::new(0x8006, FieldType::I64, true, "validUntilUtc"),
 ];
@@ -203,7 +235,7 @@ const WEATHER_PUT: [FieldSpec; 6] = [
 const EMPTY_FIELDS: [FieldSpec; 0] = [];
 
 const ROUTE_PATCH: [FieldSpec; 3] = [
-    FieldSpec::new(0x8001, FieldType::U8Range(0, 5), false, "retention"),
+    FieldSpec::new(0x8001, FieldType::U8Enum(0, 5), false, "retention"),
     FieldSpec::new(0x8002, FieldType::Bool, false, "selected"),
     FieldSpec::new(0x8003, FieldType::Text(1, 48), false, "displayName"),
 ];
@@ -216,7 +248,7 @@ const VOLUME_PATCH: [FieldSpec; 1] = [FieldSpec::new(0x8001, FieldType::Bool, fa
 // may skip them, which is exactly why the device may omit them when it lacks the fact.
 const ROUTE_CATALOG: [FieldSpec; 4] = [
     FieldSpec::new(0x8001, FieldType::Text(1, 48), true, "displayName"),
-    FieldSpec::new(0x8002, FieldType::U8Range(0, 5), true, "retention"),
+    FieldSpec::new(0x8002, FieldType::U8Enum(0, 5), true, "retention"),
     FieldSpec::new(0x0003, FieldType::Bool, false, "selected"),
     FieldSpec::new(0x0004, FieldType::I64, false, "trustedCreationUtc"),
 ];
@@ -247,7 +279,7 @@ const VOLUME_CATALOG: [FieldSpec; 3] = [
 
 const UPDATE_CATALOG: [FieldSpec; 3] = [
     FieldSpec::new(0x8001, FieldType::Text(1, 24), true, "semanticVersion"),
-    FieldSpec::new(0x8002, FieldType::U8Range(1, 6), true, "state"),
+    FieldSpec::new(0x8002, FieldType::U8Enum(1, 6), true, "state"),
     FieldSpec::new(0x8003, FieldType::Bytes(32), true, "imageDigest"),
 ];
 
@@ -314,8 +346,12 @@ impl Schema {
                         return Err(DecodeError::invalid_combination());
                     }
                     let len = field.value.len() as u16;
-                    if !spec.ty.accepts_len(len) || !spec.ty.accepts_value(field.value) {
+                    if !spec.ty.accepts_len(len) {
+                        // A schema-disallowed *width* is canonical form's own rule (§2.2).
                         return Err(DecodeError::invalid_descriptor(detail::descriptor::NONCANONICAL_METADATA));
+                    }
+                    if let Some(fault) = spec.ty.value_fault(field.value) {
+                        return Err(fault);
                     }
                     seen |= 1 << index;
                 }
@@ -331,6 +367,19 @@ impl Schema {
         for (index, spec) in self.fields.iter().enumerate() {
             if spec.required && seen & (1 << index) == 0 {
                 return Err(DecodeError::invalid_combination());
+            }
+        }
+        // The one registered rule that spans two fields: `Device_Object_Registries_v2.md` §3 fixes
+        // the required valid-until time as "later than earliest issued UTC", and a weather Put
+        // declares both. Each field is in range on its own, so this is `invalidCombination` by
+        // construction — fields individually legal and jointly illegal.
+        if self.kind == ObjectKind::Weather && self.class == SchemaClass::Put {
+            let issued = self.field(5).and(envelope.field(5)).and_then(|field| field.as_i64());
+            let valid_until = self.field(6).and(envelope.field(6)).and_then(|field| field.as_i64());
+            if let (Some(issued), Some(valid_until)) = (issued, valid_until) {
+                if valid_until <= issued {
+                    return Err(DecodeError::invalid_combination());
+                }
             }
         }
         // Last, because an envelope that is over the registered maximum is almost always over it
@@ -828,13 +877,45 @@ mod tests {
         let decoded = MetadataEnvelope::decode(&bytes, MAX_PUT_ENVELOPE).unwrap();
         assert_eq!(schema.validate(&decoded).unwrap_err(), DecodeError::invalid_combination());
 
-        // Out-of-range retention.
+        // Out-of-range retention. Retention is an *enumerated* field, so an unregistered value is
+        // `unknownEnum` — the convention `Device_Object_Registries_v2.md` §4 records, against
+        // `invalidCombination` for a continuous quantity out of its bounds.
         let bytes = envelope(ObjectKind::Route, SchemaClass::Put, &[(0x8001, vec![6])]);
         let decoded = MetadataEnvelope::decode(&bytes, MAX_PUT_ENVELOPE).unwrap();
-        assert_eq!(
-            schema.validate(&decoded).unwrap_err(),
-            DecodeError::invalid_descriptor(detail::descriptor::NONCANONICAL_METADATA)
+        assert_eq!(schema.validate(&decoded).unwrap_err(), DecodeError::unknown_enum());
+
+        // A continuous quantity outside its registered range is the other half of that convention.
+        let weather = Schema::lookup(ObjectKind::Weather, SchemaClass::Put).unwrap();
+        let bytes = envelope(
+            ObjectKind::Weather,
+            SchemaClass::Put,
+            &[
+                (0x8001, 42u64.to_le_bytes().to_vec()),
+                (0x8002, 900_000_001i32.to_le_bytes().to_vec()),
+                (0x8003, 0i32.to_le_bytes().to_vec()),
+                (0x8004, 50_000u32.to_le_bytes().to_vec()),
+                (0x8005, 1_700_000_000i64.to_le_bytes().to_vec()),
+                (0x8006, 1_700_086_400i64.to_le_bytes().to_vec()),
+            ],
         );
+        let decoded = MetadataEnvelope::decode(&bytes, MAX_PUT_ENVELOPE).unwrap();
+        assert_eq!(weather.validate(&decoded).unwrap_err(), DecodeError::invalid_combination());
+
+        // And the one rule that spans two fields: valid-until is later than issued.
+        let bytes = envelope(
+            ObjectKind::Weather,
+            SchemaClass::Put,
+            &[
+                (0x8001, 42u64.to_le_bytes().to_vec()),
+                (0x8002, 480_000_000i32.to_le_bytes().to_vec()),
+                (0x8003, 77_000_000i32.to_le_bytes().to_vec()),
+                (0x8004, 50_000u32.to_le_bytes().to_vec()),
+                (0x8005, 1_700_000_000i64.to_le_bytes().to_vec()),
+                (0x8006, 1_700_000_000i64.to_le_bytes().to_vec()),
+            ],
+        );
+        let decoded = MetadataEnvelope::decode(&bytes, MAX_PUT_ENVELOPE).unwrap();
+        assert_eq!(weather.validate(&decoded).unwrap_err(), DecodeError::invalid_combination());
 
         // Wrong width.
         let bytes = envelope(ObjectKind::Route, SchemaClass::Put, &[(0x8001, vec![1, 0])]);

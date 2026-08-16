@@ -17,6 +17,12 @@
   },
   "boundary": "",
   "note": "A download always resolves the current committed head; the revision flag and field are burned.",
+  "body": {
+    "objectKind": 1,
+    "flags": 0,
+    "logicalObjectId": "9",
+    "startOffset": "0"
+  },
   "payload": "01000000090000000000000000000000000000000000000000000000",
   "frame": "4f4243500300100100001c002800000001000000090000000000000000000000000000000000000000000000"
 }

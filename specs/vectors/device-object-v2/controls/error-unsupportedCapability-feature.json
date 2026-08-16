@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "One vector per registered category and detail, at the guidance and presence its category requires.",
+  "body": {
+    "category": 2,
+    "detailNamespace": 0,
+    "detail": 4,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "020000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c9000000020000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

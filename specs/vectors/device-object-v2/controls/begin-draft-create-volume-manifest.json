@@ -17,6 +17,16 @@
   },
   "boundary": "",
   "note": "BeginDraft binds target, expected revision, manifest length and CRC, and the exact child count.",
+  "body": {
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "objectKind": 6,
+    "targetMode": 0,
+    "logicalObjectId": "0",
+    "expectedRevision": "0",
+    "declaredManifestLength": "264",
+    "declaredManifestCrc32": 468353363,
+    "expectedPartCount": 3
+  },
   "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3060000000000000000000000000000000000000008010000000000005381ea1b03000000",
   "frame": "4f42435003003001000034003c000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3060000000000000000000000000000000000000008010000000000005381ea1b03000000"
 }

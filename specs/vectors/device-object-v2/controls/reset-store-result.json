@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "The new StoreId is returned only after the first checkpoint gate of the new store is durable.",
+  "body": {
+    "newStoreId": "112233445566778899aabbccddeeff00"
+  },
   "payload": "112233445566778899aabbccddeeff00",
   "frame": "4f42435003000604010010007f000000112233445566778899aabbccddeeff00"
 }

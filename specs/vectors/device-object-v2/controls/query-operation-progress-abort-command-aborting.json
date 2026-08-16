@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "An AbortOperation command has namespace none, kind zero, and flags, ID, and offset all zero.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 0,
+    "progress.phase": 7,
+    "progress.flags": 0,
+    "progress.subjectKind": 0,
+    "progress.logicalObjectId": "0",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000000700000000000000000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000000700000000000000000000000000000000000000000000"
 }

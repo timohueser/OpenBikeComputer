@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A kind's advertised maximum object length remains authoritative even when a transport could carry more.",
+  "body": {
+    "category": 20,
+    "detailNamespace": 0,
+    "detail": 3,
+    "guidance": 9,
+    "owner": 0,
+    "presence": 24,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "5000000000",
+    "availableBytes": "4294967295",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "14000000030009001800000000000000000000000000000000000000000000f2052a01000000ffffffff000000000000",
   "frame": "4f4243500300000103003000c800000014000000030009001800000000000000000000000000000000000000000000f2052a01000000ffffffff000000000000"
 }
