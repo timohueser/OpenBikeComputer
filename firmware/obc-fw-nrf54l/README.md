@@ -187,6 +187,20 @@ cargo run --release --no-default-features --features ble
 **There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
 "USB device plane" section further down for the bring-up recipe.
 
+```bash
+# The OBC2 media bench (#1354). Storage only — no display, no app, no BLE, no sensors — and
+# DESTRUCTIVE: it deletes and rebuilds /OBC2 on the card in the slot. It decides the two §1.1
+# volume-geometry preconditions for this card, times the §12 skeleton initialization, records the
+# exact sectors a gated sync writes (the §13.1 clean-flush obligation), times the commit cycle, and
+# then verifies the recovery decision across resets. Run it, then `probe-rs reset` (or re-run) for
+# each further recovery cycle; the on-card journal is the state that carries across.
+cargo run --release --bin obc2_media_bench
+```
+
+Its first cycle is destructive and its later ones are not: the bench resumes the journal it finds
+and appends exactly one record per boot. Flip `FORCE_REINIT` in the source for one flash to get the
+destructive first-cycle path back on a card it has already initialized.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
