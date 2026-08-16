@@ -150,6 +150,17 @@ pub trait ReachabilitySource {
 ///
 /// `scratch` is the one bounded decode buffer a reachability pass needs — §9 costs a full pass at
 /// "at most eight bounded reads of 776 bytes", one per volume-manifest head, into this buffer.
+///
+/// ## Why there is no separate WORK-record root
+///
+/// §9 lists "active operations **and WORK records**" as reachability sources, and only the first is
+/// consulted here. They are the same root. §7: "`BeginWork` reserves the next GenerationId and the
+/// preflighted logical resources in the catalog journal before either physical file is created" —
+/// so a WORK record's generation is always one an active row already carries under
+/// [`ActiveOperation::FLAG_GENERATION_RESERVED`], or one a draft row or `ActiveRideState` names, all
+/// of which are checked. A `WORK` file whose generation none of them names is therefore an orphan by
+/// construction rather than by omission, which is exactly what the collector's pair deletion assumes
+/// when it removes a `WORK` leaf it never classified on its own.
 pub fn classify<S: ReachabilitySource>(
     index: &RamIndex,
     generation: GenerationId,
@@ -278,8 +289,15 @@ pub enum Step {
         /// Why it was kept.
         class: Class,
     },
-    /// A name in a shard is not one §3 produces. §9: GC "stops on an unknown record or path" — it is
-    /// never opened, never deleted, and the pass moves past it without deciding anything about it.
+    /// A name in a shard is not one §3 produces.
+    ///
+    /// §9 says GC "stops on an unknown record or path". Read as *halt the pass*, one stray file
+    /// under one shard would make every generation on the card permanently uncollectable — a
+    /// directory a human can write into is precisely where a stray file comes from, and §12.1
+    /// already establishes that "a stray file there is not corruption". So this is the narrower
+    /// reading, amended into §9 by this change: the unknown entry is left exactly where it is,
+    /// never opened and never deleted, it is reported, and the pass continues past it. Only that
+    /// entry is exempt from collection.
     Unknown {
         /// The name, as it was found.
         leaf: LeafName,
@@ -351,6 +369,11 @@ impl Collector {
         };
         self.cursor.after = Some(leaf);
 
+        // §9's "stops on an unknown record or path", read as narrowly as it can be: the cursor has
+        // already moved past this name, so the entry is skipped rather than the pass halted. The
+        // file is not opened, not deleted and not classified; only it is exempt. Halting instead
+        // would let one stray file in one shard make every generation on the card permanently
+        // uncollectable, and `IMPORT` already establishes that a stray file is not corruption.
         let Some(generation) = leaf.generation() else {
             return Ok(Step::Unknown { leaf });
         };
@@ -576,6 +599,49 @@ mod tests {
         row.generation = GenerationId::new(902);
         let _ = index.actives.push(row);
         assert_eq!(class(&index, &mut card, 902), Class::ResumableWork);
+    }
+
+    /// §9's "active operations and WORK records" are one root, not two: §7 reserves the generation
+    /// in the catalog journal before either file exists, so an active row's reserved generation is
+    /// the only thing a WORK record can be named by.
+    ///
+    /// The half that matters operationally is the negative one — a `WORK` leaf no active row
+    /// reserves is an orphan — because the collector deletes a `WORK` leaf as the pair of a `GEN`
+    /// leaf it classified, and would strand it otherwise.
+    #[test]
+    fn a_work_record_is_rooted_by_its_active_rows_reserved_generation() {
+        let (mut index, _model) = index_with_head();
+        let mut card = Card::default();
+        let mut scratch = scratch();
+
+        // A claim that reserved generation 902 keeps both of its files.
+        let mut row = samples::active(samples::OP_B);
+        row.generation = GenerationId::new(902);
+        assert_ne!(row.flags & ActiveOperation::FLAG_GENERATION_RESERVED, 0);
+        let _ = index.actives.push(row);
+        assert_eq!(classify(&index, GenerationId::new(902), &mut card, &mut scratch).unwrap(), Class::ResumableWork,);
+
+        // A row that reserved nothing roots nothing, even carrying the same numeric generation.
+        index.actives.clear();
+        let mut without = samples::active(samples::OP_B);
+        without.generation = GenerationId::new(902);
+        without.flags &= !ActiveOperation::FLAG_GENERATION_RESERVED;
+        let _ = index.actives.push(without);
+        assert_eq!(classify(&index, GenerationId::new(902), &mut card, &mut scratch).unwrap(), Class::Orphan);
+
+        // And the collector removes both leaves of that orphan, WORK included, without ever having
+        // classified the WORK leaf on its own.
+        let mut tree = Tree::default();
+        tree.add(902);
+        let mut collector = Collector::new();
+        let mut steps = 0;
+        while collector.passes() == 0 {
+            steps += 1;
+            assert!(steps < 4_000);
+            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+        }
+        assert!(tree.generations(Role::Gen).is_empty());
+        assert!(tree.generations(Role::Work).is_empty(), "the WORK leaf of an orphan was stranded");
     }
 
     /// §9 walks the resolution table, not the manifest payload — one bounded read per manifest head.
@@ -828,21 +894,53 @@ mod tests {
         assert_eq!(steps, 2 * SHARD_COUNT, "every shard of both roles is visited exactly once");
     }
 
-    /// A name that is not one §3 produces is never opened and never deleted — §9's "stops on an
-    /// unknown record or path", applied to a stray file rather than to the whole pass.
+    /// A name that is not one §3 produces is never opened and never deleted, and — the half the
+    /// spec sentence had to be narrowed to say — the pass continues past it.
+    ///
+    /// The stray sits between two collectable orphans of the same shard, so a pass that halted on it
+    /// would leave the second one uncollected. That is the difference the §9 amendment makes, and
+    /// asserting only the first half would not have caught it.
     #[test]
-    fn an_unknown_name_is_left_exactly_where_it_is() {
+    fn an_unknown_name_is_left_where_it_is_and_the_pass_continues_past_it() {
         let (index, _model) = index_with_head();
         let mut card = Card::default();
         let mut tree = Tree::default();
+        // All in shard 0, and `ZZZZZZZZ.ZZZ` sorts after both base-36 names.
+        tree.add(0x100);
+        tree.add(0x200);
         let stray = LeafName::parse("00", "ZZZZZZZZ.ZZZ").unwrap();
         tree.files.insert((Role::Gen, stray));
         let mut scratch = scratch();
         let mut collector = Collector::new();
 
+        assert_eq!(
+            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            Step::Deleted { generation: GenerationId::new(0x100) },
+        );
+        assert_eq!(
+            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            Step::Deleted { generation: GenerationId::new(0x200) },
+        );
+        let deletes_before = tree.deletes;
         assert_eq!(collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(), Step::Unknown { leaf: stray });
-        assert_eq!(tree.deletes, 0, "an unknown name was deleted");
-        assert!(tree.files.contains(&(Role::Gen, stray)));
+        assert_eq!(tree.deletes, deletes_before, "an unknown name was deleted");
+        assert!(tree.files.contains(&(Role::Gen, stray)), "an unknown name was removed");
+
+        // And the pass runs on rather than stopping here: the cursor leaves the shard normally and
+        // a later orphan in a later shard is still collected.
+        tree.add(0x105);
+        assert_eq!(
+            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            Step::ShardComplete { role: Role::Gen, shard: 0 },
+        );
+        let mut steps = 0;
+        while collector.passes() == 0 {
+            steps += 1;
+            assert!(steps < 4_000, "the pass halted on the unknown name");
+            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+        }
+        assert!(!tree.generations(Role::Gen).contains(&0x105), "the orphan behind the stray was never collected");
+        assert!(tree.files.contains(&(Role::Gen, stray)), "the stray survived the whole pass, untouched");
     }
 
     /// §9's interrupted pair deletion, at both boundaries: whichever file the cut left behind, the

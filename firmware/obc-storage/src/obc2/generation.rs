@@ -36,6 +36,23 @@
 //! that kept one cannot write at a stale offset even by mistake. That is the same ordering the
 //! resumable profile will need when it arrives, minus the slot.
 //!
+//! ## Where the seal's own crash safety comes from
+//!
+//! Nothing in this module protects the seal itself, and that is deliberate. `seal` performs six
+//! media operations after the payload sync, any of which can be cut, and the writer's own state is
+//! gone at the next boot — so the safety cannot live here. It lives in [`work::recover_work`], and
+//! specifically in §7's reachability filter: a slot "recording an offset the payload cannot reach is
+//! skipped as if invalid", and a qualifying slot is resumed only after its finalized prefix CRC is
+//! proved against the bytes the payload now holds.
+//!
+//! That covers the two orderings a cut can leave. A slot written over a payload whose sync did not
+//! make its length durable records an offset the file cannot reach and is skipped, which is why the
+//! payload sync comes first and why its observed length is checked before the record is built. A
+//! slot torn part-way through its own stride fails its gate and is not a record at all. Either way
+//! recovery reaches "restartable work at offset zero" rather than a sealed record the card does not
+//! back — and the crash matrix asserts exactly that, recomputing the prefix CRC from the durable
+//! payload at every cut point rather than trusting the slot.
+//!
 //! ## The seam
 //!
 //! [`GenerationMedia`] is the media this writer needs, in the terms §7 uses: a payload file that
@@ -55,6 +72,21 @@ use super::work::{Subject, WorkRecord, WorkState};
 pub trait GenerationMedia {
     /// What a media operation can fail with.
     type Error;
+
+    /// Creates this generation's `GEN` and `WORK` shard directories if they are not already there.
+    ///
+    /// The lazy-shard obligation §11 and §12 place on admission, in the one place a generation's
+    /// files are about to be created. It is `make_dir` on a possibly already-present directory,
+    /// which §12 makes "not an error", so a second call costs nothing — about 140 ms the first time
+    /// a shard is used and nothing afterwards. [`mount::shard_to_create`] names which shard.
+    ///
+    /// **The implementation is #1359's.** The writer calls it before the first byte of a transaction
+    /// so the obligation cannot be forgotten at the seam that needs it, but nothing in this slice
+    /// creates a directory: the crash harness satisfies it by recording the call, and the board's
+    /// implementation arrives with the store that owns the FAT handles.
+    ///
+    /// [`mount::shard_to_create`]: super::mount::shard_to_create
+    fn ensure_shards(&mut self, generation: GenerationId) -> Result<(), Self::Error>;
 
     /// The payload file's recorded length, as observed after a sync (§7's `observed payload file
     /// length`).
@@ -202,6 +234,9 @@ pub struct GenerationWriter {
     written: u64,
     crc: obc_crc::Crc32,
     state: WriterState,
+    /// Whether this transaction has already made its shard directories exist. A shard, once
+    /// created, stays; a restart does not undo it.
+    shards_ready: bool,
     /// The `WORK` slot the sealed record will occupy. The restart-only profile writes no streaming
     /// slot, so the pair is empty and seal takes slot zero; the alternating discipline is still the
     /// one §7 states, and the resumable profile will simply arrive with a nonzero value here.
@@ -225,6 +260,7 @@ impl GenerationWriter {
             written: 0,
             crc: obc_crc::Crc32::new(),
             state: WriterState::Streaming,
+            shards_ready: false,
             work_slot: 0,
             work_sequence: 0,
         };
@@ -268,6 +304,13 @@ impl GenerationWriter {
         if would_reach > self.intent.declared_length {
             return Err(WriteError::Overrun { declared: self.intent.declared_length, would_reach });
         }
+        // §12's lazy shards: the leaf's directory has to exist before the leaf does, and this is the
+        // last moment before the payload file is addressed. Idempotent, so the flag is an
+        // optimization rather than a correctness condition.
+        if !self.shards_ready {
+            media.ensure_shards(self.intent.generation).map_err(WriteError::Media)?;
+            self.shards_ready = true;
+        }
         media.write_payload(self.written, bytes).map_err(WriteError::Media)?;
         self.crc.update(bytes);
         self.written = would_reach;
@@ -291,12 +334,18 @@ impl GenerationWriter {
         media: &mut M,
     ) -> Result<Capability, WriteError<M::Error>> {
         self.authorize(capability)?;
-        media.truncate_payload().map_err(WriteError::Media)?;
-        media.sync_payload().map_err(WriteError::Media)?;
-        // Only now, and only after both returned, does this transaction accept bytes again.
+        // The old tenancy ends **before** the media is touched, not after it succeeds. From the
+        // first byte of the truncation onwards the payload no longer matches the offset the old
+        // capability was counting from, so a truncation that fails half-way must not leave that
+        // capability able to append: the writer would carry on at an offset the file no longer has.
+        // Ending it up front makes the failure path the same as the success path — the caller
+        // retries the restart, or aborts — instead of a state where a stale offset is still live.
         self.nonce = self.nonce.wrapping_add(1);
         self.written = 0;
         self.crc = obc_crc::Crc32::new();
+        media.truncate_payload().map_err(WriteError::Media)?;
+        media.sync_payload().map_err(WriteError::Media)?;
+        // Only now, with both returned, is the rewind durable and the fresh capability usable.
         Ok(self.capability())
     }
 
@@ -435,6 +484,7 @@ mod tests {
         pending: Vec<(u64, Vec<u8>)>,
         work: Vec<u8>,
         log: Vec<&'static str>,
+        shards: Vec<super::super::names::ShardName>,
         fail_at: Option<usize>,
         ops: usize,
     }
@@ -456,6 +506,12 @@ mod tests {
 
     impl GenerationMedia for Fake {
         type Error = &'static str;
+
+        fn ensure_shards(&mut self, generation: GenerationId) -> Result<(), &'static str> {
+            self.step("ensure shards")?;
+            self.shards.push(super::super::names::LeafName::of(generation).shard);
+            Ok(())
+        }
 
         fn payload_length(&mut self) -> Result<u64, &'static str> {
             Ok(self.durable_payload_len)
@@ -562,6 +618,7 @@ mod tests {
         assert_eq!(
             media.log,
             std::vec![
+                "ensure shards", // §12's lazy leaf directory, before the leaf can exist
                 "payload write",
                 "payload sync",
                 "work write", // invalidate the gate of the slot about to be used
@@ -572,6 +629,28 @@ mod tests {
                 "work sync",
             ],
         );
+        // The shard is the one §3 maps this generation to, and it is asked for exactly once.
+        assert_eq!(media.shards, std::vec![super::super::names::LeafName::of(GenerationId::new(42)).shard]);
+    }
+
+    /// The shard is created once per transaction, before the payload exists, and a restart does not
+    /// ask again — a directory, once made, stays.
+    #[test]
+    fn the_lazy_shard_is_ensured_once_before_the_payload_is_addressed() {
+        let bytes = payload(1_024);
+        let (mut writer, capability) = GenerationWriter::begin::<&str>(intent(&bytes)).unwrap();
+        let mut media = Fake::new();
+        assert!(media.shards.is_empty(), "begin touched the medium");
+
+        for chunk in bytes.chunks(128) {
+            writer.append(writer.capability(), &mut media, chunk).unwrap();
+        }
+        assert_eq!(media.shards.len(), 1, "the shard was asked for more than once");
+        assert_eq!(media.log[0], "ensure shards", "the payload was addressed before its directory existed");
+
+        let fresh = writer.restart(capability, &mut media).unwrap();
+        writer.append(fresh, &mut media, &bytes).unwrap();
+        assert_eq!(media.shards.len(), 1, "a restart asked for a directory that already exists");
     }
 
     /// The one durable work fact both profiles share is the *only* slot this profile writes: no
@@ -586,7 +665,11 @@ mod tests {
         }
         let _ = capability;
         // Sixteen appends and not one touched the WORK file.
-        assert!(media.log.iter().all(|step| step.starts_with("payload")), "{:?}", media.log);
+        assert!(
+            media.log.iter().all(|step| step.starts_with("payload") || *step == "ensure shards"),
+            "{:?}",
+            media.log,
+        );
         assert!(media.work.iter().all(|&byte| byte == 0), "a streaming slot was written");
 
         let mut scratch = stride();
@@ -625,6 +708,45 @@ mod tests {
         assert_eq!(record.durable_offset, 2_048);
         assert_eq!(record.prefix_crc, obc_crc::crc32(&bytes));
         assert_eq!(media.payload, bytes);
+    }
+
+    /// A restart that fails half-way must still have ended the old tenancy.
+    ///
+    /// The truncation is the moment the payload stops matching the offset the old capability was
+    /// counting from, and a failure gives no evidence about how much of it landed. If the old
+    /// capability survived a failed restart it could append at that stale offset over a file the
+    /// card may already have shortened — so the tenancy ends before the medium is touched, and the
+    /// only way forward is the fresh capability.
+    #[test]
+    fn a_failed_restart_still_ends_the_old_tenancy() {
+        let bytes = payload(2_048);
+        for failing_step in [1usize, 2] {
+            let (mut writer, first) = GenerationWriter::begin::<&str>(intent(&bytes)).unwrap();
+            let mut media = Fake::new();
+            writer.append(first, &mut media, &bytes[..1_024]).unwrap();
+            media.sync_payload().unwrap();
+
+            // Step 1 is the truncation, step 2 the sync that makes it durable.
+            media.fail_at = Some(media.ops + failing_step);
+            assert_eq!(writer.restart(first, &mut media), Err(WriteError::Media("injected")));
+
+            // The old capability is dead however far the truncation got.
+            assert_eq!(
+                writer.append(first, &mut media, &bytes),
+                Err(WriteError::Capability),
+                "step {failing_step}: a failed restart left the stale capability able to append",
+            );
+            assert_eq!(writer.written(), 0, "step {failing_step}: the writer still believes an old offset");
+
+            // And the fresh one restarts cleanly, which is the whole recovery path.
+            media.fail_at = None;
+            let second = writer.restart(writer.capability(), &mut media).unwrap();
+            writer.append(second, &mut media, &bytes).unwrap();
+            let mut scratch = stride();
+            let record = writer.seal(writer.capability(), &mut media, &mut scratch, DraftPartRef::ZERO).unwrap();
+            assert_eq!(record.durable_offset, bytes.len() as u64);
+            assert_eq!(media.payload, bytes, "step {failing_step}: the payload is not the restreamed object");
+        }
     }
 
     /// A capability from another generation, or from a spent tenancy, drives nothing.
@@ -685,6 +807,9 @@ mod tests {
         struct ShortLength(Fake);
         impl GenerationMedia for ShortLength {
             type Error = &'static str;
+            fn ensure_shards(&mut self, generation: GenerationId) -> Result<(), &'static str> {
+                self.0.ensure_shards(generation)
+            }
             fn payload_length(&mut self) -> Result<u64, &'static str> {
                 Ok(self.0.durable_payload_len.saturating_sub(1))
             }
@@ -741,7 +866,8 @@ mod tests {
             writer.append(capability, &mut media, &[0u8; 1]),
             Err(WriteError::Overrun { declared: 100, would_reach: 101 }),
         );
-        assert_eq!(media.log.len(), 1, "the refused append reached the medium");
+        // The shard call and the one accepted write; the refused append added neither.
+        assert_eq!(media.log, std::vec!["ensure shards", "payload write"], "the refused append reached the medium");
         assert_eq!(writer.written(), 100);
     }
 
@@ -757,24 +883,45 @@ mod tests {
         );
     }
 
-    /// A media failure at any step of the seal is reported as itself and leaves the transaction
-    /// streaming — recovery, not the writer, decides what the half-written slot means.
+    /// A media failure at **every** step of the seal is reported as itself and leaves the
+    /// transaction streaming — recovery, not the writer, decides what the half-written slot means.
+    ///
+    /// The seal's seven counted operations are enumerated relative to where the append left the
+    /// medium, so the loop cannot silently stop covering them when the sequence gains or loses one:
+    /// the count is asserted first.
     #[test]
     fn a_media_failure_anywhere_in_the_seal_is_reported_and_seals_nothing() {
         let bytes = payload(512);
-        for step in 1..=9usize {
+
+        // How many counted operations a clean seal performs, measured rather than assumed.
+        let seal_ops = {
             let (mut writer, capability) = GenerationWriter::begin::<&str>(intent(&bytes)).unwrap();
             let mut media = Fake::new();
             let mut scratch = stride();
             writer.append(capability, &mut media, &bytes).unwrap();
-            media.fail_at = Some(step + 1);
-            match writer.seal(writer.capability(), &mut media, &mut scratch, DraftPartRef::ZERO) {
-                Err(WriteError::Media("injected")) => {
-                    assert_eq!(writer.state(), WriterState::Streaming, "step {step} sealed despite failing");
-                }
-                Ok(_) => assert!(step >= 8, "step {step} was injected but the seal completed"),
-                other => panic!("step {step}: {other:?}"),
-            }
+            let before = media.ops;
+            writer.seal(writer.capability(), &mut media, &mut scratch, DraftPartRef::ZERO).unwrap();
+            media.ops - before
+        };
+        assert_eq!(seal_ops, 7, "the payload sync plus the six of a gated WORK slot");
+
+        for step in 1..=seal_ops {
+            let (mut writer, capability) = GenerationWriter::begin::<&str>(intent(&bytes)).unwrap();
+            let mut media = Fake::new();
+            let mut scratch = stride();
+            writer.append(capability, &mut media, &bytes).unwrap();
+            media.fail_at = Some(media.ops + step);
+            let before = writer.capability();
+            assert_eq!(
+                writer.seal(before, &mut media, &mut scratch, DraftPartRef::ZERO),
+                Err(WriteError::Media("injected")),
+                "step {step} of the seal was injected but the seal completed",
+            );
+            assert_eq!(writer.state(), WriterState::Streaming, "step {step} sealed despite failing");
+            assert_eq!(writer.capability(), before, "step {step}: a failed seal spent the capability");
+            // The transaction is retryable: the payload is unchanged, so the same seal can run again.
+            media.fail_at = None;
+            assert!(writer.seal(before, &mut media, &mut scratch, DraftPartRef::ZERO).is_ok(), "step {step} retry");
         }
     }
 

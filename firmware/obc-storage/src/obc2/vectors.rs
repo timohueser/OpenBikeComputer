@@ -2163,8 +2163,8 @@ const ARM_ADVANCE: [Step; 6] = [
 ];
 
 const MANIFEST_PUBLICATION: [Step; 6] = [
-    write("GEN", 0, 0, "the resolution generation's complete body, written once in one shot"),
-    sync("GEN", "the reserved generation is durable but names nothing yet"),
+    write("GEN.PRE", 0, 0, "the resolution generation's complete body, written once in one shot"),
+    sync("GEN.PRE", "the reserved generation is durable but names nothing yet"),
     write("COMMIT.JNL", 0, SLOT_STRIDE, "the terminal record that publishes the manifest head"),
     sync("COMMIT.JNL", "its body"),
     write("COMMIT.JNL", JOURNAL_GATE_OFFSET, 512, "its gate"),
@@ -2172,8 +2172,8 @@ const MANIFEST_PUBLICATION: [Step; 6] = [
 ];
 
 const RIDE_CHECKPOINT: [Step; 8] = [
-    write("GEN", 1_024, 0, "the ride's new samples, appended at the durable offset"),
-    sync("GEN", "the payload is durable before any slot names it"),
+    write("GEN.PRE", 1_024, 0, "the ride's new samples, appended at the durable offset"),
+    sync("GEN.PRE", "the payload is durable before any slot names it"),
     write("RIDE.ACT", SLOT_STRIDE + SMALL_GATE_OFFSET, 512, "invalidate the gate of slot sequence mod 16"),
     sync("RIDE.ACT", "the previous highest valid slot is still authoritative"),
     write("RIDE.ACT", SLOT_STRIDE, SLOT_STRIDE, "the new body, with a zeroed gate sector and pad"),
@@ -2202,12 +2202,12 @@ const ARM_STEADY_STATE: [Step; 6] = [
 
 const GENERATION_SEAL: [Step; 8] = [
     write(
-        "GEN",
+        "GEN.NEW",
         0,
         0,
         "the whole payload, streamed from offset zero; the restart-only profile acknowledges none of it",
     ),
-    sync("GEN", "the payload bytes and the length its directory entry records are durable"),
+    sync("GEN.NEW", "the payload bytes and the length its directory entry records are durable"),
     write("WORK", SMALL_GATE_OFFSET, 512, "invalidate the gate of the slot about to hold the sealed record"),
     sync("WORK", "no slot claims an offset over the payload at any point of this sequence"),
     write("WORK", 0, SLOT_STRIDE, "the sealed body, with a zeroed gate sector and pad"),
@@ -2217,9 +2217,9 @@ const GENERATION_SEAL: [Step; 8] = [
 ];
 
 const GENERATION_RESTART: [Step; 3] = [
-    truncate("GEN", "truncate the claimed generation to zero"),
-    sync("GEN", "the rewind is durable; only now may a byte be accepted at offset zero"),
-    write("GEN", 0, 0, "the restreamed payload, from offset zero under the same GenerationId"),
+    truncate("GEN.NEW", "truncate the claimed generation to zero"),
+    sync("GEN.NEW", "the rewind is durable; only now may a byte be accepted at offset zero"),
+    write("GEN.NEW", 0, 0, "the restreamed payload, from offset zero under the same GenerationId"),
 ];
 
 const LEASE_RECOVERY_CLEAR: [Step; 8] = [

@@ -73,9 +73,21 @@ struct Card {
     arm: [FileId; 2],
     ride: FileId,
     work: FileId,
+    /// `GEN.PRE` — a generation that already exists at its full length: the ride journal's payload,
+    /// appended to inside a file that was there before, and §8's one-shot resolution table.
     payload: FileId,
+    /// `GEN.NEW` — the generation an upload is *creating*: empty at first, extended by writes, and
+    /// with a recorded length that becomes durable only at the sync following the write that
+    /// changed it.
+    ///
+    /// The two are separate files with separate labels because the transcripts name the file each
+    /// step addresses, and one `GEN` for both would make a reader guess. Neither label is a §3 name
+    /// — a real card names both through the leaf mapping — they are harness labels.
     gen_payload: FileId,
     init: FileId,
+    /// The shard directories §12 would have created on first use. Recorded, not created: see
+    /// [`CardGeneration::ensure_shards`].
+    shards_created: Vec<super::names::ShardName>,
 }
 
 /// The payload length the scenarios use for the one fixed-length generation they write.
@@ -93,10 +105,20 @@ impl Card {
         let ride = media.create("RIDE.ACT", RIDE_FILE_LEN);
         let init = media.create("INIT.REC", SLOT_FILE_LEN);
         let work = media.create("WORK", WORK_FILE_LEN);
-        let payload = media.create("GEN", PAYLOAD_LEN);
-        let gen_payload = media.create_payload("GEN");
-        let mut card =
-            Card { media, cat: [cat0, cat1], journal, arm: [arm0, arm1], ride, work, payload, gen_payload, init };
+        let payload = media.create("GEN.PRE", PAYLOAD_LEN);
+        let gen_payload = media.create_payload("GEN.NEW");
+        let mut card = Card {
+            media,
+            cat: [cat0, cat1],
+            journal,
+            arm: [arm0, arm1],
+            ride,
+            work,
+            payload,
+            gen_payload,
+            init,
+            shards_created: Vec::new(),
+        };
         card.install_checkpoint(0, model);
         card
     }
@@ -670,6 +692,15 @@ struct CardGeneration<'a> {
 
 impl generation::GenerationMedia for CardGeneration<'_> {
     type Error = MediaError;
+
+    /// §12's lazy shards, recorded rather than performed: this harness is sector-addressed and has
+    /// no directories at all. The obligation is real and is #1359's to implement; what the crash
+    /// matrix owes is that the writer asks for it before it addresses the payload, which the
+    /// transcript's operation count would show if it stopped happening.
+    fn ensure_shards(&mut self, generation: GenerationId) -> Result<(), MediaError> {
+        self.card.shards_created.push(super::names::LeafName::of(generation).shard);
+        Ok(())
+    }
 
     fn payload_length(&mut self) -> Result<u64, MediaError> {
         Ok(self.card.media.len(self.card.gen_payload) as u64)
@@ -1258,9 +1289,20 @@ fn blank_card(seed: u64) -> Card {
     let ride = media.create("RIDE.ACT", RIDE_FILE_LEN);
     let init = media.create("INIT.REC", SLOT_FILE_LEN);
     let work = media.create("WORK", WORK_FILE_LEN);
-    let payload = media.create("GEN", PAYLOAD_LEN);
-    let gen_payload = media.create_payload("GEN");
-    Card { media, cat: [cat0, cat1], journal, arm: [arm0, arm1], ride, work, payload, gen_payload, init }
+    let payload = media.create("GEN.PRE", PAYLOAD_LEN);
+    let gen_payload = media.create_payload("GEN.NEW");
+    Card {
+        media,
+        cat: [cat0, cat1],
+        journal,
+        arm: [arm0, arm1],
+        ride,
+        work,
+        payload,
+        gen_payload,
+        init,
+        shards_created: Vec::new(),
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -2278,8 +2320,7 @@ fn the_checked_in_transcripts_match_the_operations_the_harness_performs() {
             .unwrap_or_else(|| panic!("{} has no observed run", transcript.name));
         assert_eq!(log.len(), transcript.steps.len(), "{}: operation count", transcript.name);
         for (index, (step, operation)) in transcript.steps.iter().zip(log.iter()).enumerate() {
-            let step_file = if step.file == "GEN" { "GEN" } else { step.file };
-            assert_eq!(operation.file, step_file, "{} op {}: file", transcript.name, index + 1);
+            assert_eq!(operation.file, step.file, "{} op {}: file", transcript.name, index + 1);
             assert_eq!(operation.kind, step.kind, "{} op {}: kind", transcript.name, index + 1);
             assert_eq!(operation.offset, step.offset, "{} op {}: offset", transcript.name, index + 1);
             // A zero length in a transcript means "a body whose size the payload decides"; every

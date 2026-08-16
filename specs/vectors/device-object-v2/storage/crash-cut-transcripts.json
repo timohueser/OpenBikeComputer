@@ -224,8 +224,8 @@
       "stepCount": 6,
       "cutPoints": 18,
       "steps": [
-        { "op": 1, "file": "GEN", "kind": "write", "offset": 0, "length": 0, "note": "the resolution generation's complete body, written once in one shot" },
-        { "op": 2, "file": "GEN", "kind": "sync", "offset": 0, "length": 0, "note": "the reserved generation is durable but names nothing yet" },
+        { "op": 1, "file": "GEN.PRE", "kind": "write", "offset": 0, "length": 0, "note": "the resolution generation's complete body, written once in one shot" },
+        { "op": 2, "file": "GEN.PRE", "kind": "sync", "offset": 0, "length": 0, "note": "the reserved generation is durable but names nothing yet" },
         { "op": 3, "file": "COMMIT.JNL", "kind": "write", "offset": 0, "length": 16384, "note": "the terminal record that publishes the manifest head" },
         { "op": 4, "file": "COMMIT.JNL", "kind": "sync", "offset": 0, "length": 0, "note": "its body" },
         { "op": 5, "file": "COMMIT.JNL", "kind": "write", "offset": 1536, "length": 512, "note": "its gate" },
@@ -244,8 +244,8 @@
       "stepCount": 8,
       "cutPoints": 24,
       "steps": [
-        { "op": 1, "file": "GEN", "kind": "write", "offset": 1024, "length": 0, "note": "the ride's new samples, appended at the durable offset" },
-        { "op": 2, "file": "GEN", "kind": "sync", "offset": 0, "length": 0, "note": "the payload is durable before any slot names it" },
+        { "op": 1, "file": "GEN.PRE", "kind": "write", "offset": 1024, "length": 0, "note": "the ride's new samples, appended at the durable offset" },
+        { "op": 2, "file": "GEN.PRE", "kind": "sync", "offset": 0, "length": 0, "note": "the payload is durable before any slot names it" },
         { "op": 3, "file": "RIDE.ACT", "kind": "write", "offset": 16896, "length": 512, "note": "invalidate the gate of slot sequence mod 16" },
         { "op": 4, "file": "RIDE.ACT", "kind": "sync", "offset": 0, "length": 0, "note": "the previous highest valid slot is still authoritative" },
         { "op": 5, "file": "RIDE.ACT", "kind": "write", "offset": 16384, "length": 16384, "note": "the new body, with a zeroed gate sector and pad" },
@@ -453,8 +453,8 @@
       "stepCount": 8,
       "cutPoints": 24,
       "steps": [
-        { "op": 1, "file": "GEN", "kind": "write", "offset": 0, "length": 0, "note": "the whole payload, streamed from offset zero; the restart-only profile acknowledges none of it" },
-        { "op": 2, "file": "GEN", "kind": "sync", "offset": 0, "length": 0, "note": "the payload bytes and the length its directory entry records are durable" },
+        { "op": 1, "file": "GEN.NEW", "kind": "write", "offset": 0, "length": 0, "note": "the whole payload, streamed from offset zero; the restart-only profile acknowledges none of it" },
+        { "op": 2, "file": "GEN.NEW", "kind": "sync", "offset": 0, "length": 0, "note": "the payload bytes and the length its directory entry records are durable" },
         { "op": 3, "file": "WORK", "kind": "write", "offset": 512, "length": 512, "note": "invalidate the gate of the slot about to hold the sealed record" },
         { "op": 4, "file": "WORK", "kind": "sync", "offset": 0, "length": 0, "note": "no slot claims an offset over the payload at any point of this sequence" },
         { "op": 5, "file": "WORK", "kind": "write", "offset": 0, "length": 16384, "note": "the sealed body, with a zeroed gate sector and pad" },
@@ -475,9 +475,9 @@
       "stepCount": 3,
       "cutPoints": 9,
       "steps": [
-        { "op": 1, "file": "GEN", "kind": "truncate", "offset": 0, "length": 0, "note": "truncate the claimed generation to zero" },
-        { "op": 2, "file": "GEN", "kind": "sync", "offset": 0, "length": 0, "note": "the rewind is durable; only now may a byte be accepted at offset zero" },
-        { "op": 3, "file": "GEN", "kind": "write", "offset": 0, "length": 0, "note": "the restreamed payload, from offset zero under the same GenerationId" }
+        { "op": 1, "file": "GEN.NEW", "kind": "truncate", "offset": 0, "length": 0, "note": "truncate the claimed generation to zero" },
+        { "op": 2, "file": "GEN.NEW", "kind": "sync", "offset": 0, "length": 0, "note": "the rewind is durable; only now may a byte be accepted at offset zero" },
+        { "op": 3, "file": "GEN.NEW", "kind": "write", "offset": 0, "length": 0, "note": "the restreamed payload, from offset zero under the same GenerationId" }
       ],
       "admissibleOutcomes": [
         "the old durable prefix, when the truncation never reached the card",
