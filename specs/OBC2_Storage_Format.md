@@ -1217,9 +1217,19 @@ and the domain-retention reason only by the repository that set it.
 Reachability is computed from catalog heads, each published manifest's resolution generation and the
 children it names, the open draft parent and its sealed parts, active operations and WORK records,
 ActiveRideState and its matching RIDE slot, retained previous entries, the current update handoff,
-and live leases. GC processes at most one generation per invocation,
+and live leases. A WORK record needs no root of its own: `BeginWork` reserves the GenerationId in
+the catalog journal before either physical file exists (section 7), so every WORK record's
+generation is one an active row, a draft row or ActiveRideState already names, and a WORK file whose
+generation none of them names is an orphan by construction. GC processes at most one generation per
+invocation,
 recomputes reachability under the CardStore lock immediately before deletion, and stops on an
-unknown record or path. Deleting an unreachable GEN/WORK pair may be interrupted at either file;
+unknown record or path. **Stopping is confined to that entry**: the unknown name is left exactly
+where it is — never opened, never deleted, never renamed — it is reported through the same bounded
+diagnostics as any other finding, and the pass continues past it. Only that entry is exempt from
+collection. Halting the whole pass instead would let one stray file under one shard make every
+generation on the card permanently uncollectable, and section 12.1 already settles that a file a
+human wrote into a directory is not corruption. Deleting an unreachable GEN/WORK pair may be
+interrupted at either file;
 both orderings recover as harmless orphan cleanup because no catalog fact points to it. Publication
 never waits for deletion and never edits an old generation.
 
