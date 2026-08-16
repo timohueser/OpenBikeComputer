@@ -1,0 +1,373 @@
+/**
+ * The metadata envelope codec, Device_Object_Protocol_v3.md §2.2 plus the registry's schemas.
+ *
+ * The envelope is the one place a domain adds a bounded declared fact without touching the wire
+ * contract, so it is also the one place with two independent layers of rules: a *canonical form*
+ * (strictly increasing unique base tags, an exact field-byte sum, no padding) and a *schema* (which
+ * tags exist, how wide each is, which are required, and what a decoder does with one it does not
+ * know). They report different things — the structural faults are `noncanonicalMetadata`,
+ * `duplicateField` and `outOfOrderField`, and the schema faults are `invalidCombination`,
+ * `schemaVersion` and `logicalKind` — and §2.2 says outright that a decoder reporting the wrong one
+ * is nonconforming.
+ */
+
+import { Cursor, Writer } from "./bytes";
+import {
+    ENVELOPE_CEILING,
+    ENVELOPE_HEADER_BYTES,
+    OBJECT_KIND_NAME,
+    SCHEMA_ROLE_OF_VERSION,
+    metadataSchema,
+    type MetadataFieldSpec,
+    type MetadataSchema,
+    type ObjectKindName,
+    type SchemaRole,
+} from "./registry";
+import { reject } from "./result";
+
+export const CRITICAL_BIT = 0x8000;
+export const BASE_TAG_MASK = 0x7fff;
+
+/** One encoded field, kept verbatim so an envelope re-encodes byte for byte. */
+export interface MetadataField {
+    readonly tag: number;
+    readonly critical: boolean;
+    readonly baseTag: number;
+    readonly value: Uint8Array;
+}
+
+export type MetadataValue = number | bigint | boolean | string | Uint8Array;
+
+export interface MetadataEnvelope {
+    readonly schemaId: number;
+    readonly schemaVersion: number;
+    readonly kind: ObjectKindName;
+    readonly role: SchemaRole;
+    readonly fields: readonly MetadataField[];
+    /** Named values for every field this schema knows. Unknown noncritical fields are not here. */
+    readonly values: ReadonlyMap<string, MetadataValue>;
+    /** Total encoded length, `8 + encoded_field_bytes`. */
+    readonly byteLength: number;
+}
+
+export interface EnvelopeContext {
+    /** The ObjectKind of the containing message; `schema_id` must match it exactly. */
+    readonly kind?: ObjectKindName;
+    /** The operation's schema role; the version byte must be the registered constant for it. */
+    readonly role?: SchemaRole;
+    /**
+     * Mutating requests reject every unknown field, critical or not. Response projections reject an
+     * unknown critical field and may skip a well-formed unknown noncritical one.
+     */
+    readonly mutating: boolean;
+}
+
+/** Reads the declared total length of an envelope without validating it. Used for framing. */
+export function envelopeLength(bytes: Uint8Array, at: number): number {
+    if (bytes.length < at + ENVELOPE_HEADER_BYTES) {
+        reject("invalidDescriptor", "nestedLength", "a metadata envelope needs its eight-byte header");
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return ENVELOPE_HEADER_BYTES + view.getUint16(at + 4, true);
+}
+
+export function decodeMetadataEnvelope(bytes: Uint8Array, context: EnvelopeContext): MetadataEnvelope {
+    const head = new Cursor(bytes, { category: "invalidDescriptor", detail: "nestedLength" });
+    const schemaId = head.u16();
+    const schemaVersion = head.u8();
+    const flags = head.u8();
+    const encodedFieldBytes = head.u16();
+    const fieldCount = head.u16();
+
+    if (flags !== 0) reject("invalidDescriptor", "reservedBits", "metadata envelope header flags are zero");
+
+    const role = SCHEMA_ROLE_OF_VERSION.get(schemaVersion);
+    if (role === undefined) {
+        reject("unsupportedCapability", "schemaVersion", `schema version ${schemaVersion} is not registered`);
+    }
+    if (context.role !== undefined && role !== context.role) {
+        reject(
+            "unsupportedCapability",
+            "schemaVersion",
+            `this operation carries a ${context.role} envelope, not a ${role} one`,
+        );
+    }
+
+    const byteLength = ENVELOPE_HEADER_BYTES + encodedFieldBytes;
+    if (byteLength > ENVELOPE_CEILING[role]) {
+        reject(
+            "invalidDescriptor",
+            "nestedLength",
+            `a ${role} envelope is at most ${ENVELOPE_CEILING[role]} bytes, this one declares ${byteLength}`,
+        );
+    }
+
+    const kind = OBJECT_KIND_NAME.get(schemaId);
+    if (context.kind !== undefined && kind !== context.kind) {
+        reject(
+            "invalidDescriptor",
+            "invalidCombination",
+            `schema_id ${schemaId} does not match the containing ObjectKind`,
+        );
+    }
+    if (kind === undefined) {
+        reject("unsupportedCapability", "logicalKind", `schema_id ${schemaId} is not a registered ObjectKind`);
+    }
+    const schema = metadataSchema(kind, role);
+    if (schema === undefined) {
+        reject("unsupportedCapability", "logicalKind", `${kind} has no ${role} schema`);
+    }
+    if (bytes.length < byteLength) {
+        reject("invalidDescriptor", "nestedLength", "the metadata envelope runs past its containing message");
+    }
+
+    const fields = decodeFields(bytes.subarray(ENVELOPE_HEADER_BYTES, byteLength), fieldCount);
+    const values = applySchema(fields, schema, context.mutating);
+    // The registry's per-kind maximum is the *last* schema check, not the first. A projection
+    // carrying an unknown critical field is rejected for that field even when its envelope also
+    // happens to be oversized; a projection whose unknown field is noncritical is skipped, and then
+    // its size is what remains wrong. The two catalog-projection negatives pin exactly that order.
+    if (byteLength > schema.maxBytes) {
+        reject(
+            "invalidDescriptor",
+            "nestedLength",
+            `the ${kind} ${role} schema is at most ${schema.maxBytes} bytes, this envelope declares ${byteLength}`,
+        );
+    }
+    return { schemaId, schemaVersion, kind, role, fields, values, byteLength };
+}
+
+function decodeFields(body: Uint8Array, declaredCount: number): MetadataField[] {
+    const fields: MetadataField[] = [];
+    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    let at = 0;
+    let previousBaseTag = 0;
+    while (at < body.length) {
+        if (body.length - at < 4) {
+            reject("invalidDescriptor", "noncanonicalMetadata", "a field header runs past the encoded field bytes");
+        }
+        const tag = view.getUint16(at, true);
+        const valueLength = view.getUint16(at + 2, true);
+        const baseTag = tag & BASE_TAG_MASK;
+        if (baseTag === 0) {
+            reject("invalidDescriptor", "noncanonicalMetadata", "the low 15 bits of a tag are a nonzero base tag");
+        }
+        if (fields.length > 0) {
+            if (baseTag === previousBaseTag) {
+                reject("invalidDescriptor", "duplicateField", `base tag ${baseTag} appears twice`);
+            }
+            if (baseTag < previousBaseTag) {
+                reject("invalidDescriptor", "outOfOrderField", "fields are strictly increasing by base tag");
+            }
+        }
+        if (body.length - at - 4 < valueLength) {
+            reject(
+                "invalidDescriptor",
+                "noncanonicalMetadata",
+                "encoded_field_bytes is the exact sum of every 4 + value_length",
+            );
+        }
+        fields.push({
+            tag,
+            critical: (tag & CRITICAL_BIT) !== 0,
+            baseTag,
+            value: body.slice(at + 4, at + 4 + valueLength),
+        });
+        previousBaseTag = baseTag;
+        at += 4 + valueLength;
+    }
+    if (fields.length !== declaredCount) {
+        reject(
+            "invalidDescriptor",
+            "noncanonicalMetadata",
+            `field_count says ${declaredCount} and the body carries ${fields.length}`,
+        );
+    }
+    return fields;
+}
+
+function applySchema(
+    fields: readonly MetadataField[],
+    schema: MetadataSchema,
+    mutating: boolean,
+): ReadonlyMap<string, MetadataValue> {
+    const byTag = new Map(schema.fields.map((spec) => [spec.tag, spec]));
+    const values = new Map<string, MetadataValue>();
+    for (const encoded of fields) {
+        const spec = byTag.get(encoded.tag);
+        if (spec === undefined) {
+            if (mutating) {
+                reject(
+                    "invalidDescriptor",
+                    "invalidCombination",
+                    `a mutating request rejects the unknown field 0x${encoded.tag.toString(16)}`,
+                );
+            }
+            if (encoded.critical) {
+                reject(
+                    "invalidDescriptor",
+                    "invalidCombination",
+                    `a projection rejects the unknown critical field 0x${encoded.tag.toString(16)}`,
+                );
+            }
+            continue;
+        }
+        values.set(spec.name, decodeFieldValue(spec, encoded.value));
+    }
+    for (const spec of schema.fields) {
+        if (spec.required && !values.has(spec.name)) {
+            reject(
+                "invalidDescriptor",
+                "invalidCombination",
+                `the ${schema.kind} ${schema.role} schema requires ${spec.name}`,
+            );
+        }
+    }
+    return values;
+}
+
+function widthOf(spec: MetadataFieldSpec): number | undefined {
+    switch (spec.type.kind) {
+        case "u8":
+        case "bool":
+            return 1;
+        case "u16":
+            return 2;
+        case "u32":
+        case "i32":
+            return 4;
+        case "u64":
+        case "i64":
+            return 8;
+        case "bytes":
+            return spec.type.exact;
+        case "text":
+            return undefined;
+    }
+}
+
+function decodeFieldValue(spec: MetadataFieldSpec, value: Uint8Array): MetadataValue {
+    const width = widthOf(spec);
+    if (width !== undefined && value.length !== width) {
+        reject(
+            "invalidDescriptor",
+            "noncanonicalMetadata",
+            `${spec.name} is registered at ${width} bytes and carries ${value.length}`,
+        );
+    }
+    const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+    switch (spec.type.kind) {
+        case "u8":
+            return view.getUint8(0);
+        case "u16":
+            return view.getUint16(0, true);
+        case "u32":
+            return view.getUint32(0, true);
+        case "u64":
+            return view.getBigUint64(0, true);
+        case "i32":
+            return view.getInt32(0, true);
+        case "i64":
+            return view.getBigInt64(0, true);
+        case "bool": {
+            const raw = view.getUint8(0);
+            if (raw > 1) reject("invalidDescriptor", "unknownEnum", `${spec.name} is exactly 0 or 1`);
+            return raw === 1;
+        }
+        case "bytes":
+            return value.slice();
+        case "text": {
+            if (value.length < spec.type.min || value.length > spec.type.max) {
+                reject(
+                    "invalidDescriptor",
+                    "noncanonicalMetadata",
+                    `${spec.name} is registered at ${spec.type.min}-${spec.type.max} bytes and carries ${value.length}`,
+                );
+            }
+            return decodeWireText(value, spec.name);
+        }
+    }
+}
+
+export function encodeMetadataEnvelope(envelope: MetadataEnvelope): Uint8Array {
+    let encodedFieldBytes = 0;
+    for (const encoded of envelope.fields) encodedFieldBytes += 4 + encoded.value.length;
+    const writer = new Writer(ENVELOPE_HEADER_BYTES + encodedFieldBytes);
+    writer.u16(envelope.schemaId).u8(envelope.schemaVersion).u8(0).u16(encodedFieldBytes).u16(envelope.fields.length);
+    for (const encoded of envelope.fields) writer.u16(encoded.tag).u16(encoded.value.length).raw(encoded.value);
+    return writer.finish();
+}
+
+/**
+ * §2.2's text rule: shortest-form valid UTF-8 with no NUL, C0/C1 control, surrogate, or noncharacter
+ * scalar. Accepted bytes are canonical as-is — no normalizing, trimming, or case folding — so this
+ * validates and then decodes, and never rewrites.
+ *
+ * `TextDecoder` cannot stand in for it: it replaces bad sequences rather than reporting them, and
+ * even in fatal mode it says nothing about C0 controls or noncharacters.
+ */
+export function decodeWireText(bytes: Uint8Array, what: string): string {
+    const scalars: number[] = [];
+    let at = 0;
+    const bad = (why: string): never =>
+        reject("invalidDescriptor", "noncanonicalMetadata", `${what} is not ${why} (offset ${at})`);
+    while (at < bytes.length) {
+        const lead = bytes[at];
+        let scalar: number;
+        let width: number;
+        if (lead < 0x80) {
+            scalar = lead;
+            width = 1;
+        } else if (lead >= 0xc2 && lead <= 0xdf) {
+            scalar = lead & 0x1f;
+            width = 2;
+        } else if (lead >= 0xe0 && lead <= 0xef) {
+            scalar = lead & 0x0f;
+            width = 3;
+        } else if (lead >= 0xf0 && lead <= 0xf4) {
+            scalar = lead & 0x07;
+            width = 4;
+        } else {
+            return bad("valid UTF-8");
+        }
+        if (at + width > bytes.length) return bad("valid UTF-8");
+        for (let i = 1; i < width; i++) {
+            const continuation = bytes[at + i];
+            if ((continuation & 0xc0) !== 0x80) return bad("valid UTF-8");
+            scalar = (scalar << 6) | (continuation & 0x3f);
+        }
+        // Shortest form, and the surrogate and above-U+10FFFF holes.
+        if (width === 3 && scalar < 0x800) return bad("shortest-form UTF-8");
+        if (width === 4 && (scalar < 0x10000 || scalar > 0x10ffff)) return bad("shortest-form UTF-8");
+        if (scalar >= 0xd800 && scalar <= 0xdfff) return bad("free of surrogate scalars");
+        if (scalar === 0) return bad("free of NUL");
+        if (scalar < 0x20 || (scalar >= 0x7f && scalar <= 0x9f)) return bad("free of C0/C1 controls");
+        if (scalar >= 0xfdd0 && scalar <= 0xfdef) return bad("free of noncharacters");
+        if ((scalar & 0xfffe) === 0xfffe) return bad("free of noncharacters");
+        scalars.push(scalar);
+        at += width;
+    }
+    return String.fromCodePoint(...scalars);
+}
+
+/**
+ * §12's rendering rule for diagnostic text: a receiver never rejects a frame over it, and renders
+ * it lossily — dropping any sequence that is not valid, non-control, non-noncharacter UTF-8.
+ */
+export function renderDiagnosticText(bytes: Uint8Array): string {
+    let out = "";
+    let at = 0;
+    while (at < bytes.length) {
+        for (let width = Math.min(4, bytes.length - at); width >= 1; width--) {
+            const slice = bytes.subarray(at, at + width);
+            try {
+                out += decodeWireText(slice, "text");
+                at += width;
+                break;
+            } catch {
+                if (width === 1) at += 1;
+            }
+        }
+    }
+    return out;
+}
