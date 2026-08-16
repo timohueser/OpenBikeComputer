@@ -154,6 +154,12 @@ schema-disallowed width is `invalidDescriptor/noncanonicalMetadata`. A duplicate
 `invalidDescriptor/outOfOrderField`; those two details exist for exactly this condition and no
 other, and a decoder that reports `noncanonicalMetadata` for them is nonconforming.
 
+Validation order is fixed so that an envelope failing more than one rule reports one deterministic
+error: canonical form first (this paragraph), then the schema's field rules (identity, version,
+required/optional, widths, ranges, text validity), and the per-kind registered maximum last. An
+envelope is measured against that maximum only after its fields validate, so an unknown critical
+field in an oversized envelope reports the field error, not the size.
+
 Schema integers use their exact registered width and little-endian encoding; signed values use
 two's-complement at that width. Booleans are one byte and exactly `0` or `1`. Byte strings are
 copied verbatim at their registered exact or bounded length. Text length counts encoded bytes.
@@ -599,6 +605,16 @@ All three resumable acceptances — UploadAccepted, DraftPartAccepted, and the F
 acceptance — carry these flags in the same place: a `u16` at offset 2, with resumed-work bit 0 and
 restart-at-zero bit 1. The byte at offset 1 is whatever that message needs (target mode here,
 reserved in the other two), so one decoder reads the flag word identically in all three.
+
+Resumable upload is an advertised capability, never an obligation. A device that advertises no
+resumable kind — the **restart-only profile** — is fully conforming: every row of the table above
+resolves to a restart or fresh-work outcome, resumed-work is never set, and no durable next offset
+above zero is ever reported. The initial DOS v2 device firmware ships the restart-only profile.
+Resumable upload earns its durable-checkpoint machinery only when a product flow streams
+multi-minute payloads over a link that drops routinely — background BLE map delivery is the
+motivating case — and enabling it later is an advertising and implementation change on the device,
+not a wire change: this contract, its acceptances, and its vectors are already complete for both
+profiles.
 
 An acceptance carrying restart-at-zero is emitted **only after** the durable restart record of
 [`OBC2_Storage_Format.md`](OBC2_Storage_Format.md) §7 is synchronized. The device has recorded
@@ -1507,7 +1523,12 @@ fault and contains exactly 24 bytes: category `u16`, detail `u16`, expected next
 durable next offset `u64`, disposition `u8`, and three reserved bytes. Dispositions are resume with
 new session `0`, operation durably aborted `1`, and stream transport closed/query status `2`.
 Only namespace-zero transport category/details from Section 12 are valid in this compact body;
-semantic/domain errors use a correlated control response.
+semantic/domain errors use a correlated control response. The transport set is exactly these ten
+categories and no others: `invalidFrame`, `invalidDescriptor`, `invalidOffset`, `invalidSession`,
+`checksumFailure`, `mediaUnavailable`, `mediaIo`, `cancelled`, `linkLost`, and `internal`.
+`resourceLimit` is deliberately excluded — every bounded resource a stream could exhaust is
+reserved at admission, so an attached session has no resource-limit condition to report — and
+`semanticValidation` is excluded because the body has no namespace field to scope its detail.
 
 The legal flag combinations are exhaustive, per direction, and every other combination is
 `invalidFrame`:

@@ -321,6 +321,20 @@ client that hit it had to retry with a different preference. The byte now means 
 restart-at-zero, every combination is accepted, and the acceptance flags already tell the client
 which happened. Reserved: `objectNotFound/resumableWork` and resume values above `1`.
 
+**S8 — the initial device profile is restart-only (2026-08-16, owner decision).** Resumable upload
+stays in the wire contract as an advertised per-kind capability, but no kind advertises it in the
+initial firmware: every transfer restarts at zero on interruption. The measured flows justify this —
+routes, trips, and weather restart in seconds by design; an update package restarts in tens of
+seconds; a full map over USB restarts in minutes on a link that rarely fails, and bulk delivery has
+the card-reader import path. The one flow that genuinely needs resume — background BLE map delivery,
+where a multi-hour transfer meets a link that drops by design — is not a product feature today.
+Cutting the implementation removes the streaming WORK-slot machinery, its recovery cases, and its
+fault-injection surface from DOS2/DOS3, while keeping the contract, acceptances, and vectors
+complete for both profiles: enabling resume later is a device-side advertising and implementation
+change with no wire or on-card format change. Rejected alternative: cutting resume from the wire
+contract too — retrofitting fields into frozen acceptances would need a wire major, so the contract
+keeps what the device may grow into.
+
 ## Rejected alternatives
 
 - Reusing wire major 2: an existing peer could pass version discovery and misdecode traffic.
