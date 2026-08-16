@@ -1,0 +1,67 @@
+{
+  "name": "work-slot",
+  "suite": "device-object-v2",
+  "kind": "storage",
+  "storage_format": 1,
+  "section": "OBC2_Storage_Format.md §7",
+  "description": "The WORK slot both device profiles can hold, including the observed-length field the mandatory rewind is decided from.",
+  "caseCount": 4,
+  "cases": [
+  {
+    "name": "streaming",
+    "note": "A durable checkpoint at offset 4,096.",
+    "subject": "workSlot",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "54f2701be06c73150bdf3b71bb6a69afeb36f00dd98def412eca1639d5708ebb",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f32574b0100b0003c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111" },
+      { "offset": 104, "hex": "2a00000000000000000001000000000078563412010000000010000000000000f0debc9a0100000003000000000000000100010000000000000000000010" },
+      { "offset": 508, "hex": "08f5869d4f325747010000002a00000000000000010000000000000008f5869df70a796249ef9999" }
+    ]
+  },
+  {
+    "name": "sealed",
+    "note": "The one durable work fact the restart-only profile writes.",
+    "subject": "workSlot",
+    "slot": 1,
+    "length": 16384,
+    "sha256": "1e4f733512d76040a9e81cf310a8758ca0cc9da13da381ff96076b40db96f108",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f32574b0100b0003c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111" },
+      { "offset": 104, "hex": "2a00000000000000000001000000000078563412020000000000010000000000f0debc9a020000000300000000000000010001000000000000000000000001" },
+      { "offset": 508, "hex": "9ff889f24f325747010001002a0000000000000002000000000000009ff889f26007760df2bf4ef7" }
+    ]
+  },
+  {
+    "name": "offset-above-observed-length",
+    "note": "A valid slot whose durable offset the payload cannot reach: recovery skips it as if invalid and rewinds.",
+    "subject": "workSlot",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "f3b9b1fe019a89e33d5e5bde96a50fa1f6c7753b0f77a98b937be8548b14f13a",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f32574b0100b0003c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111" },
+      { "offset": 104, "hex": "2a00000000000000000001000000000078563412010000000080000000000000f0debc9a0300000003000000000000000100010000000000000000000010" },
+      { "offset": 508, "hex": "248e6f2d4f325747010000002a000000000000000300000000000000248e6f2ddb7190d2baf676fa" }
+    ]
+  },
+  {
+    "name": "offset-above-declared-length",
+    "note": "The durable offset cannot exceed the declared length.",
+    "subject": "workSlot",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "ed777df3262493e6b8783f29493a9f6872c5bc0bd991d0273d4ab5dd97c3e651",
+    "reject": "Overflow",
+    "runs": [
+      { "offset": 0, "hex": "4f32574b0100b0003c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111" },
+      { "offset": 104, "hex": "2a00000000000000000001000000000078563412010000000100010000000000f0debc9a0400000003000000000000000100010000000000000000000010" },
+      { "offset": 508, "hex": "a83ad6bd4f325747010000002a000000000000000400000000000000a83ad6bd57c529421a16a1f9" }
+    ]
+  }
+  ]
+}

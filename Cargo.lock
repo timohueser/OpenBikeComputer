@@ -3000,8 +3000,10 @@ dependencies = [
  "heapless 0.8.0",
  "obc-crc",
  "obc-formats",
+ "obc-link",
  "obc-ports",
  "obc-weather",
+ "sha2",
 ]
 
 [[package]]

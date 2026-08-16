@@ -28,6 +28,29 @@ obc-ports = { path = "../obc-ports" }
 # defmt/RTT itself); the adapters add no logging of their own.
 embedded-sdmmc = { version = "0.9", default-features = false }
 
-# The bounded `Vec<Run, N>` a FAT-extent table stores the resolved map chain in.
+# The bounded `Vec<Run, N>` a FAT-extent table stores the resolved map chain in, and the bounded
+# region tables of the OBC2 catalog projection.
 # Same 0.8 the rest of the OBC stack uses.
 heapless = "0.8"
+
+# The Device Object System v2 identity types (`obc_link::ids`) and the wire opcode registry an OBC2
+# active-operation row is validated against (`OBC2_Storage_Format.md` §5.3). A platform -> foundation
+# edge, the same direction `obc-storage -> obc-formats` already runs: `obc-link` is a transport-free
+# codec, so no adapter, session or framing comes with it.
+obc-link = { path = "../obc-link" }
+
+# Host-only, and optional so the device image never links it: the storage fixture producer digests
+# each vector file with SHA-256 for the suite manifest. Same 0.11 the rest of the workspace resolves.
+sha2 = { version = "0.11", default-features = false, optional = true }
+
+[dev-dependencies]
+# The same digest, for `cfg(test)` runs that do not enable the `std` feature.
+sha2 = { version = "0.11", default-features = false }
+
+[features]
+default = []
+# Host-only: the deterministic faulting-media harness (`obc2::media`) and the spec-derived storage
+# fixture producer (`obc2::vectors`) that writes `specs/vectors/device-object-v2/storage/`. Neither
+# is reachable from the device image. `cfg(test)` enables both implicitly, so `cargo test -p
+# obc-storage` and a workspace `--all-features` run agree.
+std = ["dep:sha2"]
