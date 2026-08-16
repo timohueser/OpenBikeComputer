@@ -9,10 +9,9 @@
  */
 
 import { Cursor, Writer } from "./bytes";
-import { CATEGORY, CATEGORY_NAME, detailIsRegistered, detailName, reject, type CategoryName } from "./result";
+import { CATEGORY, CATEGORY_NAME, decoding, detailName, reject, type CategoryName, type DosResult } from "./result";
 
 export const STREAM_HEADER_BYTES = 16;
-export const MIN_STREAM_FRAME_BYTES = 64;
 export const MAX_STREAM_FRAME_BYTES = 4096;
 export const FAULT_BODY_BYTES = 24;
 
@@ -77,7 +76,14 @@ export interface StreamDecodeOptions {
     readonly maximumFrameBytes?: number;
 }
 
-export function decodeStreamFrame(bytes: Uint8Array, options: StreamDecodeOptions = {}): StreamFrame {
+/** Total entry point, mirroring `decodeControlFrame`. */
+export const decodeStreamFrame = (bytes: Uint8Array, options: StreamDecodeOptions = {}): DosResult<StreamFrame> =>
+    decoding(() => readStreamFrame(bytes, options));
+
+/** Total entry point: an over-long payload is unsendable, never truncated into its length field. */
+export const encodeStreamFrame = (frame: StreamFrame): DosResult<Uint8Array> => decoding(() => writeStreamFrame(frame));
+
+export function readStreamFrame(bytes: Uint8Array, options: StreamDecodeOptions = {}): StreamFrame {
     if (bytes.length < STREAM_HEADER_BYTES) {
         reject("invalidFrame", "recordLength", "a stream record carries a complete 16-byte header");
     }
@@ -123,10 +129,10 @@ export function decodeStreamFrame(bytes: Uint8Array, options: StreamDecodeOption
 
     const payload = cursor.take(payloadLength);
     if (direction !== STREAM_DIRECTION.status) return { sessionId, offset, direction, flags, payload };
-    return { sessionId, offset, direction, flags, payload, fault: decodeStreamFault(payload, flags) };
+    return { sessionId, offset, direction, flags, payload, fault: readStreamFault(payload, flags) };
 }
 
-function decodeStreamFault(body: Uint8Array, flags: number): StreamFault {
+function readStreamFault(body: Uint8Array, flags: number): StreamFault {
     if (body.length !== FAULT_BODY_BYTES) {
         reject("invalidFrame", "payloadLength", `a fault status contains exactly ${FAULT_BODY_BYTES} bytes`);
     }
@@ -145,10 +151,10 @@ function decodeStreamFault(body: Uint8Array, flags: number): StreamFault {
             `category ${categoryValue} is not a transport category a stream fault may carry`,
         );
     }
+    // §12: "Unknown received details are preserved for forward diagnostics but do not change
+    // category retry behavior." The category is a closed set and gates the body; the detail is not,
+    // so an unregistered value is carried through with the name "unknown" rather than rejected.
     const category = CATEGORY_NAME.get(categoryValue) as CategoryName;
-    if (!detailIsRegistered(category, detailValue)) {
-        reject("invalidDescriptor", "unknownEnum", `detail ${detailValue} is not registered for ${category}`);
-    }
     if (disposition > FAULT_DISPOSITION.streamTransportClosed) {
         reject("invalidDescriptor", "unknownEnum", `fault disposition ${disposition} is not registered`);
     }
@@ -171,8 +177,15 @@ function decodeStreamFault(body: Uint8Array, flags: number): StreamFault {
     };
 }
 
-export function encodeStreamFrame(frame: StreamFrame): Uint8Array {
-    const payload = frame.fault !== undefined ? encodeStreamFault(frame.fault) : frame.payload;
+export function writeStreamFrame(frame: StreamFrame): Uint8Array {
+    const payload = frame.fault !== undefined ? writeStreamFault(frame.fault) : frame.payload;
+    if (STREAM_HEADER_BYTES + payload.length > MAX_STREAM_FRAME_BYTES) {
+        reject(
+            "invalidFrame",
+            "frameBounds",
+            `a ${payload.length}-byte payload exceeds the ${MAX_STREAM_FRAME_BYTES}-byte stream frame maximum`,
+        );
+    }
     return new Writer(STREAM_HEADER_BYTES + payload.length)
         .u32(frame.sessionId)
         .u64(frame.offset)
@@ -183,7 +196,7 @@ export function encodeStreamFrame(frame: StreamFrame): Uint8Array {
         .finish();
 }
 
-export const encodeStreamFault = (fault: StreamFault): Uint8Array =>
+export const writeStreamFault = (fault: StreamFault): Uint8Array =>
     new Writer(FAULT_BODY_BYTES)
         .u16(fault.categoryValue)
         .u16(fault.detailValue)

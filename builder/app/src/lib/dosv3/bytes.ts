@@ -16,7 +16,6 @@ export interface OverrunReason {
 }
 
 export const TRUNCATED: OverrunReason = { category: "invalidFrame", detail: "truncated" };
-export const NESTED_LENGTH: OverrunReason = { category: "invalidDescriptor", detail: "nestedLength" };
 
 export class Cursor {
     private readonly view: DataView;
@@ -119,32 +118,51 @@ export class Writer {
         return at;
     }
 
+    /**
+     * `DataView` setters take a value modulo the field width, which is the wrong behaviour for a
+     * wire encoder: a 70,000-byte payload would be announced as 4,464 and the receiver would read a
+     * frame that never existed. §1 admits no truncation anywhere — a message that does not fit is
+     * unsendable — so every setter refuses a value its field cannot hold.
+     */
+    private fits(value: number | bigint, min: bigint, max: bigint, what: string): void {
+        const wide = typeof value === "bigint" ? value : BigInt(Math.trunc(value));
+        if ((typeof value === "number" && !Number.isInteger(value)) || wide < min || wide > max) {
+            reject("internal", "codec", `${value} does not fit a ${what} field`);
+        }
+    }
+
     u8(value: number): this {
+        this.fits(value, 0n, 0xffn, "u8");
         this.view.setUint8(this.room(1), value);
         return this;
     }
 
     u16(value: number): this {
+        this.fits(value, 0n, 0xffffn, "u16");
         this.view.setUint16(this.room(2), value, true);
         return this;
     }
 
     u32(value: number): this {
+        this.fits(value, 0n, 0xffff_ffffn, "u32");
         this.view.setUint32(this.room(4), value, true);
         return this;
     }
 
     u64(value: bigint): this {
+        this.fits(value, 0n, (1n << 64n) - 1n, "u64");
         this.view.setBigUint64(this.room(8), value, true);
         return this;
     }
 
     i32(value: number): this {
+        this.fits(value, -0x8000_0000n, 0x7fff_ffffn, "i32");
         this.view.setInt32(this.room(4), value, true);
         return this;
     }
 
     i64(value: bigint): this {
+        this.fits(value, -(1n << 63n), (1n << 63n) - 1n, "i64");
         this.view.setBigInt64(this.room(8), value, true);
         return this;
     }
@@ -188,10 +206,4 @@ export function hexToBytes(hex: string): Uint8Array {
         out[i] = byte;
     }
     return out;
-}
-
-export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-    return true;
 }

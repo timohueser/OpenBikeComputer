@@ -12,9 +12,10 @@
  */
 
 import { Writer } from "./bytes";
-import { OPCODE, type Opcode, type OpcodeName } from "./frame";
+import { OPCODE, type Opcode } from "./frame";
 import type { StoreId } from "./ids";
-import { encodeMetadataEnvelope } from "./metadata";
+import { writeMetadataEnvelope } from "./metadata";
+import { decoding, type DosResult } from "./result";
 import type {
     AbortOperationRequest,
     BeginDraftRequest,
@@ -78,25 +79,17 @@ export type IntentSource =
     | { readonly opcode: "InstallUpdate"; readonly request: OperationOnObject }
     | { readonly opcode: "AcknowledgeRideImported"; readonly request: OperationOnObject };
 
-export const INTENT_OPCODES: readonly OpcodeName[] = [
-    "StartUpload",
-    "BeginDraft",
-    "StartDraftPart",
-    "DeleteObject",
-    "SetMetadata",
-    "AbortOperation",
-    "InstallUpdate",
-    "AcknowledgeRideImported",
-];
-
 /** Builds the complete canonical intent: the 36-byte prefix followed by this opcode's suffix. */
-export function canonicalIntent(store: StoreId, source: IntentSource): Uint8Array {
+export const canonicalIntent = (store: StoreId, source: IntentSource): DosResult<Uint8Array> =>
+    decoding(() => writeCanonicalIntent(store, source));
+
+export function writeCanonicalIntent(store: StoreId, source: IntentSource): Uint8Array {
     const writer = new Writer(INTENT_PREFIX_BYTES + 160);
     writer.raw(intentPrefix(store, OPCODE[source.opcode]));
     switch (source.opcode) {
         case "StartUpload": {
             const request = source.request;
-            const envelope = encodeMetadataEnvelope(request.metadata);
+            const envelope = writeMetadataEnvelope(request.metadata);
             writer
                 .u16(OBJECT_KIND_CODE[request.objectKind])
                 .u8(request.targetMode)
@@ -144,7 +137,7 @@ export function canonicalIntent(store: StoreId, source: IntentSource): Uint8Arra
         }
         case "SetMetadata": {
             const request = source.request;
-            const envelope = encodeMetadataEnvelope(request.metadata);
+            const envelope = writeMetadataEnvelope(request.metadata);
             writer
                 .u16(OBJECT_KIND_CODE[request.objectKind])
                 .u64(request.logicalObjectId)
@@ -171,17 +164,6 @@ export function canonicalIntent(store: StoreId, source: IntentSource): Uint8Arra
     }
     return writer.finish();
 }
-
-/**
- * The three device-local schemes the storage contract freezes. They land in the same 32-byte digest
- * field as a wire intent, and the families cannot collide by construction: the wire prefix begins
- * `OBC-DOS3-INTENT\0` and every local tag begins `O2-`.
- */
-export const LOCAL_INTENT_TAGS = {
-    weather: "O2-LOCAL-WX-INTENT\0",
-    update: "O2-LOCAL-UPD-INTENT\0",
-    import: "O2-LOCAL-IMP-INTENT\0",
-} as const;
 
 /** SHA-256 over a complete canonical intent. WebCrypto in the browser, `globalThis.crypto` in Node. */
 export async function intentDigest(intent: Uint8Array): Promise<Uint8Array> {

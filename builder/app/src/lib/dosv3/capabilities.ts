@@ -26,7 +26,7 @@ import {
     type DraftPartKindName,
     type ObjectKindName,
 } from "./registry";
-import { reject } from "./result";
+import { decoding, reject, type DosResult } from "./result";
 
 export const HELLO_BYTES = 12;
 export const CAPABILITIES_PREFIX_BYTES = 56;
@@ -89,7 +89,27 @@ export interface HelloRequest {
     readonly pageIndex: number;
 }
 
-export function decodeHello(bytes: Uint8Array): HelloRequest {
+/**
+ * §1's hard maxima. A value above one of them is `invalidFrame` "before allocation" — the peer is
+ * describing a frame this protocol cannot carry, whatever the link could.
+ *
+ * The floors are deliberately *not* symmetrical with them. A control ceiling below 192 is a real,
+ * expected condition on a small-MTU link, and §14.0 says the device answers that Hello with
+ * `resourceLimit/minimumControlFrame`. Refusing to decode it would make that answer impossible, so
+ * a Hello advertising less than the minimum decodes and `negotiateFrameLimit` is what refuses it.
+ * A *negotiated* limit below the minimum is different: it cannot exist, because a device in that
+ * position answers with the refusal instead of a Capabilities page.
+ */
+function checkAdvertisedMaxima(control: number, stream: number, negotiated: boolean): void {
+    if (control > MAX_CONTROL_FRAME || (negotiated && control < MIN_CONTROL_FRAME)) {
+        reject("invalidFrame", "frameBounds", `a ${control}-byte control frame is outside the protocol bounds`);
+    }
+    if (stream > MAX_STREAM_FRAME || (negotiated && stream < MIN_STREAM_FRAME)) {
+        reject("invalidFrame", "frameBounds", `a ${stream}-byte stream frame is outside the protocol bounds`);
+    }
+}
+
+export function readHello(bytes: Uint8Array): HelloRequest {
     const cursor = new Cursor(bytes);
     const minimumWireMajor = cursor.u8();
     const maximumWireMajor = cursor.u8();
@@ -112,6 +132,7 @@ export function decodeHello(bytes: Uint8Array): HelloRequest {
     if (pageKind === PAGE_KIND.resourceLimits && pageIndex !== 0) {
         reject("invalidDescriptor", "invalidCombination", "the resource page has only index zero");
     }
+    checkAdvertisedMaxima(clientMaximumControlFrame, clientMaximumStreamFrame, false);
     return {
         minimumWireMajor,
         maximumWireMajor,
@@ -123,7 +144,7 @@ export function decodeHello(bytes: Uint8Array): HelloRequest {
     };
 }
 
-export function encodeHello(hello: HelloRequest): Uint8Array {
+export function writeHello(hello: HelloRequest): Uint8Array {
     return new Writer(HELLO_BYTES)
         .u8(hello.minimumWireMajor)
         .u8(hello.maximumWireMajor)
@@ -205,7 +226,12 @@ export interface Capabilities {
     readonly page: CapabilityPage;
 }
 
-export function decodeCapabilities(bytes: Uint8Array): Capabilities {
+/** Total entry points. The `read*` readers below are what the frame decoder calls. */
+export const decodeCapabilities = (bytes: Uint8Array): DosResult<Capabilities> => decoding(() => readCapabilities(bytes));
+export const decodeSubjectEntry = (bytes: Uint8Array): DosResult<SubjectEntry> =>
+    decoding(() => readSubjectEntry(bytes));
+
+export function readCapabilities(bytes: Uint8Array): Capabilities {
     const cursor = new Cursor(bytes);
     const selectedWireMajor = cursor.u8();
     const storageFormatVersion = cursor.u8();
@@ -240,6 +266,7 @@ export function decodeCapabilities(bytes: Uint8Array): Capabilities {
     if ((statusFlags & STATUS_FLAG.storeAvailable) === 0 && !identityIsZero(store)) {
         reject("invalidDescriptor", "reservedBits", "the StoreId is zero when store-available is clear");
     }
+    checkAdvertisedMaxima(negotiatedControlFrame, negotiatedStreamFrame, true);
     if (retainedResultCapacity !== RETAINED_RESULTS) {
         reject("invalidDescriptor", "invalidCombination", `retained result capacity is exactly ${RETAINED_RESULTS}`);
     }
@@ -274,7 +301,7 @@ export function decodeCapabilities(bytes: Uint8Array): Capabilities {
         if (totalPages !== 1) {
             reject("invalidDescriptor", "invalidCombination", "the resource page kind has exactly one page");
         }
-        const limits = decodeResourceLimits(cursor.take(RESOURCE_LIMITS_BYTES));
+        const limits = readResourceLimits(cursor.take(RESOURCE_LIMITS_BYTES));
         if (limits.codecVersion !== resourceLimitsCodecVersion) {
             reject(
                 "invalidDescriptor",
@@ -291,11 +318,19 @@ export function decodeCapabilities(bytes: Uint8Array): Capabilities {
         if (returnedPageIndex >= Math.max(totalPages, 1)) {
             reject("invalidDescriptor", "invalidCombination", "the subject page index is beyond the last page");
         }
-        if (returnedSubjectCount > SUBJECTS_PER_PAGE) {
-            reject("invalidDescriptor", "invalidCombination", "a subject page returns at most two entries");
+        // §5: a page "returns up to two entries" and "the server never silently truncates the
+        // registry", so the count is determined, not merely bounded — a short non-final page would
+        // drop a subject a client can never ask for again under this capability revision.
+        const expectedCount = Math.max(Math.min(SUBJECTS_PER_PAGE, totalSubjectCount - returnedPageIndex * SUBJECTS_PER_PAGE), 0);
+        if (returnedSubjectCount !== expectedCount) {
+            reject(
+                "invalidDescriptor",
+                "invalidCombination",
+                `subject page ${returnedPageIndex} of ${totalSubjectCount} carries ${expectedCount} entries, not ${returnedSubjectCount}`,
+            );
         }
         const entries: SubjectEntry[] = [];
-        for (let i = 0; i < returnedSubjectCount; i++) entries.push(decodeSubjectEntry(cursor.take(SUBJECT_ENTRY_BYTES)));
+        for (let i = 0; i < returnedSubjectCount; i++) entries.push(readSubjectEntry(cursor.take(SUBJECT_ENTRY_BYTES)));
         page = { kind: "subjects", entries };
     }
     cursor.end("Capabilities");
@@ -328,7 +363,7 @@ export function decodeCapabilities(bytes: Uint8Array): Capabilities {
     };
 }
 
-export function encodeCapabilities(capabilities: Capabilities): Uint8Array {
+export function writeCapabilities(capabilities: Capabilities): Uint8Array {
     const writer = new Writer(CAPABILITIES_PREFIX_BYTES + RESOURCE_LIMITS_BYTES);
     writer
         .u8(capabilities.selectedWireMajor)
@@ -355,14 +390,14 @@ export function encodeCapabilities(capabilities: Capabilities): Uint8Array {
         .u8(capabilities.resourceLimitsCodecVersion)
         .u8(capabilities.deviceWireMinor);
     if (capabilities.page.kind === "resourceLimits") {
-        writer.raw(encodeResourceLimits(capabilities.page.limits));
+        writer.raw(writeResourceLimits(capabilities.page.limits));
     } else {
-        for (const entry of capabilities.page.entries) writer.raw(encodeSubjectEntry(entry));
+        for (const entry of capabilities.page.entries) writer.raw(writeSubjectEntry(entry));
     }
     return writer.finish();
 }
 
-export function decodeResourceLimits(bytes: Uint8Array): ResourceLimits {
+export function readResourceLimits(bytes: Uint8Array): ResourceLimits {
     const cursor = new Cursor(bytes);
     const codecVersion = cursor.u8();
     const blockLength = cursor.u8();
@@ -425,7 +460,7 @@ export function decodeResourceLimits(bytes: Uint8Array): ResourceLimits {
     };
 }
 
-export function encodeResourceLimits(limits: ResourceLimits): Uint8Array {
+export function writeResourceLimits(limits: ResourceLimits): Uint8Array {
     return new Writer(RESOURCE_LIMITS_BYTES)
         .u8(limits.codecVersion)
         .u8(limits.blockLength)
@@ -457,7 +492,7 @@ export function encodeResourceLimits(limits: ResourceLimits): Uint8Array {
         .finish();
 }
 
-export function decodeSubjectEntry(bytes: Uint8Array): SubjectEntry {
+export function readSubjectEntry(bytes: Uint8Array): SubjectEntry {
     const cursor = new Cursor(bytes);
     const namespace = cursor.u8();
     cursor.zeros(1, "subject entry byte 1");
@@ -534,7 +569,7 @@ export function decodeSubjectEntry(bytes: Uint8Array): SubjectEntry {
     };
 }
 
-export function encodeSubjectEntry(entry: SubjectEntry): Uint8Array {
+export function writeSubjectEntry(entry: SubjectEntry): Uint8Array {
     return new Writer(SUBJECT_ENTRY_BYTES)
         .u8(entry.namespace)
         .u8(0)

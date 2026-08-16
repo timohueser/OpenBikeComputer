@@ -23,10 +23,11 @@ import {
     CATEGORY_NAME,
     MAX_GUIDANCE,
     MAX_OWNER,
+    decoding,
     detailName,
     reject,
     type CategoryName,
-    type DosError,
+    type DosResult,
 } from "./result";
 
 export const ERROR_BODY_PREFIX_BYTES = 48;
@@ -64,7 +65,10 @@ export interface ErrorBody {
     readonly text: Uint8Array;
 }
 
-export function decodeErrorBody(bytes: Uint8Array): ErrorBody {
+/** Total entry point; `readErrorBody` is the throwing reader the frame decoder calls. */
+export const decodeErrorBody = (bytes: Uint8Array): DosResult<ErrorBody> => decoding(() => readErrorBody(bytes));
+
+export function readErrorBody(bytes: Uint8Array): ErrorBody {
     const cursor = new Cursor(bytes);
     const categoryValue = cursor.u16();
     const namespace = cursor.u16();
@@ -136,7 +140,13 @@ export function decodeErrorBody(bytes: Uint8Array): ErrorBody {
     };
 }
 
-export function encodeErrorBody(body: ErrorBody): Uint8Array {
+export function writeErrorBody(body: ErrorBody): Uint8Array {
+    // The text length is a `u8` capped at 64, so an over-long diagnostic cannot be announced. §12
+    // makes text non-authoritative, but announcing a length the body does not carry would corrupt
+    // the frame around it, which is the one thing text must never be able to do.
+    if (body.text.length > MAX_ERROR_TEXT_BYTES) {
+        reject("invalidFrame", "payloadLength", `error text is at most ${MAX_ERROR_TEXT_BYTES} bytes`);
+    }
     return new Writer(ERROR_BODY_PREFIX_BYTES + body.text.length)
         .u16(body.categoryValue)
         .u16(body.namespace)
@@ -162,15 +172,3 @@ export const isRetainedTerminalReplay = (body: ErrorBody): boolean =>
 
 /** The lossy rendering §12 mandates. Never parsed, never matched on, never behaviour-bearing. */
 export const errorText = (body: ErrorBody): string => renderDiagnosticText(body.text);
-
-/** Projects a decoded ErrorBody onto this module's own failure vocabulary. */
-export function asDosError(body: ErrorBody): DosError {
-    return {
-        category: body.category === "unknown" ? "internal" : body.category,
-        categoryValue: body.categoryValue,
-        detail: body.detail,
-        detailValue: body.detailValue,
-        message: errorText(body),
-        namespace: body.namespace,
-    };
-}

@@ -102,5 +102,3 @@ export function identityIsZero(a: Uint8Array): boolean {
     for (let i = 0; i < a.length; i++) if (a[i] !== 0) return false;
     return true;
 }
-
-export const ZERO_IDENTITY: Uint8Array = new Uint8Array(IDENTITY_BYTES);

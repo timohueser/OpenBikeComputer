@@ -160,11 +160,6 @@ export function detailName(category: CategoryName, detail: number): string {
     return DETAIL_NAMES.get(category)?.get(detail) ?? "unknown";
 }
 
-/** True when `detail` is a registered detail of `category` (or zero, the no-narrower-fact value). */
-export function detailIsRegistered(category: CategoryName, detail: number): boolean {
-    return detail === 0 || DETAIL_NAMES.get(category)?.has(detail) === true;
-}
-
 /** Retry guidance values, §12. */
 export const GUIDANCE = {
     rejectPermanently: 0,
