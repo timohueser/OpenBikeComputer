@@ -197,6 +197,8 @@ enum Stage {
     Claiming(Work),
     /// A direct mutation, at the phase of §15's command machine it is currently running.
     Mutation(CommandPhase),
+    /// An AbortOperation's `validating` step: the target it is cancelling (§6.4).
+    CancelTarget(OperationId),
     Checkpoint,
     Seal,
     Validate,
@@ -268,13 +270,14 @@ pub struct Engine {
     coordinator: SessionCoordinator,
     transfer: Option<Transfer>,
     pending: [Option<Pending>; LINK_KINDS],
-    /// The one claim whose durable answer is still in flight for a connection that has gone away.
+    /// Per link, the claim whose durable answer is still in flight for a connection that has gone.
     ///
-    /// §11 makes a durable claim something that must reach a terminal state, so the engine
-    /// remembers the identifier long enough to abandon it when the answer lands. One slot is
-    /// enough: at most one command is outstanding per connection, and a second orphan can only
-    /// appear after the first has been answered.
-    orphaned_claim: Option<OperationId>,
+    /// §11 makes a durable claim something that must reach a terminal state — "A claim cannot be
+    /// forgotten before terminal state" — so the engine remembers the identifier long enough to
+    /// abandon it when the answer lands. There is one slot **per link kind**, because the engine
+    /// admits one outstanding command per link and two links can therefore lose two connections,
+    /// each with a durable claim in flight, before either answer arrives.
+    orphaned_claim: [Option<OperationId>; LINK_KINDS],
 }
 
 impl Engine {
@@ -286,7 +289,7 @@ impl Engine {
             coordinator: SessionCoordinator::new(),
             transfer: None,
             pending: [None; LINK_KINDS],
-            orphaned_claim: None,
+            orphaned_claim: [None; LINK_KINDS],
         }
     }
 
@@ -377,6 +380,9 @@ impl Engine {
                 // §13: teardown "durably aborts active restart-only upload work to a terminal
                 // Aborted state with a retained text-free ErrorBody".
                 self.transfer = Some(Transfer::Upload(Upload { phase: UploadPhase::Aborting, ..upload }));
+                // This teardown is already walking that claim to its terminal state, so it is not
+                // also an orphan waiting for a stale outcome.
+                self.orphaned_claim[Self::index(context.link_kind)] = None;
                 self.set_pending(Pending {
                     context,
                     request_id: None,
@@ -540,7 +546,7 @@ impl Engine {
     pub fn resume(&mut self, context: LinkContext, outcome: Outcome<'_>, out: &mut [u8]) -> Reaction<'static> {
         let pending = match self.pending_for(context.link_kind) {
             Some(pending) if pending.context == context => pending,
-            _ => return self.dispose_stale(outcome),
+            _ => return self.dispose_stale(context, outcome),
         };
         match (pending.stage, outcome) {
             (Stage::Append, Outcome::Appended) => {
@@ -579,7 +585,19 @@ impl Engine {
             }
             (Stage::Lookup(work), Outcome::Claim(decision)) => self.after_lookup(pending, work, decision, out),
             (Stage::Claiming(work), Outcome::Claim(decision)) => self.after_claim(pending, work, decision, out),
-            (Stage::Mutation(CommandPhase::Validating), Outcome::Validated | Outcome::TargetCancelled(_)) => {
+            (Stage::Mutation(CommandPhase::Validating), Outcome::Validated) => {
+                match (CommandPhase::Validating.apply(CommandEvent::Validated), pending.operation_id) {
+                    (Ok(phase), Some(operation_id)) => {
+                        self.advance(pending, Stage::Mutation(phase), Command::Publish { operation_id })
+                    }
+                    _ => self.reply(pending, &Response::Error(internal_body()), out),
+                }
+            }
+            (Stage::CancelTarget(target), Outcome::TargetCancelled(_)) => {
+                // §6.4 step 2 releases the target's work. If that work is the live heavy transfer,
+                // its session goes with it: leaving one attached would let a later payload frame
+                // reach a claim the store has already made terminal.
+                self.release_transfer_of(target);
                 match (CommandPhase::Validating.apply(CommandEvent::Validated), pending.operation_id) {
                     (Ok(phase), Some(operation_id)) => {
                         self.advance(pending, Stage::Mutation(phase), Command::Publish { operation_id })
@@ -1265,7 +1283,7 @@ impl Engine {
                 // AbortResult is committed, and that result is what the client receives.
                 self.advance(
                     pending,
-                    Stage::Mutation(CommandPhase::Validating),
+                    Stage::CancelTarget(target),
                     Command::CancelTarget { operation_id: intent.operation_id, target, reason },
                 )
             }
@@ -1606,12 +1624,33 @@ impl Engine {
     }
 
     /// Drops a link's pending work, remembering a claim whose durable answer is still in flight.
+    ///
+    /// Every stage from the durable claim onwards implies a claim that must reach a terminal state,
+    /// not just the claim itself: a mutation dropped between `Validate` and `Publish`, or an upload
+    /// dropped mid-append, owns exactly the same durable row. Only [`Stage::Lookup`] is exempt,
+    /// because §11's lookup creates no state.
     fn orphan_pending(&mut self, link_kind: LinkKind) {
-        if let Some(pending) = self.pending[Self::index(link_kind)].take() {
-            // A `Lookup` creates no state, so only a claim in flight needs remembering.
-            if let Stage::Claiming(work) = pending.stage {
-                self.orphaned_claim = Some(work.intent().operation_id);
-            }
+        let Some(pending) = self.pending[Self::index(link_kind)].take() else { return };
+        let holds_claim = match pending.stage {
+            Stage::Claiming(_)
+            | Stage::Mutation(_)
+            | Stage::CancelTarget(_)
+            | Stage::Append
+            | Stage::Checkpoint
+            | Stage::Seal
+            | Stage::Validate
+            | Stage::Publish => true,
+            // An abort already *is* the walk to a terminal state, and the rest carry no claim.
+            Stage::Lookup(_)
+            | Stage::Abort(_)
+            | Stage::Resolve(_)
+            | Stage::ReadSource
+            | Stage::ReleaseLease { .. }
+            | Stage::DeviceControl
+            | Stage::Query => false,
+        };
+        if holds_claim {
+            self.orphaned_claim[Self::index(link_kind)] = pending.operation_id;
         }
     }
 
@@ -1630,18 +1669,14 @@ impl Engine {
     /// connection died is therefore never answered and never re-homed: it is dropped, and if it
     /// reports a claim that has just become durable, that claim is durably abandoned here. The
     /// abort's own outcome is stale in the same way and ends the chain.
-    fn dispose_stale(&mut self, outcome: Outcome<'_>) -> Reaction<'static> {
-        match outcome {
-            Outcome::Claim(ClaimOutcome::Claimed { .. }) | Outcome::Claim(ClaimOutcome::Restarted { .. }) => {
-                match self.orphaned_claim {
-                    Some(operation_id) => {
-                        self.orphaned_claim = None;
-                        Reaction::Work(Command::Abort { operation_id, cause: AbortCause::LinkLost })
-                    }
-                    None => Reaction::Idle,
-                }
-            }
-            _ => Reaction::Idle,
+    fn dispose_stale(&mut self, context: LinkContext, outcome: Outcome<'_>) -> Reaction<'static> {
+        let _ = outcome;
+        // Whatever the outcome says, the connection it belongs to is gone. If that connection left
+        // a durable claim behind, this is the moment it is abandoned; the abort's own outcome is
+        // stale in the same way and finds the slot empty, which ends the chain.
+        match self.orphaned_claim[Self::index(context.link_kind)].take() {
+            Some(operation_id) => Reaction::Work(Command::Abort { operation_id, cause: AbortCause::LinkLost }),
+            None => Reaction::Idle,
         }
     }
 
@@ -1705,6 +1740,16 @@ impl Engine {
         if let Some(Transfer::Upload(upload)) = self.transfer {
             if let Ok(phase) = upload.phase.apply(event) {
                 self.transfer = Some(Transfer::Upload(Upload { phase, ..upload }));
+            }
+        }
+    }
+
+    /// Releases the heavy transfer when it belongs to `operation_id`, session included.
+    fn release_transfer_of(&mut self, operation_id: OperationId) {
+        if let Some(Transfer::Upload(upload)) = self.transfer {
+            if upload.operation_id == operation_id {
+                self.coordinator.revoke_owned_by(&upload.owner);
+                self.transfer = None;
             }
         }
     }
