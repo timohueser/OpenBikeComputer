@@ -17,6 +17,7 @@
   },
   "boundary": "",
   "note": "The response payload is empty; the link then drops.",
+  "body": {},
   "payload": "",
   "frame": "4f42435003000404010000007d000000"
 }

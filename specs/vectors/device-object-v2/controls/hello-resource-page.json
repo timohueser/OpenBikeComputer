@@ -17,6 +17,15 @@
   },
   "boundary": "minimum",
   "note": "The 12-byte Hello asking for resource page zero.",
+  "body": {
+    "minimumMajor": 3,
+    "maximumMajor": 3,
+    "clientMaxControlFrame": 244,
+    "clientMaxStreamFrame": 1024,
+    "clientFeatureFlags": 0,
+    "pageKind": 0,
+    "pageIndex": 0
+  },
   "payload": "0303f4000004000000000000",
   "frame": "4f4243500300010000000c00010000000303f4000004000000000000"
 }

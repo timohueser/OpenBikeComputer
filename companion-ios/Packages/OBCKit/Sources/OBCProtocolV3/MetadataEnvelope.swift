@@ -237,10 +237,14 @@ public struct MetadataSchema: Sendable {
 
 /// A registered field's wire type and, where the registry states one, its permitted value range.
 ///
-/// The two rejection details follow the convention this contract uses everywhere: a value outside a
-/// **continuous** quantity's bounds is `invalidDescriptor/invalidCombination`, while a value that is
-/// not a member of an **enumerated** set is `invalidDescriptor/unknownEnum`. Retention (`0…5`),
-/// update state (`1…6`) and booleans are enumerations; coordinates, radii and timestamps are not.
+/// The rejection details follow the convention this contract uses everywhere, which registries §4
+/// adjudicates: a value outside a **continuous** quantity's bounds is
+/// `invalidDescriptor/invalidCombination`, a value that is not a member of an **enumerated** set is
+/// `invalidDescriptor/unknownEnum`, and everything §2.2's *encoding* paragraph governs — a wrong
+/// registered width, a boolean byte that is neither `0` nor `1`, text that is not clean
+/// shortest-form UTF-8 — is `invalidDescriptor/noncanonicalMetadata`, because those are rules about
+/// the encoding rather than about the registered value space. Retention (`0…5`) and update state
+/// (`1…6`) are enumerations; coordinates, radii and timestamps are not; a boolean is neither.
 public enum MetadataFieldType: Sendable {
     /// An enumerated `u8` domain: out-of-range is `unknownEnum`.
     case u8Enum(ClosedRange<UInt8>)
@@ -286,7 +290,9 @@ public enum MetadataFieldType: Sendable {
         case .boolean:
             try requireWidth(1)
             let v = try reader.u8()
-            guard v <= 1 else { throw WireFault.unknownEnum("\(subject): boolean \(v)") }
+            // §2.2 fixes the encoding of a boolean as the byte `0` or `1`, so a third value is a
+            // malformed *encoding*, not an unregistered member of an enumeration.
+            guard v <= 1 else { throw WireFault.noncanonicalMetadata("\(subject): boolean \(v)") }
             return .boolean(v == 1)
         case .u16: try requireWidth(2); return .u16(try reader.u16())
         case .u32(let range):

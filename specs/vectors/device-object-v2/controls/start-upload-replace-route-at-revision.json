@@ -17,6 +17,22 @@
   },
   "boundary": "",
   "note": "Replace carries the repository's exact identity and expected revision.",
+  "body": {
+    "operationId": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "objectKind": 1,
+    "targetMode": 1,
+    "resume": 1,
+    "logicalObjectId": "9",
+    "expectedRevision": "41",
+    "declaredLength": "3000",
+    "expectedCrc32": 1177987461,
+    "metadata.schemaId": 1,
+    "metadata.schemaVersion": 1,
+    "metadata.encodedFieldBytes": 5,
+    "metadata.fieldCount": 1,
+    "metadata.field[0].tag": 32769,
+    "metadata.field[0].value": "04"
+  },
   "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010109000000000000002900000000000000b80b00000000000085a9364601000100050001000180010004",
   "frame": "4f4243500300000100003d000c000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010109000000000000002900000000000000b80b00000000000085a9364601000100050001000180010004"
 }

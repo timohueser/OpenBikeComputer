@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "Outcome 1: the operation was already terminal, so there was no session to detach.",
+  "body": {
+    "outcome": 1
+  },
   "payload": "01",
   "frame": "4f42435003002001010001003200000001"
 }

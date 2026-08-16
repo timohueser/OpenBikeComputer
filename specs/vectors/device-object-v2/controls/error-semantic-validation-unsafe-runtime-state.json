@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A retryable domain precondition does not terminally claim the OperationId: both claim-status bits are clear.",
+  "body": {
+    "category": 14,
+    "detailNamespace": 7,
+    "detail": 7,
+    "guidance": 2,
+    "owner": 0,
+    "presence": 1,
+    "retryAfterMs": 60000,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "0e00070007000200010060ea000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300100303003000c80000000e00070007000200010060ea000000000000000000000000000000000000000000000000000000000000000000000000"
 }

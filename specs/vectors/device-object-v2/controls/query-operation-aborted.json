@@ -17,6 +17,22 @@
   },
   "boundary": "",
   "note": "Aborted is a successful query answer carrying the retained text-free body, with both claim-status bits set.",
+  "body": {
+    "state": 3,
+    "error.category": 14,
+    "error.detailNamespace": 0,
+    "error.detail": 1,
+    "error.guidance": 0,
+    "error.owner": 0,
+    "error.presence": 96,
+    "error.retryAfterMs": 0,
+    "error.expectedOffset": "0",
+    "error.currentRevision": "0",
+    "error.requiredBytes": "0",
+    "error.availableBytes": "0",
+    "error.textLength": 0,
+    "error.text": ""
+  },
   "payload": "030000000e0000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f424350030000020100340046000000030000000e0000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

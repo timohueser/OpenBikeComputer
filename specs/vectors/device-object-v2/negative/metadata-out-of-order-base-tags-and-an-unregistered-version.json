@@ -1,0 +1,16 @@
+{
+  "name": "metadata-out-of-order-base-tags-and-an-unregistered-version",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
+  "note": "Canonical form is checked before the schema, so the ordering fault is reported and the unregistered version byte is never reached.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "outOfOrderField",
+    "detailValue": 7
+  },
+  "bytes": "010002000a00020002800100010180010001"
+}

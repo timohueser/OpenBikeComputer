@@ -17,6 +17,18 @@
   },
   "boundary": "",
   "note": "Disposition 1 replays the retained ObjectResult of the same intent; no session is created.",
+  "body": {
+    "disposition": 1,
+    "result.resultType": 1,
+    "result.operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "result.storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "result.objectKind": 1,
+    "result.outcome": 0,
+    "result.logicalObjectId": "9",
+    "result.revision": "42",
+    "result.length": "3000",
+    "result.crc32": 1177987461
+  },
   "payload": "0100000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646",
   "frame": "4f42435003000001010048000b0000000100000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
 }

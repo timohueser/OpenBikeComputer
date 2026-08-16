@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "The 8-byte BLE-only request.",
+  "body": {
+    "scope": 1
+  },
   "payload": "0100000000000000",
   "frame": "4f42435003000404000008007d0000000100000000000000"
 }

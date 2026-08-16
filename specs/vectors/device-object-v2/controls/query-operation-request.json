@@ -17,6 +17,9 @@
   },
   "boundary": "",
   "note": "The request is exactly one OperationId.",
+  "body": {
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+  },
   "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
   "frame": "4f424350030000020000100046000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
 }

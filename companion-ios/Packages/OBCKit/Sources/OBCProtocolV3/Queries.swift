@@ -312,6 +312,15 @@ public struct CatalogPage: Hashable, Sendable {
             throw WireFault.invalidCombination(
                 "QueryCatalog response: next cursor without the more flag")
         }
+        // §8.2: the cursor's CRC-32 covers the StoreId that minted it followed by the cursor's own
+        // first twelve bytes. A *request* cursor is unverifiable here because the frame does not
+        // carry the store it was scoped to, but a page reports that StoreId itself — so this one is
+        // verifiable and is verified. Skipping it would mean following a corrupted or foreign cursor
+        // into a page this reader cannot interpret.
+        if !cursor.isZero, cursor.checksum != cursor.expectedChecksum(storeId: store) {
+            throw WireFault.cursorChecksum(
+                "QueryCatalog response: next cursor CRC \(cursor.checksum) under this page's StoreId")
+        }
         // §8.2: "A page returns only as many whole entries as fit the negotiated control frame, and
         // never more than ten."
         guard entryCount <= 10 else {

@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A well-formed zero-field patch envelope is refused as a request, not as a codec error.",
+  "body": {
+    "category": 7,
+    "detailNamespace": 0,
+    "detail": 10,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "070000000a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010303003000c8000000070000000a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

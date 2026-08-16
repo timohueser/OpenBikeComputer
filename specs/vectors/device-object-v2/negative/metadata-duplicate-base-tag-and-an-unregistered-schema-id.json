@@ -1,0 +1,16 @@
+{
+  "name": "metadata-duplicate-base-tag-and-an-unregistered-schema-id",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
+  "note": "A duplicate base tag has its own detail and keeps it even when the schema identity is also wrong.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "duplicateField",
+    "detailValue": 6
+  },
+  "bytes": "630001000a00020001800100010180010001"
+}

@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "Authentication precedes object-existence, revision, operation-status, and busy facts.",
+  "body": {
+    "category": 3,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 9,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "030000000100090000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010203003000c8000000030000000100090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

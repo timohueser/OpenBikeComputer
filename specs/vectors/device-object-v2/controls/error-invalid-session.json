@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A reconnect makes every earlier SessionId stale even for the same principal.",
+  "body": {
+    "category": 9,
+    "detailNamespace": 0,
+    "detail": 2,
+    "guidance": 4,
+    "owner": 0,
+    "presence": 32,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "090000000200040020000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020103003000c8000000090000000200040020000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

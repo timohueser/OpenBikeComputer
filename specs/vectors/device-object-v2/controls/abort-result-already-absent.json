@@ -17,6 +17,13 @@
   },
   "boundary": "",
   "note": "Returned only when authorization can be established without leaking another principal's target.",
+  "body": {
+    "resultType": 3,
+    "operationId": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+    "storeId": "3c92000099164ebaabc2342fe08f6b10",
+    "targetOperationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "disposition": 2
+  },
   "payload": "03000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e53c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10200000000000000",
   "frame": "4f4243500300020301003c002000000003000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e53c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10200000000000000"
 }

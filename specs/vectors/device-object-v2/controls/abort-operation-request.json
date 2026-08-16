@@ -17,6 +17,11 @@
   },
   "boundary": "",
   "note": "The abort command claims its own OperationId in the reserved cancellation/recovery slot.",
+  "body": {
+    "operationId": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+    "targetOperationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "reason": 1
+  },
   "payload": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000",
   "frame": "4f424350030002030000280033000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000"
 }

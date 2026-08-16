@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A revision mismatch is catalogChanged with the current revision and refresh guidance.",
+  "body": {
+    "category": 21,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 7,
+    "owner": 0,
+    "presence": 4,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "61",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "150000000100070004000000000000000000000000003d00000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010203003000c8000000150000000100070004000000000000000000000000003d00000000000000000000000000000000000000000000000000"
 }

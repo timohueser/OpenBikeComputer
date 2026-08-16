@@ -17,6 +17,10 @@
   },
   "boundary": "",
   "note": "The 12-byte checkpoint at exactly one granule.",
+  "body": {
+    "sessionId": 17,
+    "receivedNextOffset": "1024"
+  },
   "payload": "110000000004000000000000",
   "frame": "4f4243500300010100000c0014000000110000000004000000000000"
 }

@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "The parent's manifest phases use resumable/attached and the durable manifest offset.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 1,
+    "progress.phase": 0,
+    "progress.flags": 5,
+    "progress.subjectKind": 6,
+    "progress.logicalObjectId": "2",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000010005000600000002000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010005000600000002000000000000000000000000000000"
 }

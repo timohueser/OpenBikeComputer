@@ -283,6 +283,8 @@ public struct WireFault: Error, Hashable, Sendable, CustomStringConvertible {
     static func emptyMetadataPatch(_ c: String) -> WireFault {
         .init(.invalidDescriptor, 10, context: c)
     }
+    /// §8.2/§8.3: a cursor whose CRC-32 does not reproduce under the store that minted it.
+    static func cursorChecksum(_ c: String) -> WireFault { .init(.checksumFailure, 3, context: c) }
     static func unsupportedOpcode(_ c: String) -> WireFault {
         .init(.unsupportedCapability, 1, context: c)
     }
