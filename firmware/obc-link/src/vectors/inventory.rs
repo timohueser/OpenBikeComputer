@@ -757,9 +757,11 @@ pub fn controls() -> Vec<ControlVector> {
     all.push(finalize_accept(
         "finalize-accepted-resumed",
         1,
-        128,
-        crc32(&manifest[..128]),
-        "A resumed manifest stream reports its durable prefix and that prefix's own CRC.",
+        manifest.len() as u64,
+        manifest_crc,
+        "A resumed manifest stream reports its durable prefix and that prefix's own CRC. The 264-byte manifest is \
+         shorter than one 1,024-byte granule, so §6.2 leaves it exactly two legal durable offsets — zero and the \
+         declared end — and this is the end.",
     ));
     all.push(finalize_accept("finalize-accepted-restart-at-zero", 2, 0, 0, "Restart-at-zero on the manifest stream."));
 

@@ -293,7 +293,7 @@
     {
       "name": "finalize-accepted-resumed",
       "file": "controls/finalize-accepted-resumed.json",
-      "sha256": "6e829c73d8ad6b735c27ca6777630d36e2bb2867511648ed526f8e0b192e18a5"
+      "sha256": "6bf02bafb502a1b481700a7ef1ae70b833e640bbe1095a580df3c3658f672098"
     },
     {
       "name": "finalize-accepted-restart-at-zero",

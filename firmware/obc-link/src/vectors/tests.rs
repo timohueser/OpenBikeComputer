@@ -143,6 +143,9 @@ fn the_production_codec_rejects_every_negative_vector_in_the_stated_category() {
             NegativeTarget::CapabilitiesPayload => Capabilities::decode(&vector.bytes).err(),
             NegativeTarget::SubjectEntry => SubjectEntry::decode(&vector.bytes).err(),
             NegativeTarget::ConfigBlock => ConfigBlock::decode(&vector.bytes).err(),
+            // Alone among the negative rows, this one is a policy-predicate test rather than a
+            // codec-rejection test: the bytes decode fine and what refuses them is §16's admission
+            // rule, so the expected error is synthesized from that predicate's answer.
             NegativeTarget::ResetStoreEcho(class) => {
                 // The echo decodes as sixteen opaque bytes; what refuses it is §16's admission
                 // rule, which needs the mount class and the StoreId the device currently reports.
@@ -844,56 +847,94 @@ fn the_progress_matrix_covers_every_claim_family_and_phase_the_matrix_admits() {
 #[test]
 fn every_finalized_prefix_crc_covers_exactly_the_prefix_its_message_reports() {
     // The defect this test exists for: a producer that clamps the CRC span to the whole object
-    // emits one identical CRC for three different durable offsets, and a codec that hashes the
-    // wrong span passes. Each of these must be the CRC of its own prefix and of nothing else.
-    let payload = inventory::route_payload();
-    let granule = u64::from(FIXTURE_GRANULE);
-    let mut seen = BTreeSet::new();
+    // emits one identical CRC for several different durable offsets, and a codec that hashes the
+    // wrong span sails through. Membership in a set of plausible CRCs is not enough to catch that —
+    // swapping two fixtures' CRCs would still satisfy it — so every fixture is recomputed against
+    // its own family's bytes at its own reported offset.
+    let mut checked = 0usize;
     for vector in controls() {
-        let Some(offset_and_crc) = finalized_prefix(&vector) else { continue };
-        let (offset, crc) = offset_and_crc;
+        let Some((family, offset, crc)) = finalized_prefix(&vector) else { continue };
+        let payload = family.payload();
+        assert!(
+            offset <= payload.len() as u64,
+            "{}: a durable offset past the object's own length is not a prefix",
+            vector.name
+        );
+        assert_eq!(
+            crc,
+            raw::crc32(&payload[..offset as usize]),
+            "{} reports offset {offset} with a CRC that is not that prefix's",
+            vector.name
+        );
         if offset == 0 {
             assert_eq!(crc, 0, "{}: a zero durable offset carries a zero CRC", vector.name);
-            continue;
         }
-        seen.insert(crc);
+        checked += 1;
     }
-    // The three checkpoint responses report 1,024 / 2,048 / 3,000 and must not share a CRC.
-    let distinct: BTreeSet<u32> = [granule, granule * 2, payload.len() as u64]
+    assert!(checked >= 8, "only {checked} finalized-prefix fixtures were reached");
+
+    // And the three checkpoints really are three different prefixes, so no swap between them could
+    // go unnoticed either.
+    let route = inventory::route_payload();
+    let granule = u64::from(FIXTURE_GRANULE);
+    let distinct: BTreeSet<u32> = [granule, granule * 2, route.len() as u64]
         .iter()
-        .map(|offset| raw::crc32(&payload[..*offset as usize]))
+        .map(|offset| raw::crc32(&route[..*offset as usize]))
         .collect();
     assert_eq!(distinct.len(), 3, "three different prefixes must hash to three different values");
     assert_ne!(
-        raw::crc32(&payload[..granule as usize]),
-        raw::crc32(&payload),
+        raw::crc32(&route[..granule as usize]),
+        raw::crc32(&route),
         "a prefix CRC must not equal the whole-object CRC"
     );
-    assert!(seen.is_superset(&distinct), "every checkpoint CRC must be a genuine prefix CRC");
 }
 
-/// The `(durable offset, finalized prefix CRC)` pair a message reports, when it reports one.
-fn finalized_prefix(vector: &ControlVector) -> Option<(u64, u32)> {
-    let payload = &vector.payload;
-    match vector.opcode {
-        crate::frame::Opcode::CheckpointUpload if vector.direction == "response" => Some((
-            u64::from_le_bytes(payload[4..12].try_into().ok()?),
-            u32::from_le_bytes(payload[12..16].try_into().ok()?),
-        )),
-        crate::frame::Opcode::StartUpload if vector.direction == "response" && payload.first() == Some(&0) => Some((
-            u64::from_le_bytes(payload[40..48].try_into().ok()?),
-            u32::from_le_bytes(payload[56..60].try_into().ok()?),
-        )),
-        crate::frame::Opcode::StartDraftPart if vector.direction == "response" && payload.first() == Some(&0) => {
-            Some((
-                u64::from_le_bytes(payload[52..60].try_into().ok()?),
-                u32::from_le_bytes(payload[68..72].try_into().ok()?),
-            ))
+/// Which of the suite's three payloads a message's durable offset is measured into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixFamily {
+    /// The 3,000-byte route object.
+    Route,
+    /// The 65,536-byte draft part.
+    DraftPart,
+    /// The 264-byte volume manifest.
+    Manifest,
+}
+
+impl PrefixFamily {
+    fn payload(self) -> Vec<u8> {
+        match self {
+            PrefixFamily::Route => inventory::route_payload(),
+            PrefixFamily::DraftPart => inventory::draft_part_payload(),
+            PrefixFamily::Manifest => inventory::manifest_payload(),
         }
-        crate::frame::Opcode::FinalizeDraft if vector.direction == "response" && payload.first() == Some(&0) => Some((
-            u64::from_le_bytes(payload[40..48].try_into().ok()?),
-            u32::from_le_bytes(payload[56..60].try_into().ok()?),
-        )),
-        _ => None,
     }
+}
+
+/// The `(family, durable offset, finalized prefix CRC)` a message reports, when it reports one.
+///
+/// The opcode fixes the family: a checkpoint and an UploadAccepted measure into the route object,
+/// a DraftPartAccepted into the part, and the FinalizeDraft acceptance into the manifest.
+fn finalized_prefix(vector: &ControlVector) -> Option<(PrefixFamily, u64, u32)> {
+    if vector.direction != "response" || vector.flags & crate::frame::FrameFlags::ERROR != 0 {
+        // An error response on one of these opcodes carries an ErrorBody, whose expected-offset
+        // field is a resume hint rather than a durable prefix of anything this suite holds.
+        return None;
+    }
+    let payload = &vector.payload;
+    let at = |offset: usize, crc: usize| -> Option<(u64, u32)> {
+        Some((
+            u64::from_le_bytes(payload.get(offset..offset + 8)?.try_into().ok()?),
+            u32::from_le_bytes(payload.get(crc..crc + 4)?.try_into().ok()?),
+        ))
+    };
+    let accepted = payload.first() == Some(&0);
+    let (family, offset, crc) = match vector.opcode {
+        crate::frame::Opcode::CheckpointUpload => (PrefixFamily::Route, 4, 12),
+        crate::frame::Opcode::StartUpload if accepted => (PrefixFamily::Route, 40, 56),
+        crate::frame::Opcode::StartDraftPart if accepted => (PrefixFamily::DraftPart, 52, 68),
+        crate::frame::Opcode::FinalizeDraft if accepted => (PrefixFamily::Manifest, 40, 56),
+        _ => return None,
+    };
+    let (offset, crc) = at(offset, crc)?;
+    Some((family, offset, crc))
 }
