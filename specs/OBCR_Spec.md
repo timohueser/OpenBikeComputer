@@ -7,7 +7,8 @@ and an optional table of **waypoints** pinned along the route. It is
 produced **on the device** (or in the simulator) by converting an uploaded GPX
 file — or **on the phone** by the companion app, which encodes imported GPX/TCX
 to OBCR before a BLE upload (see
-[`obc-ble-interface-spec.md`](obc-ble-interface-spec.md)) — and read back by the
+[`obc-ble-interface-spec.md`](obc-ble-interface-spec.md), legacy wire v2 — superseded
+for DOS v2 by the [`Device_Object_System_v2.md`](Device_Object_System_v2.md) suite) — and read back by the
 same `no_std` Rust code that the firmware runs (`firmware/obc-route`).
 
 This document is the normative byte contract. `firmware/obc-formats/src/obcr.rs`
