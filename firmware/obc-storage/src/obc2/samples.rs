@@ -262,9 +262,13 @@ pub fn ride_slot(sequence: u32, offset: u64) -> RideRecord {
 }
 
 /// A claim record: the first durable act of an operation.
+///
+/// The active row carries the *former* cursor, which is the generation the record reserves. A
+/// cursor of zero has no former value, so the row carries zero — a case the boundary tests use to
+/// drive `check`'s refusal rather than to describe a legal record.
 pub fn claim(epoch: u64, sequence: u64, slot: u16, operation: [u8; 16], generation_cursor: u64) -> JournalBody {
     let mut row = active(operation);
-    row.generation = GenerationId::new(generation_cursor - 1);
+    row.generation = GenerationId::new(generation_cursor.wrapping_sub(1));
     JournalBody {
         store: STORE,
         epoch,

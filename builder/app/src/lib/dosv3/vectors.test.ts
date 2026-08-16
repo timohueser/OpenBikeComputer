@@ -424,6 +424,12 @@ describe("storage vectors are reconstructable outside Rust", () => {
         runs: { offset: number; hex: string }[];
     }
 
+    // An emptied storage section would make every `it.each` below vacuous — zero cases, all green.
+    it("the manifest carries a storage section at all", () => {
+        expect(MANIFEST.storage.length).toBeGreaterThan(0);
+        expect(MANIFEST.storage.some((row) => row.name === "crash-cut-transcripts")).toBe(true);
+    });
+
     const recordRows = MANIFEST.storage.filter((row) => row.name !== "crash-cut-transcripts");
 
     it.each(recordRows.map((row) => [row.name, row] as const))("%s", (_name, row) => {
@@ -475,7 +481,12 @@ describe("storage vectors are reconstructable outside Rust", () => {
             // Every operation is cut at three positions: before it reaches the card, during it, and
             // after it returns.
             expect(transcript.cutPoints, where).toBe(transcript.stepCount * 3);
-            expect(transcript.admissibleOutcomes.length, where).toBeGreaterThan(1);
+            // A commit path admits more than one recovered state — that is what its cut points
+            // are for. A fault-mode transcript is a single refused operation with exactly one
+            // outcome, and holding it to the same rule would be wrong rather than strict.
+            expect(transcript.admissibleOutcomes.length, where).toBeGreaterThan(
+                transcript.stepCount > 1 ? 1 : 0,
+            );
             transcript.steps.forEach((step, index) => {
                 expect(step.op, `${where} step ${index}`).toBe(index + 1);
                 expect(["write", "sync"], `${where} step ${index}`).toContain(step.kind);
@@ -484,8 +495,11 @@ describe("storage vectors are reconstructable outside Rust", () => {
                     expect(step.length, `${where} step ${index}`).toBe(0);
                 }
             });
-            // A commit path ends at a sync: the gate is durable only once it returns.
-            expect(transcript.steps[transcript.steps.length - 1].kind, where).toBe("sync");
+            // A commit path ends at a sync: the gate is durable only once it returns. A single-step
+            // fault transcript ends at the write that failed, which is the whole point of it.
+            if (transcript.stepCount > 1) {
+                expect(transcript.steps[transcript.steps.length - 1].kind, where).toBe("sync");
+            }
         }
     });
 });

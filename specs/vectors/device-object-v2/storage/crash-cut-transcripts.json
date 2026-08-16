@@ -5,7 +5,7 @@
   "storage_format": 1,
   "section": "OBC2_Storage_Format.md §12",
   "description": "Every commit path's media operations in their normative order, and the states a reboot after a cut before, during or after any of them may produce. A cut is enumerated at three positions per operation: before it reaches the card, during it (a write tears the program page it was programming; a sync commits an arbitrary subset), and after it returns.",
-  "transcriptCount": 5,
+  "transcriptCount": 12,
   "transcripts": [
     {
       "name": "journal-append",
@@ -108,6 +108,136 @@
       "admissibleOutcomes": [
         "the projection before publication, with the reserved generation left as a collectable orphan",
         "the published manifest head together with its resolution generation"
+      ]
+    },
+    {
+      "name": "ride-checkpoint",
+      "section": "OBC2_Storage_Format.md §7.1",
+      "description": "One ride checkpoint: payload first, then the ring slot at sequence mod 16.",
+      "note": "A ride payload is smaller than one 16,384-byte program page, so a cut during its write tears the whole file and the ride restarts at zero. Section 1.1 caps that at one checkpoint interval and calls it not a store fault. Whatever recovery resumes from, the durable bytes must back its finalized prefix CRC.",
+      "stepCount": 8,
+      "cutPoints": 24,
+      "steps": [
+        { "op": 1, "file": "GEN", "kind": "write", "offset": 1024, "length": 0, "note": "the ride's new samples, appended at the durable offset" },
+        { "op": 2, "file": "GEN", "kind": "sync", "offset": 0, "length": 0, "note": "the payload is durable before any slot names it" },
+        { "op": 3, "file": "RIDE.ACT", "kind": "write", "offset": 16896, "length": 512, "note": "invalidate the gate of slot sequence mod 16" },
+        { "op": 4, "file": "RIDE.ACT", "kind": "sync", "offset": 0, "length": 0, "note": "the previous highest valid slot is still authoritative" },
+        { "op": 5, "file": "RIDE.ACT", "kind": "write", "offset": 16384, "length": 16384, "note": "the new body, with a zeroed gate sector and pad" },
+        { "op": 6, "file": "RIDE.ACT", "kind": "sync", "offset": 0, "length": 0, "note": "the body is durable" },
+        { "op": 7, "file": "RIDE.ACT", "kind": "write", "offset": 16896, "length": 512, "note": "the O2RG gate" },
+        { "op": 8, "file": "RIDE.ACT", "kind": "sync", "offset": 0, "length": 0, "note": "the new checkpoint is authoritative" }
+      ],
+      "admissibleOutcomes": [
+        "the previous ride checkpoint",
+        "the new one",
+        "the initial durable offset zero, when the cut tore the payload page itself"
+      ]
+    },
+    {
+      "name": "work-steady-state-reuse",
+      "section": "OBC2_Storage_Format.md §7",
+      "description": "Both WORK slots valid; the write that reuses the older one must not disturb the selected one.",
+      "note": "",
+      "stepCount": 6,
+      "cutPoints": 18,
+      "steps": [
+        { "op": 1, "file": "WORK", "kind": "write", "offset": 512, "length": 512, "note": "invalidate the older slot's gate — slot 0, holding sequence 1" },
+        { "op": 2, "file": "WORK", "kind": "sync", "offset": 0, "length": 0, "note": "the selected slot, sequence 2 in slot 1, is untouched" },
+        { "op": 3, "file": "WORK", "kind": "write", "offset": 0, "length": 16384, "note": "sequence 3's body over the older slot" },
+        { "op": 4, "file": "WORK", "kind": "sync", "offset": 0, "length": 0, "note": "the body is durable" },
+        { "op": 5, "file": "WORK", "kind": "write", "offset": 512, "length": 512, "note": "the O2WG gate" },
+        { "op": 6, "file": "WORK", "kind": "sync", "offset": 0, "length": 0, "note": "sequence 3 becomes authoritative" }
+      ],
+      "admissibleOutcomes": [
+        "the previously selected slot",
+        "the newly written slot"
+      ]
+    },
+    {
+      "name": "arm-steady-state-reuse",
+      "section": "OBC2_Storage_Format.md §10",
+      "description": "Both ARM files valid at one handoff sequence; advancing to the next reuses the file holding the older pair.",
+      "note": "",
+      "stepCount": 6,
+      "cutPoints": 18,
+      "steps": [
+        { "op": 1, "file": "ARM0.HND", "kind": "write", "offset": 512, "length": 512, "note": "invalidate the gate of the file holding the older pair" },
+        { "op": 2, "file": "ARM0.HND", "kind": "sync", "offset": 0, "length": 0, "note": "the selected file, holding (4, armed), is untouched" },
+        { "op": 3, "file": "ARM0.HND", "kind": "write", "offset": 0, "length": 16384, "note": "handoff sequence 5's prepared body" },
+        { "op": 4, "file": "ARM0.HND", "kind": "sync", "offset": 0, "length": 0, "note": "the body is durable" },
+        { "op": 5, "file": "ARM0.HND", "kind": "write", "offset": 512, "length": 512, "note": "the O2HG gate" },
+        { "op": 6, "file": "ARM0.HND", "kind": "sync", "offset": 0, "length": 0, "note": "(5, prepared) becomes the greater pair" }
+      ],
+      "admissibleOutcomes": [
+        "the previously selected (sequence, phase) pair",
+        "the strictly greater new pair"
+      ]
+    },
+    {
+      "name": "checkpoint-steady-state-reuse",
+      "section": "OBC2_Storage_Format.md §6.3",
+      "description": "Both checkpoints valid; rewriting the inactive one leaves the selected one mounted throughout.",
+      "note": "",
+      "stepCount": 6,
+      "cutPoints": 18,
+      "steps": [
+        { "op": 1, "file": "CAT0.CHK", "kind": "write", "offset": 65024, "length": 512, "note": "invalidate the inactive checkpoint's gate" },
+        { "op": 2, "file": "CAT0.CHK", "kind": "sync", "offset": 0, "length": 0, "note": "the selected checkpoint, CAT1, is untouched" },
+        { "op": 3, "file": "CAT0.CHK", "kind": "write", "offset": 0, "length": 65024, "note": "the newer projection's body" },
+        { "op": 4, "file": "CAT0.CHK", "kind": "sync", "offset": 0, "length": 0, "note": "the body is durable" },
+        { "op": 5, "file": "CAT0.CHK", "kind": "write", "offset": 65024, "length": 512, "note": "the O2CG gate" },
+        { "op": 6, "file": "CAT0.CHK", "kind": "sync", "offset": 0, "length": 0, "note": "CAT0 becomes the greater through-sequence" }
+      ],
+      "admissibleOutcomes": [
+        "the previously selected checkpoint",
+        "the newly written one"
+      ]
+    },
+    {
+      "name": "short-write",
+      "section": "OBC2_Storage_Format.md §13.1",
+      "description": "A write the medium truncates. The writer checks the returned length and abandons the commit.",
+      "note": "One step, because the sequence stops there: the length check fails and nothing after it runs. There are no cut points to enumerate — the fault is the write's own return value.",
+      "stepCount": 1,
+      "cutPoints": 3,
+      "steps": [
+        { "op": 1, "file": "COMMIT.JNL", "kind": "write", "offset": 0, "length": 16384, "note": "the body stride, of which the medium accepts fewer bytes" }
+      ],
+      "admissibleOutcomes": [
+        "the projection before the record; a short write is an error, never a success"
+      ]
+    },
+    {
+      "name": "media-full",
+      "section": "OBC2_Storage_Format.md §13.1",
+      "description": "A write the medium refuses for want of space.",
+      "note": "One step, for the same reason as the short write: the refusal ends the sequence.",
+      "stepCount": 1,
+      "cutPoints": 3,
+      "steps": [
+        { "op": 1, "file": "COMMIT.JNL", "kind": "write", "offset": 0, "length": 16384, "note": "the body stride, which the medium refuses outright" }
+      ],
+      "admissibleOutcomes": [
+        "the projection before the record"
+      ]
+    },
+    {
+      "name": "corrupt-read",
+      "section": "OBC2_Storage_Format.md §12",
+      "description": "An ordinary commit, followed by a mount whose reads are poisoned one at a time.",
+      "note": "The fault here is on the read path, not the write path, so the steps are an ordinary append and the injection happens during recovery. A corrupt read can cost visibility; it can never invent state.",
+      "stepCount": 4,
+      "cutPoints": 12,
+      "steps": [
+        { "op": 1, "file": "COMMIT.JNL", "kind": "write", "offset": 0, "length": 16384, "note": "an ordinary append, completed before the fault" },
+        { "op": 2, "file": "COMMIT.JNL", "kind": "sync", "offset": 0, "length": 0, "note": "its body" },
+        { "op": 3, "file": "COMMIT.JNL", "kind": "write", "offset": 1536, "length": 512, "note": "its gate" },
+        { "op": 4, "file": "COMMIT.JNL", "kind": "sync", "offset": 0, "length": 0, "note": "the commit point; the fault is injected into a later *read*" }
+      ],
+      "admissibleOutcomes": [
+        "the projection before the record",
+        "the projection after it",
+        "no checkpoint at all, when the poisoned read was the only valid checkpoint's"
       ]
     }
   ]

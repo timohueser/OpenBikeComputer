@@ -351,6 +351,19 @@ fn handoff_ref_full(sequence: u64, phase: u8, outcome: u8, terminal_commit: u64,
     out
 }
 
+/// §10's ARM body around an already-built reference.
+fn arm_body_ref(sequence: u64, reference: Vec<u8>) -> Vec<u8> {
+    let mut out = zeros(512);
+    bytes_at(&mut out, 0, b"O2UH");
+    u16_at(&mut out, 4, 1);
+    u16_at(&mut out, 6, 64);
+    bytes_at(&mut out, 8, &STORE);
+    u64_at(&mut out, 24, sequence);
+    u16_at(&mut out, 32, 240);
+    bytes_at(&mut out, 64, &reference);
+    out
+}
+
 fn handoff_ref_base(sequence: u64, phase: u8) -> Vec<u8> {
     let mut out = zeros(240);
     u64_at(&mut out, 0, sequence);
@@ -1426,8 +1439,11 @@ fn journal_removal_keys_file() -> VectorFile {
         let mutation = Mutation { presence: P_RIDE_REMOVE, ride: Some(ride_extra), ..Mutation::default() };
         journal_slot(1, 3, 2, 6, None, &mutation)
     };
+    // A single fault: the occupied byte is present but carries the wrong value. Writing a nonzero
+    // byte *elsewhere* instead would have been two faults at once — a wrong occupied byte and a
+    // non-key byte — and either rule could have produced the rejection.
     let mut ride_unoccupied = zeros(128);
-    ride_unoccupied[1] = 1;
+    ride_unoccupied[0] = 2;
     let ride_removal_unoccupied = {
         let mutation = Mutation { presence: P_RIDE_REMOVE, ride: Some(ride_unoccupied), ..Mutation::default() };
         journal_slot(1, 3, 2, 6, None, &mutation)
@@ -1841,6 +1857,49 @@ fn arm_handoff_file() -> VectorFile {
             Case::accept("armed", "The strictly greater pair of the same handoff sequence.", Subject::ArmFile, 1, armed),
             Case::accept("armed-with-rollback-snapshot", "The rollback fields are valid exactly when flag bit 0 is set.", Subject::ArmFile, 0, rollback),
             Case::reject("zero-arm-generation", "The OBCU arm generation is nonzero.", Subject::ArmFile, 0, zero_arm_generation, "Reserved"),
+            Case::accept(
+                "trial-observed",
+                "Phase 3: a Trial page was observed after the reset, with the terminal-result commit sequence at byte 184.",
+                Subject::ArmFile,
+                1,
+                small_slot(arm_body_ref(4, handoff_ref_full(4, 3, 0, 7, 0)), b"O2HG", 1, 4, 3),
+            ),
+            Case::accept(
+                "outcome-observed-installed",
+                "Phase 4 with OBCU outcome 1 (installed), the commit sequence at 184 and the observed outcome generation at 192 — the two fields a swapped u64/u32 write would silently corrupt.",
+                Subject::ArmFile,
+                0,
+                small_slot(arm_body_ref(4, handoff_ref_full(4, 4, 1, 0x0102_0304_0506_0708, 0x090A_0B0C)), b"O2HG", 0, 4, 4),
+            ),
+            Case::accept(
+                "outcome-observed-rolled-back",
+                "The same phase carrying outcome 2 (rolled back).",
+                Subject::ArmFile,
+                0,
+                small_slot(arm_body_ref(4, handoff_ref_full(4, 4, 2, 9, 3)), b"O2HG", 0, 4, 4),
+            ),
+            Case::accept(
+                "complete-stage-rejected",
+                "Phase 5 with outcome 3 (stage rejected): the projection cleanup follows this.",
+                Subject::ArmFile,
+                1,
+                small_slot(arm_body_ref(4, handoff_ref_full(4, 5, 3, 9, 3)), b"O2HG", 1, 4, 5),
+            ),
+            Case::accept(
+                "complete-arm-abandoned",
+                "Phase 5 with outcome 4 (arm abandoned).",
+                Subject::ArmFile,
+                1,
+                small_slot(arm_body_ref(4, handoff_ref_full(4, 5, 4, 9, 3)), b"O2HG", 1, 4, 5),
+            ),
+            Case::reject(
+                "unknown-outcome",
+                "Outcome 5 is not registered.",
+                Subject::ArmFile,
+                0,
+                small_slot(arm_body_ref(4, handoff_ref_full(4, 4, 5, 9, 3)), b"O2HG", 0, 4, 4),
+                "UnknownEnum",
+            ),
             Case::reject("sequence-mismatch", "The HandoffRef sequence must equal the outer body and the gate scope.", Subject::ArmFile, 0, sequence_mismatch, "Sequence"),
         ],
     )
@@ -2064,7 +2123,63 @@ const MANIFEST_PUBLICATION: [Step; 6] = [
     sync("COMMIT.JNL", "the only visibility point of the release"),
 ];
 
+const RIDE_CHECKPOINT: [Step; 8] = [
+    write("GEN", 1_024, 0, "the ride's new samples, appended at the durable offset"),
+    sync("GEN", "the payload is durable before any slot names it"),
+    write("RIDE.ACT", SLOT_STRIDE + SMALL_GATE_OFFSET, 512, "invalidate the gate of slot sequence mod 16"),
+    sync("RIDE.ACT", "the previous highest valid slot is still authoritative"),
+    write("RIDE.ACT", SLOT_STRIDE, SLOT_STRIDE, "the new body, with a zeroed gate sector and pad"),
+    sync("RIDE.ACT", "the body is durable"),
+    write("RIDE.ACT", SLOT_STRIDE + SMALL_GATE_OFFSET, 512, "the O2RG gate"),
+    sync("RIDE.ACT", "the new checkpoint is authoritative"),
+];
+
+const WORK_STEADY_STATE: [Step; 6] = [
+    write("WORK", SMALL_GATE_OFFSET, 512, "invalidate the older slot's gate — slot 0, holding sequence 1"),
+    sync("WORK", "the selected slot, sequence 2 in slot 1, is untouched"),
+    write("WORK", 0, SLOT_STRIDE, "sequence 3's body over the older slot"),
+    sync("WORK", "the body is durable"),
+    write("WORK", SMALL_GATE_OFFSET, 512, "the O2WG gate"),
+    sync("WORK", "sequence 3 becomes authoritative"),
+];
+
+const ARM_STEADY_STATE: [Step; 6] = [
+    write("ARM0.HND", SMALL_GATE_OFFSET, 512, "invalidate the gate of the file holding the older pair"),
+    sync("ARM0.HND", "the selected file, holding (4, armed), is untouched"),
+    write("ARM0.HND", 0, SLOT_FILE_LEN, "handoff sequence 5's prepared body"),
+    sync("ARM0.HND", "the body is durable"),
+    write("ARM0.HND", SMALL_GATE_OFFSET, 512, "the O2HG gate"),
+    sync("ARM0.HND", "(5, prepared) becomes the greater pair"),
+];
+
+const CHECKPOINT_STEADY_STATE: [Step; 6] = [
+    write("CAT0.CHK", CHECKPOINT_GATE_OFFSET, 512, "invalidate the inactive checkpoint's gate"),
+    sync("CAT0.CHK", "the selected checkpoint, CAT1, is untouched"),
+    write("CAT0.CHK", 0, CHECKPOINT_BODY_LEN, "the newer projection's body"),
+    sync("CAT0.CHK", "the body is durable"),
+    write("CAT0.CHK", CHECKPOINT_GATE_OFFSET, 512, "the O2CG gate"),
+    sync("CAT0.CHK", "CAT0 becomes the greater through-sequence"),
+];
+
+const SHORT_WRITE: [Step; 1] =
+    [write("COMMIT.JNL", 0, SLOT_STRIDE, "the body stride, of which the medium accepts fewer bytes")];
+
+const MEDIA_FULL: [Step; 1] =
+    [write("COMMIT.JNL", 0, SLOT_STRIDE, "the body stride, which the medium refuses outright")];
+
+const CORRUPT_READ: [Step; 4] = [
+    write("COMMIT.JNL", 0, SLOT_STRIDE, "an ordinary append, completed before the fault"),
+    sync("COMMIT.JNL", "its body"),
+    write("COMMIT.JNL", JOURNAL_GATE_OFFSET, 512, "its gate"),
+    sync("COMMIT.JNL", "the commit point; the fault is injected into a later *read*"),
+];
+
 /// The commit paths whose every cut point the crash matrix enumerates.
+///
+/// The list is complete in both directions, and the harness proves it: every scenario with a
+/// normative media order appears here, and every row here is a sequence the harness actually
+/// performs. A one-directional guard would let a scenario be added with no transcript — which is
+/// exactly the drift the storage-vector guard already closes on the file side.
 pub fn transcripts() -> Vec<Transcript> {
     vec![
         Transcript {
@@ -2114,6 +2229,71 @@ pub fn transcripts() -> Vec<Transcript> {
             ]
             .as_slice(),
             note: "The resolution body's length is the table's, not a fixed record size, so its write appears with length zero here.",
+        },
+        Transcript {
+            name: "ride-checkpoint",
+            section: "OBC2_Storage_Format.md §7.1",
+            description: "One ride checkpoint: payload first, then the ring slot at sequence mod 16.",
+            steps: &RIDE_CHECKPOINT,
+            outcomes: &[
+                "the previous ride checkpoint",
+                "the new one",
+                "the initial durable offset zero, when the cut tore the payload page itself",
+            ],
+            note: "A ride payload is smaller than one 16,384-byte program page, so a cut during its write tears the whole file and the ride restarts at zero. Section 1.1 caps that at one checkpoint interval and calls it not a store fault. Whatever recovery resumes from, the durable bytes must back its finalized prefix CRC.",
+        },
+        Transcript {
+            name: "work-steady-state-reuse",
+            section: "OBC2_Storage_Format.md §7",
+            description: "Both WORK slots valid; the write that reuses the older one must not disturb the selected one.",
+            steps: &WORK_STEADY_STATE,
+            outcomes: &["the previously selected slot", "the newly written slot"],
+            note: "",
+        },
+        Transcript {
+            name: "arm-steady-state-reuse",
+            section: "OBC2_Storage_Format.md §10",
+            description: "Both ARM files valid at one handoff sequence; advancing to the next reuses the file holding the older pair.",
+            steps: &ARM_STEADY_STATE,
+            outcomes: &["the previously selected (sequence, phase) pair", "the strictly greater new pair"],
+            note: "",
+        },
+        Transcript {
+            name: "checkpoint-steady-state-reuse",
+            section: "OBC2_Storage_Format.md §6.3",
+            description: "Both checkpoints valid; rewriting the inactive one leaves the selected one mounted throughout.",
+            steps: &CHECKPOINT_STEADY_STATE,
+            outcomes: &["the previously selected checkpoint", "the newly written one"],
+            note: "",
+        },
+        Transcript {
+            name: "short-write",
+            section: "OBC2_Storage_Format.md §13.1",
+            description: "A write the medium truncates. The writer checks the returned length and abandons the commit.",
+            steps: &SHORT_WRITE,
+            outcomes: &["the projection before the record; a short write is an error, never a success"],
+            note: "One step, because the sequence stops there: the length check fails and nothing after it runs. There are no cut points to enumerate — the fault is the write's own return value.",
+        },
+        Transcript {
+            name: "media-full",
+            section: "OBC2_Storage_Format.md §13.1",
+            description: "A write the medium refuses for want of space.",
+            steps: &MEDIA_FULL,
+            outcomes: &["the projection before the record"],
+            note: "One step, for the same reason as the short write: the refusal ends the sequence.",
+        },
+        Transcript {
+            name: "corrupt-read",
+            section: "OBC2_Storage_Format.md §12",
+            description: "An ordinary commit, followed by a mount whose reads are poisoned one at a time.",
+            steps: &CORRUPT_READ,
+            outcomes: [
+                "the projection before the record",
+                "the projection after it",
+                "no checkpoint at all, when the poisoned read was the only valid checkpoint's",
+            ]
+            .as_slice(),
+            note: "The fault here is on the read path, not the write path, so the steps are an ordinary append and the injection happens during recovery. A corrupt read can cost visibility; it can never invent state.",
         },
     ]
 }
@@ -2342,13 +2522,28 @@ mod tests {
     fn the_suite_manifest_lists_every_storage_vector() {
         let manifest_path = dir().join("../manifest.json");
         let manifest = std::fs::read_to_string(&manifest_path).expect("manifest");
-        assert!(manifest.contains("storage/crash-cut-transcripts.json"));
+
+        // The digest is checked **inside this file's own row**, not anywhere in the manifest. A
+        // bare `contains` would pass while a digest sat next to the wrong name — including the
+        // degenerate case of two files whose contents happen to match.
+        let row_digest = |file_name: &str| -> Option<String> {
+            let key = format!("\"file\": \"storage/{file_name}\"");
+            let start = manifest.find(&key)?;
+            let tail = &manifest[start..];
+            let digest_at = tail.find("\"sha256\": \"")? + "\"sha256\": \"".len();
+            let digest = &tail[digest_at..digest_at + 64];
+            Some(digest.to_string())
+        };
+
         for file in files() {
-            let entry = format!("storage/{}.json", file.name);
-            assert!(manifest.contains(&entry), "{} is missing from the suite manifest", entry);
-            let digest = sha256(file.json().as_bytes());
-            assert!(manifest.contains(&digest), "{}'s digest is stale in the suite manifest", entry);
+            let file_name = format!("{}.json", file.name);
+            let listed = row_digest(&file_name)
+                .unwrap_or_else(|| panic!("storage/{file_name} is missing from the suite manifest"));
+            assert_eq!(listed, sha256(file.json().as_bytes()), "storage/{file_name}'s digest is stale");
         }
+        let transcripts = row_digest("crash-cut-transcripts.json")
+            .expect("storage/crash-cut-transcripts.json is missing from the suite manifest");
+        assert_eq!(transcripts, sha256(transcripts_json().as_bytes()), "the transcript digest is stale");
     }
 
     #[test]

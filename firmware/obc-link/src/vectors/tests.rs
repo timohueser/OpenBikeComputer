@@ -92,11 +92,25 @@ fn every_fixture_name_is_unique_and_the_manifest_records_its_digest() {
     assert!(rendered.contains("\"suite\": \"device-object-v2\""));
     assert!(rendered.contains("\"wire_major\": 3"));
     // The storage array is indexed from the checked-in `storage/` directory rather than produced
-    // here, so what this side can assert is that every file present is listed with its digest.
+    // here. Comparing the *rendered* manifest against that same directory would be a tautology —
+    // both sides come from one `read_dir` — so the comparison is against the manifest **on disk**:
+    // if a storage fixture is added or removed without regenerating, that file and the directory
+    // disagree and this fails.
+    let checked_in = std::fs::read_to_string(dir().join("manifest.json")).expect("manifest.json");
     for entry in std::fs::read_dir(dir().join("storage")).expect("storage directory") {
         let name = entry.expect("directory entry").file_name().to_string_lossy().into_owned();
-        assert!(rendered.contains(&format!("storage/{name}")), "{name} is missing from the manifest");
+        assert!(
+            checked_in.contains(&format!("storage/{name}")),
+            "{name} is on disk but missing from the checked-in manifest — regenerate obc-storage's \
+             vectors, then this crate's",
+        );
     }
+    // And the rendered manifest is what would be written, so the two must agree about storage too.
+    assert_eq!(
+        checked_in.matches("\"file\": \"storage/").count(),
+        rendered.matches("\"file\": \"storage/").count(),
+        "the checked-in manifest and a fresh render disagree about how many storage rows exist",
+    );
 }
 
 #[test]

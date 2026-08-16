@@ -21,14 +21,30 @@
 //! transcript says so: it writes the checkpoint body in one call, while §6.3 specifies a bounded
 //! forward pass of many smaller writes. The *ordering* around that write is normative and is what
 //! these cut points prove; the streaming pass arrives with the compaction engine.
+//!
+//! ## What the initialization scenario proves, and what it cannot yet
+//!
+//! [`initialization_produces_no_store_or_a_complete_first_checkpoint`] is **not** one of the
+//! exhaustively-cut commit paths, and counting it among them would overstate this slice. Its cut
+//! points are structurally unfailable: every one of them ends in either a complete first checkpoint
+//! or no checkpoint at all, and "no checkpoint" is the same observation whether the witness is
+//! absent, torn, or perfectly valid. Distinguishing those three — a fresh card, a resumable `INIT`
+//! witness, an ungated pre-birth prefix, an unknown shape — is §12's mount classification, and that
+//! is a later slice. What the scenario proves today is the half the record codecs own: that no cut
+//! produces a *partial* record, that the witness that survives is this attempt's, and that nothing
+//! is advertised before the first checkpoint gate. The commit paths whose cut matrices carry real
+//! discriminating power are the seven with a normative media order, each of which has a checked-in
+//! transcript.
 
 use std::boxed::Box;
+use std::format;
 use std::vec;
 use std::vec::Vec;
 
 use obc_link::ids::{GenerationId, OperationId};
 
 use super::checkpoint;
+use super::checkpoint::HEADER_LEN;
 use super::entries::{DraftPartState, RetainedPrevious};
 use super::gate::INVALIDATED;
 use super::handoff::{HandoffPhase, HandoffRecord};
@@ -568,7 +584,8 @@ fn a_slot_whose_prefix_the_payload_contradicts_is_discarded() {
 // -------------------------------------------------------------------------------------------
 
 /// §7.1's recovery, through the production function: the ring's slots, the checkpoint's
-/// ActiveRideState identity, and the payload's observed length.
+/// ActiveRideState identity, and the payload's **bytes** — not just its length, because §7.1 refuses
+/// an unverifiable prefix as firmly as an unreachable one.
 fn recover_ride(card: &mut Card, identity: Option<work::RideIdentity>) -> RideRecovery {
     let mut slots: Vec<Option<RideRecord>> = Vec::new();
     for slot in 0..RIDE_SLOTS {
@@ -578,8 +595,29 @@ fn recover_ride(card: &mut Card, identity: Option<work::RideIdentity>) -> RideRe
         };
         slots.push(RideRecord::validate_slot(&stride, slot as u16).ok());
     }
-    let observed = card.media.read_at(card.payload, 0, PAYLOAD_LEN).map(|bytes| bytes.len()).unwrap_or(0);
-    work::recover_ride(&slots, identity, observed as u64)
+    let payload = card.media.read_at(card.payload, 0, PAYLOAD_LEN).unwrap_or_default();
+    work::recover_ride(&slots, identity, &payload)
+}
+
+/// The oracle every ride cut point is judged against: whatever recovery resumes from, the bytes on
+/// the card must actually back it.
+///
+/// This is the assertion that catches a selector which checks reachability and forgets the CRC —
+/// the resumed prefix is recomputed here from the durable payload rather than trusted from the slot.
+fn assert_ride_prefix_holds(card: &mut Card, recovered: RideRecovery, where_: &str) {
+    let RideRecovery::Resume(record) = recovered else { return };
+    let payload = card.media.read_at(card.payload, 0, PAYLOAD_LEN).unwrap_or_default();
+    assert!(
+        record.durable_offset <= payload.len() as u64,
+        "{where_}: resumed at offset {} past a {}-byte payload",
+        record.durable_offset,
+        payload.len(),
+    );
+    assert_eq!(
+        super::raw::crc32(&payload[..record.durable_offset as usize]),
+        record.prefix_crc,
+        "{where_}: resumed from a prefix the durable payload contradicts",
+    );
 }
 
 fn ride_identity(record: &RideRecord) -> work::RideIdentity {
@@ -641,10 +679,19 @@ fn a_ride_checkpoint_recovers_the_previous_or_the_new_slot() {
             scenario(&mut card);
             card.media.reboot();
             let recovered = recover_ride(&mut card, identity);
+            // Three outcomes, not two. A cut during a payload write tears the GEN page — the whole
+            // file here, since a ride payload is smaller than one 16,384-byte program page — and a
+            // ride whose bytes are gone restarts at zero. §1.1 caps that loss at one checkpoint
+            // interval and calls it "not a store fault", so it is an admissible recovery, and the
+            // assertion that matters is the one below: whatever it resumes from must be backed by
+            // the bytes actually on the card.
             assert!(
-                recovered == RideRecovery::Resume(first) || recovered == RideRecovery::Resume(second),
+                recovered == RideRecovery::Resume(first)
+                    || recovered == RideRecovery::Resume(second)
+                    || recovered == RideRecovery::RestartAtZero,
                 "ride checkpoint: cut at op {op} {when:?} recovered {recovered:?}",
             );
+            assert_ride_prefix_holds(&mut card, recovered, &format!("ride checkpoint cut at op {op} {when:?}"));
         }
     }
 }
@@ -672,11 +719,15 @@ fn a_wrapping_ride_checkpoint_never_loses_more_than_one_interval() {
     card.media.set_plan(FaultPlan::cut(baseline + 3, When::During));
     let _ = card.write_gated_slot(card.ride, 0, &wrapped.encode_slot(0));
     card.media.reboot();
-    assert_eq!(recover_ride(&mut card, identity), RideRecovery::Resume(newest));
+    let recovered = recover_ride(&mut card, identity);
+    assert_eq!(recovered, RideRecovery::Resume(newest));
+    assert_ride_prefix_holds(&mut card, recovered, "wrapping ride checkpoint, cut");
 
     // Completing the same write makes sequence 16 authoritative.
     card.write_gated_slot(card.ride, 0, &wrapped.encode_slot(0)).unwrap();
-    assert_eq!(recover_ride(&mut card, identity), RideRecovery::Resume(wrapped));
+    let recovered = recover_ride(&mut card, identity);
+    assert_eq!(recovered, RideRecovery::Resume(wrapped));
+    assert_ride_prefix_holds(&mut card, recovered, "wrapping ride checkpoint, complete");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1359,12 +1410,28 @@ fn mutated_checkpoints_are_rejected_without_panicking() {
     // The other half re-stamps the body CRC and the gate, so the mutation is internally consistent
     // and reaches the region rules — counts, sort order, reserved runs, entry enums. A CRC proves
     // nothing about those, and this is the only way a fuzz round gets past it.
+    //
+    // The mutation index is drawn from the *occupied* bytes, not uniformly over the body. Uniform
+    // draws are worthless here: the occupied prefixes of this projection are a few hundred bytes
+    // inside a 60 KiB region span, so 98% of rounds would land in a zero_after run and trip the
+    // same trivial count rule every time — a histogram that looks like coverage and is not. The
+    // ranges below are the header and the entries that actually exist.
+    let targets: [core::ops::Range<usize>; 8] = [
+        0..HEADER_LEN,                                                             // the header
+        checkpoint::REPOSITORIES.offset..checkpoint::REPOSITORIES.offset + 24 * 3, // three rows
+        checkpoint::HEADS.offset..checkpoint::HEADS.offset + 160 * 2,              // two heads
+        checkpoint::ACTIVE.offset..checkpoint::ACTIVE.offset + 128,                // one active row
+        checkpoint::DRAFT_PARENT.offset..checkpoint::DRAFT_PARENT.offset + 128,
+        checkpoint::DRAFT_PARTS.offset..checkpoint::DRAFT_PARTS.offset + 96,
+        checkpoint::WEATHER.offset..checkpoint::WEATHER.offset + 80,
+        checkpoint::RIDE.offset..checkpoint::RIDE.offset + 128,
+    ];
+    let mut reasons: std::collections::BTreeMap<super::error::Reason, usize> = std::collections::BTreeMap::new();
     let mut reached_structure = 0;
     for _ in 0..4_000 {
         let mut mutated = file.clone();
-        // Confine mutations to the header and the occupied regions; the zero tail is already
-        // covered by the raw rounds above and would only ever trip the reserved-run rule.
-        let index = (next() as usize) % 60_096;
+        let target = &targets[(next() as usize) % targets.len()];
+        let index = target.start + (next() as usize) % (target.end - target.start);
         mutated[index] ^= (next() as u8) | 1;
         checkpoint::seal_body(&mut mutated[..CHECKPOINT_BODY_LEN]);
         let gate = checkpoint::gate_for(&mutated[..CHECKPOINT_BODY_LEN], 0);
@@ -1380,6 +1447,7 @@ fn mutated_checkpoints_are_rejected_without_panicking() {
             }
             Err(error) => {
                 reached_structure += 1;
+                *reasons.entry(error.reason).or_default() += 1;
                 // The refusal names the shape that refused — the body itself, its gate, or the
                 // entry whose rule the flip broke — and never something outside the checkpoint.
                 use super::error::Record::*;
@@ -1404,7 +1472,16 @@ fn mutated_checkpoints_are_rejected_without_panicking() {
             }
         }
     }
-    assert!(reached_structure > 0, "no re-stamped mutation reached a structural rule");
+    // A floor per rule, not one aggregate count: `reached_structure > 0` is satisfiable by one
+    // trivial rule firing 4,000 times, which is precisely the shape of coverage this fuzz exists to
+    // avoid claiming. Requiring several distinct reasons — and a real share of the rounds — is what
+    // makes the number mean something.
+    use super::error::Reason;
+    assert!(reached_structure > 200, "only {reached_structure} of 4,000 re-stamped rounds reached a rule");
+    assert!(reasons.len() >= 4, "re-stamped mutations tripped only {} distinct rules: {reasons:?}", reasons.len(),);
+    for reason in [Reason::Reserved, Reason::UnknownEnum] {
+        assert!(reasons.get(&reason).copied().unwrap_or(0) > 0, "no round reached {reason:?}: {reasons:?}");
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1679,7 +1756,78 @@ fn the_checked_in_transcripts_match_the_operations_the_harness_performs() {
     card.append_journal(&samples::publish(1, 1, 0, samples::OP_A, 1, samples::manifest_head(3, 92))).unwrap();
     observed.push(("manifest-publication", card.media.log()[base..].to_vec()));
 
-    for transcript in vectors::transcripts() {
+    // §7.1's ride checkpoint: payload first, then the ring slot at sequence mod 16.
+    let payload = payload_bytes();
+    let mut card = Card::new(6, &initial());
+    card.write_all(card.payload, 0, &payload[..1_024]).unwrap();
+    card.media.sync(card.payload).unwrap();
+    let base = card.media.log().len();
+    card.write_all(card.payload, 1_024, &payload[1_024..2_048]).unwrap();
+    card.media.sync(card.payload).unwrap();
+    card.write_gated_slot(card.ride, SLOT_STRIDE, &samples::ride_slot(1, 2_048).encode_slot(1)).unwrap();
+    observed.push(("ride-checkpoint", card.media.log()[base..].to_vec()));
+
+    // The three steady-state reuses: the pair is already full when the write starts.
+    let mut card = Card::new(7, &initial());
+    card.write_gated_slot(card.work, 0, &samples::work(1, 1_024, WorkState::Streaming).encode_slot(0)).unwrap();
+    card.write_gated_slot(card.work, SLOT_STRIDE, &samples::work(2, 2_048, WorkState::Streaming).encode_slot(1))
+        .unwrap();
+    let base = card.media.log().len();
+    card.write_gated_slot(card.work, 0, &samples::work(3, 3_072, WorkState::Streaming).encode_slot(0)).unwrap();
+    observed.push(("work-steady-state-reuse", card.media.log()[base..].to_vec()));
+
+    let mut card = Card::new(8, &initial());
+    card.write_gated_slot(card.arm[0], 0, &samples::handoff_record(4, HandoffPhase::Prepared).encode_slot(0)).unwrap();
+    card.write_gated_slot(card.arm[1], 0, &samples::handoff_record(4, HandoffPhase::Armed).encode_slot(1)).unwrap();
+    let base = card.media.log().len();
+    card.write_gated_slot(card.arm[0], 0, &samples::handoff_record(5, HandoffPhase::Prepared).encode_slot(0)).unwrap();
+    observed.push(("arm-steady-state-reuse", card.media.log()[base..].to_vec()));
+
+    let mut newer = initial();
+    newer.epoch = 2;
+    let mut card = Card::new(9, &initial());
+    card.write_checkpoint(1, &newer).unwrap();
+    let base = card.media.log().len();
+    card.write_checkpoint(0, &newer).unwrap();
+    observed.push(("checkpoint-steady-state-reuse", card.media.log()[base..].to_vec()));
+
+    // The three §13.1 fault modes. A short write and a full medium end their sequence at the write
+    // that failed, which is exactly one operation.
+    let record = samples::claim(1, 1, 0, samples::OP_A, 1);
+    let mut card = Card::new(10, &initial());
+    let base = card.media.log().len();
+    card.media.set_plan(FaultPlan { short_write: Some((card.media.ops() + 1, 4_096)), ..FaultPlan::default() });
+    assert_eq!(card.append_journal(&record), Err(MediaError::Full));
+    observed.push(("short-write", card.media.log()[base..].to_vec()));
+
+    let mut card = Card::new(11, &initial());
+    let base = card.media.log().len();
+    card.media.set_plan(FaultPlan { media_full: Some(card.media.ops() + 1), ..FaultPlan::default() });
+    assert_eq!(card.append_journal(&record), Err(MediaError::Full));
+    observed.push(("media-full", card.media.log()[base..].to_vec()));
+
+    let mut card = Card::new(12, &initial());
+    let base = card.media.log().len();
+    card.append_journal(&record).unwrap();
+    observed.push(("corrupt-read", card.media.log()[base..].to_vec()));
+
+    // Both directions. A scenario with no transcript is drift just as surely as a transcript with
+    // no scenario, and a one-directional check would catch only the second.
+    let transcripts = vectors::transcripts();
+    let named: std::collections::BTreeSet<&str> = transcripts.iter().map(|transcript| transcript.name).collect();
+    let performed: std::collections::BTreeSet<&str> = observed.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        performed.difference(&named).collect::<std::vec::Vec<_>>(),
+        std::vec::Vec::<&&str>::new(),
+        "a harness scenario has no checked-in transcript",
+    );
+    assert_eq!(
+        named.difference(&performed).collect::<std::vec::Vec<_>>(),
+        std::vec::Vec::<&&str>::new(),
+        "a checked-in transcript names no harness scenario",
+    );
+
+    for transcript in &transcripts {
         let (_, log) = observed
             .iter()
             .find(|(name, _)| *name == transcript.name)

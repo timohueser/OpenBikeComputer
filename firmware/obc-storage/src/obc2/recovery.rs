@@ -176,7 +176,14 @@ pub fn choose(checkpoints: &[Option<CheckpointObservation>; 2], slots: &[Option<
 
     // §5.2: a store that has run out of a monotonic space is intact and readable, and admits no
     // mutation until an explicit reset. It is not a fault and nothing about it is repaired.
-    if checkpoint.through_sequence == u64::MAX {
+    //
+    // The threshold is the one `CheckpointHeader::decode` already enforces, and it has to be: that
+    // decoder refuses a header whose through-sequence cannot carry a full journal of successors, so
+    // a store that reached `u64::MAX` exactly would never get here — its checkpoint would not
+    // decode, and it would mount recovery-failed as if it were corrupt. The guard therefore fires
+    // at the *last* sequence the decoder still admits: one more compaction would write a header
+    // that no longer decodes, so this is the last moment the store can still say why it stopped.
+    if checkpoint.through_sequence >= u64::MAX - JOURNAL_SLOTS as u64 {
         return Decision::MountReadOnly { checkpoint: index, replay, reason: ReadOnly::SequenceSpaceExhausted };
     }
     if checkpoint.next_generation == u64::MAX {
@@ -354,20 +361,87 @@ mod tests {
 
     /// §5.2: an exhausted monotonic space is a read-only mount, not a fault — the store is intact,
     /// replay is unchanged, and only an explicit reset clears it.
+    ///
+    /// The threshold has to be the decoder's, not `u64::MAX`: `CheckpointHeader::decode` refuses a
+    /// header that cannot carry a journal of successors, so a checkpoint at `u64::MAX` never
+    /// reaches `choose` at all. The two guards meet at one number, and this pins that they do.
     #[test]
     fn an_exhausted_sequence_or_generation_space_mounts_read_only() {
-        let mut exhausted = checkpoint(1, u64::MAX);
+        let limit = u64::MAX - JOURNAL_SLOTS as u64;
+
+        // One below the limit is an ordinary mount.
         assert_eq!(
-            choose(&[Some(exhausted), None], &[None; 4]),
+            choose(&[Some(checkpoint(1, limit - 1)), None], &[None; 4]),
+            Decision::Mount { checkpoint: 0, replay: 0 }
+        );
+        // The limit itself is the last sequence the decoder admits, and the first the store refuses
+        // to mutate past.
+        assert_eq!(
+            choose(&[Some(checkpoint(1, limit)), None], &[None; 4]),
             Decision::MountReadOnly { checkpoint: 0, replay: 0, reason: ReadOnly::SequenceSpaceExhausted }
         );
 
-        exhausted = checkpoint(1, 10);
+        let mut exhausted = checkpoint(1, 10);
         exhausted.next_generation = u64::MAX;
         assert_eq!(
             choose(&[Some(exhausted), None], &[None; 4]),
             Decision::MountReadOnly { checkpoint: 0, replay: 0, reason: ReadOnly::GenerationSpaceExhausted }
         );
+    }
+
+    /// The two guards agree: every sequence the decoder admits either mounts or mounts read-only,
+    /// and no sequence exists that the decoder accepts while `choose` treats it as corrupt.
+    #[test]
+    fn the_decoder_and_the_read_only_guard_meet_at_one_threshold() {
+        let limit = u64::MAX - JOURNAL_SLOTS as u64;
+        for through in [limit - 1, limit] {
+            let header = super::super::checkpoint::CheckpointHeader {
+                store: STORE,
+                epoch: 1,
+                through_sequence: through,
+                next_generation: 0,
+                repository_count: 0,
+                head_count: 0,
+                active_count: 0,
+                draft_parent_count: 0,
+                draft_part_count: 0,
+                retained_count: 0,
+                result_start: 0,
+                result_count: 0,
+                handoff_count: 0,
+                flags: 0,
+                terminal_counter: 0,
+                weather_count: 0,
+                ride_count: 0,
+            };
+            assert!(
+                super::super::checkpoint::CheckpointHeader::decode(&header.encode()).is_ok(),
+                "the decoder refuses {through}, so `choose` can never see it",
+            );
+        }
+        // And one past the limit is refused by the decoder, which is why `choose` never has to.
+        let mut header = super::super::checkpoint::CheckpointHeader {
+            store: STORE,
+            epoch: 1,
+            through_sequence: limit + 1,
+            next_generation: 0,
+            repository_count: 0,
+            head_count: 0,
+            active_count: 0,
+            draft_parent_count: 0,
+            draft_part_count: 0,
+            retained_count: 0,
+            result_start: 0,
+            result_count: 0,
+            handoff_count: 0,
+            flags: 0,
+            terminal_counter: 0,
+            weather_count: 0,
+            ride_count: 0,
+        };
+        assert!(super::super::checkpoint::CheckpointHeader::decode(&header.encode()).is_err());
+        header.through_sequence = u64::MAX;
+        assert!(super::super::checkpoint::CheckpointHeader::decode(&header.encode()).is_err());
     }
 
     /// More observations than the journal has slots are not evidence about this store, and must not

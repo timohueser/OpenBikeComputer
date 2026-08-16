@@ -273,8 +273,6 @@ enum VectorExerciser {
         }
     }
 
-    // MARK: transcripts
-
     // MARK: storage
 
     /// `Device_Object_Vectors_v2.md` §6's storage fixtures: OBC2 on-card records — checkpoints,
@@ -322,12 +320,22 @@ enum VectorExerciser {
                         }
                     }
                 }
-                // A commit path ends at a sync: the gate is durable only once it returns.
-                guard (steps.last?["kind"] as? String) == "sync" else {
-                    throw VectorError("\(entry)/\(name): the path does not end at a sync")
-                }
-                guard (transcript["admissibleOutcomes"] as? [String] ?? []).count > 1 else {
-                    throw VectorError("\(entry)/\(name): fewer than two admissible outcomes")
+                // A commit path ends at a sync, because its gate is durable only once that
+                // returns — and admits more than one recovered state, because that is what its cut
+                // points are for. A fault-mode transcript is a single refused operation: it ends at
+                // the write that failed and has exactly one outcome, and holding it to the commit
+                // path's rules would be wrong rather than strict.
+                if steps.count > 1 {
+                    guard (steps.last?["kind"] as? String) == "sync" else {
+                        throw VectorError("\(entry)/\(name): the path does not end at a sync")
+                    }
+                    guard (transcript["admissibleOutcomes"] as? [String] ?? []).count > 1 else {
+                        throw VectorError("\(entry)/\(name): fewer than two admissible outcomes")
+                    }
+                } else {
+                    guard !(transcript["admissibleOutcomes"] as? [String] ?? []).isEmpty else {
+                        throw VectorError("\(entry)/\(name): no admissible outcome")
+                    }
                 }
             }
             ExerciseLog.shared.record(entry.name)
@@ -375,7 +383,7 @@ enum VectorExerciser {
         ExerciseLog.shared.record(entry.name)
     }
 
-    // MARK: transcripts
+    // MARK: wire transcripts
 
     static func exerciseTranscript(_ entry: DeviceObjectVectors.Entry, _ json: [String: Any]) throws
     {
