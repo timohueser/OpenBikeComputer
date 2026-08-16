@@ -1,0 +1,15 @@
+{
+  "name": "intent-start-upload-create-route",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 47,
+  "note": "Inactive target fields are included as their required zero bytes, so there is one encoding per intent.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b10000101000100000000000000000000000000000000000000b80b00000000000085a936460d0001000100050001000180010002",
+  "sha256": "d61cec7abdc0ae3eb480713f8b24b696474884e1b3a0733bb69e27489d0aadf6"
+}

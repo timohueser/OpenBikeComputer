@@ -1,0 +1,14 @@
+{
+  "name": "metadata-field-count-disagrees",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "field_count equals the number of fields.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "01000100050002000180010002"
+}

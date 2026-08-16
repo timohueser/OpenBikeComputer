@@ -1,0 +1,22 @@
+{
+  "name": "error-busy-maintenance-claim",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "AbortOperation",
+    "value": 770
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "When the reserved slot is occupied, a different new AbortOperation is refused rather than partially cancelling.",
+  "payload": "050000000700030500000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020303003000c8000000050000000700030500000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

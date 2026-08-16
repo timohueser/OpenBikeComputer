@@ -1,0 +1,22 @@
+{
+  "name": "error-checksum-failure-durable-prefix",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A prefix mismatch uses the expected offset; concatenation onto an unverified prefix is never allowed.",
+  "payload": "0d0000000200010022000000000000000400000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c80000000d0000000200010022000000000000000400000000000000000000000000000000000000000000000000000000000000"
+}

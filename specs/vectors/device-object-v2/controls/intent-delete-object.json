@@ -1,0 +1,15 @@
+{
+  "name": "intent-delete-object",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "DeleteObject",
+    "value": 768
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 18,
+  "note": "DeleteObject's suffix is kind, identity, and expected revision.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1000030100010009000000000000002a00000000000000",
+  "sha256": "87a827359d07f54e0c26b23cd24c6512e9c540dce86766ed9056d62e0b0c05dc"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "fault-resume-with-new-session",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 17,
+  "offset": "0",
+  "payloadLength": 24,
+  "direction": 3,
+  "flags": 1,
+  "note": "Disposition 0 is the nonterminal form: the session may still be resumed under a new SessionId.",
+  "record": "11000000000000000000000018000301080001000000040000000000000004000000000000000000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "query-catalog-cursor-revision-mismatch",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryCatalogRequest",
+  "note": "The expected revision must equal the cursor revision.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243500300010200001c0001000000010003002b000000000000002a00000000000000030001003069e299"
+}

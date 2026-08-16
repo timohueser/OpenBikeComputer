@@ -1,0 +1,14 @@
+{
+  "name": "finish-upload-zero-session",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "FinishUploadRequest",
+  "note": "A SessionId is nonzero by construction.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "4f42435003000201000004000100000000000000"
+}

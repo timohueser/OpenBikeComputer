@@ -1,0 +1,15 @@
+{
+  "name": "intent-install-update",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "InstallUpdate",
+    "value": 784
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 18,
+  "note": "The ObjectKind field is pinned at the literal value 7.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1010030100070003000000000000004600000000000000",
+  "sha256": "20c5406df0c275c63692563d954c59ed33d1ff492d097e4d3cfae05e4f381db9"
+}

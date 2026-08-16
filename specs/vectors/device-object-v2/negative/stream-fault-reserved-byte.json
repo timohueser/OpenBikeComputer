@@ -1,0 +1,14 @@
+{
+  "name": "stream-fault-reserved-byte",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "The fault body's three trailing bytes are reserved.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "01000000000000000000000018000301080001000000000000000000000000000000000000010000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "error-object-not-found",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartDownload",
+    "value": 272
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "No existence detail beyond the authorized target.",
+  "payload": "0a0000000100070000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300100103003000c80000000a0000000100070000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

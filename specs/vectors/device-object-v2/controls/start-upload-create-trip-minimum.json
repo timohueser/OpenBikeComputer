@@ -1,0 +1,22 @@
+{
+  "name": "start-upload-create-trip-minimum",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 56,
+    "requestId": 10
+  },
+  "boundary": "minimum",
+  "note": "The 56-byte minimum StartUpload: create mode encodes both identity fields as zero, over an empty Put envelope.",
+  "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a102000000000000000000000000000000000000000010000000000000785634120200010000000000",
+  "frame": "4f42435003000001000038000a000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a102000000000000000000000000000000000000000010000000000000785634120200010000000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "error-catalog-changed-draft-snapshot",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryDraft",
+    "value": 514
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "Pagination is snapshot-bound to the draft revision and rejects a changed one instead of mixing child sets.",
+  "payload": "150000000200070004000000000000000000000000000a00000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020203003000c8000000150000000200070004000000000000000000000000000a00000000000000000000000000000000000000000000000000"
+}

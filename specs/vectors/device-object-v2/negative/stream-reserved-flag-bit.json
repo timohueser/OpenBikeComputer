@@ -1,0 +1,14 @@
+{
+  "name": "stream-reserved-flag-bit",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Flags above bit 1 are undefined.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "malformedHeader",
+    "detailValue": 1
+  },
+  "bytes": "01000000000000000000000018000310080001000000000000000000000000000000000000000000"
+}

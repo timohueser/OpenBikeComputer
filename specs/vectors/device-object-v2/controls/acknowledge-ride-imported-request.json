@@ -1,0 +1,22 @@
+{
+  "name": "acknowledge-ride-imported-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "AcknowledgeRideImported",
+    "value": 785
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 32,
+    "requestId": 114
+  },
+  "boundary": "",
+  "note": "Download completion alone never changes import state.",
+  "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b205000000000000003d00000000000000",
+  "frame": "4f424350030011030000200072000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b205000000000000003d00000000000000"
+}

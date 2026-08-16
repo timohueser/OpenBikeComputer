@@ -1,0 +1,22 @@
+{
+  "name": "hello-subject-page-one",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "Hello",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 12,
+    "requestId": 3
+  },
+  "boundary": "",
+  "note": "A repeated Hello may differ only in page kind and index; every negotiation field is byte-identical.",
+  "payload": "0303f4000004000000000101",
+  "frame": "4f4243500300010000000c00030000000303f4000004000000000101"
+}

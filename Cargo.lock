@@ -2821,6 +2821,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-link"
+version = "0.1.0"
+dependencies = [
+ "obc-crc",
+ "sha2",
+]
+
+[[package]]
 name = "obc-map-scene"
 version = "0.1.0"
 dependencies = [

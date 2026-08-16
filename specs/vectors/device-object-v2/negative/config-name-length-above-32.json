@@ -1,0 +1,14 @@
+{
+  "name": "config-name-length-above-32",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "configBlock",
+  "note": "A name length above 32 is invalidDescriptor.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "01380000210000004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

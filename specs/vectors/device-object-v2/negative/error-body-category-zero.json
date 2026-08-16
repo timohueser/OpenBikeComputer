@@ -1,0 +1,14 @@
+{
+  "name": "error-body-category-zero",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "errorBody",
+  "note": "Category 0 is reserved and invalid: a receiver treats it as a malformed body.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "metadata-zero-base-tag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "The tag's low 15 bits are a nonzero base tag.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "01000100050001000080010002"
+}

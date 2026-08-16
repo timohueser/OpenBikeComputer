@@ -1,0 +1,14 @@
+{
+  "name": "frame-incompatible-major",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "An unsupported parseable wire version is incompatibleVersion, not either malformed category.",
+  "expect": {
+    "category": "incompatibleVersion",
+    "categoryValue": 1,
+    "detail": "unsupportedMajor",
+    "detailValue": 1
+  },
+  "bytes": "4f42435002000201000004000100000011000000"
+}

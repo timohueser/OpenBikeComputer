@@ -1,0 +1,22 @@
+{
+  "name": "set-metadata-volume-selected-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "SetMetadata",
+    "value": 769
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 49,
+    "requestId": 112
+  },
+  "boundary": "",
+  "note": "Initial publication derives selected false; selecting the release requires a later compare-and-swap SetMetadata.",
+  "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1060001000200000000000000330000000000000006008000050001000180010001",
+  "frame": "4f424350030001030000310070000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1060001000200000000000000330000000000000006008000050001000180010001"
+}

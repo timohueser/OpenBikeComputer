@@ -1,0 +1,22 @@
+{
+  "name": "error-resource-limit-minimum-stream-frame",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "Hello",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "An SDU below the 64-byte floor refuses the channel at CoC establishment.",
+  "payload": "140000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010003003000c8000000140000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

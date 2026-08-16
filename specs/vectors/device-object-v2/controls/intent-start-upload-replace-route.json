@@ -1,0 +1,15 @@
+{
+  "name": "intent-start-upload-replace-route",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 47,
+  "note": "Replace mode carries the exact compare-and-swap token.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b10000101000100010009000000000000002900000000000000b80b00000000000085a936460d0001000100050001000180010004",
+  "sha256": "5baae4f1e17fd7fb5f3aa264f533cc6b30c14bfc67d4ee8a99f7a83068781cee"
+}

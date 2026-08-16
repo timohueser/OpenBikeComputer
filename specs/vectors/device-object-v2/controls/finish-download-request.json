@@ -1,0 +1,22 @@
+{
+  "name": "finish-download-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "FinishDownload",
+    "value": 273
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 42
+  },
+  "boundary": "",
+  "note": "Length and CRC include a locally retained prefix when the start offset was nonzero.",
+  "payload": "21000000b80b00000000000085a93646",
+  "frame": "4f42435003001101000010002a00000021000000b80b00000000000085a93646"
+}

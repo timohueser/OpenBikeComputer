@@ -1,0 +1,22 @@
+{
+  "name": "query-operation-progress-start-upload-streaming",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryOperation",
+    "value": 512
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 28,
+    "requestId": 70
+  },
+  "boundary": "",
+  "note": "StartUpload in `streaming`: resumable, attached, ID-present, durable payload prefix.",
+  "payload": "01000000010107000100000009000000000000000000040000000000",
+  "frame": "4f4243500300000201001c004600000001000000010107000100000009000000000000000000040000000000"
+}

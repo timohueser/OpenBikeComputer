@@ -1,0 +1,22 @@
+{
+  "name": "retained-aborted-replay-invalid-offset",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A replayed terminal body is exempt from the presence matrix: owner none, guidance forced to reject-permanently, both claim-status bits set.",
+  "payload": "080000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c8000000080000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

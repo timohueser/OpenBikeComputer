@@ -1,0 +1,22 @@
+{
+  "name": "config-block-short-name-response",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "GetConfig",
+    "value": 1025
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 56,
+    "requestId": 121
+  },
+  "boundary": "",
+  "note": "A short name whose padding is zero.",
+  "payload": "01380000030502004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f42435003000104010038007900000001380000030502004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

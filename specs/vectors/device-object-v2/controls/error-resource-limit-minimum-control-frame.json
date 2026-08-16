@@ -1,0 +1,22 @@
+{
+  "name": "error-resource-limit-minimum-control-frame",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "Hello",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A transport ceiling below the 192-byte minimum fails Hello and admits nothing on that connection.",
+  "payload": "140000000100090000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010003003000c8000000140000000100090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

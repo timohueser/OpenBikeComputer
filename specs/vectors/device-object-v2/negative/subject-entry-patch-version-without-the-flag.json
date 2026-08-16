@@ -1,0 +1,14 @@
+{
+  "name": "subject-entry-patch-version-without-the-flag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "subjectEntry",
+  "note": "A nonzero patch schema version while the set-metadata flag is clear.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "0100020003000000018040000004000000000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "query-operation-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "QueryOperation",
+    "value": 512
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 70
+  },
+  "boundary": "",
+  "note": "The request is exactly one OperationId.",
+  "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "frame": "4f424350030000020000100046000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+}

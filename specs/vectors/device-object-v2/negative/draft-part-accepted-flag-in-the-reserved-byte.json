@@ -1,0 +1,14 @@
+{
+  "name": "draft-part-accepted-flag-in-the-reserved-byte",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartDraftPartResponse",
+  "note": "Offset 1 is reserved in DraftPartAccepted.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f424350030031010100480001000000000100000000000000000000000000000000000000000000000000000000000000000000010000000200000000000000000000000000000000000000000000000000000000000000"
+}

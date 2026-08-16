@@ -1,0 +1,22 @@
+{
+  "name": "reserved-detail-object-not-found-requested-revision",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "Registered so its number stays burned; reserved and never emitted in v3.0. Decode-only.",
+  "payload": "0a0000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c80000000a0000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

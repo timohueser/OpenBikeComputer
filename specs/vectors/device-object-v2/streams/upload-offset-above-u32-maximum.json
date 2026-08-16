@@ -1,0 +1,12 @@
+{
+  "name": "upload-offset-above-u32-maximum",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 17,
+  "offset": "4294967296",
+  "payloadLength": 1,
+  "direction": 1,
+  "flags": 0,
+  "note": "A u64 offset past the 32-bit boundary: a codec that truncates to 32 bits is nonconforming.",
+  "record": "1100000000000000010000000100010002"
+}

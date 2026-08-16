@@ -1,0 +1,12 @@
+{
+  "name": "upload-offset-below-u32-maximum",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 17,
+  "offset": "4294967294",
+  "payloadLength": 1,
+  "direction": 1,
+  "flags": 0,
+  "note": "An offset just below 0xFFFF_FFFF, without allocating the preceding bytes.",
+  "record": "11000000feffffff000000000100010001"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "error-busy-draft-parents",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "BeginDraft",
+    "value": 304
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A second BeginDraft while a parent is open is an ownership refusal, not a compiled-capacity failure.",
+  "payload": "050000000400030400000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300300103003000c8000000050000000400030400000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

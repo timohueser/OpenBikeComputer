@@ -1,0 +1,22 @@
+{
+  "name": "checkpoint-accepted-sequence-3",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "CheckpointUpload",
+    "value": 257
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 20,
+    "requestId": 20
+  },
+  "boundary": "",
+  "note": "The sequence starts at 1, strictly increases, and is scoped to the work record rather than the session.",
+  "payload": "11000000b80b00000000000085a9364603000000",
+  "frame": "4f42435003000101010014001400000011000000b80b00000000000085a9364603000000"
+}

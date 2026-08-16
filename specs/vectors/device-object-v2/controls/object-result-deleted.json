@@ -1,0 +1,22 @@
+{
+  "name": "object-result-deleted",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "DeleteObject",
+    "value": 768
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 68,
+    "requestId": 30
+  },
+  "boundary": "",
+  "note": "Outcome 2 reports the deleted old head's length and CRC.",
+  "payload": "01000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100020009000000000000002b00000000000000b80b00000000000044332211",
+  "frame": "4f42435003000003010044001e00000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100020009000000000000002b00000000000000b80b00000000000044332211"
+}

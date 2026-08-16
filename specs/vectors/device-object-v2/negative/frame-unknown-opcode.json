@@ -1,0 +1,14 @@
+{
+  "name": "frame-unknown-opcode",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "Unknown opcodes are unsupportedCapability; the frame itself parsed perfectly.",
+  "expect": {
+    "category": "unsupportedCapability",
+    "categoryValue": 2,
+    "detail": "opcode",
+    "detailValue": 1
+  },
+  "bytes": "4f42435003009909000004000100000011000000"
+}

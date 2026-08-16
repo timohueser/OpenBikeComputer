@@ -1,0 +1,14 @@
+{
+  "name": "metadata-nonzero-header-flags",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "The header flags are zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "01000101050001000180010002"
+}

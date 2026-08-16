@@ -1,0 +1,14 @@
+{
+  "name": "metadata-above-the-catalog-ceiling",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "Catalog envelopes are at most 96 bytes, so their encoded fields are at most 88.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "nestedLength",
+    "detailValue": 4
+  },
+  "bytes": "0100400059000000"
+}

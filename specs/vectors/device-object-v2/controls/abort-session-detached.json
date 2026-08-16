@@ -1,0 +1,22 @@
+{
+  "name": "abort-session-detached",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "AbortSession",
+    "value": 288
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 1,
+    "requestId": 50
+  },
+  "boundary": "",
+  "note": "Outcome 0: the session was detached.",
+  "payload": "00",
+  "frame": "4f42435003002001010001003200000000"
+}

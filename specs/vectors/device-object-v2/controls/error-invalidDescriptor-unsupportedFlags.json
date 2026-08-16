@@ -1,0 +1,22 @@
+{
+  "name": "error-invalidDescriptor-unsupportedFlags",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 201
+  },
+  "boundary": "",
+  "note": "One vector per registered category and detail, at the guidance and presence its category requires.",
+  "payload": "070000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c9000000070000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

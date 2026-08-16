@@ -1,0 +1,22 @@
+{
+  "name": "forget-bond-response",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "ForgetBond",
+    "value": 1028
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 0,
+    "requestId": 125
+  },
+  "boundary": "",
+  "note": "The response payload is empty; the link then drops.",
+  "payload": "",
+  "frame": "4f42435003000404010000007d000000"
+}

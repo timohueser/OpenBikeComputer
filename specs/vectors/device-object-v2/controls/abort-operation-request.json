@@ -1,0 +1,22 @@
+{
+  "name": "abort-operation-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "AbortOperation",
+    "value": 770
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 40,
+    "requestId": 51
+  },
+  "boundary": "",
+  "note": "The abort command claims its own OperationId in the reserved cancellation/recovery slot.",
+  "payload": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000",
+  "frame": "4f424350030002030000280033000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000"
+}

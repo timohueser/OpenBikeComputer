@@ -1,0 +1,22 @@
+{
+  "name": "error-object-not-found-weather-request-context",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryWeatherRequest",
+    "value": 515
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "An authorized query before any context exists does not synthesize a zero WeatherRequestId.",
+  "payload": "0a0000000600070000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300030203003000c80000000a0000000600070000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

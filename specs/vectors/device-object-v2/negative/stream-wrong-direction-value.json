@@ -1,0 +1,14 @@
+{
+  "name": "stream-wrong-direction-value",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Directions are upload 1, download 2, status 3.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "0100000000000000000000000100040001"
+}

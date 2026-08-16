@@ -1,0 +1,22 @@
+{
+  "name": "begin-draft-already-terminal",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "BeginDraft",
+    "value": 304
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 72,
+    "requestId": 60
+  },
+  "boundary": "",
+  "note": "A terminal parent replays its ObjectResult behind the same four-byte prefix.",
+  "payload": "0100000001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c33c92000099164ebaabc2342fe08f6b10060000000200000000000000330000000000000008010000000000000f0f0f0f",
+  "frame": "4f42435003003001010048003c0000000100000001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c33c92000099164ebaabc2342fe08f6b10060000000200000000000000330000000000000008010000000000000f0f0f0f"
+}

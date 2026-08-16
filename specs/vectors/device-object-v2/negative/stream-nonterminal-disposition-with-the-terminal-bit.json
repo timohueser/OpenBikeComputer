@@ -1,0 +1,14 @@
+{
+  "name": "stream-nonterminal-disposition-with-the-terminal-bit",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Disposition 0 is the nonterminal form.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "01000000000000000000000018000303080001000000000000000000000000000000000000000000"
+}
