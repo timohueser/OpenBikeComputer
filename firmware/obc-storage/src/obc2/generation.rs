@@ -372,6 +372,16 @@ impl GenerationWriter {
         if self.written != self.intent.declared_length {
             return Err(WriteError::Length { declared: self.intent.declared_length, written: self.written });
         }
+        // A generation of zero declared bytes never appends, so the shard the `WORK` leaf lands in
+        // would never have been created — and the seal would write a slot into a directory that
+        // does not exist. Nothing in §5, §7 or the wire contract forbids a zero-length payload
+        // (`Device_Object_Protocol_v3.md` §7's "nonempty payload" rule is about a Data *frame*, not
+        // about the object), so the seal ensures the shard rather than `begin` refusing the length.
+        // Guarded, so an ordinary upload that already appended does not ask twice.
+        if !self.shards_ready {
+            media.ensure_shards(self.intent.generation).map_err(WriteError::Media)?;
+            self.shards_ready = true;
+        }
         let computed = self.crc.clone().finalize();
         if computed != self.intent.declared_crc {
             return Err(WriteError::Crc { declared: self.intent.declared_crc, computed });
@@ -631,6 +641,49 @@ mod tests {
         );
         // The shard is the one §3 maps this generation to, and it is asked for exactly once.
         assert_eq!(media.shards, std::vec![super::super::names::LeafName::of(GenerationId::new(42)).shard]);
+    }
+
+    /// A generation of zero declared bytes never appends, so `seal` is the only place its shard can
+    /// be created — and without that call the sealed `WORK` slot would be written into a directory
+    /// that does not exist.
+    ///
+    /// Zero is a legal declared length: §5, §7 and §2's `0xFFFF_FFFF` ceiling all admit it, and the
+    /// wire contract's "nonempty payload" rule is about a Data *frame* rather than about the object,
+    /// so a zero-length upload simply sends none. Refusing it at `begin` would invent a limit the
+    /// format does not have, which is why the fix is the seal-side call and not a new rejection.
+    #[test]
+    fn a_zero_length_generation_ensures_its_shard_at_seal() {
+        let empty: Vec<u8> = Vec::new();
+        let (mut writer, capability) = GenerationWriter::begin::<&str>(intent(&empty)).unwrap();
+        let mut media = Fake::new();
+        let mut scratch = stride();
+
+        // Nothing is appended, so nothing has touched the medium at all.
+        assert!(media.log.is_empty());
+        let record = writer.seal(capability, &mut media, &mut scratch, DraftPartRef::ZERO).unwrap();
+
+        assert_eq!(media.log[0], "ensure shards", "the sealed slot was written into an uncreated shard");
+        assert_eq!(media.shards, std::vec![super::super::names::LeafName::of(GenerationId::new(42)).shard]);
+        assert_eq!(record.declared_length, 0);
+        assert_eq!(record.durable_offset, 0);
+        assert_eq!(record.prefix_crc, obc_crc::crc32(&[]), "the empty prefix's CRC is the empty CRC");
+        assert_eq!(record.observed_length, 0);
+        let slot: &[u8; SLOT_STRIDE] = media.work[..SLOT_STRIDE].try_into().unwrap();
+        assert_eq!(WorkRecord::validate_slot(slot, 0).unwrap(), record);
+    }
+
+    /// An ordinary upload asks once, not twice: the append made the shard and the seal's guard sees
+    /// it already done.
+    #[test]
+    fn a_streamed_generation_does_not_ensure_its_shard_twice() {
+        let bytes = payload(512);
+        let (mut writer, capability) = GenerationWriter::begin::<&str>(intent(&bytes)).unwrap();
+        let mut media = Fake::new();
+        let mut scratch = stride();
+        writer.append(capability, &mut media, &bytes).unwrap();
+        writer.seal(writer.capability(), &mut media, &mut scratch, DraftPartRef::ZERO).unwrap();
+        assert_eq!(media.shards.len(), 1);
+        assert_eq!(media.log.iter().filter(|step| **step == "ensure shards").count(), 1);
     }
 
     /// The shard is created once per transaction, before the payload exists, and a restart does not

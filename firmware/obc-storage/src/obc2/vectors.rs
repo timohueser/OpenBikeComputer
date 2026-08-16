@@ -2066,6 +2066,21 @@ pub struct Transcript {
     /// Owned rather than borrowed because §6.3's checkpoint body is 127 separate sector writes: the
     /// compaction transcript is built rather than written out, and a `const` array cannot be.
     pub steps: Vec<Step>,
+    /// Whether the sequence's **last operation is its durability point**.
+    ///
+    /// A commit path ends at the sync that makes its gate durable, and a consumer can hold it to
+    /// that: last step is a sync, and a cut somewhere in it produces more than one recovered state.
+    /// Two shapes are not commit paths and would fail that rule for reasons that are the point of
+    /// them rather than a defect — a refused operation that ends the sequence where it failed
+    /// (`short-write`, `media-full`), and a sequence that deliberately runs one step *past* its own
+    /// durability point to show what may only happen after it (`generation-restart`, whose third
+    /// step is the first byte the rewind permits).
+    ///
+    /// Declaring it beats inferring it. The rule used to be "a transcript of more than one step ends
+    /// at a sync", which happened to hold only because every non-commit sequence was one step long
+    /// until `generation-restart` existed. A transcript that opts out must say so and must carry a
+    /// [`note`](Self::note) saying why; all three language consumers enforce both halves.
+    pub commit: bool,
     /// The states a reboot after any cut may produce, named.
     pub outcomes: &'static [&'static str],
     /// Anything a reader must know about how normative this sequence is. Empty when the ordering is
@@ -2259,6 +2274,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §1, §6.2",
             description: "One journal record. Journal slots are the single exemption from the invalidate-first discipline, so the body write carries the zeroed gate sector itself.",
             steps: JOURNAL_APPEND.to_vec(),
+            commit: true,
             outcomes: &["the projection before the record", "the projection after it"],
             note: "",
         },
@@ -2267,6 +2283,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §6.3",
             description: "Compaction streams the inactive checkpoint's body a sector at a time and gates it completely before the new epoch's first record exists.",
             steps: compaction_steps(),
+            commit: true,
             outcomes: &[
                 "the old checkpoint plus its old-epoch journal suffix",
                 "the new checkpoint alone, which is the same catalog at epoch E + 1",
@@ -2279,6 +2296,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §7",
             description: "The sealed WORK slot, the one durable work fact both device profiles write.",
             steps: WORK_SEAL.to_vec(),
+            commit: true,
             outcomes: &["the previous WORK slot", "the sealed WORK slot"],
             note: "",
         },
@@ -2287,6 +2305,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §10",
             description: "One handoff phase advance across the alternating ARM pair.",
             steps: ARM_ADVANCE.to_vec(),
+            commit: true,
             outcomes: &["the old (sequence, phase) pair", "the strictly greater new pair"],
             note: "",
         },
@@ -2295,6 +2314,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §8",
             description: "The resolution generation is written and synchronized before the terminal record; only that record's gate publishes the head.",
             steps: MANIFEST_PUBLICATION.to_vec(),
+            commit: true,
             outcomes: [
                 "the projection before publication, with the reserved generation left as a collectable orphan",
                 "the published manifest head together with its resolution generation",
@@ -2307,6 +2327,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §7.1",
             description: "One ride checkpoint: payload first, then the ring slot at sequence mod 16.",
             steps: RIDE_CHECKPOINT.to_vec(),
+            commit: true,
             outcomes: &[
                 "the previous ride checkpoint",
                 "the new one",
@@ -2319,6 +2340,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §7",
             description: "Both WORK slots valid; the write that reuses the older one must not disturb the selected one.",
             steps: WORK_STEADY_STATE.to_vec(),
+            commit: true,
             outcomes: &["the previously selected slot", "the newly written slot"],
             note: "",
         },
@@ -2327,6 +2349,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §10",
             description: "Both ARM files valid at one handoff sequence; advancing to the next reuses the file holding the older pair.",
             steps: ARM_STEADY_STATE.to_vec(),
+            commit: true,
             outcomes: &["the previously selected (sequence, phase) pair", "the strictly greater new pair"],
             note: "",
         },
@@ -2335,6 +2358,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §6.3",
             description: "Both checkpoints valid; streaming the inactive one's body leaves the selected one mounted throughout.",
             steps: checkpoint_write("CAT0.CHK", "CAT0 becomes the greater through-sequence"),
+            commit: true,
             outcomes: &["the previously selected checkpoint", "the newly written one"],
             note: "",
         },
@@ -2343,6 +2367,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §3, §7",
             description: "One restart-only upload: the payload is streamed and synchronized, then the sealed WORK slot — the one durable work fact both device profiles write — is gated.",
             steps: GENERATION_SEAL.to_vec(),
+            commit: true,
             outcomes: [
                 "a claimed generation with no durable work slot, which recovery classifies as restartable work at offset zero",
                 "the sealed WORK slot, whose finalized prefix CRC the durable payload backs",
@@ -2355,6 +2380,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §7",
             description: "A readmission rewinding a claimed generation to offset zero. The truncation is synchronized before a byte is accepted again.",
             steps: GENERATION_RESTART.to_vec(),
+            commit: false,
             outcomes: [
                 "the old durable prefix, when the truncation never reached the card",
                 "an empty payload, ready to be streamed from offset zero",
@@ -2367,6 +2393,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §9",
             description: "The bounded recovery suffix that clears every durable live-lease reason before garbage collection may treat any generation as unreachable.",
             steps: LEASE_RECOVERY_CLEAR.to_vec(),
+            commit: true,
             outcomes: [
                 "no record: every entry still carries its lease reason and the next mount owes the whole suffix",
                 "the first entry cleared and the second still owed",
@@ -2380,6 +2407,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §13.1",
             description: "A write the medium truncates. The writer checks the returned length and abandons the commit.",
             steps: SHORT_WRITE.to_vec(),
+            commit: false,
             outcomes: &["the projection before the record; a short write is an error, never a success"],
             note: "One step, because the sequence stops there: the length check fails and nothing after it runs. There are no cut points to enumerate — the fault is the write's own return value.",
         },
@@ -2388,6 +2416,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §13.1",
             description: "A write the medium refuses for want of space.",
             steps: MEDIA_FULL.to_vec(),
+            commit: false,
             outcomes: &["the projection before the record"],
             note: "One step, for the same reason as the short write: the refusal ends the sequence.",
         },
@@ -2396,6 +2425,7 @@ pub fn transcripts() -> Vec<Transcript> {
             section: "OBC2_Storage_Format.md §12",
             description: "An ordinary commit, followed by a mount whose reads are poisoned one at a time.",
             steps: CORRUPT_READ.to_vec(),
+            commit: true,
             outcomes: [
                 "the projection before the record",
                 "the projection after it",
@@ -2430,11 +2460,12 @@ pub fn transcripts_json() -> String {
                 .collect();
             let outcomes: Vec<String> = transcript.outcomes.iter().map(|outcome| format!("        \"{outcome}\"")).collect();
             format!(
-                "    {{\n      \"name\": \"{}\",\n      \"section\": \"{}\",\n      \"description\": \"{}\",\n      \"note\": \"{}\",\n      \"stepCount\": {},\n      \"cutPoints\": {},\n      \"steps\": [\n{}\n      ],\n      \"admissibleOutcomes\": [\n{}\n      ]\n    }}",
+                "    {{\n      \"name\": \"{}\",\n      \"section\": \"{}\",\n      \"description\": \"{}\",\n      \"note\": \"{}\",\n      \"commit\": {},\n      \"stepCount\": {},\n      \"cutPoints\": {},\n      \"steps\": [\n{}\n      ],\n      \"admissibleOutcomes\": [\n{}\n      ]\n    }}",
                 transcript.name,
                 transcript.section,
                 transcript.description,
                 transcript.note,
+                transcript.commit,
                 transcript.steps.len(),
                 transcript.steps.len() * 3,
                 steps.join(",\n"),
@@ -2588,6 +2619,52 @@ mod tests {
     #[test]
     fn the_producers_crc_is_the_contract_crc() {
         assert_eq!(super::raw::crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    /// The transcript invariants, enforced by the producer as well as by the two consumers.
+    ///
+    /// The TypeScript and Swift suites check exactly these rules over the checked-in JSON. Checking
+    /// them here too is what stops a producer change from shipping a file that only fails in another
+    /// language's CI job — which is how the `truncate` kind and `generation-restart`'s unsynced last
+    /// step reached those jobs in the first place.
+    #[test]
+    fn every_transcript_satisfies_the_rules_all_three_consumers_enforce() {
+        for transcript in transcripts() {
+            let where_ = transcript.name;
+            assert!(!transcript.steps.is_empty(), "{where_}: no steps");
+            for (index, step) in transcript.steps.iter().enumerate() {
+                assert!(
+                    matches!(step.kind, "write" | "sync" | "truncate"),
+                    "{where_} step {index}: unknown kind {}",
+                    step.kind,
+                );
+                // Only a write addresses bytes. A sync and a truncation carry neither an offset nor
+                // a length, which is what lets a consumer read a nonzero one as a producer bug.
+                if step.kind != "write" {
+                    assert_eq!(step.offset, 0, "{where_} step {index}: a {} carries an offset", step.kind);
+                    assert_eq!(step.length, 0, "{where_} step {index}: a {} carries a length", step.kind);
+                }
+            }
+            if transcript.commit {
+                // The last operation is the durability point, so it is the sync that returns; and a
+                // cut inside the sequence produces more than one recovered state, which is what its
+                // cut points are for.
+                assert_eq!(
+                    transcript.steps.last().unwrap().kind,
+                    "sync",
+                    "{where_}: a commit path must end at the sync that makes its gate durable",
+                );
+                assert!(transcript.outcomes.len() > 1, "{where_}: a commit path admits more than one state");
+            } else {
+                assert!(!transcript.outcomes.is_empty(), "{where_}: no admissible outcome");
+                // Opting out of the commit rule is a claim about the sequence, so it has to be
+                // argued rather than merely declared.
+                assert!(!transcript.note.is_empty(), "{where_}: a non-commit transcript must say why");
+            }
+        }
+        // And the flag is not vacuous in either direction: both shapes exist in the inventory.
+        assert!(transcripts().iter().any(|transcript| transcript.commit));
+        assert!(transcripts().iter().any(|transcript| !transcript.commit));
     }
 
     /// The CI guard `Device_Object_Vectors_v2.md` §7 asks for: the checked-in files are exactly what
