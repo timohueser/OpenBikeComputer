@@ -979,6 +979,16 @@ record the old offset and prefix CRC makes recovery re-read a prefix that no lon
 terminally abort a healthy upload for a mismatch the device itself created. Recovery needs no special
 case, because the newest valid slot remains authoritative exactly as it is everywhere else.
 
+**The restart-only profile writes no WORK slots.** A device that advertises no resumable kind never
+records durable upload progress: its claims stand alone, every readmission truncates the claimed
+generation and streams from offset zero, and recovery classifies a claimed, unsealed generation as
+restartable work at offset zero — with no slot ever written, the stale-offset fault the rule above
+closes cannot arise, so the restart durability point is satisfied vacuously. Seal still writes its
+sealed WORK slot, which is the one durable work fact both profiles share. The WORK file, its slot
+layout, and its preallocation at initialization remain part of the frozen format, so a card moves
+between device profiles without conversion; a restart-only device simply leaves the streaming slots
+unwritten.
+
 Resume recomputes or verifies
 the finalized CRC through that offset before accepting more bytes; an implementation may invert
 the final XOR to restore its internal accumulator. Seal requires exact length and
