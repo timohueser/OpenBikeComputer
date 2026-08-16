@@ -1632,7 +1632,7 @@
     {
       "name": "crash-cut-transcripts",
       "file": "storage/crash-cut-transcripts.json",
-      "sha256": "948752b6b6e02dc6492a47be1bec227b67d1fd41c8d3f0d97993e0becb3c8a8d"
+      "sha256": "4be1c777e65f3145d4fad67eab55631dee6f3b6ca6fa5cd2a1186762588ec3b2"
     },
     {
       "name": "gate-sector",

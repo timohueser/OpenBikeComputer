@@ -31,10 +31,12 @@
 //!
 //! ## Scope
 //!
-//! This is the slice 1 + 2 inventory: the record layouts of §4 through §12, their rejections, and
-//! the crash-cut transcripts of the commit paths those slices implement. §6's remaining storage
-//! items — filesystem-shape images, import staging, lease and GC behaviour, the compaction
-//! materialization sources — arrive with the slices that implement them.
+//! This is the record-layout inventory of §4 through §12, their rejections, and the crash-cut
+//! transcripts of every commit path the kernel implements — the catalog paths, §7's restart-only
+//! upload, §6.3's streaming compaction pass, and §9's recovery suffix. What still has no vector
+//! here is the shape of the filesystem itself: `/OBC2` directory listings for §12's mount
+//! classification and §12.1's staging, which are decisions about names rather than about bytes and
+//! are tested against listings in [`mount`](super::mount) instead.
 
 use std::format;
 use std::path::PathBuf;
@@ -2060,7 +2062,10 @@ pub struct Transcript {
     /// What the path does.
     pub description: &'static str,
     /// The ordered operations.
-    pub steps: &'static [Step],
+    ///
+    /// Owned rather than borrowed because §6.3's checkpoint body is 127 separate sector writes: the
+    /// compaction transcript is built rather than written out, and a `const` array cannot be.
+    pub steps: Vec<Step>,
     /// The states a reboot after any cut may produce, named.
     pub outcomes: &'static [&'static str],
     /// Anything a reader must know about how normative this sequence is. Empty when the ordering is
@@ -2076,6 +2081,12 @@ const fn sync(file: &'static str, note: &'static str) -> Step {
     Step { file, kind: "sync", offset: 0, length: 0, note }
 }
 
+/// A truncation to zero length: §7's readmission rewind, and the only modelled operation that is
+/// neither a write nor a sync.
+const fn truncate(file: &'static str, note: &'static str) -> Step {
+    Step { file, kind: "truncate", offset: 0, length: 0, note }
+}
+
 const JOURNAL_APPEND: [Step; 4] = [
     write("COMMIT.JNL", 0, SLOT_STRIDE, "the whole stride: body, a zeroed gate sector, and a zeroed pad"),
     sync("COMMIT.JNL", "the body is durable and the slot carries no valid gate"),
@@ -2083,18 +2094,55 @@ const JOURNAL_APPEND: [Step; 4] = [
     sync("COMMIT.JNL", "the commit point"),
 ];
 
-const COMPACTION: [Step; 10] = [
-    write("CAT1.CHK", CHECKPOINT_GATE_OFFSET, 512, "invalidate the inactive checkpoint's gate"),
-    sync("CAT1.CHK", "the inactive checkpoint is now unusable and its body may be reused"),
-    write("CAT1.CHK", 0, CHECKPOINT_BODY_LEN, "the complete body at epoch E + 1 and through-sequence S"),
-    sync("CAT1.CHK", "the body is durable; the active checkpoint is still the selected one"),
-    write("CAT1.CHK", CHECKPOINT_GATE_OFFSET, 512, "the O2CG gate"),
-    sync("CAT1.CHK", "the new checkpoint is selected and every old-epoch slot is inert"),
-    write("COMMIT.JNL", 0, SLOT_STRIDE, "only now, sequence S + 1 at slot zero of epoch E + 1"),
-    sync("COMMIT.JNL", "its body"),
-    write("COMMIT.JNL", JOURNAL_GATE_OFFSET, 512, "its gate"),
-    sync("COMMIT.JNL", "the first commit of the new epoch"),
-];
+/// The sectors §6.3's forward pass emits: the whole body, one 512-byte sector at a time, in
+/// ascending order and each written exactly once.
+///
+/// 127 of them, which is what "a single forward pass over the inactive checkpoint file, region by
+/// region and, inside a region, entry by entry in key order" costs at a 65,024-byte body and a
+/// one-sector stage. Every one is a cut point, and every one of those cuts leaves a partly
+/// materialized body under a gate that was invalidated before the pass began.
+fn checkpoint_body_pass(file: &'static str) -> Vec<Step> {
+    (0..CHECKPOINT_BODY_LEN / 512)
+        .map(|index| {
+            write(
+                file,
+                index * 512,
+                512,
+                if index == 0 {
+                    "the forward pass begins: the header and the first entries of the repository region"
+                } else if index + 1 == CHECKPOINT_BODY_LEN / 512 {
+                    "the last sector, carrying the body CRC the pass accumulated"
+                } else {
+                    "one sector of the forward pass, staged from one entry at a time"
+                },
+            )
+        })
+        .collect()
+}
+
+/// The gated write of one checkpoint: invalidate, stream the body, gate. Shared by compaction and
+/// by the steady-state reuse of the inactive side, which are the same six framing operations around
+/// the same pass.
+fn checkpoint_write(file: &'static str, gate_note: &'static str) -> Vec<Step> {
+    let mut steps = vec![
+        write(file, CHECKPOINT_GATE_OFFSET, 512, "invalidate the inactive checkpoint's gate"),
+        sync(file, "the inactive checkpoint is now unusable and its body may be reused"),
+    ];
+    steps.extend(checkpoint_body_pass(file));
+    steps.push(sync(file, "the body is durable; the active checkpoint is still the selected one"));
+    steps.push(write(file, CHECKPOINT_GATE_OFFSET, 512, "the O2CG gate"));
+    steps.push(sync(file, gate_note));
+    steps
+}
+
+fn compaction_steps() -> Vec<Step> {
+    let mut steps = checkpoint_write("CAT1.CHK", "the new checkpoint is selected and every old-epoch slot is inert");
+    steps.push(write("COMMIT.JNL", 0, SLOT_STRIDE, "only now, sequence S + 1 at slot zero of epoch E + 1"));
+    steps.push(sync("COMMIT.JNL", "its body"));
+    steps.push(write("COMMIT.JNL", JOURNAL_GATE_OFFSET, 512, "its gate"));
+    steps.push(sync("COMMIT.JNL", "the first commit of the new epoch"));
+    steps
+}
 
 const WORK_SEAL: [Step; 6] = [
     write("WORK", SLOT_STRIDE + SMALL_GATE_OFFSET, 512, "invalidate the older slot's gate"),
@@ -2152,13 +2200,37 @@ const ARM_STEADY_STATE: [Step; 6] = [
     sync("ARM0.HND", "(5, prepared) becomes the greater pair"),
 ];
 
-const CHECKPOINT_STEADY_STATE: [Step; 6] = [
-    write("CAT0.CHK", CHECKPOINT_GATE_OFFSET, 512, "invalidate the inactive checkpoint's gate"),
-    sync("CAT0.CHK", "the selected checkpoint, CAT1, is untouched"),
-    write("CAT0.CHK", 0, CHECKPOINT_BODY_LEN, "the newer projection's body"),
-    sync("CAT0.CHK", "the body is durable"),
-    write("CAT0.CHK", CHECKPOINT_GATE_OFFSET, 512, "the O2CG gate"),
-    sync("CAT0.CHK", "CAT0 becomes the greater through-sequence"),
+const GENERATION_SEAL: [Step; 8] = [
+    write(
+        "GEN",
+        0,
+        0,
+        "the whole payload, streamed from offset zero; the restart-only profile acknowledges none of it",
+    ),
+    sync("GEN", "the payload bytes and the length its directory entry records are durable"),
+    write("WORK", SMALL_GATE_OFFSET, 512, "invalidate the gate of the slot about to hold the sealed record"),
+    sync("WORK", "no slot claims an offset over the payload at any point of this sequence"),
+    write("WORK", 0, SLOT_STRIDE, "the sealed body, with a zeroed gate sector and pad"),
+    sync("WORK", "the body is durable"),
+    write("WORK", SMALL_GATE_OFFSET, 512, "the O2WG gate"),
+    sync("WORK", "seal is durable and domain validation may run"),
+];
+
+const GENERATION_RESTART: [Step; 3] = [
+    truncate("GEN", "truncate the claimed generation to zero"),
+    sync("GEN", "the rewind is durable; only now may a byte be accepted at offset zero"),
+    write("GEN", 0, 0, "the restreamed payload, from offset zero under the same GenerationId"),
+];
+
+const LEASE_RECOVERY_CLEAR: [Step; 8] = [
+    write("COMMIT.JNL", 0, SLOT_STRIDE, "the first retention record, clearing one entry's live-lease bit"),
+    sync("COMMIT.JNL", "its body"),
+    write("COMMIT.JNL", JOURNAL_GATE_OFFSET, 512, "its gate"),
+    sync("COMMIT.JNL", "that entry's durable lease reason is gone"),
+    write("COMMIT.JNL", SLOT_STRIDE, SLOT_STRIDE, "the second retention record"),
+    sync("COMMIT.JNL", "its body"),
+    write("COMMIT.JNL", SLOT_STRIDE + JOURNAL_GATE_OFFSET, 512, "its gate"),
+    sync("COMMIT.JNL", "no retained entry carries a lease reason; garbage collection may now run"),
 ];
 
 const SHORT_WRITE: [Step; 1] =
@@ -2186,27 +2258,27 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "journal-append",
             section: "OBC2_Storage_Format.md §1, §6.2",
             description: "One journal record. Journal slots are the single exemption from the invalidate-first discipline, so the body write carries the zeroed gate sector itself.",
-            steps: &JOURNAL_APPEND,
+            steps: JOURNAL_APPEND.to_vec(),
             outcomes: &["the projection before the record", "the projection after it"],
             note: "",
         },
         Transcript {
             name: "checkpoint-compaction",
             section: "OBC2_Storage_Format.md §6.3",
-            description: "Compaction writes and gates the inactive checkpoint completely before the new epoch's first record exists.",
-            steps: &COMPACTION,
+            description: "Compaction streams the inactive checkpoint's body a sector at a time and gates it completely before the new epoch's first record exists.",
+            steps: compaction_steps(),
             outcomes: &[
                 "the old checkpoint plus its old-epoch journal suffix",
                 "the new checkpoint alone, which is the same catalog at epoch E + 1",
                 "the new checkpoint plus the first record of the new epoch",
             ],
-            note: "PROVISIONAL, in one respect only: the body appears here as a single 65,024-byte write because that is what the reference implementation does. Section 6.3 specifies a bounded forward pass, region by region and entry by entry, staging at most one 208-byte entry plus a 512-byte sector — so a conforming writer emits many writes here, not one. The ordering around it is normative and is what the cut points test: invalidate the inactive gate, sync; write the whole body, sync; write the gate, sync; only then the first record of the new epoch. The streaming pass lands with the compaction engine and will replace this step's shape.",
+            note: "The body is 127 separate 512-byte sector writes, which is section 6.3's forward pass rather than a buffered materialization: the store stages one entry and one sector, takes each card-resident field from the RAM index, from a journal-carried entry through the per-head slot reference, or from the active checkpoint, and accumulates the body CRC as it goes. One correction to section 6.3's own arithmetic: it calls 208 bytes the largest entry shape, but section 5.1 gives the update-handoff projection 240, so the entry stage is 240 bytes and the whole staging bound is 752.",
         },
         Transcript {
             name: "work-seal",
             section: "OBC2_Storage_Format.md §7",
             description: "The sealed WORK slot, the one durable work fact both device profiles write.",
-            steps: &WORK_SEAL,
+            steps: WORK_SEAL.to_vec(),
             outcomes: &["the previous WORK slot", "the sealed WORK slot"],
             note: "",
         },
@@ -2214,7 +2286,7 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "arm-phase-advance",
             section: "OBC2_Storage_Format.md §10",
             description: "One handoff phase advance across the alternating ARM pair.",
-            steps: &ARM_ADVANCE,
+            steps: ARM_ADVANCE.to_vec(),
             outcomes: &["the old (sequence, phase) pair", "the strictly greater new pair"],
             note: "",
         },
@@ -2222,7 +2294,7 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "manifest-publication",
             section: "OBC2_Storage_Format.md §8",
             description: "The resolution generation is written and synchronized before the terminal record; only that record's gate publishes the head.",
-            steps: &MANIFEST_PUBLICATION,
+            steps: MANIFEST_PUBLICATION.to_vec(),
             outcomes: [
                 "the projection before publication, with the reserved generation left as a collectable orphan",
                 "the published manifest head together with its resolution generation",
@@ -2234,7 +2306,7 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "ride-checkpoint",
             section: "OBC2_Storage_Format.md §7.1",
             description: "One ride checkpoint: payload first, then the ring slot at sequence mod 16.",
-            steps: &RIDE_CHECKPOINT,
+            steps: RIDE_CHECKPOINT.to_vec(),
             outcomes: &[
                 "the previous ride checkpoint",
                 "the new one",
@@ -2246,7 +2318,7 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "work-steady-state-reuse",
             section: "OBC2_Storage_Format.md §7",
             description: "Both WORK slots valid; the write that reuses the older one must not disturb the selected one.",
-            steps: &WORK_STEADY_STATE,
+            steps: WORK_STEADY_STATE.to_vec(),
             outcomes: &["the previously selected slot", "the newly written slot"],
             note: "",
         },
@@ -2254,23 +2326,60 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "arm-steady-state-reuse",
             section: "OBC2_Storage_Format.md §10",
             description: "Both ARM files valid at one handoff sequence; advancing to the next reuses the file holding the older pair.",
-            steps: &ARM_STEADY_STATE,
+            steps: ARM_STEADY_STATE.to_vec(),
             outcomes: &["the previously selected (sequence, phase) pair", "the strictly greater new pair"],
             note: "",
         },
         Transcript {
             name: "checkpoint-steady-state-reuse",
             section: "OBC2_Storage_Format.md §6.3",
-            description: "Both checkpoints valid; rewriting the inactive one leaves the selected one mounted throughout.",
-            steps: &CHECKPOINT_STEADY_STATE,
+            description: "Both checkpoints valid; streaming the inactive one's body leaves the selected one mounted throughout.",
+            steps: checkpoint_write("CAT0.CHK", "CAT0 becomes the greater through-sequence"),
             outcomes: &["the previously selected checkpoint", "the newly written one"],
             note: "",
+        },
+        Transcript {
+            name: "generation-seal",
+            section: "OBC2_Storage_Format.md §3, §7",
+            description: "One restart-only upload: the payload is streamed and synchronized, then the sealed WORK slot — the one durable work fact both device profiles write — is gated.",
+            steps: GENERATION_SEAL.to_vec(),
+            outcomes: [
+                "a claimed generation with no durable work slot, which recovery classifies as restartable work at offset zero",
+                "the sealed WORK slot, whose finalized prefix CRC the durable payload backs",
+            ]
+            .as_slice(),
+            note: "The payload write's length is the object's, not a fixed record size, so it appears with length zero here. No streaming slot is ever written: this profile acknowledges no offset, so the two payload operations and the six of the gated slot are the whole sequence.",
+        },
+        Transcript {
+            name: "generation-restart",
+            section: "OBC2_Storage_Format.md §7",
+            description: "A readmission rewinding a claimed generation to offset zero. The truncation is synchronized before a byte is accepted again.",
+            steps: GENERATION_RESTART.to_vec(),
+            outcomes: [
+                "the old durable prefix, when the truncation never reached the card",
+                "an empty payload, ready to be streamed from offset zero",
+            ]
+            .as_slice(),
+            note: "Section 7's restart durability point is satisfied vacuously under the restart-only profile: no WORK slot records a streaming offset, so no truncation can make a recorded prefix unverifiable. The ordering is still the resumable profile's, minus the slot it would write first.",
+        },
+        Transcript {
+            name: "lease-recovery-clear",
+            section: "OBC2_Storage_Format.md §9",
+            description: "The bounded recovery suffix that clears every durable live-lease reason before garbage collection may treat any generation as unreachable.",
+            steps: LEASE_RECOVERY_CLEAR.to_vec(),
+            outcomes: [
+                "no record: every entry still carries its lease reason and the next mount owes the whole suffix",
+                "the first entry cleared and the second still owed",
+                "no retained entry carrying a lease reason",
+            ]
+            .as_slice(),
+            note: "At most eight such records exist, which is the retention capacity, and section 6.3 counts them into the 55-record recovery suffix. A cut leaves a prefix that a later mount finishes; clearing the bit only in RAM is the fault this sequence exists to forbid.",
         },
         Transcript {
             name: "short-write",
             section: "OBC2_Storage_Format.md §13.1",
             description: "A write the medium truncates. The writer checks the returned length and abandons the commit.",
-            steps: &SHORT_WRITE,
+            steps: SHORT_WRITE.to_vec(),
             outcomes: &["the projection before the record; a short write is an error, never a success"],
             note: "One step, because the sequence stops there: the length check fails and nothing after it runs. There are no cut points to enumerate — the fault is the write's own return value.",
         },
@@ -2278,7 +2387,7 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "media-full",
             section: "OBC2_Storage_Format.md §13.1",
             description: "A write the medium refuses for want of space.",
-            steps: &MEDIA_FULL,
+            steps: MEDIA_FULL.to_vec(),
             outcomes: &["the projection before the record"],
             note: "One step, for the same reason as the short write: the refusal ends the sequence.",
         },
@@ -2286,7 +2395,7 @@ pub fn transcripts() -> Vec<Transcript> {
             name: "corrupt-read",
             section: "OBC2_Storage_Format.md §12",
             description: "An ordinary commit, followed by a mount whose reads are poisoned one at a time.",
-            steps: &CORRUPT_READ,
+            steps: CORRUPT_READ.to_vec(),
             outcomes: [
                 "the projection before the record",
                 "the projection after it",
