@@ -21,18 +21,28 @@
 //! copied into one this crate owns. Encoding produces exact bytes: fixed-size messages return
 //! fixed-size arrays, variable ones write into a caller-provided slice and report the length.
 //!
-//! It contains no transport, no session state, no storage, and no policy. It does not know what a
-//! BLE characteristic or a USB endpoint is, it never decides whether an operation is authorized,
-//! and it holds no state between calls. Those are the adapter's and the engine's jobs; this crate
-//! is what they agree on. That is also why it has exactly two dependencies — `obc-crc` for the
-//! contract's CRC-32/IEEE and `sha2` for the canonical-intent digest.
+//! The codec proper contains no transport, no session state, no storage, and no policy. It does not
+//! know what a BLE characteristic or a USB endpoint is, it never decides whether an operation is
+//! authorized, and it holds no state between calls. Those are the adapter's and the engine's jobs;
+//! this crate is what they agree on. That is also why it has exactly two dependencies — `obc-crc`
+//! for the contract's CRC-32/IEEE and `sha2` for the canonical-intent digest.
+//!
+//! ## The engine
+//!
+//! [`engine`] is the device half *above* that codec: the connection state machine of §5.2, the
+//! SessionId coordinator of §3, and the upload/download/command machines of §15. It is still
+//! transport-free and storage-free — a record goes in and either bytes or a typed command comes out,
+//! and the board glue executes the command against the DOS2 transaction seam — which is what lets
+//! one engine serve BLE and USB and be proved without a radio or a card. [`harness`] is the host-only
+//! side of that proof: the `ByteLink` seam implemented twice, an in-memory transaction with the DOS2
+//! lifecycle's shape, and the checked-in semantic transcripts replayed through both.
 //!
 //! ## Reading order
 //!
 //! [`frame`] is the envelope every control message arrives in; [`request`] and [`response`] are the
 //! two dispatching enums that turn a decoded frame into a typed message. Everything else is the
 //! parts they are built from: [`ids`], [`registry`], [`metadata`], [`result`], [`error`],
-//! [`stream`], and [`intent`].
+//! [`stream`], and [`intent`]. [`engine`] sits on top of all of them.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -45,6 +55,7 @@ mod codec;
 pub mod control;
 pub mod download;
 pub mod draft;
+pub mod engine;
 pub mod error;
 pub mod frame;
 pub mod hello;
@@ -59,6 +70,9 @@ pub mod response;
 pub mod result;
 pub mod stream;
 pub mod upload;
+
+#[cfg(any(test, feature = "std"))]
+pub mod harness;
 
 #[cfg(any(test, feature = "std"))]
 pub mod vectors;

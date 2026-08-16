@@ -3,7 +3,7 @@ name = "obc-link"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal firmware crate — not published to crates.io
-description = "Device Object System v2 wire codec: OBCP wire major 3 control/stream frames, identities, metadata envelopes, typed results, error bodies and canonical-intent digests. no_std, allocation-free, transport-free."
+description = "Device Object System v2 wire codec and transfer engine: OBCP wire major 3 control/stream frames, identities, metadata envelopes, typed results, error bodies and canonical-intent digests, plus the connection/session model and the upload/download/command state machines. no_std, allocation-free, transport-free."
 
 # The one Rust authority for the bytes frozen in `specs/Device_Object_Protocol_v3.md` and
 # `specs/Device_Object_Registries_v2.md`. It is deliberately transport-free: no obc-ble, no embassy,

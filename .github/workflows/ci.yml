@@ -422,6 +422,10 @@ jobs:
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
         run: cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
+      # obc-link carries the DOS3 engine beside the codec, and its host-only harness must stay
+      # behind the `std` feature: a default build has to keep compiling for the device.
+      - name: cargo build -p obc-link (thumbv8m.main, nRF54L)
+        run: cargo build -p obc-link --target thumbv8m.main-none-eabihf --locked
       - name: thumbv8m +strict-align backend probe
         run: python3 firmware/tools/resource_guard.py strict-align
 
