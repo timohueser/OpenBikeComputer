@@ -27,8 +27,14 @@ const BOOT_SIGNATURE: u16 = 0xAA55;
 const PARTITION_TABLE: usize = 446;
 /// One MBR partition entry.
 const PARTITION_ENTRY_LEN: usize = 16;
-/// The largest volume §1.1 admits.
-const MAX_VOLUME_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
+/// §1.1's "the volume is at most 2 TiB" is enforced by arithmetic rather than by a check.
+///
+/// A partition entry counts sectors in a `u32` and this module admits no sector size but 512, so the
+/// largest volume that can be described at all is `0xFFFF_FFFF × 512` — 512 bytes short of 2 TiB. A
+/// runtime comparison against 2 TiB would therefore be a branch that can never be taken, which is
+/// worse than useless: it reads like a guard and tests like dead code. This assertion is the guard,
+/// and it fails the build if either premise ever changes.
+const _: () = assert!((u32::MAX as u64) * 512 < 2 * 1024 * 1024 * 1024 * 1024);
 
 /// The partition types §1.1 admits: FAT16 and FAT32 in their CHS and LBA spellings.
 pub const ADMITTED_PARTITION_TYPES: [u8; 5] = [0x04, 0x06, 0x0B, 0x0C, 0x0E];
@@ -40,8 +46,12 @@ pub const ADMITTED_PARTITION_TYPES: [u8; 5] = [0x04, 0x06, 0x0B, 0x0C, 0x0E];
 /// repair instruction, because the device never formats a card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unsupported {
-    /// LBA 0 carries no MBR signature: a partitionless superfloppy or a GPT disk.
+    /// LBA 0 carries no MBR signature: a GPT disk, or no filesystem at all.
     NotPartitioned,
+    /// LBA 0 is itself a volume boot record: a partitionless superfloppy, which §1.1 names as
+    /// unsupported. Told from an MBR by the jump instruction and a plausible BPB, because the
+    /// `0xAA55` signature at offset 510 is common to both.
+    Superfloppy,
     /// The partition entry is empty (type `0x00`).
     NoSuchPartition,
     /// The entry's status byte is neither bootable nor non-bootable.
@@ -66,8 +76,6 @@ pub enum Unsupported {
     ClusterNotWholePages(u32),
     /// §1.1 precondition 2: the data region does not begin at a physical multiple of the page.
     DataRegionMisaligned(u64),
-    /// A volume larger than 2 TiB.
-    VolumeTooLarge(u64),
 }
 
 /// Which FAT the volume is, decided the way the FAT specification decides it: by cluster count.
@@ -179,12 +187,16 @@ impl VolumeGeometry {
         if Some(lba) == self.fs_info_lba {
             return Region::FsInfo;
         }
-        let reserved_end = start + u32::from(self.reserved_sectors);
+        // Saturating rather than wrapping throughout: this classifies a write log, and a wrapped
+        // boundary would silently rename a metadata sector "data" — the one mistake that turns the
+        // clean-flush measurement into a false pass. The invariant checked at construction makes
+        // saturation unreachable; it is here so that it stays unreachable rather than becoming wrong.
+        let reserved_end = start.saturating_add(u32::from(self.reserved_sectors));
         if lba < reserved_end {
             return Region::Reserved;
         }
         for copy in 0..self.fat_count {
-            let fat_start = reserved_end + u32::from(copy) * self.fat_size_sectors;
+            let fat_start = reserved_end.saturating_add(u32::from(copy).saturating_mul(self.fat_size_sectors));
             if lba >= fat_start && lba - fat_start < self.fat_size_sectors {
                 return Region::Fat(copy);
             }
@@ -209,17 +221,62 @@ impl VolumeGeometry {
         if !self.data_region_is_page_aligned() {
             return Err(Unsupported::DataRegionMisaligned(self.data_start_byte));
         }
-        if self.volume_bytes() > MAX_VOLUME_BYTES {
-            return Err(Unsupported::VolumeTooLarge(self.volume_bytes()));
-        }
+        // §1.1's 2 TiB bound needs no branch here; see the assertion at the top of the module.
         Ok(())
     }
+
+    /// The internal consistency every value in this struct must have, checked once at construction.
+    ///
+    /// Each field is derived from the two sectors rather than read from them, so a mistake in that
+    /// derivation would produce a struct that is self-contradictory — a `data_start_lba` that is not
+    /// where the reserved region and the FATs end, say — and every later answer, including §1.1's
+    /// verdict and [`region`](Self::region)'s classification of a write log, would be wrong in a way
+    /// nothing else could notice. This is the one place that can notice.
+    fn invariants_hold(&self) -> bool {
+        let non_data = u32::from(self.reserved_sectors)
+            .checked_add(u32::from(self.fat_count) * self.fat_size_sectors)
+            .and_then(|sectors| sectors.checked_add(self.root_dir_sectors));
+        let Some(non_data) = non_data else { return false };
+        self.bytes_per_sector == 512
+            && self.sectors_per_cluster.is_power_of_two()
+            && self.cluster_bytes == u32::from(self.bytes_per_sector) * u32::from(self.sectors_per_cluster)
+            && self.data_start_lba == self.partition.start_lba.wrapping_add(non_data)
+            && self.data_start_byte == u64::from(self.data_start_lba) * u64::from(self.bytes_per_sector)
+            && self.total_sectors > non_data
+            && self.cluster_count == (self.total_sectors - non_data) / u32::from(self.sectors_per_cluster)
+            && match self.fat_type {
+                FatType::Fat16 => (4_085..65_525).contains(&self.cluster_count) && self.fs_info_lba.is_none(),
+                FatType::Fat32 => self.cluster_count >= 65_525 && self.root_dir_sectors == 0,
+            }
+            && self.root_dir_lba.is_none() == (self.root_dir_sectors == 0)
+    }
+}
+
+/// Whether a sector reads as a volume boot record rather than as a master boot record.
+///
+/// A superfloppy — no partition table, the volume's own BPB directly at LBA 0 — carries the same
+/// `0xAA55` signature at offset 510 as an MBR does, so the signature cannot tell them apart. What
+/// can is what the sector looks like *as a BPB*: an x86 jump instruction in its first byte and a
+/// declared sector size and cluster size that a real BPB would carry. Without this test the bytes at
+/// 446.. — boot code, in a VBR — are read as a partition table, and a fragment of the BPB or of that
+/// code becomes a partition type and a start LBA.
+fn looks_like_a_volume_boot_record(sector: &[u8; 512]) -> bool {
+    let jump = sector[0] == 0xEB || sector[0] == 0xE9;
+    let bytes_per_sector = u16_le(sector, 11);
+    let sectors_per_cluster = sector[13];
+    jump && bytes_per_sector.is_power_of_two()
+        && (512..=4096).contains(&bytes_per_sector)
+        && sectors_per_cluster != 0
+        && sectors_per_cluster.is_power_of_two()
 }
 
 /// Reads partition entry `index` out of an MBR sector.
 pub fn partition(mbr: &[u8; 512], index: usize) -> Result<Partition, Unsupported> {
     if u16_le(mbr, 510) != BOOT_SIGNATURE {
         return Err(Unsupported::NotPartitioned);
+    }
+    if looks_like_a_volume_boot_record(mbr) {
+        return Err(Unsupported::Superfloppy);
     }
     if index >= 4 {
         return Err(Unsupported::NoSuchPartition);
@@ -281,6 +338,13 @@ pub fn geometry(partition: Partition, bpb: &[u8; 512]) -> Result<VolumeGeometry,
     if non_data == 0 || total_sectors <= non_data {
         return Err(Unsupported::Inconsistent);
     }
+    // One notion of how big this volume is. The BPB and the partition entry are written by the same
+    // formatter and must agree; a BPB claiming more sectors than the partition holds would put the
+    // end of the data region outside the partition, and every later bound — including
+    // [`VolumeGeometry::region`]'s — would be computed against a volume that is not there.
+    if total_sectors > partition.sectors {
+        return Err(Unsupported::Inconsistent);
+    }
     let cluster_count = (total_sectors - non_data) / u32::from(sectors_per_cluster);
     let fat_type = if cluster_count < 4_085 {
         return Err(Unsupported::Fat12);
@@ -299,12 +363,15 @@ pub fn geometry(partition: Partition, bpb: &[u8; 512]) -> Result<VolumeGeometry,
     let fs_info_lba = match fat_type {
         FatType::Fat32 => match u16_le(bpb, 48) {
             0 | 0xFFFF => None,
-            sector => Some(partition.start_lba + u32::from(sector)),
+            sector => Some(partition.start_lba.checked_add(u32::from(sector)).ok_or(Unsupported::Inconsistent)?),
         },
         FatType::Fat16 => None,
     };
-    let root_dir_lba = (root_dir_sectors != 0).then(|| data_start_lba - root_dir_sectors);
-    Ok(VolumeGeometry {
+    let root_dir_lba = match root_dir_sectors {
+        0 => None,
+        sectors => Some(data_start_lba.checked_sub(sectors).ok_or(Unsupported::Inconsistent)?),
+    };
+    let geometry = VolumeGeometry {
         partition,
         fat_type,
         bytes_per_sector,
@@ -320,7 +387,14 @@ pub fn geometry(partition: Partition, bpb: &[u8; 512]) -> Result<VolumeGeometry,
         data_start_byte: u64::from(data_start_lba) * u64::from(bytes_per_sector),
         fs_info_lba,
         root_dir_lba,
-    })
+    };
+    // The constructor invariant. Every field above is derived rather than read, so this is what
+    // stands between a derivation mistake and a geometry that lies consistently to everything.
+    debug_assert!(geometry.invariants_hold(), "the derived geometry contradicts itself: {geometry:?}");
+    if !geometry.invariants_hold() {
+        return Err(Unsupported::Inconsistent);
+    }
+    Ok(geometry)
 }
 
 /// The whole §1.1 decision over the two sectors: parse, compute, admit.
@@ -448,12 +522,120 @@ mod tests {
         assert_eq!(partition(&mbr, 0), Err(Unsupported::PartitionType(0x07)));
         // …but a volume mislabelled 0x0C does, and the marker catches it.
         assert_eq!(geometry(partition(&mbr_with(0x0C, 2_048, 1_000), 0).unwrap(), &bpb), Err(Unsupported::ExFat));
-        // A superfloppy: a BPB at LBA 0 with no partition table.
-        let mut superfloppy = [0u8; 512];
-        superfloppy[510..512].copy_from_slice(&BOOT_SIGNATURE.to_le_bytes());
-        superfloppy[PARTITION_TABLE] = 0xEB;
-        assert_eq!(partition(&superfloppy, 0), Err(Unsupported::BadPartitionStatus(0xEB)));
         assert_eq!(partition(&[0u8; 512], 0), Err(Unsupported::NotPartitioned));
+    }
+
+    /// A real superfloppy: the simulator's own FAT32 boot record, placed at LBA 0 with no partition
+    /// table around it — which is exactly what a card formatted without one looks like.
+    ///
+    /// It carries `0xAA55` at 510 like an MBR does, so the signature admits it; what refuses it is
+    /// the jump instruction and the plausible BPB. Without that test, bytes 446.. — boot code here —
+    /// are read as a partition table, and this sector happens to contain zeros there, so the failure
+    /// would have been a confident `NoSuchPartition` rather than the truth.
+    #[test]
+    fn a_partitionless_superfloppy_is_refused_as_one() {
+        let card = crate::obc2::fatsim::fat32_card(crate::obc2::fatsim::Layout::default());
+        let vbr = card.get(crate::obc2::fatsim::Layout::default().partition_start_lba);
+        assert_eq!(u16_le(&vbr, 510), BOOT_SIGNATURE, "the fixture must look like a boot sector");
+        assert_eq!(partition(&vbr, 0), Err(Unsupported::Superfloppy));
+        // And the real MBR of the same card is still read as one.
+        assert!(partition(&card.get(0), 0).is_ok());
+    }
+
+    /// The five refusals nothing else exercises.
+    #[test]
+    fn every_remaining_unsupported_class_has_a_case() {
+        // An empty partition entry, and one past the end of the table.
+        let mbr = mbr_with(0x0C, 2_048, 8_192);
+        assert_eq!(partition(&mbr, 1), Err(Unsupported::NoSuchPartition));
+        assert_eq!(partition(&mbr, 4), Err(Unsupported::NoSuchPartition));
+        // A partition that points at something with no boot signature at all.
+        let part = partition(&mbr, 0).unwrap();
+        assert_eq!(geometry(part, &[0u8; 512]), Err(Unsupported::NotFat));
+        // Three FATs.
+        let mut bpb = bpb_fat32(64, 5_392, 15_523_840, 32);
+        bpb[16] = 3;
+        assert_eq!(geometry(part, &bpb), Err(Unsupported::FatCount(3)));
+        // A reserved region of zero sectors: there is nowhere for the boot record to live.
+        let bpb = bpb_fat32(64, 5_392, 15_523_840, 0);
+        assert_eq!(geometry(part, &bpb), Err(Unsupported::Inconsistent));
+        // A bootable-flag byte that is neither 0x00 nor 0x80.
+        let mut odd = mbr;
+        odd[PARTITION_TABLE] = 0x7F;
+        assert_eq!(partition(&odd, 0), Err(Unsupported::BadPartitionStatus(0x7F)));
+    }
+
+    /// m2's one notion of the volume: a BPB that claims more sectors than its partition holds.
+    #[test]
+    fn a_bpb_larger_than_its_partition_is_inconsistent() {
+        let mbr = mbr_with(0x0C, 8_192, 1_000_000);
+        let bpb = bpb_fat32(64, 5_392, 15_523_840, 32);
+        assert_eq!(geometry(partition(&mbr, 0).unwrap(), &bpb), Err(Unsupported::Inconsistent));
+        // The same BPB inside a partition that is big enough is fine.
+        let mbr = mbr_with(0x0C, 8_192, 15_523_840);
+        assert!(geometry(partition(&mbr, 0).unwrap(), &bpb).is_ok());
+    }
+
+    /// The cluster-size ends of the range: the smallest FAT cluster there is, and one four times the
+    /// program page.
+    #[test]
+    fn cluster_sizes_at_both_ends_of_the_range() {
+        // 512 B: one sector per cluster, a whole legal FAT volume and a thirty-second of a page.
+        let mbr = mbr_with(0x0C, 8_192, 15_523_840);
+        let bpb = bpb_fat32(1, 121_088, 15_523_840, 32);
+        let smallest = geometry(partition(&mbr, 0).unwrap(), &bpb).unwrap();
+        assert_eq!(smallest.cluster_bytes, 512);
+        assert_eq!(smallest.admit(), Err(Unsupported::ClusterNotWholePages(512)));
+
+        // 64 KiB: four whole program pages. §1.1 says the admitted sizes are "exactly 16,384 or
+        // 32,768" because those are what FAT formatters produce, but the normative rule it states is
+        // the multiple — so this is admitted, deliberately, and the deviation is recorded here rather
+        // than left to be discovered.
+        let bpb = bpb_fat32(128, 2_704, 15_523_840, 32);
+        let largest = geometry(partition(&mbr, 0).unwrap(), &bpb).unwrap();
+        assert_eq!(largest.cluster_bytes, 65_536);
+        assert_eq!(largest.admit(), Ok(()));
+    }
+
+    /// The sum property, stated positively: a partition that is itself badly aligned is admitted when
+    /// the reserved region and the FATs make up the difference.
+    ///
+    /// This is the case the negative tests cannot show, and it is why §1.1 computes the data region's
+    /// physical address instead of asserting a partition alignment. Neither term has to be aligned —
+    /// only their sum.
+    #[test]
+    fn a_misaligned_partition_with_a_compensating_reserved_region_is_admitted() {
+        // 2,056 sectors is 1 MiB + 4 KiB: a quarter of a program page past a boundary, so the
+        // partition start alone fails precondition 2…
+        let mbr = mbr_with(0x0C, 2_056, 15_523_840);
+        assert_ne!(2_056u64 * 512 % PROGRAM_PAGE as u64, 0, "the partition must start misaligned");
+        // …and 24 + 2 × 15,232 = 30,488 sectors of reserved region and FATs bring it back, because
+        // 2,056 + 30,488 = 32,544 is a whole number of 32-sector pages.
+        let bpb = bpb_fat32(64, 15_232, 15_523_840, 24);
+        let geometry = admit(&mbr, &bpb, 0).unwrap();
+        assert_eq!(geometry.data_start_lba, 2_056 + 30_488);
+        assert_eq!(geometry.data_start_byte, 16_662_528);
+        assert_eq!(geometry.data_start_byte % PROGRAM_PAGE as u64, 0);
+
+        // The same reserved region under an already-aligned partition is admitted too — which is the
+        // shipped card of #1354, where both terms happen to be whole page counts on their own.
+        let aligned = mbr_with(0x0C, 2_048, 15_523_840);
+        let bpb = bpb_fat32(64, 15_232, 15_523_840, 64);
+        let geometry = admit(&aligned, &bpb, 0).unwrap();
+        assert_eq!(geometry.data_start_byte, 16_678_912);
+        assert_eq!(2_048u64 * 512 % PROGRAM_PAGE as u64, 0, "1 MiB is already 64 program pages");
+    }
+
+    /// The constructor invariant holds for every geometry this module will return.
+    #[test]
+    fn a_returned_geometry_is_internally_consistent() {
+        let (mbr, bpb) = sd_association_card();
+        assert!(admit(&mbr, &bpb, 0).unwrap().invariants_hold());
+        let card = crate::obc2::fatsim::fat32_card(crate::obc2::fatsim::Layout::default());
+        let layout = crate::obc2::fatsim::Layout::default();
+        let geometry = admit(&card.get(0), &card.get(layout.partition_start_lba), 0).unwrap();
+        assert!(geometry.invariants_hold());
+        assert_eq!(geometry.data_start_lba, layout.data_start_lba());
     }
 
     #[test]

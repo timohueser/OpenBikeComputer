@@ -27,10 +27,10 @@
 //! 4. **Commit throughput.** The gated-record commit cycle — body write, sync, gate write, sync —
 //!    timed per commit over 64 journal slots, beside a 16,384-byte full-stride write for the
 //!    payload rate. These are the numbers DOS2's card-resident-catalog decision needs.
-//! 5. **Recovery across resets.** Each boot scans all 256 journal slots, reports the contiguous
-//!    valid prefix §6.3's replay would accept, checks every record against its physical slot, and
-//!    appends exactly one more. Reset the board (`probe-rs reset`) and run it again: the prefix must
-//!    grow by exactly one, with no stray valid slot beyond it.
+//! 5. **Recovery across resets.** Each boot scans all 256 journal slots and hands the observations
+//!    to `obc2::recovery::choose` — §6.3's own decision function, not a rule restated here — then
+//!    appends exactly one record. Reset the board (`probe-rs reset`) and run it again: the replay
+//!    count must grow by exactly one and the decision must stay `Mount`.
 //!
 //! ## What it does NOT prove — read this before quoting the results
 //!
@@ -39,6 +39,10 @@
 //! about. So the recovery loop validates *the recovery decision over durable records* and nothing
 //! at all about tearing: the program page `P` of the shipped media and the fault-isolation
 //! assumption remain **unvalidated** and need a rig that cuts the card's own supply mid-write.
+//!
+//! The checkpoint half of §6.3 is not exercised either. This bench writes no `CAT0.CHK` — the
+//! catalog codec belongs to the store, not to the media adapter — so `choose` is handed a
+//! synthesized checkpoint and only its journal arithmetic runs against real bytes.
 //!
 //! ## Bring-up
 //!
@@ -57,10 +61,10 @@ use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_time::Instant;
 use embedded_sdmmc::{
-    Block, BlockCount, BlockDevice, BlockIdx, RawDirectory, RawFile, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+    Block, BlockCount, BlockDevice, BlockIdx, RawDirectory, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 use obc_storage::fat_extents::SharedBlockDevice;
-use obc_storage::obc2::adapter::{Adapter, AdapterError};
+use obc_storage::obc2::adapter::{Adapter, GatedFile};
 use obc_storage::obc2::blocklog::WriteLog;
 use obc_storage::obc2::geometry::{self, FatType, Region, VolumeGeometry};
 use obc_storage::obc2::init::InitRecord;
@@ -69,6 +73,7 @@ use obc_storage::obc2::limits::{
     CHECKPOINT_FILE_LEN, INITIALIZATION_ZERO_FILL, JOURNAL_BODY_LEN, JOURNAL_FILE_LEN, JOURNAL_GATE_OFFSET,
     JOURNAL_SLOTS, RIDE_FILE_LEN, SLOT_FILE_LEN, SLOT_STRIDE,
 };
+use obc_storage::obc2::recovery::{choose, CheckpointObservation, Decision, SlotObservation};
 use obc_storage::obc2::{GenerationId, OperationId, StoreId};
 
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set); MPSL is
@@ -216,6 +221,9 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, value: T) -> &'static mut T 
 const BENCH_STORE: StoreId =
     StoreId::new([0xB2, 0x0C, 0xB2, 0x0C, 0xB2, 0x0C, 0xB2, 0x0C, 0xB2, 0x0C, 0xB2, 0x0C, 0xB2, 0x0C, 0xB2, 0x0C]);
 
+/// The compaction epoch every bench record carries. §6.1 forbids zero.
+const BENCH_EPOCH: u64 = 1;
+
 /// How many commits the throughput pass times, and therefore how many records a fresh card ends
 /// with. Each later boot adds one.
 const COMMITS: u16 = 64;
@@ -296,27 +304,35 @@ async fn main(_spawner: Spawner) {
     // §13 budget is four directory handles, and `make_dir_in_dir` needs a free slot even though it
     // keeps none, so root + two `/OBC2` handles + a role directory is exactly one too many.
     let existing = vmgr.open_dir(root, "OBC2").ok();
-    let valid = match existing {
+    let scan = match existing {
         Some(obc2) => fat
             .open_fixed(obc2, "COMMIT.JNL", JOURNAL_FILE_LEN as u32)
             .map(|file| {
-                let count = scan_journal(&fat, file);
-                let _ = vmgr.close_file(file);
-                count
+                let scan = scan_journal(&fat, file);
+                let _ = vmgr.close_file(file.raw());
+                scan
             })
-            .unwrap_or(0),
-        None => 0,
+            .ok(),
+        None => None,
     };
+    let valid = scan.as_ref().map_or(0, |scan| scan.replay);
+    let foreign = scan.as_ref().map_or(0, |scan| scan.foreign);
 
     let obc2 = match existing {
+        // A card carrying another store's records is never wiped and never appended to, whatever
+        // the rest of the state says. This binary is destructive about its own tree only.
+        Some(_) if foreign != 0 => {
+            error!("RUN   {=usize} journal record(s) belong to another store — refusing to touch this card", foreign);
+            park();
+        }
         Some(obc2) if !FORCE_REINIT && valid > 0 && valid <= RESTART_ABOVE => {
-            info!("RUN   recovery cycle: {=usize} durable records were found on this card", valid);
-            append_and_verify(&fat, obc2, valid);
+            info!("RUN   recovery cycle: §6.3 replays {=usize} durable records on this card", valid);
+            append_and_verify(&fat, obc2, scan.expect("a scan produced the replay count"));
             park();
         }
         Some(obc2) => {
             if valid > RESTART_ABOVE {
-                info!("INIT  the journal holds {=usize} valid slots — wiping and starting over", valid);
+                info!("INIT  the journal replays {=usize} slots — wiping and starting over", valid);
             }
             wipe(&fat, obc2);
             vmgr.close_dir(obc2).expect("close");
@@ -326,7 +342,7 @@ async fn main(_spawner: Spawner) {
     };
 
     clean_flush_phase(&fat, log, obc2, &geometry);
-    throughput_phase(&fat, obc2, &geometry);
+    throughput_phase(&fat, log, obc2, &geometry);
     info!("RUN   first cycle complete — `probe-rs reset` and run again to exercise recovery");
     park();
 }
@@ -451,7 +467,7 @@ fn initialize(fat: &Fat, root: RawDirectory) -> RawDirectory {
     let gate: [u8; 512] = slot.0[512..1_024].try_into().expect("512 bytes");
     fat.write_gate(init_file, 512, &gate).expect("INIT gate");
     fat.sync_fixed(init_file, SLOT_FILE_LEN as u32).expect("sync");
-    vmgr.close_file(init_file).expect("close");
+    vmgr.close_file(init_file.raw()).expect("close");
     info!("INIT  INIT.REC (16,384 B + witness gate): {=u64} ms", ms(started));
 
     // The two role trees: 256 shard directories each, in numeric order.
@@ -490,7 +506,7 @@ fn initialize(fat: &Fat, root: RawDirectory) -> RawDirectory {
                     rate(len as u64, elapsed)
                 );
                 filled += len as u64;
-                vmgr.close_file(file).expect("close");
+                vmgr.close_file(file.raw()).expect("close");
             }
             Err(error) => error!("INIT  {=str} failed ({})", name, defmt::Debug2Format(&error)),
         }
@@ -521,14 +537,29 @@ fn initialize(fat: &Fat, root: RawDirectory) -> RawDirectory {
 /// the adapter's clean path and for the fork's own `flush_file`, and names each one.
 fn clean_flush_phase(fat: &Fat, log: &Log, obc2: RawDirectory, geometry: &VolumeGeometry) {
     let vmgr = fat.volume_manager();
-    let entry_lba = directory_entry_lba(fat, obc2, "ARM0.HND");
+    // The instrument's own precondition, checked before the experiment rather than after. A verdict
+    // reached without knowing which sector holds the directory entry is not a weaker verdict — it is
+    // a *wrong* one, because an entry rewrite lands in the data region on FAT32 and would be counted
+    // as an ordinary record write. This measurement decides whether OBC2's commit path is safe; it
+    // has to fail loudly rather than pass blindly.
+    let entry_lba = match directory_entry_lba(fat, obc2, "ARM0.HND") {
+        Ok(Some(lba)) => lba,
+        Ok(None) => {
+            error!("FLUSH INDETERMINATE — no directory entry found for ARM0.HND; no verdict is possible");
+            return;
+        }
+        Err(()) => {
+            error!("FLUSH INDETERMINATE — the /OBC2 directory could not be enumerated; no verdict is possible");
+            return;
+        }
+    };
     let Ok(file) = fat.open_fixed(obc2, "ARM0.HND", SLOT_FILE_LEN as u32) else {
-        error!("FLUSH ARM0.HND is not at its full length — initialization did not complete");
+        error!("FLUSH INDETERMINATE — ARM0.HND is not at its full length; initialization did not complete");
         return;
     };
     info!(
         "FLUSH ARM0.HND is 16,384 B; its directory entry lives in LBA {=u32}, FSInfo in LBA {=u32}",
-        entry_lba.unwrap_or(0),
+        entry_lba,
         geometry.fs_info_lba.unwrap_or(0)
     );
 
@@ -536,39 +567,70 @@ fn clean_flush_phase(fat: &Fat, log: &Log, obc2: RawDirectory, geometry: &Volume
     let body = [0xA5u8; 512];
     let gate = [0x5Au8; 512];
     log.arm();
-    fat.write_at(file, 0, &body).expect("body");
+    fat.write_body(file, 0, 512, &body).expect("body");
     fat.sync_fixed(file, SLOT_FILE_LEN as u32).expect("sync");
     fat.write_gate(file, 512, &gate).expect("gate");
     fat.sync_fixed(file, SLOT_FILE_LEN as u32).expect("sync");
     log.disarm();
-    let clean = report_spans(log, geometry, entry_lba, "FLUSH clean");
+    let Some(clean) = report_spans(log, geometry, entry_lba, "FLUSH clean") else {
+        error!("FLUSH INDETERMINATE — the span log overflowed, so the sectors above are a subset");
+        let _ = vmgr.close_file(file.raw());
+        return;
+    };
 
     // The same sequence through the fork's own flush, which is what §13.1 rules out.
     log.arm();
-    fat.write_at(file, 0, &body).expect("body");
+    fat.write_body(file, 0, 512, &body).expect("body");
     fat.sync_metadata(file).expect("flush_file");
     log.disarm();
     let dirty = report_spans(log, geometry, entry_lba, "FLUSH forks flush_file");
 
-    info!("FLUSH VERDICT: a clean sync wrote {=u32} metadata sector(s); the fork's flush wrote {=u32}", clean, dirty);
-    if clean == 0 {
+    // The host test asserts the exact sector count; so does this, because "no metadata" and "two
+    // data sectors, the body and its gate" are different claims and only the second one says the
+    // writes actually happened.
+    let expected_clean_sectors = 2;
+    info!(
+        "FLUSH VERDICT: a clean sync wrote {=u32} sector(s), {=u32} of them metadata; the fork's flush wrote {=u32} metadata",
+        clean.total,
+        clean.metadata,
+        dirty.map_or(0, |spans| spans.metadata)
+    );
+    if clean.metadata == 0 && clean.total == expected_clean_sectors {
         info!("FLUSH §13.1 clean-flush obligation HOLDS on this card with the adapter's sync_fixed");
-    } else {
+    } else if clean.metadata != 0 {
         error!("FLUSH §13.1 clean-flush obligation VIOLATED — OBC2's C2 assumption does not hold here");
+    } else {
+        error!(
+            "FLUSH INDETERMINATE — expected exactly {=u32} data sector(s), saw {=u32}; the instrument disagrees with the experiment",
+            expected_clean_sectors, clean.total
+        );
     }
-    let _ = vmgr.close_file(file);
+    let _ = vmgr.close_file(file.raw());
 }
 
-/// Prints every recorded span with the structure it landed in, and returns how many of those
-/// sectors were single-copy metadata — FSInfo, the directory entry, the boot record or a FAT.
-fn report_spans(log: &Log, geometry: &VolumeGeometry, entry_lba: Option<u32>, tag: &str) -> u32 {
-    let mut metadata = 0;
-    log.with_spans(|spans| {
-        for span in spans {
+/// What one armed window wrote.
+#[derive(Clone, Copy)]
+struct Spans {
+    /// Sectors written in total.
+    total: u32,
+    /// How many of those were single-copy metadata — FSInfo, the directory entry, a FAT, the boot
+    /// record — rather than ordinary file data.
+    metadata: u32,
+}
+
+/// Prints every recorded span with the structure it landed in.
+///
+/// `None` means the bounded log overflowed and the spans are a subset of what was written, which is
+/// not evidence about anything: the sectors it dropped are exactly the ones a violation would hide
+/// in.
+fn report_spans(log: &Log, geometry: &VolumeGeometry, entry_lba: u32, tag: &str) -> Option<Spans> {
+    let mut spans = Spans { total: 0, metadata: 0 };
+    log.with_spans(|recorded| {
+        for span in recorded {
             for offset in 0..span.blocks {
                 let lba = span.start + offset;
                 let region = geometry.region(lba);
-                let is_entry = Some(lba) == entry_lba;
+                let is_entry = lba == entry_lba;
                 let name = match (region, is_entry) {
                     (_, true) => "DIRECTORY ENTRY",
                     (Region::FsInfo, _) => "FSINFO",
@@ -579,31 +641,42 @@ fn report_spans(log: &Log, geometry: &VolumeGeometry, entry_lba: Option<u32>, ta
                     (Region::BeforeVolume, _) => "BEFORE VOLUME",
                     (Region::BeyondVolume, _) => "BEYOND VOLUME",
                 };
+                spans.total += 1;
                 if !matches!((region, is_entry), (Region::Data, false)) {
-                    metadata += 1;
+                    spans.metadata += 1;
                 }
                 info!("{=str}: wrote LBA {=u32} — {=str}", tag, lba, name);
             }
         }
-        if spans.is_empty() {
+        if recorded.is_empty() {
             info!("{=str}: wrote no sectors at all", tag);
         }
     });
     if log.dropped() > 0 {
-        warn!("{=str}: {=u32} span(s) did not fit the log — the count above is a lower bound", tag, log.dropped());
+        error!("{=str}: {=u32} span(s) did not fit the log — this window proves nothing", tag, log.dropped());
+        return None;
     }
-    metadata
+    Some(spans)
 }
 
 /// The LBA of the sector holding `name`'s 32-byte directory entry, from the FAT layer's own view.
-fn directory_entry_lba(fat: &Fat, dir: RawDirectory, name: &str) -> Option<u32> {
+///
+/// `Err` is an enumeration that failed and `Ok(None)` a name that is not there; the caller must tell
+/// them apart from a real answer, because "I do not know which sector that is" silently classifies a
+/// directory-entry rewrite as an ordinary data write.
+fn directory_entry_lba(fat: &Fat, dir: RawDirectory, name: &str) -> Result<Option<u32>, ()> {
     let mut found = None;
-    let _ = fat.volume_manager().iterate_dir(dir, |entry| {
-        if found.is_none() && entry.name.base_name() == name.split('.').next().unwrap_or("").as_bytes() {
-            found = Some(entry.entry_block.0);
-        }
-    });
-    found
+    let base = name.split('.').next().unwrap_or("");
+    fat.volume_manager()
+        .iterate_dir(dir, |entry| {
+            if found.is_none() && entry.name.base_name() == base.as_bytes() {
+                found = Some(entry.entry_block.0);
+            }
+        })
+        .map_err(|error| {
+            warn!("FLUSH could not enumerate /OBC2 ({})", defmt::Debug2Format(&error));
+        })?;
+    Ok(found)
 }
 
 // ── 4. commit throughput ────────────────────────────────────────────────────────────────────────
@@ -614,7 +687,7 @@ fn directory_entry_lba(fat: &Fat, dir: RawDirectory, name: &str) -> Option<u32> 
 /// 512-byte gate write and a sync. The full-stride write beside it is the payload rate at the
 /// 16,384-byte granule the format's slots use, which is the number a card-resident catalog is
 /// budgeted against.
-fn throughput_phase(fat: &Fat, obc2: RawDirectory, geometry: &VolumeGeometry) {
+fn throughput_phase(fat: &Fat, log: &Log, obc2: RawDirectory, geometry: &VolumeGeometry) {
     let vmgr = fat.volume_manager();
     let Ok(journal) = fat.open_fixed(obc2, "COMMIT.JNL", JOURNAL_FILE_LEN as u32) else {
         error!("RATE  COMMIT.JNL is not at its full length");
@@ -623,16 +696,32 @@ fn throughput_phase(fat: &Fat, obc2: RawDirectory, geometry: &VolumeGeometry) {
     // SAFETY: sole borrow of the staging slot.
     let slot = unsafe { &mut *core::ptr::addr_of_mut!(SLOT) };
 
-    let started = Instant::now();
+    // Encoding is staged outside the stopwatch, deliberately. A commit's cost is the two card
+    // program cycles and the FAT chain walk between them; folding a CRC over 1,536 bytes of RAM into
+    // the same bracket would quietly inflate every figure below with work the card never sees.
     let mut worst = 0u64;
+    let mut elapsed = 0u64;
+    let mut written = 0u16;
     for index in 0..COMMITS {
-        let commit = Instant::now();
-        if !write_record(fat, journal, slot, index) {
+        if !encode_record(slot, index) {
+            error!("RATE  record {=u16} would not encode", index);
             break;
         }
-        worst = worst.max(us(commit));
+        let commit = Instant::now();
+        let ok = write_record(fat, journal, slot, index);
+        let took = us(commit);
+        if !ok {
+            break;
+        }
+        elapsed += took;
+        worst = worst.max(took);
+        written += 1;
     }
-    let elapsed = us(started);
+    if written != COMMITS {
+        error!("RATE  only {=u16} of {=u16} commits landed", written, COMMITS);
+        let _ = vmgr.close_file(journal.raw());
+        return;
+    }
     info!(
         "RATE  {=u16} gated commits (body 1,536 B + sync + gate 512 B + sync): {=u64} us total, {=u64} us mean, {=u64} us worst",
         COMMITS,
@@ -669,7 +758,14 @@ fn throughput_phase(fat: &Fat, obc2: RawDirectory, geometry: &VolumeGeometry) {
     // slot. The mount-shaped scan reads only the 2,048 bytes a record actually occupies — its
     // 1,536-byte body and its gate — which is what §12's "fixed number of bounded reads" costs if
     // the pad is left to a lazy check.
+    //
+    // The block counters are armed across both, so the reads-per-block ratio is measured rather than
+    // inferred: the fork's CMD25 batching is write-only, and "one device read per 512-byte block" is
+    // the claim that explains why a scan lands an order of magnitude under the transport's rate. A
+    // ratio of 1.00 confirms it; anything else means the fork gained a read fast path and these
+    // figures need re-reading.
     for (label, span) in [("whole-slot", SLOT_STRIDE), ("mount-shaped", JOURNAL_GATE_OFFSET + 512)] {
+        log.arm();
         let started = Instant::now();
         let mut read = 0u64;
         for index in 0..JOURNAL_SLOTS as u32 {
@@ -679,12 +775,22 @@ fn throughput_phase(fat: &Fat, obc2: RawDirectory, geometry: &VolumeGeometry) {
             read += span as u64;
         }
         let elapsed = us(started);
+        log.disarm();
+        let counters = log.counters();
         info!(
             "RATE  {=str} journal scan ({=u64} B over 256 slots): {=u64} ms ({=u64} kB/s)",
             label,
             read,
             elapsed / 1_000,
             rate(read, elapsed)
+        );
+        info!(
+            "RATE  {=str}: {=u32} device reads for {=u32} blocks = {=u64}/100 reads per block, {=u64} us per read",
+            label,
+            counters.reads,
+            counters.read_blocks,
+            u64::from(counters.reads) * 100 / u64::from(counters.read_blocks.max(1)),
+            elapsed / u64::from(counters.reads.max(1))
         );
     }
     info!(
@@ -702,18 +808,18 @@ fn throughput_phase(fat: &Fat, obc2: RawDirectory, geometry: &VolumeGeometry) {
         let offset = (JOURNAL_SLOTS as u32 - 1 - index) * SLOT_STRIDE as u32;
         let _ = fat.write_at(journal, offset, &slot.0);
     }
-    let _ = vmgr.close_file(journal);
+    let _ = vmgr.close_file(journal.raw());
 }
 
-/// Writes one journal record the way §6 orders it: the whole body, synchronized, and then the gate.
+/// Encodes one journal record into the staging slot, outside any stopwatch.
 ///
-/// The record is a retention record with an empty mutation — the smallest thing §6.1 admits without
-/// an operation identity — carrying sequence `index + 1` at physical slot `index`, so a later scan
-/// can check every slot against where it was found.
-fn write_record(fat: &Fat, journal: RawFile, slot: &mut Aligned<SLOT_STRIDE>, index: u16) -> bool {
+/// A retention record with an empty mutation — the smallest thing §6.1 admits without an operation
+/// identity — carrying sequence `index + 1` at physical slot `index`, so a later scan can check
+/// every record against where it was found.
+fn encode_record(slot: &mut Aligned<SLOT_STRIDE>, index: u16) -> bool {
     let body = JournalBody {
         store: BENCH_STORE,
-        epoch: 1,
+        epoch: BENCH_EPOCH,
         sequence: index as u64 + 1,
         slot: index,
         kind: RecordKind::Retention,
@@ -721,19 +827,27 @@ fn write_record(fat: &Fat, journal: RawFile, slot: &mut Aligned<SLOT_STRIDE>, in
         intent: [0u8; 32],
         mutation: Mutation { retained: Some(Change::Remove(GenerationId::new(index as u64))), ..Mutation::default() },
     };
-    if body.encode_slot_into(&mut slot.0).is_err() {
-        return false;
-    }
+    body.encode_slot_into(&mut slot.0).is_ok()
+}
+
+/// Writes an already-encoded journal record the way §6 orders it: the body, made durable, and then
+/// the gate that publishes it.
+fn write_record(fat: &Fat, journal: GatedFile, slot: &Aligned<SLOT_STRIDE>, index: u16) -> bool {
     let base = index as u32 * SLOT_STRIDE as u32;
-    let write = |offset: u32, bytes: &[u8]| -> Result<(), AdapterError> {
-        fat.write_at(journal, base + offset, bytes)?;
-        fat.sync_fixed(journal, JOURNAL_FILE_LEN as u32)
-    };
-    if let Err(error) = write(0, &slot.0[..JOURNAL_BODY_LEN]) {
+    let gate = base + JOURNAL_GATE_OFFSET as u32;
+    // The body first, refused if it would reach the gate — §6's two durability points must stay
+    // apart, and the gate sits immediately after the body.
+    if let Err(error) = fat
+        .write_body(journal, base, gate, &slot.0[..JOURNAL_BODY_LEN])
+        .and_then(|()| fat.sync_fixed(journal, JOURNAL_FILE_LEN as u32))
+    {
         error!("RATE  body write at slot {=u16} failed ({})", index, defmt::Debug2Format(&error));
         return false;
     }
-    if let Err(error) = write(JOURNAL_GATE_OFFSET as u32, &slot.0[JOURNAL_GATE_OFFSET..JOURNAL_GATE_OFFSET + 512]) {
+    if let Err(error) = fat
+        .write_gate(journal, gate, slot.0[JOURNAL_GATE_OFFSET..JOURNAL_GATE_OFFSET + 512].try_into().expect("512"))
+        .and_then(|()| fat.sync_fixed(journal, JOURNAL_FILE_LEN as u32))
+    {
         error!("RATE  gate write at slot {=u16} failed ({})", index, defmt::Debug2Format(&error));
         return false;
     }
@@ -742,87 +856,135 @@ fn write_record(fat: &Fat, journal: RawFile, slot: &mut Aligned<SLOT_STRIDE>, in
 
 // ── 5. recovery across resets ───────────────────────────────────────────────────────────────────
 
-/// Scans all 256 journal slots and reports the decision §6.3's replay would make.
+/// What one all-slot journal scan observed.
+struct Scan {
+    /// The decision `obc2::recovery::choose` made from those observations.
+    decision: Decision,
+    /// How many leading slots it would replay, when it decided to mount at all.
+    replay: usize,
+    /// Valid records belonging to some other store. The bench must never write into one.
+    foreign: usize,
+}
+
+/// Scans all 256 journal slots and hands them to §6.3's own decision function.
 ///
-/// Returns the length of the contiguous valid prefix. The scan is deliberately over *every* slot
-/// rather than stopping at the first invalid one, because §6.3's all-slot scan is what "turns any
-/// loss that does occur into a fail-closed mount rather than a silent rollback": a valid slot
-/// beyond the prefix is a gap, and a gap is corruption.
-fn scan_journal(fat: &Fat, journal: RawFile) -> usize {
+/// The scan is deliberately over *every* slot rather than stopping at the first invalid one, because
+/// §6.3's all-slot scan is what "turns any loss that does occur into a fail-closed mount rather than
+/// a silent rollback".
+///
+/// The decision itself is [`obc2::recovery::choose`], not a rule restated here. A bench that
+/// reimplemented the replay arithmetic would agree with itself no matter what the kernel does, which
+/// is the one thing an on-glass check must not do: the point is to run the shipping decision against
+/// bytes a real card really returned.
+///
+/// The checkpoint half is synthesized, and that is the honest limit of this run. This bench writes
+/// no `CAT0.CHK` — the catalog codec is the store's job, not the adapter's — so `choose` is handed
+/// the checkpoint an initialized store would have (epoch 1, through-sequence 0) and decides the
+/// journal half from real observations. The checkpoint-selection half of §6.3 is therefore *not*
+/// exercised here.
+fn scan_journal(fat: &Fat, journal: GatedFile) -> Scan {
     // SAFETY: sole borrow of the staging slot.
     let slot = unsafe { &mut *core::ptr::addr_of_mut!(SLOT) };
     let started = Instant::now();
-    let mut prefix = 0usize;
-    let mut prefix_open = true;
-    let mut strays = 0usize;
-    let mut mismatched = 0usize;
-    for index in 0..JOURNAL_SLOTS {
+    let mut slots: [Option<SlotObservation>; JOURNAL_SLOTS] = [None; JOURNAL_SLOTS];
+    let mut foreign = 0usize;
+    let mut unreadable = 0usize;
+    for (index, observation) in slots.iter_mut().enumerate() {
         if fat.read_at(journal, index as u32 * SLOT_STRIDE as u32, &mut slot.0).is_err() {
             error!("SCAN  slot {=usize} unreadable", index);
-            prefix_open = false;
+            unreadable += 1;
             continue;
         }
-        match JournalBody::validate_slot(&slot.0, index as u16) {
-            Ok(body) => {
-                if body.store != BENCH_STORE || body.sequence != index as u64 + 1 {
-                    mismatched += 1;
-                }
-                if prefix_open {
-                    prefix = index + 1;
-                } else {
-                    strays += 1;
-                }
+        if let Ok(body) = JournalBody::validate_slot(&slot.0, index as u16) {
+            if body.store != BENCH_STORE {
+                foreign += 1;
             }
-            Err(_) => prefix_open = false,
+            *observation = Some(SlotObservation { store: body.store, epoch: body.epoch, sequence: body.sequence });
         }
     }
+    let checkpoint = CheckpointObservation {
+        store: BENCH_STORE,
+        epoch: BENCH_EPOCH,
+        through_sequence: 0,
+        next_generation: 0,
+        body_crc: 0,
+    };
+    let decision = choose(&[Some(checkpoint), None], &slots);
+    let replay = match decision {
+        Decision::Mount { replay, .. } | Decision::MountReadOnly { replay, .. } => replay,
+        _ => 0,
+    };
     info!(
-        "SCAN  256 slots in {=u64} ms: contiguous valid prefix {=usize}, stray valid slots beyond it {=usize}, sequence/store mismatches {=usize}",
+        "SCAN  256 slots in {=u64} ms: §6.3 decided {}, replay {=usize}, foreign records {=usize}, unreadable {=usize}",
         ms(started),
-        prefix,
-        strays,
-        mismatched
+        defmt::Debug2Format(&decision),
+        replay,
+        foreign,
+        unreadable
     );
-    if strays != 0 || mismatched != 0 {
-        error!("SCAN  the journal is NOT a clean prefix — §6.3 would fail this mount closed");
+    if !matches!(decision, Decision::Mount { .. }) {
+        error!("SCAN  §6.3 would NOT mount this journal cleanly");
     }
-    prefix
+    Scan { decision, replay, foreign }
 }
 
 /// The recovery cycle: verify what the last run left, append exactly one record, and prove it.
-fn append_and_verify(fat: &Fat, obc2: RawDirectory, valid: usize) {
+fn append_and_verify(fat: &Fat, obc2: RawDirectory, before: Scan) {
     let vmgr = fat.volume_manager();
     let Ok(journal) = fat.open_fixed(obc2, "COMMIT.JNL", JOURNAL_FILE_LEN as u32) else {
         error!("RCVR  COMMIT.JNL is not at its full length");
         return;
     };
+    let valid = before.replay;
+    // Never write into a store that is not this bench's. A card carrying another store's records is
+    // someone's real data, and the fact that this binary is destructive about *its own* tree is not
+    // permission to append to a stranger's journal.
+    if before.foreign != 0 {
+        error!("RCVR  REFUSING to append: {=usize} record(s) belong to another store", before.foreign);
+        let _ = vmgr.close_file(journal.raw());
+        return;
+    }
+    if !matches!(before.decision, Decision::Mount { .. }) {
+        error!("RCVR  REFUSING to append: §6.3 did not mount this journal, so an append would bury the evidence");
+        let _ = vmgr.close_file(journal.raw());
+        return;
+    }
     if valid >= JOURNAL_SLOTS {
         error!("RCVR  the journal is full");
-        let _ = vmgr.close_file(journal);
+        let _ = vmgr.close_file(journal.raw());
         return;
     }
     // SAFETY: sole borrow of the staging slot.
     let slot = unsafe { &mut *core::ptr::addr_of_mut!(SLOT) };
+    if !encode_record(slot, valid as u16) {
+        error!("RCVR  the record would not encode");
+        let _ = vmgr.close_file(journal.raw());
+        return;
+    }
     let started = Instant::now();
     let appended = write_record(fat, journal, slot, valid as u16);
     let commit_us = us(started);
     if !appended {
         error!("RCVR  the append failed");
-        let _ = vmgr.close_file(journal);
+        let _ = vmgr.close_file(journal.raw());
         return;
     }
     let after = scan_journal(fat, journal);
-    if after == valid + 1 {
+    if after.replay == valid + 1 && matches!(after.decision, Decision::Mount { .. }) {
         info!(
-            "RCVR  OK — recovery found {=usize}, appended one in {=u64} us, and now finds {=usize}",
-            valid, commit_us, after
+            "RCVR  OK — §6.3 replayed {=usize}, one record was appended in {=u64} us, and it now replays {=usize}",
+            valid, commit_us, after.replay
         );
     } else {
-        error!("RCVR  MISMATCH — expected {=usize} durable records after the append, found {=usize}", valid + 1, after);
+        error!(
+            "RCVR  MISMATCH — expected a replay of {=usize} after the append, got {=usize}",
+            valid + 1,
+            after.replay
+        );
     }
     info!("RCVR  soft reset only: `probe-rs reset` never removed the card's supply, so this says");
     info!("RCVR  nothing about §1.1 tearing. Reset and run again to add another cycle.");
-    let _ = vmgr.close_file(journal);
+    let _ = vmgr.close_file(journal.raw());
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────────────

@@ -57,6 +57,12 @@
 //! enforces: **never call `flush_file` or `close_file` on a gated file after initialization.** A
 //! gated file is opened once at mount and closed at unmount, and the one directory-entry write that
 //! close performs happens when the store is being torn down rather than three times per commit.
+//!
+//! A negative law in prose is one autocomplete away from being broken, so it is also expressed in
+//! the types: [`GatedFile`] is what the adapter hands out and it cannot be passed to the volume
+//! manager without [`GatedFile::raw`]. The two remaining ways past it — that accessor and
+//! [`Adapter::volume_manager`] — carry the law on their own doc comments, and both are worth
+//! grepping for during review.
 
 use embedded_sdmmc::{BlockDevice, Mode, RawDirectory, RawFile, TimeSource, VolumeManager};
 
@@ -68,10 +74,36 @@ use super::limits::{GATE_LEN, SECTOR};
 /// repair. `ShortWrite` and `LengthChanged` are the two §13.1 invents: they exist because the fork
 /// reports a clamped write as success, so a length that is not exactly the intended one is the only
 /// evidence.
+///
+/// ## Three of them are a mount classification, not just a failure
+///
+/// §12's table turns a failure into a mount class, and the three classes it needs cannot be
+/// recovered from one undifferentiated I/O error: [`CorruptStore`](Self::CorruptStore) is the
+/// "lost single-copy FAT structure" that mounts recovery-failed and read-only,
+/// [`Media`](Self::Media) is a card that stopped answering — a different conversation with the
+/// rider — and [`CallerBug`](Self::CallerBug) is neither, because it means this code asked for
+/// something incoherent and no mount class should ever be derived from it. Collapsing them would
+/// make a §12 mount decision unimplementable above this seam, so the split is here rather than in
+/// the store that needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterError {
-    /// The block device or the filesystem failed.
-    Io,
+    /// The block device failed: the card stopped answering, or answered with an error.
+    ///
+    /// §12's mount classification treats this as a medium fault rather than a store fault — the
+    /// store may be perfectly intact on a card that is no longer readable.
+    Media,
+    /// The filesystem itself is not coherent: a malformed BPB, a bad cluster, a FAT chain that runs
+    /// into free space, or a volume that is no longer there.
+    ///
+    /// §1.1: losing a single-copy FAT structure "is an unrecoverable store fault … and mounts
+    /// recovery-failed and read-only with evidence preserved". This is how that reaches the mount.
+    CorruptStore,
+    /// This code asked the filesystem for something incoherent — a stale handle, a file opened
+    /// twice, a re-entrant call. Never a fact about the card, so never a mount class.
+    ///
+    /// It carries a `debug_assert` at the point of translation, because in a debug build the useful
+    /// behaviour is to stop at the mistake rather than to propagate a typed error nobody will read.
+    CallerBug,
     /// The file or directory does not exist.
     NotFound,
     /// The file already exists and the caller asked for an exclusive create.
@@ -88,6 +120,16 @@ pub enum AdapterError {
     OutOfRange,
     /// A gate or record write was not sector-aligned, so gate isolation could not be guaranteed.
     Misaligned,
+    /// A record body write would have reached into the gate sector that publishes it.
+    ///
+    /// The gate is written last and alone, so a body write that overlapped it would publish a record
+    /// the same instant it wrote it — collapsing the two durability points §6 keeps apart.
+    GateOverlap {
+        /// Where the body write would have ended.
+        body_end: u32,
+        /// Where its gate begins.
+        gate: u32,
+    },
     /// §13.1's write completeness: the write reported success having moved fewer bytes.
     ShortWrite {
         /// The offset the write was expected to end at.
@@ -104,17 +146,81 @@ pub enum AdapterError {
     },
 }
 
+/// Translates the fork's error into the classes §12 needs, exhaustively.
+///
+/// Deliberately without a catch-all arm: a new variant in the fork should fail this build rather
+/// than land silently in whichever class the wildcard happened to name.
 fn map<E: core::fmt::Debug>(error: embedded_sdmmc::Error<E>) -> AdapterError {
     use embedded_sdmmc::Error as E;
     match error {
         E::NotFound => AdapterError::NotFound,
-        E::FileAlreadyExists => AdapterError::AlreadyExists,
+        E::FileAlreadyExists | E::DirAlreadyExists => AdapterError::AlreadyExists,
         E::DiskFull | E::NotEnoughSpace => AdapterError::Full,
         E::ReadOnly => AdapterError::ReadOnly,
         E::TooManyOpenFiles | E::TooManyOpenDirs | E::TooManyOpenVolumes => AdapterError::Handles,
         E::FilenameError(_) => AdapterError::BadName,
         E::InvalidOffset | E::EndOfFile => AdapterError::OutOfRange,
-        _ => AdapterError::Io,
+
+        // The card, not the store.
+        E::DeviceError(_) => AdapterError::Media,
+
+        // The store, not the card. `ConversionError` and `AllocationError` join these because the
+        // fork raises them when on-disk values will not fit the arithmetic the format guarantees —
+        // an implausible cluster number or a chain the allocator could not follow — which is a
+        // statement about the volume rather than about the request.
+        E::FormatError(_)
+        | E::BadCluster
+        | E::UnterminatedFatChain
+        | E::NoSuchVolume
+        | E::BadBlockSize(_)
+        | E::ConversionError
+        | E::AllocationError => AdapterError::CorruptStore,
+
+        // Neither. Every one of these is reachable only by asking for something incoherent: a handle
+        // from a closed file, a second open of an open object, a call made from inside a directory
+        // iterator. `Unsupported` is here too — it means this code asked the fork to do something it
+        // does not implement, which is a mistake in the caller and not a fact about the medium.
+        E::BadHandle
+        | E::FileAlreadyOpen
+        | E::DirAlreadyOpen
+        | E::OpenedDirAsFile
+        | E::OpenedFileAsDir
+        | E::DeleteDirAsFile
+        | E::VolumeStillInUse
+        | E::VolumeAlreadyOpen
+        | E::LockError
+        | E::Unsupported => {
+            debug_assert!(false, "OBC2 adapter misuse: the FAT layer refused an incoherent request");
+            AdapterError::CallerBug
+        }
+    }
+}
+
+/// An open handle to a fixed-length gated OBC2 file.
+///
+/// It exists to make the module's one law hard to break by accident. The law is negative — *never
+/// `flush_file` or `close_file` a gated file after initialization* — and a negative law expressed
+/// only in prose is one autocomplete away from being broken: `vmgr.flush_file(file)` is the obvious
+/// call, it compiles, it looks like a sync, and it silently rewrites FSInfo and the directory entry.
+///
+/// A `GatedFile` cannot be passed to the volume manager at all. Reaching the raw handle takes
+/// [`raw`](Self::raw), which is a deliberate, greppable act with the law restated on it. That is not
+/// containment in the type-system sense — [`Adapter::volume_manager`] still exists — but it moves
+/// the mistake from "the natural thing to write" to "a thing you had to mean".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedFile(RawFile);
+
+impl GatedFile {
+    /// The underlying handle.
+    ///
+    /// **Only for closing the file at unmount.** §13.1: an adapter whose flush "unconditionally
+    /// rewrites FSInfo and the 32-byte directory entry puts a single-copy sector at risk on every
+    /// sync"; the fork's `close_file` flushes, and its `flush_file` never clears the dirty flag that
+    /// `write` sets. So `close_file` on a gated file costs exactly one directory-entry write, which
+    /// is acceptable while the store is being torn down and at no other time. Never hand this to
+    /// `flush_file`; [`Adapter::sync_fixed`] is the sync a gated file has.
+    pub fn raw(self) -> RawFile {
+        self.0
     }
 }
 
@@ -145,6 +251,13 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
 
     /// The volume manager underneath, for the operations §13.1 does not constrain (directory
     /// iteration, deletion, opening a `GEN` payload for streaming).
+    ///
+    /// ⚠️ **The escape hatch, and the module's law applies through it.** Never call `flush_file` or
+    /// `close_file` on a gated `/OBC2` file after initialization: both write the directory entry and
+    /// FSInfo — the fork's dirty flag is set by every `write` and cleared by nothing — and that puts
+    /// the single-copy sector holding every `/OBC2` entry at risk on a path §13.1 requires to write
+    /// no metadata at all. A [`GatedFile`] cannot be passed here without [`GatedFile::raw`], which
+    /// is the seam to grep for; unrelated files (a `GEN` payload, a staged import) are unaffected.
     pub fn volume_manager(&self) -> &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES> {
         self.vmgr
     }
@@ -160,8 +273,8 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     }
 
     /// The file's recorded length.
-    pub fn length(&self, file: RawFile) -> Result<u32, AdapterError> {
-        self.vmgr.file_length(file).map_err(map)
+    pub fn length(&self, file: GatedFile) -> Result<u32, AdapterError> {
+        self.vmgr.file_length(file.raw()).map_err(map)
     }
 
     /// Reads `buf.len()` bytes at `offset`, bounded by the recorded length.
@@ -169,14 +282,16 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// One SD read returns at most a block, so this loops until the buffer is full; a zero-length
     /// read before then is EOF, which the bound check above should already have excluded and which
     /// is therefore reported as an I/O failure rather than as a short read.
-    pub fn read_at(&self, file: RawFile, offset: u32, buf: &mut [u8]) -> Result<(), AdapterError> {
-        let end = self.end_of(file, offset, buf.len())?;
-        let _ = end;
-        self.vmgr.file_seek_from_start(file, offset).map_err(map)?;
+    pub fn read_at(&self, file: GatedFile, offset: u32, buf: &mut [u8]) -> Result<(), AdapterError> {
+        self.end_of(file, offset, buf.len())?;
+        self.vmgr.file_seek_from_start(file.raw(), offset).map_err(map)?;
         let mut done = 0;
         while done < buf.len() {
-            match self.vmgr.read(file, &mut buf[done..]) {
-                Ok(0) => return Err(AdapterError::Io),
+            match self.vmgr.read(file.raw(), &mut buf[done..]) {
+                // The bound check above proved these bytes are inside the recorded length, so a
+                // zero-length read means the cluster chain ends before the length says it does —
+                // a lost FAT structure, which is §1.1's unrecoverable store fault.
+                Ok(0) => return Err(AdapterError::CorruptStore),
                 Ok(read) => done += read,
                 Err(error) => return Err(map(error)),
             }
@@ -190,12 +305,12 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// write is bounded against the recorded length *before* the seek, so the fork can never be
     /// asked to extend the file, and the resulting offset is compared against the intended one
     /// afterwards, because the fork reports a clamped write as `Ok(())`.
-    pub fn write_at(&self, file: RawFile, offset: u32, bytes: &[u8]) -> Result<(), AdapterError> {
+    pub fn write_at(&self, file: GatedFile, offset: u32, bytes: &[u8]) -> Result<(), AdapterError> {
         let end = self.end_of(file, offset, bytes.len())?;
         let before = self.length(file)?;
-        self.vmgr.file_seek_from_start(file, offset).map_err(map)?;
-        self.vmgr.write(file, bytes).map_err(map)?;
-        let reached = self.vmgr.file_offset(file).map_err(map)?;
+        self.vmgr.file_seek_from_start(file.raw(), offset).map_err(map)?;
+        self.vmgr.write(file.raw(), bytes).map_err(map)?;
+        let reached = self.vmgr.file_offset(file.raw()).map_err(map)?;
         if reached != end {
             return Err(AdapterError::ShortWrite { wanted: end, reached });
         }
@@ -213,11 +328,26 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// reading it only when the write starts at a block boundary and covers the block, so the
     /// alignment is the property being checked here — a misaligned gate offset would silently become
     /// a read-modify-write and gate invalidation would stop being all-or-nothing.
-    pub fn write_gate(&self, file: RawFile, offset: u32, gate: &[u8; GATE_LEN]) -> Result<(), AdapterError> {
+    pub fn write_gate(&self, file: GatedFile, offset: u32, gate: &[u8; GATE_LEN]) -> Result<(), AdapterError> {
         if !(offset as usize).is_multiple_of(SECTOR) {
             return Err(AdapterError::Misaligned);
         }
         self.write_at(file, offset, gate)
+    }
+
+    /// Writes a record body, refusing a write that would reach the gate sector that publishes it.
+    ///
+    /// §6 keeps two durability points apart: the body is written and made durable, and only then
+    /// does the gate say the body became a record. A body write that ran into its own gate offset
+    /// would collapse them — and, because the gate sits immediately after the body in every record
+    /// shape §4 tabulates, an off-by-one in a body length is exactly the arithmetic that does it.
+    pub fn write_body(&self, file: GatedFile, offset: u32, gate_offset: u32, bytes: &[u8]) -> Result<(), AdapterError> {
+        let count = u32::try_from(bytes.len()).map_err(|_| AdapterError::OutOfRange)?;
+        let body_end = offset.checked_add(count).ok_or(AdapterError::OutOfRange)?;
+        if offset <= gate_offset && body_end > gate_offset {
+            return Err(AdapterError::GateOverlap { body_end, gate: gate_offset });
+        }
+        self.write_at(file, offset, bytes)
     }
 
     /// The clean flush of §13.1: synchronizing a fixed-length gated file.
@@ -230,7 +360,7 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     ///
     /// `expected` is the length §3 fixes for the file. A mismatch means something extended a file
     /// that must never grow, which is a store fault rather than a sync failure.
-    pub fn sync_fixed(&self, file: RawFile, expected: u32) -> Result<(), AdapterError> {
+    pub fn sync_fixed(&self, file: GatedFile, expected: u32) -> Result<(), AdapterError> {
         let actual = self.length(file)?;
         if actual != expected {
             return Err(AdapterError::LengthChanged { expected, actual });
@@ -240,11 +370,17 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
 
     /// The other sync: the one that *does* have metadata to persist.
     ///
-    /// Only initialization and file creation reach it — the points where a recorded length actually
-    /// changed and the directory entry has to catch up. It rewrites FSInfo and the directory entry,
-    /// which is correct there and forbidden afterwards.
-    pub fn sync_metadata(&self, file: RawFile) -> Result<(), AdapterError> {
-        self.vmgr.flush_file(file).map_err(map)
+    /// ⚠️ **Initialization only.** This is the fork's `flush_file`: it rewrites FSInfo and
+    /// read-modify-writes the 32-byte directory entry, every time, because the dirty flag it is
+    /// gated on is set by every `write` and cleared by nothing. That is correct exactly once per
+    /// file — when [`create_fixed`](Self::create_fixed) has just changed the recorded length and the
+    /// directory entry has to catch up — and forbidden on every path afterwards. §13.1: an adapter
+    /// whose flush unconditionally rewrites those sectors "does not satisfy this contract", and a
+    /// commit performs three syncs, so calling this per sync would risk the sector holding all of
+    /// `/OBC2`'s directory entries three times per commit. [`sync_fixed`](Self::sync_fixed) is the
+    /// sync a gated file has after initialization; it writes nothing, which is the point.
+    pub fn sync_metadata(&self, file: GatedFile) -> Result<(), AdapterError> {
+        self.vmgr.flush_file(file.raw()).map_err(map)
     }
 
     /// Creates a fixed-size OBC2 file at its full length in zeros (§13.1, full-length
@@ -261,34 +397,39 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
         name: &str,
         len: u32,
         scratch: &mut [u8],
-    ) -> Result<RawFile, AdapterError> {
-        if scratch.is_empty() {
-            return Err(AdapterError::Misaligned);
+    ) -> Result<GatedFile, AdapterError> {
+        // A granule that is not a whole number of sectors makes every write after the first one
+        // sector-misaligned, which drops the fork onto its read-modify-write path and quietly costs
+        // a read per block for the whole 4.6 MB zero-fill. Zero is worse: it is an infinite loop.
+        // Both are mistakes in this code rather than facts about the card.
+        if scratch.is_empty() || !scratch.len().is_multiple_of(SECTOR) {
+            debug_assert!(false, "the zero-fill granule must be a nonzero multiple of 512 bytes");
+            return Err(AdapterError::CallerBug);
         }
         scratch.fill(0);
-        let file = self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteCreateOrTruncate).map_err(map)?;
+        let file = GatedFile(self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteCreateOrTruncate).map_err(map)?);
         match self.fill(file, len, scratch) {
             Ok(()) => Ok(file),
             Err(error) => {
                 // A failed creation leaves a short file, which §12's pre-birth rules classify and
                 // repair; closing the handle is all this level can do about it.
-                let _ = self.vmgr.close_file(file);
+                let _ = self.vmgr.close_file(file.raw());
                 Err(error)
             }
         }
     }
 
-    fn fill(&self, file: RawFile, len: u32, scratch: &mut [u8]) -> Result<(), AdapterError> {
+    fn fill(&self, file: GatedFile, len: u32, scratch: &mut [u8]) -> Result<(), AdapterError> {
         let granule = u32::try_from(scratch.len()).map_err(|_| AdapterError::OutOfRange)?;
         // Returns short rather than failing when the volume is nearly full, so the length check
         // below is what actually reports the failure.
-        self.vmgr.preallocate(file, len).map_err(map)?;
-        self.vmgr.file_seek_from_start(file, 0).map_err(map)?;
+        self.vmgr.preallocate(file.raw(), len).map_err(map)?;
+        self.vmgr.file_seek_from_start(file.raw(), 0).map_err(map)?;
         let mut written = 0u32;
         while written < len {
             let chunk = granule.min(len - written) as usize;
-            self.vmgr.write(file, &scratch[..chunk]).map_err(map)?;
-            let reached = self.vmgr.file_offset(file).map_err(map)?;
+            self.vmgr.write(file.raw(), &scratch[..chunk]).map_err(map)?;
+            let reached = self.vmgr.file_offset(file.raw()).map_err(map)?;
             let wanted = written + chunk as u32;
             if reached != wanted {
                 return Err(AdapterError::ShortWrite { wanted, reached });
@@ -308,18 +449,26 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// §13.1: "no offset beyond the recorded length is addressable, so a preallocated-but-short file
     /// cannot be slot-addressed at all". A store that mounted such a file and started addressing
     /// slots in it would fail at an arbitrary later offset instead of here.
-    pub fn open_fixed(&self, parent: RawDirectory, name: &str, len: u32) -> Result<RawFile, AdapterError> {
-        let file = self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteAppend).map_err(map)?;
-        let actual = self.length(file).unwrap_or(0);
+    pub fn open_fixed(&self, parent: RawDirectory, name: &str, len: u32) -> Result<GatedFile, AdapterError> {
+        let file = GatedFile(self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteAppend).map_err(map)?);
+        // A failure here is a medium or store fault and must not be flattened into "length zero",
+        // which would report a readable-but-truncated file and an unreadable one identically.
+        let actual = match self.length(file) {
+            Ok(actual) => actual,
+            Err(error) => {
+                let _ = self.vmgr.close_file(file.raw());
+                return Err(error);
+            }
+        };
         if actual != len {
-            let _ = self.vmgr.close_file(file);
+            let _ = self.vmgr.close_file(file.raw());
             return Err(AdapterError::LengthChanged { expected: len, actual });
         }
         Ok(file)
     }
 
     /// The end offset of a request, refused when it would pass the recorded length.
-    fn end_of(&self, file: RawFile, offset: u32, count: usize) -> Result<u32, AdapterError> {
+    fn end_of(&self, file: GatedFile, offset: u32, count: usize) -> Result<u32, AdapterError> {
         let count = u32::try_from(count).map_err(|_| AdapterError::OutOfRange)?;
         let end = offset.checked_add(count).ok_or(AdapterError::OutOfRange)?;
         if end > self.length(file)? {
@@ -381,7 +530,7 @@ mod tests {
         }
 
         /// One 16,384-byte gated file at its full length — the state every rule below assumes.
-        fn gated_file(&self, name: &str) -> RawFile {
+        fn gated_file(&self, name: &str) -> GatedFile {
             let mut scratch = [0u8; 4_096];
             self.fat().create_fixed(self.obc2, name, SLOT_FILE_LEN as u32, &mut scratch).expect("created")
         }
@@ -547,12 +696,81 @@ mod tests {
         let store = Store::mounted();
         let fat = store.fat();
         let file = store.gated_file("RIDE.ACT");
-        store.vmgr.close_file(file).unwrap();
+        store.vmgr.close_file(file.raw()).unwrap();
         assert_eq!(
             fat.open_fixed(store.obc2, "RIDE.ACT", RIDE_FILE_LEN as u32),
             Err(AdapterError::LengthChanged { expected: 262_144, actual: SLOT_FILE_LEN as u32 })
         );
         assert!(fat.open_fixed(store.obc2, "RIDE.ACT", SLOT_FILE_LEN as u32).is_ok());
+    }
+
+    /// §6's two durability points stay apart: a body write that would reach its own gate sector is
+    /// refused, and the gate offset itself is still writable as a gate.
+    #[test]
+    fn a_body_write_may_not_reach_its_gate() {
+        let store = Store::mounted();
+        let fat = store.fat();
+        let file = store.gated_file("ARM0.HND");
+        let gate = SMALL_GATE_OFFSET as u32;
+
+        // One byte too long, and one byte too long from an earlier start: both reach the gate.
+        assert_eq!(
+            fat.write_body(file, 0, gate, &[0xA5; SMALL_BODY_LEN + 1]),
+            Err(AdapterError::GateOverlap { body_end: gate + 1, gate })
+        );
+        assert_eq!(
+            fat.write_body(file, 256, gate, &[0xA5; SMALL_BODY_LEN]),
+            Err(AdapterError::GateOverlap { body_end: gate + 256, gate })
+        );
+        // Exactly up to the gate is the shape every record has.
+        assert_eq!(fat.write_body(file, 0, gate, &[0xA5; SMALL_BODY_LEN]), Ok(()));
+        // And a write that starts past the gate is a different sector's business, not this guard's.
+        assert_eq!(fat.write_body(file, gate + 512, gate, &[0u8; 512]), Ok(()));
+    }
+
+    /// m9: a zero-length or ragged zero-fill granule is a mistake in this code, not a card fault.
+    ///
+    /// Zero loops forever; a granule that is not a whole number of sectors drops every write after
+    /// the first onto the fork's read-modify-write path, which costs a read per block for the whole
+    /// 4.6 MB initialization. Both are refused as [`AdapterError::CallerBug`] — and the
+    /// `debug_assert` that comes with it is why this test runs in release only.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn a_ragged_zero_fill_granule_is_refused() {
+        let store = Store::mounted();
+        let fat = store.fat();
+        let mut empty: [u8; 0] = [];
+        assert_eq!(
+            fat.create_fixed(store.obc2, "ARM0.HND", SLOT_FILE_LEN as u32, &mut empty),
+            Err(AdapterError::CallerBug)
+        );
+        let mut ragged = [0u8; 700];
+        assert_eq!(
+            fat.create_fixed(store.obc2, "ARM0.HND", SLOT_FILE_LEN as u32, &mut ragged),
+            Err(AdapterError::CallerBug)
+        );
+    }
+
+    /// M3: the fork's errors reach §12 as the three classes its mount table needs.
+    ///
+    /// Checked through the public surface rather than by calling `map` directly, because what
+    /// matters is that a store above this seam can tell a card that stopped answering from a volume
+    /// that is not coherent — the difference between "the card is gone" and "mount recovery-failed,
+    /// read-only, preserve the evidence".
+    #[test]
+    fn filesystem_failures_arrive_as_the_classes_section_12_classifies_on() {
+        let store = Store::mounted();
+        let fat = store.fat();
+        // A name no FAT 8.3 encoder accepts.
+        assert_eq!(
+            fat.open_fixed(store.obc2, "not a valid 8.3 name", SLOT_FILE_LEN as u32),
+            Err(AdapterError::BadName)
+        );
+        // A file that is not there.
+        assert_eq!(fat.open_fixed(store.obc2, "ABSENT.BIN", SLOT_FILE_LEN as u32), Err(AdapterError::NotFound));
+        // And the classes are distinct values, which is the whole point of the split.
+        assert_ne!(AdapterError::Media, AdapterError::CorruptStore);
+        assert_ne!(AdapterError::CorruptStore, AdapterError::CallerBug);
     }
 
     /// The fixed files of §3, created at their stated lengths and clean-flushable afterwards.
@@ -565,7 +783,7 @@ mod tests {
             let file = fat.create_fixed(store.obc2, name, len, &mut scratch).expect("created");
             assert_eq!(fat.length(file).unwrap(), len, "{name}");
             assert_eq!(fat.sync_fixed(file, len), Ok(()), "{name}");
-            store.vmgr.close_file(file).unwrap();
+            store.vmgr.close_file(file.raw()).unwrap();
         }
     }
 }

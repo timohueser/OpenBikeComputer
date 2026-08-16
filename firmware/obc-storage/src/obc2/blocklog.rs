@@ -11,6 +11,17 @@
 //! synthetic volume and on the board against the real card. Recording is off until armed and the
 //! entry buffer is bounded: an overrun is counted rather than dropped silently, because "the log
 //! filled up" and "nothing else was written" are opposite conclusions.
+//!
+//! ## Why it is in the device crate rather than behind a feature
+//!
+//! It is compiled into `obc-storage` unconditionally, which looks like instrumentation shipping in
+//! the product and is not: nothing in the firmware constructs a `WriteLog`, so the linker discards
+//! every byte of it from the device image — the same reason the rest of this crate's unused generic
+//! code costs nothing. A `std`/feature gate was the alternative and was rejected, because the whole
+//! value of this type is that the board bench and the host tests measure the clean-flush obligation
+//! with *the same instrument*; a gate that excluded it from the board would leave the one
+//! measurement §13.1 actually needs unable to run where it matters. If it ever gains state the
+//! device pays for, that trade changes.
 
 use core::cell::RefCell;
 
