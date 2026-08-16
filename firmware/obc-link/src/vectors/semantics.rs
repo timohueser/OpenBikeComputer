@@ -47,7 +47,7 @@ pub struct Body {
 }
 
 impl Body {
-    /// An empty body — what the four empty-payload messages carry.
+    /// An empty body — what the five empty-payload messages carry.
     pub fn new() -> Self {
         Body { fields: Vec::new() }
     }
