@@ -507,6 +507,8 @@ describe("storage vectors are reconstructable outside Rust", () => {
             transcriptCount: number;
             transcripts: {
                 name: string;
+                note: string;
+                commit: boolean;
                 stepCount: number;
                 cutPoints: number;
                 steps: { op: number; file: string; kind: string; offset: number; length: number }[];
@@ -521,26 +523,36 @@ describe("storage vectors are reconstructable outside Rust", () => {
             // Every operation is cut at three positions: before it reaches the card, during it, and
             // after it returns.
             expect(transcript.cutPoints, where).toBe(transcript.stepCount * 3);
-            // A commit path admits more than one recovered state — that is what its cut points
-            // are for. A fault-mode transcript is a single refused operation with exactly one
-            // outcome, and holding it to the same rule would be wrong rather than strict.
-            expect(transcript.admissibleOutcomes.length, where).toBeGreaterThan(
-                transcript.stepCount > 1 ? 1 : 0,
-            );
+            expect(typeof transcript.commit, `${where}: no commit flag`).toBe("boolean");
             transcript.steps.forEach((step, index) => {
                 expect(step.op, `${where} step ${index}`).toBe(index + 1);
-                expect(["write", "sync"], `${where} step ${index}`).toContain(step.kind);
-                if (step.kind === "sync") {
+                expect(["write", "sync", "truncate"], `${where} step ${index}`).toContain(step.kind);
+                // Only a write addresses bytes. A sync and a truncation carry neither an offset nor
+                // a length, so a nonzero one is a producer bug rather than a shape to interpret.
+                if (step.kind !== "write") {
                     expect(step.offset, `${where} step ${index}`).toBe(0);
                     expect(step.length, `${where} step ${index}`).toBe(0);
                 }
             });
-            // A commit path ends at a sync: the gate is durable only once it returns. A single-step
-            // fault transcript ends at the write that failed, which is the whole point of it.
-            if (transcript.stepCount > 1) {
+            // The rule is declared, not inferred. A commit path's last operation *is* its durability
+            // point, so it ends at the sync that returns and admits more than one recovered state —
+            // that is what its cut points are for. Two shapes are not commit paths: a refused
+            // operation that ends the sequence where it failed, and a sequence that deliberately
+            // runs one step past its durability point to show what may only happen after it.
+            // Inferring this from the step count held only while every non-commit sequence happened
+            // to be one step long.
+            if (transcript.commit) {
                 expect(transcript.steps[transcript.steps.length - 1].kind, where).toBe("sync");
+                expect(transcript.admissibleOutcomes.length, where).toBeGreaterThan(1);
+            } else {
+                expect(transcript.admissibleOutcomes.length, where).toBeGreaterThan(0);
+                // Opting out is a claim about the sequence, so it has to be argued in the note.
+                expect(transcript.note?.length ?? 0, `${where}: opted out of the commit rule silently`).toBeGreaterThan(0);
             }
         }
+        // The flag is not vacuous in either direction.
+        expect(file.transcripts.some((transcript) => transcript.commit)).toBe(true);
+        expect(file.transcripts.some((transcript) => !transcript.commit)).toBe(true);
     });
 });
 
