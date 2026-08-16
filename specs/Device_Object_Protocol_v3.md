@@ -148,8 +148,11 @@ Each field is `tag u16`, `value_length u16`, then exactly that many value bytes.
 is the critical bit and its low 15 bits are a nonzero base tag. Fields are strictly increasing by
 base tag and base tags are unique; changing only the critical bit does not create another field.
 `encoded_field_bytes` equals the exact sum of every `4 + value_length`, and `field_count` equals the
-number of fields. Truncation, trailing bytes, padding, a zero base tag, duplicate/out-of-order base
-tags, integer overflow, or a schema-disallowed width is `invalidDescriptor/noncanonicalMetadata`.
+number of fields. Truncation, trailing bytes, padding, a zero base tag, integer overflow, or a
+schema-disallowed width is `invalidDescriptor/noncanonicalMetadata`. A duplicate base tag is
+`invalidDescriptor/duplicateField` and a base tag that does not strictly increase is
+`invalidDescriptor/outOfOrderField`; those two details exist for exactly this condition and no
+other, and a decoder that reports `noncanonicalMetadata` for them is nonconforming.
 
 Schema integers use their exact registered width and little-endian encoding; signed values use
 two's-complement at that width. Booleans are one byte and exactly `0` or `1`. Byte strings are
@@ -171,10 +174,13 @@ requested mutation is forbidden.
 
 Shared vectors include empty envelopes, every registered scalar/string form, critical and
 noncritical unknowns, duplicate/out-of-order base tags, malformed UTF-8/forbidden scalars, exact
-120/88-byte field-body maxima, and one-byte-over failures. Codec tests assert the schema ceilings —
-a 176-byte StartUpload payload and a 176-byte one-entry catalog page — as ceiling cases, and the
-per-kind maxima a device can actually produce — a 116-byte weather StartUpload and a 162-byte route
-catalog entry page — as the positive ones.
+120/88-byte field-body maxima, and one-byte-over failures. Codec tests assert the schema ceilings
+arithmetically — that `44 + 36 + 96` and `48 + 128` both equal 176, and that `176 + 16` is the
+192-byte floor — rather than as byte vectors. No legal envelope reaches either ceiling, because
+every registered schema's maximum is below it and both the per-kind maximum and the registered field
+widths are enforced, so a 176-byte ceiling fixture would necessarily be a fixture a conforming
+decoder must reject. The per-kind maxima a device can actually produce — a 116-byte weather
+StartUpload and a 162-byte route catalog entry page — are the positive ones.
 
 ## 3. Authentication, principals, and ownership
 
@@ -996,9 +1002,12 @@ The next cursor is zero unless `more` is set. Each entry begins with a 36-byte p
 | 32 | 4 | reserved |
 
 followed by exactly that many metadata bytes. Metadata length is
-`8 + encoded_field_bytes` and at most 96. Entries are ordered by LogicalObjectId. A page returns at
-most ten whole entries, and only as many whole entries as fit the negotiated control frame,
-whichever is fewer; an entry is never split across pages. At least one whole entry is returned
+`8 + encoded_field_bytes` and at most 96. Entries are ordered by LogicalObjectId. A page returns
+only as many whole entries as fit the negotiated control frame, and never more than ten; an entry is
+never split across pages. The frame bound is the binding one for every kind this registry defines:
+the smallest registered projection is ride's 41-byte envelope, so one entry is 77 payload bytes and
+the 496-byte payload maximum admits five. The ten-entry ceiling is therefore headroom for a future
+smaller projection, not a page size any v3.0 device can reach. At least one whole entry is returned
 whenever one remains, and a schema whose maximum entry cannot fit the negotiated frame is an
 internal contract error rather than an empty page. One ceiling-sized entry makes a
 `44 + 36 + 96 = 176` byte payload and therefore fits the 192-byte control minimum exactly, so the
@@ -1048,8 +1057,12 @@ The 44-byte response prefix is parent OperationId `[16]`, draft revision `u64`, 
 count `u8`, flags `u8` (manifest-streaming bit 0, aborting bit 1), and reserved `u16`. The next
 cursor is zero unless `more` is set, exactly as in Section 8.2. Up to six 68-byte
 entries follow:
-child OperationId `[16]`, DraftPartRef `[16]`, DraftPartKind `u16`, reserved `u16`, part key `u64`, state
-`u8`, flags `u8`, reserved `u16`, durable offset `u64`, declared length `u64`, and CRC `u32`.
+child OperationId `[16]`, DraftPartRef `[16]`, DraftPartKind `u16`, reserved `u16`, part key `u64`,
+state `u8`, entry flags `u8` with no bit defined in v3.0, reserved `u16`, durable offset `u64`,
+declared length `u64`, and CRC `u32`. The entry flags byte is an inactive fixed-width alternative
+under Section 1: it is encoded zero and a nonzero value is `invalidDescriptor/reservedBits`.
+Assigning a bit in it is a major bump, exactly as Section 2.1 says for reinterpreting any existing
+field.
 DraftPartRef is zero unless state sealed `2`; states are prepared `0`, streaming `1`, sealed `2`,
 and aborted `3`. Entries are strictly ordered by `(DraftPartKind, part_key)`, which is unique within the
 draft. The device returns no more than the request limit and only as many whole entries as fit the
