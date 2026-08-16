@@ -18,11 +18,16 @@
 //!
 //! ## What this deliberately is not
 //!
-//! It is not the engine. There is no `CardStore`, no transaction API, no lease table, no garbage
-//! collector and no compaction driver; those are the later slices of #1354. The §13.1 adapter seam
-//! *is* here now — [`adapter`] over `embedded_sdmmc`, with [`geometry`] deciding §1.1's volume
-//! preconditions ahead of it — but it is only the media seam: it knows sectors, lengths and syncs,
-//! and still knows no filename. §3's `GEN`/`WORK` name mapping belongs to the store above it.
+//! It is not `CardStore`. There is no owner, no admission lock, no claim coordinator, no session
+//! table and no domain repository; those arrive with #1359, and nothing here is wired into a
+//! production path.
+//!
+//! What *is* here now is the kernel's own machinery. The §13.1 adapter seam — [`adapter`] over
+//! `embedded_sdmmc`, with [`geometry`] deciding §1.1's volume preconditions ahead of it. The
+//! resident [`index`] §13 fixes, and the [`compaction`] pass §6.3 materializes a checkpoint through.
+//! The [`generation`] writer, [`leases`], the [`gc`] collector, [`mount`]'s classification, and
+//! §3's `GEN`/`WORK` [`names`] mapping. Each is a bounded, allocation-free piece with a seam a store
+//! composes rather than a trait that is the union of what a store does.
 //!
 //! It also holds no domain knowledge. §1: domain repositories "provide validated projections and
 //! immutable payloads"; the kernel owns byte counts, CRCs, ordering, publication and recovery, and
@@ -33,22 +38,35 @@
 //! [`limits`] is the capacity table everything is bounded by, and [`gate`] the 512 bytes that make
 //! a body a record. [`entries`] holds the projection rows; [`checkpoint`] and [`journal`] are the
 //! two containers that carry them. [`work`], [`handoff`], [`init`] and [`resolution`] are the
-//! remaining record shapes. [`model`] and [`recovery`] are the pure logic; [`geometry`],
-//! [`adapter`] and [`blocklog`] are the media seam; [`media`], [`fatsim`] and [`vectors`] are
-//! host-only.
+//! remaining record shapes. [`model`] and [`recovery`] are the pure logic.
+//!
+//! On top of those sit the engine pieces, each answering one section: [`index`] (§13's resident
+//! index), [`compaction`] (§6.3's forward pass), [`generation`] (§7's writer), [`leases`] (§9's
+//! table), [`gc`] (§9's reachability and collector), [`mount`] (§12's classification and staging)
+//! and [`names`] (§3's identity mapping).
+//!
+//! [`geometry`], [`adapter`] and [`blocklog`] are the media seam; [`media`], [`fatsim`] and
+//! [`vectors`] are host-only.
 
 pub mod adapter;
 pub mod blocklog;
 pub mod checkpoint;
+pub mod compaction;
 pub mod entries;
 pub mod error;
 pub mod gate;
+pub mod gc;
+pub mod generation;
 pub mod geometry;
 pub mod handoff;
+pub mod index;
 pub mod init;
 pub mod journal;
+pub mod leases;
 pub mod limits;
 pub mod model;
+pub mod mount;
+pub mod names;
 mod raw;
 pub mod recovery;
 pub mod resolution;

@@ -29,6 +29,20 @@
 //! and the **absent primitives** rule (no `delete_dir`, no `rename`). Nothing here can prove an
 //! adapter satisfies them; the point of naming them is that a green crash matrix does not.
 //!
+//! ## Fixed files and payload files are different things
+//!
+//! [`Media::create`] makes a fixed OBC2 metadata file: full length, never growing, and the seek
+//! bound applies to both ends of a write. [`Media::create_payload`] makes a `GEN` payload, which §3
+//! defines as "exactly the canonical payload bytes" with no wrapper — it starts empty and is
+//! extended by ordinary writes.
+//!
+//! The distinction earns its place at one specific rule. §7: a durable offset "may exceed the
+//! payload's observed length after a cut, because the length recorded in a FAT directory entry is
+//! only guaranteed durable once the sync that followed the length-changing write has completed". A
+//! growable file here therefore stages its new *length* alongside its bytes, and a cut during the
+//! sync commits the two independently — so the harness genuinely produces the state §7's mandatory
+//! rewind exists to resolve, instead of asserting that it would.
+//!
 //! Determinism is total: the same seed and the same [`FaultPlan`] produce the same bytes, so a
 //! failing case in the crash matrix is a case anyone can rerun.
 
@@ -99,12 +113,20 @@ pub enum MediaError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileId(usize);
 
-/// One file: its durable image and the writes a sync has not yet persisted.
+/// One file: its durable image, the writes a sync has not yet persisted, and — for a growable file
+/// — the recorded length those writes would extend it to.
+///
+/// The split matters for §7. A FAT directory entry's length "is only guaranteed durable once the
+/// sync that followed the length-changing write has completed", so a cut can leave bytes on the card
+/// that the recorded length does not reach. That is exactly the state §7's mandatory rewind exists
+/// for, and modelling the length separately is the only way a harness can produce it.
 #[derive(Debug, Clone)]
 struct FileImage {
     name: String,
     durable: Vec<u8>,
     pending: Vec<(usize, Vec<u8>)>,
+    pending_len: Option<usize>,
+    growable: bool,
 }
 
 /// A tiny deterministic PRNG. Not cryptographic and not meant to be: it exists so a torn page is
@@ -171,8 +193,88 @@ impl Media {
     /// and is deliberately not a counted operation: the scenarios under test start from an
     /// initialized card.
     pub fn create(&mut self, name: &str, len: usize) -> FileId {
-        self.files.push(FileImage { name: String::from(name), durable: vec![0u8; len], pending: Vec::new() });
+        self.files.push(FileImage {
+            name: String::from(name),
+            durable: vec![0u8; len],
+            pending: Vec::new(),
+            pending_len: None,
+            growable: false,
+        });
         FileId(self.files.len() - 1)
+    }
+
+    /// Creates an empty **growable** file: a `GEN` payload.
+    ///
+    /// §13.1's full-length initialization and its seek bound are rules about the fixed metadata
+    /// files. A generation payload is §3's "canonical payload bytes" with no wrapper: it is created
+    /// empty and extended by ordinary writes, and its recorded length becomes durable only at the
+    /// sync that follows the write which changed it.
+    pub fn create_payload(&mut self, name: &str) -> FileId {
+        self.files.push(FileImage {
+            name: String::from(name),
+            durable: Vec::new(),
+            pending: Vec::new(),
+            pending_len: None,
+            growable: true,
+        });
+        FileId(self.files.len() - 1)
+    }
+
+    /// Places durable bytes without counting an operation.
+    ///
+    /// Harness setup only — the state a scenario *starts* from, exactly as [`create`](Self::create)
+    /// is. It is not a modelled media operation and has no cut points, which is what keeps a matrix
+    /// over a long scenario from also enumerating cuts inside the card it was handed.
+    pub fn install(&mut self, file: FileId, offset: usize, bytes: &[u8]) {
+        let image = &mut self.files[file.0];
+        if image.durable.len() < offset + bytes.len() {
+            image.durable.resize(offset + bytes.len(), 0);
+        }
+        image.durable[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Truncates a growable file to zero length (§7's readmission rewind).
+    ///
+    /// A counted operation. A cut *during* it is genuinely ambiguous on a real card — the directory
+    /// entry and the FAT chain are two writes — so the outcome is seeded, and both branches are
+    /// states recovery must handle.
+    pub fn truncate(&mut self, file: FileId) -> Result<(), MediaError> {
+        if !self.powered {
+            return Err(MediaError::PowerLoss);
+        }
+        self.ops += 1;
+        let op = self.ops;
+        self.log.push(Operation { file: self.files[file.0].name.clone(), kind: "truncate", offset: 0, length: 0 });
+        if self.cut_is(op, When::Before) {
+            self.power_off();
+            return Err(MediaError::PowerLoss);
+        }
+        if self.cut_is(op, When::During) {
+            if self.rng.next() & 1 == 0 {
+                self.apply_truncate(file);
+            }
+            self.power_off();
+            return Err(MediaError::PowerLoss);
+        }
+        self.apply_truncate(file);
+        if self.cut_is(op, When::After) {
+            self.power_off();
+        }
+        Ok(())
+    }
+
+    fn apply_truncate(&mut self, file: FileId) {
+        let image = &mut self.files[file.0];
+        image.durable.clear();
+        image.pending.clear();
+        image.pending_len = None;
+    }
+
+    /// The length a write may address: the recorded length, plus any extension a pending write has
+    /// staged but no sync has persisted.
+    fn effective_len(&self, file: FileId) -> usize {
+        let image = &self.files[file.0];
+        image.pending_len.unwrap_or(0).max(image.durable.len())
     }
 
     /// The handle of an existing file.
@@ -215,6 +317,7 @@ impl Media {
     pub fn reboot(&mut self) {
         for file in &mut self.files {
             file.pending.clear();
+            file.pending_len = None;
         }
         self.plan = FaultPlan::default();
         self.powered = true;
@@ -244,14 +347,20 @@ impl Media {
         if self.plan.media_full == Some(op) {
             return Err(MediaError::Full);
         }
-        let len = self.files[file.0].durable.len();
-        if offset > len || offset + bytes.len() > len {
+        let len = self.effective_len(file);
+        let growable = self.files[file.0].growable;
+        // §13.1's seek bound applies to both: a write may never *start* past the end. A fixed file
+        // may not end past it either, which is the whole of the bound; a growable one extends.
+        if offset > len || (!growable && offset + bytes.len() > len) {
             return Err(MediaError::OutOfRange);
         }
         let accepted = match self.plan.short_write {
             Some((at, count)) if at == op => count.min(bytes.len()),
             _ => bytes.len(),
         };
+        if growable && offset + accepted > len {
+            self.files[file.0].pending_len = Some(offset + accepted);
+        }
         self.files[file.0].pending.push((offset, bytes[..accepted].to_vec()));
         if self.cut_is(op, When::During) {
             self.tear_pages(file, offset, accepted);
@@ -288,6 +397,15 @@ impl Media {
             // failing case reproducible. A stronger model belongs with the adapter, where multiple
             // in-flight pages become real.
             let pending = core::mem::take(&mut self.files[file.0].pending);
+            let pending_len = self.files[file.0].pending_len.take();
+            // The directory entry is a separate write from the payload's, so a cut may leave the
+            // recorded length behind the bytes. Seeding the choice produces both states, and §7's
+            // rewind is written for exactly the one where it does.
+            if self.rng.next() & 1 == 0 {
+                if let Some(len) = pending_len {
+                    self.grow_to(file, len);
+                }
+            }
             let mut torn: Option<(usize, usize)> = None;
             for (offset, bytes) in pending {
                 if self.rng.next() & 1 == 0 {
@@ -303,6 +421,9 @@ impl Media {
             return Err(MediaError::PowerLoss);
         }
         let pending = core::mem::take(&mut self.files[file.0].pending);
+        if let Some(len) = self.files[file.0].pending_len.take() {
+            self.grow_to(file, len);
+        }
         for (offset, bytes) in pending {
             self.apply(file, offset, &bytes);
         }
@@ -345,11 +466,28 @@ impl Media {
         self.powered = false;
         for file in &mut self.files {
             file.pending.clear();
+            file.pending_len = None;
         }
     }
 
+    fn grow_to(&mut self, file: FileId, len: usize) {
+        let image = &mut self.files[file.0];
+        if image.durable.len() < len {
+            image.durable.resize(len, 0);
+        }
+    }
+
+    /// Applies a pending write, clamped to the recorded length.
+    ///
+    /// Bytes beyond it are not durable: the file does not reach that far, so nothing on the card
+    /// holds them. This is the other half of the state §7's rewind resolves.
     fn apply(&mut self, file: FileId, offset: usize, bytes: &[u8]) {
-        self.files[file.0].durable[offset..offset + bytes.len()].copy_from_slice(bytes);
+        let len = self.files[file.0].durable.len();
+        if offset >= len {
+            return;
+        }
+        let end = (offset + bytes.len()).min(len);
+        self.files[file.0].durable[offset..end].copy_from_slice(&bytes[..end - offset]);
     }
 
     /// Corrupts every sector of every program page the write at `offset..offset + len` touched, and
@@ -480,6 +618,86 @@ mod tests {
         assert_eq!(media.read_at(file, 0, 4), Err(MediaError::PowerLoss));
         media.reboot();
         assert!(media.read_at(file, 0, 4).is_ok());
+    }
+
+    /// A `GEN` payload grows by being written, and the growth is durable only after its sync.
+    #[test]
+    fn a_payload_file_grows_at_its_sync_rather_than_at_its_write() {
+        let mut media = Media::new(11);
+        let payload = media.create_payload("GEN");
+        assert_eq!(media.len(payload), 0);
+
+        media.write_at(payload, 0, &[0xAB; 1_000]).unwrap();
+        assert_eq!(media.len(payload), 0, "the recorded length changed before the sync");
+        media.sync(payload).unwrap();
+        assert_eq!(media.len(payload), 1_000);
+        assert!(media.image(payload).iter().all(|&byte| byte == 0xAB));
+
+        // Appending at the end extends it further; starting past the end is still the seek bound.
+        media.write_at(payload, 1_000, &[0xCD; 24]).unwrap();
+        media.sync(payload).unwrap();
+        assert_eq!(media.len(payload), 1_024);
+        assert_eq!(media.write_at(payload, 2_000, &[0u8; 4]), Err(MediaError::OutOfRange));
+    }
+
+    /// §7's rewind case, produced rather than asserted: a cut can leave payload bytes on the card
+    /// that the recorded length does not reach.
+    #[test]
+    fn a_cut_can_leave_the_recorded_length_behind_the_bytes() {
+        let mut behind = 0;
+        for seed in 1..40u64 {
+            let mut media = Media::new(seed);
+            let payload = media.create_payload("GEN");
+            media.write_at(payload, 0, &[0xAB; 4_096]).unwrap();
+            media.sync(payload).unwrap();
+
+            media.write_at(payload, 4_096, &[0xCD; 4_096]).unwrap();
+            media.set_plan(FaultPlan::cut(media.ops() + 1, When::During));
+            let _ = media.sync(payload);
+            media.reboot();
+            if media.len(payload) == 4_096 {
+                behind += 1;
+            }
+            // Whatever happened, no byte past the recorded length survives — that is what makes an
+            // offset above it unreachable rather than merely stale.
+            assert!(media.image(payload).len() == media.len(payload));
+        }
+        assert!(behind > 0, "no seed produced a length that lagged its bytes");
+    }
+
+    /// Truncation is the whole of §7's restart under the restart-only profile, and a cut during it
+    /// leaves one of the two states recovery already handles.
+    #[test]
+    fn truncation_is_all_or_nothing_at_a_reboot() {
+        let mut truncated = 0;
+        for seed in 1..40u64 {
+            let mut media = Media::new(seed);
+            let payload = media.create_payload("GEN");
+            media.write_at(payload, 0, &[0xAB; 2_048]).unwrap();
+            media.sync(payload).unwrap();
+
+            media.set_plan(FaultPlan::cut(media.ops() + 1, When::During));
+            let _ = media.truncate(payload);
+            media.reboot();
+            match media.len(payload) {
+                0 => truncated += 1,
+                2_048 => assert!(media.image(payload).iter().all(|&byte| byte == 0xAB)),
+                other => panic!("seed {seed} left a {other}-byte payload"),
+            }
+        }
+        assert!(truncated > 0 && truncated < 39, "the seeded truncation outcome is not exercising both branches");
+    }
+
+    /// Installed bytes are setup, not a modelled operation: they change the card and count nothing.
+    #[test]
+    fn installed_bytes_are_durable_and_uncounted() {
+        let mut media = Media::new(13);
+        let file = media.create("CAT0.CHK", 1_024);
+        let before = media.ops();
+        media.install(file, 512, &[0x5A; 512]);
+        assert_eq!(media.ops(), before, "install counted an operation");
+        assert!(media.image(file)[512..].iter().all(|&byte| byte == 0x5A));
+        assert!(media.image(file)[..512].iter().all(|&byte| byte == 0));
     }
 
     #[test]
