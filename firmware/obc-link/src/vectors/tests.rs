@@ -17,16 +17,23 @@ use crate::query::OperationStatus;
 use crate::stream::StreamFrame;
 use crate::{Request, Response};
 
-/// Rebuilds `specs/vectors/device-object-v2/` from this producer.
+/// Rebuilds the wire half of `specs/vectors/device-object-v2/` from this producer.
 ///
 /// Deliberately `#[ignore]`d, exactly like the S0 vector suite's own regenerate step: fixtures move
 /// only when someone means them to.
+///
+/// It clears the four directories this producer owns — never the suite root, because `storage/`
+/// belongs to `obc-storage`'s producer and this manifest only indexes it. Regenerate that side
+/// first, then this one, or the manifest's storage digests will be the previous ones.
 #[test]
 #[ignore = "writes specs/vectors/device-object-v2/; run deliberately after a spec change"]
 fn regenerate() {
     let root = dir();
-    if root.exists() {
-        std::fs::remove_dir_all(&root).expect("clearing the suite directory");
+    for category in [Category::Control, Category::Stream, Category::Negative, Category::Transcript] {
+        let directory = root.join(category.directory());
+        if directory.exists() {
+            std::fs::remove_dir_all(&directory).expect("clearing a suite subdirectory");
+        }
     }
     let written = write_all().expect("writing the suite");
     println!("wrote {written} files to {}", root.display());
@@ -84,7 +91,12 @@ fn every_fixture_name_is_unique_and_the_manifest_records_its_digest() {
     }
     assert!(rendered.contains("\"suite\": \"device-object-v2\""));
     assert!(rendered.contains("\"wire_major\": 3"));
-    assert!(rendered.contains("\"storage\": []"));
+    // The storage array is indexed from the checked-in `storage/` directory rather than produced
+    // here, so what this side can assert is that every file present is listed with its digest.
+    for entry in std::fs::read_dir(dir().join("storage")).expect("storage directory") {
+        let name = entry.expect("directory entry").file_name().to_string_lossy().into_owned();
+        assert!(rendered.contains(&format!("storage/{name}")), "{name} is missing from the manifest");
+    }
 }
 
 #[test]

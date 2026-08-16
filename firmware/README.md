@@ -89,6 +89,17 @@ in [`specs/vectors/device-object-v2/`](../specs/vectors/device-object-v2/), buil
 that lays every byte down from the spec's own offset tables rather than through the codec;
 regenerate them deliberately with `cargo test -p obc-link regenerate -- --ignored`.
 
+`obc-storage::obc2` is the same suite's on-card half: the record codecs of
+[`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,
+`RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog reference
+model whose `apply` is the meaning of a journal record, and §6.3's recovery decision as a pure
+function. Two host-only modules sit beside them behind the crate's `std` feature: a deterministic
+faulting-media harness that models §1.1's program-page tearing and §13.1's adapter obligations, and
+the storage half of the vector suite (`cargo test -p obc-storage regenerate_storage_vectors --
+--ignored`, then the `obc-link` regenerate above, which indexes it). There is no engine here yet —
+no transaction API, no leases, no garbage collector, no FAT adapter — and nothing in it knows a
+filename.
+
 ## Test
 
 ```sh
