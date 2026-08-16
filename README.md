@@ -85,7 +85,9 @@ wire vectors as the firmware. See [`companion-ios/CLAUDE.md`](companion-ios/CLAU
 build/test on-ramp.
 
 BLE and USB bind the same object protocol. The canonical contract is
-[`specs/obc-ble-interface-spec.md`](specs/obc-ble-interface-spec.md); the conceptual flow is in the
+[`specs/obc-ble-interface-spec.md`](specs/obc-ble-interface-spec.md) (legacy wire v2 — superseded for
+DOS v2 by the [`specs/Device_Object_System_v2.md`](specs/Device_Object_System_v2.md) suite); the
+conceptual flow is in the
 [companion-link guide](https://openbikecomputer.com/software/companion-link/).
 
 Firmware updates are signed OBCU containers named `UPDATE.BIN`. Release builds, signing, install,
