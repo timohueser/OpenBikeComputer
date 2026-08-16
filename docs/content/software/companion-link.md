@@ -5,6 +5,12 @@ description: How the OpenBikeComputer device and its phone companion app talk ov
 
 # The companion link
 
+> This page describes the currently implemented legacy link while the coordinated Device Object
+> System v2 cutover is under development. The replacement contract starts at
+> [`Device_Object_System_v2.md`](src:specs/Device_Object_System_v2.md) and uses wire major 3,
+> resumable framed transfers, immutable generations, and one catalog/result durability boundary.
+> There is no compatibility or dual-write path between the two designs.
+
 The device is a self-contained navigator, but a route is usually *planned* on a
 phone and a ride is worth keeping once it's ridden. A small **iOS companion app**
 bridges the two over **Bluetooth Low Energy**: push a planned route to the
