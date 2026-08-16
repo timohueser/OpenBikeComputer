@@ -34,6 +34,7 @@ enum VectorExerciser {
         case "frameLimitDerivation": try exerciseFrameLimits(entry, json)
         case "negative": try exerciseNegative(entry, json)
         case "stream": try exerciseStream(entry, json)
+        case "storage": try exerciseStorage(entry, json)
         case "transcript": try exerciseTranscript(entry, json)
         case let other: throw VectorError("\(entry): unhandled fixture kind \(other ?? "nil")")
         }
@@ -270,6 +271,108 @@ enum VectorExerciser {
         guard try frame.encoded() == record else {
             throw VectorError("\(entry): re-encoded record differs")
         }
+    }
+
+    // MARK: transcripts
+
+    // MARK: storage
+
+    /// `Device_Object_Vectors_v2.md` §6's storage fixtures: OBC2 on-card records — checkpoints,
+    /// journal slots, WORK and RIDE slots, the ARM handoff, `INIT.REC`, resolution generations.
+    ///
+    /// There is deliberately no Swift codec for them, and there is unlikely ever to be one: the
+    /// on-card format is private to `CardStore` and no client ever sees a byte of it. What a
+    /// *cross-language* fixture still owes is that its encoding is readable outside the language
+    /// that wrote it. A case states its `length` and the non-zero `runs` inside it — hex of a
+    /// 65,536-byte checkpoint would be unreviewable — so reconstruction has to be mechanical:
+    /// allocate the zeros, splice the runs in, and land on the stated digest.
+    static func exerciseStorage(_ entry: DeviceObjectVectors.Entry, _ json: [String: Any]) throws {
+        guard json["storage_format"] as? Int == 1 else {
+            throw VectorError("\(entry): storage_format")
+        }
+
+        // The crash-cut transcripts carry ordered media operations rather than record bytes.
+        if let transcripts = json["transcripts"] as? [[String: Any]] {
+            guard transcripts.count == json["transcriptCount"] as? Int else {
+                throw VectorError("\(entry): transcriptCount disagrees with the list")
+            }
+            for transcript in transcripts {
+                let name = transcript["name"] as? String ?? "?"
+                guard let steps = transcript["steps"] as? [[String: Any]] else {
+                    throw VectorError("\(entry)/\(name): no steps")
+                }
+                guard steps.count == transcript["stepCount"] as? Int else {
+                    throw VectorError("\(entry)/\(name): stepCount disagrees with the steps")
+                }
+                // One cut position per operation, three per operation in total.
+                guard transcript["cutPoints"] as? Int == steps.count * 3 else {
+                    throw VectorError("\(entry)/\(name): cutPoints is not three per operation")
+                }
+                for (index, step) in steps.enumerated() {
+                    guard step["op"] as? Int == index + 1 else {
+                        throw VectorError("\(entry)/\(name): step \(index) is out of order")
+                    }
+                    let kind = step["kind"] as? String ?? ""
+                    guard kind == "write" || kind == "sync" else {
+                        throw VectorError("\(entry)/\(name): step \(index) has kind \(kind)")
+                    }
+                    if kind == "sync" {
+                        guard step["offset"] as? Int == 0, step["length"] as? Int == 0 else {
+                            throw VectorError("\(entry)/\(name): a sync carries an offset or length")
+                        }
+                    }
+                }
+                // A commit path ends at a sync: the gate is durable only once it returns.
+                guard (steps.last?["kind"] as? String) == "sync" else {
+                    throw VectorError("\(entry)/\(name): the path does not end at a sync")
+                }
+                guard (transcript["admissibleOutcomes"] as? [String] ?? []).count > 1 else {
+                    throw VectorError("\(entry)/\(name): fewer than two admissible outcomes")
+                }
+            }
+            ExerciseLog.shared.record(entry.name)
+            return
+        }
+
+        guard let cases = json["cases"] as? [[String: Any]] else {
+            throw VectorError("\(entry): neither cases nor transcripts")
+        }
+        guard cases.count == json["caseCount"] as? Int else {
+            throw VectorError("\(entry): caseCount disagrees with the case list")
+        }
+        for record in cases {
+            let name = record["name"] as? String ?? "?"
+            guard let length = record["length"] as? Int, length > 0 else {
+                throw VectorError("\(entry)/\(name): no length")
+            }
+            guard let runs = record["runs"] as? [[String: Any]] else {
+                throw VectorError("\(entry)/\(name): no runs")
+            }
+            var bytes = [UInt8](repeating: 0, count: length)
+            for run in runs {
+                guard let offset = run["offset"] as? Int, let hex = run["hex"] as? String else {
+                    throw VectorError("\(entry)/\(name): malformed run")
+                }
+                let chunk = try hex.hexBytes
+                guard !chunk.isEmpty else {
+                    throw VectorError("\(entry)/\(name): empty run")
+                }
+                // A run is non-zero at both ends, or the encoding is not canonical and two
+                // producers could emit different files for the same bytes.
+                guard chunk.first != 0, chunk.last != 0 else {
+                    throw VectorError("\(entry)/\(name): a run starts or ends on a zero")
+                }
+                guard offset >= 0, offset + chunk.count <= length else {
+                    throw VectorError("\(entry)/\(name): a run lies past the record")
+                }
+                bytes.replaceSubrange(offset..<(offset + chunk.count), with: chunk)
+            }
+            let digest = DeviceObjectVectors.sha256Hex(Data(bytes))
+            guard digest == record["sha256"] as? String else {
+                throw VectorError("\(entry)/\(name): reconstructed bytes hash to \(digest)")
+            }
+        }
+        ExerciseLog.shared.record(entry.name)
     }
 
     // MARK: transcripts
