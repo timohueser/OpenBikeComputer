@@ -1,11 +1,16 @@
-# OBC BLE Interface Specification (v2)
+# OBC BLE Interface Specification (legacy wire v2)
 
-The normative wire contract between the OpenBikeComputer device (nRF54L
+> **Superseded for Device Object System v2.** The normative replacement is
+> [`Device_Object_System_v2.md`](Device_Object_System_v2.md), using wire major 3. This document
+> remains the authority only for the temporary legacy implementation during the coordinated
+> cutover. Shipping DOS v2 peers do not translate or serve these descriptors.
+
+The legacy wire contract between the OpenBikeComputer device (nRF54L
 firmware, BLE peripheral) and the companion app (iOS, BLE central): advertising,
 the GATT control plane, the L2CAP CoC data plane, and the byte layout of every
 object that crosses the link. It sits next to [`OBCM_Spec.md`](OBCM_Spec.md)
 (map format) and [`OBCR_Spec.md`](OBCR_Spec.md) (route format) and is the
-canonical source the firmware Track-A issues (epic #267) implement.
+historical source the firmware Track-A issues (epic #267) implemented.
 
 > **Protocol v2** (epic #632) is the one coordinated wire break over v1: it
 > **removes** the `objectStore` digest and reserved `diagnostics` characteristics
@@ -16,7 +21,7 @@ canonical source the firmware Track-A issues (epic #267) implement.
 > parallel — a v1 peer reads `version = 2` first and surfaces its mismatch path
 > (§1). The one-line "what changed and why" for each item lives in its section.
 
-> **This document is canonical.** The iOS implementation notes
+> **This document is canonical for legacy wire v2 only.** The iOS implementation notes
 > ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) defer to it:
 > where they disagree, this spec wins and the notes are corrected. §9 lists the
 > v1 → v2 wire changes so the app-side repin is a checklist, not a diff hunt.

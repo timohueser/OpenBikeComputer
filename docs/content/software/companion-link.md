@@ -5,6 +5,12 @@ description: How the OpenBikeComputer device and its phone companion app talk ov
 
 # The companion link
 
+> This page describes the currently implemented legacy link while the coordinated Device Object
+> System v2 cutover is under development. The replacement contract starts at
+> [`Device_Object_System_v2.md`](src:specs/Device_Object_System_v2.md) and uses wire major 3,
+> resumable framed transfers, immutable generations, and one catalog/result durability boundary.
+> There is no compatibility or dual-write path between the two designs.
+
 The device is a self-contained navigator, but a route is usually *planned* on a
 phone and a ride is worth keeping once it's ridden. A small **iOS companion app**
 bridges the two over **Bluetooth Low Energy**: push a planned route to the
@@ -12,9 +18,12 @@ device, pull tracked rides back, rename the device, read its diagnostics. Once
 you've paired, powered, and are in range, it just works — no accounts, no cloud,
 nothing leaves the two devices.
 
-This page is the *shape* of that link. The normative, byte-level reference is the
-[BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as the
-[`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); here we
+This page is the *shape* of that link. The normative, byte-level reference **for the legacy link
+described here** is the [BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as
+the [`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); for Device
+Object System v2 the normative reference is instead the
+[`Device_Object_System_v2.md`](src:specs/Device_Object_System_v2.md) suite, whose wire half is
+[`Device_Object_Protocol_v3.md`](src:specs/Device_Object_Protocol_v3.md). Here we
 cover the design and the *why*. Five ideas run through all of it:
 
 - **Two planes.** Small typed control state rides GATT; bulk bytes ride a single
