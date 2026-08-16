@@ -11,6 +11,7 @@
       "name": "journal-append",
       "section": "OBC2_Storage_Format.md §1, §6.2",
       "description": "One journal record. Journal slots are the single exemption from the invalidate-first discipline, so the body write carries the zeroed gate sector itself.",
+      "note": "",
       "stepCount": 4,
       "cutPoints": 12,
       "steps": [
@@ -28,6 +29,7 @@
       "name": "checkpoint-compaction",
       "section": "OBC2_Storage_Format.md §6.3",
       "description": "Compaction writes and gates the inactive checkpoint completely before the new epoch's first record exists.",
+      "note": "PROVISIONAL, in one respect only: the body appears here as a single 65,024-byte write because that is what the reference implementation does. Section 6.3 specifies a bounded forward pass, region by region and entry by entry, staging at most one 208-byte entry plus a 512-byte sector — so a conforming writer emits many writes here, not one. The ordering around it is normative and is what the cut points test: invalidate the inactive gate, sync; write the whole body, sync; write the gate, sync; only then the first record of the new epoch. The streaming pass lands with the compaction engine and will replace this step's shape.",
       "stepCount": 10,
       "cutPoints": 30,
       "steps": [
@@ -52,6 +54,7 @@
       "name": "work-seal",
       "section": "OBC2_Storage_Format.md §7",
       "description": "The sealed WORK slot, the one durable work fact both device profiles write.",
+      "note": "",
       "stepCount": 6,
       "cutPoints": 18,
       "steps": [
@@ -71,6 +74,7 @@
       "name": "arm-phase-advance",
       "section": "OBC2_Storage_Format.md §10",
       "description": "One handoff phase advance across the alternating ARM pair.",
+      "note": "",
       "stepCount": 6,
       "cutPoints": 18,
       "steps": [
@@ -90,6 +94,7 @@
       "name": "manifest-publication",
       "section": "OBC2_Storage_Format.md §8",
       "description": "The resolution generation is written and synchronized before the terminal record; only that record's gate publishes the head.",
+      "note": "The resolution body's length is the table's, not a fixed record size, so its write appears with length zero here.",
       "stepCount": 6,
       "cutPoints": 18,
       "steps": [

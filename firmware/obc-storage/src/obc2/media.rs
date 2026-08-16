@@ -9,7 +9,7 @@
 //! corrupted more would prove nothing about this format, and one that corrupted less would let a
 //! real bug through.
 //!
-//! The §13.1 obligations it models, and why each matters to a crash test:
+//! ## Which §13.1 obligations this models — five of the eight
 //!
 //! - **Synchronization.** A write lands in a volatile cache; only [`Media::sync`] makes it durable.
 //!   A cut before the sync loses it. "A failed sync has an uncertain outcome and is resolved by
@@ -19,6 +19,15 @@
 //! - **Seek bound.** Writing past the recorded length fails rather than extending the file, which is
 //!   what makes §7's rewind mandatory rather than cosmetic.
 //! - **Gate isolation.** Writing 512 bytes at a gate offset touches no other sector.
+//! - **Full-length initialization.** [`Media::create`] produces a file at its full recorded length,
+//!   which is the state every slot-addressing rule assumes.
+//!
+//! Three it does **not** model, because they are properties of a real FAT adapter rather than of a
+//! sector-addressed medium, and they arrive with that adapter: **clean flush** (a sync of a
+//! fixed-length gated file must not rewrite the directory entry or FSInfo), **chain longer than
+//! length** (a cut between preallocation and zero-fill, which free-space accounting must tolerate),
+//! and the **absent primitives** rule (no `delete_dir`, no `rename`). Nothing here can prove an
+//! adapter satisfies them; the point of naming them is that a green crash matrix does not.
 //!
 //! Determinism is total: the same seed and the same [`FaultPlan`] produce the same bytes, so a
 //! failing case in the crash matrix is a case anyone can rerun.
@@ -271,6 +280,13 @@ impl Media {
         if self.cut_is(op, When::During) {
             // "A failed sync has an uncertain outcome and is resolved by recovery": commit a seeded
             // subset of the pending writes and tear the page of one of the rest.
+            //
+            // This is deliberately the *weaker* model of the two available: a real card could tear
+            // every page it was mid-programming, not just one. One torn page is enough to exercise
+            // every gate rule these records have — the gate and its body share a page, so tearing
+            // one is what invalidates a record — and keeping the choice seeded and singular keeps a
+            // failing case reproducible. A stronger model belongs with the adapter, where multiple
+            // in-flight pages become real.
             let pending = core::mem::take(&mut self.files[file.0].pending);
             let mut torn: Option<(usize, usize)> = None;
             for (offset, bytes) in pending {

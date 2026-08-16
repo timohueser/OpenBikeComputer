@@ -629,23 +629,47 @@ impl JournalBody {
         out
     }
 
-    /// Encodes the complete 16,384-byte slot: body, gate, and the pad to the next stride.
+    /// Writes the complete 16,384-byte slot into `out`: body, gate, and the pad to the next stride.
+    ///
+    /// The in-place form is the one production code uses. A 16 KiB array returned by value is a
+    /// 16 KiB stack temporary at every call site, and the board's task stacks are measured in tens
+    /// of kilobytes — see the nRF54L stack notes. [`encode_slot`](Self::encode_slot) is the same
+    /// bytes for a host that does not care.
+    pub fn encode_slot_into(&self, out: &mut [u8]) -> Result<()> {
+        if out.len() != SLOT_STRIDE {
+            return Err(DecodeError::new(Record::JournalSlot, Reason::Length));
+        }
+        out.fill(0);
+        let body = self.encode_body();
+        put_bytes(out, 0, &body);
+        put_bytes(out, JOURNAL_GATE_OFFSET, &self.gate_for(&body).encode());
+        Ok(())
+    }
+
+    /// The same slot, returned by value. Host-only: see [`encode_slot_into`](Self::encode_slot_into).
+    #[cfg(any(test, feature = "std"))]
     pub fn encode_slot(&self) -> [u8; SLOT_STRIDE] {
         let mut out = [0u8; SLOT_STRIDE];
-        let body = self.encode_body();
-        put_bytes(&mut out, 0, &body);
-        put_bytes(&mut out, JOURNAL_GATE_OFFSET, &self.gate().encode());
+        self.encode_slot_into(&mut out).expect("a stride-sized buffer");
         out
     }
 
     /// The gate that publishes this body.
+    ///
+    /// Encoding the body twice — once for the write and once for its CRC — is wasteful where the
+    /// caller already holds it, so [`gate_for`](Self::gate_for) takes the encoded bytes.
     pub fn gate(&self) -> Gate {
+        self.gate_for(&self.encode_body())
+    }
+
+    /// The gate that publishes an already-encoded body.
+    pub fn gate_for(&self, body: &[u8; JOURNAL_BODY_LEN]) -> Gate {
         Gate {
             magic: MAGIC_JOURNAL,
             slot: self.slot,
             scope: self.epoch,
             sequence: self.sequence,
-            body_crc: u32_at(&self.encode_body(), JOURNAL_BODY_CRC_OFFSET),
+            body_crc: u32_at(body, JOURNAL_BODY_CRC_OFFSET),
         }
     }
 

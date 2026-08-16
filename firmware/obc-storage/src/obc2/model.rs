@@ -2,17 +2,22 @@
 //! (`OBC2_Storage_Format.md` §5, §6).
 //!
 //! This is the **reference model**: one bounded value holding every region a checkpoint body holds,
-//! with a total `apply` that is the meaning of a journal record. Two things are built on it. Replay
-//! is literally `for record in suffix { model.apply(record) }`, and compaction is
-//! [`CatalogModel::encode_body`], so a checkpoint is by construction the projection its records
-//! produce. The crash harness then uses it as the oracle: recovery must land on exactly the model's
-//! before-state or its after-state, never anything else.
+//! with a total `apply` that is the meaning of a journal record. Replay is literally
+//! `for record in suffix { model.apply(record) }`, and the crash harness uses the result as its
+//! oracle: recovery must land on exactly the model's before-state or its after-state, never
+//! anything else.
+//!
+//! [`CatalogModel::encode_body`] materializes a body from a projection, which is what compaction
+//! *produces* — but it is not compaction. §6.3 specifies a bounded forward pass that never holds a
+//! projection at all: region by region, entry by entry, staging one 208-byte entry plus a 512-byte
+//! sector, taking each card-resident field from the RAM index, from a journal-carried head entry,
+//! or from the active checkpoint's stored bytes. That pass, and the RAM index it reads, are a later
+//! slice. What this function gives that slice is the answer to check itself against.
 //!
 //! It is deliberately **not** the device's resident state. §13 fixes that as a bounded *index* —
 //! about 19.25 KiB, with envelopes and resolution generations left on the card and re-read on
-//! demand — while this value holds whole entries because a host oracle has no reason not to. The
-//! device's index and the compaction pass that materializes a body without holding one are a later
-//! slice; nothing here is instantiated by the device image.
+//! demand — while this value holds whole entries because a host oracle has no reason not to.
+//! Nothing here is instantiated by the device image.
 //!
 //! Every region is a `heapless::Vec` at its §2 capacity, so a mutation that would exceed one
 //! returns [`ApplyError::ResourceLimit`] rather than growing: there is no allocator anywhere in
@@ -28,7 +33,7 @@ use super::entries::{
 };
 use super::error::{ApplyError, Record, Result};
 use super::handoff::HandoffRef;
-use super::journal::{Change, JournalBody};
+use super::journal::{Change, JournalBody, RecordKind};
 use super::limits::{
     CHECKPOINT_BODY_LEN, MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS, MAX_DRAFT_PARTS, MAX_REPOSITORY_STATES,
     MAX_RETAINED_PREVIOUS, MAX_TERMINAL_RESULTS,
@@ -75,11 +80,15 @@ pub struct CatalogModel {
 }
 
 impl CatalogModel {
-    /// The first checkpoint of a freshly initialized store (§12): epoch 1, through-sequence 0, next
-    /// `GenerationId` 0, terminal counter 0, and weather logical ID zero reserved by setting the
-    /// weather repository's next candidate to one while leaving the weather state absent.
-    pub fn initial(store: StoreId, weather_kind: u16) -> Self {
-        let mut model = CatalogModel {
+    /// An empty projection, `const` so it can initialize a `static` rather than be returned by
+    /// value.
+    ///
+    /// This value is around 56 KiB. Nothing in this crate hands one back through a return slot for
+    /// that reason — every constructor here either fills a `&mut` the caller placed or, on a host,
+    /// hands back a [`Box`]. A board crate that copied one through a stack temporary would blow the
+    /// ~36 KiB task stack the nRF54L notes measure.
+    pub const fn empty(store: StoreId) -> Self {
+        CatalogModel {
             store,
             epoch: 1,
             through_sequence: 0,
@@ -97,13 +106,28 @@ impl CatalogModel {
             handoff: None,
             weather: None,
             ride: None,
-        };
-        let _ = model.repositories.push(RepositoryState {
+        }
+    }
+
+    /// Resets this projection to the first checkpoint of a freshly initialized store (§12): epoch 1,
+    /// through-sequence 0, next `GenerationId` 0, terminal counter 0, and weather logical ID zero
+    /// reserved by setting the weather repository's next candidate to one while leaving the
+    /// weather state absent.
+    pub fn reset_to_initial(&mut self, store: StoreId, weather_kind: u16) {
+        *self = CatalogModel::empty(store);
+        let _ = self.repositories.push(RepositoryState {
             kind: weather_kind,
             flags: 0,
             revision: obc_link::ids::Revision::ZERO,
             next_logical_id: obc_link::ids::LogicalObjectId::new(1),
         });
+    }
+
+    /// The same first checkpoint, boxed. Host-only for the reason [`empty`](Self::empty) gives.
+    #[cfg(any(test, feature = "std"))]
+    pub fn initial(store: StoreId, weather_kind: u16) -> std::boxed::Box<Self> {
+        let mut model = std::boxed::Box::new(CatalogModel::empty(store));
+        model.reset_to_initial(store, weather_kind);
         model
     }
 
@@ -130,31 +154,180 @@ impl CatalogModel {
     /// The record must be the contiguous successor of what this projection has absorbed: same
     /// store, same epoch, sequence exactly `through_sequence + 1` (§6.3). Everything past those
     /// three checks is the mutation's own semantics.
+    ///
+    /// **`apply` is all-or-nothing.** Every rule is proved against `&self` first and only then is
+    /// anything written, so a refused record leaves the projection byte-identical to what it was.
+    /// That is not a nicety: replay stops at the first record that does not apply, and a partially
+    /// applied one would make the mounted state a thing no sequence of records can produce.
     pub fn apply(&mut self, record: &JournalBody) -> core::result::Result<(), ApplyError> {
+        self.check(record)?;
+        self.commit(record);
+        Ok(())
+    }
+
+    /// Proves every rule `commit` then relies on. Reads only.
+    fn check(&self, record: &JournalBody) -> core::result::Result<(), ApplyError> {
         if record.store != self.store {
             return Err(ApplyError::StoreId);
         }
         if record.epoch != self.epoch {
             return Err(ApplyError::Epoch);
         }
-        if record.sequence != self.through_sequence + 1 {
+        let expected = self.through_sequence.checked_add(1).ok_or(ApplyError::Sequence)?;
+        if record.sequence != expected {
             return Err(ApplyError::Sequence);
         }
         let mutation = &record.mutation;
 
         // §6.1 bit 18: "the encoded cursor must be the current cursor plus one without wrap. The
-        // record reserves the former cursor value as its GenerationId."
+        // record reserves the former cursor value as its GenerationId." The reserved value is the
+        // *former* cursor, and §6.1 names exactly which entry of which record kind carries it, so
+        // the carrier is checked to hold that value rather than merely to be present.
         if let Some(cursor) = mutation.generation_cursor {
             if cursor != self.next_generation.checked_add(1).ok_or(ApplyError::GenerationCursor)? {
                 return Err(ApplyError::GenerationCursor);
             }
+            let reserved = self.next_generation;
+            let carried = match (record.kind, &mutation.active, &mutation.draft_parent, &mutation.ride) {
+                // "A normal claim carries that value in an active entry with flag bit 4."
+                (RecordKind::Claim, Some(Change::Put(row)), _, _) => {
+                    row.flags & ActiveOperation::FLAG_GENERATION_RESERVED != 0 && row.generation.get() == reserved
+                }
+                // "an update rollback-snapshot reservation carries it in the already-active install
+                // entry; and a parent-manifest work record ... in the draft-parent row's reserved
+                // resolution field."
+                (RecordKind::Work, Some(Change::Put(row)), _, _) => {
+                    row.flags & ActiveOperation::FLAG_GENERATION_RESERVED != 0 && row.generation.get() == reserved
+                }
+                (RecordKind::Work, _, Some(Change::Put(parent)), _) => parent.resolution.get() == reserved,
+                // "a pre-claim ride domain record carries it in ActiveRideState".
+                (RecordKind::Domain, _, _, Some(Change::Put(ride))) => ride.generation.get() == reserved,
+                _ => false,
+            };
+            if !carried {
+                return Err(ApplyError::GenerationCursor);
+            }
+        }
+
+        if let Some(repository) = &mutation.repository {
+            if !self.repositories.iter().any(|row| row.kind == repository.kind)
+                && self.repositories.len() == MAX_REPOSITORY_STATES
+            {
+                return Err(ApplyError::ResourceLimit(Record::RepositoryState));
+            }
+        }
+
+        match &mutation.active {
+            Some(Change::Put(row)) => {
+                let key = row.operation.to_bytes();
+                if !self.actives.iter().any(|held| held.operation.to_bytes() == key)
+                    && self.actives.len() == MAX_ACTIVE_OPERATIONS
+                {
+                    return Err(ApplyError::ResourceLimit(Record::ActiveOperation));
+                }
+            }
+            Some(Change::Remove(key)) if !self.actives.iter().any(|held| held.operation == *key) => {
+                return Err(ApplyError::MissingKey(Record::ActiveOperation))
+            }
+            Some(Change::Remove(_)) => {}
+            None => {}
+        }
+
+        match &mutation.head {
+            Some(Change::Put(row)) => {
+                if !self.heads.iter().any(|held| held.key == row.key) && self.heads.len() == MAX_CATALOG_HEADS {
+                    return Err(ApplyError::ResourceLimit(Record::CatalogHead));
+                }
+            }
+            Some(Change::Remove(key)) if !self.heads.iter().any(|held| held.key == *key) => {
+                return Err(ApplyError::MissingKey(Record::CatalogHead))
+            }
+            Some(Change::Remove(_)) => {}
+            None => {}
+        }
+
+        // §2 bounds draft parents at one, and §5.1 gives the region one row. A put that named a
+        // different parent while one was open would silently replace it and strand its parts, so it
+        // is a resource limit, not an update.
+        match &mutation.draft_parent {
+            Some(Change::Put(row)) => match self.draft_parent {
+                Some(open) if open.parent != row.parent => return Err(ApplyError::ResourceLimit(Record::DraftParent)),
+                _ => {}
+            },
+            Some(Change::Remove(key)) => match self.draft_parent {
+                Some(open) if open.parent == *key => {}
+                _ => return Err(ApplyError::MissingKey(Record::DraftParent)),
+            },
+            None => {}
+        }
+
+        // A part belongs to the parent this record leaves open — the one it puts, or the one
+        // already open. §5.3 keys a part by its parent, so a row naming any other parent is not a
+        // membership fact this projection can hold.
+        let effective_parent = match &mutation.draft_parent {
+            Some(Change::Put(row)) => Some(row.parent),
+            Some(Change::Remove(_)) => None,
+            None => self.draft_parent.map(|parent| parent.parent),
+        };
+        match &mutation.draft_part {
+            Some(Change::Put(row)) => {
+                if effective_parent != Some(row.key.parent) {
+                    return Err(ApplyError::MissingKey(Record::DraftParent));
+                }
+                if !self.draft_parts.iter().any(|held| held.key == row.key) && self.draft_parts.len() == MAX_DRAFT_PARTS
+                {
+                    return Err(ApplyError::ResourceLimit(Record::DraftPart));
+                }
+            }
+            Some(Change::Remove(key)) if !self.draft_parts.iter().any(|held| held.key == *key) => {
+                return Err(ApplyError::MissingKey(Record::DraftPart))
+            }
+            Some(Change::Remove(_)) => {}
+            None => {}
+        }
+
+        match &mutation.retained {
+            Some(Change::Put(row)) => {
+                if !self.retained.iter().any(|held| held.generation == row.generation)
+                    && self.retained.len() == MAX_RETAINED_PREVIOUS
+                {
+                    return Err(ApplyError::ResourceLimit(Record::RetainedPrevious));
+                }
+            }
+            Some(Change::Remove(key)) if !self.retained.iter().any(|held| held.generation == *key) => {
+                return Err(ApplyError::MissingKey(Record::RetainedPrevious))
+            }
+            Some(Change::Remove(_)) => {}
+            None => {}
+        }
+
+        if let Some(result) = &mutation.result {
+            // §5.3: "`terminal commit sequence` is the checkpoint's terminal-commit counter after
+            // increment", so the counter and the appended entry move together or not at all.
+            let next = self.terminal_counter.checked_add(1).ok_or(ApplyError::TerminalCounter)?;
+            if result.commit_sequence != next {
+                return Err(ApplyError::TerminalCounter);
+            }
+        }
+
+        if matches!(mutation.handoff, Some(Change::Remove(()))) && self.handoff.is_none() {
+            return Err(ApplyError::MissingKey(Record::HandoffRef));
+        }
+        if matches!(mutation.ride, Some(Change::Remove(()))) && self.ride.is_none() {
+            return Err(ApplyError::MissingKey(Record::ActiveRide));
+        }
+        Ok(())
+    }
+
+    /// Writes what [`check`](Self::check) proved. Infallible by construction.
+    fn commit(&mut self, record: &JournalBody) {
+        let mutation = &record.mutation;
+
+        if let Some(cursor) = mutation.generation_cursor {
             self.next_generation = cursor;
         }
 
         if let Some(repository) = &mutation.repository {
-            // A repository row appears the first time a record advances that kind's cursors; it is
-            // never removed. Working in indices rather than in a re-`find` keeps this whole arm
-            // free of a panic path.
             let index = match self.repositories.iter().position(|row| row.kind == repository.kind) {
                 Some(index) => index,
                 None => {
@@ -165,7 +338,7 @@ impl CatalogModel {
                         next_logical_id: obc_link::ids::LogicalObjectId::ZERO,
                     };
                     let position = self.repositories.iter().position(|row| row.kind > repository.kind);
-                    insert(&mut self.repositories, position, fresh, Record::RepositoryState)?;
+                    insert(&mut self.repositories, position, fresh);
                     position.unwrap_or(self.repositories.len() - 1)
                 }
             };
@@ -186,17 +359,14 @@ impl CatalogModel {
                     Some(index) => self.actives[index] = *row,
                     None => {
                         let position = self.actives.iter().position(|held| held.operation.to_bytes() > key);
-                        insert(&mut self.actives, position, *row, Record::ActiveOperation)?;
+                        insert(&mut self.actives, position, *row);
                     }
                 }
             }
             Some(Change::Remove(key)) => {
-                let index = self
-                    .actives
-                    .iter()
-                    .position(|held| held.operation == *key)
-                    .ok_or(ApplyError::MissingKey(Record::ActiveOperation))?;
-                remove(&mut self.actives, index);
+                if let Some(index) = self.actives.iter().position(|held| held.operation == *key) {
+                    remove(&mut self.actives, index);
+                }
             }
             None => {}
         }
@@ -206,16 +376,13 @@ impl CatalogModel {
                 Some(index) => self.heads[index] = *row,
                 None => {
                     let position = self.heads.iter().position(|held| held.key > row.key);
-                    insert(&mut self.heads, position, *row, Record::CatalogHead)?;
+                    insert(&mut self.heads, position, *row);
                 }
             },
             Some(Change::Remove(key)) => {
-                let index = self
-                    .heads
-                    .iter()
-                    .position(|held| held.key == *key)
-                    .ok_or(ApplyError::MissingKey(Record::CatalogHead))?;
-                remove(&mut self.heads, index);
+                if let Some(index) = self.heads.iter().position(|held| held.key == *key) {
+                    remove(&mut self.heads, index);
+                }
             }
             None => {}
         }
@@ -223,10 +390,7 @@ impl CatalogModel {
         match &mutation.draft_parent {
             Some(Change::Put(row)) => self.draft_parent = Some(*row),
             Some(Change::Remove(key)) => {
-                match self.draft_parent {
-                    Some(parent) if parent.parent == *key => self.draft_parent = None,
-                    _ => return Err(ApplyError::MissingKey(Record::DraftParent)),
-                }
+                self.draft_parent = None;
                 // §6.1: "Removing a terminal draft parent also removes every draft-part row with
                 // that parent in the same replay step."
                 retain_parts(&mut self.draft_parts, *key);
@@ -239,16 +403,13 @@ impl CatalogModel {
                 Some(index) => self.draft_parts[index] = *row,
                 None => {
                     let position = self.draft_parts.iter().position(|held| held.key.sort_key() > row.key.sort_key());
-                    insert(&mut self.draft_parts, position, *row, Record::DraftPart)?;
+                    insert(&mut self.draft_parts, position, *row);
                 }
             },
             Some(Change::Remove(key)) => {
-                let index = self
-                    .draft_parts
-                    .iter()
-                    .position(|held| held.key == *key)
-                    .ok_or(ApplyError::MissingKey(Record::DraftPart))?;
-                remove(&mut self.draft_parts, index);
+                if let Some(index) = self.draft_parts.iter().position(|held| held.key == *key) {
+                    remove(&mut self.draft_parts, index);
+                }
             }
             None => {}
         }
@@ -258,27 +419,19 @@ impl CatalogModel {
                 Some(index) => self.retained[index] = *row,
                 None => {
                     let position = self.retained.iter().position(|held| held.generation > row.generation);
-                    insert(&mut self.retained, position, *row, Record::RetainedPrevious)?;
+                    insert(&mut self.retained, position, *row);
                 }
             },
             Some(Change::Remove(key)) => {
-                let index = self
-                    .retained
-                    .iter()
-                    .position(|held| held.generation == *key)
-                    .ok_or(ApplyError::MissingKey(Record::RetainedPrevious))?;
-                remove(&mut self.retained, index);
+                if let Some(index) = self.retained.iter().position(|held| held.generation == *key) {
+                    remove(&mut self.retained, index);
+                }
             }
             None => {}
         }
 
         if let Some(result) = &mutation.result {
-            // §5.3: "`terminal commit sequence` is the checkpoint's terminal-commit counter after
-            // increment", so the counter and the appended entry move together or not at all.
             self.terminal_counter += 1;
-            if result.commit_sequence != self.terminal_counter {
-                return Err(ApplyError::TerminalCounter);
-            }
             if self.results.len() == MAX_TERMINAL_RESULTS {
                 // "Ring append writes `(result_start + result_count) mod 64`; when already full it
                 // overwrites `result_start` and advances that index by one. This is the only
@@ -293,10 +446,7 @@ impl CatalogModel {
 
         match &mutation.handoff {
             Some(Change::Put(row)) => self.handoff = Some(*row),
-            Some(Change::Remove(())) if self.handoff.take().is_none() => {
-                return Err(ApplyError::MissingKey(Record::HandoffRef))
-            }
-            Some(Change::Remove(())) => {}
+            Some(Change::Remove(())) => self.handoff = None,
             None => {}
         }
 
@@ -306,15 +456,11 @@ impl CatalogModel {
 
         match &mutation.ride {
             Some(Change::Put(row)) => self.ride = Some(*row),
-            Some(Change::Remove(())) if self.ride.take().is_none() => {
-                return Err(ApplyError::MissingKey(Record::ActiveRide))
-            }
-            Some(Change::Remove(())) => {}
+            Some(Change::Remove(())) => self.ride = None,
             None => {}
         }
 
         self.through_sequence = record.sequence;
-        Ok(())
     }
 
     /// The header this projection encodes to.
@@ -377,28 +523,23 @@ impl CatalogModel {
         Ok(())
     }
 
-    /// Reconstructs a projection from a validated checkpoint body.
-    pub fn decode_body(body: &[u8]) -> Result<Self> {
+    /// Reconstructs a projection from a validated checkpoint body, into a buffer the caller owns.
+    ///
+    /// The in-place form is the one the device can use: see [`empty`](Self::empty) for why nothing
+    /// here returns this value through a return slot.
+    pub fn decode_body_into(&mut self, body: &[u8]) -> Result<()> {
         let header = checkpoint::validate_body(body)?;
-        let mut model = CatalogModel {
+        *self = CatalogModel {
             store: header.store,
             epoch: header.epoch,
             through_sequence: header.through_sequence,
             next_generation: header.next_generation,
             terminal_counter: header.terminal_counter,
             flags: header.flags,
-            repositories: Vec::new(),
-            heads: Vec::new(),
-            actives: Vec::new(),
-            draft_parent: None,
-            draft_parts: Vec::new(),
-            retained: Vec::new(),
             result_start: header.result_start as usize,
-            results: Vec::new(),
-            handoff: None,
-            weather: None,
-            ride: None,
+            ..CatalogModel::empty(header.store)
         };
+        let model = self;
         for index in 0..header.repository_count as usize {
             let _ = model.repositories.push(RepositoryState::decode(&body[checkpoint::REPOSITORIES.slot(index)])?);
         }
@@ -430,6 +571,14 @@ impl CatalogModel {
         if header.ride_count == 1 {
             model.ride = Some(ActiveRide::decode(&body[checkpoint::RIDE.slot(0)])?);
         }
+        Ok(())
+    }
+
+    /// The same reconstruction, boxed. Host-only for the reason [`empty`](Self::empty) gives.
+    #[cfg(any(test, feature = "std"))]
+    pub fn decode_body(body: &[u8]) -> Result<std::boxed::Box<Self>> {
+        let mut model = std::boxed::Box::new(CatalogModel::empty(obc_link::ids::StoreId::ZERO));
+        model.decode_body_into(body)?;
         Ok(model)
     }
 }
@@ -445,22 +594,21 @@ fn write_region<T, const N: usize, const L: usize>(
     }
 }
 
-fn insert<T, const N: usize>(
-    vec: &mut Vec<T, N>,
-    position: Option<usize>,
-    value: T,
-    record: Record,
-) -> core::result::Result<(), ApplyError> {
-    if vec.len() == N {
-        return Err(ApplyError::ResourceLimit(record));
+/// Inserts at `position`, or appends when it is `None`.
+///
+/// Infallible: `check` proved the room before `commit` ran. A full vector here would be a bug in
+/// that proof rather than a state a record can reach, so the push simply cannot fail — and if it
+/// somehow did, dropping the row silently is still better than a panic on the replay path.
+fn insert<T, const N: usize>(vec: &mut Vec<T, N>, position: Option<usize>, value: T) {
+    debug_assert!(vec.len() < N, "capacity is proved by CatalogModel::check");
+    if vec.push(value).is_err() {
+        return;
     }
-    let index = position.unwrap_or(vec.len());
-    let _ = vec.push(value);
     let last = vec.len() - 1;
+    let index = position.unwrap_or(last);
     // `heapless::Vec` has no `insert`; rotating the freshly pushed element into place is the same
     // thing and stays allocation-free.
     vec[index..=last].rotate_right(1);
-    Ok(())
 }
 
 fn remove<T: Copy, const N: usize>(vec: &mut Vec<T, N>, index: usize) {
@@ -499,12 +647,11 @@ pub fn replay<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::journal::RecordKind;
     use super::super::samples;
     use super::*;
     use std::boxed::Box;
 
-    fn model() -> CatalogModel {
+    fn model() -> Box<CatalogModel> {
         CatalogModel::initial(samples::STORE, 4)
     }
 
@@ -613,7 +760,7 @@ mod tests {
         for key in 1..=3u64 {
             let row = samples::part(key);
             let position = model.draft_parts.iter().position(|held| held.key.sort_key() > row.key.sort_key());
-            insert(&mut model.draft_parts, position, row, Record::DraftPart).unwrap();
+            insert(&mut model.draft_parts, position, row);
         }
         let record = super::super::journal::JournalBody {
             store: samples::STORE,
@@ -649,18 +796,135 @@ mod tests {
         assert!(model.draft_parts.is_empty());
     }
 
+    /// A full region is a refusal, not a truncation — and the refusal has to leave the projection
+    /// exactly as it was, which is the property `check`-then-`commit` exists for.
     #[test]
     fn a_full_region_reports_a_resource_limit_rather_than_growing() {
         let mut model = model();
         for index in 0..MAX_CATALOG_HEADS {
             let row = samples::head(1, index as u64);
             let position = model.heads.iter().position(|held| held.key > row.key);
-            insert(&mut model.heads, position, row, Record::CatalogHead).unwrap();
+            insert(&mut model.heads, position, row);
         }
-        let row = samples::head(1, MAX_CATALOG_HEADS as u64);
-        assert_eq!(
-            insert(&mut model.heads, None, row, Record::CatalogHead),
-            Err(ApplyError::ResourceLimit(Record::CatalogHead))
-        );
+        let before = model.clone();
+        let record = samples::publish(1, 1, 0, samples::OP_A, 1, samples::head(1, MAX_CATALOG_HEADS as u64));
+        // The active row the terminal record removes has to exist, or that check fires first.
+        let mut model = model;
+        model.actives.push(samples::active(samples::OP_A)).unwrap();
+        let mut before = before;
+        before.actives.push(samples::active(samples::OP_A)).unwrap();
+
+        assert_eq!(model.apply(&record), Err(ApplyError::ResourceLimit(Record::CatalogHead)));
+        assert_eq!(model.as_ref(), before.as_ref(), "a refused record moved the projection");
+    }
+
+    /// MAJ-2's regression: every refusal path must leave the projection untouched, including the
+    /// ones that used to run after the terminal counter had already been incremented.
+    #[test]
+    fn every_refusal_leaves_the_projection_byte_identical() {
+        let mut model = model();
+        model.apply(&samples::claim(1, 1, 0, samples::OP_A, 1)).unwrap();
+        let before = model.clone();
+
+        // A result whose commit sequence is not the incremented counter.
+        let mut record = samples::publish(1, 2, 1, samples::OP_A, 9, samples::head(1, 7));
+        assert_eq!(model.apply(&record), Err(ApplyError::TerminalCounter));
+        assert_eq!(model, before);
+
+        // A head removal naming a head that does not exist.
+        record = samples::publish(1, 2, 1, samples::OP_A, 2, samples::head(1, 7));
+        record.mutation.head = Some(Change::Remove(HeadKey { kind: 1, id: obc_link::ids::LogicalObjectId::new(99) }));
+        assert_eq!(model.apply(&record), Err(ApplyError::MissingKey(Record::CatalogHead)));
+        assert_eq!(model, before);
+
+        // A retention removal naming a generation no entry holds.
+        let retention = samples::retention_remove(1, 2, 1, 40);
+        assert_eq!(model.apply(&retention), Err(ApplyError::MissingKey(Record::RetainedPrevious)));
+        assert_eq!(model, before);
+
+        // A ride removal with no ride state.
+        let mut ride_removal = samples::retention_remove(1, 2, 1, 40);
+        ride_removal.kind = RecordKind::Domain;
+        ride_removal.mutation =
+            super::super::journal::Mutation { ride: Some(Change::Remove(())), ..Default::default() };
+        assert_eq!(model.apply(&ride_removal), Err(ApplyError::MissingKey(Record::ActiveRide)));
+        assert_eq!(model, before);
+    }
+
+    /// MAJ-3: the one draft-parent row is a capacity, not a slot to overwrite. A second parent
+    /// would strand the first one's parts, which is exactly what §5.1's single row forbids.
+    #[test]
+    fn a_second_draft_parent_is_refused_rather_than_replacing_the_open_one() {
+        let mut model = model();
+        model.draft_parent = Some(samples::parent());
+        let before = model.clone();
+
+        let mut other = samples::parent();
+        other.parent = obc_link::ids::OperationId::new(samples::OP_B);
+        let mut record = samples::claim(1, 1, 0, samples::OP_B, 1);
+        record.mutation.draft_parent = Some(Change::Put(other));
+        assert_eq!(model.apply(&record), Err(ApplyError::ResourceLimit(Record::DraftParent)));
+        assert_eq!(model, before);
+
+        // The same parent is an ordinary state transition and applies.
+        let mut same = samples::parent();
+        same.state = super::super::entries::DraftParentState::ManifestStreaming;
+        let mut record = samples::claim(1, 1, 0, samples::OP_PARENT, 1);
+        record.mutation.draft_parent = Some(Change::Put(same));
+        model.apply(&record).unwrap();
+        assert_eq!(model.draft_parent.unwrap().state, super::super::entries::DraftParentState::ManifestStreaming);
+    }
+
+    /// MAJ-3: a part row names its parent, so one naming a parent this projection does not hold is
+    /// not a membership fact it can absorb.
+    #[test]
+    fn a_part_naming_a_foreign_parent_is_refused() {
+        let mut model = model();
+        model.draft_parent = Some(samples::parent());
+        let before = model.clone();
+
+        let mut foreign = samples::part(1);
+        foreign.key.parent = obc_link::ids::OperationId::new(samples::OP_B);
+        let mut record = samples::claim(1, 1, 0, samples::OP_PARENT, 1);
+        record.mutation.draft_part = Some(Change::Put(foreign));
+        assert_eq!(model.apply(&record), Err(ApplyError::MissingKey(Record::DraftParent)));
+        assert_eq!(model, before);
+    }
+
+    /// §6.1 bit 18 names the entry that carries the reserved generation, and the value it carries
+    /// is the *former* cursor. A carrier holding anything else is not a reservation.
+    #[test]
+    fn the_reserved_generation_must_appear_in_the_named_carrier() {
+        let mut model = model();
+        let mut record = samples::claim(1, 1, 0, samples::OP_A, 1);
+        // The claim's active row carries generation 0, the former cursor. Move it and the record
+        // stops being a reservation.
+        if let Some(Change::Put(row)) = &mut record.mutation.active {
+            row.generation = GenerationId::new(7);
+        }
+        assert_eq!(model.apply(&record), Err(ApplyError::GenerationCursor));
+
+        // Clearing flag bit 4 has the same effect: the row no longer claims to hold one.
+        let mut record = samples::claim(1, 1, 0, samples::OP_A, 1);
+        if let Some(Change::Put(row)) = &mut record.mutation.active {
+            row.flags &= !ActiveOperation::FLAG_GENERATION_RESERVED;
+        }
+        assert_eq!(model.apply(&record), Err(ApplyError::GenerationCursor));
+    }
+
+    /// The replay helper is the loop recovery runs; it stops at the first record that does not
+    /// apply and reports how many it absorbed.
+    #[test]
+    fn replay_absorbs_a_contiguous_prefix_and_stops_at_the_first_refusal() {
+        let mut model = model();
+        let records = [
+            samples::claim(1, 1, 0, samples::OP_A, 1),
+            samples::publish(1, 2, 1, samples::OP_A, 1, samples::head(1, 7)),
+            // Sequence 4 is not the successor of 2.
+            samples::claim(1, 4, 3, samples::OP_B, 2),
+        ];
+        assert_eq!(replay(&mut model, records.iter()), Err(ApplyError::Sequence));
+        assert_eq!(model.through_sequence, 2);
+        assert_eq!(replay(&mut model, records[..0].iter()), Ok(0));
     }
 }

@@ -47,14 +47,30 @@ impl InitRecord {
         out
     }
 
-    /// Encodes the complete 16,384-byte file: body, gate at offset 512, and the zero pad.
-    pub fn encode_slot(&self) -> [u8; SLOT_FILE_LEN] {
-        let mut out = [0u8; SLOT_FILE_LEN];
+    /// Writes the complete 16,384-byte file into `out`: body, gate at offset 512, and the zero pad.
+    ///
+    /// The in-place form is the one production code uses. A 16 KiB array returned by value is a
+    /// 16 KiB stack temporary at every call site, and the board's task stacks are measured in tens
+    /// of kilobytes. [`encode_slot`](Self::encode_slot) is the same bytes for a host that does not
+    /// care.
+    pub fn encode_slot_into(&self, out: &mut [u8]) -> Result<()> {
+        if out.len() != SLOT_FILE_LEN {
+            return Err(DecodeError::new(Record::Init, Reason::Length));
+        }
+        out.fill(0);
         let body = self.encode_body();
-        put_bytes(&mut out, 0, &body);
+        put_bytes(out, 0, &body);
         let (scope, sequence) = Self::binding(self.store);
         let gate = Gate { magic: MAGIC_INIT, slot: 0, scope, sequence, body_crc: u32_at(&body, SMALL_BODY_CRC_OFFSET) };
-        put_bytes(&mut out, SMALL_GATE_OFFSET, &gate.encode());
+        put_bytes(out, SMALL_GATE_OFFSET, &gate.encode());
+        Ok(())
+    }
+
+    /// The same file, returned by value. Host-only: see [`encode_slot_into`](Self::encode_slot_into).
+    #[cfg(any(test, feature = "std"))]
+    pub fn encode_slot(&self) -> [u8; SLOT_FILE_LEN] {
+        let mut out = [0u8; SLOT_FILE_LEN];
+        self.encode_slot_into(&mut out).expect("a stride-sized buffer");
         out
     }
 

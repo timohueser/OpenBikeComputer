@@ -148,6 +148,7 @@ const OP_A: [u8; 16] = [0xa1; 16];
 const OP_PARENT: [u8; 16] = [0xc3; 16];
 const OP_CHILD: [u8; 16] = [0xd4; 16];
 const OP_INSTALL: [u8; 16] = [0xe5; 16];
+const OP_ABORT: [u8; 16] = [0xf6; 16];
 const OP_RIDE: [u8; 16] = [0xc1; 16];
 const PART_REF: [u8; 16] = [0x5a; 16];
 const INTENT: [u8; 32] = [0x11; 32];
@@ -265,15 +266,39 @@ fn retained_entry(generation: u64, reasons: u8, lease_count: u16) -> Vec<u8> {
 
 /// §5.3's 208-byte terminal result.
 fn result_entry(commit_sequence: u64, operation: &[u8; 16]) -> Vec<u8> {
+    typed_result_entry(commit_sequence, operation, 1, 1, &[0x5a; 64])
+}
+
+/// The same entry at any `(terminal state, result type)` with an explicit body, so the length
+/// column of §5.3's table can be exercised value by value.
+fn typed_result_entry(
+    commit_sequence: u64,
+    operation: &[u8; 16],
+    terminal_state: u8,
+    result_type: u8,
+    body: &[u8],
+) -> Vec<u8> {
     let mut out = zeros(208);
     u64_at(&mut out, 0, commit_sequence);
     bytes_at(&mut out, 8, operation);
     bytes_at(&mut out, 24, &INTENT);
     bytes_at(&mut out, 56, &PRINCIPAL);
-    out[88] = 1;
-    out[89] = 1;
-    u16_at(&mut out, 90, 64);
-    bytes_at(&mut out, 104, &[0x5a; 64]);
+    out[88] = terminal_state;
+    out[89] = result_type;
+    u16_at(&mut out, 90, body.len() as u16);
+    bytes_at(&mut out, 104, body);
+    out
+}
+
+/// §5.3's `DomainResult`: "OperationId `[16]`, StoreId `[16]`, ObjectKind/domain `u16`, outcome
+/// `u16`, domain-state revision `u64`, and reserved zero `u32`, exactly 48 bytes."
+fn domain_result_body(operation: &[u8; 16], domain: u16, outcome: u16, revision: u64) -> Vec<u8> {
+    let mut out = zeros(48);
+    bytes_at(&mut out, 0, operation);
+    bytes_at(&mut out, 16, &STORE);
+    u16_at(&mut out, 32, domain);
+    u16_at(&mut out, 34, outcome);
+    u64_at(&mut out, 36, revision);
     out
 }
 
@@ -311,8 +336,22 @@ fn ride_entry() -> Vec<u8> {
     out
 }
 
-/// §10's 240-byte HandoffRef.
+/// §10's 240-byte HandoffRef at a phase with no observed outcome yet.
 fn handoff_ref(sequence: u64, phase: u8) -> Vec<u8> {
+    handoff_ref_full(sequence, phase, 0, 0, 0)
+}
+
+/// The same reference with §10's observation fields filled: the OBCU outcome at byte 9, the
+/// terminal-result commit sequence at 184, and the observed outcome generation at 192.
+fn handoff_ref_full(sequence: u64, phase: u8, outcome: u8, terminal_commit: u64, outcome_generation: u32) -> Vec<u8> {
+    let mut out = handoff_ref_base(sequence, phase);
+    out[9] = outcome;
+    u64_at(&mut out, 184, terminal_commit);
+    u32_at(&mut out, 192, outcome_generation);
+    out
+}
+
+fn handoff_ref_base(sequence: u64, phase: u8) -> Vec<u8> {
     let mut out = zeros(240);
     u64_at(&mut out, 0, sequence);
     out[8] = phase;
@@ -412,6 +451,17 @@ impl Checkpoint {
         bytes_at(&mut file, CHECKPOINT_GATE_OFFSET, &gate(b"O2CG", slot, self.epoch, self.through_sequence, crc));
         file
     }
+}
+
+/// Rebuilds a mutated checkpoint file's body CRC and its gate, so the only thing that can refuse it
+/// is the rule under test.
+fn reseal_checkpoint(file: &mut [u8], slot: u16) {
+    let crc = crc32_with_hole(&file[..CHECKPOINT_BODY_LEN], CHECKPOINT_BODY_CRC_OFFSET);
+    u32_at(file, CHECKPOINT_BODY_CRC_OFFSET, crc);
+    let epoch = u64::from_le_bytes(file[24..32].try_into().expect("eight bytes"));
+    let through = u64::from_le_bytes(file[32..40].try_into().expect("eight bytes"));
+    let gate = gate(b"O2CG", slot, epoch, through, crc);
+    bytes_at(file, CHECKPOINT_GATE_OFFSET, &gate);
 }
 
 /// A journal record's mutation, built from §6.1's presence bits and entry offsets.
@@ -750,7 +800,143 @@ pub fn files() -> Vec<VectorFile> {
         init_record_file(),
         resolution_file(),
         slot_stride_file(),
+        terminal_result_file(),
+        storage_claim_tag_file(),
     ]
+}
+
+/// §5.3's terminal-result table, one case per `(result type, encoded length)` pair, plus the
+/// `DomainResult` codec the storage-local producers use and the length rule's negative twin.
+fn terminal_result_file() -> VectorFile {
+    let in_checkpoint = |entry: Vec<u8>| {
+        let mut checkpoint = empty_checkpoint();
+        checkpoint.result_start = 0;
+        checkpoint.results = vec![entry];
+        checkpoint.terminal_counter = 1;
+        checkpoint.file(0)
+    };
+    let aborted_error_body = {
+        // A diagnostic-text-free ErrorBody: category `semanticValidation`, detail 1.
+        let mut body = zeros(48);
+        u16_at(&mut body, 0, 14);
+        u16_at(&mut body, 2, 1);
+        body
+    };
+    let mut wrong_length = typed_result_entry(1, &OP_A, 1, 1, &[0x5a; 64]);
+    u16_at(&mut wrong_length, 90, 88);
+
+    file(
+        "terminal-result",
+        "OBC2_Storage_Format.md §5.3",
+        "Every result type at its exact encoded length, the DomainResult codec, and the pairing rule that binds the two.",
+        vec![
+            Case::accept(
+                "aborted-error-body-48",
+                "Terminal state aborted, result type 0, a 48-byte ErrorBody with no diagnostic text.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(typed_result_entry(1, &OP_A, 2, 0, &aborted_error_body)),
+            ),
+            Case::accept(
+                "object-result-64",
+                "The ordinary publication result.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(typed_result_entry(1, &OP_A, 1, 1, &[0x5a; 64])),
+            ),
+            Case::accept(
+                "draft-part-result-88",
+                "The largest result, which is exactly the 88-byte body reservation.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(typed_result_entry(1, &OP_CHILD, 1, 2, &[0x6b; 88])),
+            ),
+            Case::accept(
+                "abort-result-56",
+                "AbortOperation's own result.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(typed_result_entry(1, &OP_ABORT, 1, 3, &[0x7c; 56])),
+            ),
+            Case::accept(
+                "domain-result-weather-changed",
+                "DomainResult outcome 1, weatherRequestChanged, with the domain-state revision equal to the new request-context revision.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(typed_result_entry(1, &OP_A, 1, 4, &domain_result_body(&OP_A, 4, 1, 3))),
+            ),
+            Case::accept(
+                "domain-result-update-state-changed",
+                "DomainResult outcome 2, updateStateChanged, with the new update repository Revision.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(typed_result_entry(1, &OP_INSTALL, 1, 4, &domain_result_body(&OP_INSTALL, 7, 2, 9))),
+            ),
+            Case::reject(
+                "length-that-contradicts-its-type",
+                "An ObjectResult declaring 88 bytes: the type fixes the length and the two must agree.",
+                Subject::Checkpoint,
+                0,
+                in_checkpoint(wrong_length),
+                "Overflow",
+            ),
+        ],
+    )
+}
+
+/// §5.3's storage-internal claim tags, which are positives rather than rejections: they are
+/// registered here and nowhere else, and a row carrying one is a perfectly ordinary active row.
+fn storage_claim_tag_file() -> VectorFile {
+    let claim = |opcode: u16, phase: u8| {
+        let mutation = Mutation {
+            presence: P_ACTIVE_PUT,
+            active: Some(active_entry(&OP_A, opcode, phase, 0x08)),
+            ..Mutation::default()
+        };
+        journal_slot(1, 1, 0, 1, Some(&OP_A), &mutation)
+    };
+    file(
+        "storage-claim-tags",
+        "OBC2_Storage_Format.md §5.3",
+        "The two 0xFF00-block claim tags a local producer stores, against the wire opcodes the other local producers store.",
+        vec![
+            Case::accept(
+                "weather-context-change-ff01",
+                "The device-local weather-context claim, in the reserved ninth row.",
+                Subject::JournalSlot,
+                0,
+                claim(0xFF01, 5),
+            ),
+            Case::accept(
+                "update-reconciliation-ff02",
+                "The post-boot update-state reconciliation claim, also in the reserved row.",
+                Subject::JournalSlot,
+                0,
+                claim(0xFF02, 5),
+            ),
+            Case::accept(
+                "ride-publication-stores-start-upload",
+                "A ride publication mirrors a wire operation and stores its opcode, 0x0100.",
+                Subject::JournalSlot,
+                0,
+                claim(0x0100, 5),
+            ),
+            Case::accept(
+                "map-import-stores-begin-draft",
+                "A staged map import stores 0x0130 for its draft parent.",
+                Subject::JournalSlot,
+                0,
+                claim(0x0130, 2),
+            ),
+            Case::accept(
+                "map-import-child-stores-start-draft-part",
+                "And 0x0131 for its single child.",
+                Subject::JournalSlot,
+                0,
+                claim(0x0131, 1),
+            ),
+        ],
+    )
 }
 
 fn gate_file() -> VectorFile {
@@ -829,18 +1015,91 @@ fn populated_checkpoint() -> Checkpoint {
     }
 }
 
+/// §5.3's head entry with a full-width envelope: "the 96-byte envelope reservation is exactly the
+/// catalog-projection ceiling of the metadata registry".
+fn head_entry_full_envelope(kind: u16, id: u64) -> Vec<u8> {
+    let mut out = head_entry(kind, id, None);
+    u16_at(&mut out, 40, 96);
+    for index in 0..96usize {
+        out[48 + index] = (index as u8) | 1;
+    }
+    out
+}
+
 fn checkpoint_populated_file() -> VectorFile {
     file(
         "checkpoint-populated",
         "OBC2_Storage_Format.md §5.1, §5.3",
         "Every region occupied at once, including a result ring that wraps past index 63 and a manifest head carrying its resolution generation.",
-        vec![Case::accept(
-            "all-regions-occupied",
-            "Three repositories, three heads, two actives, a draft parent with a sealed and a prepared part, two retained reasons, a wrapped result ring, a handoff, weather and an active ride.",
-            Subject::Checkpoint,
-            0,
-            populated_checkpoint().file(0),
-        )],
+        vec![
+            Case::accept(
+                "all-regions-occupied",
+                "Three repositories, three heads, two actives, a draft parent with a sealed and a prepared part, two retained reasons, a wrapped result ring, a handoff, weather and an active ride.",
+                Subject::Checkpoint,
+                0,
+                populated_checkpoint().file(0),
+            ),
+            Case::accept(
+                "catalog-envelope-at-its-ceiling",
+                "A head whose envelope fills the whole 96-byte reservation, which is the largest a registered schema may grow into. The bound reads as inclusive: 96 is a length the field can hold, not one past it.",
+                Subject::Checkpoint,
+                0,
+                {
+                    let mut checkpoint = empty_checkpoint();
+                    checkpoint.heads = vec![head_entry_full_envelope(1, 3)];
+                    checkpoint.file(0)
+                },
+            ),
+            Case::accept(
+                "draft-parent-manifest-streaming",
+                "State 2: the parent-owned manifest is streaming.",
+                Subject::Checkpoint,
+                0,
+                {
+                    let mut checkpoint = empty_checkpoint();
+                    checkpoint.parent = Some(parent_entry(2));
+                    checkpoint.file(0)
+                },
+            ),
+            Case::accept(
+                "draft-parent-finalizing-with-its-resolution",
+                "State 3, the only state in which the reserved resolution GenerationId is meaningful.",
+                Subject::Checkpoint,
+                0,
+                {
+                    let mut parent = parent_entry(3);
+                    u64_at(&mut parent, 116, 92);
+                    let mut checkpoint = empty_checkpoint();
+                    checkpoint.parent = Some(parent);
+                    checkpoint.file(0)
+                },
+            ),
+            Case::accept(
+                "draft-parent-aborting",
+                "State 4: no new parts and no finalization.",
+                Subject::Checkpoint,
+                0,
+                {
+                    let mut checkpoint = empty_checkpoint();
+                    checkpoint.parent = Some(parent_entry(4));
+                    checkpoint.file(0)
+                },
+            ),
+            Case::reject(
+                "draft-parent-resolution-outside-finalizing",
+                "The reserved resolution field is inactive zero in every state but finalizing.",
+                Subject::Checkpoint,
+                0,
+                {
+                    let mut parent = parent_entry(1);
+                    u64_at(&mut parent, 116, 92);
+                    let mut checkpoint = empty_checkpoint();
+                    checkpoint.parent = Some(parent);
+                    checkpoint.file(0)
+                },
+                "Reserved",
+            ),
+        ],
     )
 }
 
@@ -852,25 +1111,49 @@ fn checkpoint_negative_file() -> VectorFile {
     let mut duplicate = base.clone();
     duplicate.heads[1] = head_entry(1, 3, None);
 
+    // Both of these mutate a complete file, so the body CRC **and** the gate are rebuilt: the
+    // declared reason has to be the rule that actually refuses first, not a stale checksum standing
+    // in front of it.
     let mut over_capacity = base.clone().file(0);
     u16_at(&mut over_capacity, 50, 257);
-    let crc = crc32_with_hole(&over_capacity[..CHECKPOINT_BODY_LEN], CHECKPOINT_BODY_CRC_OFFSET);
-    u32_at(&mut over_capacity, CHECKPOINT_BODY_CRC_OFFSET, crc);
+    reseal_checkpoint(&mut over_capacity, 0);
 
     let mut nonzero_tail = base.clone().file(0);
     nonzero_tail[60_200] = 1;
-    let crc = crc32_with_hole(&nonzero_tail[..CHECKPOINT_BODY_LEN], CHECKPOINT_BODY_CRC_OFFSET);
-    u32_at(&mut nonzero_tail, CHECKPOINT_BODY_CRC_OFFSET, crc);
+    reseal_checkpoint(&mut nonzero_tail, 0);
 
     let mut torn_body = base.clone().file(0);
     torn_body[600] ^= 0xFF;
 
+    // Nine rows fit only as "eight normal plus the one reserved". Ten normal rows is the count
+    // rule; nine normal rows plus the reserved one is the *composition* rule, and they are
+    // different refusals of the same region.
     let mut ten_actives = base.clone();
     ten_actives.actives = (0..10)
         .map(|index| {
             let mut operation = OP_A;
             operation[0] = index;
             active_entry(&operation, 0x0100, 3, 0)
+        })
+        .collect();
+
+    let mut nine_normal_rows = base.clone();
+    nine_normal_rows.actives = (0..9)
+        .map(|index| {
+            let mut operation = OP_A;
+            operation[0] = index;
+            // No reserved-slot flag on any of them: nine *normal* claims, which §5.2 forbids.
+            active_entry(&operation, 0x0100, 3, 0)
+        })
+        .collect();
+
+    let mut eight_plus_reserved = base.clone();
+    eight_plus_reserved.actives = (0..9)
+        .map(|index| {
+            let mut operation = OP_A;
+            operation[0] = index;
+            let flags = if index == 8 { 0x08 } else { 0 };
+            active_entry(&operation, 0x0100, 3, flags)
         })
         .collect();
 
@@ -921,11 +1204,26 @@ fn checkpoint_negative_file() -> VectorFile {
             ),
             Case::reject(
                 "ten-active-rows",
-                "At most eight normal rows plus the one reserved row.",
+                "The region holds nine rows: a tenth is above its capacity.",
                 Subject::Checkpoint,
                 0,
                 ten_actives.file(0),
                 "Count",
+            ),
+            Case::reject(
+                "nine-normal-active-rows",
+                "Nine rows fit, but only as eight normal claims plus the one reserved cancellation/recovery row.",
+                Subject::Checkpoint,
+                0,
+                nine_normal_rows.file(0),
+                "Count",
+            ),
+            Case::accept(
+                "eight-normal-rows-plus-the-reserved-one",
+                "The composition that does fit: eight ordinary claims and one row carrying flag bit 3.",
+                Subject::Checkpoint,
+                0,
+                eight_plus_reserved.file(0),
             ),
         ],
     )
@@ -937,12 +1235,15 @@ const P_HEAD_PUT: u32 = 1 << 2;
 const P_HEAD_REMOVE: u32 = 1 << 3;
 const P_PARENT_PUT: u32 = 1 << 4;
 const P_PART_PUT: u32 = 1 << 6;
+const P_PARENT_REMOVE: u32 = 1 << 5;
+const P_PART_REMOVE: u32 = 1 << 7;
 const P_PREVIOUS_PUT: u32 = 1 << 8;
 const P_PREVIOUS_REMOVE: u32 = 1 << 9;
 const P_RESULT_APPEND: u32 = 1 << 10;
 const P_HANDOFF_PUT: u32 = 1 << 11;
 const P_HANDOFF_REMOVE: u32 = 1 << 12;
 const P_REPOSITORY_REVISION: u32 = 1 << 13;
+const P_REPOSITORY_CURSOR: u32 = 1 << 14;
 const P_WEATHER_PUT: u32 = 1 << 15;
 const P_RIDE_PUT: u32 = 1 << 16;
 const P_RIDE_REMOVE: u32 = 1 << 17;
@@ -1010,7 +1311,14 @@ fn journal_kinds_file() -> VectorFile {
         let mut removal = zeros(128);
         bytes_at(&mut removal, 0, &OP_A);
         let mutation = Mutation {
-            presence: P_ACTIVE_REMOVE | P_HEAD_PUT | P_RESULT_APPEND | P_WEATHER_PUT | P_PREVIOUS_PUT,
+            presence: P_ACTIVE_REMOVE
+                | P_HEAD_PUT
+                | P_RESULT_APPEND
+                | P_WEATHER_PUT
+                | P_PREVIOUS_PUT
+                | P_REPOSITORY_REVISION,
+            repository_kind: 4,
+            repository_revision: 12,
             active: Some(removal),
             head: Some(head_entry(4, 0, None)),
             result: Some(result_entry(2, &OP_A)),
@@ -1047,6 +1355,43 @@ fn journal_kinds_file() -> VectorFile {
             Case::accept("draft-claim", "A parent claim that atomically puts the parent and its first prepared part.", Subject::JournalSlot, 8, draft_claim),
         ],
     )
+}
+
+/// Offsets of the mutation's entry slots, for the removal cases below.
+fn at_active() -> usize {
+    40
+}
+fn at_parent() -> usize {
+    328
+}
+fn at_part() -> usize {
+    456
+}
+fn at_previous() -> usize {
+    552
+}
+
+/// One terminal record whose only interesting content is the removal entry under test.
+///
+/// A removal never travels alone: §6.1 requires a terminal record to remove its active row and
+/// append its result, so each case is wrapped in the smallest record that admits it.
+fn removal_record(presence: u32, offset: usize, entry: Vec<u8>) -> Vec<u8> {
+    let mut active_removal = zeros(128);
+    bytes_at(&mut active_removal, 0, &OP_A);
+    let mut mutation = Mutation {
+        presence: P_ACTIVE_REMOVE | P_RESULT_APPEND | presence,
+        active: Some(active_removal),
+        result: Some(result_entry(1, &OP_A)),
+        ..Mutation::default()
+    };
+    match offset {
+        40 => mutation.active = Some(entry),
+        328 => mutation.parent = Some(entry),
+        456 => mutation.part = Some(entry),
+        552 => mutation.retained = Some(entry),
+        _ => unreachable!("no other entry offset has a removal case"),
+    }
+    journal_slot(1, 2, 1, 3, Some(&OP_A), &mutation)
 }
 
 fn journal_removal_keys_file() -> VectorFile {
@@ -1131,6 +1476,105 @@ fn journal_removal_keys_file() -> VectorFile {
                 ride_removal_extra,
                 "KeyBytes",
             ),
+            Case::accept(
+                "active-operation-removal",
+                "Sixteen key bytes and nothing else — this entry shape has no occupied byte.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_ACTIVE_REMOVE, at_active(), {
+                    let mut entry = zeros(128);
+                    bytes_at(&mut entry, 0, &OP_A);
+                    entry
+                }),
+            ),
+            Case::reject(
+                "active-operation-removal-with-payload-byte",
+                "A nonzero byte outside the key range.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_ACTIVE_REMOVE, at_active(), {
+                    let mut entry = zeros(128);
+                    bytes_at(&mut entry, 0, &OP_A);
+                    entry[84] = 3;
+                    entry
+                }),
+                "KeyBytes",
+            ),
+            Case::accept(
+                "draft-parent-removal",
+                "The parent's own 16 key bytes.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_PARENT_REMOVE, at_parent(), {
+                    let mut entry = zeros(128);
+                    bytes_at(&mut entry, 0, &OP_PARENT);
+                    entry
+                }),
+            ),
+            Case::accept(
+                "draft-part-removal",
+                "Parent, DraftPartKind and part key; the child operation and every payload field are zero.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_PART_REMOVE, at_part(), {
+                    let mut entry = zeros(96);
+                    bytes_at(&mut entry, 0, &OP_PARENT);
+                    u16_at(&mut entry, 48, 1);
+                    u64_at(&mut entry, 52, 1);
+                    entry
+                }),
+            ),
+            Case::reject(
+                "draft-part-removal-with-a-generation",
+                "The generation is not a key byte.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_PART_REMOVE, at_part(), {
+                    let mut entry = zeros(96);
+                    bytes_at(&mut entry, 0, &OP_PARENT);
+                    u16_at(&mut entry, 48, 1);
+                    u64_at(&mut entry, 52, 1);
+                    u64_at(&mut entry, 60, 91);
+                    entry
+                }),
+                "KeyBytes",
+            ),
+            Case::accept(
+                "retained-previous-removal",
+                "The occupied byte and the generation key.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_PREVIOUS_REMOVE, at_previous(), {
+                    let mut entry = zeros(64);
+                    entry[0] = 1;
+                    u64_at(&mut entry, 16, 40);
+                    entry
+                }),
+            ),
+            Case::reject(
+                "retained-previous-removal-with-reasons",
+                "The reason flags are not key bytes: a removal names the entry, it does not describe it.",
+                Subject::JournalSlot,
+                1,
+                removal_record(P_PREVIOUS_REMOVE, at_previous(), {
+                    let mut entry = zeros(64);
+                    entry[0] = 1;
+                    entry[1] = 0b001;
+                    u64_at(&mut entry, 16, 40);
+                    entry
+                }),
+                "KeyBytes",
+            ),
+            Case::accept(
+                "update-handoff-removal",
+                "The singleton removal is all 240 bytes zero; the presence bit is what distinguishes it from absence.",
+                Subject::JournalSlot,
+                1,
+                {
+                    let mutation = Mutation { presence: P_HANDOFF_REMOVE, ..Mutation::default() };
+                    journal_slot(1, 2, 1, 5, None, &mutation)
+                },
+            ),
             Case::reject(
                 "active-ride-removal-unoccupied",
                 "Occupied must be exactly 1.",
@@ -1211,14 +1655,6 @@ fn journal_negative_file() -> VectorFile {
         };
         journal_slot(1, 1, 0, 1, Some(&OP_A), &mutation)
     };
-    let claim_tag = {
-        let mutation = Mutation {
-            presence: P_ACTIVE_PUT,
-            active: Some(active_entry(&OP_A, 0xFF01, 5, 0x08)),
-            ..Mutation::default()
-        };
-        journal_slot(1, 1, 0, 1, Some(&OP_A), &mutation)
-    };
     let wrong_slot = journal_slot(
         1,
         1,
@@ -1235,13 +1671,6 @@ fn journal_negative_file() -> VectorFile {
         "OBC2_Storage_Format.md §6.1",
         "The per-kind combination rules, the presence-bit rules, and the storage-internal claim-tag registry.",
         vec![
-            Case::accept(
-                "storage-internal-claim-tag",
-                "A weather-context claim carries tag 0xFF01, which is registered only in storage.",
-                Subject::JournalSlot,
-                0,
-                claim_tag,
-            ),
             Case::reject(
                 "claim-that-mutates-a-head",
                 "A claim record forbids head mutation.",
@@ -1308,11 +1737,27 @@ fn journal_negative_file() -> VectorFile {
             ),
             Case::reject(
                 "wrong-physical-slot",
-                "Slot i must carry the sequence the mapping rule gives it.",
+                "The body's own slot index must equal the physical slot it was read from. Section 6.3's sequence-to-slot mapping is a separate replay rule.",
                 Subject::JournalSlot,
                 0,
                 wrong_slot,
                 "SlotIndex",
+            ),
+            Case::accept(
+                "repository-logical-id-cursor",
+                "Presence bit 14 alone: the repository's next logical-ID candidate and its exhausted flag move without its revision.",
+                Subject::JournalSlot,
+                0,
+                {
+                    let mutation = Mutation {
+                        presence: P_ACTIVE_PUT | P_REPOSITORY_CURSOR,
+                        repository_kind: 1,
+                        next_logical_id: 9,
+                        active: Some(active_entry(&OP_A, 0x0100, 3, 0x10)),
+                        ..Mutation::default()
+                    };
+                    journal_slot(1, 1, 0, 1, Some(&OP_A), &mutation)
+                },
             ),
             Case::reject(
                 "nonzero-slot-pad",
@@ -1443,8 +1888,24 @@ fn resolution_file() -> VectorFile {
     let mut unordered = resolution_body(&[(PART_REF, 91), ([0x01; 16], 92)]);
     let mut truncated = resolution_body(&[(PART_REF, 91), ([0x7f; 16], 92)]);
     truncated.truncate(truncated.len() - 1);
-    let mut zero_count = resolution_body(&[(PART_REF, 91)]);
-    u32_at(&mut zero_count, 0, 0);
+    // Two separate single-fault cases: a count of zero in a body whose length agrees with it, and
+    // a count above the 32-child maximum in a body whose length agrees with *that*. Mutating only
+    // the count of a longer body would trip the length rule first and prove nothing about the
+    // count bound.
+    let zero_count = {
+        let mut out = zeros(8);
+        u32_at(&mut out, 0, 0);
+        out
+    };
+    let over_maximum = {
+        let mut out = zeros(8 + 33 * 24);
+        u32_at(&mut out, 0, 33);
+        for index in 0..33usize {
+            out[8 + index * 24] = index as u8;
+            u64_at(&mut out, 8 + index * 24 + 16, 100 + index as u64);
+        }
+        out
+    };
     let mut duplicate = resolution_body(&[(PART_REF, 91), (PART_REF, 92)]);
     u32_at(&mut duplicate, 0, 2);
     u32_at(&mut unordered, 0, 2);
@@ -1456,7 +1917,22 @@ fn resolution_file() -> VectorFile {
         vec![
             Case::accept("one-entry", "The smallest table: eight header bytes and one 24-byte entry.", Subject::Resolution, 0, one),
             Case::accept("thirty-two-entries", "The 32-child maximum, 776 bytes, which bounds a full reachability pass.", Subject::Resolution, 0, maximum),
-            Case::reject("count-zero", "The count is 1 through 32.", Subject::Resolution, 0, zero_count, "Count"),
+            Case::reject(
+                "count-zero",
+                "The count is 1 through 32; an eight-byte body declaring zero entries is the smallest way to violate it.",
+                Subject::Resolution,
+                0,
+                zero_count,
+                "Count",
+            ),
+            Case::reject(
+                "count-above-the-maximum",
+                "Thirty-three entries, in a body whose length agrees with the count, so the bound is what refuses it.",
+                Subject::Resolution,
+                0,
+                over_maximum,
+                "Count",
+            ),
             Case::reject("truncated-body", "A cut during the one-shot write leaves a body whose count and length disagree.", Subject::Resolution, 0, truncated, "Length"),
             Case::reject("entries-out-of-order", "Entries are ordered by DraftPartRef bytes, compared lexicographically.", Subject::Resolution, 0, unordered, "Order"),
             Case::reject("duplicate-reference", "Refs are unique.", Subject::Resolution, 0, duplicate, "Duplicate"),
@@ -1528,6 +2004,9 @@ pub struct Transcript {
     pub steps: &'static [Step],
     /// The states a reboot after any cut may produce, named.
     pub outcomes: &'static [&'static str],
+    /// Anything a reader must know about how normative this sequence is. Empty when the ordering is
+    /// exactly what the spec fixes.
+    pub note: &'static str,
 }
 
 const fn write(file: &'static str, offset: usize, length: usize, note: &'static str) -> Step {
@@ -1594,6 +2073,7 @@ pub fn transcripts() -> Vec<Transcript> {
             description: "One journal record. Journal slots are the single exemption from the invalidate-first discipline, so the body write carries the zeroed gate sector itself.",
             steps: &JOURNAL_APPEND,
             outcomes: &["the projection before the record", "the projection after it"],
+            note: "",
         },
         Transcript {
             name: "checkpoint-compaction",
@@ -1605,6 +2085,7 @@ pub fn transcripts() -> Vec<Transcript> {
                 "the new checkpoint alone, which is the same catalog at epoch E + 1",
                 "the new checkpoint plus the first record of the new epoch",
             ],
+            note: "PROVISIONAL, in one respect only: the body appears here as a single 65,024-byte write because that is what the reference implementation does. Section 6.3 specifies a bounded forward pass, region by region and entry by entry, staging at most one 208-byte entry plus a 512-byte sector — so a conforming writer emits many writes here, not one. The ordering around it is normative and is what the cut points test: invalidate the inactive gate, sync; write the whole body, sync; write the gate, sync; only then the first record of the new epoch. The streaming pass lands with the compaction engine and will replace this step's shape.",
         },
         Transcript {
             name: "work-seal",
@@ -1612,6 +2093,7 @@ pub fn transcripts() -> Vec<Transcript> {
             description: "The sealed WORK slot, the one durable work fact both device profiles write.",
             steps: &WORK_SEAL,
             outcomes: &["the previous WORK slot", "the sealed WORK slot"],
+            note: "",
         },
         Transcript {
             name: "arm-phase-advance",
@@ -1619,6 +2101,7 @@ pub fn transcripts() -> Vec<Transcript> {
             description: "One handoff phase advance across the alternating ARM pair.",
             steps: &ARM_ADVANCE,
             outcomes: &["the old (sequence, phase) pair", "the strictly greater new pair"],
+            note: "",
         },
         Transcript {
             name: "manifest-publication",
@@ -1630,6 +2113,7 @@ pub fn transcripts() -> Vec<Transcript> {
                 "the published manifest head together with its resolution generation",
             ]
             .as_slice(),
+            note: "The resolution body's length is the table's, not a fixed record size, so its write appears with length zero here.",
         },
     ]
 }
@@ -1657,10 +2141,11 @@ pub fn transcripts_json() -> String {
                 .collect();
             let outcomes: Vec<String> = transcript.outcomes.iter().map(|outcome| format!("        \"{outcome}\"")).collect();
             format!(
-                "    {{\n      \"name\": \"{}\",\n      \"section\": \"{}\",\n      \"description\": \"{}\",\n      \"stepCount\": {},\n      \"cutPoints\": {},\n      \"steps\": [\n{}\n      ],\n      \"admissibleOutcomes\": [\n{}\n      ]\n    }}",
+                "    {{\n      \"name\": \"{}\",\n      \"section\": \"{}\",\n      \"description\": \"{}\",\n      \"note\": \"{}\",\n      \"stepCount\": {},\n      \"cutPoints\": {},\n      \"steps\": [\n{}\n      ],\n      \"admissibleOutcomes\": [\n{}\n      ]\n    }}",
                 transcript.name,
                 transcript.section,
                 transcript.description,
+                transcript.note,
                 transcript.steps.len(),
                 transcript.steps.len() * 3,
                 steps.join(",\n"),
@@ -1728,7 +2213,19 @@ mod tests {
         let bytes = &case.bytes;
         match case.subject {
             Subject::Gate => super::super::gate::Gate::decode(bytes, *b"O2JG", case.slot).map(|_| ()),
-            Subject::Checkpoint => checkpoint::validate_file(bytes, case.slot).map(|_| ()),
+            // A checkpoint's round trip goes through the projection: decode the body into the
+            // model, materialize it again, and require the same bytes. That is the property
+            // compaction depends on — §6.3 rewrites a checkpoint from the projection its records
+            // produced — so a vector that only decoded would leave the encoder unpinned.
+            Subject::Checkpoint => checkpoint::validate_file(bytes, case.slot).map(|_| {
+                let model = super::super::model::CatalogModel::decode_body(&bytes[..CHECKPOINT_BODY_LEN])
+                    .expect("a validated checkpoint decodes");
+                let mut rebuilt = std::vec![0u8; CHECKPOINT_BODY_LEN];
+                model.encode_body(&mut rebuilt).expect("body");
+                assert_eq!(rebuilt, bytes[..CHECKPOINT_BODY_LEN], "checkpoint re-encode differs");
+                let gate = checkpoint::gate_for(&rebuilt, case.slot);
+                assert_eq!(&gate.encode()[..], &bytes[CHECKPOINT_GATE_OFFSET..], "checkpoint gate re-encode differs");
+            }),
             Subject::JournalSlot => JournalBody::validate_slot(bytes, case.slot).map(|record| {
                 assert_eq!(&record.encode_slot()[..], &bytes[..], "journal re-encode differs");
             }),
@@ -1744,7 +2241,14 @@ mod tests {
             Subject::InitRecord => InitRecord::validate_slot(bytes).map(|record| {
                 assert_eq!(&record.encode_slot()[..], &bytes[..], "init re-encode differs");
             }),
-            Subject::Resolution => Resolution::decode(bytes).map(|_| ()),
+            // The resolution table's round trip is the same idea at a smaller size: decode it, hand
+            // the entries back to the encoder, and require the same bytes.
+            Subject::Resolution => Resolution::decode(bytes).map(|table| {
+                let entries: std::vec::Vec<_> = table.iter().collect();
+                let mut rebuilt = std::vec![0u8; super::super::resolution::MAX_BODY_LEN];
+                let len = super::super::resolution::encode(&entries, &mut rebuilt).expect("entries re-encode");
+                assert_eq!(&rebuilt[..len], &bytes[..], "resolution re-encode differs");
+            }),
         }
         .map_err(|error| error.reason)
     }
@@ -1801,6 +2305,20 @@ mod tests {
     /// this producer emits, so an unreviewed fixture rewrite fails the build.
     #[test]
     fn checked_in_storage_vectors_match_the_producer() {
+        // Drift in the other direction too: a file on disk the producer no longer emits is a
+        // leftover the manifest would happily keep indexing. One assertion closes it.
+        let expected: std::collections::BTreeSet<String> = files()
+            .iter()
+            .map(|file| format!("{}.json", file.name))
+            .chain(core::iter::once("crash-cut-transcripts.json".to_string()))
+            .collect();
+        let mut found = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(dir()).expect("the storage directory") {
+            let name = entry.expect("directory entry").file_name().to_string_lossy().into_owned();
+            found.insert(name);
+        }
+        assert_eq!(found, expected, "the storage directory holds a file the producer does not emit, or is missing one");
+
         let transcripts_path = dir().join("crash-cut-transcripts.json");
         let checked_in = std::fs::read_to_string(&transcripts_path)
             .unwrap_or_else(|error| panic!("{}: {error}", transcripts_path.display()));
