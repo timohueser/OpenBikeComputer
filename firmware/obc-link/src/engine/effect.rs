@@ -38,11 +38,25 @@ pub struct ClaimIntent {
     pub declared_length: u64,
     /// The declared whole-object CRC; zero for a direct mutation.
     pub expected_crc: u32,
+    /// The operation an AbortOperation command names, and `None` for every other opcode.
+    ///
+    /// §11 makes target admissibility part of preflight — "such as an AbortOperation naming a
+    /// non-cancellable target" — so the lookup that decides whether a claim may be made needs it.
+    pub target_operation_id: Option<OperationId>,
 }
 
 /// What the claim lock decided (§11).
+///
+/// [`Command::Lookup`] and [`Command::Claim`] share this type because they share §11's four
+/// actions: the lookup answers all of them but action 1, which it reports as [`Unclaimed`] so the
+/// engine can run the owner/resource preflight §12 puts *after* the idempotency lookup and *before*
+/// the durable claim. Only [`Command::Claim`] ever creates state.
+///
+/// [`Unclaimed`]: ClaimOutcome::Unclaimed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimOutcome {
+    /// The lookup found no claim and no retained result: preflight may now run.
+    Unclaimed,
     /// Action 1: nothing was claimed, and this claim is now durable with empty work.
     Claimed {
         /// The identity the repository assigned or confirmed.
@@ -53,7 +67,10 @@ pub enum ClaimOutcome {
     /// Action 3, live work: the same principal and digest already own live work.
     ///
     /// Under the restart-only profile of §6.1 the device holds no durable progress, so the work is
-    /// discarded and restarted and the acceptance carries restart-at-zero.
+    /// discarded and restarted and the acceptance carries restart-at-zero. §6.1 makes the ordering
+    /// normative: an acceptance carrying restart-at-zero "is emitted **only after** the durable
+    /// restart record ... is synchronized", so a transaction reports this outcome only once it has
+    /// recorded durable next offset zero and the empty-prefix CRC.
     Restarted {
         /// The identity the repository assigned or confirmed.
         logical_object_id: LogicalObjectId,
@@ -171,6 +188,16 @@ pub enum FailureCause {
         /// The owner class to report; never a token.
         owner: Owner,
     },
+    /// The principal may not reach this target (§3: authorization precedes every other fact).
+    Authorization {
+        /// The §12 `authorizationFailed` detail.
+        detail: u16,
+    },
+    /// The request names something this device does not serve, or a target it cannot cancel.
+    UnsupportedCapability {
+        /// The §12 `unsupportedCapability` detail.
+        detail: u16,
+    },
     /// The device's own invariant broke.
     Internal {
         /// The §12 `internal` detail.
@@ -191,6 +218,8 @@ impl FailureCause {
             FailureCause::ResourceLimit { .. } => ErrorCategory::RESOURCE_LIMIT,
             FailureCause::ObjectNotFound { .. } => ErrorCategory::OBJECT_NOT_FOUND,
             FailureCause::Busy { .. } => ErrorCategory::BUSY,
+            FailureCause::Authorization { .. } => ErrorCategory::AUTHORIZATION_FAILED,
+            FailureCause::UnsupportedCapability { .. } => ErrorCategory::UNSUPPORTED_CAPABILITY,
             FailureCause::Internal { .. } => ErrorCategory::INTERNAL,
         }
     }
@@ -213,6 +242,8 @@ impl FailureCause {
             FailureCause::ResourceLimit { detail } => (*detail, RetryGuidance::RETRY_AFTER_USER_ACTION),
             FailureCause::ObjectNotFound { detail } => (*detail, RetryGuidance::REJECT_PERMANENTLY),
             FailureCause::Busy { detail, .. } => (*detail, RetryGuidance::RETRY_AFTER_OWNER_RELEASE),
+            FailureCause::Authorization { detail } => (*detail, RetryGuidance::RETRY_AFTER_USER_ACTION),
+            FailureCause::UnsupportedCapability { detail } => (*detail, RetryGuidance::REJECT_PERMANENTLY),
             FailureCause::Internal { detail } => (*detail, RetryGuidance::RETRY_AFTER_DELAY),
         };
         let mut body = ErrorBody::bare(self.category(), detail, guidance);
@@ -245,6 +276,8 @@ impl FailureCause {
             | FailureCause::ResourceLimit { detail }
             | FailureCause::ObjectNotFound { detail }
             | FailureCause::Busy { detail, .. }
+            | FailureCause::Authorization { detail }
+            | FailureCause::UnsupportedCapability { detail }
             | FailureCause::Internal { detail } => (0, *detail, None),
             FailureCause::InsufficientSpace { .. } => (0, detail::space::RESERVATION_BYTES, None),
         };
@@ -323,10 +356,18 @@ impl AbortCause {
 /// One command for the board glue to execute against the transaction seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command<'a> {
-    /// Run §11's claim lock for this intent, and make the claim durable when it is action 1.
+    /// Answer §11's claim lock for this intent **without creating state**.
+    ///
+    /// §12's precedence puts the idempotency lookup before owner/resources and size/space, so this
+    /// is what the engine asks first: a retained result, a conflict, or a foreign principal answers
+    /// the request outright, and only [`ClaimOutcome::Unclaimed`] lets preflight run.
+    Lookup(ClaimIntent),
+    /// Make the claim durable. It is the first mutation and precedes every side effect (§11).
     Claim(ClaimIntent),
     /// Append payload bytes at exactly this offset. Nothing is durable until a checkpoint.
     Append {
+        /// The operation whose work record the bytes belong to.
+        operation_id: OperationId,
         /// The absolute payload offset.
         offset: u64,
         /// The bytes, borrowed from the arriving stream record.
@@ -334,22 +375,46 @@ pub enum Command<'a> {
     },
     /// Synchronize the payload prefix and the work record (§6.2).
     Checkpoint {
+        /// The operation whose work record is being synchronized.
+        operation_id: OperationId,
         /// The prefix end this checkpoint covers.
         offset: u64,
     },
     /// Verify declared length and whole-object CRC and seal the immutable generation.
     Seal {
+        /// The operation being sealed.
+        operation_id: OperationId,
         /// The length StartUpload declared.
         declared_length: u64,
         /// The CRC StartUpload declared.
         expected_crc: u32,
     },
     /// Run the kind's typed validator over the sealed bytes.
-    Validate,
+    Validate {
+        /// The operation being validated.
+        operation_id: OperationId,
+    },
     /// Recheck the compare-and-swap under the commit lock and publish, in one durable commit.
-    Publish,
+    Publish {
+        /// The operation being published.
+        operation_id: OperationId,
+    },
+    /// Durably mark an AbortOperation command's target terminal Aborted (§6.4).
+    CancelTarget {
+        /// The abort command's own claim.
+        operation_id: OperationId,
+        /// The operation being cancelled.
+        target: OperationId,
+        /// Why.
+        reason: crate::registry::AbortReason,
+    },
     /// Durably abandon the claim and release its work.
-    Abort(AbortCause),
+    Abort {
+        /// The operation being abandoned.
+        operation_id: OperationId,
+        /// Why.
+        cause: AbortCause,
+    },
     /// Resolve the current committed head and take a RAM lease over it (§7).
     Resolve {
         /// The kind named by StartDownload.
@@ -371,7 +436,14 @@ pub enum Command<'a> {
     /// Answer a device-control request from device state (§16). It claims nothing.
     DeviceControl(DeviceControlRequest<'a>),
     /// Report the state of an OperationId the client asked about (§8.1).
-    QueryOperation(OperationId),
+    QueryOperation {
+        /// The operation the client named.
+        operation_id: OperationId,
+        /// Who is asking. §3: "Authentication and authorization precede object-existence,
+        /// revision, operation-status, and busy facts", so a foreign principal is answered
+        /// `authorizationFailed` and never a status.
+        principal: PrincipalScope,
+    },
 }
 
 /// A §16 device-control request, forwarded verbatim for the glue to answer.
@@ -454,6 +526,8 @@ pub enum Outcome<'a> {
     Published(ResultEnvelope),
     /// The claim is durably terminal with this retained body.
     Aborted(TerminalError),
+    /// An AbortOperation's target reached its durable terminal state (§6.4).
+    TargetCancelled(crate::result::AbortDisposition),
     /// The head is resolved and leased.
     Resolved(PinnedSource),
     /// Source bytes for the next download frame.

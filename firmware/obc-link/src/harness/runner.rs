@@ -5,7 +5,7 @@
 //! driver only carries values between them — because "one upload and one download implementation
 //! serve BLE and USB" is only true if the thing above them is this thin.
 
-use crate::engine::{DeviceProfile, Engine, LinkChannel, LinkError, Reaction};
+use crate::engine::{DeviceProfile, Engine, LinkChannel, LinkContext, LinkError, Reaction};
 use crate::frame::MAX_STREAM_FRAME;
 
 use super::fake_link::FakeLink;
@@ -42,7 +42,15 @@ impl<L: FakeLink> Driver<L> {
         let reaction = self.engine.close_connection(context);
         let mut out = [0u8; MAX_STREAM_FRAME];
         let mut scratch = [0u8; MAX_STREAM_FRAME];
-        let _ = Self::settle(&mut self.link, &mut self.engine, &mut self.transaction, reaction, &mut out, &mut scratch);
+        let _ = Self::settle(
+            &mut self.link,
+            &mut self.engine,
+            &mut self.transaction,
+            context,
+            reaction,
+            &mut out,
+            &mut scratch,
+        );
     }
 
     /// Drains every waiting record, then every download frame that is due.
@@ -65,6 +73,7 @@ impl<L: FakeLink> Driver<L> {
                             &mut self.link,
                             &mut self.engine,
                             &mut self.transaction,
+                            context,
                             reaction,
                             &mut out,
                             &mut scratch,
@@ -86,10 +95,12 @@ impl<L: FakeLink> Driver<L> {
                     break;
                 }
                 progressed = true;
+                let context = self.link.context();
                 Self::settle(
                     &mut self.link,
                     &mut self.engine,
                     &mut self.transaction,
+                    context,
                     reaction,
                     &mut out,
                     &mut scratch,
@@ -110,6 +121,7 @@ impl<L: FakeLink> Driver<L> {
         link: &mut L,
         engine: &mut Engine,
         transaction: &mut FakeTransaction,
+        context: LinkContext,
         mut reaction: Reaction<'_>,
         out: &mut [u8],
         scratch: &mut [u8],
@@ -131,8 +143,10 @@ impl<L: FakeLink> Driver<L> {
                     return Ok(());
                 }
                 Reaction::Work(command) => {
+                    // The outcome is resumed for the connection the command was issued for, which
+                    // is what keeps a dead connection's answer from landing on a live one.
                     let outcome = transaction.execute(command, scratch);
-                    reaction = engine.resume(outcome, out);
+                    reaction = engine.resume(context, outcome, out);
                 }
             }
         }

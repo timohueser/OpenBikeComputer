@@ -9,7 +9,12 @@
 //!   swap the real kernel in without reshaping the engine;
 //! - [`runner`] is the driver loop, generic over the link;
 //! - [`transcript`] replays the checked-in semantic transcripts of
-//!   `specs/vectors/device-object-v2/transcripts/` through both links.
+//!   `specs/vectors/device-object-v2/transcripts/` through both links. All eleven are held to their
+//!   framing and their decoding; **one** — the end-to-end create/upload/publish/download flow — is
+//!   driven through the engine from its first event, and the abort transcript's *semantics* are
+//!   reproduced from a preamble, with the two rows the restart-only profile changes asserted rather
+//!   than skipped. The other nine name the state or profile they would need in
+//!   [`transcript::DRIVEN`].
 //!
 //! The transport-neutrality proof is mechanical: a scenario is run twice, once per link, and the
 //! DOS records the engine emits must be byte-identical. Everything that differs between the two

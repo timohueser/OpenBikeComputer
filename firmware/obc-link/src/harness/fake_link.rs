@@ -33,6 +33,10 @@ pub trait FakeLink: ByteLink {
 
     /// Moves the link to a new connection generation, as a reconnect does (§3).
     fn set_generation(&mut self, generation: u32);
+
+    /// Replaces the whole connection identity, for a reconnect that authenticates a different
+    /// principal on the same link.
+    fn set_context(&mut self, context: LinkContext);
 }
 
 /// The three bytes of ATT overhead one Write Request or indication value pays (§14.1).
@@ -61,6 +65,10 @@ pub struct FakeBleLink {
     pub indication_times_out: bool,
     /// Indications that were sent but never confirmed.
     pub unconfirmed: usize,
+    /// Records completed by [`ByteLink::drain`], in completion order.
+    pub drained: Vec<Vec<u8>>,
+    /// Records accepted since the last drain, in acceptance order.
+    queued: Vec<Vec<u8>>,
 }
 
 impl FakeBleLink {
@@ -80,7 +88,22 @@ impl FakeBleLink {
             closed: [false, false],
             indication_times_out: false,
             unconfirmed: 0,
+            drained: Vec::new(),
+            queued: Vec::new(),
         }
+    }
+
+    /// The confirmation for a previously unconfirmed indication finally arrives.
+    ///
+    /// §14.1's drain waits for confirmations, so a link that has caught up must be able to say so;
+    /// otherwise one lost response would fail every later drain for the connection's whole life.
+    pub fn confirm(&mut self) {
+        self.unconfirmed = 0;
+    }
+
+    /// How many records are accepted but not yet completed at the link layer.
+    pub fn in_flight(&self) -> usize {
+        self.queued.len()
     }
 
     /// Queues one whole DOS record as if the client had written or sent it.
@@ -102,6 +125,11 @@ impl FakeBleLink {
 impl FakeLink for FakeBleLink {
     fn set_generation(&mut self, generation: u32) {
         self.context.generation = generation;
+        self.closed = [false, false];
+    }
+
+    fn set_context(&mut self, context: LinkContext) {
+        self.context = context;
         self.closed = [false, false];
     }
 
@@ -135,7 +163,13 @@ impl ByteLink for FakeBleLink {
             return Ok(None);
         }
         let Some(record) = self.inbound[index].pop_front() else { return Ok(None) };
-        if record.len() > buffer.len() {
+        // §14.1: one Write Request value is one control frame, and one CoC SDU is one stream frame.
+        // A peer cannot hand over more than its channel's ceiling in one record.
+        let ceiling = match channel {
+            LinkChannel::Control => self.ceilings().control_frame,
+            LinkChannel::Stream => self.ceilings().stream_frame,
+        };
+        if record.len() > usize::from(ceiling) || record.len() > buffer.len() {
             return Err(LinkError::RecordTooLarge);
         }
         buffer[..record.len()].copy_from_slice(&record);
@@ -161,12 +195,17 @@ impl ByteLink for FakeBleLink {
             return Err(LinkError::Timeout);
         }
         self.outbound[index].push(record.to_vec());
+        self.queued.push(record.to_vec());
         Ok(())
     }
 
     fn drain(&mut self) -> Result<(), LinkError> {
         // §14.1: the terminal indication "must receive its confirmation ... or the adapter's
-        // bounded drain timeout must expire".
+        // bounded drain timeout must expire". Records that were confirmed complete in the order
+        // they were accepted.
+        for record in self.queued.drain(..) {
+            self.drained.push(record);
+        }
         if self.unconfirmed > 0 {
             return Err(LinkError::Timeout);
         }
@@ -244,6 +283,11 @@ impl FakeUsbLink {
 impl FakeLink for FakeUsbLink {
     fn set_generation(&mut self, generation: u32) {
         self.context.generation = generation;
+        self.closed = [false, false];
+    }
+
+    fn set_context(&mut self, context: LinkContext) {
+        self.context = context;
         self.closed = [false, false];
     }
 

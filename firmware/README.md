@@ -96,8 +96,10 @@ everything it needs done comes back as a typed command the board glue executes a
 transaction seam — and it implements §6.1's **restart-only** upload profile, so no kind advertises
 resumable upload and no durable next offset above zero is ever reported. The host-only `harness`
 module beside it (behind the same `std` feature) implements the `ByteLink` seam twice, with BLE and
-USB physical framing, and drives one engine over both against an in-memory transaction and the
-checked-in semantic transcripts.
+USB physical framing, and drives one engine over both against an in-memory transaction. All eleven
+checked-in semantic transcripts are held to their framing and decoding on both bindings; one is
+driven end to end through the engine and one more has its semantics reproduced from a preamble,
+and the rest name the device state or profile they would need.
 
 `obc-storage::obc2` is the same suite's on-card half: the record codecs of
 [`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,

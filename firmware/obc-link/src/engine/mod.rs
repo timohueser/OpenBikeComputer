@@ -63,9 +63,9 @@ use crate::download::{DownloadAccepted, StartDownload};
 use crate::error::{detail, ErrorBody, ErrorCategory, Owner, RetryGuidance};
 use crate::frame::{ControlFrame, Opcode, HEADER_LEN, MIN_CONTROL_FRAME};
 use crate::hello::LinkKind;
-use crate::ids::{LogicalObjectId, OperationId, RequestId, SessionId};
+use crate::ids::{LogicalObjectId, OperationId, RequestId, SessionId, StoreId};
 use crate::query::OperationStatus;
-use crate::registry::{subject_flags, ObjectKind};
+use crate::registry::{subject_flags, AbortReason, ObjectKind};
 use crate::stream::{Direction, FaultBody, FaultDisposition, StreamFrame, STREAM_HEADER_LEN};
 use crate::upload::{
     AbortSessionOutcome, AcceptanceFlags, CheckpointAccepted, Disposition, StartUpload, Target, UploadAcceptance,
@@ -151,14 +151,24 @@ impl Transfer {
     }
 }
 
-/// What a StartUpload is waiting for its claim lock to say.
+/// What a request is trying to claim, carried from the §11 lookup through to the durable claim.
 #[derive(Debug, Clone, Copy)]
-struct UploadClaim {
-    operation_id: OperationId,
-    kind: ObjectKind,
-    target: Target,
-    declared_length: u64,
-    expected_crc: u32,
+enum Work {
+    /// A logical Put: the claim is followed by a session and a stream.
+    Upload(ClaimIntent),
+    /// A direct mutation: the claim is followed by validate and publish.
+    Mutation(ClaimIntent),
+    /// An AbortOperation command, which also names the operation it cancels (§6.4).
+    AbortCommand { intent: ClaimIntent, target: OperationId, reason: AbortReason },
+}
+
+impl Work {
+    const fn intent(&self) -> ClaimIntent {
+        match self {
+            Work::Upload(intent) | Work::Mutation(intent) => *intent,
+            Work::AbortCommand { intent, .. } => *intent,
+        }
+    }
 }
 
 /// What to answer once an abort is durable.
@@ -170,6 +180,8 @@ enum AbortReply {
     SessionDetached,
     /// Emit the terminal stream fault §13 sends before releasing the session.
     StreamFault { session_id: SessionId, category: ErrorCategory, detail: u16, expected_offset: u64 },
+    /// The abort was the first step of a ResetStore: destroy the store once the work is terminal.
+    ThenResetStore(StoreId),
     /// Nothing to answer: the link is already gone.
     Silent,
 }
@@ -179,8 +191,10 @@ enum AbortReply {
 enum Stage {
     /// Payload bytes are being written. Nothing answers this: the frame is the whole exchange.
     Append,
-    UploadClaim(UploadClaim),
-    MutationClaim,
+    /// §11's idempotency lookup, which creates no state.
+    Lookup(Work),
+    /// The durable claim, after preflight passed.
+    Claiming(Work),
     /// A direct mutation, at the phase of §15's command machine it is currently running.
     Mutation(CommandPhase),
     Checkpoint,
@@ -197,12 +211,18 @@ enum Stage {
     Query,
 }
 
-/// The one outstanding piece of work, and how to answer it.
+/// The one outstanding piece of work on one connection, and how to answer it.
+///
+/// The context is the **whole** [`LinkContext`], not just the link kind: §5.2's one-outstanding
+/// rule is per link, and a command outstanding when a connection dies must never be answered into
+/// whatever connection now occupies that link kind. [`Engine::resume`] is given the context it is
+/// resuming for and matches it exactly.
 #[derive(Debug, Clone, Copy)]
 struct Pending {
-    link: LinkKind,
+    context: LinkContext,
     request_id: Option<RequestId>,
     opcode: Opcode,
+    operation_id: Option<OperationId>,
     stage: Stage,
 }
 
@@ -247,7 +267,14 @@ pub struct Engine {
     connections: [Connection; LINK_KINDS],
     coordinator: SessionCoordinator,
     transfer: Option<Transfer>,
-    pending: Option<Pending>,
+    pending: [Option<Pending>; LINK_KINDS],
+    /// The one claim whose durable answer is still in flight for a connection that has gone away.
+    ///
+    /// §11 makes a durable claim something that must reach a terminal state, so the engine
+    /// remembers the identifier long enough to abandon it when the answer lands. One slot is
+    /// enough: at most one command is outstanding per connection, and a second orphan can only
+    /// appear after the first has been answered.
+    orphaned_claim: Option<OperationId>,
 }
 
 impl Engine {
@@ -258,7 +285,8 @@ impl Engine {
             connections: [Connection::closed(); LINK_KINDS],
             coordinator: SessionCoordinator::new(),
             transfer: None,
-            pending: None,
+            pending: [None; LINK_KINDS],
+            orphaned_claim: None,
         }
     }
 
@@ -313,7 +341,13 @@ impl Engine {
     }
 
     /// Opens a connection generation on one link. Everything the old one negotiated is discarded.
+    ///
+    /// A command left outstanding by the connection this replaces is dropped here: its outcome
+    /// arrives with the old context, matches nothing, and is disposed of by [`Engine::resume`]'s
+    /// stale path rather than being answered into this new connection.
     pub fn open_connection(&mut self, context: LinkContext, ceilings: LinkCeilings) {
+        self.orphan_pending(context.link_kind);
+        self.coordinator.open(context);
         self.connection_mut(context.link_kind).open(context, ceilings);
     }
 
@@ -332,6 +366,7 @@ impl Engine {
             return Reaction::Idle;
         }
         self.connection_mut(context.link_kind).close();
+        self.orphan_pending(context.link_kind);
         let Some(transfer) = self.transfer else { return Reaction::Idle };
         if !transfer.owner().is_same_connection(&context) {
             return Reaction::Idle;
@@ -342,20 +377,22 @@ impl Engine {
                 // §13: teardown "durably aborts active restart-only upload work to a terminal
                 // Aborted state with a retained text-free ErrorBody".
                 self.transfer = Some(Transfer::Upload(Upload { phase: UploadPhase::Aborting, ..upload }));
-                self.pending = Some(Pending {
-                    link: context.link_kind,
+                self.set_pending(Pending {
+                    context,
                     request_id: None,
                     opcode: Opcode::StartUpload,
+                    operation_id: Some(upload.operation_id),
                     stage: Stage::Abort(AbortReply::Silent),
                 });
-                Reaction::Work(Command::Abort(AbortCause::LinkLost))
+                Reaction::Work(Command::Abort { operation_id: upload.operation_id, cause: AbortCause::LinkLost })
             }
             Transfer::Download(_) => {
                 // "releases a matching download lease exactly once".
-                self.pending = Some(Pending {
-                    link: context.link_kind,
+                self.set_pending(Pending {
+                    context,
                     request_id: None,
                     opcode: Opcode::StartDownload,
+                    operation_id: None,
                     stage: Stage::ReleaseLease { detach: false },
                 });
                 Reaction::Work(Command::ReleaseLease)
@@ -379,6 +416,13 @@ impl Engine {
             Ok(frame) => frame,
             Err(error) => return self.refuse_unframed(link, record, error, out),
         };
+        if self.pending_for(link).is_some() {
+            // A command is outstanding on this link and the adapter must resume it before handing
+            // the next record in. Refusing here is §5.2's one-outstanding rule, and it never
+            // disturbs the work in flight.
+            let body = ConnectionRefusal::Outstanding.body(link);
+            return Self::encode_response(&Response::Error(body), frame.opcode, frame.request_id, out);
+        }
         if let Err(refusal) = self.connection_mut(link).admit(frame.opcode, frame.request_id) {
             // A refusal here never disturbs the request in flight, and never clears its slot.
             return Self::encode_response(&Response::Error(refusal.body(link)), frame.opcode, frame.request_id, out);
@@ -407,6 +451,12 @@ impl Engine {
             Err(_) => return Reaction::Close(LinkChannel::Stream),
             Ok(frame) => frame,
         };
+        if self.pending_for(context.link_kind).is_some() {
+            // The adapter owes this link a `resume` before its next record; dropping the frame is
+            // safer than writing bytes the engine has not accounted for.
+            debug_assert!(false, "a stream record arrived while this link owed the engine an outcome");
+            return Reaction::Idle;
+        }
         let session_id = frame.session_id();
         match self.coordinator.admit_stream(session_id, &context) {
             StreamAdmission::Tombstoned => return Reaction::Idle,
@@ -459,7 +509,7 @@ impl Engine {
     /// client finishes on the control link.
     pub fn poll_download(&mut self) -> Reaction<'static> {
         let Some(Transfer::Download(download)) = self.transfer else { return Reaction::Idle };
-        if self.pending.is_some() || !download.phase.is_streamable() {
+        if self.pending_for(download.owner.link_kind).is_some() || !download.phase.is_streamable() {
             return Reaction::Idle;
         }
         let remaining = download.source.total_length.saturating_sub(download.next_offset);
@@ -467,27 +517,34 @@ impl Engine {
             return Reaction::Idle;
         }
         let length = remaining.min(u64::from(download.max_payload)) as u16;
-        self.pending = Some(Pending {
-            link: download.owner.link_kind,
+        self.set_pending(Pending {
+            context: download.owner,
             request_id: None,
             opcode: Opcode::StartDownload,
+            operation_id: None,
             stage: Stage::ReadSource,
         });
         Reaction::Work(Command::ReadSource { offset: download.next_offset, length })
     }
 
-    /// Takes back the outcome of the command the engine last asked for.
+    /// Takes back the outcome of the command the engine asked this connection for.
+    ///
+    /// `context` is the connection the command was issued for, and it is matched exactly. An
+    /// outcome whose connection is gone — a link that dropped, or a generation that has been
+    /// replaced — is **never re-homed onto whatever now occupies that link kind**: it is disposed
+    /// of by [`Engine::dispose_stale`], which durably abandons a claim the dead connection had just
+    /// made rather than leaving it occupying a slot no one can reach.
     ///
     /// Nothing an outcome carries is ever handed back out: bytes it brings — echo payloads, source
     /// bytes — are encoded into `out`, which is why the reaction it produces borrows nothing.
-    pub fn resume(&mut self, outcome: Outcome<'_>, out: &mut [u8]) -> Reaction<'static> {
-        let Some(pending) = self.pending else {
-            debug_assert!(false, "an outcome arrived with no command outstanding");
-            return Reaction::Idle;
+    pub fn resume(&mut self, context: LinkContext, outcome: Outcome<'_>, out: &mut [u8]) -> Reaction<'static> {
+        let pending = match self.pending_for(context.link_kind) {
+            Some(pending) if pending.context == context => pending,
+            _ => return self.dispose_stale(outcome),
         };
         match (pending.stage, outcome) {
             (Stage::Append, Outcome::Appended) => {
-                self.pending = None;
+                self.clear_pending(pending.context.link_kind);
                 Reaction::Idle
             }
             (Stage::Append, Outcome::Failed(cause)) => {
@@ -498,12 +555,12 @@ impl Engine {
                     Some(Transfer::Upload(upload)) => upload.next_offset,
                     _ => 0,
                 };
-                match session_id {
-                    Some(session_id) => {
+                match (session_id, pending.operation_id) {
+                    (Some(session_id), Some(operation_id)) => {
                         self.step_upload(UploadEvent::Abandon);
                         self.coordinator.revoke();
                         let (category, detail) = fault_pair(cause);
-                        self.pending = Some(Pending {
+                        self.set_pending(Pending {
                             stage: Stage::Abort(AbortReply::StreamFault {
                                 session_id,
                                 category,
@@ -512,22 +569,22 @@ impl Engine {
                             }),
                             ..pending
                         });
-                        Reaction::Work(Command::Abort(AbortCause::Failed(cause)))
+                        Reaction::Work(Command::Abort { operation_id, cause: AbortCause::Failed(cause) })
                     }
-                    None => {
-                        self.pending = None;
+                    _ => {
+                        self.clear_pending(pending.context.link_kind);
                         Reaction::Idle
                     }
                 }
             }
-            (Stage::UploadClaim(claim), Outcome::Claim(decision)) => {
-                self.after_upload_claim(pending, claim, decision, out)
-            }
-            (Stage::MutationClaim, Outcome::Claim(decision)) => self.after_mutation_claim(pending, decision, out),
-            (Stage::Mutation(CommandPhase::Validating), Outcome::Validated) => {
-                match CommandPhase::Validating.apply(CommandEvent::Validated) {
-                    Ok(phase) => self.advance(pending, Stage::Mutation(phase), Command::Publish),
-                    Err(_) => self.reply(pending, &Response::Error(internal_body()), out),
+            (Stage::Lookup(work), Outcome::Claim(decision)) => self.after_lookup(pending, work, decision, out),
+            (Stage::Claiming(work), Outcome::Claim(decision)) => self.after_claim(pending, work, decision, out),
+            (Stage::Mutation(CommandPhase::Validating), Outcome::Validated | Outcome::TargetCancelled(_)) => {
+                match (CommandPhase::Validating.apply(CommandEvent::Validated), pending.operation_id) {
+                    (Ok(phase), Some(operation_id)) => {
+                        self.advance(pending, Stage::Mutation(phase), Command::Publish { operation_id })
+                    }
+                    _ => self.reply(pending, &Response::Error(internal_body()), out),
                 }
             }
             (Stage::Mutation(CommandPhase::Publishing), Outcome::Published(envelope)) => {
@@ -551,14 +608,20 @@ impl Engine {
                     None => self.reply(pending, &Response::Error(internal_body()), out),
                 }
             }
-            (Stage::Seal, Outcome::Sealed) => {
-                self.step_upload(UploadEvent::Sealed);
-                self.advance(pending, Stage::Validate, Command::Validate)
-            }
-            (Stage::Validate, Outcome::Validated) => {
-                self.step_upload(UploadEvent::Validated);
-                self.advance(pending, Stage::Publish, Command::Publish)
-            }
+            (Stage::Seal, Outcome::Sealed) => match pending.operation_id {
+                Some(operation_id) => {
+                    self.step_upload(UploadEvent::Sealed);
+                    self.advance(pending, Stage::Validate, Command::Validate { operation_id })
+                }
+                None => self.reply(pending, &Response::Error(internal_body()), out),
+            },
+            (Stage::Validate, Outcome::Validated) => match pending.operation_id {
+                Some(operation_id) => {
+                    self.step_upload(UploadEvent::Validated);
+                    self.advance(pending, Stage::Publish, Command::Publish { operation_id })
+                }
+                None => self.reply(pending, &Response::Error(internal_body()), out),
+            },
             (Stage::Publish, Outcome::Published(envelope)) => {
                 self.step_upload(UploadEvent::Published);
                 self.release_transfer();
@@ -579,15 +642,15 @@ impl Engine {
                 match pending.request_id {
                     Some(_) => self.reply(pending, &response, out),
                     None => {
-                        self.pending = None;
+                        self.clear_pending(pending.context.link_kind);
                         Reaction::Idle
                     }
                 }
             }
             (Stage::DeviceControl, Outcome::DeviceControl(answer)) => self.after_device_control(pending, answer, out),
             (Stage::Query, Outcome::OperationReport(report)) => self.after_query(pending, report, out),
-            (Stage::UploadClaim(_) | Stage::MutationClaim, Outcome::Failed(cause)) => {
-                // A preflight failure creates no state, so there is nothing to abort.
+            (Stage::Lookup(_) | Stage::Claiming(_), Outcome::Failed(cause)) => {
+                // A lookup or preflight failure creates no state, so there is nothing to abort.
                 self.reply(pending, &Response::Error(cause.body(ClaimStatus::None)), out)
             }
             (_, Outcome::Failed(cause)) => self.abandon(pending, cause),
@@ -633,11 +696,22 @@ impl Engine {
             Request::StartDownload(request) => self.start_download(context, request_id, request, out),
             Request::FinishDownload(request) => self.finish_download(context, request_id, request, out),
             Request::QueryOperation(request) => {
-                self.pending = Some(Pending { link, request_id: Some(request_id), opcode, stage: Stage::Query });
-                Reaction::Work(Command::QueryOperation(request.operation_id))
+                self.set_pending(Pending {
+                    context,
+                    request_id: Some(request_id),
+                    opcode,
+                    operation_id: Some(request.operation_id),
+                    stage: Stage::Query,
+                });
+                Reaction::Work(Command::QueryOperation {
+                    operation_id: request.operation_id,
+                    principal: context.principal,
+                })
             }
             Request::DeleteObject(request) => {
-                let digest = self.intent_digest(&Request::DeleteObject(request));
+                let Some(digest) = self.intent_digest(&Request::DeleteObject(request)) else {
+                    return self.reply_error(link, opcode, request_id, internal_body(), out);
+                };
                 let target = Target::Replace {
                     logical_object_id: request.target.logical_object_id,
                     expected_revision: request.target.expected_revision,
@@ -655,7 +729,9 @@ impl Engine {
                 )
             }
             Request::SetMetadata(request) => {
-                let digest = self.intent_digest(&Request::SetMetadata(request));
+                let Some(digest) = self.intent_digest(&Request::SetMetadata(request)) else {
+                    return self.reply_error(link, opcode, request_id, internal_body(), out);
+                };
                 let target = Target::Replace {
                     logical_object_id: request.target.logical_object_id,
                     expected_revision: request.target.expected_revision,
@@ -673,26 +749,33 @@ impl Engine {
                 )
             }
             Request::AbortOperation(request) => {
-                let digest = self.intent_digest(&Request::AbortOperation(request));
-                self.claim(
+                let Some(digest) = self.intent_digest(&Request::AbortOperation(request)) else {
+                    return self.reply_error(link, opcode, request_id, internal_body(), out);
+                };
+                // §6.4's command claims nothing of its own in the object system: it names no kind
+                // and no head, and its typed result is an AbortResult rather than an ObjectResult.
+                let intent = ClaimIntent {
+                    operation_id: request.operation_id,
+                    principal: context.principal,
+                    opcode,
+                    digest,
+                    kind: ObjectKind::Route,
+                    target: Target::Create,
+                    declared_length: 0,
+                    expected_crc: 0,
+                    target_operation_id: Some(request.target_operation_id),
+                };
+                self.lookup(
                     context,
                     request_id,
                     opcode,
-                    ClaimIntent {
-                        operation_id: request.operation_id,
-                        principal: context.principal,
-                        opcode,
-                        digest,
-                        kind: ObjectKind::Route,
-                        target: Target::Create,
-                        declared_length: 0,
-                        expected_crc: 0,
-                    },
-                    Stage::MutationClaim,
+                    Work::AbortCommand { intent, target: request.target_operation_id, reason: request.reason },
                 )
             }
             Request::InstallUpdate(request) => {
-                let digest = self.intent_digest(&Request::InstallUpdate(request));
+                let Some(digest) = self.intent_digest(&Request::InstallUpdate(request)) else {
+                    return self.reply_error(link, opcode, request_id, internal_body(), out);
+                };
                 let target = Target::Replace {
                     logical_object_id: request.logical_object_id,
                     expected_revision: request.expected_revision,
@@ -710,7 +793,9 @@ impl Engine {
                 )
             }
             Request::AcknowledgeRideImported(request) => {
-                let digest = self.intent_digest(&Request::AcknowledgeRideImported(request));
+                let Some(digest) = self.intent_digest(&Request::AcknowledgeRideImported(request)) else {
+                    return self.reply_error(link, opcode, request_id, internal_body(), out);
+                };
                 let target = Target::Replace {
                     logical_object_id: request.logical_object_id,
                     expected_revision: request.expected_revision,
@@ -728,24 +813,22 @@ impl Engine {
                 )
             }
             Request::GetDeviceStatus => {
-                self.device_control(link, request_id, opcode, DeviceControlRequest::GetDeviceStatus)
+                self.device_control(context, request_id, opcode, DeviceControlRequest::GetDeviceStatus)
             }
-            Request::GetConfig => self.device_control(link, request_id, opcode, DeviceControlRequest::GetConfig),
+            Request::GetConfig => self.device_control(context, request_id, opcode, DeviceControlRequest::GetConfig),
             Request::SetConfig(block) => {
-                self.device_control(link, request_id, opcode, DeviceControlRequest::SetConfig(block))
+                self.device_control(context, request_id, opcode, DeviceControlRequest::SetConfig(block))
             }
             Request::SetClock(request) => {
-                self.device_control(link, request_id, opcode, DeviceControlRequest::SetClock(request))
+                self.device_control(context, request_id, opcode, DeviceControlRequest::SetClock(request))
             }
             Request::ForgetBond(request) => {
-                self.device_control(link, request_id, opcode, DeviceControlRequest::ForgetBond(request))
+                self.device_control(context, request_id, opcode, DeviceControlRequest::ForgetBond(request))
             }
             Request::Echo(echo) => {
-                self.device_control(link, request_id, opcode, DeviceControlRequest::Echo(echo.payload))
+                self.device_control(context, request_id, opcode, DeviceControlRequest::Echo(echo.payload))
             }
-            Request::ResetStore(request) => {
-                self.device_control(link, request_id, opcode, DeviceControlRequest::ResetStore(request.echoed_store_id))
-            }
+            Request::ResetStore(request) => self.reset_store(context, request_id, request.echoed_store_id),
             // Every remaining opcode belongs to a later slice and was refused above.
             _ => self.reply_error(link, opcode, request_id, unsupported_opcode(), out),
         }
@@ -759,27 +842,20 @@ impl Engine {
         out: &mut [u8],
     ) -> Reaction<'a> {
         let link = context.link_kind;
-        let entry = match self.profile.require_operation(request.kind, subject_flags::PUT) {
-            Ok(entry) => entry,
-            Err(body) => return self.reply_error(link, Opcode::StartUpload, request_id, body, out),
-        };
-        if request.declared_length > entry.max_length {
-            let body = FailureCause::ResourceLimit { detail: detail::resource::OBJECT_LENGTH }.body(ClaimStatus::None);
+        if let Err(body) = self.profile.require_operation(request.kind, subject_flags::PUT) {
             return self.reply_error(link, Opcode::StartUpload, request_id, body, out);
         }
-        if let Some(transfer) = self.transfer {
-            let same_work = matches!(transfer, Transfer::Upload(upload) if upload.operation_id == request.operation_id);
-            if !same_work {
-                let body = busy_body(detail::busy::HEAVY_TRANSFER, transfer.owner().link_kind);
-                return self.reply_error(link, Opcode::StartUpload, request_id, body, out);
-            }
-        }
-        let digest = crate::intent::CanonicalIntent::for_start_upload(self.profile.store_id, &request).digest();
-        self.claim(
+        let Some(digest) = self.intent_digest(&Request::StartUpload(request)) else {
+            return self.reply_error(link, Opcode::StartUpload, request_id, internal_body(), out);
+        };
+        // §12's precedence: the idempotency lookup precedes owner/resources and size/space, so the
+        // busy and object-length checks live in `preflight` and run only once the lookup has said
+        // this identifier carries no retained result and no conflicting intent.
+        self.lookup(
             context,
             request_id,
             Opcode::StartUpload,
-            ClaimIntent {
+            Work::Upload(ClaimIntent {
                 operation_id: request.operation_id,
                 principal: context.principal,
                 opcode: Opcode::StartUpload,
@@ -788,13 +864,7 @@ impl Engine {
                 target: request.target,
                 declared_length: request.declared_length,
                 expected_crc: request.expected_crc32,
-            },
-            Stage::UploadClaim(UploadClaim {
-                operation_id: request.operation_id,
-                kind: request.kind,
-                target: request.target,
-                declared_length: request.declared_length,
-                expected_crc: request.expected_crc32,
+                target_operation_id: None,
             }),
         )
     }
@@ -815,11 +885,11 @@ impl Engine {
         if let Err(body) = self.profile.require_operation(kind, operation) {
             return self.reply_error(context.link_kind, opcode, request_id, body, out);
         }
-        self.claim(
+        self.lookup(
             context,
             request_id,
             opcode,
-            ClaimIntent {
+            Work::Mutation(ClaimIntent {
                 operation_id,
                 principal: context.principal,
                 opcode,
@@ -828,21 +898,47 @@ impl Engine {
                 target,
                 declared_length: 0,
                 expected_crc: 0,
-            },
-            Stage::MutationClaim,
+                target_operation_id: None,
+            }),
         )
     }
 
-    fn claim<'a>(
-        &mut self,
-        context: LinkContext,
-        request_id: RequestId,
-        opcode: Opcode,
-        intent: ClaimIntent,
-        stage: Stage,
-    ) -> Reaction<'a> {
-        self.pending = Some(Pending { link: context.link_kind, request_id: Some(request_id), opcode, stage });
-        Reaction::Work(Command::Claim(intent))
+    /// Asks §11's claim lock what this identifier already carries, without creating state.
+    fn lookup<'a>(&mut self, context: LinkContext, request_id: RequestId, opcode: Opcode, work: Work) -> Reaction<'a> {
+        let intent = work.intent();
+        self.set_pending(Pending {
+            context,
+            request_id: Some(request_id),
+            opcode,
+            operation_id: Some(intent.operation_id),
+            stage: Stage::Lookup(work),
+        });
+        Reaction::Work(Command::Lookup(intent))
+    }
+
+    /// The owner/resource and size checks §11 puts between the lookup and the durable claim.
+    fn preflight(&self, work: &Work) -> Result<(), ErrorBody<'static>> {
+        let intent = work.intent();
+        if let Work::Upload(_) = work {
+            if let Ok(entry) = self.profile.require_operation(intent.kind, subject_flags::PUT) {
+                if intent.declared_length > entry.max_length {
+                    return Err(
+                        FailureCause::ResourceLimit { detail: detail::resource::OBJECT_LENGTH }.body(ClaimStatus::None)
+                    );
+                }
+            }
+            if let Some(transfer) = self.transfer {
+                // §6.1: a same-intent StartUpload for the operation that already owns the
+                // coordinator is a resume, never a refusal — the lookup above has already proved
+                // the intent matches, because a different one would have been a conflict.
+                let same_work =
+                    matches!(transfer, Transfer::Upload(upload) if upload.operation_id == intent.operation_id);
+                if !same_work {
+                    return Err(busy_body(detail::busy::HEAVY_TRANSFER, transfer.owner().link_kind));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn checkpoint<'a>(
@@ -866,6 +962,10 @@ impl Engine {
             body.expected_offset = upload.next_offset;
             return self.reply_error(context.link_kind, Opcode::CheckpointUpload, request_id, body, out);
         }
+        // §6.2, restart-only: this device *accepts* CheckpointUpload and reports the synchronized
+        // prefix rather than refusing it with `unsupportedCapability/feature`. The offset it
+        // reports is a progress fact only — §13's teardown rule still durably aborts the work, and
+        // no client may resume from it, which is why no acceptance ever reports a nonzero offset.
         if !request.is_on_boundary(self.profile.checkpoint_granule, upload.declared_length) {
             let mut body = ErrorBody::bare(
                 ErrorCategory::INVALID_OFFSET,
@@ -876,13 +976,14 @@ impl Engine {
             body.expected_offset = upload.next_offset;
             return self.reply_error(context.link_kind, Opcode::CheckpointUpload, request_id, body, out);
         }
-        self.pending = Some(Pending {
-            link: context.link_kind,
+        self.set_pending(Pending {
+            context,
             request_id: Some(request_id),
             opcode: Opcode::CheckpointUpload,
+            operation_id: Some(upload.operation_id),
             stage: Stage::Checkpoint,
         });
-        Reaction::Work(Command::Checkpoint { offset: request.received_next_offset })
+        Reaction::Work(Command::Checkpoint { operation_id: upload.operation_id, offset: request.received_next_offset })
     }
 
     fn finish_upload<'a>(
@@ -897,13 +998,18 @@ impl Engine {
             Err(body) => return self.reply_error(context.link_kind, Opcode::FinishUpload, request_id, body, out),
         };
         self.step_upload(UploadEvent::Finish);
-        self.pending = Some(Pending {
-            link: context.link_kind,
+        self.set_pending(Pending {
+            context,
             request_id: Some(request_id),
             opcode: Opcode::FinishUpload,
+            operation_id: Some(upload.operation_id),
             stage: Stage::Seal,
         });
-        Reaction::Work(Command::Seal { declared_length: upload.declared_length, expected_crc: upload.expected_crc })
+        Reaction::Work(Command::Seal {
+            operation_id: upload.operation_id,
+            declared_length: upload.declared_length,
+            expected_crc: upload.expected_crc,
+        })
     }
 
     fn abort_session<'a>(
@@ -936,19 +1042,24 @@ impl Engine {
             Transfer::Upload(upload) => {
                 // §6.4: "Detaching a restart-only upload durably aborts it."
                 self.transfer = Some(Transfer::Upload(Upload { phase: UploadPhase::Aborting, ..upload }));
-                self.pending = Some(Pending {
-                    link: context.link_kind,
+                self.set_pending(Pending {
+                    context,
                     request_id: Some(request_id),
                     opcode: Opcode::AbortSession,
+                    operation_id: Some(upload.operation_id),
                     stage: Stage::Abort(AbortReply::SessionDetached),
                 });
-                Reaction::Work(Command::Abort(AbortCause::Cancelled { reason: request.reason }))
+                Reaction::Work(Command::Abort {
+                    operation_id: upload.operation_id,
+                    cause: AbortCause::Cancelled { reason: request.reason },
+                })
             }
             Transfer::Download(_) => {
-                self.pending = Some(Pending {
-                    link: context.link_kind,
+                self.set_pending(Pending {
+                    context,
                     request_id: Some(request_id),
                     opcode: Opcode::AbortSession,
+                    operation_id: None,
                     stage: Stage::ReleaseLease { detach: true },
                 });
                 Reaction::Work(Command::ReleaseLease)
@@ -979,10 +1090,11 @@ impl Engine {
             let body = busy_body(detail::busy::HEAVY_TRANSFER, transfer.owner().link_kind);
             return self.reply_error(link, Opcode::StartDownload, request_id, body, out);
         }
-        self.pending = Some(Pending {
-            link,
+        self.set_pending(Pending {
+            context,
             request_id: Some(request_id),
             opcode: Opcode::StartDownload,
+            operation_id: None,
             stage: Stage::Resolve(request),
         });
         Reaction::Work(Command::Resolve {
@@ -1030,10 +1142,11 @@ impl Engine {
         };
         self.transfer = Some(Transfer::Download(Download { phase, ..download }));
         self.coordinator.revoke_owned_by(&context);
-        self.pending = Some(Pending {
-            link: context.link_kind,
+        self.set_pending(Pending {
+            context,
             request_id: Some(request_id),
             opcode: Opcode::FinishDownload,
+            operation_id: None,
             stage: Stage::ReleaseLease { detach: false },
         });
         Reaction::Work(Command::ReleaseLease)
@@ -1041,22 +1154,90 @@ impl Engine {
 
     fn device_control<'a>(
         &mut self,
-        link: LinkKind,
+        context: LinkContext,
         request_id: RequestId,
         opcode: Opcode,
         request: DeviceControlRequest<'a>,
     ) -> Reaction<'a> {
         // §16: the plane "claims nothing", so an active transfer is neither consulted nor touched.
-        self.pending = Some(Pending { link, request_id: Some(request_id), opcode, stage: Stage::DeviceControl });
+        self.set_pending(Pending {
+            context,
+            request_id: Some(request_id),
+            opcode,
+            operation_id: None,
+            stage: Stage::DeviceControl,
+        });
         Reaction::Work(Command::DeviceControl(request))
+    }
+
+    /// ResetStore (§16), which is destructive and ends the connection.
+    ///
+    /// §16 makes it destroy "every object, operation result, and lease" and §5.2 makes a StoreId
+    /// change a connection-ending transition. Active work is therefore durably abandoned *before*
+    /// the store is destroyed rather than being silently replaced underneath it.
+    fn reset_store<'a>(&mut self, context: LinkContext, request_id: RequestId, echoed: StoreId) -> Reaction<'a> {
+        if let Some(transfer) = self.transfer {
+            let owner = transfer.owner();
+            self.coordinator.revoke_owned_by(&owner);
+            let operation_id = match transfer {
+                Transfer::Upload(upload) => Some(upload.operation_id),
+                Transfer::Download(_) => None,
+            };
+            if let Some(operation_id) = operation_id {
+                self.step_upload(UploadEvent::Abandon);
+                self.set_pending(Pending {
+                    context,
+                    request_id: Some(request_id),
+                    opcode: Opcode::ResetStore,
+                    operation_id: Some(operation_id),
+                    stage: Stage::Abort(AbortReply::ThenResetStore(echoed)),
+                });
+                return Reaction::Work(Command::Abort {
+                    operation_id,
+                    cause: AbortCause::Cancelled { reason: AbortReason::Superseded },
+                });
+            }
+            self.transfer = None;
+        }
+        self.device_control(context, request_id, Opcode::ResetStore, DeviceControlRequest::ResetStore(echoed))
     }
 
     // -- outcomes ------------------------------------------------------------------------------
 
-    fn after_upload_claim<'a>(
+    /// §11's lookup came back: answer it outright, or run preflight and make the durable claim.
+    fn after_lookup<'a>(
         &mut self,
         pending: Pending,
-        claim: UploadClaim,
+        work: Work,
+        decision: ClaimOutcome,
+        out: &mut [u8],
+    ) -> Reaction<'a> {
+        match decision {
+            ClaimOutcome::Unclaimed => {
+                // Only now — after the idempotency lookup, as §12's precedence requires — may an
+                // owner/resource or size refusal be raised, and it creates no state.
+                if let Err(body) = self.preflight(&work) {
+                    return self.reply(pending, &Response::Error(body), out);
+                }
+                self.advance(pending, Stage::Claiming(work), Command::Claim(work.intent()))
+            }
+            // A live claim of the same intent is a resume rather than a fresh claim, so it skips
+            // the durable-claim step and goes straight to its acceptance.
+            ClaimOutcome::Claimed { .. } | ClaimOutcome::Restarted { .. } => {
+                if let Err(body) = self.preflight(&work) {
+                    return self.reply(pending, &Response::Error(body), out);
+                }
+                self.after_claim(pending, work, decision, out)
+            }
+            _ => self.replay_terminal(pending, work, decision, out),
+        }
+    }
+
+    /// The claim is durable (or the lookup resolved it): move to the work the opcode implies.
+    fn after_claim<'a>(
+        &mut self,
+        pending: Pending,
+        work: Work,
         decision: ClaimOutcome,
         out: &mut [u8],
     ) -> Reaction<'a> {
@@ -1067,66 +1248,93 @@ impl Engine {
             ClaimOutcome::Restarted { logical_object_id, repository_revision } => {
                 (logical_object_id, repository_revision, true)
             }
-            ClaimOutcome::Committed(envelope) => {
-                return self.reply(pending, &Response::UploadAccepted(Disposition::AlreadyTerminal(envelope)), out)
+            _ => return self.replay_terminal(pending, work, decision, out),
+        };
+        let intent = work.intent();
+        match work {
+            Work::Mutation(_) => {
+                // §15: a direct mutation is `claimed -> validating -> publishing -> terminal`.
+                self.advance(
+                    pending,
+                    Stage::Mutation(CommandPhase::Validating),
+                    Command::Validate { operation_id: intent.operation_id },
+                )
             }
-            ClaimOutcome::Aborted(terminal) => {
-                return self.reply(pending, &Response::Error(terminal.body()), out);
+            Work::AbortCommand { target, reason, .. } => {
+                // §6.4: the target is durably marked terminal before the abort command's own
+                // AbortResult is committed, and that result is what the client receives.
+                self.advance(
+                    pending,
+                    Stage::Mutation(CommandPhase::Validating),
+                    Command::CancelTarget { operation_id: intent.operation_id, target, reason },
+                )
             }
-            ClaimOutcome::Conflict => return self.reply(pending, &Response::Error(conflict_body()), out),
-            ClaimOutcome::ForeignPrincipal => return self.reply(pending, &Response::Error(unauthorized_body()), out),
-            ClaimOutcome::Refused(cause) => {
-                return self.reply(pending, &Response::Error(cause.body(ClaimStatus::None)), out)
+            Work::Upload(_) => {
+                let Some(context) =
+                    self.connection(pending.context.link_kind).context().filter(|open| open == &pending.context)
+                else {
+                    // The connection that asked is gone: its acceptance would bind a session to a
+                    // connection that cannot use it (§3), so nothing is issued.
+                    self.clear_pending(pending.context.link_kind);
+                    return Reaction::Idle;
+                };
+                let Some(session_id) = self.coordinator.issue(context) else {
+                    return self.reply(pending, &Response::Error(internal_body()), out);
+                };
+                let max_stream_payload = self.max_stream_payload(context.link_kind);
+                self.transfer = Some(Transfer::Upload(Upload {
+                    operation_id: intent.operation_id,
+                    kind: intent.kind,
+                    session_id,
+                    owner: context,
+                    phase: UploadPhase::Prepared,
+                    declared_length: intent.declared_length,
+                    expected_crc: intent.expected_crc,
+                    next_offset: 0,
+                    logical_object_id,
+                }));
+                let acceptance = UploadAcceptance {
+                    target_mode: intent.target.mode(),
+                    // Restart-only: a device that holds no durable progress reports offset zero,
+                    // with restart-at-zero exactly when work was discarded to get there (§6.1).
+                    flags: if restarted { AcceptanceFlags::RESTARTED } else { AcceptanceFlags::NONE },
+                    operation_id: intent.operation_id,
+                    session_id,
+                    logical_object_id,
+                    admission_revision,
+                    durable_next_offset: 0,
+                    checkpoint_granule: self.profile.checkpoint_granule,
+                    max_stream_payload,
+                    finalized_prefix_crc32: 0,
+                };
+                self.reply(pending, &Response::UploadAccepted(Disposition::Accepted(acceptance)), out)
             }
-        };
-        let Some(context) = self.connection(pending.link).context() else {
-            self.pending = None;
-            return Reaction::Idle;
-        };
-        let Some(session_id) = self.coordinator.issue(context) else {
-            return self.reply(pending, &Response::Error(internal_body()), out);
-        };
-        let max_stream_payload = self.max_stream_payload(pending.link);
-        self.transfer = Some(Transfer::Upload(Upload {
-            operation_id: claim.operation_id,
-            kind: claim.kind,
-            session_id,
-            owner: context,
-            phase: UploadPhase::Prepared,
-            declared_length: claim.declared_length,
-            expected_crc: claim.expected_crc,
-            next_offset: 0,
-            logical_object_id,
-        }));
-        let acceptance = UploadAcceptance {
-            target_mode: claim.target.mode(),
-            // Restart-only: a device that holds no durable progress reports offset zero, with
-            // restart-at-zero exactly when work was discarded to get there (§6.1's table).
-            flags: if restarted { AcceptanceFlags::RESTARTED } else { AcceptanceFlags::NONE },
-            operation_id: claim.operation_id,
-            session_id,
-            logical_object_id,
-            admission_revision,
-            durable_next_offset: 0,
-            checkpoint_granule: self.profile.checkpoint_granule,
-            max_stream_payload,
-            finalized_prefix_crc32: 0,
-        };
-        self.reply(pending, &Response::UploadAccepted(Disposition::Accepted(acceptance)), out)
+        }
     }
 
-    fn after_mutation_claim<'a>(&mut self, pending: Pending, decision: ClaimOutcome, out: &mut [u8]) -> Reaction<'a> {
-        match decision {
-            ClaimOutcome::Claimed { .. } | ClaimOutcome::Restarted { .. } => {
-                // §15: a direct mutation is `claimed -> validating -> publishing -> terminal`.
-                self.advance(pending, Stage::Mutation(CommandPhase::Validating), Command::Validate)
+    /// The §11 answers that end the request without any new work.
+    fn replay_terminal<'a>(
+        &mut self,
+        pending: Pending,
+        work: Work,
+        decision: ClaimOutcome,
+        out: &mut [u8],
+    ) -> Reaction<'a> {
+        let response = match decision {
+            ClaimOutcome::Committed(envelope) => match work {
+                // §6.1: a retained success replays as the operation's own typed response.
+                Work::Upload(_) => Response::UploadAccepted(Disposition::AlreadyTerminal(envelope)),
+                _ => Response::MutationResult(envelope),
+            },
+            ClaimOutcome::Aborted(terminal) => Response::Error(terminal.body()),
+            ClaimOutcome::Conflict => Response::Error(conflict_body()),
+            ClaimOutcome::ForeignPrincipal => Response::Error(unauthorized_body()),
+            ClaimOutcome::Refused(cause) => Response::Error(cause.body(ClaimStatus::None)),
+            ClaimOutcome::Unclaimed | ClaimOutcome::Claimed { .. } | ClaimOutcome::Restarted { .. } => {
+                Response::Error(internal_body())
             }
-            ClaimOutcome::Committed(envelope) => self.reply(pending, &Response::MutationResult(envelope), out),
-            ClaimOutcome::Aborted(terminal) => self.reply(pending, &Response::Error(terminal.body()), out),
-            ClaimOutcome::Conflict => self.reply(pending, &Response::Error(conflict_body()), out),
-            ClaimOutcome::ForeignPrincipal => self.reply(pending, &Response::Error(unauthorized_body()), out),
-            ClaimOutcome::Refused(cause) => self.reply(pending, &Response::Error(cause.body(ClaimStatus::None)), out),
-        }
+        };
+        self.reply(pending, &response, out)
     }
 
     fn after_abort<'a>(
@@ -1145,7 +1353,7 @@ impl Engine {
             }
             AbortReply::StreamFault { session_id, category, detail, expected_offset } => {
                 let _ = terminal;
-                self.pending = None;
+                self.clear_pending(pending.context.link_kind);
                 let frame = StreamFrame::Fault {
                     session_id,
                     terminal: true,
@@ -1162,8 +1370,22 @@ impl Engine {
                     Err(_) => Reaction::Close(LinkChannel::Stream),
                 }
             }
+            AbortReply::ThenResetStore(echoed) => {
+                // The work is terminal; now the store itself may go (§16).
+                let request_id = pending.request_id;
+                self.clear_pending(pending.context.link_kind);
+                match request_id {
+                    Some(request_id) => self.device_control(
+                        pending.context,
+                        request_id,
+                        Opcode::ResetStore,
+                        DeviceControlRequest::ResetStore(echoed),
+                    ),
+                    None => Reaction::Idle,
+                }
+            }
             AbortReply::Silent => {
-                self.pending = None;
+                self.clear_pending(pending.context.link_kind);
                 Reaction::Idle
             }
         }
@@ -1187,14 +1409,16 @@ impl Engine {
             body.expected_offset = source.total_length;
             return self.reply(pending, &Response::Error(body), out);
         }
-        let Some(context) = self.connection(pending.link).context() else {
-            self.pending = None;
+        let Some(context) =
+            self.connection(pending.context.link_kind).context().filter(|open| open == &pending.context)
+        else {
+            self.clear_pending(pending.context.link_kind);
             return Reaction::Idle;
         };
         let Some(session_id) = self.coordinator.issue(context) else {
             return self.reply(pending, &Response::Error(internal_body()), out);
         };
-        let max_payload = self.max_stream_payload(pending.link);
+        let max_payload = self.max_stream_payload(context.link_kind);
         self.transfer = Some(Transfer::Download(Download {
             session_id,
             owner: context,
@@ -1217,7 +1441,7 @@ impl Engine {
     }
 
     fn emit_download<'a>(&mut self, pending: Pending, offset: u64, bytes: &[u8], out: &mut [u8]) -> Reaction<'a> {
-        self.pending = None;
+        self.clear_pending(pending.context.link_kind);
         let Some(Transfer::Download(download)) = self.transfer else { return Reaction::Idle };
         let _ = pending;
         let frame = StreamFrame::Data {
@@ -1253,7 +1477,20 @@ impl Engine {
             DeviceControlAnswer::BondForgotten => Response::BondForgotten,
             DeviceControlAnswer::Echo(payload) => Response::Echo(crate::control::Echo { payload }),
             DeviceControlAnswer::ResetStore(store_id) => {
-                Response::ResetStoreResult(crate::control::ResetStoreResult { new_store_id: store_id })
+                // §16: reset "closes every connection, session, and lease", and §5.2 makes a
+                // StoreId change a connection-ending transition. The new identity is adopted before
+                // the response goes out, because every canonical intent of §11 is computed over the
+                // *current* StoreId and the old one no longer exists.
+                self.profile.store_id = store_id;
+                self.transfer = None;
+                self.coordinator = SessionCoordinator::new();
+                let response = Response::ResetStoreResult(crate::control::ResetStoreResult { new_store_id: store_id });
+                let reaction = self.reply(pending, &response, out);
+                for link in [LinkKind::Ble, LinkKind::Usb, LinkKind::Test] {
+                    self.connection_mut(link).close();
+                    self.clear_pending(link);
+                }
+                return reaction;
             }
             DeviceControlAnswer::Refused(cause) => Response::Error(cause.body(ClaimStatus::None)),
         };
@@ -1281,9 +1518,13 @@ impl Engine {
     }
 
     fn abandon<'a>(&mut self, pending: Pending, cause: FailureCause) -> Reaction<'a> {
+        let Some(operation_id) = pending.operation_id else {
+            self.clear_pending(pending.context.link_kind);
+            return Reaction::Idle;
+        };
         self.step_upload(UploadEvent::Abandon);
-        self.pending = Some(Pending { stage: Stage::Abort(AbortReply::Failure(cause)), ..pending });
-        Reaction::Work(Command::Abort(AbortCause::Failed(cause)))
+        self.set_pending(Pending { stage: Stage::Abort(AbortReply::Failure(cause)), ..pending });
+        Reaction::Work(Command::Abort { operation_id, cause: AbortCause::Failed(cause) })
     }
 
     // -- plumbing ------------------------------------------------------------------------------
@@ -1296,13 +1537,14 @@ impl Engine {
             next_offset: offset.saturating_add(payload.len() as u64),
             ..upload
         }));
-        self.pending = Some(Pending {
-            link: upload.owner.link_kind,
+        self.set_pending(Pending {
+            context: upload.owner,
             request_id: None,
             opcode: Opcode::StartUpload,
+            operation_id: Some(upload.operation_id),
             stage: Stage::Append,
         });
-        Reaction::Work(Command::Append { offset, bytes: payload })
+        Reaction::Work(Command::Append { operation_id: upload.operation_id, offset, bytes: payload })
     }
 
     fn fault<'a>(
@@ -1314,26 +1556,31 @@ impl Engine {
     ) -> Reaction<'a> {
         // §13: a restart-only upload is durably aborted, and the fault the client sees says so —
         // which is why the abort is made durable before the frame goes out.
-        let link = self.transfer.map(|transfer| transfer.owner().link_kind).unwrap_or(LinkKind::Test);
+        let Some(Transfer::Upload(upload)) = self.transfer else { return Reaction::Idle };
         self.step_upload(UploadEvent::Abandon);
         self.coordinator.revoke();
-        self.pending = Some(Pending {
-            link,
+        self.set_pending(Pending {
+            context: upload.owner,
             request_id: None,
             opcode: Opcode::StartUpload,
+            operation_id: Some(upload.operation_id),
             stage: Stage::Abort(AbortReply::StreamFault { session_id, category, detail, expected_offset }),
         });
-        Reaction::Work(Command::Abort(AbortCause::StreamFault { detail }))
+        Reaction::Work(Command::Abort { operation_id: upload.operation_id, cause: AbortCause::StreamFault { detail } })
     }
 
     fn advance<'a>(&mut self, pending: Pending, stage: Stage, command: Command<'a>) -> Reaction<'a> {
-        self.pending = Some(Pending { stage, ..pending });
+        self.set_pending(Pending { stage, ..pending });
         Reaction::Work(command)
     }
 
     fn reply<'a>(&mut self, pending: Pending, response: &Response<'_>, out: &mut [u8]) -> Reaction<'a> {
-        self.pending = None;
-        self.connection_mut(pending.link).complete();
+        self.clear_pending(pending.context.link_kind);
+        // Only the connection that asked may have its outstanding slot released: a reply computed
+        // for a connection that has since been replaced must not free the new one's slot.
+        if self.connection(pending.context.link_kind).context() == Some(pending.context) {
+            self.connection_mut(pending.context.link_kind).complete();
+        }
         match pending.request_id {
             Some(request_id) => Self::encode_response(response, pending.opcode, request_id, out),
             None => Reaction::Idle,
@@ -1348,9 +1595,54 @@ impl Engine {
         body: ErrorBody<'_>,
         out: &mut [u8],
     ) -> Reaction<'a> {
-        self.pending = None;
+        self.clear_pending(link);
         self.connection_mut(link).complete();
         Self::encode_response(&Response::Error(body), opcode, request_id, out)
+    }
+
+    /// The pending work of one link, if it has any.
+    fn pending_for(&self, link_kind: LinkKind) -> Option<Pending> {
+        self.pending[Self::index(link_kind)]
+    }
+
+    /// Drops a link's pending work, remembering a claim whose durable answer is still in flight.
+    fn orphan_pending(&mut self, link_kind: LinkKind) {
+        if let Some(pending) = self.pending[Self::index(link_kind)].take() {
+            // A `Lookup` creates no state, so only a claim in flight needs remembering.
+            if let Stage::Claiming(work) = pending.stage {
+                self.orphaned_claim = Some(work.intent().operation_id);
+            }
+        }
+    }
+
+    fn set_pending(&mut self, pending: Pending) {
+        self.pending[Self::index(pending.context.link_kind)] = Some(pending);
+    }
+
+    fn clear_pending(&mut self, link_kind: LinkKind) {
+        self.pending[Self::index(link_kind)] = None;
+    }
+
+    /// Disposes of an outcome whose connection is gone.
+    ///
+    /// §13 makes teardown the moment work is abandoned, and §11 makes a durable claim something
+    /// that must reach a terminal state rather than linger. An outcome that lands after its
+    /// connection died is therefore never answered and never re-homed: it is dropped, and if it
+    /// reports a claim that has just become durable, that claim is durably abandoned here. The
+    /// abort's own outcome is stale in the same way and ends the chain.
+    fn dispose_stale(&mut self, outcome: Outcome<'_>) -> Reaction<'static> {
+        match outcome {
+            Outcome::Claim(ClaimOutcome::Claimed { .. }) | Outcome::Claim(ClaimOutcome::Restarted { .. }) => {
+                match self.orphaned_claim {
+                    Some(operation_id) => {
+                        self.orphaned_claim = None;
+                        Reaction::Work(Command::Abort { operation_id, cause: AbortCause::LinkLost })
+                    }
+                    None => Reaction::Idle,
+                }
+            }
+            _ => Reaction::Idle,
+        }
     }
 
     fn refuse_unframed<'a>(
@@ -1432,16 +1724,27 @@ impl Engine {
         frame.saturating_sub(STREAM_HEADER_LEN as u16)
     }
 
-    fn intent_digest(&self, request: &Request<'_>) -> [u8; 32] {
-        request.canonical_intent(self.profile.store_id).map(|intent| intent.digest()).unwrap_or([0; 32])
+    /// The SHA-256 of §11's canonical intent for a claiming request.
+    ///
+    /// `None` means this crate's codec does not build an intent for that opcode, which for a
+    /// claiming request is an internal contract error rather than a digest of zeroes: two different
+    /// intents that both hashed to zero would compare equal and replay each other's results.
+    fn intent_digest(&self, request: &Request<'_>) -> Option<[u8; 32]> {
+        request.canonical_intent(self.profile.store_id).map(|intent| intent.digest())
     }
 
     fn connection_mut(&mut self, link_kind: LinkKind) -> &mut Connection {
         &mut self.connections[Self::index(link_kind)]
     }
 
+    /// The slot one link kind owns. Total over the enum, so a new link kind is a compile error
+    /// here rather than an out-of-bounds index at runtime.
     const fn index(link_kind: LinkKind) -> usize {
-        (link_kind.to_u8() as usize) - 1
+        match link_kind {
+            LinkKind::Ble => 0,
+            LinkKind::Usb => 1,
+            LinkKind::Test => 2,
+        }
     }
 }
 

@@ -12,20 +12,23 @@ use std::vec::Vec;
 use crate::control::{Echo, ForgetBond, ForgetBondScope};
 use crate::download::{FinishDownload, StartDownload};
 use crate::engine::{
-    ByteLink, DeviceProfile, Engine, FailureCause, LinkCeilings, LinkChannel, LinkContext, PrincipalScope, Reaction,
-    UploadPhase,
+    AbortCause, ByteLink, Command, DeviceProfile, Engine, FailureCause, LinkCeilings, LinkChannel, LinkContext,
+    PrincipalScope, Reaction, UploadPhase,
 };
 use crate::error::{detail, presence, ErrorCategory, Owner, RetryGuidance};
 use crate::frame::{ControlFrame, FrameFlags, Opcode, MAX_STREAM_FRAME};
 use crate::hello::{Hello, LinkKind, PageKind, Subject, SubjectEntry};
 use crate::ids::{LogicalObjectId, OperationId, RequestId, Revision, SessionId, StoreId};
 use crate::metadata::{MetadataEnvelope, MetadataWriter, SchemaClass, MAX_PUT_ENVELOPE};
-use crate::mutate::{DeleteObject, MutationTarget};
+use crate::mutate::{AcknowledgeRideImported, DeleteObject, InstallUpdate, MutationTarget, SetMetadata};
 use crate::query::{OperationStatus, QueryOperation};
 use crate::registry::{schema_version, subject_flags, AbortReason, ObjectKind};
 use crate::result::ResultEnvelope;
 use crate::stream::{Direction, StreamFrame};
-use crate::upload::{AbortSession, CheckpointUpload, Disposition, FinishUpload, ResumePreference, StartUpload, Target};
+use crate::upload::{
+    AbortOperation, AbortSession, CheckpointUpload, Disposition, FinishUpload, ResumePreference, StartUpload, Target,
+    UploadAcceptance,
+};
 use crate::{Request, Response};
 
 use super::fake_link::FakeLink;
@@ -35,6 +38,7 @@ use super::{transcript, Driver, FakeBleLink, FakeUsbLink};
 const STORE: StoreId = StoreId::new([0x3c; 16]);
 const OP_A: OperationId = OperationId::new([0xa1; 16]);
 const OP_B: OperationId = OperationId::new([0xb2; 16]);
+const OP_ABORT: OperationId = OperationId::new([0xe5; 16]);
 const GRANULE: u32 = 1_024;
 const OBJECT_LEN: usize = 3_000;
 
@@ -54,10 +58,13 @@ fn profile() -> DeviceProfile {
     profile.checkpoint_granule = GRANULE;
     profile.command_flags = Opcode::QueryOperation.command_flag().unwrap()
         | Opcode::AbortOperation.command_flag().unwrap()
+        | Opcode::InstallUpdate.command_flag().unwrap()
+        | Opcode::AcknowledgeRideImported.command_flag().unwrap()
         | Opcode::GetDeviceStatus.command_flag().unwrap()
         | Opcode::GetConfig.command_flag().unwrap()
         | Opcode::SetConfig.command_flag().unwrap()
-        | Opcode::Echo.command_flag().unwrap();
+        | Opcode::Echo.command_flag().unwrap()
+        | Opcode::ResetStore.command_flag().unwrap();
     assert!(profile.subjects.push(SubjectEntry {
         subject: Subject::Logical(ObjectKind::Route),
         operation_flags: subject_flags::PUT | subject_flags::GET | subject_flags::DELETE | subject_flags::SET_METADATA,
@@ -75,6 +82,15 @@ fn profile() -> DeviceProfile {
         patch_schema_version: 0,
         catalog_schema_version: schema_version::CATALOG,
         max_length: 1 << 20,
+    }));
+    assert!(profile.subjects.push(SubjectEntry {
+        subject: Subject::Logical(ObjectKind::UpdatePackage),
+        operation_flags: subject_flags::PUT | subject_flags::GET | subject_flags::DELETE,
+        policy_flags: 0,
+        put_schema_version: schema_version::PUT,
+        patch_schema_version: 0,
+        catalog_schema_version: schema_version::CATALOG,
+        max_length: 1 << 22,
     }));
     profile
 }
@@ -292,7 +308,7 @@ fn nothing_is_admitted_before_hello_and_a_second_request_is_busy() {
         assert_eq!(body.detail, detail::descriptor::INVALID_COMBINATION, "{link}");
     }
 
-    // One outstanding request per direction: the engine is mid-claim when the second arrives.
+    // One outstanding command per link: the engine is mid-lookup when the second arrives.
     let mut engine = Engine::new(profile());
     let context = context(LinkKind::Ble, 1);
     engine.open_connection(context, LinkCeilings { control_frame: 244, stream_frame: 1_024 });
@@ -313,6 +329,112 @@ fn nothing_is_admitted_before_hello_and_a_second_request_is_busy() {
     assert_eq!(body.category, ErrorCategory::BUSY);
     assert_eq!(body.detail, detail::busy::NORMAL_OPERATION_CLAIMS);
     assert_eq!(body.owner, Owner::BLE, "owner is this connection's own link kind");
+}
+
+#[test]
+fn a_command_outstanding_on_one_link_is_not_disturbed_by_traffic_on_the_other() {
+    // The one-outstanding rule of §5.2 is per link: a legal request on the USB connection must not
+    // touch the command the BLE connection is waiting on, and its outcome must still be answered
+    // to the connection that asked for it.
+    let mut engine = Engine::new(profile());
+    let mut transaction = FakeTransaction::new(STORE);
+    let ble_context = context(LinkKind::Ble, 1);
+    let usb_context = context(LinkKind::Usb, 1);
+    engine.open_connection(ble_context, LinkCeilings { control_frame: 244, stream_frame: 1_024 });
+    engine.open_connection(usb_context, LinkCeilings { control_frame: 512, stream_frame: 4_096 });
+    let mut out = [0u8; MAX_STREAM_FRAME];
+    let mut scratch = [0u8; MAX_STREAM_FRAME];
+    for link in [ble_context, usb_context] {
+        let hello_record = record(&Request::Hello(hello(PageKind::Resources, 0)), 1);
+        assert!(matches!(engine.on_control(link, &hello_record, &mut out), Reaction::Emit { .. }));
+    }
+
+    let bytes = payload(64);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    let upload = record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 2);
+    let Reaction::Work(lookup) = engine.on_control(ble_context, &upload, &mut out) else {
+        panic!("expected the lookup")
+    };
+
+    // A legal device-control request on the other link, while that command is outstanding.
+    let echo = record(&Request::Echo(Echo { payload: b"other link" }), 7);
+    let Reaction::Work(control_command) = engine.on_control(usb_context, &echo, &mut out) else {
+        panic!("expected the device-control command")
+    };
+    let control_outcome = transaction.execute(control_command, &mut scratch);
+    let Reaction::Emit { len, .. } = engine.resume(usb_context, control_outcome, &mut out) else {
+        panic!("expected the echo")
+    };
+    assert!(matches!(decoded(&out[..len]), Response::Echo(_)));
+
+    // The BLE command is still outstanding and still answerable.
+    let mut reaction = Reaction::Work(lookup);
+    let answered;
+    loop {
+        match reaction {
+            Reaction::Work(command) => {
+                let outcome = transaction.execute(command, &mut scratch);
+                reaction = engine.resume(ble_context, outcome, &mut out);
+            }
+            Reaction::Emit { len, .. } => {
+                answered = Some(out[..len].to_vec());
+                break;
+            }
+            other => panic!("expected the acceptance, got {other:?}"),
+        }
+    }
+    let answer = answered.expect("the BLE request is answered");
+    let frame = ControlFrame::decode(&answer).unwrap();
+    assert_eq!(frame.opcode, Opcode::StartUpload);
+    assert_eq!(frame.request_id, RequestId::new(2).unwrap(), "answered to the request that asked");
+    assert!(engine.live_session().is_some());
+}
+
+#[test]
+fn an_outcome_for_a_dead_connection_is_never_answered_into_the_one_that_replaced_it() {
+    // C1/C2's reconnect variant: the claim comes back after the connection that asked for it is
+    // gone. It must not be answered under the new generation's RequestId, and the claim it reports
+    // must not be left occupying a slot no one can reach.
+    let mut engine = Engine::new(profile());
+    let mut transaction = FakeTransaction::new(STORE);
+    let first = context(LinkKind::Ble, 1);
+    engine.open_connection(first, LinkCeilings { control_frame: 244, stream_frame: 1_024 });
+    let mut out = [0u8; MAX_STREAM_FRAME];
+    let mut scratch = [0u8; MAX_STREAM_FRAME];
+    let hello_record = record(&Request::Hello(hello(PageKind::Resources, 0)), 1);
+    assert!(matches!(engine.on_control(first, &hello_record, &mut out), Reaction::Emit { .. }));
+
+    let bytes = payload(64);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    let upload = record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 2);
+    let Reaction::Work(lookup) = engine.on_control(first, &upload, &mut out) else { panic!("expected the lookup") };
+    let lookup_outcome = transaction.execute(lookup, &mut scratch);
+    let Reaction::Work(claim) = engine.resume(first, lookup_outcome, &mut out) else { panic!("expected the claim") };
+
+    // The link drops and comes back before the claim's answer arrives.
+    engine.close_connection(first);
+    let second = LinkContext { generation: 2, ..first };
+    engine.open_connection(second, LinkCeilings { control_frame: 244, stream_frame: 1_024 });
+    let hello_record = record(&Request::Hello(hello(PageKind::Resources, 0)), 9);
+    assert!(matches!(engine.on_control(second, &hello_record, &mut out), Reaction::Emit { .. }));
+
+    let claim_outcome = transaction.execute(claim, &mut scratch);
+    let reaction = engine.resume(first, claim_outcome, &mut out);
+    // Nothing is emitted to the new connection, and the orphaned claim is durably abandoned.
+    let Reaction::Work(Command::Abort { operation_id, .. }) = reaction else {
+        panic!("expected the orphaned claim to be abandoned, got {reaction:?}")
+    };
+    assert_eq!(operation_id, OP_A);
+    let abort_outcome = transaction.execute(Command::Abort { operation_id, cause: AbortCause::LinkLost }, &mut scratch);
+    assert_eq!(engine.resume(first, abort_outcome, &mut out), Reaction::Idle);
+    assert!(engine.live_session().is_none());
+    assert!(transaction.retains(OP_A), "the claim reached a terminal state rather than lingering");
+
+    // The new connection is untouched and still usable.
+    let status = record(&Request::GetDeviceStatus, 10);
+    assert!(matches!(engine.on_control(second, &status, &mut out), Reaction::Work(_)));
 }
 
 #[test]
@@ -351,10 +473,17 @@ fn a_stale_or_wrong_wire_session_cannot_advance_or_release_anything() {
     let mut buffer = [0u8; 32];
     let metadata = route_put(&mut buffer, 1);
     let request = record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 2);
-    let reaction = engine.on_control(ble_context, &request, &mut out);
-    let Reaction::Work(command) = reaction else { panic!("expected the claim") };
-    let outcome = transaction.execute(command, &mut scratch);
-    assert!(matches!(engine.resume(outcome, &mut out), Reaction::Emit { .. }));
+    let mut reaction = engine.on_control(ble_context, &request, &mut out);
+    loop {
+        match reaction {
+            Reaction::Work(command) => {
+                let outcome = transaction.execute(command, &mut scratch);
+                reaction = engine.resume(ble_context, outcome, &mut out);
+            }
+            Reaction::Emit { .. } => break,
+            other => panic!("expected the acceptance, got {other:?}"),
+        }
+    }
     let session_id = engine.live_session().unwrap();
 
     // The same identifier offered on the other link kind.
@@ -822,43 +951,56 @@ fn a_direct_mutation_publishes_through_the_same_command_machine() {
 
 #[test]
 fn fuzzed_control_and_data_frames_never_panic_and_never_advance_a_session() {
-    let mut driver = ble(1);
-    negotiate(&mut driver);
+    // Every round fuzzes a *live* session: a mutated frame that legitimately faults one ends that
+    // round, and the next round rebuilds the driver rather than firing at a dead engine.
     let bytes = payload(1_024);
-    let mut buffer = [0u8; 32];
-    let metadata = route_put(&mut buffer, 1);
-    driver.link.deliver(
-        LinkChannel::Control,
-        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
-    );
-    driver.pump().unwrap();
-    let session_id = driver.engine.live_session().unwrap();
-
-    let seed_control = record(&Request::FinishUpload(FinishUpload { session_id }), 9);
-    let seed_stream = data_frame(session_id, 0, &bytes[..64]);
     let mut state = 0x1234_5678u32;
+    let mut faulted = 0usize;
+    let mut delivered = 0usize;
     for round in 0..2_000u32 {
+        let mut driver = ble(1);
+        negotiate(&mut driver);
+        let mut buffer = [0u8; 32];
+        let metadata = route_put(&mut buffer, 1);
+        driver.link.deliver(
+            LinkChannel::Control,
+            &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+        );
+        driver.pump().unwrap();
+        let session_id = driver.engine.live_session().unwrap();
+        let seed_control = record(&Request::FinishUpload(FinishUpload { session_id }), 9);
+        let seed_stream = data_frame(session_id, 0, &bytes[..64]);
+
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let control = round.is_multiple_of(2);
         let seed = if control { &seed_control } else { &seed_stream };
         let mut mutated = seed.clone();
-        if !mutated.is_empty() {
-            let index = (state as usize) % mutated.len();
-            mutated[index] ^= (state >> 16) as u8;
-        }
+        let index = (state as usize) % mutated.len();
+        mutated[index] ^= (state >> 16) as u8;
         if state.is_multiple_of(7) {
             mutated.truncate((state as usize) % mutated.len().max(1));
         }
         let channel = if control { LinkChannel::Control } else { LinkChannel::Stream };
         driver.link.deliver(channel, &mutated);
         let _ = driver.pump();
-        if driver.engine.live_session().is_none() {
-            // A mutated frame legitimately faulted the session; restart the fuzz from a live one.
-            break;
+        delivered += 1;
+
+        match driver.engine.active_upload() {
+            Some(snapshot) => {
+                assert!(
+                    snapshot.next_offset <= snapshot.declared_length,
+                    "no fuzzed frame writes past the declared length"
+                );
+                assert!(
+                    driver.transaction.head(ObjectKind::Route, LogicalObjectId::new(1)).is_none(),
+                    "no fuzzed frame publishes anything"
+                );
+            }
+            None => faulted += 1,
         }
-        let snapshot = driver.engine.active_upload().unwrap();
-        assert!(snapshot.next_offset <= snapshot.declared_length, "no fuzzed frame writes past the declared length");
     }
+    assert_eq!(delivered, 2_000, "every round fuzzes a live engine");
+    assert!(faulted > 0, "the corpus reaches the fault paths at least once");
 }
 
 // -- transcripts ---------------------------------------------------------------------------------
@@ -869,7 +1011,9 @@ fn every_checked_in_transcript_record_survives_both_bindings_byte_for_byte() {
     assert_eq!(transcripts.len(), transcript::DRIVEN.len(), "the inventory and the directory agree");
     let mut records = 0usize;
     for transcript in &transcripts {
-        let mut over_ble = FakeBleLink::with_limits(context(LinkKind::Ble, 1), 4_099, 4_096);
+        // The largest ATT MTU a real link negotiates, and a CoC SDU that carries the fixture's
+        // 1,024-byte stream payloads.
+        let mut over_ble = FakeBleLink::with_limits(context(LinkKind::Ble, 1), 517, 4_096);
         let mut over_usb = FakeUsbLink::with_max_record(context(LinkKind::Usb, 1), 4_096);
         let mut buffer = [0u8; MAX_STREAM_FRAME];
         for event in &transcript.events {
@@ -881,6 +1025,12 @@ fn every_checked_in_transcript_record_survives_both_bindings_byte_for_byte() {
                 transcript::Channel::Stream => LinkChannel::Stream,
                 _ => LinkChannel::Control,
             };
+            assert!(
+                event.record.len()
+                    <= usize::from(over_ble.ceilings().control_frame.max(over_ble.ceilings().stream_frame)),
+                "{}: a real ATT MTU carries every record of this fixture",
+                transcript.name
+            );
             over_ble.deliver(channel, &event.record);
             over_usb.deliver(channel, &event.record);
             let ble_len = over_ble.receive(channel, &mut buffer).unwrap().unwrap();
@@ -1096,6 +1246,20 @@ impl AnyDriver {
         }
     }
 
+    fn control_count(&self) -> usize {
+        match self {
+            AnyDriver::Ble(driver) => driver.link.sent(LinkChannel::Control).len(),
+            AnyDriver::Usb(driver) => driver.link.sent(LinkChannel::Control).len(),
+        }
+    }
+
+    fn control_at(&self, index: usize) -> Option<&[u8]> {
+        match self {
+            AnyDriver::Ble(driver) => driver.link.sent(LinkChannel::Control).get(index).map(Vec::as_slice),
+            AnyDriver::Usb(driver) => driver.link.sent(LinkChannel::Control).get(index).map(Vec::as_slice),
+        }
+    }
+
     fn last_control(&self) -> &[u8] {
         match self {
             AnyDriver::Ble(driver) => driver.link.sent(LinkChannel::Control).last().unwrap(),
@@ -1185,4 +1349,671 @@ fn usb_completes_its_in_records_in_order_and_resets_a_malformed_record_stream() 
     driver.pump().unwrap();
     assert!(driver.link.is_closed(LinkChannel::Control));
     assert!(!driver.link.is_closed(LinkChannel::Stream));
+}
+
+// -- §12's validation precedence -------------------------------------------------------------------
+
+#[test]
+fn the_idempotency_lookup_precedes_busy_and_size_refusals() {
+    // §12: "idempotency claim/intent, owner/resources, compare-and-swap, size/space". A retained
+    // result therefore replays even while another transfer owns the coordinator, and a conflicting
+    // intent is a conflict even when the request would also be too large.
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(256);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, &bytes));
+    driver.pump().unwrap();
+    driver.link.deliver(LinkChannel::Control, &record(&Request::FinishUpload(FinishUpload { session_id }), 4));
+    driver.pump().unwrap();
+    let committed = match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::UploadResult(envelope) => envelope,
+        other => panic!("expected the result, got {other:?}"),
+    };
+
+    // A second, different operation now owns the heavy-transfer coordinator.
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_B, Target::Create, &bytes, metadata)), 5),
+    );
+    driver.pump().unwrap();
+    assert!(driver.engine.live_session().is_some());
+
+    // The retained result of OP_A still replays: §6.1 creates no stream session for a terminal
+    // replay, so `busy` is never the right answer to one.
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 6),
+    );
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::UploadAccepted(Disposition::AlreadyTerminal(envelope)) => assert_eq!(envelope, committed),
+        other => panic!("expected the retained result, got {other:?}"),
+    }
+
+    // And an oversize *different* intent under that same identifier is a conflict, not a limit.
+    let oversize = payload(64);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    let mut request = start_upload(OP_A, Target::Create, &oversize, metadata);
+    request.declared_length = u64::from(u32::MAX);
+    driver.link.deliver(LinkChannel::Control, &record(&Request::StartUpload(request), 7));
+    driver.pump().unwrap();
+    let body = error_of(driver.link.sent(LinkChannel::Control).last().unwrap());
+    assert_eq!(body.category, ErrorCategory::OPERATION_ID_CONFLICT);
+}
+
+#[test]
+fn a_same_intent_start_upload_for_the_live_transfer_restarts_it_rather_than_refusing_it() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(2_048);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let first_session = driver.engine.live_session().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(first_session, 0, &bytes[..1_008]));
+    driver.pump().unwrap();
+
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 4),
+    );
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::UploadAccepted(Disposition::Accepted(acceptance)) => {
+            assert!(acceptance.flags.restart_at_zero(), "restart-only discards the work and says so");
+            assert_eq!(acceptance.durable_next_offset, 0);
+            assert_eq!(acceptance.finalized_prefix_crc32, 0);
+            assert_ne!(acceptance.session_id, first_session, "a fresh session revokes the old one");
+        }
+        other => panic!("expected a restarted acceptance, got {other:?}"),
+    }
+    assert_eq!(driver.engine.active_upload().unwrap().next_offset, 0);
+}
+
+// -- §6.4, AbortOperation --------------------------------------------------------------------------
+
+#[test]
+fn abort_operation_marks_its_target_terminal_and_returns_its_own_abort_result() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(512);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, &bytes[..256]));
+    driver.pump().unwrap();
+
+    let abort =
+        AbortOperation { operation_id: OP_ABORT, target_operation_id: OP_A, reason: AbortReason::UserRequested };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(abort), 4));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Abort(result)) => {
+            assert_eq!(result.operation_id, OP_ABORT);
+            assert_eq!(result.target_operation_id, OP_A);
+            assert_eq!(result.disposition, crate::result::AbortDisposition::Cancelled);
+        }
+        other => panic!("expected an AbortResult, got {other:?}"),
+    }
+
+    // §6.4: "The target parent never receives an AbortResult" — its own status is the retained
+    // bare terminal body.
+    driver
+        .link
+        .deliver(LinkChannel::Control, &record(&Request::QueryOperation(QueryOperation { operation_id: OP_A }), 5));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::OperationStatus(OperationStatus::Aborted(body)) => {
+            assert_eq!(body.category, ErrorCategory::CANCELLED);
+            assert_eq!(body.detail, u16::from(AbortReason::UserRequested.to_u8()));
+            assert!(body.durable_claim_exists() && body.claim_is_terminal());
+        }
+        other => panic!("expected the retained Aborted, got {other:?}"),
+    }
+
+    // Repeating the abort command is idempotent by its own OperationId.
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(abort), 6));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Abort(result)) => {
+            assert_eq!(result.disposition, crate::result::AbortDisposition::Cancelled, "the same result, unchanged");
+        }
+        other => panic!("expected the replayed AbortResult, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_abort_command_naming_an_absent_or_foreign_target_says_so_without_burning_state() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+
+    // A target that was never claimed: `already absent`, and the command still commits its result.
+    let abort =
+        AbortOperation { operation_id: OP_ABORT, target_operation_id: OP_B, reason: AbortReason::ClientCancelled };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(abort), 3));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Abort(result)) => {
+            assert_eq!(result.disposition, crate::result::AbortDisposition::AlreadyAbsent);
+        }
+        other => panic!("expected an AbortResult, got {other:?}"),
+    }
+
+    // A target owned by another principal: §3 puts authorization before every existence fact, and
+    // §11 lets that refusal happen in preflight without creating state.
+    let mut other = ble(1);
+    negotiate(&mut other);
+    let bytes = payload(64);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    other.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    other.pump().unwrap();
+    let foreign = LinkContext::new(LinkKind::Ble, PrincipalScope::new([0x99; 16]), 2);
+    other.link.set_context(foreign);
+    other.engine.open_connection(foreign, other.link.ceilings());
+    other.link.deliver(LinkChannel::Control, &record(&Request::Hello(hello(PageKind::Resources, 0)), 1));
+    other.pump().unwrap();
+    let abort =
+        AbortOperation { operation_id: OP_ABORT, target_operation_id: OP_A, reason: AbortReason::ClientCancelled };
+    other.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(abort), 2));
+    other.pump().unwrap();
+    let body = error_of(other.link.sent(LinkChannel::Control).last().unwrap());
+    assert_eq!(body.category, ErrorCategory::AUTHORIZATION_FAILED);
+    assert_eq!(body.presence & (presence::DURABLE_CLAIM_EXISTS | presence::CLAIM_IS_TERMINAL), 0);
+    assert!(!other.transaction.retains(OP_ABORT), "a preflight refusal burns no identifier");
+}
+
+// -- §3, authorization precedes status ---------------------------------------------------------------
+
+#[test]
+fn a_foreign_principal_is_refused_rather_than_told_an_operations_status() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(64);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+
+    let foreign = LinkContext::new(LinkKind::Ble, PrincipalScope::new([0x5e; 16]), 2);
+    driver.link.set_context(foreign);
+    driver.engine.open_connection(foreign, driver.link.ceilings());
+    driver.link.deliver(LinkChannel::Control, &record(&Request::Hello(hello(PageKind::Resources, 0)), 1));
+    driver.pump().unwrap();
+    driver
+        .link
+        .deliver(LinkChannel::Control, &record(&Request::QueryOperation(QueryOperation { operation_id: OP_A }), 2));
+    driver.pump().unwrap();
+    let body = error_of(driver.link.sent(LinkChannel::Control).last().unwrap());
+    assert_eq!(body.category, ErrorCategory::AUTHORIZATION_FAILED, "authorization precedes status");
+}
+
+// -- §5.1's eight concurrent claims ------------------------------------------------------------------
+
+#[test]
+fn an_interleaved_mutation_publishes_its_own_claim_and_not_the_uploads() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let existing = payload(96);
+    let (logical_object_id, revision) = driver.transaction.publish_local(ObjectKind::Route, &existing);
+
+    let bytes = payload(1_008);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, &bytes));
+    driver.pump().unwrap();
+
+    // A small mutation runs between stream frames, as §5.2 and §16 both allow.
+    let delete = DeleteObject {
+        target: MutationTarget {
+            operation_id: OP_B,
+            kind: ObjectKind::Route,
+            logical_object_id,
+            expected_revision: revision,
+        },
+    };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::DeleteObject(delete), 4));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Object(result)) => {
+            assert_eq!(result.operation_id, OP_B, "the mutation published its own claim");
+            assert_eq!(result.outcome, crate::registry::ObjectOutcome::Deleted);
+        }
+        other => panic!("expected the delete's result, got {other:?}"),
+    }
+    // The upload is untouched: still live, still unpublished, still owning the session.
+    assert_eq!(driver.engine.live_session(), Some(session_id));
+    assert_eq!(driver.engine.active_upload().unwrap().next_offset, 1_008);
+    assert!(!driver.transaction.retains(OP_A));
+
+    driver.link.deliver(LinkChannel::Control, &record(&Request::FinishUpload(FinishUpload { session_id }), 5));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::UploadResult(ResultEnvelope::Object(result)) => {
+            assert_eq!(result.operation_id, OP_A);
+            assert_eq!(result.length, 1_008);
+        }
+        other => panic!("expected the upload's result, got {other:?}"),
+    }
+}
+
+// -- §16's ResetStore -------------------------------------------------------------------------------
+
+#[test]
+fn reset_store_abandons_active_work_before_it_destroys_the_store_and_ends_the_connection() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(1_008);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, &bytes));
+    driver.pump().unwrap();
+
+    let reset = crate::control::ResetStore { echoed_store_id: STORE };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::ResetStore(reset), 4));
+    driver.pump().unwrap();
+    let new_store = match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::ResetStoreResult(result) => result.new_store_id,
+        other => panic!("expected the new StoreId, got {other:?}"),
+    };
+    assert_ne!(new_store, STORE);
+    assert_eq!(driver.engine.profile().store_id, new_store, "later intents are built over the live store");
+    assert!(driver.engine.live_session().is_none(), "every session is closed");
+    assert!(driver.engine.active_upload().is_none(), "the active work was abandoned, not replaced under");
+
+    // §5.2: the StoreId change ends the connection, so the client rediscovers rather than
+    // continuing on stale terms.
+    let before = driver.link.sent(LinkChannel::Control).len();
+    driver.link.deliver(LinkChannel::Control, &record(&Request::GetDeviceStatus, 5));
+    driver.pump().unwrap();
+    assert_eq!(driver.link.sent(LinkChannel::Control).len(), before, "the connection is over");
+
+    // A mismatched echo destroys nothing.
+    let mut fresh = ble(1);
+    negotiate(&mut fresh);
+    let wrong = crate::control::ResetStore { echoed_store_id: StoreId::new([0xEE; 16]) };
+    fresh.link.deliver(LinkChannel::Control, &record(&Request::ResetStore(wrong), 3));
+    fresh.pump().unwrap();
+    let body = error_of(fresh.link.sent(LinkChannel::Control).last().unwrap());
+    assert_eq!(body.category, ErrorCategory::MEDIA_UNAVAILABLE);
+    assert_eq!(fresh.engine.profile().store_id, STORE);
+}
+
+// -- §9's direct mutations ----------------------------------------------------------------------------
+
+#[test]
+fn set_metadata_install_update_and_ride_acknowledgement_each_publish_their_own_outcome() {
+    let mut driver = usb(1);
+    negotiate(&mut driver);
+    let route = payload(64);
+    let (route_id, route_revision) = driver.transaction.publish_local(ObjectKind::Route, &route);
+    let ride = payload(32);
+    let (ride_id, ride_revision) = driver.transaction.publish_local(ObjectKind::Ride, &ride);
+    let package = payload(48);
+    let (package_id, package_revision) = driver.transaction.publish_local(ObjectKind::UpdatePackage, &package);
+
+    let mut buffer = [0u8; 64];
+    let mut writer = MetadataWriter::new(&mut buffer).unwrap();
+    writer.push(0x8001, &[3]).unwrap();
+    let patch_bytes = writer.finish(ObjectKind::Route, SchemaClass::Patch);
+    let patch = MetadataEnvelope::decode(patch_bytes, crate::metadata::MAX_PUT_ENVELOPE).unwrap();
+    let set_metadata = SetMetadata {
+        target: MutationTarget {
+            operation_id: OP_A,
+            kind: ObjectKind::Route,
+            logical_object_id: route_id,
+            expected_revision: route_revision,
+        },
+        patch,
+    };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::SetMetadata(set_metadata), 3));
+    driver.pump().unwrap();
+    let metadata_revision = match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Object(result)) => {
+            assert_eq!(result.outcome, crate::registry::ObjectOutcome::MetadataChanged);
+            result.revision
+        }
+        other => panic!("expected metadataChanged, got {other:?}"),
+    };
+    assert!(metadata_revision > route_revision);
+
+    let install =
+        InstallUpdate { operation_id: OP_B, logical_object_id: package_id, expected_revision: package_revision };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::InstallUpdate(install), 4));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Object(result)) => {
+            assert_eq!(result.outcome, crate::registry::ObjectOutcome::UpdateInstallRequested);
+        }
+        other => panic!("expected update-install-requested, got {other:?}"),
+    }
+
+    let acknowledge = AcknowledgeRideImported {
+        operation_id: OP_ABORT,
+        logical_object_id: ride_id,
+        expected_revision: ride_revision,
+    };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AcknowledgeRideImported(acknowledge), 5));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Object(result)) => {
+            assert_eq!(result.outcome, crate::registry::ObjectOutcome::RideImported);
+        }
+        other => panic!("expected ride-imported, got {other:?}"),
+    }
+
+    // All three are retained, and each replays its own result under its own identifier.
+    for operation_id in [OP_A, OP_B, OP_ABORT] {
+        assert!(driver.transaction.retains(operation_id));
+    }
+    assert_eq!(driver.transaction.retained_results(), 3);
+}
+
+#[test]
+fn an_abort_operation_naming_an_install_update_is_refused_as_non_cancellable() {
+    // §9: InstallUpdate "is not cancellable once it has been admitted", and the refusal "is decided
+    // in preflight, before the abort command's own OperationId is durably claimed".
+    let mut driver = usb(1);
+    negotiate(&mut driver);
+    driver.transaction.claim_install_update(OP_B, principal());
+
+    let abort =
+        AbortOperation { operation_id: OP_ABORT, target_operation_id: OP_B, reason: AbortReason::UserRequested };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(abort), 3));
+    driver.pump().unwrap();
+    let body = error_of(driver.link.sent(LinkChannel::Control).last().unwrap());
+    assert_eq!(body.category, ErrorCategory::UNSUPPORTED_CAPABILITY);
+    assert_eq!(body.detail, detail::capability::NON_CANCELLABLE_OPERATION);
+    assert_eq!(body.guidance, RetryGuidance::REJECT_PERMANENTLY);
+    assert!(!driver.transaction.retains(OP_ABORT), "it creates no state and burns no identifier");
+}
+
+// -- §8.1's projection ----------------------------------------------------------------------------------
+
+#[test]
+fn every_reachable_upload_phase_is_reported_as_the_engine_holds_it() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(1_008);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+
+    let mut seen = vec![];
+    for step in 0..2 {
+        if step == 1 {
+            driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, &bytes));
+            driver.pump().unwrap();
+        }
+        let engine_phase = driver.engine.active_upload().unwrap().phase;
+        driver.link.deliver(
+            LinkChannel::Control,
+            &record(&Request::QueryOperation(QueryOperation { operation_id: OP_A }), 10 + step as u32),
+        );
+        driver.pump().unwrap();
+        match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+            Response::OperationStatus(OperationStatus::InProgress(progress)) => {
+                assert_eq!(
+                    Some(progress.phase),
+                    engine_phase.wire_phase(),
+                    "the reported phase is the phase the engine holds"
+                );
+                assert_ne!(progress.flags & crate::query::progress_flags::SESSION_ATTACHED, 0);
+                assert_eq!(progress.namespace, crate::registry::SubjectNamespace::Logical);
+                seen.push(progress.phase);
+            }
+            other => panic!("expected InProgress, got {other:?}"),
+        }
+    }
+    assert_eq!(seen, vec![crate::registry::Phase::Prepared, crate::registry::Phase::Streaming]);
+}
+
+// -- divergent framing ------------------------------------------------------------------------------------
+
+#[test]
+fn two_links_that_negotiate_different_limits_still_carry_identical_records() {
+    // The BLE link is held to a 195-byte ATT MTU (the smallest that can carry the 192-byte control
+    // minimum) and a 64-byte CoC SDU; USB negotiates the protocol maxima. The framing, the frame
+    // sizes and the number of stream records all differ — the DOS records do not.
+    let narrow = FakeBleLink::with_limits(context(LinkKind::Ble, 1), 195, 64);
+    let mut over_ble = Driver::new(narrow, profile(), FakeTransaction::new(STORE));
+    let mut over_usb = usb(1);
+
+    let small_hello =
+        Hello { client_max_control_frame: 512, client_max_stream_frame: 4_096, ..hello(PageKind::Resources, 0) };
+    over_ble.link.deliver(LinkChannel::Control, &record(&Request::Hello(small_hello), 1));
+    over_ble.pump().unwrap();
+    over_usb.link.deliver(LinkChannel::Control, &record(&Request::Hello(small_hello), 1));
+    over_usb.pump().unwrap();
+
+    let ble_negotiated = over_ble.engine.connection(LinkKind::Ble).negotiated().unwrap();
+    let usb_negotiated = over_usb.engine.connection(LinkKind::Usb).negotiated().unwrap();
+    assert_eq!((ble_negotiated.control_frame, ble_negotiated.stream_frame), (192, 64));
+    assert_eq!((usb_negotiated.control_frame, usb_negotiated.stream_frame), (512, 4_096));
+
+    let bytes = payload(96);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    let request = start_upload(OP_A, Target::Create, &bytes, metadata);
+    over_ble.link.deliver(LinkChannel::Control, &record(&Request::StartUpload(request), 2));
+    over_ble.pump().unwrap();
+    over_usb.link.deliver(LinkChannel::Control, &record(&Request::StartUpload(request), 2));
+    over_usb.pump().unwrap();
+
+    // The acceptances differ in exactly one field — the maximum stream payload each link can carry.
+    let ble_acceptance = over_ble.link.sent(LinkChannel::Control).last().unwrap().clone();
+    let usb_acceptance = over_usb.link.sent(LinkChannel::Control).last().unwrap().clone();
+    assert_ne!(ble_acceptance, usb_acceptance);
+    match (decoded(&ble_acceptance), decoded(&usb_acceptance)) {
+        (
+            Response::UploadAccepted(Disposition::Accepted(over_ble_body)),
+            Response::UploadAccepted(Disposition::Accepted(over_usb_body)),
+        ) => {
+            assert_eq!(over_ble_body.max_stream_payload, 48);
+            assert_eq!(over_usb_body.max_stream_payload, 4_080);
+            assert_eq!(
+                UploadAcceptance { max_stream_payload: 0, ..over_ble_body },
+                UploadAcceptance { max_stream_payload: 0, ..over_usb_body },
+                "everything the engine decides is identical; only the link's own limit differs"
+            );
+        }
+        other => panic!("expected two acceptances, got {other:?}"),
+    }
+
+    // The narrow link needs two stream records for what the wide one carries in one, and the
+    // engine's published result is byte-identical all the same.
+    let ble_session = over_ble.engine.live_session().unwrap();
+    for chunk in bytes.chunks(48) {
+        let offset = over_ble.engine.active_upload().unwrap().next_offset;
+        over_ble.link.deliver(LinkChannel::Stream, &data_frame(ble_session, offset, chunk));
+        over_ble.pump().unwrap();
+    }
+    let usb_session = over_usb.engine.live_session().unwrap();
+    over_usb.link.deliver(LinkChannel::Stream, &data_frame(usb_session, 0, &bytes));
+    over_usb.pump().unwrap();
+    assert_eq!(over_ble.link.sent(LinkChannel::Stream).len(), 0);
+    assert!(over_ble.engine.active_upload().unwrap().next_offset == 96);
+
+    over_ble
+        .link
+        .deliver(LinkChannel::Control, &record(&Request::FinishUpload(FinishUpload { session_id: ble_session }), 3));
+    over_ble.pump().unwrap();
+    over_usb
+        .link
+        .deliver(LinkChannel::Control, &record(&Request::FinishUpload(FinishUpload { session_id: usb_session }), 3));
+    over_usb.pump().unwrap();
+    assert_eq!(
+        over_ble.link.sent(LinkChannel::Control).last(),
+        over_usb.link.sent(LinkChannel::Control).last(),
+        "the terminal result is byte-identical across two very different links"
+    );
+}
+
+#[test]
+fn the_abort_transcript_semantics_are_reproduced_by_the_engine() {
+    // The abort transcript opens on a session issued before the fixture, so it cannot be driven
+    // from its first event the way the end-to-end one is. Its *semantics* can: give the engine the
+    // live upload the fixture assumes, then replay its client records and hold every device answer
+    // to the fixture's own opcode and response type.
+    //
+    // Two rows diverge by profile rather than by defect, and they are asserted rather than
+    // skipped. §6.4: "Detaching a resumable upload preserves its durable work; detaching a
+    // restart-only upload durably aborts it." The fixture's device is resumable, so its
+    // QueryOperation after the detach reports InProgress and its later AbortOperation still finds
+    // a live target. This device is restart-only, so the detach is already terminal: the query
+    // reports Aborted and the abort command reports `already terminal`. Everything else — the
+    // detach outcome, the AbortResult's identity and idempotence, and the target's terminal
+    // status — is identical.
+    let transcripts = transcript::load();
+    let transcript = transcripts
+        .iter()
+        .find(|transcript| transcript.name == "abort-session-retains-work-abort-operation-abandons-it")
+        .expect("the abort transcript is checked in");
+
+    for over_usb in [false, true] {
+        let mut driver = if over_usb { AnyDriver::Usb(usb(1)) } else { AnyDriver::Ble(ble(1)) };
+        driver.negotiate();
+        let session_id = driver.start_upload(payload(512));
+
+        let mut sent = driver.control_count();
+        let mut compared = 0usize;
+        let mut divergent = 0usize;
+        let mut answer: Option<Vec<u8>> = None;
+        for event in &transcript.events {
+            if event.record.is_empty() {
+                continue;
+            }
+            if event.is_client() {
+                let mut retargeted = event.record.clone();
+                retarget(&mut retargeted, event.channel, Some(session_id), None);
+                driver.deliver(LinkChannel::Control, &retargeted);
+                driver.pump();
+                answer = driver.control_at(sent).map(<[u8]>::to_vec);
+                sent = driver.control_count();
+                continue;
+            }
+            let answer = answer.as_ref().expect("the device answered the request before it");
+            let expected = ControlFrame::decode(&event.record).unwrap();
+            let actual = ControlFrame::decode(answer).unwrap();
+            assert_eq!(actual.opcode, expected.opcode, "{}", event.note);
+            match (Response::decode(&actual).unwrap(), Response::decode(&expected).unwrap()) {
+                (Response::SessionAborted(mine), Response::SessionAborted(theirs)) => {
+                    assert_eq!(mine, theirs, "{}", event.note);
+                    compared += 1;
+                }
+                (
+                    Response::MutationResult(ResultEnvelope::Abort(mine)),
+                    Response::MutationResult(ResultEnvelope::Abort(theirs)),
+                ) => {
+                    assert_eq!(mine.operation_id, theirs.operation_id, "{}", event.note);
+                    assert_eq!(mine.target_operation_id, theirs.target_operation_id);
+                    assert_eq!(mine.store_id, STORE);
+                    // Restart-only: the detach already made the target terminal.
+                    assert_eq!(mine.disposition, crate::result::AbortDisposition::AlreadyTerminal);
+                    assert_eq!(theirs.disposition, crate::result::AbortDisposition::Cancelled);
+                    divergent += 1;
+                }
+                (
+                    Response::OperationStatus(OperationStatus::Aborted(mine)),
+                    Response::OperationStatus(OperationStatus::Aborted(theirs)),
+                ) => {
+                    assert_eq!(mine.category, theirs.category, "{}", event.note);
+                    assert_eq!(mine.presence, theirs.presence, "both claim-status bits, no text");
+                    assert!(mine.text.is_empty());
+                    compared += 1;
+                }
+                (
+                    Response::OperationStatus(OperationStatus::Aborted(mine)),
+                    Response::OperationStatus(OperationStatus::InProgress(_)),
+                ) => {
+                    // The restart-only divergence §6.4 names.
+                    assert_eq!(mine.category, ErrorCategory::CANCELLED, "{}", event.note);
+                    assert_eq!(mine.detail, u16::from(AbortReason::ClientCancelled.to_u8()));
+                    assert!(mine.durable_claim_exists() && mine.claim_is_terminal());
+                    divergent += 1;
+                }
+                (mine, theirs) => panic!("{}: got {mine:?}, fixture has {theirs:?}", event.note),
+            }
+        }
+        assert_eq!(compared + divergent, 5, "every device event of the transcript was accounted for");
+        assert_eq!(divergent, 3, "exactly the rows the restart-only profile changes");
+    }
+}
+
+#[test]
+fn the_ble_link_completes_confirmed_indications_in_order_and_recovers_from_a_lost_one() {
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    driver.link.deliver(LinkChannel::Control, &record(&Request::GetDeviceStatus, 3));
+    driver.link.deliver(LinkChannel::Control, &record(&Request::Echo(Echo { payload: b"order" }), 4));
+    driver.pump().unwrap();
+    assert_eq!(driver.link.in_flight(), 4, "two capability pages and two answers await confirmation");
+    driver.drain().unwrap();
+    assert_eq!(driver.link.drained, driver.link.sent(LinkChannel::Control).to_vec(), "completion is acceptance order");
+
+    // A lost indication fails the drain until its confirmation finally arrives (§14.1).
+    driver.link.indication_times_out = true;
+    driver.link.deliver(LinkChannel::Control, &record(&Request::GetConfig, 5));
+    driver.pump().unwrap();
+    driver.link.indication_times_out = false;
+    assert_eq!(driver.drain(), Err(crate::engine::LinkError::Timeout));
+    driver.link.confirm();
+    assert_eq!(driver.drain(), Ok(()));
+
+    // §14.1: one Write Request value is one control frame; a record above the ATT ceiling is not
+    // something this binding can hand over.
+    let mut narrow = Driver::new(
+        FakeBleLink::with_limits(context(LinkKind::Ble, 1), 195, 1_024),
+        profile(),
+        FakeTransaction::new(STORE),
+    );
+    narrow.link.deliver(LinkChannel::Control, &vec![0u8; 400]);
+    assert_eq!(narrow.pump(), Err(crate::engine::LinkError::RecordTooLarge));
 }
