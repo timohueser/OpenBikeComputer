@@ -3,10 +3,10 @@
   "suite": "device-object-v2",
   "kind": "stream",
   "sessionId": 18,
-  "offset": "262144",
-  "payloadLength": 4,
+  "offset": "1024",
+  "payloadLength": 8,
   "direction": 1,
   "flags": 0,
   "note": "The frame a resumed client sends after comparing its retained prefix CRC against the acceptance's.",
-  "record": "1200000000000400000000000400010011223344"
+  "record": "120000000004000000000000080001001415161718191a1b"
 }

@@ -143,6 +143,17 @@ fn the_production_codec_rejects_every_negative_vector_in_the_stated_category() {
             NegativeTarget::CapabilitiesPayload => Capabilities::decode(&vector.bytes).err(),
             NegativeTarget::SubjectEntry => SubjectEntry::decode(&vector.bytes).err(),
             NegativeTarget::ConfigBlock => ConfigBlock::decode(&vector.bytes).err(),
+            NegativeTarget::ResetStoreEcho(class) => {
+                // The echo decodes as sixteen opaque bytes; what refuses it is §16's admission
+                // rule, which needs the mount class and the StoreId the device currently reports.
+                let request = crate::control::ResetStore::decode(&vector.bytes).expect("sixteen bytes");
+                let mount_class = MountClass::from_u8(class).expect("a registered mount class");
+                if request.echo_is_admissible(mount_class, crate::ids::StoreId::new(STORE)) {
+                    None
+                } else {
+                    Some(crate::DecodeError::invalid_combination())
+                }
+            }
         };
         let observed = observed.unwrap_or_else(|| panic!("{} was accepted but must be rejected", vector.name));
         assert_eq!(
@@ -200,23 +211,25 @@ fn the_production_intent_builder_matches_every_canonical_golden() {
         &find("intent-start-upload-replace-route").bytes[..]
     );
 
+    let manifest = inventory::manifest_payload();
     let begin = BeginDraft {
         parent_operation_id: OperationId::new(OP_PARENT),
         kind: ObjectKind::VolumeManifest,
         target: Target::Create,
-        declared_manifest_length: 96 + 56 * 3,
-        declared_manifest_crc32: 0x0F0F_0F0F,
+        declared_manifest_length: manifest.len() as u64,
+        declared_manifest_crc32: raw::crc32(&manifest),
         expected_part_count: 3,
     };
     assert_eq!(CanonicalIntent::for_begin_draft(store, &begin).bytes(), &find("intent-begin-draft").bytes[..]);
 
+    let part_payload = inventory::draft_part_payload();
     let part = StartDraftPart {
         child_operation_id: OperationId::new(OP_CHILD),
         parent_operation_id: OperationId::new(OP_PARENT),
         part_kind: DraftPartKind::MapShard,
         part_key: 7,
-        declared_length: 65_536,
-        expected_crc32: 0x99AA_BBCC,
+        declared_length: part_payload.len() as u64,
+        expected_crc32: raw::crc32(&part_payload),
         resume: ResumePreference::ResumePermitted,
     };
     assert_eq!(CanonicalIntent::for_start_draft_part(store, &part).bytes(), &find("intent-start-draft-part").bytes[..]);
@@ -356,6 +369,18 @@ fn every_error_category_and_registered_detail_appears_in_a_vector() {
         if row.code == 0 {
             continue;
         }
+        if row.category == ErrorCategory::INVALID_DESCRIPTOR
+            && row.code == crate::error::detail::descriptor::ZERO_REQUEST_ID
+        {
+            // §2 makes this one a close reason rather than a message: "it is never transmitted".
+            // A response vector for it would freeze a frame no conforming device can send, so the
+            // behaviour is pinned as a negative instead.
+            assert!(
+                negatives().iter().any(|vector| vector.name == "frame-zero-request-id"),
+                "the zero-RequestId close must still be pinned as a negative"
+            );
+            continue;
+        }
         assert!(details.contains(&(row.category, row.code)), "no vector carries {}/{}", row.category.name(), row.name);
     }
     for guidance in crate::error::RetryGuidance::ALL {
@@ -394,6 +419,7 @@ fn every_device_control_mount_class_and_config_boundary_is_pinned() {
 #[test]
 fn the_nine_required_transcripts_are_present_and_every_frame_in_them_decodes() {
     let expected = [
+        // The nine flows issue #1358 names.
         "create-upload-publish-and-download",
         "replace-conflict-at-the-commit-lock",
         "lost-result-then-query-operation",
@@ -403,6 +429,9 @@ fn the_nine_required_transcripts_are_present_and_every_frame_in_them_decodes() {
         "download-pin-survives-replace-and-delete",
         "delete-lost-result-and-pinned-reader-continuity",
         "set-metadata-compare-and-swap-and-lost-result",
+        // §5.4's result-window boundary and §5.11's draft machinery, both pure wire traffic.
+        "result-window-eviction-boundary",
+        "draft-begin-parts-finalize-and-paging",
     ];
     let all = transcripts();
     let names: Vec<String> = all.iter().map(|transcript| transcript.name.clone()).collect();
@@ -656,4 +685,215 @@ fn transcript_create_publishes_one_head_that_the_catalog_and_a_download_agree_on
     assert_eq!(accepted.pinned_revision, published.revision);
     assert_eq!(accepted.total_length, published.length);
     assert_eq!(accepted.whole_source_crc32, published.crc32);
+}
+
+#[test]
+fn transcript_result_window_holds_at_63_and_evicts_at_64() {
+    // Event 3 is the query after 63 newer terminals; event 6 is the query after the 64th.
+    let retained = transcript_payload("result-window-eviction-boundary", 3);
+    let frame = ControlFrame::decode(&retained).unwrap();
+    let OperationStatus::Committed(result) = OperationStatus::decode(frame.payload).unwrap() else {
+        panic!("63 newer terminals must not evict");
+    };
+    let crate::result::ResultEnvelope::Object(result) = result else { panic!("expected an ObjectResult") };
+    assert_eq!(result.revision.get(), 42);
+
+    let evicted = transcript_payload("result-window-eviction-boundary", 6);
+    let frame = ControlFrame::decode(&evicted).unwrap();
+    assert_eq!(OperationStatus::decode(frame.payload).unwrap(), OperationStatus::Unknown);
+
+    // And the reconciliation that follows is a catalog read, not a replay: no frame after the
+    // eviction carries the spent OperationId.
+    let transcripts = transcripts();
+    let transcript = transcripts.iter().find(|t| t.name == "result-window-eviction-boundary").unwrap();
+    for event in &transcript.events[7..] {
+        let Some(record) = &event.record else { continue };
+        assert!(!record.windows(16).any(|window| window == OP_A), "an evicted OperationId must never be replayed");
+    }
+}
+
+#[test]
+fn transcript_draft_publishes_one_release_and_refuses_a_second_parent() {
+    // A second BeginDraft while a parent is open is an ownership refusal before any claim.
+    let refusal = transcript_payload("draft-begin-parts-finalize-and-paging", 3);
+    let frame = ControlFrame::decode(&refusal).unwrap();
+    let Response::Error(body) = Response::decode(&frame).unwrap() else { panic!("expected an error") };
+    assert_eq!(body.category, crate::ErrorCategory::BUSY);
+    assert_eq!(body.detail, crate::error::detail::busy::DRAFT_PARENTS);
+    assert_eq!(body.owner, crate::error::Owner::BLE);
+    assert!(!body.durable_claim_exists(), "the refusal precedes any claim");
+
+    // Sealing mints the ref; the accepted response before it carried none.
+    let accepted = transcript_payload("draft-begin-parts-finalize-and-paging", 5);
+    let frame = ControlFrame::decode(&accepted).unwrap();
+    let Response::DraftPartAccepted(crate::upload::Disposition::Accepted(accepted)) = Response::decode(&frame).unwrap()
+    else {
+        panic!("expected a DraftPartAccepted");
+    };
+    assert_eq!(accepted.durable_next_offset, 0);
+
+    let sealed = transcript_payload("draft-begin-parts-finalize-and-paging", 8);
+    let frame = ControlFrame::decode(&sealed).unwrap();
+    let Response::UploadResult(crate::result::ResultEnvelope::DraftPart(sealed)) = Response::decode(&frame).unwrap()
+    else {
+        panic!("expected a DraftPartResult");
+    };
+    assert!(!sealed.draft_part_ref.is_zero(), "sealing mints the reference");
+
+    // The paged snapshot reports that same ref, and its draft revision moved twice: once for the
+    // claim, once for the seal — never for a payload checkpoint.
+    let page = transcript_payload("draft-begin-parts-finalize-and-paging", 10);
+    let frame = ControlFrame::decode(&page).unwrap();
+    let Response::DraftPage(page) = Response::decode(&frame).unwrap() else { panic!("expected a draft page") };
+    assert_eq!(page.draft_revision, 3);
+    assert_eq!(page.entries().len(), 1);
+    assert_eq!(page.entries()[0].draft_part_ref, sealed.draft_part_ref);
+    assert_eq!(page.entries()[0].state, crate::query::DraftPartState::Sealed);
+
+    // Finalization publishes one logical head, and selection is a separate compare-and-swap.
+    let published = transcript_payload("draft-begin-parts-finalize-and-paging", 15);
+    let frame = ControlFrame::decode(&published).unwrap();
+    let Response::UploadResult(crate::result::ResultEnvelope::Object(published)) = Response::decode(&frame).unwrap()
+    else {
+        panic!("expected an ObjectResult");
+    };
+    assert_eq!(published.kind, crate::registry::ObjectKind::VolumeManifest);
+    assert_eq!(published.outcome, crate::registry::ObjectOutcome::Committed);
+
+    let selected = transcript_payload("draft-begin-parts-finalize-and-paging", 17);
+    let frame = ControlFrame::decode(&selected).unwrap();
+    let Response::MutationResult(crate::result::ResultEnvelope::Object(selected)) = Response::decode(&frame).unwrap()
+    else {
+        panic!("expected an ObjectResult");
+    };
+    assert_eq!(selected.outcome, crate::registry::ObjectOutcome::MetadataChanged);
+    assert!(selected.revision > published.revision);
+}
+
+#[test]
+fn the_frame_limit_derivation_cases_match_the_production_derivation() {
+    use crate::hello::negotiation::{ble_control_ceiling, control_frame, stream_frame, Limit};
+
+    let vectors = derivations();
+    let cases = &vectors[0].cases;
+    assert_eq!(cases.len(), 6);
+    for case in cases {
+        let observed = match case.channel {
+            "control" => {
+                assert_eq!(ble_control_ceiling(case.link_value), case.ceiling, "ATT MTU {}", case.link_value);
+                control_frame(case.client_max, case.device_max, case.ceiling)
+            }
+            "stream" => stream_frame(case.client_max, case.device_max, case.ceiling),
+            other => panic!("unknown channel {other}"),
+        };
+        let expected = match case.outcome {
+            "negotiated" => Limit::Negotiated(case.negotiated),
+            "belowProtocolMinimum" => Limit::BelowProtocolMinimum,
+            "undeliverable" => Limit::Undeliverable,
+            other => panic!("unknown outcome {other}"),
+        };
+        assert_eq!(observed, expected, "{} case at link value {}", case.channel, case.link_value);
+    }
+}
+
+#[test]
+fn the_progress_matrix_covers_every_claim_family_and_phase_the_matrix_admits() {
+    use crate::query::{OperationProgress, PROGRESS_LEN};
+    use crate::registry::Phase;
+
+    let rows = progress_matrix();
+    // Every row decodes and satisfies the matrix's own shape rules.
+    for row in &rows {
+        let bytes = progress(row.namespace, row.phase, row.flags, row.kind, row.logical_id, row.offset);
+        assert_eq!(bytes.len(), PROGRESS_LEN);
+        let decoded = OperationProgress::decode(&bytes)
+            .unwrap_or_else(|error| panic!("{} failed to decode: {error:?}", row.name));
+        assert_eq!(decoded.phase.to_u8(), row.phase);
+        if !decoded.logical_id_present() {
+            assert_eq!(decoded.logical_object_id.get(), 0, "{}: ID-present clear means the ID is zero", row.name);
+        }
+        if decoded.namespace == crate::registry::SubjectNamespace::None {
+            assert_eq!(decoded.subject_kind, 0, "{}: namespace none means kind zero", row.name);
+        }
+    }
+
+    // Every phase the wire enum defines appears somewhere in the matrix.
+    let phases: BTreeSet<u8> = rows.iter().map(|row| row.phase).collect();
+    for phase in Phase::ALL {
+        assert!(phases.contains(&phase.to_u8()), "no matrix row occupies phase {}", phase.name());
+    }
+
+    // And each claim family occupies exactly the phases §8.1 gives it.
+    let phases_for = |prefix: &str| -> BTreeSet<u8> {
+        rows.iter()
+            .filter(|row| row.name.starts_with(&format!("query-operation-progress-{prefix}")))
+            .map(|row| row.phase)
+            .collect()
+    };
+    assert_eq!(phases_for("start-upload"), BTreeSet::from([0, 1, 2, 3, 4, 7]));
+    assert_eq!(phases_for("draft-part"), BTreeSet::from([0, 1, 2, 3, 4, 7]));
+    assert_eq!(phases_for("draft-parent"), BTreeSet::from([0, 1, 2, 3, 4, 6, 7]));
+    assert_eq!(phases_for("delete"), BTreeSet::from([3, 4, 7]));
+    assert_eq!(phases_for("set-metadata"), BTreeSet::from([3, 4, 7]));
+    assert_eq!(phases_for("abort-command"), BTreeSet::from([7]));
+    // InstallUpdate never enters aborting: §9 makes it non-cancellable from its durable claim.
+    assert_eq!(phases_for("install-update"), BTreeSet::from([3, 4, 5]));
+    assert_eq!(phases_for("acknowledge-ride"), BTreeSet::from([3, 4, 7]));
+}
+
+#[test]
+fn every_finalized_prefix_crc_covers_exactly_the_prefix_its_message_reports() {
+    // The defect this test exists for: a producer that clamps the CRC span to the whole object
+    // emits one identical CRC for three different durable offsets, and a codec that hashes the
+    // wrong span passes. Each of these must be the CRC of its own prefix and of nothing else.
+    let payload = inventory::route_payload();
+    let granule = u64::from(FIXTURE_GRANULE);
+    let mut seen = BTreeSet::new();
+    for vector in controls() {
+        let Some(offset_and_crc) = finalized_prefix(&vector) else { continue };
+        let (offset, crc) = offset_and_crc;
+        if offset == 0 {
+            assert_eq!(crc, 0, "{}: a zero durable offset carries a zero CRC", vector.name);
+            continue;
+        }
+        seen.insert(crc);
+    }
+    // The three checkpoint responses report 1,024 / 2,048 / 3,000 and must not share a CRC.
+    let distinct: BTreeSet<u32> = [granule, granule * 2, payload.len() as u64]
+        .iter()
+        .map(|offset| raw::crc32(&payload[..*offset as usize]))
+        .collect();
+    assert_eq!(distinct.len(), 3, "three different prefixes must hash to three different values");
+    assert_ne!(
+        raw::crc32(&payload[..granule as usize]),
+        raw::crc32(&payload),
+        "a prefix CRC must not equal the whole-object CRC"
+    );
+    assert!(seen.is_superset(&distinct), "every checkpoint CRC must be a genuine prefix CRC");
+}
+
+/// The `(durable offset, finalized prefix CRC)` pair a message reports, when it reports one.
+fn finalized_prefix(vector: &ControlVector) -> Option<(u64, u32)> {
+    let payload = &vector.payload;
+    match vector.opcode {
+        crate::frame::Opcode::CheckpointUpload if vector.direction == "response" => Some((
+            u64::from_le_bytes(payload[4..12].try_into().ok()?),
+            u32::from_le_bytes(payload[12..16].try_into().ok()?),
+        )),
+        crate::frame::Opcode::StartUpload if vector.direction == "response" && payload.first() == Some(&0) => Some((
+            u64::from_le_bytes(payload[40..48].try_into().ok()?),
+            u32::from_le_bytes(payload[56..60].try_into().ok()?),
+        )),
+        crate::frame::Opcode::StartDraftPart if vector.direction == "response" && payload.first() == Some(&0) => {
+            Some((
+                u64::from_le_bytes(payload[52..60].try_into().ok()?),
+                u32::from_le_bytes(payload[68..72].try_into().ok()?),
+            ))
+        }
+        crate::frame::Opcode::FinalizeDraft if vector.direction == "response" && payload.first() == Some(&0) => Some((
+            u64::from_le_bytes(payload[40..48].try_into().ok()?),
+            u32::from_le_bytes(payload[56..60].try_into().ok()?),
+        )),
+        _ => None,
+    }
 }

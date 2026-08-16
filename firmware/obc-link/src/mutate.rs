@@ -15,7 +15,7 @@
 use crate::codec::{bytes16_at, put_bytes, put_u16, put_u64, u16_at, u64_at};
 use crate::error::{detail, DecodeError};
 use crate::ids::{LogicalObjectId, OperationId, Revision};
-use crate::metadata::{MetadataEnvelope, MAX_PUT_ENVELOPE};
+use crate::metadata::{MetadataEnvelope, Schema, SchemaClass, MAX_PUT_ENVELOPE};
 use crate::registry::{object_kind, ObjectKind};
 use crate::{BufferTooSmall, EncodeResult};
 
@@ -113,16 +113,26 @@ impl<'a> SetMetadata<'a> {
     }
 
     /// Decodes a SetMetadata payload.
+    ///
+    /// Like StartUpload, the patch is validated against the registered schema for the target's own
+    /// kind. A kind the registry gives no patch schema — trip, ride, weather, update package —
+    /// "reject[s] SetMetadata as unsupported", which is `unsupportedCapability/logicalKind` rather
+    /// than a descriptor fault: the request is well formed and names something the object system
+    /// does not offer.
     pub fn decode(payload: &'a [u8]) -> crate::Result<Self> {
         DecodeError::min_len(payload, MIN_SET_METADATA_LEN)?;
         let (patch, used) = MetadataEnvelope::decode_prefix(&payload[DELETE_OBJECT_LEN..], MAX_PUT_ENVELOPE)?;
         if DELETE_OBJECT_LEN + used != payload.len() {
             return Err(DecodeError::trailing_bytes());
         }
+        let target = MutationTarget::decode(payload)?;
+        let schema = Schema::lookup(target.kind, SchemaClass::Patch)
+            .ok_or_else(|| DecodeError::unsupported_capability(detail::capability::LOGICAL_KIND))?;
         if patch.field_count == 0 {
             return Err(DecodeError::invalid_descriptor(detail::descriptor::EMPTY_METADATA_PATCH));
         }
-        Ok(SetMetadata { target: MutationTarget::decode(payload)?, patch })
+        schema.validate(&patch)?;
+        Ok(SetMetadata { target, patch })
     }
 
     /// Encodes the payload into `out`, returning its exact length.

@@ -182,36 +182,6 @@ pub fn update_catalog(version: &str, state: u8, digest: [u8; 32]) -> Vec<u8> {
     envelope(7, 64, &[(0x8001, version.as_bytes().to_vec()), (0x8002, vec![state]), (0x8003, digest.to_vec())])
 }
 
-/// A structurally canonical 96-byte catalog envelope, used only by the decode-only ceiling vector.
-///
-/// No registered schema produces one — route's 82 bytes is the real maximum — so this exists to pin
-/// the *ceiling* §1 derives the 192-byte frame floor from, not traffic any device emits.
-fn ceiling_catalog_envelope() -> Vec<u8> {
-    // 96 = 8 header + 88 field bytes. Two registered route fields (52 + 5) plus one noncritical
-    // filler of 4 + 27.
-    let mut fields: Vec<(u16, Vec<u8>)> = vec![
-        (0x8001, "A route name of exactly forty-eight bytes in UTF-8!!".as_bytes()[..48].to_vec()),
-        (0x8002, vec![2]),
-    ];
-    fields.push((0x0003, vec![0x5A; 27]));
-    envelope(1, 64, &fields)
-}
-
-/// A structurally canonical 128-byte Put envelope, for the decode-only StartUpload ceiling.
-fn ceiling_put_envelope() -> Vec<u8> {
-    let mut fields: Vec<(u16, Vec<u8>)> = vec![
-        (0x8001, 42u64.to_le_bytes().to_vec()),
-        (0x8002, 480_000_000i32.to_le_bytes().to_vec()),
-        (0x8003, 77_000_000i32.to_le_bytes().to_vec()),
-        (0x8004, 50_000u32.to_le_bytes().to_vec()),
-        (0x8005, 1_700_000_000i64.to_le_bytes().to_vec()),
-        (0x8006, 1_700_086_400i64.to_le_bytes().to_vec()),
-    ];
-    // 68 so far; 120 - 60 field bytes used = one more field of 4 + 56.
-    fields.push((0x0007, vec![0x11; 56]));
-    envelope(4, 1, &fields)
-}
-
 // ---------------------------------------------------------------------------------------------
 // Control vectors.
 // ---------------------------------------------------------------------------------------------
@@ -223,11 +193,26 @@ pub fn committed_route_result(operation: [u8; 16], logical_id: u64, revision: u6
 
 /// The payload bytes the create transcript uploads.
 pub fn route_payload() -> Vec<u8> {
-    let mut bytes = vec![0u8; 3000];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = (index % 251) as u8;
-    }
-    bytes
+    deterministic(3000, 251)
+}
+
+/// The bytes one draft part carries.
+pub fn draft_part_payload() -> Vec<u8> {
+    deterministic(65_536, 241)
+}
+
+/// The bytes the volume manifest carries: its 96-byte header plus three 56-byte records.
+pub fn manifest_payload() -> Vec<u8> {
+    deterministic(96 + 56 * 3, 239)
+}
+
+/// A deterministic byte source.
+///
+/// Every CRC in the suite is computed over exactly these bytes and never invented. That matters
+/// most for the finalized *prefix* CRCs: a fabricated one, or one clamped to the whole object,
+/// would let a codec that hashes the wrong span pass the very vector meant to catch it.
+fn deterministic(len: usize, modulus: usize) -> Vec<u8> {
+    (0..len).map(|index| (index % modulus) as u8).collect()
 }
 
 /// Every control vector in the suite.
@@ -236,6 +221,10 @@ pub fn controls() -> Vec<ControlVector> {
     let payload = route_payload();
     let payload_crc = crc32(&payload);
     let payload_len = payload.len() as u64;
+    let part = draft_part_payload();
+    let part_crc = crc32(&part);
+    let manifest = manifest_payload();
+    let manifest_crc = crc32(&manifest);
 
     // ---- Hello and Capabilities -------------------------------------------------------------
     all.push(bounded(
@@ -376,16 +365,6 @@ pub fn controls() -> Vec<ControlVector> {
         ),
         "maximum",
     ));
-    all.push(bounded(
-        request(
-            "start-upload-schema-ceiling-decode-only",
-            Opcode::StartUpload,
-            15,
-            start_upload(OP_A, 4, 0, 0, 0, 0, 1, 0, &ceiling_put_envelope()),
-            "The 176-byte schema ceiling the 192-byte frame floor is derived from. No conforming v3.0 device emits one.",
-        ),
-        "ceiling",
-    ));
     all.push(request(
         "start-upload-restart-at-zero",
         Opcode::StartUpload,
@@ -399,7 +378,7 @@ pub fn controls() -> Vec<ControlVector> {
             name,
             Opcode::StartUpload,
             11,
-            upload_accepted(0, flags, OP_A, 0x0000_0011, 9, 41, offset, 262_144, 1008, crc),
+            upload_accepted(0, flags, OP_A, 0x0000_0011, 9, 41, offset, FIXTURE_GRANULE, 1008, crc),
             note,
         )
     };
@@ -416,9 +395,10 @@ pub fn controls() -> Vec<ControlVector> {
     all.push(accept(
         "upload-accepted-resumed",
         1,
-        262_144,
-        crc32(&payload[..262_144.min(payload.len())]),
-        "Resumed work: the finalized CRC covers exactly the durable prefix the response reports.",
+        u64::from(FIXTURE_GRANULE),
+        crc32(&payload[..FIXTURE_GRANULE as usize]),
+        "Resumed work: the finalized CRC covers exactly the durable prefix this response reports, and no other \
+         span of this object hashes to it.",
     ));
     all.push(accept(
         "upload-accepted-restart-at-zero",
@@ -446,16 +426,22 @@ pub fn controls() -> Vec<ControlVector> {
         {
             let mut body = zeros(12);
             u32_at(&mut body, 0, 0x0000_0011);
-            u64_at(&mut body, 4, 262_144);
+            u64_at(&mut body, 4, u64::from(FIXTURE_GRANULE));
             body
         },
         "The 12-byte checkpoint at exactly one granule.",
     ));
-    for (sequence, offset) in [(1u32, 262_144u64), (2, 524_288), (3, payload_len)] {
+    // §6.2: the offset "is an exact multiple of the checkpoint granule, except at the declared end,
+    // where it equals the declared length" — 1,024, 2,048, and the 3,000-byte end. Each carries the
+    // finalized CRC of exactly its own prefix, and there is deliberately no clamp: a clamped
+    // producer would report three different offsets under one identical CRC.
+    for (sequence, offset) in
+        [(1u32, u64::from(FIXTURE_GRANULE)), (2, u64::from(FIXTURE_GRANULE) * 2), (3, payload_len)]
+    {
         let mut body = zeros(20);
         u32_at(&mut body, 0, 0x0000_0011);
         u64_at(&mut body, 4, offset);
-        u32_at(&mut body, 12, crc32(&payload[..offset.min(payload_len) as usize]));
+        u32_at(&mut body, 12, crc32(&payload[..offset as usize]));
         u32_at(&mut body, 16, sequence);
         all.push(response(
             &format!("checkpoint-accepted-sequence-{sequence}"),
@@ -523,7 +509,7 @@ pub fn controls() -> Vec<ControlVector> {
         "draft-part-result-sealed",
         Opcode::FinishUpload,
         31,
-        result_envelope(2, &draft_part_result(OP_CHILD, STORE, OP_PARENT, PART_REF, 2, 7, 65_536, 0x99AA_BBCC)),
+        result_envelope(2, &draft_part_result(OP_CHILD, STORE, OP_PARENT, PART_REF, 2, 7, part.len() as u64, part_crc)),
         "A sealed part's result: no LogicalObjectId, no GenerationId, and the opaque ref that only sealing mints.",
     ));
     for (disposition, name, note) in [
@@ -644,8 +630,8 @@ pub fn controls() -> Vec<ControlVector> {
     let mut begin = zeros(52);
     bytes_at(&mut begin, 0, &OP_PARENT);
     u16_at(&mut begin, 16, 6);
-    u64_at(&mut begin, 36, 96 + 56 * 3);
-    u32_at(&mut begin, 44, 0x0F0F_0F0F);
+    u64_at(&mut begin, 36, manifest.len() as u64);
+    u32_at(&mut begin, 44, manifest_crc);
     u16_at(&mut begin, 48, 3);
     all.push(request(
         "begin-draft-create-volume-manifest",
@@ -673,7 +659,7 @@ pub fn controls() -> Vec<ControlVector> {
             let mut body = vec![1u8, 0, 0, 0];
             body.extend_from_slice(&result_envelope(
                 1,
-                &object_result(OP_PARENT, STORE, 6, 0, 2, 51, 264, 0x0F0F_0F0F),
+                &object_result(OP_PARENT, STORE, 6, 0, 2, 51, manifest.len() as u64, manifest_crc),
             ));
             body
         },
@@ -685,8 +671,8 @@ pub fn controls() -> Vec<ControlVector> {
     bytes_at(&mut start_part, 16, &OP_PARENT);
     u16_at(&mut start_part, 32, 2);
     u64_at(&mut start_part, 36, 7);
-    u64_at(&mut start_part, 44, 65_536);
-    u32_at(&mut start_part, 52, 0x99AA_BBCC);
+    u64_at(&mut start_part, 44, part.len() as u64);
+    u32_at(&mut start_part, 52, part_crc);
     start_part[56] = 1;
     all.push(request(
         "start-draft-part-request",
@@ -714,7 +700,7 @@ pub fn controls() -> Vec<ControlVector> {
         u16_at(&mut body, 40, 2);
         u64_at(&mut body, 44, 7);
         u64_at(&mut body, 52, offset);
-        u32_at(&mut body, 60, 262_144);
+        u32_at(&mut body, 60, FIXTURE_GRANULE);
         u16_at(&mut body, 64, 1008);
         u32_at(&mut body, 68, crc);
         response(name, Opcode::StartDraftPart, 61, body, note)
@@ -729,9 +715,9 @@ pub fn controls() -> Vec<ControlVector> {
     all.push(draft_accept(
         "draft-part-accepted-resumed",
         1,
-        262_144,
-        0x1357_9BDF,
-        "Resumed work reports the last durable checkpoint.",
+        32_768,
+        crc32(&part[..32_768]),
+        "Resumed work reports the last durable checkpoint, and the CRC is that prefix's own.",
     ));
     all.push(draft_accept(
         "draft-part-accepted-restart-at-zero",
@@ -756,7 +742,7 @@ pub fn controls() -> Vec<ControlVector> {
         u64_at(&mut body, 24, 2);
         u64_at(&mut body, 32, 50);
         u64_at(&mut body, 40, offset);
-        u32_at(&mut body, 48, 262_144);
+        u32_at(&mut body, 48, FIXTURE_GRANULE);
         u16_at(&mut body, 52, 1008);
         u32_at(&mut body, 56, crc);
         response(name, Opcode::FinalizeDraft, 63, body, note)
@@ -772,8 +758,8 @@ pub fn controls() -> Vec<ControlVector> {
         "finalize-accepted-resumed",
         1,
         128,
-        0x2468_ACE0,
-        "A resumed manifest stream reports its durable prefix and that prefix's CRC.",
+        crc32(&manifest[..128]),
+        "A resumed manifest stream reports its durable prefix and that prefix's own CRC.",
     ));
     all.push(finalize_accept("finalize-accepted-restart-at-zero", 2, 0, 0, "Restart-at-zero on the manifest stream."));
 
@@ -792,97 +778,18 @@ pub fn controls() -> Vec<ControlVector> {
         operation_status(0, &[]),
         "Unknown means only that the ID is neither active nor retained; it cannot distinguish never-claimed from evicted.",
     ));
-    // §8.1's progress matrix, one vector per originating claim.
-    for (name, namespace, kind, phase, flags, logical_id, offset, note) in [
-        (
-            "query-operation-progress-start-upload-streaming",
-            1u8,
-            1u16,
-            1u8,
-            0b111u8,
-            9u64,
-            262_144u64,
-            "StartUpload in `streaming`: resumable, attached, ID-present, durable payload prefix.",
-        ),
-        (
-            "query-operation-progress-start-upload-sealed",
-            1,
-            1,
-            2,
-            0b101,
-            9,
-            3000,
-            "In phases 2..4 the offset is the declared length.",
-        ),
-        ("query-operation-progress-start-upload-aborting", 1, 1, 7, 0b100, 9, 3000, "Aborting has no attachment."),
-        (
-            "query-operation-progress-draft-part-streaming",
-            2,
-            2,
-            1,
-            0b011,
-            0,
-            65_536,
-            "A draft part has ID-present clear and its ID zero.",
-        ),
-        (
-            "query-operation-progress-draft-parent-open",
-            1,
-            6,
-            6,
-            0b100,
-            2,
-            0,
-            "A draft parent in draft-open has offset zero and no attached session.",
-        ),
-        (
-            "query-operation-progress-delete-validating",
-            1,
-            1,
-            3,
-            0b100,
-            9,
-            0,
-            "DeleteObject reports only ID-present, its target, and offset zero.",
-        ),
-        ("query-operation-progress-set-metadata-publishing", 1, 1, 4, 0b100, 9, 0, "SetMetadata likewise."),
-        (
-            "query-operation-progress-abort-command-aborting",
-            0,
-            0,
-            7,
-            0b000,
-            0,
-            0,
-            "An AbortOperation command has namespace none, kind zero, and flags, ID, and offset zero.",
-        ),
-        (
-            "query-operation-progress-install-external-handoff",
-            1,
-            7,
-            5,
-            0b100,
-            3,
-            0,
-            "InstallUpdate occupies phases 3, 4, and 5 only and never enters aborting.",
-        ),
-        (
-            "query-operation-progress-acknowledge-ride-validating",
-            1,
-            3,
-            3,
-            0b100,
-            5,
-            0,
-            "AcknowledgeRideImported names the ride it acknowledges.",
-        ),
-    ] {
+    // §8.1's progress matrix in full: every originating claim, every phase that claim may occupy,
+    // and the flag/ID/offset shape the matrix fixes for it. The matrix is normative — "A phase
+    // outside its row, a nonzero kind in namespace none, or a nonzero ID/offset where the matrix
+    // says zero is an internal state/codec error and MUST NOT be emitted" — so a client that
+    // cannot read one of these rows has an interop hole, not a cosmetic gap.
+    for row in progress_matrix() {
         all.push(response(
-            name,
+            &row.name,
             Opcode::QueryOperation,
             70,
-            operation_status(1, &progress(namespace, phase, flags, kind, logical_id, offset)),
-            note,
+            operation_status(1, &progress(row.namespace, row.phase, row.flags, row.kind, row.logical_id, row.offset)),
+            &row.note,
         ));
     }
     all.push(response(
@@ -977,19 +884,6 @@ pub fn controls() -> Vec<ControlVector> {
     );
     continuing.flags = OK_MORE;
     all.push(bounded(continuing, "maximum"));
-    let mut ceiling_entries = catalog_entry(9, 42, 1, 0, &ceiling_catalog_envelope());
-    ceiling_entries.truncate(36 + 96);
-    all.push(bounded(
-        response(
-            "catalog-page-schema-ceiling-decode-only",
-            Opcode::QueryCatalog,
-            80,
-            catalog_page(STORE, 1, 1, 42, &zero_cursor, &ceiling_entries),
-            "The 176-byte ceiling the 192-byte floor is derived from. No conforming v3.0 device emits one.",
-        ),
-        "ceiling",
-    ));
-
     // The producible maximum-count page. Five whole ride entries is the most a 512-byte frame
     // carries: the smallest registered catalog projection is ride's 41 bytes, so one entry is 77
     // bytes and 44 + 6 * 77 = 506 already exceeds the 496-byte payload maximum.
@@ -2130,6 +2024,13 @@ fn error_vectors() -> Vec<ControlVector> {
         if row.code == 0 || covered.contains(&(row.category.get(), row.code)) {
             continue;
         }
+        if row.category == ErrorCategory::INVALID_DESCRIPTOR && row.code == detail::descriptor::ZERO_REQUEST_ID {
+            // §2: `invalidDescriptor/zeroRequestId` "is the recorded and logged reason for that
+            // close; it is never transmitted". Freezing it as a response frame would freeze a
+            // frame no conforming device can send. The behaviour is pinned instead by
+            // `negative/frame-zero-request-id`, which is where it actually lives.
+            continue;
+        }
         let shape = category_defaults(row.category.get());
         sweep.push(control(
             &format!("error-{}-{}", row.category.name(), row.name),
@@ -2217,6 +2118,208 @@ fn category_defaults(category: u16) -> ErrorShape {
 // Canonical-intent goldens.
 // ---------------------------------------------------------------------------------------------
 
+/// One row of §8.1's progress matrix.
+pub struct ProgressRow {
+    /// Stable fixture name.
+    pub name: String,
+    /// Subject namespace: none `0`, logical `1`, draft part `2`.
+    pub namespace: u8,
+    /// Subject kind code, zero in namespace none.
+    pub kind: u16,
+    /// The phase.
+    pub phase: u8,
+    /// Resumable / attached / ID-present.
+    pub flags: u8,
+    /// The assigned LogicalObjectId, zero when ID-present is clear.
+    pub logical_id: u64,
+    /// The durable offset the matrix fixes for this row.
+    pub offset: u64,
+    /// The rule this row pins.
+    pub note: String,
+}
+
+const RESUMABLE: u8 = 1;
+const ATTACHED: u8 = 1 << 1;
+const ID_PRESENT: u8 = 1 << 2;
+
+/// §8.1's progress matrix, expanded to one row per `(originating claim, phase)` the matrix admits.
+///
+/// The eight claim families and the phases each may occupy come straight from the matrix table.
+/// Two extra rows exercise the flag variants the matrix leaves to policy rather than fixing: a
+/// claim whose kind advertises no resume, and resumable work whose session has been detached.
+pub fn progress_matrix() -> Vec<ProgressRow> {
+    let route_length = route_payload().len() as u64;
+    let part_length = draft_part_payload().len() as u64;
+    let manifest_length = manifest_payload().len() as u64;
+    let granule = u64::from(FIXTURE_GRANULE);
+    let phases = [(0u8, "prepared"), (1, "streaming"), (2, "sealed"), (3, "validating"), (4, "publishing")];
+    let mut rows = Vec::new();
+    let mut push =
+        |name: &str, namespace: u8, kind: u16, phase: u8, flags: u8, logical_id: u64, offset: u64, note: &str| {
+            rows.push(ProgressRow {
+                name: format!("query-operation-progress-{name}"),
+                namespace,
+                kind,
+                phase,
+                flags,
+                logical_id,
+                offset,
+                note: note.to_string(),
+            });
+        };
+
+    // StartUpload `0x0100`: logical namespace, phases 0..4 and aborting 7; ID-present set; the
+    // offset is the durable payload prefix, and the declared length in phases 2..4.
+    for (phase, label) in phases {
+        let offset = if phase >= 2 {
+            route_length
+        } else if phase == 0 {
+            0
+        } else {
+            granule
+        };
+        let flags = RESUMABLE | ID_PRESENT | if phase == 1 { ATTACHED } else { 0 };
+        push(
+            &format!("start-upload-{label}"),
+            1,
+            1,
+            phase,
+            flags,
+            9,
+            offset,
+            "StartUpload: ID-present set, the offset is the durable payload prefix and the declared length in \
+             phases 2..4, and a session is attached only while one exists.",
+        );
+    }
+    push("start-upload-aborting", 1, 1, 7, RESUMABLE | ID_PRESENT, 9, granule, "Aborting has no attachment.");
+    push(
+        "start-upload-prepared-not-resumable",
+        1,
+        1,
+        0,
+        ID_PRESENT,
+        9,
+        0,
+        "The resumable bit reflects the claimed policy, so a kind that advertises no resumable upload clears it.",
+    );
+
+    // StartDraftPart `0x0131`: draft-part namespace, ID-present clear and the ID zero throughout.
+    for (phase, label) in phases {
+        let offset = if phase >= 2 {
+            part_length
+        } else if phase == 0 {
+            0
+        } else {
+            32_768
+        };
+        let flags = RESUMABLE | if phase == 1 { ATTACHED } else { 0 };
+        push(
+            &format!("draft-part-{label}"),
+            2,
+            2,
+            phase,
+            flags,
+            0,
+            offset,
+            "A draft part reports ID-present clear and its ID zero; the offset is the durable part prefix.",
+        );
+    }
+    push("draft-part-aborting", 2, 2, 7, RESUMABLE, 0, 32_768, "Aborting has no attachment.");
+    push(
+        "draft-part-streaming-detached",
+        2,
+        1,
+        1,
+        RESUMABLE,
+        0,
+        4096,
+        "Resumable work whose session was detached: attachment is advisory and grants no ownership.",
+    );
+
+    // BeginDraft / FinalizeDraft parent `0x0130`: draft-open 6, the manifest phases, aborting 7.
+    push("draft-parent-draft-open", 1, 6, 6, ID_PRESENT, 2, 0, "Draft-open has offset zero and no attached session.");
+    for (phase, label) in phases {
+        let offset = if phase >= 2 {
+            manifest_length
+        } else if phase == 0 {
+            0
+        } else {
+            128
+        };
+        let flags = RESUMABLE | ID_PRESENT | if phase == 1 { ATTACHED } else { 0 };
+        push(
+            &format!("draft-parent-manifest-{label}"),
+            1,
+            6,
+            phase,
+            flags,
+            2,
+            offset,
+            "The parent's manifest phases use resumable/attached and the durable manifest offset.",
+        );
+    }
+    push("draft-parent-aborting", 1, 6, 7, ID_PRESENT, 2, 0, "Aborting has offset zero and no attached session.");
+
+    // DeleteObject `0x0300` and SetMetadata `0x0301`: phases 3, 4 and aborting 7, only ID-present
+    // set, offset zero.
+    for opcode_label in ["delete", "set-metadata"] {
+        for (phase, label) in [(3u8, "validating"), (4, "publishing"), (7, "aborting")] {
+            push(
+                &format!("{opcode_label}-{label}"),
+                1,
+                1,
+                phase,
+                ID_PRESENT,
+                9,
+                0,
+                "A direct mutation reports only ID-present, its target, and offset zero.",
+            );
+        }
+    }
+
+    // AbortOperation `0x0302`: namespace none, kind zero, aborting only, everything else zero.
+    push(
+        "abort-command-aborting",
+        0,
+        0,
+        7,
+        0,
+        0,
+        0,
+        "An AbortOperation command has namespace none, kind zero, and flags, ID, and offset all zero.",
+    );
+
+    // InstallUpdate `0x0310`: phases 3, 4 and external-handoff 5 only — it never enters aborting.
+    for (phase, label) in [(3u8, "validating"), (4, "publishing"), (5, "external-handoff")] {
+        push(
+            &format!("install-update-{label}"),
+            1,
+            7,
+            phase,
+            ID_PRESENT,
+            3,
+            0,
+            "InstallUpdate occupies phases 3, 4, and 5 only and never enters aborting.",
+        );
+    }
+
+    // AcknowledgeRideImported `0x0311`: phases 3, 4 and aborting 7.
+    for (phase, label) in [(3u8, "validating"), (4, "publishing"), (7, "aborting")] {
+        push(
+            &format!("acknowledge-ride-{label}"),
+            1,
+            3,
+            phase,
+            ID_PRESENT,
+            5,
+            0,
+            "AcknowledgeRideImported names the ride it acknowledges.",
+        );
+    }
+
+    rows
+}
+
 /// Every canonical-intent golden: one per row of §11's suffix table.
 pub fn intents() -> Vec<IntentVector> {
     let payload = route_payload();
@@ -2267,8 +2370,8 @@ pub fn intents() -> Vec<IntentVector> {
 
     let mut begin_suffix = zeros(36);
     u16_at(&mut begin_suffix, 0, 6);
-    u64_at(&mut begin_suffix, 20, 96 + 56 * 3);
-    u32_at(&mut begin_suffix, 28, 0x0F0F_0F0F);
+    u64_at(&mut begin_suffix, 20, manifest_payload().len() as u64);
+    u32_at(&mut begin_suffix, 28, crc32(&manifest_payload()));
     u16_at(&mut begin_suffix, 32, 3);
     push(
         "begin-draft",
@@ -2281,8 +2384,8 @@ pub fn intents() -> Vec<IntentVector> {
     bytes_at(&mut part_suffix, 0, &OP_PARENT);
     u16_at(&mut part_suffix, 16, 2);
     u64_at(&mut part_suffix, 20, 7);
-    u64_at(&mut part_suffix, 28, 65_536);
-    u32_at(&mut part_suffix, 36, 0x99AA_BBCC);
+    u64_at(&mut part_suffix, 28, draft_part_payload().len() as u64);
+    u32_at(&mut part_suffix, 36, crc32(&draft_part_payload()));
     push(
         "start-draft-part",
         Opcode::StartDraftPart,
@@ -2345,6 +2448,82 @@ pub fn intents() -> Vec<IntentVector> {
     all
 }
 
+/// §14.0's frame-limit derivation, as the cases the vectors contract asks for.
+///
+/// "Frame-limit derivation is pinned as cases rather than prose: ATT MTU 247 yields a 244-byte
+/// ceiling, 195 yields exactly the 192-byte minimum, 194 is refused at Hello with
+/// `resourceLimit/minimumControlFrame`, and 66 produces no frame at all because even the refusal is
+/// undeliverable."
+pub fn derivations() -> Vec<DerivationVector> {
+    let control = |att_mtu: u16, outcome: &'static str, negotiated: u16, note: &'static str| DerivationCase {
+        channel: "control",
+        link_value: att_mtu,
+        ceiling: att_mtu.saturating_sub(3),
+        client_max: 512,
+        device_max: 512,
+        outcome,
+        negotiated,
+        note,
+    };
+    let stream =
+        |sdu: u16, client_max: u16, outcome: &'static str, negotiated: u16, note: &'static str| DerivationCase {
+            channel: "stream",
+            link_value: sdu,
+            ceiling: sdu,
+            client_max,
+            device_max: 4096,
+            outcome,
+            negotiated,
+            note,
+        };
+    vec![DerivationVector {
+        name: "frame-limit-derivation-cases".to_string(),
+        cases: vec![
+            control(
+                247,
+                "negotiated",
+                244,
+                "One ATT Write Request or indication value carries at most ATT_MTU - 3 bytes, so the device's \
+                 preferred 247-byte MTU yields a 244-byte ceiling.",
+            ),
+            control(
+                195,
+                "negotiated",
+                192,
+                "Carrying the 192-byte protocol minimum therefore requires ATT_MTU >= 195, and 195 yields exactly it.",
+            ),
+            control(
+                194,
+                "belowProtocolMinimum",
+                0,
+                "Below the minimum no negotiation is possible: Hello is answered resourceLimit/minimumControlFrame \
+                 with retry-only-after-user-action, and nothing is admitted on that connection.",
+            ),
+            control(
+                66,
+                "undeliverable",
+                0,
+                "Below a 64-byte frame — the 16-byte header plus a text-free ErrorBody — the refusal itself is \
+                 undeliverable, so the adapter disconnects rather than truncating an error.",
+            ),
+            stream(
+                512,
+                1024,
+                "negotiated",
+                512,
+                "The effective stream limit is min(negotiated stream maximum, CoC SDU), fixed at CoC establishment.",
+            ),
+            stream(
+                63,
+                1024,
+                "belowProtocolMinimum",
+                0,
+                "An SDU below the 64-byte floor refuses the channel with resourceLimit/minimumStreamFrame.",
+            ),
+        ],
+    }]
+}
+
 // ---------------------------------------------------------------------------------------------
 // Stream vectors.
 // ---------------------------------------------------------------------------------------------
@@ -2397,7 +2576,7 @@ pub fn streams() -> Vec<StreamVector> {
 
     push(
         "upload-resumed-prefix-frame",
-        stream_frame(0x0000_0012, 262_144, 1, 0, &[0x11, 0x22, 0x33, 0x44]),
+        stream_frame(0x0000_0012, u64::from(FIXTURE_GRANULE), 1, 0, &payload[FIXTURE_GRANULE as usize..1032]),
         "The frame a resumed client sends after comparing its retained prefix CRC against the acceptance's.",
     );
 
@@ -2428,7 +2607,7 @@ pub fn streams() -> Vec<StreamVector> {
                 0,
                 3,
                 1 | if terminal { 2 } else { 0 },
-                &fault_body(8, 1, 262_144, 262_144, disposition),
+                &fault_body(8, 1, u64::from(FIXTURE_GRANULE), u64::from(FIXTURE_GRANULE), disposition),
             ),
             note,
         );
@@ -3124,6 +3303,159 @@ pub fn negatives() -> Vec<NegativeVector> {
         "The StoreId is zero unless the mount class is 3, 4, or 6.",
     );
 
+    // ---- Schema conformance, beyond canonical form (§2.2) --------------------------------------
+    let put_with = |fields: Vec<u8>| {
+        control_frame(Opcode::StartUpload.to_u16(), REQUEST, 1, &start_upload(OP_A, 1, 0, 0, 0, 0, 10, 0, &fields))
+    };
+    push(
+        "metadata-unknown-critical-field",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(envelope(1, 1, &[(0x8001, vec![2]), (0x8055, vec![9])])),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "A mutating request rejects an unknown critical field.",
+    );
+    push(
+        "metadata-unknown-noncritical-field-in-a-mutating-request",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(envelope(1, 1, &[(0x8001, vec![2]), (0x0055, vec![9])])),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "Mutating requests reject every unknown field, whether critical or not; only a projection may skip one.",
+    );
+    push(
+        "metadata-schema-id-does-not-match-the-object-kind",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(envelope(2, 1, &[])),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "The schema_id must exactly match the containing logical ObjectKind.",
+    );
+    push(
+        "metadata-schema-version-is-not-the-registered-one",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(envelope(1, 2, &[(0x8001, vec![2])])),
+        ErrorCategory::UNSUPPORTED_CAPABILITY,
+        detail::capability::SCHEMA_VERSION,
+        "Put schemas are version 1, patch 128, catalog 64 — registry constants, not a negotiation.",
+    );
+    push(
+        "metadata-missing-a-required-field",
+        NegativeTarget::ControlBody(Opcode::StartUpload, false),
+        put_with(envelope(1, 1, &[])),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "Every registered required field appears exactly once; route Put requires its retention byte.",
+    );
+    push(
+        "metadata-text-field-above-its-registered-length",
+        NegativeTarget::ControlBody(Opcode::SetMetadata, false),
+        {
+            let mut body = zeros(36);
+            bytes_at(&mut body, 0, &OP_A);
+            u16_at(&mut body, 16, 1);
+            u16_at(&mut body, 18, 1);
+            u64_at(&mut body, 20, 9);
+            u64_at(&mut body, 28, 42);
+            body.extend_from_slice(&envelope(1, 128, &[(0x8003, vec![b'x'; 49])]));
+            control_frame(Opcode::SetMetadata.to_u16(), REQUEST, 1, &body)
+        },
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::NONCANONICAL_METADATA,
+        "The route display name is registered at 1-48 bytes; 49 is a schema-disallowed width.",
+    );
+    push(
+        "set-metadata-on-a-kind-with-no-patch-schema",
+        NegativeTarget::ControlBody(Opcode::SetMetadata, false),
+        {
+            let mut body = zeros(36);
+            bytes_at(&mut body, 0, &OP_A);
+            u16_at(&mut body, 16, 2);
+            u16_at(&mut body, 18, 1);
+            u64_at(&mut body, 20, 4);
+            u64_at(&mut body, 28, 12);
+            body.extend_from_slice(&envelope(2, 128, &[(0x8001, vec![1])]));
+            control_frame(Opcode::SetMetadata.to_u16(), REQUEST, 1, &body)
+        },
+        ErrorCategory::UNSUPPORTED_CAPABILITY,
+        detail::capability::LOGICAL_KIND,
+        "Trip, ride, weather and update package reject SetMetadata as unsupported.",
+    );
+    push(
+        "catalog-projection-unknown-critical-field",
+        NegativeTarget::ControlBody(Opcode::QueryCatalog, true),
+        {
+            let entry = catalog_entry(
+                1,
+                2,
+                3,
+                4,
+                &envelope(
+                    3,
+                    64,
+                    &[
+                        (0x8001, 1_700_000_000i64.to_le_bytes().to_vec()),
+                        (0x8002, 5400u32.to_le_bytes().to_vec()),
+                        (0x8003, 42_000u32.to_le_bytes().to_vec()),
+                        (0x8004, vec![1]),
+                        (0x8055, vec![7]),
+                    ],
+                ),
+            );
+            control_frame(Opcode::QueryCatalog.to_u16(), OK, 1, &catalog_page(STORE, 3, 1, 12, &[0u8; 16], &entry))
+        },
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "A projection rejects an unknown critical field even though it may skip a well-formed noncritical one.",
+    );
+    push(
+        "catalog-projection-oversized-for-its-registered-schema",
+        NegativeTarget::ControlBody(Opcode::QueryCatalog, true),
+        {
+            // Every field here is legal on its own — the unknown noncritical one is even skippable —
+            // and the envelope is still 54 bytes past ride's registered 41-byte maximum.
+            let entry = catalog_entry(
+                1,
+                2,
+                3,
+                4,
+                &envelope(
+                    3,
+                    64,
+                    &[
+                        (0x8001, 1_700_000_000i64.to_le_bytes().to_vec()),
+                        (0x8002, 5400u32.to_le_bytes().to_vec()),
+                        (0x8003, 42_000u32.to_le_bytes().to_vec()),
+                        (0x8004, vec![1]),
+                        (0x0055, vec![0x33; 50]),
+                    ],
+                ),
+            );
+            control_frame(Opcode::QueryCatalog.to_u16(), OK, 1, &catalog_page(STORE, 3, 1, 12, &[0u8; 16], &entry))
+        },
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::NESTED_LENGTH,
+        "A decoder rejects a schema-specific envelope larger than the registry's per-kind maximum.",
+    );
+
+    // ---- ResetStore admission (§16) ------------------------------------------------------------
+    push(
+        "reset-store-echo-mismatch",
+        NegativeTarget::ResetStoreEcho(3),
+        STORE_B.to_vec(),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "The echo MUST equal the StoreId the device currently reports, and it is checked before anything is deleted.",
+    );
+    push(
+        "reset-store-zero-echo-in-a-class-that-reports-a-store",
+        NegativeTarget::ResetStoreEcho(3),
+        [0u8; 16].to_vec(),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::INVALID_COMBINATION,
+        "The all-zero form is admitted only in the two classes that report no StoreId at all.",
+    );
+
     // ---- Streams -----------------------------------------------------------------------------
     let mut zero_session = stream_frame(0, 0, 1, 0, &[1]);
     u32_at(&mut zero_session, 0, 0);
@@ -3244,6 +3576,23 @@ pub fn negatives() -> Vec<NegativeVector> {
         ErrorCategory::INVALID_DESCRIPTOR,
         detail::descriptor::RESERVED_BITS,
         "The fault body's three trailing bytes are reserved.",
+    );
+    push(
+        "stream-fault-semantic-category",
+        NegativeTarget::StreamFrame,
+        stream_frame(1, 0, 3, 1, &fault_body(14, 5, 0, 0, 0)),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::UNKNOWN_ENUM,
+        "Only namespace-zero transport categories are valid in the compact body, which has no namespace field a \
+         semantic detail could be scoped to.",
+    );
+    push(
+        "stream-fault-domain-category",
+        NegativeTarget::StreamFrame,
+        stream_frame(1, 0, 3, 1, &fault_body(11, 1, 0, 0, 0)),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::UNKNOWN_ENUM,
+        "A revisionConflict is a domain outcome and uses a correlated control response, not a stream fault.",
     );
 
     all
@@ -3481,6 +3830,331 @@ pub fn transcripts() -> Vec<Transcript> {
             event_in(2, "client", "stream", "The client compares its retained prefix CRC against the field and only then sends new bytes.", Some(stream_frame(0x0000_0012, 262_144, 1, 0, &[0x11, 0x22, 0x33, 0x44]))),
             event_in(2, "client", "control", "FinishUpload publishes exactly once.", Some(control_frame(0x0102, REQUEST, 2, &0x0000_0012u32.to_le_bytes()))),
             event_in(2, "device", "control", "One terminal ObjectResult for the whole resumed transfer.", Some(control_frame(0x0102, OK, 2, &committed_route_result(OP_A, 9, 42, payload_len, payload_crc)))),
+        ],
+    });
+
+    // 4b. The bounded exactly-once window and its eviction boundary.
+    all.push(Transcript {
+        name: "result-window-eviction-boundary".to_string(),
+        description: "The retained-result window fills, the operation's result survives 63 newer terminals, the 64th \
+                      evicts it, and Unknown is then reconciled against the catalog rather than replayed."
+            .to_string(),
+        events: vec![
+            event(
+                "device",
+                "control",
+                "The create commits and its result occupies one of the 64 retained slots.",
+                Some(control_frame(0x0102, OK, 90, &committed_route_result(OP_A, 9, 42, payload_len, payload_crc))),
+            ),
+            event(
+                "device",
+                "injected",
+                "63 later terminal operations commit. The window is store-global, so device-local ride, weather, \
+                 update-state and import results fill it exactly as a link client's do.",
+                None,
+            ),
+            event(
+                "client",
+                "control",
+                "QueryOperation after 63 newer terminals.",
+                Some(control_frame(0x0200, REQUEST, 91, &OP_A)),
+            ),
+            event(
+                "device",
+                "control",
+                "Still Committed: retention is proven at 63 rather than assumed.",
+                Some(control_frame(
+                    0x0200,
+                    OK,
+                    91,
+                    &operation_status(2, &committed_route_result(OP_A, 9, 42, payload_len, payload_crc)),
+                )),
+            ),
+            event(
+                "device",
+                "injected",
+                "The 64th newer terminal record commits and deterministically evicts the oldest.",
+                None,
+            ),
+            event("client", "control", "The same query again.", Some(control_frame(0x0200, REQUEST, 92, &OP_A))),
+            event(
+                "device",
+                "control",
+                "Unknown. It cannot distinguish never-claimed from evicted, and the device cannot close that hole \
+                 on the client's behalf.",
+                Some(control_frame(0x0200, OK, 92, &operation_status(0, &[]))),
+            ),
+            event(
+                "client",
+                "control",
+                "So the client reconciles domain state instead of replaying: a create carries no prior Revision, so \
+                 a blind reissue under a fresh OperationId would publish a second object.",
+                Some(control_frame(0x0201, REQUEST, 93, &{
+                    let mut body = zeros(28);
+                    u16_at(&mut body, 0, 1);
+                    body
+                })),
+            ),
+            event(
+                "device",
+                "control",
+                "The catalog shows the head is already there, so nothing is reissued and the OperationId is never \
+                 reused.",
+                Some(control_frame(
+                    0x0201,
+                    OK,
+                    93,
+                    &catalog_page(
+                        STORE,
+                        1,
+                        1,
+                        42,
+                        &[0u8; 16],
+                        &catalog_entry(
+                            9,
+                            42,
+                            payload_len,
+                            payload_crc,
+                            &route_catalog("Kaiserstuhl loop", 2, Some(false), Some(1_700_000_000)),
+                        ),
+                    ),
+                )),
+            ),
+        ],
+    });
+
+    // 4c. The draft machinery, which is the most stateful surface the wire has.
+    let part = draft_part_payload();
+    let part_crc = crc32(&part);
+    let manifest = manifest_payload();
+    let manifest_crc = crc32(&manifest);
+    let part_session = 0x0000_0031u32;
+    let manifest_session = 0x0000_0041u32;
+    all.push(Transcript {
+        name: "draft-begin-parts-finalize-and-paging".to_string(),
+        description: "BeginDraft, a child part streamed and sealed, snapshot paging over the draft, a second \
+                      BeginDraft refused while the parent is open, atomic finalization, and the explicit selection \
+                      that follows an initially unselected release."
+            .to_string(),
+        events: vec![
+            event(
+                "client",
+                "control",
+                "BeginDraft binds target, expected revision, manifest length and CRC, and the exact child count.",
+                Some(control_frame(0x0130, REQUEST, 100, &{
+                    let mut body = zeros(52);
+                    bytes_at(&mut body, 0, &OP_PARENT);
+                    u16_at(&mut body, 16, 6);
+                    u64_at(&mut body, 36, manifest.len() as u64);
+                    u32_at(&mut body, 44, manifest_crc);
+                    u16_at(&mut body, 48, 1);
+                    body
+                })),
+            ),
+            event(
+                "device",
+                "control",
+                "The parent opens at draft revision 1 and consumes no terminal-result slot.",
+                Some(control_frame(0x0130, OK, 100, &{
+                    let mut body = zeros(32);
+                    bytes_at(&mut body, 4, &OP_PARENT);
+                    u64_at(&mut body, 20, 1);
+                    u16_at(&mut body, 28, 1);
+                    body
+                })),
+            ),
+            event(
+                "client",
+                "control",
+                "A second BeginDraft while that parent is open.",
+                Some(control_frame(0x0130, REQUEST, 101, &{
+                    let mut body = zeros(52);
+                    bytes_at(&mut body, 0, &OP_B);
+                    u16_at(&mut body, 16, 6);
+                    u64_at(&mut body, 36, 264);
+                    u32_at(&mut body, 44, 1);
+                    u16_at(&mut body, 48, 1);
+                    body
+                })),
+            ),
+            event(
+                "device",
+                "control",
+                "Refused busy/draftParents before any claim, reporting that parent's owner — an ownership refusal, \
+                 not a compiled-capacity failure.",
+                Some(control_frame(
+                    0x0130,
+                    ERR,
+                    101,
+                    &error_body(5, 0, 4, RetryGuidance::RETRY_AFTER_OWNER_RELEASE.get(), 1, 0, 0, 0, 0, 0, 0, &[]),
+                )),
+            ),
+            event(
+                "client",
+                "control",
+                "StartDraftPart durably claims the child; (kind, key) is unique within the parent.",
+                Some(control_frame(0x0131, REQUEST, 102, &{
+                    let mut body = zeros(64);
+                    bytes_at(&mut body, 0, &OP_CHILD);
+                    bytes_at(&mut body, 16, &OP_PARENT);
+                    u16_at(&mut body, 32, 1);
+                    u64_at(&mut body, 36, 1);
+                    u64_at(&mut body, 44, part.len() as u64);
+                    u32_at(&mut body, 52, part_crc);
+                    body[56] = 1;
+                    body
+                })),
+            ),
+            event(
+                "device",
+                "control",
+                "DraftPartAccepted returns only a session and a durable offset: the opaque ref does not exist yet.",
+                Some(control_frame(0x0131, OK, 102, &{
+                    let mut body = zeros(72);
+                    bytes_at(&mut body, 4, &OP_CHILD);
+                    bytes_at(&mut body, 20, &OP_PARENT);
+                    u32_at(&mut body, 36, part_session);
+                    u16_at(&mut body, 40, 1);
+                    u64_at(&mut body, 44, 1);
+                    u32_at(&mut body, 60, FIXTURE_GRANULE);
+                    u16_at(&mut body, 64, 1008);
+                    body
+                })),
+            ),
+            event(
+                "client",
+                "stream",
+                "The part's first bytes.",
+                Some(stream_frame(part_session, 0, 1, 0, &part[..1008])),
+            ),
+            event(
+                "client",
+                "control",
+                "FinishUpload seals the part.",
+                Some(control_frame(0x0102, REQUEST, 103, &part_session.to_le_bytes())),
+            ),
+            event(
+                "device",
+                "control",
+                "Sealing mints the DraftPartRef and returns a DraftPartResult — never a logical result.",
+                Some(control_frame(
+                    0x0102,
+                    OK,
+                    103,
+                    &result_envelope(
+                        2,
+                        &draft_part_result(OP_CHILD, STORE, OP_PARENT, PART_REF, 1, 1, part.len() as u64, part_crc),
+                    ),
+                )),
+            ),
+            event(
+                "client",
+                "control",
+                "QueryDraft pages the parent's children under the draft-revision snapshot.",
+                Some(control_frame(0x0202, REQUEST, 104, &{
+                    let mut body = zeros(44);
+                    bytes_at(&mut body, 0, &OP_PARENT);
+                    body[18] = 6;
+                    body
+                })),
+            ),
+            event(
+                "device",
+                "control",
+                "Draft revision 3: it moved when the child was claimed and again when it sealed, and never for a \
+                 payload checkpoint. The sealed entry is the only one carrying a ref.",
+                Some(control_frame(0x0202, OK, 104, &{
+                    let mut body = zeros(44);
+                    bytes_at(&mut body, 0, &OP_PARENT);
+                    u64_at(&mut body, 16, 3);
+                    body[40] = 1;
+                    body.extend_from_slice(&draft_entry(
+                        OP_CHILD,
+                        PART_REF,
+                        1,
+                        1,
+                        2,
+                        part.len() as u64,
+                        part.len() as u64,
+                        part_crc,
+                    ));
+                    body
+                })),
+            ),
+            event(
+                "client",
+                "control",
+                "FinalizeDraft addresses the existing claim by OperationId alone.",
+                Some(control_frame(0x0132, REQUEST, 105, &OP_PARENT)),
+            ),
+            event(
+                "device",
+                "control",
+                "The manifest acceptance issues a fresh session for the bound manifest stream.",
+                Some(control_frame(0x0132, OK, 105, &{
+                    let mut body = zeros(64);
+                    bytes_at(&mut body, 4, &OP_PARENT);
+                    u32_at(&mut body, 20, manifest_session);
+                    u64_at(&mut body, 24, 2);
+                    u64_at(&mut body, 32, 50);
+                    u32_at(&mut body, 48, FIXTURE_GRANULE);
+                    u16_at(&mut body, 52, 1008);
+                    body
+                })),
+            ),
+            event(
+                "client",
+                "stream",
+                "The manifest bytes, which name exactly the sealed refs of this parent.",
+                Some(stream_frame(manifest_session, 0, 1, 0, &manifest)),
+            ),
+            event(
+                "client",
+                "control",
+                "FinishUpload verifies the manifest against BeginDraft's declared length and CRC.",
+                Some(control_frame(0x0102, REQUEST, 106, &manifest_session.to_le_bytes())),
+            ),
+            event(
+                "device",
+                "control",
+                "One commit publishes the manifest and every referenced part; no physical generation is exposed.",
+                Some(control_frame(
+                    0x0102,
+                    OK,
+                    106,
+                    &result_envelope(
+                        1,
+                        &object_result(OP_PARENT, STORE, 6, 0, 2, 51, manifest.len() as u64, manifest_crc),
+                    ),
+                )),
+            ),
+            event(
+                "client",
+                "control",
+                "Initial publication derives selected false, so selecting the release is a separate \
+                 compare-and-swap SetMetadata.",
+                Some(control_frame(0x0301, REQUEST, 107, &{
+                    let mut body = zeros(36);
+                    bytes_at(&mut body, 0, &OP_B);
+                    u16_at(&mut body, 16, 6);
+                    u16_at(&mut body, 18, 1);
+                    u64_at(&mut body, 20, 2);
+                    u64_at(&mut body, 28, 51);
+                    body.extend_from_slice(&volume_patch(true));
+                    body
+                })),
+            ),
+            event(
+                "device",
+                "control",
+                "metadataChanged at the next revision.",
+                Some(control_frame(
+                    0x0301,
+                    OK,
+                    107,
+                    &result_envelope(1, &object_result(OP_B, STORE, 6, 3, 2, 52, manifest.len() as u64, manifest_crc)),
+                )),
+            ),
         ],
     });
 

@@ -1,0 +1,14 @@
+{
+  "name": "catalog-projection-unknown-critical-field",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryCatalogResponse",
+  "note": "A projection rejects an unknown critical field even though it may skip a well-formed noncritical one.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243500300010201007e00010000003c92000099164ebaabc2342fe08f6b10030001000c00000000000000000000000000000000000000000000000100000000000000020000000000000003000000000000000400000000002e000000000003004000260005000180080000f153650000000002800400181500000380040010a4000004800100015580010007"
+}

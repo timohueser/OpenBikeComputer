@@ -1,0 +1,14 @@
+{
+  "name": "reset-store-echo-mismatch",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "resetStoreEcho(mountClass=3)",
+  "note": "The echo MUST equal the StoreId the device currently reports, and it is checked before anything is deleted.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "112233445566778899aabbccddeeff00"
+}

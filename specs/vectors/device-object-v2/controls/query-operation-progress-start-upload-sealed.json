@@ -16,7 +16,7 @@
     "requestId": 70
   },
   "boundary": "",
-  "note": "In phases 2..4 the offset is the declared length.",
+  "note": "StartUpload: ID-present set, the offset is the durable payload prefix and the declared length in phases 2..4, and a session is attached only while one exists.",
   "payload": "0100000001020500010000000900000000000000b80b000000000000",
   "frame": "4f4243500300000201001c00460000000100000001020500010000000900000000000000b80b000000000000"
 }

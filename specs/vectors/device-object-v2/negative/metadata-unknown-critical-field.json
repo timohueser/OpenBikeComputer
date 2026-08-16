@@ -1,0 +1,14 @@
+{
+  "name": "metadata-unknown-critical-field",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "A mutating request rejects an unknown critical field.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030000010000420001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a101000000000000000000000000000000000000000a0000000000000000000000010001000a00020001800100025580010009"
+}

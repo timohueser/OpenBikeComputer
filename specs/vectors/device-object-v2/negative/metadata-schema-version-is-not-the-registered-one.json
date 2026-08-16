@@ -1,0 +1,14 @@
+{
+  "name": "metadata-schema-version-is-not-the-registered-one",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "Put schemas are version 1, patch 128, catalog 64 — registry constants, not a negotiation.",
+  "expect": {
+    "category": "unsupportedCapability",
+    "categoryValue": 2,
+    "detail": "schemaVersion",
+    "detailValue": 5
+  },
+  "bytes": "4f4243500300000100003d0001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a101000000000000000000000000000000000000000a000000000000000000000001000200050001000180010002"
+}

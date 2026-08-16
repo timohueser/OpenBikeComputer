@@ -1,5 +1,5 @@
 {
-  "name": "query-operation-progress-draft-parent-open",
+  "name": "query-operation-progress-draft-parent-draft-open",
   "suite": "device-object-v2",
   "kind": "control",
   "direction": "response",
@@ -16,7 +16,7 @@
     "requestId": 70
   },
   "boundary": "",
-  "note": "A draft parent in draft-open has offset zero and no attached session.",
+  "note": "Draft-open has offset zero and no attached session.",
   "payload": "01000000010604000600000002000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010604000600000002000000000000000000000000000000"
 }

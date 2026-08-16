@@ -132,6 +132,17 @@ pub const OP_ABORT: [u8; 16] = [0xe5; 16];
 /// A sealed part's opaque reference.
 pub const PART_REF: [u8; 16] =
     [0x5a, 0xa5, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0x0f, 0xf0, 0x1e, 0xe1];
+/// The durable upload checkpoint granule the suite uses.
+///
+/// §1's *default* granule is 262,144 bytes, and the granule is device policy an acceptance
+/// advertises rather than a protocol constant. The fixtures deliberately use a small one: the
+/// suite's objects are 3,000 and 65,536 bytes, so at the default granule they would have exactly
+/// one durable prefix — the whole object — and every "finalized prefix CRC" in the suite would be
+/// the whole-object CRC wearing a different name. At 1,024 bytes the checkpoint fixtures have
+/// several genuinely different prefixes, and a codec that confused a prefix CRC with an object CRC
+/// would fail against them.
+pub const FIXTURE_GRANULE: u32 = 1_024;
+
 /// The device serial the status fixtures report.
 pub const SERIAL: [u8; 16] =
     [0x0b, 0xc0, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba];
@@ -426,7 +437,7 @@ pub fn capabilities(
     }
     u16_at(&mut out, 20, 244);
     u16_at(&mut out, 22, 1024);
-    u32_at(&mut out, 24, 262_144);
+    u32_at(&mut out, 24, FIXTURE_GRANULE);
     u16_at(&mut out, 28, 64);
     u16_at(&mut out, 30, 128);
     u16_at(&mut out, 32, 96);
@@ -906,6 +917,12 @@ pub enum NegativeTarget {
     SubjectEntry,
     /// A bare configuration block.
     ConfigBlock,
+    /// A ResetStore echo, checked against the mount class the device is reporting.
+    ///
+    /// §16 makes the echo an admission rule rather than a decode rule — "It MUST equal the StoreId
+    /// the device currently reports" — so the fixture has to carry the context the check is made
+    /// against. The `u8` is that mount class.
+    ResetStoreEcho(u8),
 }
 
 impl NegativeTarget {
@@ -921,6 +938,7 @@ impl NegativeTarget {
             NegativeTarget::CapabilitiesPayload => "capabilities".to_string(),
             NegativeTarget::SubjectEntry => "subjectEntry".to_string(),
             NegativeTarget::ConfigBlock => "configBlock".to_string(),
+            NegativeTarget::ResetStoreEcho(class) => format!("resetStoreEcho(mountClass={class})"),
         }
     }
 }
@@ -1024,6 +1042,68 @@ impl IntentVector {
     }
 }
 
+/// One frame-limit derivation case (§14.0, and the vectors contract's §2.2).
+#[derive(Debug, Clone, Copy)]
+pub struct DerivationCase {
+    /// `"control"` or `"stream"`.
+    pub channel: &'static str,
+    /// The link fact the ceiling comes from: an ATT MTU on the control channel, a CoC SDU on the
+    /// stream channel.
+    pub link_value: u16,
+    /// The transport ceiling that link fact yields.
+    pub ceiling: u16,
+    /// The client's advertised maximum.
+    pub client_max: u16,
+    /// The device's advertised maximum.
+    pub device_max: u16,
+    /// `"negotiated"`, `"belowProtocolMinimum"`, or `"undeliverable"`.
+    pub outcome: &'static str,
+    /// The negotiated limit when there is one, else zero.
+    pub negotiated: u16,
+    /// The rule this case pins.
+    pub note: &'static str,
+}
+
+/// The frame-limit derivation cases, pinned as data rather than as prose.
+#[derive(Debug, Clone)]
+pub struct DerivationVector {
+    /// Stable name.
+    pub name: String,
+    /// The cases.
+    pub cases: Vec<DerivationCase>,
+}
+
+impl DerivationVector {
+    fn to_fixture(&self) -> Fixture {
+        let cases = self
+            .cases
+            .iter()
+            .map(|case| {
+                Json::new()
+                    .str("channel", case.channel)
+                    .num("linkValue", i64::from(case.link_value))
+                    .num("transportCeiling", i64::from(case.ceiling))
+                    .num("clientMaximum", i64::from(case.client_max))
+                    .num("deviceMaximum", i64::from(case.device_max))
+                    .str("outcome", case.outcome)
+                    .num("negotiated", i64::from(case.negotiated))
+                    .str("note", case.note)
+            })
+            .collect();
+        let json = Json::new()
+            .str("name", &self.name)
+            .str("suite", "device-object-v2")
+            .str("kind", "frameLimitDerivation")
+            .num("protocolMinimumControlFrame", 192)
+            .num("protocolMinimumStreamFrame", 64)
+            .num("maximumControlFrame", 512)
+            .num("maximumStreamFrame", 4096)
+            .array("cases", cases)
+            .render_file();
+        Fixture { name: self.name.clone(), category: Category::Control, json }
+    }
+}
+
 /// One event in a transcript.
 #[derive(Debug, Clone)]
 pub struct Event {
@@ -1086,13 +1166,14 @@ impl Transcript {
 
 mod inventory;
 
-pub use inventory::{controls, intents, negatives, streams, transcripts};
+pub use inventory::{controls, derivations, intents, negatives, progress_matrix, streams, transcripts};
 
 /// Every fixture the suite contains, in manifest order.
 pub fn fixtures() -> Vec<Fixture> {
     let mut all = Vec::new();
     all.extend(controls().iter().map(ControlVector::to_fixture));
     all.extend(intents().iter().map(IntentVector::to_fixture));
+    all.extend(derivations().iter().map(DerivationVector::to_fixture));
     all.extend(streams().iter().map(StreamVector::to_fixture));
     all.extend(negatives().iter().map(NegativeVector::to_fixture));
     all.extend(transcripts().iter().map(Transcript::to_fixture));

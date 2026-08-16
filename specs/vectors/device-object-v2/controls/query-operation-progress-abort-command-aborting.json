@@ -16,7 +16,7 @@
     "requestId": 70
   },
   "boundary": "",
-  "note": "An AbortOperation command has namespace none, kind zero, and flags, ID, and offset zero.",
+  "note": "An AbortOperation command has namespace none, kind zero, and flags, ID, and offset all zero.",
   "payload": "01000000000700000000000000000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000000700000000000000000000000000000000000000000000"
 }
