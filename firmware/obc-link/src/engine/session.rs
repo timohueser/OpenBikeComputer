@@ -13,8 +13,17 @@
 //!    are silently discarded, while an identifier that was never issued to this connection is
 //!    untrusted framing.
 //!
-//! One heavy transfer owns the coordinator at a time (§6), so at most one session is live and the
-//! bounded [`ISSUE_HISTORY`] ring is enough to classify a stale identifier deterministically.
+//! §13's tombstone set is kept as the **half-open interval** between the first SessionId this
+//! connection was issued and the allocator's next value. §3 makes that allocator monotonic and
+//! never-reusing, so the interval is exact, O(1), and — unlike a bounded per-identifier history —
+//! cannot truncate. Truncation would turn ordinary in-flight traffic into a transport close, which
+//! §13 forbids in as many words: the receiver "silently discards frames bearing one, sending
+//! neither data acknowledgement nor fault and never closing the transport".
+//!
+//! The bounded [`ISSUE_HISTORY`] ring is kept for a narrower job: naming *which* of the three
+//! scoping facts a control request got wrong. A classification that has aged out of it degrades to
+//! `staleConnection`, which is a legal detail for a control refusal; the tombstone decision never
+//! consults it.
 
 use core::fmt;
 
@@ -22,12 +31,15 @@ use crate::error::detail;
 use crate::hello::LinkKind;
 use crate::ids::SessionId;
 
-/// How many past issues are remembered with their exact owner.
+/// How many link kinds a device serves at once: BLE, USB, and the test link (§5).
+const LINK_KINDS: usize = 3;
+
+/// How many past issues are remembered with their exact owner, for detail classification only.
 ///
 /// An identifier older than this is still rejected — it is below the allocator's cursor, so it was
 /// certainly issued once — but it is reported as a stale connection rather than as a wrong link.
-/// Only one session is live at a time, so eight covers every session a connection realistically
-/// issues before the client has been told about all of them.
+/// §13's tombstone decision does **not** use this ring: it uses the per-connection interval, which
+/// cannot truncate.
 pub const ISSUE_HISTORY: usize = 8;
 
 /// The opaque stable principal-scope digest of §3.
@@ -125,6 +137,13 @@ struct Issue {
     owner: LinkContext,
 }
 
+/// What one connection has been issued: its identity, and the allocator value it started from.
+#[derive(Debug, Clone, Copy)]
+struct Generation {
+    context: LinkContext,
+    first: u32,
+}
+
 /// The sole issuer and revoker of SessionIds.
 #[derive(Debug)]
 pub struct SessionCoordinator {
@@ -132,6 +151,7 @@ pub struct SessionCoordinator {
     live: Option<Issue>,
     history: [Option<Issue>; ISSUE_HISTORY],
     cursor: usize,
+    generations: [Option<Generation>; LINK_KINDS],
 }
 
 impl Default for SessionCoordinator {
@@ -143,7 +163,41 @@ impl Default for SessionCoordinator {
 impl SessionCoordinator {
     /// A coordinator with nothing issued.
     pub const fn new() -> Self {
-        SessionCoordinator { next: 1, live: None, history: [None; ISSUE_HISTORY], cursor: 0 }
+        SessionCoordinator {
+            next: 1,
+            live: None,
+            history: [None; ISSUE_HISTORY],
+            cursor: 0,
+            generations: [None; LINK_KINDS],
+        }
+    }
+
+    /// Records that a connection generation has opened on one link.
+    ///
+    /// The allocator's current value becomes that connection's first issuable SessionId, which is
+    /// the lower bound of its §13 tombstone interval. A reconnect calls this again and the old
+    /// interval goes with the old connection, "since a new generation makes every earlier SessionId
+    /// stale by the generation check alone".
+    pub fn open(&mut self, context: LinkContext) {
+        self.generations[Self::index(context.link_kind)] = Some(Generation { context, first: self.next });
+    }
+
+    const fn index(link_kind: LinkKind) -> usize {
+        match link_kind {
+            LinkKind::Ble => 0,
+            LinkKind::Usb => 1,
+            LinkKind::Test => 2,
+        }
+    }
+
+    /// True when `session_id` falls inside the half-open interval this connection was issued from.
+    fn issued_to(&self, session_id: SessionId, context: &LinkContext) -> bool {
+        match self.generations[Self::index(context.link_kind)] {
+            Some(generation) if generation.context.is_same_connection(context) => {
+                session_id.get() >= generation.first && session_id.get() < self.next
+            }
+            _ => false,
+        }
     }
 
     /// The live session, if one is attached.
@@ -213,19 +267,24 @@ impl SessionCoordinator {
     }
 
     /// Classifies a stream frame's SessionId (§13).
+    ///
+    /// The tombstone test is the interval, not the history ring: every identifier this connection
+    /// was issued and no longer owns is discarded in silence, however many have been issued since.
     pub fn admit_stream(&self, session_id: SessionId, context: &LinkContext) -> StreamAdmission {
         if let Some(issue) = self.live {
             if issue.session_id == session_id {
                 return if issue.owner.is_same_connection(context) {
                     StreamAdmission::Owned
                 } else {
+                    // Live, but never issued to *this* connection: untrusted framing here.
                     StreamAdmission::Untrusted
                 };
             }
         }
-        match self.remembered(session_id) {
-            Some(issue) if issue.owner.is_same_connection(context) => StreamAdmission::Tombstoned,
-            _ => StreamAdmission::Untrusted,
+        if self.issued_to(session_id, context) {
+            StreamAdmission::Tombstoned
+        } else {
+            StreamAdmission::Untrusted
         }
     }
 
@@ -283,6 +342,7 @@ mod tests {
     fn issuing_revokes_the_session_bound_to_the_same_work() {
         let mut coordinator = SessionCoordinator::new();
         let owner = context(LinkKind::Ble, 1, 1);
+        coordinator.open(owner);
         let first = coordinator.issue(owner).unwrap();
         let second = coordinator.issue(owner).unwrap();
         assert_eq!(coordinator.check(first, &owner), Err(SessionRejection::Unknown));
@@ -318,6 +378,7 @@ mod tests {
     fn a_live_identifier_from_another_connection_is_untrusted_framing() {
         let mut coordinator = SessionCoordinator::new();
         let owner = context(LinkKind::Ble, 1, 1);
+        coordinator.open(owner);
         let session = coordinator.issue(owner).unwrap();
         assert_eq!(coordinator.admit_stream(session, &owner), StreamAdmission::Owned);
         assert_eq!(coordinator.admit_stream(session, &context(LinkKind::Usb, 1, 1)), StreamAdmission::Untrusted);
@@ -329,14 +390,33 @@ mod tests {
     }
 
     #[test]
-    fn the_issue_history_is_bounded_and_older_identifiers_stay_rejected() {
+    fn a_tombstone_survives_any_number_of_later_issues() {
+        // §13: the receiver "keeps a tombstone for every session it released in this generation and
+        // silently discards frames bearing one ... never closing the transport". A bounded history
+        // would turn the oldest of these into a transport close, which is what the interval avoids.
         let mut coordinator = SessionCoordinator::new();
         let owner = context(LinkKind::Ble, 1, 1);
+        coordinator.open(owner);
         let first = coordinator.issue(owner).unwrap();
-        for _ in 0..ISSUE_HISTORY + 2 {
+        for _ in 0..ISSUE_HISTORY * 4 {
             coordinator.issue(owner).unwrap();
         }
+        assert_eq!(coordinator.admit_stream(first, &owner), StreamAdmission::Tombstoned);
+        // The control plane still refuses it; only the detail degrades once the ring has aged out.
         assert_eq!(coordinator.check(first, &owner), Err(SessionRejection::StaleConnection));
-        assert_eq!(coordinator.admit_stream(first, &owner), StreamAdmission::Untrusted);
+    }
+
+    #[test]
+    fn an_identifier_from_an_earlier_generation_is_untrusted_rather_than_tombstoned() {
+        let mut coordinator = SessionCoordinator::new();
+        let first_generation = context(LinkKind::Ble, 1, 1);
+        coordinator.open(first_generation);
+        let session = coordinator.issue(first_generation).unwrap();
+        assert_eq!(coordinator.admit_stream(session, &first_generation), StreamAdmission::Owned);
+
+        let second_generation = context(LinkKind::Ble, 1, 2);
+        coordinator.open(second_generation);
+        assert_eq!(coordinator.admit_stream(session, &second_generation), StreamAdmission::Untrusted);
+        assert_eq!(coordinator.check(session, &second_generation), Err(SessionRejection::StaleConnection));
     }
 }

@@ -23,8 +23,8 @@ use crate::error::detail;
 use crate::frame::Opcode;
 use crate::ids::{GenerationId, LogicalObjectId, OperationId, Revision, StoreId};
 use crate::query::{progress_flags, OperationProgress};
-use crate::registry::{ObjectKind, ObjectOutcome, Phase, SubjectNamespace};
-use crate::result::{ObjectResult, ResultEnvelope};
+use crate::registry::{AbortReason, ObjectKind, ObjectOutcome, Phase, SubjectNamespace};
+use crate::result::{AbortDisposition, AbortResult, ObjectResult, ResultEnvelope};
 use crate::upload::Target;
 
 /// §5.1's retained terminal results, and §2 of the storage contract's ring.
@@ -61,6 +61,8 @@ struct Claim {
     checkpoint_sequence: u32,
     sealed: bool,
     phase: Phase,
+    /// What an AbortOperation command found when it reached its target (§6.4).
+    disposition: Option<AbortDisposition>,
 }
 
 /// One retained terminal result (§8.1's 64-result window).
@@ -203,6 +205,30 @@ impl FakeTransaction {
         (logical_object_id, revision)
     }
 
+    /// Claims an InstallUpdate directly, so a test can name a target §9 makes non-cancellable.
+    pub fn claim_install_update(&mut self, operation_id: OperationId, principal: PrincipalScope) {
+        self.claims.push(Claim {
+            intent: ClaimIntent {
+                operation_id,
+                principal,
+                opcode: Opcode::InstallUpdate,
+                digest: [0x11; 32],
+                kind: ObjectKind::UpdatePackage,
+                target: Target::Create,
+                declared_length: 0,
+                expected_crc: 0,
+                target_operation_id: None,
+            },
+            logical_object_id: LogicalObjectId::ZERO,
+            buffer: Vec::new(),
+            durable_offset: 0,
+            checkpoint_sequence: 0,
+            sealed: false,
+            phase: Phase::ExternalHandoff,
+            disposition: None,
+        });
+    }
+
     /// Retains one terminal result under a synthetic identity, as any device-local producer's
     /// terminal commit does. §8.1: the window "is store-global in the strict sense".
     pub fn retain_local_result(&mut self, operation_id: OperationId) {
@@ -227,13 +253,17 @@ impl FakeTransaction {
     /// Executes one engine command. `scratch` carries any bytes the outcome hands back.
     pub fn execute<'s>(&mut self, command: Command<'_>, scratch: &'s mut [u8]) -> Outcome<'s> {
         match command {
+            Command::Lookup(intent) => Outcome::Claim(self.lookup(intent)),
             Command::Claim(intent) => Outcome::Claim(self.claim(intent)),
-            Command::Append { offset, bytes } => self.append(offset, bytes),
-            Command::Checkpoint { offset } => self.checkpoint(offset),
-            Command::Seal { declared_length, expected_crc } => self.seal(declared_length, expected_crc),
-            Command::Validate => self.validate(),
-            Command::Publish => self.publish(),
-            Command::Abort(cause) => self.abort(cause),
+            Command::Append { operation_id, offset, bytes } => self.append(operation_id, offset, bytes),
+            Command::Checkpoint { operation_id, offset } => self.checkpoint(operation_id, offset),
+            Command::Seal { operation_id, declared_length, expected_crc } => {
+                self.seal(operation_id, declared_length, expected_crc)
+            }
+            Command::Validate { operation_id } => self.validate(operation_id),
+            Command::Publish { operation_id } => self.publish(operation_id),
+            Command::CancelTarget { operation_id, target, reason } => self.cancel_target(operation_id, target, reason),
+            Command::Abort { operation_id, cause } => self.abort(operation_id, cause),
             Command::Resolve { kind, logical_object_id, .. } => self.resolve(kind, logical_object_id),
             Command::ReadSource { offset, length } => self.read_source(offset, length, scratch),
             Command::ReleaseLease => {
@@ -241,28 +271,27 @@ impl FakeTransaction {
                 Outcome::LeaseReleased
             }
             Command::DeviceControl(request) => Outcome::DeviceControl(self.device_control(request, scratch)),
-            Command::QueryOperation(operation_id) => Outcome::OperationReport(self.report(operation_id)),
+            Command::QueryOperation { operation_id, principal } => {
+                Outcome::OperationReport(self.report_for(operation_id, principal))
+            }
         }
     }
 
     // -- the claim lock ---------------------------------------------------------------------------
 
-    fn claim(&mut self, intent: ClaimIntent) -> ClaimOutcome {
-        if let Some(index) = self.claims.iter().position(|claim| claim.intent.operation_id == intent.operation_id) {
-            let claim = &self.claims[index];
-            // §11 actions 2 and 4 precede action 3: a foreign principal never learns the intent.
+    /// §11's lookup: it answers every action but the first and **creates no state**.
+    fn lookup(&mut self, intent: ClaimIntent) -> ClaimOutcome {
+        if let Some(claim) = self.claims.iter().find(|claim| claim.intent.operation_id == intent.operation_id) {
             if claim.intent.principal != intent.principal {
                 return ClaimOutcome::ForeignPrincipal;
             }
             if claim.intent.digest != intent.digest {
                 return ClaimOutcome::Conflict;
             }
+            // Live work of the same intent. §6.1's restart-only row: the work is discarded and
+            // restarted, and the durable restart record is synchronized before the acceptance.
             let logical_object_id = claim.logical_object_id;
-            // Restart-only: the work this claim already holds is discarded and started again.
-            self.claims[index].buffer.clear();
-            self.claims[index].durable_offset = 0;
-            self.claims[index].sealed = false;
-            self.claims[index].phase = Phase::Prepared;
+            self.restart_work(intent.operation_id);
             return ClaimOutcome::Restarted {
                 logical_object_id,
                 repository_revision: Revision::new(self.repository_revision),
@@ -280,8 +309,25 @@ impl FakeTransaction {
                 Err(terminal) => ClaimOutcome::Aborted(terminal),
             };
         }
+        ClaimOutcome::Unclaimed
+    }
+
+    /// §11's durable claim, which is the first mutation and precedes every side effect.
+    fn claim(&mut self, intent: ClaimIntent) -> ClaimOutcome {
+        match self.lookup(intent) {
+            ClaimOutcome::Unclaimed => {}
+            resolved => return resolved,
+        }
+        // Target admissibility is preflight: §11 lets it "fail without creating state", and §9
+        // requires exactly that for an AbortOperation naming a non-cancellable target.
+        if intent.opcode == Opcode::AbortOperation {
+            if let Some(target) = intent.target_operation_id {
+                if let Some(cause) = self.target_admissibility(target, intent.principal) {
+                    return ClaimOutcome::Refused(cause);
+                }
+            }
+        }
         if let Some(cause) = self.faults.refuse_claim.take() {
-            // Preflight: "may fail without creating state".
             return ClaimOutcome::Refused(cause);
         }
         if self.claims.len() == ACTIVE_CLAIMS {
@@ -305,19 +351,53 @@ impl FakeTransaction {
             checkpoint_sequence: 0,
             sealed: false,
             phase: if intent.opcode == Opcode::StartUpload { Phase::Prepared } else { Phase::Validating },
+            disposition: None,
         });
         ClaimOutcome::Claimed { logical_object_id, repository_revision: Revision::new(self.repository_revision) }
     }
 
+    /// Whether an AbortOperation may name this target at all (§3's ownership, §9's non-cancellable
+    /// InstallUpdate). `None` means it may.
+    fn target_admissibility(&self, target: OperationId, principal: PrincipalScope) -> Option<FailureCause> {
+        let claim = self.claims.iter().find(|claim| claim.intent.operation_id == target);
+        let retained = self.results.iter().find(|retained| retained.operation_id == target);
+        let owner = claim.map(|claim| claim.intent.principal).or(retained.map(|retained| retained.principal));
+        if let Some(owner) = owner {
+            if owner != principal {
+                // §6.4 "requires the target's owning principal", and §3 puts authorization ahead of
+                // every existence fact.
+                return Some(FailureCause::Authorization { detail: detail::authorization::OPERATION_OWNER });
+            }
+        }
+        if claim.is_some_and(|claim| claim.intent.opcode == Opcode::InstallUpdate) {
+            // §9: "An AbortOperation naming an InstallUpdate target is refused with
+            // unsupportedCapability/nonCancellableOperation ... it creates no state and burns no
+            // identifier."
+            return Some(FailureCause::UnsupportedCapability { detail: detail::capability::NON_CANCELLABLE_OPERATION });
+        }
+        None
+    }
+
+    /// Discards a live work record and re-synchronizes it at offset zero (§6.1's restart row).
+    fn restart_work(&mut self, operation_id: OperationId) {
+        if let Some(claim) = self.claims.iter_mut().find(|claim| claim.intent.operation_id == operation_id) {
+            claim.buffer.clear();
+            claim.durable_offset = 0;
+            claim.checkpoint_sequence = 0;
+            claim.sealed = false;
+            claim.phase = Phase::Prepared;
+        }
+    }
+
     // -- the work record --------------------------------------------------------------------------
 
-    fn append<'s>(&mut self, offset: u64, bytes: &[u8]) -> Outcome<'s> {
+    fn append<'s>(&mut self, operation_id: OperationId, offset: u64, bytes: &[u8]) -> Outcome<'s> {
         if let Some(at) = self.faults.fail_append_at {
             if offset + bytes.len() as u64 > at {
                 return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
             }
         }
-        let Some(claim) = self.active_upload_mut() else {
+        let Some(claim) = self.claim_mut(operation_id) else {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         };
         if offset != claim.buffer.len() as u64 {
@@ -328,8 +408,8 @@ impl FakeTransaction {
         Outcome::Appended
     }
 
-    fn checkpoint<'s>(&mut self, offset: u64) -> Outcome<'s> {
-        let Some(claim) = self.active_upload_mut() else {
+    fn checkpoint<'s>(&mut self, operation_id: OperationId, offset: u64) -> Outcome<'s> {
+        let Some(claim) = self.claim_mut(operation_id) else {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         };
         if offset > claim.buffer.len() as u64 {
@@ -341,11 +421,11 @@ impl FakeTransaction {
         Outcome::Checkpointed { durable_offset: offset, prefix_crc, sequence: claim.checkpoint_sequence }
     }
 
-    fn seal<'s>(&mut self, declared_length: u64, expected_crc: u32) -> Outcome<'s> {
+    fn seal<'s>(&mut self, operation_id: OperationId, declared_length: u64, expected_crc: u32) -> Outcome<'s> {
         if self.faults.fail_seal {
             return Outcome::Failed(FailureCause::Checksum { detail: detail::checksum::WHOLE_PAYLOAD });
         }
-        let Some(claim) = self.active_upload_mut() else {
+        let Some(claim) = self.claim_mut(operation_id) else {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         };
         if claim.buffer.len() as u64 != declared_length || obc_crc::crc32(&claim.buffer) != expected_crc {
@@ -356,22 +436,50 @@ impl FakeTransaction {
         Outcome::Sealed
     }
 
-    fn validate<'s>(&mut self) -> Outcome<'s> {
-        let kind = self.active_claim().map(|claim| claim.intent.kind).unwrap_or(ObjectKind::Route);
+    fn validate<'s>(&mut self, operation_id: OperationId) -> Outcome<'s> {
+        let Some(kind) = self.claim_for(operation_id).map(|claim| claim.intent.kind) else {
+            return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
+        };
         if let Some(detail) = self.faults.fail_validation {
             return Outcome::Failed(FailureCause::SemanticValidation { kind, detail });
         }
-        if let Some(claim) = self.active_claim_mut() {
+        if let Some(claim) = self.claim_mut(operation_id) {
             claim.phase = Phase::Validating;
         }
         Outcome::Validated
     }
 
-    fn publish<'s>(&mut self) -> Outcome<'s> {
+    /// §6.4's second durable step: the target is marked terminal Aborted before the abort command's
+    /// own result is committed, and the disposition it produced is kept for that result.
+    fn cancel_target<'s>(
+        &mut self,
+        operation_id: OperationId,
+        target: OperationId,
+        reason: AbortReason,
+    ) -> Outcome<'s> {
+        let disposition = if self.claims.iter().any(|claim| claim.intent.operation_id == target) {
+            let terminal = AbortCause::Cancelled { reason }.terminal();
+            self.finish_claim(target, Err(terminal));
+            AbortDisposition::Cancelled
+        } else if self.results.iter().any(|retained| retained.operation_id == target) {
+            // "If the target was already terminal, it is unchanged and the abort result says
+            // `already terminal`."
+            AbortDisposition::AlreadyTerminal
+        } else {
+            AbortDisposition::AlreadyAbsent
+        };
+        if let Some(claim) = self.claim_mut(operation_id) {
+            claim.disposition = Some(disposition);
+            claim.phase = Phase::Aborting;
+        }
+        Outcome::TargetCancelled(disposition)
+    }
+
+    fn publish<'s>(&mut self, operation_id: OperationId) -> Outcome<'s> {
         if self.faults.fail_publication {
             return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
         }
-        let Some(claim) = self.active_claim().cloned() else {
+        let Some(claim) = self.claim_for(operation_id).cloned() else {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         };
         if self.faults.race_publication {
@@ -422,10 +530,14 @@ impl FakeTransaction {
                 self.object_result(&claim, ObjectOutcome::RideImported, revision, 0, 0)
             }
             Opcode::AbortOperation => {
-                let target = claim.intent.target;
-                let _ = target;
-                let revision = self.bump_repository();
-                self.object_result(&claim, ObjectOutcome::Committed, revision, 0, 0)
+                // §10: the abort command's typed success is an AbortResult, and §6.4 gives that
+                // result to the command rather than to the target it cancelled.
+                ResultEnvelope::Abort(AbortResult {
+                    operation_id: claim.intent.operation_id,
+                    store_id: self.store_id,
+                    target_operation_id: claim.intent.target_operation_id.unwrap_or(OperationId::ZERO),
+                    disposition: claim.disposition.unwrap_or(AbortDisposition::AlreadyAbsent),
+                })
             }
             _ => return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT }),
         };
@@ -433,10 +545,10 @@ impl FakeTransaction {
         Outcome::Published(envelope)
     }
 
-    fn abort<'s>(&mut self, cause: AbortCause) -> Outcome<'s> {
+    fn abort<'s>(&mut self, operation_id: OperationId, cause: AbortCause) -> Outcome<'s> {
         let terminal = cause.terminal();
-        if let Some(claim) = self.active_claim().cloned() {
-            self.finish_claim(claim.intent.operation_id, Err(terminal));
+        if self.claim_for(operation_id).is_some() {
+            self.finish_claim(operation_id, Err(terminal));
         }
         Outcome::Aborted(terminal)
     }
@@ -466,10 +578,12 @@ impl FakeTransaction {
         let Some(bytes) = self.generation_bytes(lease.generation) else {
             return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::READ });
         };
-        let start = offset as usize;
-        let end = (start + usize::from(length)).min(bytes.len());
-        let taken = end.saturating_sub(start);
-        scratch[..taken].copy_from_slice(&bytes[start..end]);
+        // Every bound is checked rather than assumed: an offset past the end, a length past the
+        // end, and a length past the caller's scratch all clamp instead of panicking.
+        let start = (offset as usize).min(bytes.len());
+        let end = start.saturating_add(usize::from(length)).min(bytes.len());
+        let taken = end.saturating_sub(start).min(scratch.len());
+        scratch[..taken].copy_from_slice(&bytes[start..start + taken]);
         Outcome::SourceBytes { offset, bytes: &scratch[..taken] }
     }
 
@@ -507,18 +621,38 @@ impl FakeTransaction {
     }
 
     fn report(&self, operation_id: OperationId) -> OperationReport {
-        if let Some(claim) = self.claims.iter().find(|claim| claim.intent.operation_id == operation_id) {
+        if let Some(claim) = self.claim_for(operation_id) {
+            // §8.1's matrix fixes every field from the originating claim, and a row outside it
+            // "is an internal state/codec error and MUST NOT be emitted".
+            if claim.intent.opcode == Opcode::AbortOperation {
+                return OperationReport::InProgress(OperationProgress {
+                    namespace: SubjectNamespace::None,
+                    subject_kind: 0,
+                    phase: Phase::Aborting,
+                    flags: 0,
+                    logical_object_id: LogicalObjectId::ZERO,
+                    durable_offset: 0,
+                });
+            }
+            let is_upload = claim.intent.opcode == Opcode::StartUpload;
             let mut flags = progress_flags::LOGICAL_ID_PRESENT;
-            if claim.intent.opcode == Opcode::StartUpload {
+            if is_upload && !matches!(claim.phase, Phase::Aborting) {
+                // "attached only while that session exists; ... aborting has no attachment".
                 flags |= progress_flags::SESSION_ATTACHED;
             }
+            let durable_offset = match (is_upload, claim.phase) {
+                // "offset is durable payload prefix, declared length in phases 2..4".
+                (true, Phase::Sealed | Phase::Validating | Phase::Publishing) => claim.intent.declared_length,
+                (true, _) => claim.durable_offset,
+                (false, _) => 0,
+            };
             return OperationReport::InProgress(OperationProgress {
                 namespace: SubjectNamespace::Logical,
                 subject_kind: claim.intent.kind.to_u16(),
                 phase: claim.phase,
                 flags,
                 logical_object_id: claim.logical_object_id,
-                durable_offset: if claim.intent.opcode == Opcode::StartUpload { claim.durable_offset } else { 0 },
+                durable_offset,
             });
         }
         match self.results.iter().find(|retained| retained.operation_id == operation_id) {
@@ -551,16 +685,12 @@ impl FakeTransaction {
 
     // -- helpers -----------------------------------------------------------------------------------
 
-    fn active_claim(&self) -> Option<&Claim> {
-        self.claims.last()
+    fn claim_for(&self, operation_id: OperationId) -> Option<&Claim> {
+        self.claims.iter().find(|claim| claim.intent.operation_id == operation_id)
     }
 
-    fn active_claim_mut(&mut self) -> Option<&mut Claim> {
-        self.claims.last_mut()
-    }
-
-    fn active_upload_mut(&mut self) -> Option<&mut Claim> {
-        self.claims.iter_mut().rev().find(|claim| claim.intent.opcode == Opcode::StartUpload)
+    fn claim_mut(&mut self, operation_id: OperationId) -> Option<&mut Claim> {
+        self.claims.iter_mut().find(|claim| claim.intent.operation_id == operation_id)
     }
 
     fn generation_bytes(&self, generation: GenerationId) -> Option<&[u8]> {
@@ -639,13 +769,16 @@ impl FakeTransaction {
     }
 
     fn retain(&mut self, retained: Retained) {
-        // The same ring `obc-storage`'s model keeps: a full ring overwrites its start and advances
-        // it by one, which is the only place a result is forgotten.
-        if self.results.len() == RESULT_RING {
-            self.results.remove(self.result_start.min(self.results.len() - 1));
-            self.result_start = 0;
+        // The same ring `obc-storage`'s model keeps: "Ring append writes `(result_start +
+        // result_count) mod 64`; when already full it overwrites `result_start` and advances that
+        // index by one. This is the only place a result is forgotten."
+        if self.results.len() < RESULT_RING {
+            let index = (self.result_start + self.results.len()) % RESULT_RING;
+            self.results.insert(index, retained);
+            return;
         }
-        self.results.push(retained);
+        self.results[self.result_start] = retained;
+        self.result_start = (self.result_start + 1) % RESULT_RING;
     }
 }
 
