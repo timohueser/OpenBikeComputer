@@ -25,6 +25,28 @@ readers may skip unknown noncritical fields and reject unknown critical fields.
 | 6 | volume manifest | Create/replace one atomic release head, metadata update, list, download, delete. |
 | 7 | update package | Publish VerifiedReady, list, download, explicit install, retention/rollback cleanup. |
 
+Each kind's lifecycle above fixes which subject operation flags it may advertise. The wire contract
+defines the bits; this table fixes their default per kind, and a device advertises a subset of the
+permitted set, never a superset.
+
+| Kind | put 0 | get 1 | delete 2 | set-metadata 3 | draft-finalize 6 |
+|---|:--:|:--:|:--:|:--:|:--:|
+| route | yes | yes | yes | yes | no |
+| trip | yes | yes | yes | no | no |
+| ride | no | yes | yes | no | no |
+| weather | yes | yes | yes | no | no |
+| volume manifest | no | yes | yes | yes | yes |
+| update package | yes | yes | yes | no | no |
+
+A `no` is normative: a device that advertises it is nonconforming and a client that requests the
+operation receives `unsupportedCapability`. Rides carry no put bit because a ride is produced by the
+device and only finalized locally; volume manifests carry no put bit because a manifest is published
+only by finalizing its draft, never by a direct upload. Import acknowledgement and update install
+are their own opcodes with their own command flags and consume no subject bit. The two resumable
+bits (4 and 5) are device policy rather than registry policy: a device may advertise either for any
+kind it serves, and the only fixed rule is the wire contract's — a draft-part subject advertises put
+and optionally resumable upload and nothing else.
+
 Trip remains optional but distinct because it has an independent name, ordered route membership,
 and replace/list/download/delete lifecycle. `DeleteObject(Trip)` removes only the
 trip. Deleting its routes is a client-composed sequence, not an implicit multi-object transaction.
@@ -32,6 +54,17 @@ trip. Deleting its routes is a client-composed sequence, not an implicit multi-o
 A route head is the validated canonical route payload. Original GPX/TCX source bytes are not a
 sidecar, alternate identity, or implicitly retained generation. A future named lossless-source
 export feature must define a separate logical lifecycle and contract before storing them.
+
+Exactly three kinds are importable from the card's staging area: route, volume manifest, and update
+package. An imported route and an imported update package are ordinary Puts of the staged bytes; an
+imported volume manifest is a standalone-map release whose single part is the staged file and whose
+manifest the device synthesizes, because a foreign manifest can never carry this store's private
+part references. Weather is not importable: a bundle is meaningful only against a live durable
+request context the card cannot carry. Rides are not importable because the device produces them,
+and trips are not importable because a trip is a composition of routes that must already exist.
+Import changes nothing about validation — an imported payload passes the same typed validator as an
+uploaded one — and the storage format owns the staging area, the file naming, and the per-mount
+bounds.
 
 ## 2. Multipart draft registry
 
@@ -48,12 +81,12 @@ Draft parts are immutable prospective generations, not logical objects. They hav
 | 3 | terrain blob |
 | 4 | volume index |
 
-A `DraftPartRef` is a 16-byte, device-issued authenticated opaque reference meaningful only inside
-the parent draft that issued it. It conveys no authority: authentication and authorization are
-checked independently. It is not a `GenerationId`, content digest, filename, or globally
-addressable object ID. CardStore's private keyed codec makes it resolvable after publication
-without exposing its physical identity. Clients may place it only in the matching volume-manifest
-payload.
+A `DraftPartRef` is 16 opaque bytes the device draws at random when it seals a part, meaningful only
+inside the parent draft that issued it. It conveys no authority: authentication and authorization
+are checked independently. It is not a `GenerationId`, content digest, filename, or globally
+addressable object ID, and it is not derived from any of them — it is a name the store looks up in
+its own stored rows, not a value anything decodes. Clients may place it only in the matching
+volume-manifest payload.
 
 ### 2.1 Parent lifecycle
 
@@ -67,7 +100,9 @@ claim storage:
 - the authenticated principal and StoreId used for authorization and intent identity.
 
 The parent has a monotonic `DraftRevision` beginning at 1. Claiming, sealing, or durably aborting a
-child increments it. `(DraftPartKind, part_key u64)` is unique within one parent; a duplicate with
+child increments it; a durable payload checkpoint of a child does not, because a snapshot pages over
+membership rather than progress. This is the frozen wording, and the wire and storage contracts
+restate it rather than paraphrasing it. `(DraftPartKind, part_key u64)` is unique within one parent; a duplicate with
 the same child OperationId and intent resumes, while any different intent is
 `operationIdConflict` or semantic `duplicateDraftPart` before allocation.
 
@@ -87,9 +122,10 @@ wall-clock-based: storage may reclaim a draft only through the advertised reclam
 this same ordered sequence. An OperationId or DraftPartRef from an aborted, finalized, or evicted
 parent can never be rebound.
 
-The baseline contract supports at most 32 parts per draft. A device may advertise a smaller value
-but MUST reject the parent during `BeginDraft`, before child bytes transfer, when the declaration
-exceeds it. Pagination is snapshot-bound to DraftRevision and rejects a changed revision instead of
+Exactly one draft parent may be open at a time, so the whole 32-part budget belongs to it and a
+`BeginDraft` issued while another parent is open is refused before any claim. A device may advertise
+a smaller part maximum but MUST reject the parent during `BeginDraft`, before child bytes transfer,
+when the declaration exceeds it. Pagination is snapshot-bound to DraftRevision and rejects a changed revision instead of
 mixing child sets.
 
 ### 2.2 Volume-manifest payload v1
@@ -110,7 +146,7 @@ The final logical payload is a bounded binary manifest, not an on-card filename 
 | 24 | 4 | north latitude, signed microdegrees |
 | 28 | 4 | east longitude, signed microdegrees |
 | 32 | 1 | UTF-8 display-name length, 1 through 32 |
-| 33 | 32 | display-name bytes followed by zero |
+| 33 | 32 | display-name bytes then zero padding to 32 |
 | 65 | 16 | parent OperationId from BeginDraft |
 | 81 | 15 | zero |
 
@@ -129,8 +165,12 @@ Exactly `entry_count` 56-byte records follow immediately:
 | 48 | 4 | child north latitude, signed microdegrees |
 | 52 | 4 | child east longitude, signed microdegrees |
 
+The display-name field carries exactly the stated number of name bytes followed by zero padding to
+32 bytes; no terminator is required at full length, and a nonzero byte at or beyond the stated
+length is a validation failure.
+
 The payload length is exactly `96 + entry_count * 56`. The header parent must equal the parent
-OperationId used for finalization and DraftPartRef decoding. Records are strictly ordered by
+OperationId used for finalization and DraftPartRef lookup. Records are strictly ordered by
 `(DraftPartKind, part_key)` and unique. Every bbox is ordered and inside the manifest bbox. Exactly
 one map-bearing entry has the core bit and its bbox equals the manifest bbox; terrain/index entries
 never set it. A standalone-map entry requires entry count one. The validator resolves every ref
@@ -139,12 +179,28 @@ name, part count, and selected state in catalog metadata are validator-derived; 
 the separate metadata flag and is not hidden in this payload. Initial publication derives selected
 as false; selecting the release requires a later compare-and-swap SetMetadata operation.
 
+A sideload-imported map is the one manifest the device writes itself, and it is bound to exactly
+this layout: entry count one; one standalone-map record with `DraftPartKind` standalone map blob
+`1`, the fixed part key `1`, and the core-coverage bit set; the display name taken from the staged
+file's eight-byte FAT stem with its trailing space padding stripped, which is 1 through 8 bytes and
+therefore always inside the 1-through-32 range this header requires; and the map schema revision and
+both bounding boxes derived
+by the map validator from the sealed part payload. Those three synthesized values are frozen rather
+than left to the implementation, because the whole import identity must be reproducible from the
+same staged file at the next mount. A payload from which those facts cannot be
+derived fails validation; the device never guesses a bbox, a schema revision, or a name it could not
+read. Every other rule above — ordering, uniqueness, ref resolution, length and CRC equality —
+applies unchanged, because the synthesized manifest is validated by the same validator as an
+uploaded one.
+
 ## 3. Weather singleton and durable request context
 
 Store initialization reserves exactly one weather LogicalObjectId and persists it even when no
 weather head exists. It is an ordinary `u64` value, not a sentinel. The device exposes it in each
 durable weather-request context; an authorized query before any context exists returns
-`objectNotFound`. Clients never choose it. Deleting weather removes
+`objectNotFound`. Clients never choose it, never derive it, and never reject the value the device
+reports — including zero, which every real device reports today and which is an allocated identity
+like any other. `WeatherRequestId` is never that identity. Deleting weather removes
 only the head; the reserved identity and repository revision survive, and later replacement uses
 that same identity plus the current Revision.
 
@@ -170,8 +226,9 @@ The weather domain owns one durable, connection-independent request context:
 Creating or replacing this request is a local durable domain transition and increments both
 WeatherRequestId and a separate request-context revision. It does **not** increment the weather
 object repository Revision or mutate the catalog head; only publishing/deleting the logical
-weather object does that. This separation lets a response become superseded while its original
-object CAS token can still be valid. A client discovers the complete context through
+weather object does that. This separation is why a bundle in flight can find its request changed
+while its object CAS token is still valid — the two counters move independently, and the publish
+rule below is what resolves that case. A client discovers the complete context through
 `QueryWeatherRequest`; no connection event or unsolicited frame is authoritative. If trusted time
 or position is unavailable, the domain does not create a request it cannot validate.
 Neither counter wraps; exhaustion requires explicit StoreId-changing reset rather than reuse.
@@ -180,32 +237,34 @@ Neither counter wraps; exhaustion requires explicit StoreId-changing reset rathe
 
 Every field is critical and required:
 
-| Tag | Type | Meaning |
-|---:|---:|---|
-| `0x8001` | `u64` | WeatherRequestId answered by this bundle. |
-| `0x8002` | `i32` | Validated coverage centre latitude. |
-| `0x8003` | `i32` | Validated coverage centre longitude. |
-| `0x8004` | `u32` | Validated coverage radius metres. |
-| `0x8005` | `i64` | Validated issued UTC. |
-| `0x8006` | `i64` | Validated valid-until UTC. |
+| Tag | Type | Required | Meaning |
+|---:|---:|---|---|
+| `0x8001` | `u64` | required | WeatherRequestId answered by this bundle. |
+| `0x8002` | `i32` | required | Validated coverage centre latitude. |
+| `0x8003` | `i32` | required | Validated coverage centre longitude. |
+| `0x8004` | `u32` | required | Validated coverage radius metres. |
+| `0x8005` | `i64` | required | Validated issued UTC. |
+| `0x8006` | `i64` | required | Validated valid-until UTC. |
 
 These are declared semantic facts used for bounded preflight. The typed weather validator MUST
 derive the same facts from the payload; any mismatch is `weather.payloadFactsMismatch`. The payload
 remains the weather data authority, while the catalog stores the validator-derived facts.
 
-The superseded-request rule is deliberately narrow. If the request ID is current and normal
-coverage/time validation passes, publication satisfies it. If it has been superseded, publication
-is allowed only when the expected repository Revision still matches, the bundle passes the current
-request's coverage and validity predicates, and either no head exists or its issued UTC is strictly
-later than the current head. The result is `committedSupersededWeather` and the newer request
-remains pending. Otherwise
-the mutation aborts as `weather.supersededNotUseful`. No history, provider ranking, or quality
-score participates.
+The publish rule is one line: a bundle publishes if and only if its compare-and-swap revision still
+matches **and** its context matches the current request — the request ID is the current one and the
+validated coverage and validity facts satisfy that request's predicates. A bundle that names any
+other request, or that no longer satisfies the current one, aborts terminally as
+`weather.requestMismatch`, and the current request stays pending until a bundle that answers it
+arrives. There is no publication path for a stale bundle, no history, no provider ranking, and no
+quality score. `weather.supersededNotUseful` is registered, reserved, and never emitted.
 
 ## 4. Metadata envelopes
 
 Put schemas use version `1`, patch schemas version `128`, and catalog projection schemas version
-`64`. An empty schema is still an eight-byte envelope with zero fields.
+`64`. Those three numbers are constants of this registry, not a negotiation: there is one schema per
+kind per operation, a device advertises the constant or advertises zero for an operation it does not
+support, and there is no mechanism — and no reason — for two peers to agree on a different one. An
+empty schema is still an eight-byte envelope with zero fields.
 
 The envelope `schema_id` is the numeric ObjectKind. The wire field codec fixes the four-byte field
 header, canonical ordering, integer and text encodings, and rejection rules. These are the exact
@@ -223,14 +282,23 @@ update this table and the shared maximum vectors.
 
 Every length includes the eight-byte envelope. A decoder rejects a schema-specific envelope larger
 than its value above even though the common Put/patch and catalog envelope ceilings are 128 and 96
-bytes respectively.
+bytes respectively. The 96-byte catalog ceiling is not only a decoder bound: the storage format
+reserves exactly that many bytes inside each catalog-head entry, so raising it changes the on-card
+entry size and the garbage collector's bounded read. It is a format constant, not a limit a decoder
+may relax.
+
+Every field below carries an explicit required/optional status, which is the status the wire
+contract's "every registered required field appears exactly once" rule refers to. Put and catalog
+schemas mark each field individually. Patch schemas are uniform: every field is individually
+optional, and the envelope as a whole must carry at least one field, since an empty patch is refused
+as a request rather than treated as a no-op mutation.
 
 ### 4.1 Put v1
 
-| Kind | Tag | Type | Meaning |
-|---|---:|---|---|
-| route | `0x8001` | `u8` | Retention: never `0`, day `1`, week `2`, two weeks `3`, month `4`, two months `5`. |
-| weather | §3.1 | — | All six weather response facts. |
+| Kind | Tag | Type | Required | Meaning |
+|---|---:|---|---|---|
+| route | `0x8001` | `u8` | required | Retention: never `0`, day `1`, week `2`, two weeks `3`, month `4`, two months `5`. |
+| weather | §3.1 | — | required | All six weather response facts. |
 
 Trip, ride, volume-manifest, and update-package Put v1 have zero fields. Their semantic facts are
 derived from validated payload bytes. Draft parts use their dedicated command, not this schema.
@@ -239,12 +307,12 @@ derived from validated payload bytes. Draft parts use their dedicated command, n
 
 Every present field is applied in one catalog commit. An empty patch is invalid.
 
-| Kind | Tag | Type | Meaning |
-|---|---:|---|---|
-| route | `0x8001` | `u8` | Retention, using the Put values. |
-| route | `0x8002` | `u8` | Selected boolean, exactly 0 or 1. |
-| route | `0x8003` | UTF-8, 1–48 bytes | Display name. |
-| volume manifest | `0x8001` | `u8` | Selected boolean, exactly 0 or 1. |
+| Kind | Tag | Type | Required | Meaning |
+|---|---:|---|---|---|
+| route | `0x8001` | `u8` | optional | Retention, using the Put values. |
+| route | `0x8002` | `u8` | optional | Selected boolean, exactly 0 or 1. |
+| route | `0x8003` | UTF-8, 1–48 bytes | optional | Display name. |
+| volume manifest | `0x8001` | `u8` | optional | Selected boolean, exactly 0 or 1. |
 
 Other kinds reject SetMetadata as unsupported. Ride import state changes only through its explicit
 command; trip name and stages change through payload replacement.
@@ -253,36 +321,42 @@ command; trip name and stages change through payload replacement.
 
 Catalog projection envelopes are at most 96 bytes and contain validator-derived bounded facts.
 
-| Kind | Tag | Type | Meaning |
-|---|---:|---|---|
-| route | `0x8001` | UTF-8, 1–48 bytes | Display name. |
-| route | `0x8002` | `u8` | Retention. |
-| route | `0x0003` | `u8` | Selected, optional. |
-| route | `0x0004` | `i64` | Trusted creation UTC, optional. |
-| trip | `0x8001` | UTF-8, 1–48 bytes | Display name. |
-| trip | `0x8002` | `u16` | Ordered stage count. |
-| ride | `0x8001` | `i64` | Start UTC. |
-| ride | `0x8002` | `u32` | Duration seconds. |
-| ride | `0x8003` | `u32` | Distance metres. |
-| ride | `0x8004` | `u8` | Imported acknowledgement boolean. |
-| weather | `0x8001` | `u64` | WeatherRequestId that produced the head. |
-| weather | `0x8002` | `i64` | Issued UTC. |
-| weather | `0x8003` | `i64` | Valid-until UTC. |
-| volume manifest | `0x8001` | UTF-8, 1–32 bytes | Display name. |
-| volume manifest | `0x8002` | `u8` | Selected boolean. |
-| volume manifest | `0x8003` | `u16` | Referenced part count. |
-| update package | `0x8001` | UTF-8, 1–24 bytes | Validated semantic version. |
-| update package | `0x8002` | `u8` | State. |
-| update package | `0x8003` | 32 bytes | Validated image digest. |
+| Kind | Tag | Type | Required | Meaning |
+|---|---:|---|---|---|
+| route | `0x8001` | UTF-8, 1–48 bytes | required | Display name. |
+| route | `0x8002` | `u8` | required | Retention. |
+| route | `0x0003` | `u8` | optional | Selected. |
+| route | `0x0004` | `i64` | optional | Trusted creation UTC. |
+| trip | `0x8001` | UTF-8, 1–48 bytes | required | Display name. |
+| trip | `0x8002` | `u16` | required | Ordered stage count. |
+| ride | `0x8001` | `i64` | required | Start UTC. |
+| ride | `0x8002` | `u32` | required | Duration seconds. |
+| ride | `0x8003` | `u32` | required | Distance metres. |
+| ride | `0x8004` | `u8` | required | Imported acknowledgement boolean. |
+| weather | `0x8001` | `u64` | required | WeatherRequestId that produced the head. |
+| weather | `0x8002` | `i64` | required | Issued UTC. |
+| weather | `0x8003` | `i64` | required | Valid-until UTC. |
+| volume manifest | `0x8001` | UTF-8, 1–32 bytes | required | Display name. |
+| volume manifest | `0x8002` | `u8` | required | Selected boolean. |
+| volume manifest | `0x8003` | `u16` | required | Referenced part count. |
+| update package | `0x8001` | UTF-8, 1–24 bytes | required | Validated semantic version. |
+| update package | `0x8002` | `u8` | required | State. |
+| update package | `0x8003` | 32 bytes | required | Validated image digest. |
+
+A required catalog field is present in every projection of that kind; the two optional route fields
+are present only when the device holds the fact, and a reader treats their absence as unknown rather
+than as a default value.
 
 Update states are VerifiedReady `1`, installRequested `2`, trial `3`, confirmed `4`, rolledBack
 `5`, and failed `6`.
 
-## 5. Result outcomes
+## 5. ObjectResult outcomes
 
-Logical `OperationResult` outcomes are committed `0`, committedSupersededWeather `1`, deleted `2`,
-metadataChanged `3`, updateInstallRequested `4`, and rideImported `5`. `DraftPartResult` is a
-different message type and has no logical outcome, ID, or Revision fields.
+`ObjectResult` is the wire body carrying a logical terminal outcome, and these are its outcomes:
+committed `0`, deleted `2`, metadataChanged `3`, updateInstallRequested `4`, and rideImported `5`.
+Value `1` was `committedSupersededWeather`; it is registered, reserved, and never emitted, because a
+weather bundle either answers the current request and commits as `committed` or is rejected.
+`DraftPartResult` is a different message type and has no logical outcome, ID, or Revision fields.
 
 Storage-local `DomainResult` outcomes are weatherRequestChanged `1` and updateStateChanged `2`.
 They use a device-local authenticated principal and remain subject to the same claim/result atomicity
@@ -294,17 +368,22 @@ The error body's detail namespace is its ObjectKind, or common namespace `0`. A 
 details listed here; clients may display but do not parse diagnostic text.
 
 Common framing, ownership, snapshot, and retry details are owned by the wire contract. This file
-allocates only ObjectKind-scoped semantic-validation details.
+allocates only ObjectKind-scoped semantic-validation details. The device-control operations of the
+wire contract are outside the object system and therefore allocate no namespace here: they report
+only common-namespace details, and a device-control failure never carries an ObjectKind. That
+includes the one `semanticValidation` refusal they use — `clockRegression`, which the wire contract
+registers in namespace zero — so a decoder that sees `semanticValidation` with namespace zero is
+looking at a device-control refusal, not at a domain that forgot its kind.
 
 | Namespace | Code | Detail | Terminal? |
 |---|---:|---|---|
 | route | 1 | invalidRouteFormat | yes |
-| route | 2 | missingTripRoute | yes |
 | trip | 1 | invalidTripFormat | yes |
 | trip | 2 | duplicateRouteReference | yes |
+| trip | 3 | missingTripRoute | yes |
 | ride | 1 | invalidRideFormat | yes |
 | ride | 2 | alreadyImported | no; same semantic state returns retained success when same operation |
-| weather | 1 | supersededNotUseful | yes |
+| weather | 1 | supersededNotUseful | reserved; never emitted — a stale bundle is `requestMismatch` |
 | weather | 2 | coverageMismatch | yes |
 | weather | 3 | staleBundle | yes |
 | weather | 4 | payloadFactsMismatch | yes |
@@ -325,6 +404,7 @@ allocates only ObjectKind-scoped semantic-validation details.
 | update package | 7 | unsafeRuntimeState | no |
 | update package | 8 | notVerifiedReady | yes |
 
+A row marked reserved is registered so its number stays burned and is never sent by a v3.0 device.
 Format, signature, target, digest, downgrade, request mismatch, and semantic validation failures are
 terminal Aborted after the OperationId has been durably claimed. Transient power/runtime, media,
 owner, and recovery conditions do not terminally claim a new command; their required retry
@@ -341,8 +421,19 @@ its committed result. A different acknowledgement intent observes normal revisio
 An update upload publishes only VerifiedReady after signature, digest, target, version/downgrade,
 and size validation. A separate authenticated and authorized `InstallUpdate` may automatically arm
 and reboot without physical confirmation once power/runtime safety also passes. Transfer CRC is
-never trust. Bootloader revalidation, trial boot, application health confirmation, and rollback
-remain mandatory.
+never trust.
+
+Version monotonicity is a mandatory admission check rather than a host courtesy: the device compares
+the pinned package's version against the running image's and refuses anything not strictly newer
+with `downgradeDenied`. Runtime safety is enumerated, not left to taste: admission refuses with
+`unsafeRuntimeState` while a ride is being tracked or unsaved ride data has not reached durable
+storage, and with `unsafePowerState` below the device's install threshold.
+
+The trust boundary follows the update-image contract. The **application** independently verifies the
+package's Ed25519 signature and digest before arming; the **bootloader** independently revalidates
+the package's structure and CRC framing and enforces trial boot, application health confirmation,
+and rollback. Those bootloader obligations are mandatory, and cryptographic signature verification
+is not among them.
 
 Every observed post-reboot state—trial, confirmed, rolledBack, or failed—is applied by a fresh
 device-local update operation. Its one terminal commit updates the package head's catalog metadata,
