@@ -399,6 +399,97 @@ describe("transcripts replay", () => {
     });
 });
 
+/**
+ * The storage half of the suite (`Device_Object_Vectors_v2.md` §6).
+ *
+ * These files are OBC2 on-card records — checkpoints, journal slots, WORK and RIDE slots, the ARM
+ * handoff, `INIT.REC`, resolution generations — and there is deliberately no TypeScript codec for
+ * them: the on-card format is private to `CardStore`, and no client ever sees one. Their decode
+ * guard lives with the Rust producer that owns their bytes.
+ *
+ * What this side can prove, and what matters for a *cross-language* fixture, is that the encoding
+ * those files use is readable outside Rust. A case states its `length` and the non-zero `runs`
+ * inside it — because a 65,536-byte checkpoint written out as hex would be unreviewable — so
+ * reconstruction has to be mechanical: allocate the zeros, splice the runs in, and land on the
+ * stated digest. If that ever stops holding, the files have become Rust-private and are no longer
+ * a contract.
+ */
+describe("storage vectors are reconstructable outside Rust", () => {
+    interface StorageCase {
+        name: string;
+        subject: string;
+        length: number;
+        sha256: string;
+        reject: string | null;
+        runs: { offset: number; hex: string }[];
+    }
+
+    const recordRows = MANIFEST.storage.filter((row) => row.name !== "crash-cut-transcripts");
+
+    it.each(recordRows.map((row) => [row.name, row] as const))("%s", (_name, row) => {
+        const file = fixture<{ kind: string; storage_format: number; caseCount: number; cases: StorageCase[] }>(row);
+        expect(file.kind).toBe("storage");
+        expect(file.storage_format).toBe(MANIFEST.storage_format);
+        expect(file.cases.length).toBe(file.caseCount);
+        expect(file.cases.length).toBeGreaterThan(0);
+
+        for (const record of file.cases) {
+            const where = `${row.name}/${record.name}`;
+            const bytes = new Uint8Array(record.length);
+            for (const run of record.runs) {
+                const chunk = hexToBytes(run.hex);
+                expect(run.offset + chunk.length, `${where}: run past the record`).toBeLessThanOrEqual(record.length);
+                bytes.set(chunk, run.offset);
+            }
+            expect(createHash("sha256").update(bytes).digest("hex"), where).toBe(record.sha256);
+            // A run is non-zero at both ends, or the encoding is not canonical and two producers
+            // could emit different files for the same bytes.
+            for (const run of record.runs) {
+                const chunk = hexToBytes(run.hex);
+                expect(chunk.length, `${where}: empty run`).toBeGreaterThan(0);
+                expect(chunk[0], `${where}: run starts on a zero`).not.toBe(0);
+                expect(chunk[chunk.length - 1], `${where}: run ends on a zero`).not.toBe(0);
+            }
+        }
+    });
+
+    it("crash-cut-transcripts", () => {
+        const row = MANIFEST.storage.find((entry) => entry.name === "crash-cut-transcripts");
+        expect(row, "the transcript file is missing from the manifest").toBeDefined();
+        const file = fixture<{
+            kind: string;
+            transcriptCount: number;
+            transcripts: {
+                name: string;
+                stepCount: number;
+                cutPoints: number;
+                steps: { op: number; file: string; kind: string; offset: number; length: number }[];
+                admissibleOutcomes: string[];
+            }[];
+        }>(row!);
+        expect(file.kind).toBe("storage");
+        expect(file.transcripts.length).toBe(file.transcriptCount);
+        for (const transcript of file.transcripts) {
+            const where = transcript.name;
+            expect(transcript.steps.length, where).toBe(transcript.stepCount);
+            // Every operation is cut at three positions: before it reaches the card, during it, and
+            // after it returns.
+            expect(transcript.cutPoints, where).toBe(transcript.stepCount * 3);
+            expect(transcript.admissibleOutcomes.length, where).toBeGreaterThan(1);
+            transcript.steps.forEach((step, index) => {
+                expect(step.op, `${where} step ${index}`).toBe(index + 1);
+                expect(["write", "sync"], `${where} step ${index}`).toContain(step.kind);
+                if (step.kind === "sync") {
+                    expect(step.offset, `${where} step ${index}`).toBe(0);
+                    expect(step.length, `${where} step ${index}`).toBe(0);
+                }
+            });
+            // A commit path ends at a sync: the gate is durable only once it returns.
+            expect(transcript.steps[transcript.steps.length - 1].kind, where).toBe("sync");
+        }
+    });
+});
+
 describe("the drift guard", () => {
     it("exercises every fixture the manifest lists", () => {
         const listed = [
