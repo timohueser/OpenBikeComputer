@@ -584,7 +584,12 @@ Disposition already terminal `1` is `u8 disposition`, three reserved bytes, then
 ResultEnvelope from Section 10. A same-intent in-progress operation receives a fresh SessionId
 bound to the current connection and the same reservation/work; issuing it atomically revokes any
 SessionId previously bound to that work, so at most one session is ever live for one work record.
-Frames bearing the revoked identifier are stale and handled by Section 13's discard rule. A retained
+Frames bearing the revoked identifier are stale and handled by Section 13's discard rule. On a
+restart-only device this applies to live in-RAM work as well as to durable work: the work is
+discarded, the acceptance carries restart-at-zero with durable next offset zero, and the previously
+issued SessionId is revoked in the same step. A device MUST NOT refuse a same-intent StartUpload
+with `busy/heavyTransfer` merely because that same operation already owns the transfer coordinator,
+and MUST NOT let busy or a resource limit precede the idempotency lookup of Section 11. A retained
 Aborted operation does not use a disposition: it returns a `response|error` control frame containing
 exactly its bare 48-byte, text-free terminal ErrorBody. No stream session is created for either
 terminal replay.
@@ -662,6 +667,12 @@ or AbortOperation, never concatenation onto an unverified prefix. The device's v
 without a further round trip: UploadAccepted, DraftPartAccepted, and the FinalizeDraft acceptance
 each carry the finalized prefix CRC of the durable next offset they report, and a checkpoint
 response carries it for every later checkpoint.
+
+A device shipping the restart-only profile of Section 6.1 MAY refuse CheckpointUpload with
+`unsupportedCapability/feature`, or MAY accept it and report the synchronized prefix. In the latter
+case the reported durable next offset is a progress fact only: Section 13's teardown rule still
+durably aborts the work, and no client may resume from it. Section 6.1's "no durable next offset
+above zero is ever reported" binds the three acceptances, not a checkpoint response.
 
 ### 6.3 FinishUpload
 
@@ -1554,8 +1565,17 @@ frames bearing one, sending neither data acknowledgement nor fault and never clo
 a late frame from a session the peer has already been told about is ordinary in-flight traffic, not
 an attack. The tombstone set is bounded by the sessions issued in one connection generation, which
 Section 3 already bounds and which a reconnect clears wholesale, since a new generation makes every
-earlier SessionId stale by the generation check alone. A SessionId that was never issued in this
-generation is untrusted framing and closes the stream transport, as below.
+earlier SessionId stale by the generation check alone. Issuance is scoped to the connection that
+received it. A SessionId this connection was never issued — including one currently live on another
+link kind, principal scope, or connection generation — is untrusted framing on this connection and
+closes its stream transport. Only the connection that owns a released SessionId keeps its tombstone;
+a frame bearing another connection's released identifier is likewise untrusted framing, never a
+silent discard.
+
+A receiver MAY implement the tombstone set as the half-open interval between the first SessionId it
+issued in this connection generation and its allocator's next value, since Section 3 makes that
+allocator monotonic. A bounded per-identifier history is not sufficient: truncating it turns
+ordinary in-flight traffic into a transport close, which this section forbids.
 
 For an owned, parseable stream frame with wrong offset, direction, or allowed payload size, the
 receiver sends a fault status before releasing that SessionId. A resumable upload is detached at
