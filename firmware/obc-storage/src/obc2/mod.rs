@@ -19,9 +19,10 @@
 //! ## What this deliberately is not
 //!
 //! It is not the engine. There is no `CardStore`, no transaction API, no lease table, no garbage
-//! collector, no compaction driver, and no FAT adapter here; those are the later slices of #1354,
-//! and the adapter seam of §13.1 is the last of them. Nothing in this module knows a filename: §3's
-//! `GEN`/`WORK` name mapping is the adapter's, and no rule here needs it.
+//! collector and no compaction driver; those are the later slices of #1354. The §13.1 adapter seam
+//! *is* here now — [`adapter`] over `embedded_sdmmc`, with [`geometry`] deciding §1.1's volume
+//! preconditions ahead of it — but it is only the media seam: it knows sectors, lengths and syncs,
+//! and still knows no filename. §3's `GEN`/`WORK` name mapping belongs to the store above it.
 //!
 //! It also holds no domain knowledge. §1: domain repositories "provide validated projections and
 //! immutable payloads"; the kernel owns byte counts, CRCs, ordering, publication and recovery, and
@@ -32,13 +33,17 @@
 //! [`limits`] is the capacity table everything is bounded by, and [`gate`] the 512 bytes that make
 //! a body a record. [`entries`] holds the projection rows; [`checkpoint`] and [`journal`] are the
 //! two containers that carry them. [`work`], [`handoff`], [`init`] and [`resolution`] are the
-//! remaining record shapes. [`model`] and [`recovery`] are the pure logic; [`media`] and
-//! [`vectors`] are host-only.
+//! remaining record shapes. [`model`] and [`recovery`] are the pure logic; [`geometry`],
+//! [`adapter`] and [`blocklog`] are the media seam; [`media`], [`fatsim`] and [`vectors`] are
+//! host-only.
 
+pub mod adapter;
+pub mod blocklog;
 pub mod checkpoint;
 pub mod entries;
 pub mod error;
 pub mod gate;
+pub mod geometry;
 pub mod handoff;
 pub mod init;
 pub mod journal;
@@ -49,6 +54,8 @@ pub mod recovery;
 pub mod resolution;
 pub mod work;
 
+#[cfg(any(test, feature = "std"))]
+pub mod fatsim;
 #[cfg(any(test, feature = "std"))]
 pub mod media;
 #[cfg(any(test, feature = "std"))]
