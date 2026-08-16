@@ -2017,3 +2017,194 @@ fn the_ble_link_completes_confirmed_indications_in_order_and_recovers_from_a_los
     narrow.link.deliver(LinkChannel::Control, &vec![0u8; 400]);
     assert_eq!(narrow.pump(), Err(crate::engine::LinkError::RecordTooLarge));
 }
+
+#[test]
+fn cancelling_the_live_upload_releases_its_session_and_retains_exactly_one_result() {
+    // The abort command's primary use: a client cancelling its own upload. §6.4 step 2 releases
+    // the target's work, so the session goes with it and nothing is left attached to a claim the
+    // store has already made terminal.
+    let mut driver = ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(2_016);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, &bytes[..1_008]));
+    driver.pump().unwrap();
+
+    let abort =
+        AbortOperation { operation_id: OP_ABORT, target_operation_id: OP_A, reason: AbortReason::ClientCancelled };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(abort), 4));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Abort(result)) => {
+            assert_eq!(result.disposition, crate::result::AbortDisposition::Cancelled);
+        }
+        other => panic!("expected the AbortResult, got {other:?}"),
+    }
+    assert!(driver.engine.live_session().is_none(), "the cancelled work's session is released");
+    assert!(driver.engine.active_upload().is_none(), "and the transfer with it");
+
+    // The next payload frame bears a session this connection released in this generation, which
+    // §13 makes an ordinary in-flight straggler: discarded in silence, never a fault, never a close.
+    let streams = driver.link.sent(LinkChannel::Stream).len();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 1_008, &bytes[1_008..2_016]));
+    driver.pump().unwrap();
+    assert_eq!(driver.link.sent(LinkChannel::Stream).len(), streams, "no fault frame");
+    assert!(!driver.link.is_closed(LinkChannel::Stream));
+
+    // Exactly two terminal results exist — the cancelled target and the abort command itself — and
+    // no second result was retained for the target.
+    assert_eq!(driver.transaction.retained_results(), 2);
+    assert!(driver.transaction.retains(OP_A) && driver.transaction.retains(OP_ABORT));
+    driver
+        .link
+        .deliver(LinkChannel::Control, &record(&Request::QueryOperation(QueryOperation { operation_id: OP_A }), 5));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::OperationStatus(OperationStatus::Aborted(body)) => {
+            assert_eq!(body.category, ErrorCategory::CANCELLED);
+            assert_eq!(body.detail, u16::from(AbortReason::ClientCancelled.to_u8()));
+        }
+        other => panic!("expected the target's retained Aborted, got {other:?}"),
+    }
+
+    // A heavy transfer can start again immediately: the coordinator is free.
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_B, Target::Create, &bytes, metadata)), 6),
+    );
+    driver.pump().unwrap();
+    assert!(driver.engine.live_session().is_some());
+}
+
+#[test]
+fn a_mutation_dropped_mid_chain_still_reaches_a_terminal_state() {
+    // §11: "A claim cannot be forgotten before terminal state." The claim is durable and the
+    // connection dies between `Validate` and `Publish`, so the outcome that lands afterwards is
+    // stale — and must still abandon the claim rather than leave it live for ever.
+    let mut engine = Engine::new(profile());
+    let mut transaction = FakeTransaction::new(STORE);
+    let context = context(LinkKind::Usb, 1);
+    engine.open_connection(context, LinkCeilings { control_frame: 512, stream_frame: 4_096 });
+    let mut out = [0u8; MAX_STREAM_FRAME];
+    let mut scratch = [0u8; MAX_STREAM_FRAME];
+    let hello_record = record(&Request::Hello(hello(PageKind::Resources, 0)), 1);
+    assert!(matches!(engine.on_control(context, &hello_record, &mut out), Reaction::Emit { .. }));
+
+    let existing = payload(64);
+    let (logical_object_id, revision) = transaction.publish_local(ObjectKind::Route, &existing);
+    let delete = DeleteObject {
+        target: MutationTarget {
+            operation_id: OP_B,
+            kind: ObjectKind::Route,
+            logical_object_id,
+            expected_revision: revision,
+        },
+    };
+    let delete_record = record(&Request::DeleteObject(delete), 2);
+    let mut reaction = engine.on_control(context, &delete_record, &mut out);
+    // Walk to the validate step and stop there.
+    let validate = loop {
+        match reaction {
+            Reaction::Work(Command::Validate { operation_id }) => break Command::Validate { operation_id },
+            Reaction::Work(command) => {
+                let outcome = transaction.execute(command, &mut scratch);
+                reaction = engine.resume(context, outcome, &mut out);
+            }
+            other => panic!("expected the validate step, got {other:?}"),
+        }
+    };
+    assert!(!transaction.retains(OP_B), "the claim is live, not terminal");
+
+    engine.close_connection(context);
+    let outcome = transaction.execute(validate, &mut scratch);
+    let reaction = engine.resume(context, outcome, &mut out);
+    let Reaction::Work(Command::Abort { operation_id, .. }) = reaction else {
+        panic!("expected the orphaned claim to be abandoned, got {reaction:?}")
+    };
+    assert_eq!(operation_id, OP_B);
+    let outcome = transaction.execute(Command::Abort { operation_id, cause: AbortCause::LinkLost }, &mut scratch);
+    assert_eq!(engine.resume(context, outcome, &mut out), Reaction::Idle);
+    assert_eq!(transaction.retained_results(), 1);
+    assert!(transaction.retains(OP_B));
+    assert_eq!(
+        transaction.head(ObjectKind::Route, logical_object_id).map(|(revision, _, _)| revision),
+        Some(revision),
+        "the head is untouched: the mutation never published"
+    );
+}
+
+#[test]
+fn two_connections_that_drop_with_claims_in_flight_both_reach_a_terminal_state() {
+    // One outstanding command per link means two links can leave two durable claims behind, so the
+    // orphan slot is per link kind: remembering only one would leak the other.
+    let mut engine = Engine::new(profile());
+    let mut transaction = FakeTransaction::new(STORE);
+    let over_ble = context(LinkKind::Ble, 1);
+    let over_usb = context(LinkKind::Usb, 1);
+    engine.open_connection(over_ble, LinkCeilings { control_frame: 244, stream_frame: 1_024 });
+    engine.open_connection(over_usb, LinkCeilings { control_frame: 512, stream_frame: 4_096 });
+    let mut out = [0u8; MAX_STREAM_FRAME];
+    let mut scratch = [0u8; MAX_STREAM_FRAME];
+    for link in [over_ble, over_usb] {
+        let hello_record = record(&Request::Hello(hello(PageKind::Resources, 0)), 1);
+        assert!(matches!(engine.on_control(link, &hello_record, &mut out), Reaction::Emit { .. }));
+    }
+
+    let existing = payload(48);
+    let (first_id, first_revision) = transaction.publish_local(ObjectKind::Route, &existing);
+    let (second_id, second_revision) = transaction.publish_local(ObjectKind::Route, &existing);
+
+    // Each link claims a mutation and stops with the claim durable.
+    let mut in_flight = vec![];
+    for (link, operation_id, logical_object_id, revision, request_id) in
+        [(over_ble, OP_A, first_id, first_revision, 2u32), (over_usb, OP_B, second_id, second_revision, 3)]
+    {
+        let delete = DeleteObject {
+            target: MutationTarget {
+                operation_id,
+                kind: ObjectKind::Route,
+                logical_object_id,
+                expected_revision: revision,
+            },
+        };
+        let delete_record = record(&Request::DeleteObject(delete), request_id);
+        let mut reaction = engine.on_control(link, &delete_record, &mut out);
+        loop {
+            match reaction {
+                Reaction::Work(Command::Validate { operation_id }) => {
+                    in_flight.push((link, Command::Validate { operation_id }));
+                    break;
+                }
+                Reaction::Work(command) => {
+                    let outcome = transaction.execute(command, &mut scratch);
+                    reaction = engine.resume(link, outcome, &mut out);
+                }
+                other => panic!("expected the validate step, got {other:?}"),
+            }
+        }
+    }
+    assert_eq!(transaction.retained_results(), 0, "two live claims, no results yet");
+
+    // Both connections drop, then both outcomes land.
+    engine.close_connection(over_ble);
+    engine.close_connection(over_usb);
+    for (link, command) in in_flight {
+        let outcome = transaction.execute(command, &mut scratch);
+        let Reaction::Work(Command::Abort { operation_id, .. }) = engine.resume(link, outcome, &mut out) else {
+            panic!("every orphaned claim is abandoned")
+        };
+        let outcome = transaction.execute(Command::Abort { operation_id, cause: AbortCause::LinkLost }, &mut scratch);
+        assert_eq!(engine.resume(link, outcome, &mut out), Reaction::Idle);
+    }
+    assert_eq!(transaction.retained_results(), 2, "both claims reached a terminal state");
+    assert!(transaction.retains(OP_A) && transaction.retains(OP_B));
+}
