@@ -233,8 +233,9 @@ impl VolumeGeometry {
     /// verdict and [`region`](Self::region)'s classification of a write log, would be wrong in a way
     /// nothing else could notice. This is the one place that can notice.
     fn invariants_hold(&self) -> bool {
-        let non_data = u32::from(self.reserved_sectors)
-            .checked_add(u32::from(self.fat_count) * self.fat_size_sectors)
+        let non_data = u32::from(self.fat_count)
+            .checked_mul(self.fat_size_sectors)
+            .and_then(|fats| fats.checked_add(u32::from(self.reserved_sectors)))
             .and_then(|sectors| sectors.checked_add(self.root_dir_sectors));
         let Some(non_data) = non_data else { return false };
         self.bytes_per_sector == 512
@@ -260,6 +261,12 @@ impl VolumeGeometry {
 /// declared sector size and cluster size that a real BPB would carry. Without this test the bytes at
 /// 446.. — boot code, in a VBR — are read as a partition table, and a fragment of the BPB or of that
 /// code becomes a partition type and a start LBA.
+///
+/// A real MBR would have to carry `0xEB`/`0xE9` at offset 0 *and* a power-of-two 512–4096 at 11..13
+/// *and* a power-of-two nonzero at 13 to be mistaken for one — and it would then be refused rather
+/// than misread, which is the direction this has to fail in. The device never formats a card, so a
+/// false positive costs a rider one unsupported-filesystem diagnostic; a false negative costs them a
+/// store written at an address taken from boot code.
 fn looks_like_a_volume_boot_record(sector: &[u8; 512]) -> bool {
     let jump = sector[0] == 0xEB || sector[0] == 0xE9;
     let bytes_per_sector = u16_le(sector, 11);
