@@ -1,0 +1,22 @@
+{
+  "name": "hello-at-the-192-byte-floor",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "Hello",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 12,
+    "requestId": 4
+  },
+  "boundary": "",
+  "note": "A client advertising exactly the two protocol minima.",
+  "payload": "0303c0004000000000000000",
+  "frame": "4f4243500300010000000c00040000000303c0004000000000000000"
+}

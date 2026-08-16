@@ -1,0 +1,14 @@
+{
+  "name": "stream-flag-on-a-data-direction",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Any nonzero flag on a data direction is rejected.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "malformedHeader",
+    "detailValue": 1
+  },
+  "bytes": "0100000000000000000000000100010101"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "start-upload-restart-at-zero",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 61,
+    "requestId": 16
+  },
+  "boundary": "",
+  "note": "Resume byte `0`: discard any durable work and stream from byte zero.",
+  "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000000000000000000000000000b80b00000000000085a9364601000100050001000180010000",
+  "frame": "4f4243500300000100003d0010000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000000000000000000000000000b80b00000000000085a9364601000100050001000180010000"
+}

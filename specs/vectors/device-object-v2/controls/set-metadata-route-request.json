@@ -1,0 +1,22 @@
+{
+  "name": "set-metadata-route-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "SetMetadata",
+    "value": 769
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 74,
+    "requestId": 111
+  },
+  "boundary": "",
+  "note": "Every present field is applied in one catalog commit; metadata never changes through a sidecar.",
+  "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000010080001e00030001800100030280010001038010004b6169736572737475686c206c6f6f70",
+  "frame": "4f4243500300010300004a006f000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000010080001e00030001800100030280010001038010004b6169736572737475686c206c6f6f70"
+}

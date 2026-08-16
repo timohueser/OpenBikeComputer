@@ -1,0 +1,22 @@
+{
+  "name": "finalize-accepted-resumed",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinalizeDraft",
+    "value": 306
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 64,
+    "requestId": 63
+  },
+  "boundary": "",
+  "note": "A resumed manifest stream reports its durable prefix and that prefix's CRC.",
+  "payload": "00000100c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c34100000002000000000000003200000000000000800000000000000000000400f0030000e0ac682400000000",
+  "frame": "4f42435003003201010040003f00000000000100c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c34100000002000000000000003200000000000000800000000000000000000400f0030000e0ac682400000000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "config-weather-refresh-above-4",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "configBlock",
+  "note": "A weather-refresh value above 4 is invalidDescriptor.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "01380000030005004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "query-draft-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "QueryDraft",
+    "value": 514
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 44,
+    "requestId": 90
+  },
+  "boundary": "",
+  "note": "The requested limit is 1 through 6 and the snapshot token is the draft revision.",
+  "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000600000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020200002c005a000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000600000000000000000000000000000000000000000000000000"
+}

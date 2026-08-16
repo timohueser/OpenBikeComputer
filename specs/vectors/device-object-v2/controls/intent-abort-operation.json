@@ -1,0 +1,15 @@
+{
+  "name": "intent-abort-operation",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "AbortOperation",
+    "value": 770
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 24,
+  "note": "The abort command's suffix is its target and reason, then seven zero bytes.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1002030100a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000000000000",
+  "sha256": "8ec5c4e6e2d0f91ddcd6e04ff5fc84284491fd7e2e45c0281b8a8a6e460f5215"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "frame-bad-magic",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "Bad magic is invalidFrame, not a descriptor fault.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "magic",
+    "detailValue": 3
+  },
+  "bytes": "5842435003000201000004000100000011000000"
+}

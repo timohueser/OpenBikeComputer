@@ -1,0 +1,14 @@
+{
+  "name": "stream-zero-session",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Every data frame carries a nonzero SessionId.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "0000000000000000000000000100010001"
+}

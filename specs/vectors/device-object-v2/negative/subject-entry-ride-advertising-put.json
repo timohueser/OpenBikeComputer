@@ -1,0 +1,14 @@
+{
+  "name": "subject-entry-ride-advertising-put",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "subjectEntry",
+  "note": "A `no` in the registry's lifecycle table is normative.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "0100030003000000010040000004000000000000"
+}

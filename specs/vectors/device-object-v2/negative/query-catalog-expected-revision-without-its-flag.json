@@ -1,0 +1,14 @@
+{
+  "name": "query-catalog-expected-revision-without-its-flag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryCatalogRequest",
+  "note": "With neither flag, both fields are zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f4243500300010200001c0001000000010000002a0000000000000000000000000000000000000000000000"
+}

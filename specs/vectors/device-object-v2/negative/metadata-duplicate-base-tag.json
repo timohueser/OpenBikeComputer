@@ -1,0 +1,14 @@
+{
+  "name": "metadata-duplicate-base-tag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "Base tags are unique; changing only the critical bit does not create another field.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "duplicateField",
+    "detailValue": 6
+  },
+  "bytes": "010080000a00020001800100010180010001"
+}

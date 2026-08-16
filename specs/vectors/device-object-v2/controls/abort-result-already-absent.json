@@ -1,0 +1,22 @@
+{
+  "name": "abort-result-already-absent",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "AbortOperation",
+    "value": 770
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 60,
+    "requestId": 32
+  },
+  "boundary": "",
+  "note": "Returned only when authorization can be established without leaking another principal's target.",
+  "payload": "03000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e53c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10200000000000000",
+  "frame": "4f4243500300020301003c002000000003000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e53c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10200000000000000"
+}

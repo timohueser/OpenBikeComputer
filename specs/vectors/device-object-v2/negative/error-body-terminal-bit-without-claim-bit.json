@@ -1,0 +1,14 @@
+{
+  "name": "error-body-terminal-bit-without-claim-bit",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "errorBody",
+  "note": "Bit 6 set with bit 5 clear MUST be rejected as a malformed body.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "110000000100000040000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

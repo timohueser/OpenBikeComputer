@@ -1,0 +1,22 @@
+{
+  "name": "error-unsupported-capability-opcode",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "ForgetBond",
+    "value": 1028
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "ForgetBond on a non-BLE link: the device clears command-flag bit 14 and answers unsupportedCapability/opcode.",
+  "payload": "020000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300040403003000c8000000020000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

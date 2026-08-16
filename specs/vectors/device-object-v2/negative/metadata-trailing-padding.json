@@ -1,0 +1,14 @@
+{
+  "name": "metadata-trailing-padding",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "Padding is forbidden.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "010001000700010001800100020000"
+}

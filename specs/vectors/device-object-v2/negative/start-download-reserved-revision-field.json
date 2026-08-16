@@ -1,0 +1,14 @@
+{
+  "name": "start-download-reserved-revision-field",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartDownloadRequest",
+  "note": "The eight bytes at offset 12 are burned too.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f4243500300100100001c000100000001000000090000000000000003000000000000000000000000000000"
+}

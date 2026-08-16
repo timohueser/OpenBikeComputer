@@ -1,0 +1,15 @@
+{
+  "name": "intent-start-draft-part",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "StartDraftPart",
+    "value": 305
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 40,
+  "note": "The child's own OperationId is the lookup key and is not repeated in the digest.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1031010100c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30200000007000000000000000000010000000000ccbbaa99",
+  "sha256": "1cb8f375a43dc49ead9371386bd73a45e0c80959f30cf4cd67cdfae823da1043"
+}

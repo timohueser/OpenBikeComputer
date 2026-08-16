@@ -1,0 +1,14 @@
+{
+  "name": "subject-entry-patch-version-other-than-128",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "subjectEntry",
+  "note": "A patch schema version other than 128 while that flag is set.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "010001000a000000000140000004000000000000"
+}

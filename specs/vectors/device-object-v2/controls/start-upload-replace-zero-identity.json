@@ -1,0 +1,22 @@
+{
+  "name": "start-upload-replace-zero-identity",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 116,
+    "requestId": 13
+  },
+  "boundary": "",
+  "note": "Replace mode with a zero LogicalObjectId and zero expected Revision: zero is a value, never a sentinel.",
+  "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b204000100000000000000000000000000000000008403000000000000cdab0000040001003c000600018008002a000000000000000280040000389c1c0380040040ed96040480040050c300000580080000f1536500000000068008008042556500000000",
+  "frame": "4f42435003000001000074000d000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b204000100000000000000000000000000000000008403000000000000cdab0000040001003c000600018008002a000000000000000280040000389c1c0380040040ed96040480040050c300000580080000f1536500000000068008008042556500000000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "frame-flags-on-a-request",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "Requests have no flags.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unsupportedFlags",
+    "detailValue": 8
+  },
+  "bytes": "4f42435003000201040004000100000011000000"
+}

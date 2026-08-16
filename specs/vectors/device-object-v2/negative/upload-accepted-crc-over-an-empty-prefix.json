@@ -1,0 +1,14 @@
+{
+  "name": "upload-accepted-crc-over-an-empty-prefix",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadResponse",
+  "note": "The finalized prefix CRC is zero when the durable next offset is zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f42435003000001010040000100000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000009000000000000002900000000000000000000000000000000000400f00300000700000000000000"
+}

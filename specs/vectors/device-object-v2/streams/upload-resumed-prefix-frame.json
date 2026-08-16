@@ -1,0 +1,12 @@
+{
+  "name": "upload-resumed-prefix-frame",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 18,
+  "offset": "262144",
+  "payloadLength": 4,
+  "direction": 1,
+  "flags": 0,
+  "note": "The frame a resumed client sends after comparing its retained prefix CRC against the acceptance's.",
+  "record": "1200000000000400000000000400010011223344"
+}

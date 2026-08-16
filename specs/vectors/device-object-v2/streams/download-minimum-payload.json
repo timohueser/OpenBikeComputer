@@ -1,0 +1,12 @@
+{
+  "name": "download-minimum-payload",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 17,
+  "offset": "4096",
+  "payloadLength": 1,
+  "direction": 2,
+  "flags": 0,
+  "note": "The one-byte minimum: data directions have nonempty payload.",
+  "record": "110000000010000000000000010002005a"
+}

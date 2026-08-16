@@ -1,0 +1,90 @@
+{
+  "name": "disconnect-reboot-and-resume",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "A disconnect after uncheckpointed bytes, a reboot, a resume from the last durable offset, and exactly one final publication.",
+  "eventCount": 9,
+  "events": [
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "A checkpoint makes the first granule durable.",
+      "record": "4f4243500300010100000c001e000000110000000000040000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Sequence 1, with the finalized CRC of exactly that prefix.",
+      "record": "4f42435003000101010014001e000000110000000000040000000000df9b571301000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "stream",
+      "note": "More bytes are sent and never checkpointed.",
+      "record": "11000000000004000000000000020100eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The link drops, then the device reboots. Payload beyond the last checkpoint may be discarded.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "StartUpload repeats the same OperationId and intent with resume permitted.",
+      "record": "4f4243500300000100003d0001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000100000000000000000000000000000000b80b00000000000085a9364601000100050001000180010002"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "Resumed-work is set, the durable next offset is the last checkpoint, and the acceptance carries that prefix's CRC.",
+      "record": "4f42435003000001010040000100000000000100a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11200000009000000000000002900000000000000000004000000000000000400f0030000df9b571300000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "stream",
+      "note": "The client compares its retained prefix CRC against the field and only then sends new bytes.",
+      "record": "1200000000000400000000000400010011223344"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "FinishUpload publishes exactly once.",
+      "record": "4f42435003000201000004000200000012000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "One terminal ObjectResult for the whole resumed transfer.",
+      "record": "4f42435003000201010044000200000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "error-semantic-validation-downgrade-denied",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "InstallUpdate",
+    "value": 784
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "Version monotonicity is a mandatory admission check, not a host courtesy.",
+  "payload": "0e0007000400000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300100303003000c80000000e0007000400000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

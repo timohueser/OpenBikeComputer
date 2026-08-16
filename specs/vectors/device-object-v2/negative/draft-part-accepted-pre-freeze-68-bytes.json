@@ -1,0 +1,14 @@
+{
+  "name": "draft-part-accepted-pre-freeze-68-bytes",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartDraftPartResponse",
+  "note": "The 68-byte pre-freeze twin MUST fail decode.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "truncated",
+    "detailValue": 6
+  },
+  "bytes": "4f4243500300310101004400010000000000000000000000000000000000000000000000000000000000000000000000000000000100000002000000000000000000000000000000000000000000000000000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "error-internal",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A stable category detail is reported when known.",
+  "payload": "16000000010002000100e803000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020103003000c800000016000000010002000100e803000000000000000000000000000000000000000000000000000000000000000000000000"
+}

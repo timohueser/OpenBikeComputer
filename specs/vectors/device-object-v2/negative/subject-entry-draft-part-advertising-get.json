@@ -1,0 +1,14 @@
+{
+  "name": "subject-entry-draft-part-advertising-get",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "subjectEntry",
+  "note": "A draft-part subject advertises put and optional resumable upload only.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "0200010003000000000000000004000000000000"
+}

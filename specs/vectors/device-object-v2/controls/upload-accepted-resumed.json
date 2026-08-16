@@ -1,0 +1,22 @@
+{
+  "name": "upload-accepted-resumed",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 64,
+    "requestId": 11
+  },
+  "boundary": "",
+  "note": "Resumed work: the finalized CRC covers exactly the durable prefix the response reports.",
+  "payload": "00000100a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000004000000000000000400f003000085a9364600000000",
+  "frame": "4f42435003000001010040000b00000000000100a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000004000000000000000400f003000085a9364600000000"
+}

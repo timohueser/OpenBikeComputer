@@ -1,0 +1,90 @@
+{
+  "name": "lost-result-then-query-operation",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "The committed terminal response is lost, the client reconnects, QueryOperation returns the exact retained result, and the retry creates no second commit.",
+  "eventCount": 9,
+  "events": [
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "FinishUpload on a session whose publication will succeed.",
+      "record": "4f42435003000201000004001400000011000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The publication commits durably; the response frame is lost on the link.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The link drops with the mutation outstanding.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "After reconnecting, QueryOperation is the first operation-bearing request.",
+      "record": "4f424350030000020000100001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "The exact retained result comes back; a lost response is unknown delivery, not a failed mutation.",
+      "record": "4f4243500300000201004800010000000200000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "Reissuing the same OperationId with identical intent must not write again.",
+      "record": "4f4243500300000100003d0002000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000100000000000000000000000000000000b80b00000000000085a9364601000100050001000180010002"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "Disposition 1 replays the same result; no generation and no second commit.",
+      "record": "4f4243500300000101004800020000000100000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "The same OperationId with a different intent is a hard conflict.",
+      "record": "4f4243500300000100003d0003000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000100000000000000000000000000000000b90b00000000000085a9364601000100050001000180010002"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "operationIdConflict, with both claim-status bits clear and new-ID guidance.",
+      "record": "4f424350030000010300300003000000130000000100080000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

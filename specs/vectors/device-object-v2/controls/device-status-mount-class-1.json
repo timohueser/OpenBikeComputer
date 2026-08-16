@@ -1,0 +1,22 @@
+{
+  "name": "device-status-mount-class-1",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "GetDeviceStatus",
+    "value": 1024
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 64,
+    "requestId": 120
+  },
+  "boundary": "",
+  "note": "The 64-byte status, pinned once per mount class; the StoreId field is zero except in classes 3, 4, and 6.",
+  "payload": "01000400020003000bc00123456789abcdef1032547698ba9c01000080510100000000000060000001000100b726000000000000000000000000000000000000",
+  "frame": "4f42435003000004010040007800000001000400020003000bc00123456789abcdef1032547698ba9c01000080510100000000000060000001000100b726000000000000000000000000000000000000"
+}

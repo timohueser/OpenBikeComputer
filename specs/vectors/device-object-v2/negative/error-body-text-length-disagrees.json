@@ -1,0 +1,14 @@
+{
+  "name": "error-body-text-length-disagrees",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "errorBody",
+  "note": "A text length that disagrees with the payload length is structural.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "payloadLength",
+    "detailValue": 4
+  },
+  "bytes": "1600000001000000000000000000000000000000000000000000000000000000000000000000000000000000000003006162"
+}

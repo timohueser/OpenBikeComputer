@@ -1,0 +1,22 @@
+{
+  "name": "error-invalid-descriptor-reserved-bits",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartDownload",
+    "value": 272
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "invalidDescriptor means a complete frame carries an illegal field value or reserved bit.",
+  "payload": "070000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300100103003000c8000000070000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

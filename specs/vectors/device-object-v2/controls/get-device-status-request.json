@@ -1,0 +1,22 @@
+{
+  "name": "get-device-status-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "GetDeviceStatus",
+    "value": 1024
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 0,
+    "requestId": 120
+  },
+  "boundary": "",
+  "note": "The request payload is empty.",
+  "payload": "",
+  "frame": "4f424350030000040000000078000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "object-result-reserved-superseded-weather-decode-only",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 68,
+    "requestId": 30
+  },
+  "boundary": "",
+  "note": "Outcome 1 is registered, reserved, and never emitted; it exists here as a decode-only row.",
+  "payload": "01000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100010009000000000000002b00000000000000b80b00000000000044332211",
+  "frame": "4f42435003000201010044001e00000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100010009000000000000002b00000000000000b80b00000000000044332211"
+}

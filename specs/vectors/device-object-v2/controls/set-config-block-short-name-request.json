@@ -1,0 +1,22 @@
+{
+  "name": "set-config-block-short-name-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "SetConfig",
+    "value": 1026
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 56,
+    "requestId": 122
+  },
+  "boundary": "",
+  "note": "A short name whose padding is zero.",
+  "payload": "01380000030502004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f42435003000204000038007a00000001380000030502004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

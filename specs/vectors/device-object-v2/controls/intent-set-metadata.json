@@ -1,0 +1,15 @@
+{
+  "name": "intent-set-metadata",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "SetMetadata",
+    "value": 769
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 58,
+  "note": "The patch envelope is part of the intent, byte for byte.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1001030100010009000000000000002a000000000000002600010080001e00030001800100030280010001038010004b6169736572737475686c206c6f6f70",
+  "sha256": "ee6285ba4eeb2b4a9ee6da3343b5820d6d67a8c23acc2bff68a6073675cda9c1"
+}

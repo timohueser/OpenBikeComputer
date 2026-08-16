@@ -1,0 +1,99 @@
+{
+  "name": "abort-session-retains-work-abort-operation-abandons-it",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "AbortSession retains resumable work; AbortOperation durably abandons it and repeating the command is idempotent.",
+  "eventCount": 10,
+  "events": [
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "AbortSession detaches the session, client-cancelled.",
+      "record": "4f4243500300200100000800280000001100000001000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Outcome 0: detached. A resumable upload keeps its durable work.",
+      "record": "4f42435003002001010001002800000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "QueryOperation still reports the claim as live.",
+      "record": "4f424350030000020000100029000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "InProgress, resumable, with no session attached.",
+      "record": "4f4243500300000201001c002900000001000000010005000100000009000000000000000000040000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "AbortOperation claims its own OperationId in the reserved cancellation slot.",
+      "record": "4f42435003000203000028002a000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10300000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The AbortResult is committed only after the target is durably Aborted.",
+      "record": "4f4243500300020301003c002a00000003000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e53c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Repeating the abort command is idempotent by its own OperationId.",
+      "record": "4f42435003000203000028002b000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10300000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The same AbortResult, unchanged.",
+      "record": "4f4243500300020301003c002b00000003000000e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e53c92000099164ebaabc2342fe08f6b10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The target itself never receives an AbortResult; its status is the retained bare body.",
+      "record": "4f42435003000002000010002c000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Aborted, cancelled/userRequested, both claim-status bits set.",
+      "record": "4f42435003000002010034002c00000003000000110000000300000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

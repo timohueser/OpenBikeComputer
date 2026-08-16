@@ -1,0 +1,22 @@
+{
+  "name": "draft-part-result-sealed",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 92,
+    "requestId": 31
+  },
+  "boundary": "",
+  "note": "A sealed part's result: no LogicalObjectId, no GenerationId, and the opaque ref that only sealing mints.",
+  "payload": "02000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d43c92000099164ebaabc2342fe08f6b10c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c35aa5112233445566778899000ff01ee10200000007000000000000000000010000000000ccbbaa99",
+  "frame": "4f4243500300020101005c001f00000002000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d43c92000099164ebaabc2342fe08f6b10c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c35aa5112233445566778899000ff01ee10200000007000000000000000000010000000000ccbbaa99"
+}
