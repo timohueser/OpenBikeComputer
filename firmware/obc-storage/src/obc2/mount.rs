@@ -164,13 +164,36 @@ pub const CREATION_ORDER: [FixedFile; 7] = [
 /// The directories initialization creates, in order. Four, not 516: the 512 shard leaves are lazy.
 pub const CREATION_DIRECTORIES: [&str; 4] = ["OBC2", "GEN", "WORK", "IMPORT"];
 
+/// What kind of `/OBC2` entry a mount observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// An ordinary file.
+    File,
+    /// A subdirectory.
+    Directory,
+}
+
 /// One `/OBC2` directory entry a mount observed, in FAT physical order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry<'a> {
     /// The 8.3 name, uppercase.
     pub name: &'a str,
-    /// The recorded length.
+    /// Whether it is a file or a directory.
+    pub kind: EntryKind,
+    /// The recorded length. Zero for a directory.
     pub len: u32,
+}
+
+impl<'a> Entry<'a> {
+    /// An ordinary file entry.
+    pub const fn file(name: &'a str, len: u32) -> Self {
+        Entry { name, kind: EntryKind::File, len }
+    }
+
+    /// A subdirectory entry.
+    pub const fn directory(name: &'a str) -> Self {
+        Entry { name, kind: EntryKind::Directory, len: 0 }
+    }
 }
 
 /// What a mount observed of an existing `/OBC2`.
@@ -262,20 +285,26 @@ pub enum Prefix {
 
 /// §12's pre-birth prefix test.
 ///
-/// "the present files are an exact prefix of the creation order above, every present name has the
-/// specified type and at most its specified length, and no present slot has any valid OBC2 gate …
+/// "the present files are an exact prefix of the creation order above, **every present name has the
+/// specified type** and at most its specified length, and no present slot has any valid OBC2 gate …
 /// The final entry of that prefix may be short or incomplete: a cut during the zero-fill of
 /// `INIT.REC` or of any preallocated file leaves a truncated last file, which is a bounded restart
 /// case and not a foreign name."
 ///
+/// "the specified type" is why [`Entry`] carries a kind. A *directory* named `INIT.REC` is not a
+/// short `INIT.REC`: nothing this store's initialization does could produce one, so it is a foreign
+/// shape and fails closed rather than being deleted as an unowned prefix — and deletion is what the
+/// verdict authorizes, which is exactly why the distinction has to be made here.
+///
 /// The order is the FAT physical one, which is the order initialization created them; the caller
-/// must not sort.
+/// must not sort, and must not include directories of the skeleton or anything under `IMPORT`.
 pub fn prefix_verdict(files: &[Entry<'_>]) -> Prefix {
     if files.len() > CREATION_ORDER.len() {
         return Prefix::Foreign;
     }
     for (entry, expected) in files.iter().zip(CREATION_ORDER.iter()) {
-        if !entry.name.eq_ignore_ascii_case(expected.name) || entry.len > expected.len {
+        if entry.kind != EntryKind::File || !entry.name.eq_ignore_ascii_case(expected.name) || entry.len > expected.len
+        {
             return Prefix::Foreign;
         }
     }
@@ -471,7 +500,7 @@ mod tests {
     }
 
     fn entry(name: &str, len: u32) -> Entry<'_> {
-        Entry { name, len }
+        Entry::file(name, len)
     }
 
     /// §12's table, value by value. The wire contract reports these verbatim, so the discriminants
@@ -622,6 +651,28 @@ mod tests {
         let mut observed = shape(&files, Decision::NoCheckpoint);
         observed.any_valid_gate = true;
         assert_eq!(classify(None, Some(observed)), Outcome::RecoveryFailed(Fault::UnknownShape));
+    }
+
+    /// §12 requires "every present name has the specified **type**". A directory wearing a fixed
+    /// file's name is not a short file, and the difference matters because the verdict is what
+    /// authorizes deleting the prefix: nothing initialization does could produce it, so it fails
+    /// closed instead.
+    #[test]
+    fn a_directory_wearing_a_fixed_files_name_is_a_foreign_shape() {
+        for name in ["INIT.REC", "CAT0.CHK"] {
+            let files = [Entry::directory(name)];
+            assert_eq!(prefix_verdict(&files), Prefix::Foreign, "a directory named {name}");
+            assert_eq!(
+                classify(None, Some(shape(&files, Decision::NoCheckpoint))),
+                Outcome::RecoveryFailed(Fault::UnknownShape),
+            );
+        }
+        // And one part-way through an otherwise valid prefix fails it too.
+        let files = [entry("INIT.REC", SLOT_FILE_LEN as u32), Entry::directory("COMMIT.JNL")];
+        assert_eq!(prefix_verdict(&files), Prefix::Foreign);
+        // The same names as ordinary files are the ordinary restart case.
+        let files = [entry("INIT.REC", SLOT_FILE_LEN as u32), entry("COMMIT.JNL", 0)];
+        assert_eq!(prefix_verdict(&files), Prefix::Exact(2));
     }
 
     /// §12: "The final entry of that prefix may be short or incomplete: a cut during the zero-fill

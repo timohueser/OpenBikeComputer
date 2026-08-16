@@ -55,10 +55,14 @@ use super::raw::put_u32;
 /// update-handoff projection 240 bytes, which is larger. The bound's *shape* was right and its
 /// arithmetic was 32 bytes short. This constant is derived from the regions rather than restated
 /// from the prose, so the two cannot disagree silently again; the spec now says 240 too.
-pub const MAX_ENTRY_LEN: usize = super::limits::HANDOFF_REF_LEN;
+pub const MAX_ENTRY_LEN: usize = checkpoint::largest_entry();
 
-/// The figure §6.3 and §13 state for the entry stage, kept so the discrepancy above is a value a
-/// test can compare rather than a comment.
+/// The figure §6.3 and §13 originally stated for the entry stage, kept so the correction above is a
+/// value a test can compare rather than a comment.
+///
+/// It is still a real number and still the one that matters most often: 208 is the terminal-result
+/// entry, the largest of the *repeating* shapes and the one a pass stages 64 times. The handoff
+/// projection is larger and occurs once. §6.3 now says both.
 pub const SPEC_STATED_ENTRY_LEN: usize = TerminalResult::LEN;
 
 /// §6.3's complete staging bound: one entry plus one sector.
@@ -208,13 +212,13 @@ pub fn materialize<P: CheckpointPass>(index: &RamIndex, pass: &mut P) -> Result<
     })?;
 
     // §5.1's one exception: the result region is circular, so it is emitted in physical order and
-    // the ring's start and count decide which positions are occupied.
-    let mut occupant = [usize::MAX; MAX_TERMINAL_RESULTS];
-    for step in 0..index.results.len() {
-        occupant[(index.result_start + step) % MAX_TERMINAL_RESULTS] = step;
-    }
-    for (physical, &step) in occupant.iter().enumerate().take(checkpoint::RESULTS.capacity) {
-        if step == usize::MAX {
+    // the ring's start and count decide which positions are occupied. The occupancy is arithmetic
+    // rather than a table — a 512-byte scratch array to answer a question two additions and a
+    // modulo answer would be the largest single allocation in a pass whose whole point is that it
+    // has none.
+    for physical in 0..checkpoint::RESULTS.capacity {
+        let step = (physical + MAX_TERMINAL_RESULTS - index.result_start) % MAX_TERMINAL_RESULTS;
+        if step >= index.results.len() {
             emitter.zeros(checkpoint::RESULTS.entry)?;
             continue;
         }
@@ -487,20 +491,8 @@ mod tests {
     /// measurement and the prose disagree.
     #[test]
     fn the_pass_stages_one_entry_and_one_sector() {
-        // §5.1's regions, entry size by entry size. The largest is the update-handoff projection.
-        let regions = [
-            checkpoint::REPOSITORIES,
-            checkpoint::HEADS,
-            checkpoint::ACTIVE,
-            checkpoint::DRAFT_PARENT,
-            checkpoint::DRAFT_PARTS,
-            checkpoint::RETAINED,
-            checkpoint::RESULTS,
-            checkpoint::HANDOFF,
-            checkpoint::WEATHER,
-            checkpoint::RIDE,
-        ];
-        let largest = regions.iter().map(|region| region.entry).max().unwrap();
+        // §5.1's regions, entry size by entry size, from the one list `checkpoint` owns.
+        let largest = checkpoint::REGIONS.iter().map(|region| region.entry).max().unwrap();
         assert_eq!(largest, MAX_ENTRY_LEN);
         assert_eq!(MAX_ENTRY_LEN, 240, "the largest entry shape is the 240-byte handoff projection");
         assert_eq!(SPEC_STATED_ENTRY_LEN, 208, "§6.3 and §13 both state 208, which is the terminal result");
@@ -531,6 +523,48 @@ mod tests {
         }
     }
 
+    /// A claim that is never published, so its active row is still there when the body is written.
+    ///
+    /// Without one of these the active region is 1,152 bytes of zeros in every round and
+    /// `ActiveOperation::encode` never runs inside the proof at all — the generators publish
+    /// everything they claim, and a publication removes the row it claimed.
+    fn claim_only(model: &mut CatalogModel, tag: u8, reserved: bool) {
+        let mut operation = samples::OP_B;
+        operation[0] = tag;
+        operation[15] = if reserved { 0xFF } else { 0x00 };
+        let sequence = model.through_sequence + 1;
+        let mut record = samples::claim(1, sequence, 0, operation, model.next_generation + 1);
+        if reserved {
+            if let Some(super::super::journal::Change::Put(row)) = &mut record.mutation.active {
+                // §5.2 admits at most eight normal rows and exactly one reserved: the ninth row is
+                // only reachable through this flag.
+                row.flags |= super::super::entries::ActiveOperation::FLAG_RESERVED_SLOT;
+                row.phase = super::super::entries::OperationPhase::Aborting;
+            }
+        }
+        model.apply(&record).expect("a claim applies");
+    }
+
+    /// Adds one repository row in key order, skipping a kind the projection already holds — a
+    /// publication puts one for its own kind, so a generator that pushed blindly would produce a
+    /// duplicate key rather than a wider region.
+    fn insert_repository(model: &mut CatalogModel, kind: u16) {
+        if model.repositories.iter().any(|row| row.kind == kind) {
+            return;
+        }
+        let fresh = samples::repository(kind, u64::from(kind) + 1);
+        match model.repositories.iter().position(|row| row.kind > kind) {
+            Some(index) => {
+                let _ = model.repositories.push(fresh);
+                let last = model.repositories.len() - 1;
+                model.repositories[index..=last].rotate_right(1);
+            }
+            None => {
+                let _ = model.repositories.push(fresh);
+            }
+        }
+    }
+
     /// A populated store: every region occupied, the ring wrapped, and all three singletons present.
     #[test]
     fn a_populated_projection_streams_to_the_same_bytes() {
@@ -543,6 +577,17 @@ mod tests {
         }
         assert_eq!(model.results.len(), super::super::limits::MAX_TERMINAL_RESULTS, "the ring did not fill");
         assert!(model.result_start > 0, "the ring did not wrap, so physical order is not exercised");
+
+        // Two claims left open, one of them the reserved row, so the active region is occupied.
+        claim_only(&mut model, 0xA0, false);
+        claim_only(&mut model, 0xA1, true);
+        assert_eq!(model.actives.len(), 2);
+
+        // Several repository rows rather than the two the publications and `initial` leave behind.
+        for kind in [2u16, 6, 7, 9] {
+            insert_repository(&mut model, kind);
+        }
+        assert!(model.repositories.len() >= 6, "the repository region is barely occupied");
 
         model.draft_parent = Some(samples::parent());
         let mut part = samples::part(1);
@@ -557,6 +602,96 @@ mod tests {
         assert_streams_to_the_model(&model, &mut pass);
         assert_eq!(pass.head_reads, model.heads.len(), "one bounded read per head, and no more");
         assert_eq!(pass.result_reads, model.results.len(), "one bounded read per occupied ring entry");
+    }
+
+    /// Every region at its §2 capacity at once: 256 heads, all nine active rows, the full result
+    /// ring, 32 draft parts, eight retained entries, sixteen repository rows and all three
+    /// singletons.
+    ///
+    /// The boundary is where a forward pass is most likely to be wrong — every region's occupied
+    /// prefix reaches its last entry and no region emits a zero run at all, so an off-by-one in any
+    /// region's tiling shows up as a byte difference rather than as a coincidentally-zero match.
+    #[test]
+    fn a_projection_at_every_capacity_streams_to_the_same_bytes() {
+        use super::super::limits::{
+            MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS, MAX_DRAFT_PARTS, MAX_REPOSITORY_STATES, MAX_RETAINED_PREVIOUS,
+            MAX_TERMINAL_RESULTS,
+        };
+        let mut model = CatalogModel::initial(samples::STORE, 4);
+
+        // 256 heads and 300 results: the ring fills, wraps and evicts.
+        for step in 1..=MAX_CATALOG_HEADS as u64 {
+            let mut operation = samples::OP_A;
+            operation[0] = step as u8;
+            operation[1] = (step >> 8) as u8;
+            model.apply(&samples::claim(1, step * 2 - 1, 0, operation, model.next_generation + 1)).unwrap();
+            let mut head = samples::head(1, step);
+            head.generation = obc_link::ids::GenerationId::new(10_000 + step);
+            head.envelope_len = 8 + (step % 89) as u16;
+            model.apply(&samples::publish(1, step * 2, 0, operation, step, head)).unwrap();
+        }
+        assert_eq!(model.heads.len(), MAX_CATALOG_HEADS);
+        // 256 commits leave `result_start` back at zero, which is the one ring position a wrapped
+        // ring must not be pinned at: it is also the unwrapped state. A handful of replacements —
+        // publications that append a result without adding a head — carry it off the boundary.
+        for extra in 1..=13u64 {
+            let mut operation = samples::OP_A;
+            operation[0] = extra as u8;
+            operation[2] = 0x5A;
+            let sequence = model.through_sequence + 1;
+            model.apply(&samples::claim(1, sequence, 0, operation, model.next_generation + 1)).unwrap();
+            let mut head = samples::head(1, extra);
+            head.generation = obc_link::ids::GenerationId::new(40_000 + extra);
+            model
+                .apply(&samples::publish(1, sequence + 1, 0, operation, MAX_CATALOG_HEADS as u64 + extra, head))
+                .unwrap();
+        }
+        assert_eq!(model.results.len(), MAX_TERMINAL_RESULTS);
+        assert_eq!(model.result_start, (MAX_CATALOG_HEADS as u64 + 13) as usize % MAX_TERMINAL_RESULTS);
+        assert!(model.result_start > 0, "the ring did not wrap off the zero boundary");
+
+        // All nine active rows: eight normal and the one reserved.
+        for index in 0..MAX_ACTIVE_OPERATIONS {
+            claim_only(&mut model, 0xB0 + index as u8, index + 1 == MAX_ACTIVE_OPERATIONS);
+        }
+        assert_eq!(model.actives.len(), MAX_ACTIVE_OPERATIONS);
+
+        // Sixteen repository rows, sorted by kind — the region's whole capacity.
+        model.repositories.clear();
+        for kind in 0..MAX_REPOSITORY_STATES as u16 {
+            model.repositories.push(samples::repository(kind, u64::from(kind) + 1)).unwrap();
+        }
+
+        model.draft_parent = Some(samples::parent());
+        for key in 1..=MAX_DRAFT_PARTS as u64 {
+            let mut part = samples::part(key);
+            part.state = DraftPartState::Sealed;
+            part.generation = obc_link::ids::GenerationId::new(20_000 + key);
+            model.draft_parts.push(part).unwrap();
+        }
+        for generation in 0..MAX_RETAINED_PREVIOUS as u64 {
+            let mut entry = samples::retained(30_000 + generation);
+            entry.reasons = RetainedPrevious::REASON_UPDATE_ROLLBACK;
+            entry.lease_count = 0;
+            model.retained.push(entry).unwrap();
+        }
+        model.handoff = Some(samples::handoff_ref(9, super::super::handoff::HandoffPhase::Complete));
+        model.weather = Some(samples::weather());
+        model.ride = Some(samples::ride());
+
+        // Every region's occupied prefix is its capacity, so no region emits a zero entry.
+        let header = model.header();
+        assert_eq!(header.head_count as usize, MAX_CATALOG_HEADS);
+        assert_eq!(header.active_count as usize, MAX_ACTIVE_OPERATIONS);
+        assert_eq!(header.repository_count as usize, MAX_REPOSITORY_STATES);
+        assert_eq!(header.draft_part_count as usize, MAX_DRAFT_PARTS);
+        assert_eq!(header.retained_count as usize, MAX_RETAINED_PREVIOUS);
+        assert_eq!(header.result_count as usize, MAX_TERMINAL_RESULTS);
+
+        let mut pass = ModelPass::new(&model);
+        assert_streams_to_the_model(&model, &mut pass);
+        assert_eq!(pass.head_reads, MAX_CATALOG_HEADS);
+        assert_eq!(pass.result_reads, MAX_TERMINAL_RESULTS);
     }
 
     /// §6.3's newest-source rule, which is the whole point of the journal-slot reference: a head
@@ -586,7 +721,7 @@ mod tests {
         pass.carry_result(3, *after.results.last().unwrap());
         let mut index = super::super::index::RamIndex::project(&after);
         assert!(index.note_head_record(newer.key, 3));
-        assert!(index.note_result_record(3));
+        assert!(index.note_result_record(after.results.last().unwrap().commit_sequence, 3));
 
         let crc = materialize(&index, &mut pass).expect("the pass completes");
         let oracle = expected(&after);
@@ -599,6 +734,104 @@ mod tests {
         assert_eq!(streamed.envelope_len, 24);
         assert_ne!(streamed.flags & CatalogHead::FLAG_RESOLUTION_PRESENT, 0);
         assert_eq!(streamed.resolution, GenerationId::new(92));
+    }
+
+    /// The journal-carried sources, randomized: several heads and several results at once, over a
+    /// ring that has wrapped, against an active checkpoint that holds the *older* bytes.
+    ///
+    /// One hand-built case proves the path exists; it does not prove the pass picks the right source
+    /// for each of eight entries independently. This does, and it is discriminating in both
+    /// directions: a head sourced from the checkpoint streams a stale envelope and the byte compare
+    /// fails, and a result sourced from the checkpoint's ring is a *different operation's* result,
+    /// which the pass's own agreement check refuses outright.
+    #[test]
+    fn randomized_journal_carried_sources_win_over_the_checkpoint() {
+        let mut rng = 0x1BAD_C0DE_5EED_0007u64;
+        let mut next = || {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            rng.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+
+        for round in 0..16u64 {
+            // The active checkpoint: enough publications to wrap the 64-entry ring, plus the open
+            // claims the replayed records will terminate.
+            let mut active = CatalogModel::initial(samples::STORE, 4);
+            let published = 66 + next() % 40;
+            for step in 1..=published {
+                let mut operation = samples::OP_A;
+                operation[0] = step as u8;
+                operation[1] = round as u8;
+                active.apply(&samples::claim(1, step * 2 - 1, 0, operation, active.next_generation + 1)).unwrap();
+                let mut head = samples::head(1, step);
+                head.envelope_len = 8 + (next() % 89) as u16;
+                head.envelope[..head.envelope_len as usize].fill(0x11);
+                head.generation = GenerationId::new(50_000 + step);
+                active.apply(&samples::publish(1, step * 2, 0, operation, step, head)).unwrap();
+            }
+            assert!(active.result_start > 0, "round {round}: the ring did not wrap");
+
+            let replays = 1 + next() % (super::super::limits::MAX_NORMAL_ACTIVE_OPERATIONS as u64);
+            let mut operations = std::vec::Vec::new();
+            for index in 0..replays {
+                let mut operation = samples::OP_B;
+                operation[0] = index as u8;
+                operation[1] = round as u8;
+                let sequence = active.through_sequence + 1;
+                active.apply(&samples::claim(1, sequence, 0, operation, active.next_generation + 1)).unwrap();
+                operations.push(operation);
+            }
+            assert_eq!(active.actives.len(), replays as usize);
+
+            // The replayed suffix: each record publishes a head the checkpoint either holds with an
+            // older envelope or does not hold at all, and appends its own result.
+            let mut after = active.clone();
+            let mut pass = ModelPass::new(&active);
+            let mut carried_heads = std::vec::Vec::new();
+            let mut carried_results = std::vec::Vec::new();
+            for (index, operation) in operations.iter().enumerate() {
+                let slot = index as u16;
+                let replaces_existing = next() % 2 == 0;
+                let id = if replaces_existing { 1 + next() % published } else { published + 1 + index as u64 };
+                let mut head = samples::head(1, id);
+                head.envelope_len = 8 + (next() % 89) as u16;
+                head.envelope[..head.envelope_len as usize].fill(0xEE);
+                head.generation = GenerationId::new(60_000 + round * 100 + index as u64);
+                head.revision = obc_link::ids::Revision::new(1_000 + index as u64);
+                if next() % 3 == 0 {
+                    head.flags |= CatalogHead::FLAG_RESOLUTION_PRESENT;
+                    head.resolution = GenerationId::new(70_000 + index as u64);
+                }
+                let record =
+                    samples::publish(1, after.through_sequence + 1, slot, *operation, after.terminal_counter + 1, head);
+                after.apply(&record).expect("the replayed record applies");
+                let result = *after.results.last().expect("the record appended a result");
+                pass.carry(slot, head);
+                pass.carry_result(slot, result);
+                carried_heads.push((head.key, slot));
+                carried_results.push((result.commit_sequence, slot));
+            }
+
+            let mut index = super::super::index::RamIndex::project(&after);
+            for (key, slot) in &carried_heads {
+                assert!(index.note_head_record(*key, *slot), "round {round}: the head is not in the index");
+            }
+            for (commit_sequence, slot) in &carried_results {
+                assert!(
+                    index.note_result_record(*commit_sequence, *slot),
+                    "round {round}: the result was evicted before its reference was installed",
+                );
+            }
+
+            let crc = materialize(&index, &mut pass).unwrap_or_else(|error| {
+                panic!("round {round}: the pass refused a source it should have taken: {error:?}")
+            });
+            let oracle = expected(&after);
+            assert_eq!(pass.out.as_slice(), oracle.as_slice(), "round {round}: a stale source won");
+            assert_eq!(crc, checkpoint::body_crc(oracle.as_slice()));
+            checkpoint::validate_body(&pass.out).expect("the streamed body validates");
+        }
     }
 
     /// Randomized projections, streamed and compared byte for byte. This is the property the slice
@@ -615,11 +848,14 @@ mod tests {
 
         for round in 0..24u64 {
             let mut model = CatalogModel::initial(samples::STORE, 4);
-            let publications = 1 + next() % 80;
+            // Up to the 256-head capacity, so the region's occupied prefix is exercised across its
+            // whole range rather than only in its first third.
+            let publications = 1 + next() % 255;
             for step in 1..=publications {
                 let mut operation = samples::OP_A;
                 operation[0] = step as u8;
                 operation[1] = round as u8;
+                operation[2] = (step >> 8) as u8;
                 model.apply(&samples::claim(1, step * 2 - 1, 0, operation, model.next_generation + 1)).unwrap();
                 let kind = 1 + (next() % 3) as u16;
                 let mut head = samples::head(kind, step);
@@ -633,6 +869,21 @@ mod tests {
                     head.resolution = GenerationId::new(next() % 10_000);
                 }
                 model.apply(&samples::publish(1, step * 2, 0, operation, step, head)).unwrap();
+            }
+            // Claims left open, so the active region is genuinely occupied — a generator that
+            // published everything it claimed would emit 1,152 bytes of zeros here every round and
+            // never encode an active row at all. The last one takes the reserved ninth slot.
+            let open = next() % (super::super::limits::MAX_ACTIVE_OPERATIONS as u64 + 1);
+            for index in 0..open {
+                claim_only(
+                    &mut model,
+                    (0xC0 + index) as u8,
+                    index + 1 == super::super::limits::MAX_ACTIVE_OPERATIONS as u64,
+                );
+            }
+            // A varying number of repository rows, up to the region's capacity.
+            for kind in 0..(next() % super::super::limits::MAX_REPOSITORY_STATES as u64) as u16 {
+                insert_repository(&mut model, kind);
             }
             if next() % 2 == 0 {
                 model.draft_parent = Some(samples::parent());

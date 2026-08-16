@@ -127,6 +127,14 @@ impl ResultIndexEntry {
 /// `12,800 + 2,048 + 1,152 + 128 + 3,072 + 512`.
 pub const SECTION_13_FORMULA: usize = 19_712;
 
+/// The measured resident footprint §13 asks DOS2 to report and size its arena from.
+///
+/// Pinned exactly rather than bounded, so a field added to any resident table has to change this
+/// line and be argued for. It is a 64-bit-host figure: this type's only width-dependent members are
+/// the `usize` length each `heapless::Vec` carries and `result_start`, so a 32-bit target measures
+/// less, never more.
+pub const MEASURED_RESIDENT: usize = 19_848;
+
 /// The bounded resident index.
 #[derive(Debug, Clone)]
 pub struct RamIndex {
@@ -213,11 +221,15 @@ impl RamIndex {
         }
     }
 
-    /// Records that journal slot `slot` carries the record that appended the newest result.
+    /// Records that journal slot `slot` carries the record which appended the result at
+    /// `commit_sequence`.
     ///
-    /// Results are append-only, so this always names the last entry of the ring.
-    pub fn note_result_record(&mut self, slot: u16) -> bool {
-        match self.results.last_mut() {
+    /// Keyed by the commit sequence rather than by "the newest": a replayed suffix installs a
+    /// reference per record, and by the time the suffix is applied several of the ring's entries are
+    /// journal-carried at once. Returns false when the ring no longer holds that sequence, which the
+    /// 64-entry eviction makes an ordinary outcome rather than a caller mistake.
+    pub fn note_result_record(&mut self, commit_sequence: u64, slot: u16) -> bool {
+        match self.results.iter_mut().find(|entry| entry.commit_sequence == commit_sequence) {
             Some(entry) => {
                 entry.journal_slot = slot;
                 true
@@ -360,34 +372,35 @@ mod tests {
         assert!(size_of::<RetainedPrevious>() <= RetainedPrevious::LEN);
     }
 
-    /// The measured figure §13 asks for, held against its own formula.
+    /// The measured figure §13 asks for, **pinned**.
     ///
     /// The formula covers the head index, the result ring index and the four small tables. This
     /// type also holds what §6.3's pass needs and §13's enumeration does not name — the repository
     /// rows and the three singleton projections — plus the lease table, which §13 adds separately.
-    /// The assertion is an envelope rather than an equality because a struct's exact size is the
-    /// compiler's business; what must not drift is the total.
+    ///
+    /// Equality rather than an envelope: this is the number §13 records and the number an arena is
+    /// sized from, so a field added to any resident table has to move this line deliberately rather
+    /// than be absorbed by slack. The breakdown is printed so a change explains its own diff.
     #[test]
-    fn the_resident_index_fits_its_measured_envelope() {
+    fn the_resident_index_is_its_measured_footprint() {
         // The additions §13's formula does not enumerate, at their measured sizes.
         let singletons = size_of::<Option<HandoffRef>>()
             + size_of::<Option<WeatherState>>()
             + size_of::<Option<ActiveRide>>()
             + size_of::<Vec<RepositoryState, MAX_REPOSITORY_STATES>>();
         let leases = size_of::<LeaseTable>();
-        let envelope = SECTION_13_FORMULA + singletons + leases + 128;
         std::println!(
             "OBC2 resident index: {} bytes (§13 formula {SECTION_13_FORMULA}, singletons {singletons}, leases \
-             {leases}, envelope {envelope}); head entry {}, result entry {}",
+             {leases}); head entry {}, result entry {}",
             resident_bytes(),
             size_of::<HeadIndexEntry>(),
             size_of::<ResultIndexEntry>(),
         );
-        assert!(
-            resident_bytes() <= envelope,
-            "the resident index is {} bytes, above the {envelope}-byte envelope (§13 formula {SECTION_13_FORMULA} + \
-             {singletons} of singletons + {leases} of leases + 128 of scalars and lengths)",
+        assert_eq!(
             resident_bytes(),
+            MEASURED_RESIDENT,
+            "the resident index moved: §13's formula is {SECTION_13_FORMULA}, the singletons {singletons}, the lease \
+             table {leases}. Move MEASURED_RESIDENT and §13's recorded figure together.",
         );
         // And it is genuinely an index rather than a projection: a whole checkpoint body is 65,024
         // bytes and the reference model that holds one is far larger than this.

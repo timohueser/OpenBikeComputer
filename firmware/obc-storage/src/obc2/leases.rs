@@ -32,7 +32,7 @@ use obc_link::ids::{GenerationId, LogicalObjectId, Revision, SessionId};
 
 use super::entries::RetainedPrevious;
 use super::journal::Change;
-use super::limits::MAX_LEASES;
+use super::limits::{MAX_LEASES, MAX_RETAINED_PREVIOUS};
 
 /// The capability a reader holds. Opaque: its fields are private, so only this module can compare
 /// one against the table.
@@ -171,12 +171,25 @@ impl LeaseTable {
     /// Each released lease still owes its retention record, so the caller gets them back rather
     /// than the table quietly forgetting: §9 makes the decrement durable, and a connection that
     /// died is not an exemption from it.
+    ///
+    /// **Each release sees the table as the previous one left it.** Two leases of the same
+    /// connection on the same generation — the ordinary shape, since one BLE connection may hold all
+    /// four — must fold to a decrement and then a removal, not to two identical decrements. Folding
+    /// them against one unchanged snapshot would emit `Put(count - 1)` twice and leave a
+    /// `REASON_LIVE_LEASE` entry carrying a count no live lease justifies, which blocks collection
+    /// of those bytes until the next reboot clears it.
     pub fn close_connection(
         &mut self,
         connection: u32,
         retained: &[RetainedPrevious],
         out: &mut heapless::Vec<Change<RetainedPrevious, GenerationId>, MAX_LEASES>,
     ) -> usize {
+        debug_assert!(retained.len() <= MAX_RETAINED_PREVIOUS, "§2 bounds the retention table at eight entries");
+        let mut table: heapless::Vec<RetainedPrevious, MAX_RETAINED_PREVIOUS> = heapless::Vec::new();
+        for entry in retained.iter().take(MAX_RETAINED_PREVIOUS) {
+            let _ = table.push(*entry);
+        }
+
         let mut closed = 0;
         for slot in 0..MAX_LEASES {
             let Some(held) = self.slots[slot] else { continue };
@@ -190,7 +203,8 @@ impl LeaseTable {
                 session: held.session,
                 generation: held.generation,
             };
-            if let ReleaseEffect::Retention(change) = self.release(handle, retained) {
+            if let ReleaseEffect::Retention(change) = self.release(handle, &table) {
+                apply(&mut table, &change);
                 let _ = out.push(change);
             }
             closed += 1;
@@ -285,13 +299,45 @@ pub fn recovery_clear(entry: &RetainedPrevious) -> Option<Change<RetainedPreviou
 ///
 /// §9 bounds this at the retention capacity — eight records — and §6.3 counts those eight into the
 /// bounded recovery suffix.
+///
+/// The output vector is sized at that capacity, so a full table always fits. A push that failed
+/// would silently drop a record recovery still owes — the exact fault §9 calls out, since a lease
+/// bit cleared nowhere lets GC treat a generation the durable catalog still names as unreachable —
+/// so it is asserted rather than ignored. `out` is expected empty; appending to a non-empty vector
+/// is what would make a full table overflow it.
 pub fn recovery_suffix(
     retained: &[RetainedPrevious],
     out: &mut heapless::Vec<Change<RetainedPrevious, GenerationId>, { super::limits::MAX_RETAINED_PREVIOUS }>,
 ) {
+    debug_assert!(retained.len() <= MAX_RETAINED_PREVIOUS, "§2 bounds the retention table at eight entries");
+    debug_assert!(out.is_empty(), "the recovery suffix is collected into a fresh vector");
     for entry in retained {
         if let Some(change) = recovery_clear(entry) {
-            let _ = out.push(change);
+            let pushed = out.push(change).is_ok();
+            debug_assert!(pushed, "a retention record recovery owes was dropped for want of capacity");
+        }
+    }
+}
+
+/// Applies one emitted retention change to a working copy of the table, so the next release of the
+/// same batch decides against the state its predecessor produced rather than against the snapshot
+/// they all started from.
+fn apply(
+    table: &mut heapless::Vec<RetainedPrevious, MAX_RETAINED_PREVIOUS>,
+    change: &Change<RetainedPrevious, GenerationId>,
+) {
+    match change {
+        Change::Put(row) => {
+            if let Some(held) = table.iter_mut().find(|held| held.generation == row.generation) {
+                *held = *row;
+            }
+        }
+        Change::Remove(generation) => {
+            if let Some(index) = table.iter().position(|held| held.generation == *generation) {
+                // The table has no ordering rule among entries of one kind (§5.3), and this copy is
+                // a lookup structure rather than a body being encoded, so a swap is enough.
+                table.swap_remove(index);
+            }
         }
     }
 }
@@ -495,6 +541,84 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0], Change::Put(RetainedPrevious { lease_count: 1, ..retained[0] }));
         assert_eq!(records[1], Change::Remove(generation(43)));
+    }
+
+    /// M1's regression, and the ordinary device configuration rather than an exotic one: **one**
+    /// connection holding several leases on the same generation.
+    ///
+    /// Each release must decide against the table its predecessor produced. Folding all of them
+    /// against the snapshot they started from emits the same decrement twice and leaves an entry
+    /// carrying a live-lease count no live lease justifies — which keeps those bytes uncollectable
+    /// until a reboot clears the bit.
+    #[test]
+    fn several_leases_of_one_connection_on_one_generation_fold_to_a_removal() {
+        let mut table = LeaseTable::new();
+        for index in 0..MAX_LEASES {
+            table.pin(1, session(index as u32 + 1), generation(42)).unwrap();
+        }
+        let retained = [retention_for(&displaced(42), &table, 0).unwrap()];
+        assert_eq!(retained[0].lease_count, MAX_LEASES as u16);
+
+        let mut records = heapless::Vec::new();
+        assert_eq!(table.close_connection(1, &retained, &mut records), MAX_LEASES);
+        assert_eq!(table.live(), 0);
+        assert_eq!(records.len(), MAX_LEASES);
+        // Three decrements walking the count down, then the removal that frees the generation.
+        for (index, record) in records.iter().enumerate().take(MAX_LEASES - 1) {
+            assert_eq!(
+                *record,
+                Change::Put(RetainedPrevious { lease_count: (MAX_LEASES - 1 - index) as u16, ..retained[0] }),
+                "release {index} did not decide against its predecessor's table",
+            );
+        }
+        assert_eq!(
+            records[MAX_LEASES - 1],
+            Change::Remove(generation(42)),
+            "the last release of the last lease must free the entry",
+        );
+    }
+
+    /// The same fold when another reason holds the entry: the count still walks to zero and the
+    /// last record clears only the lease bit.
+    #[test]
+    fn several_leases_of_one_connection_clear_the_bit_and_leave_another_reason() {
+        let mut table = LeaseTable::new();
+        table.pin(5, session(1), generation(42)).unwrap();
+        table.pin(5, session(2), generation(42)).unwrap();
+        let retained = [retention_for(&displaced(42), &table, RetainedPrevious::REASON_UPDATE_ROLLBACK).unwrap()];
+
+        let mut records = heapless::Vec::new();
+        table.close_connection(5, &retained, &mut records);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], Change::Put(RetainedPrevious { lease_count: 1, ..retained[0] }),);
+        assert_eq!(
+            records[1],
+            Change::Put(RetainedPrevious {
+                lease_count: 0,
+                reasons: RetainedPrevious::REASON_UPDATE_ROLLBACK,
+                ..retained[0]
+            }),
+            "the rollback reason still holds the entry after the last lease goes",
+        );
+    }
+
+    /// Mixed generations under one connection stay independent: each generation's own count is what
+    /// walks down, and one reaching zero does not disturb another.
+    #[test]
+    fn closing_a_connection_folds_each_generation_independently() {
+        let mut table = LeaseTable::new();
+        table.pin(1, session(1), generation(42)).unwrap();
+        table.pin(1, session(2), generation(42)).unwrap();
+        table.pin(1, session(3), generation(43)).unwrap();
+        let retained =
+            [retention_for(&displaced(42), &table, 0).unwrap(), retention_for(&displaced(43), &table, 0).unwrap()];
+
+        let mut records = heapless::Vec::new();
+        assert_eq!(table.close_connection(1, &retained, &mut records), 3);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0], Change::Put(RetainedPrevious { lease_count: 1, ..retained[0] }));
+        assert_eq!(records[1], Change::Remove(generation(42)));
+        assert_eq!(records[2], Change::Remove(generation(43)));
     }
 
     /// §9's reboot rule: every entry carrying the live-lease bit gets one retention record, and
