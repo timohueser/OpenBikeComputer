@@ -881,11 +881,19 @@ order. For each entry the newest source wins:
   a per-head **journal-slot reference** the RAM index keeps for exactly this purpose — one `u16`
   physical slot index per catalog head, counted into section 13's budget, meaningful only within the
   selected epoch and reset by compaction;
-- otherwise both are copied across from the active checkpoint's stored bytes by one bounded
+- the one card-resident per-result field — the 208-byte terminal-result entry itself, of which
+  section 13 keeps only the `OperationId` and the commit sequence resident — is sourced the same
+  way, through a per-result journal-slot reference of the same shape and lifetime. A result appended
+  by a record replayed since the active checkpoint exists in no checkpoint at all, so "re-read from
+  card" can only mean re-read from that record. The reference is inside the budget section 13
+  already gives the ring: 32 bytes an entry against the 24 those two fields occupy;
+- otherwise all of them are copied across from the active checkpoint's stored bytes by one bounded
   read.
 
-Staging is bounded at one entry — at most 208 bytes, the largest entry shape — plus one 512-byte
-sector buffer. The body CRC accumulates across the pass, and step 4's gate is written last, so an
+Staging is bounded at one entry plus one 512-byte sector buffer. The entry stage is **240 bytes**,
+which is the update-handoff projection of section 5.1 and the largest entry shape in the body; the
+208-byte terminal result is the largest of the *repeating* shapes and is what a pass stages most
+often. The body CRC accumulates across the pass, and step 4's gate is written last, so an
 interrupted pass leaves an invalid checkpoint rather than a half-new one. Mount therefore never
 needs envelopes resident, and a `QueryCatalog` envelope read — or a garbage collector's read of a
 head's resolution `GenerationId` — is served from the active checkpoint file overlaid by any
@@ -1455,6 +1463,10 @@ The plan proves all applicable conditions:
   most 262,144 bytes at the 32 KiB maximum this format admits;
 - enough transient FAT handles for the complete operation at its worst step, including payload,
   WORK, journal/checkpoint, and any already pinned readers or mounted map files;
+- the `GEN` and `WORK` shard directories the reserved generation lands in, which section 12 creates
+  on first use. Both are one bounded `make_dir` on a possibly already-present directory, they are
+  performed after the plan is proved and before the payload or WORK file is created, and their
+  cluster cost is part of the directory growth the free-cluster condition above accounts for;
 - no prepared/armed update handoff, and enough OBCU extents, app-slot space, rollback resources,
   and one of the four WORK slots when a rollback snapshot is required, for InstallUpdate.
 
@@ -1479,18 +1491,29 @@ the entire resource plan are rechecked under that lock immediately before the jo
 Absence of `OBC2` is the normal fresh-card state, and is distinct from the unsupported-filesystem
 class of section 1.1, which never initializes anything. Initialization creates entries in this fixed
 order: the `OBC2` directory; `INIT.REC` written to its full 16,384 bytes; its valid witness gate;
-`GEN` and its shards
-in numeric order; `WORK` and its shards; `IMPORT`; COMMIT, ARM0, ARM1, RIDE, CAT0, and CAT1; then
+`GEN`; `WORK`; `IMPORT`; COMMIT, ARM0, ARM1, RIDE, CAT0, and CAT1; then
 the first checkpoint. `make_dir` on an already-present empty directory at any level is not an error and does
 not restart the order; a directory skeleton left by an earlier attempt or by store reset is reused
-in place. It generates all 128 StoreId bits with a CSPRNG and
+in place.
+
+**Shard directories are not created here.** A `GEN` or `WORK` shard is created by one bounded
+`make_dir` at the admission that first places a generation in it, under the same reuse rule: a shard
+that already exists is not an error. Everywhere else in this document an **absent shard directory is
+equivalent to an empty one** — enumeration of one yields no names and is not a fault, and no shape
+judgement counts it. Creating all 512 eagerly measured 73.5 seconds on the shipped media, 98% of a
+75-second first boot, because the cost is per-directory rather than per-byte; deferring them leaves a
+first boot of the fixed files and their zero-fill, and moves one ~140 ms `make_dir` onto the
+admission path once per shard and never onto the streaming path. The on-card format is unchanged: a
+card written by either policy is read by both, and section 3's mapping is unaffected.
+
+It generates all 128 StoreId bits with a CSPRNG and
 writes the incomplete-initialization witness using a 512-byte body at file offset 0 and an `O2IG`
 gate at file offset 512, the same body-then-gate shape every other 16,384-byte slot uses.
 The body is magic `O2IN` at 0, version `1` at 4, header length `24` at 6, StoreId at 8, 484 zero
 bytes, and body CRC at 508. Its slot index is zero; StoreId bytes `0..8` and `8..16` are copied
 verbatim into the gate's scope and sequence fields solely to bind the two records.
-It then creates both role trees, writes each of the journal, ARM, checkpoint, and RIDE files to its
-full length in zeros, and writes the
+It then creates both role directories, writes each of the journal, ARM, checkpoint, and RIDE files to
+its full length in zeros, and writes the
 first CAT0 checkpoint with epoch 1, through-sequence 0, next GenerationId 0, and terminal counter
 0. That checkpoint reserves weather LogicalObjectId zero by setting the weather repository's next
 candidate to one while leaving weather-state count zero; zero is an ordinary allocated value, not
@@ -1515,8 +1538,11 @@ never a reset authorization.
 Before the first checkpoint gate, StoreId has never escaped CardStore. If reset leaves no valid
 INIT or checkpoint, automatic restart is allowed only when the present files are an exact
 prefix of the creation order above, every present name has the specified type and at most its
-specified length, and no present slot has any valid OBC2 gate. Empty directories of the skeleton
-may be present in any state, since they are reused rather than removed, and `IMPORT` is exempt from
+specified length, and no present slot has any valid OBC2 gate. The prefix is over the seven fixed
+files — `INIT.REC`, `COMMIT.JNL`, `ARM0.HND`, `ARM1.HND`, `RIDE.ACT`, `CAT0.CHK`, `CAT1.CHK` — in
+that order. Directories of the skeleton
+may be present, absent, or empty in any combination, since they are reused rather than removed and
+the shard leaves are created on first use, and `IMPORT` is exempt from
 the empty part of that rule: staged files inside it are foreign bytes and never participate in any
 shape judgement — not the pre-birth prefix, not the fresh-card test, and not the unknown-shape
 class. A card whose `/OBC2` contains nothing but `IMPORT` and staged files is a fresh card, is
@@ -1543,7 +1569,9 @@ On mount:
   resume initialization with that unadvertised StoreId;
 - no valid checkpoint or INIT but an exact ungated pre-birth prefix: remove it and restart as
   specified above;
-- any other nonempty or unknown OBC2 shape: mount recovery-failed/read-only;
+- any other nonempty or unknown OBC2 shape: mount recovery-failed/read-only. A missing `GEN`,
+  `WORK`, `IMPORT` or shard directory is never an unknown shape: directories are reused and shards
+  are lazy, so only a file decides this;
 - a lost single-copy FAT structure by section 1.1: mount recovery-failed/read-only;
 - terminal result plus stale active/WORK data: terminal result wins and stale bytes are GC input;
 - valid resumable work: expose it only through the matching OperationId and intent digest;
@@ -1754,36 +1782,49 @@ admission when the advertised contract permits it. It may not silently change by
 retention guarantees, identity rules, durability points, or recovery behavior to meet a budget.
 
 The measurement list DOS2 owes is at least: the program page `P` of the shipped media and the
-fault-isolation assumption of section 1.1; first-boot initialization, which creates 512 shard
-directories costing one cluster each — up to 16 MiB at a 32 KiB cluster — and zero-fills 4,636,672
-bytes of metadata files, a multi-second cost on a fresh card; the one-time full-FAT free-cluster
-scan of section 11; the resident footprint of the RAM index below at each capacity; a full
-reachability pass, whose worst case is eight bounded resolution-generation reads of at most 776
+fault-isolation assumption of section 1.1; first-boot initialization; the one-time full-FAT
+free-cluster scan of section 11; the resident footprint of the RAM index below at each capacity; a
+full reachability pass, whose worst case is eight bounded resolution-generation reads of at most 776
 bytes each; the per-step cost of an incremental GC shard visit; and the
 existing ride/upload/draft cut tests of section 12.
+
+First-boot initialization has been measured on the shipped media and is recorded here rather than
+estimated. Zero-filling the 4,636,672 bytes of fixed metadata files costs **1.55 s** at 2,971 kB/s.
+Creating all 512 shard directories eagerly cost **73.5 s** and 16 MiB of allocation at a 32 KiB
+cluster — 98% of a 75 s first boot — which is why section 12 now creates them on first use instead,
+at about **140 ms** per shard, once per shard, at admission. A fresh card therefore initializes in
+roughly **1.7 s** plus the first checkpoint write. These figures are one card and one preparation;
+the fault-isolation assumption they were gathered alongside remains unvalidated, because the
+measuring rig cut the CPU rather than the card's own supply.
 
 The checkpoint projection is **card-resident**. RAM holds a bounded index, not the projection: one
 head-index entry per catalog head carrying `ObjectKind`, `LogicalObjectId`, `Revision`,
 `GenerationId`, payload length, payload CRC, flags other than the resolution-present bit, and the
 `u16` journal-slot reference section 6.3 resolves a newer carried head entry through, targeting at
-most 50 bytes per entry; the result-ring index; the active-operation table; the draft parent and
-part tables; the retained-previous table; and the live-lease table. Catalog-projection envelopes
-and resolution `GenerationId`s — together with the resolution-present bit, which travels with its
-field per section 6.3 — are not resident: they stay in the checkpoint on card and are re-read on
-demand through the mounted-file budget.
+most 50 bytes per entry; the result-ring index, each entry carrying an `OperationId`, a commit
+sequence and its own `u16` journal-slot reference; the active-operation table; the draft parent and
+part tables; the retained-previous table; the live-lease table; and — because section 6.3's pass
+materializes them from RAM and nothing else holds them — the repository-state rows and the three
+singleton projections, the update handoff, the weather-request state and the active-ride state.
+Catalog-projection envelopes, resolution `GenerationId`s — together with the resolution-present bit,
+which travels with its field per section 6.3 — and terminal-result bodies are not resident: they
+stay in the checkpoint on card and are re-read on demand through the mounted-file budget.
 
 An ordinary commit does not touch a checkpoint file at all: it writes exactly one journal record and
 updates the RAM index. The checkpoint is rewritten only by the compaction of section 6.3, in one
 bounded forward pass. The staging a commit needs is therefore one journal-slot body, and the staging
-compaction needs is one entry of at most 208 bytes plus one 512-byte sector — not a buffer sized by
-the largest checkpoint region.
+compaction needs is one entry of at most 240 bytes plus one 512-byte sector — 752 bytes, not a
+buffer sized by the largest checkpoint region.
 
 The budget formula at the section 2 capacities is `50 × 256` head-index entries, `32 × 64`
-result-ring index entries holding OperationId and commit sequence with the result body re-read from
+result-ring index entries holding OperationId, commit sequence and journal-slot reference with the
+result body re-read from
 card, and the four small tables in their on-card shapes at `128 × 9`, `128 × 1`, `96 × 32`, and
 `64 × 8` bytes: 12,800 + 2,048 + 1,152 + 128 + 3,072 + 512 = 19,712 bytes, exactly 19.25 KiB. Add
-the four-entry lease table and the bounded staging above. DOS2 measures the exact figure and sizes
-its arena from it. The capacities
+the four-entry lease table, the repository rows and the three singleton projections above, and the
+bounded staging. The measured figure at these capacities is **19,848 bytes**, 136 above the formula:
+the additions cost 872, and the four small tables fit their on-card shapes with room to spare. DOS2
+sizes its arena from that figure. The capacities
 are contract constants: DOS2 may not shrink `256` heads, `64` results, or any other capacity to fit
 an arena, and may not move the projection into RAM to avoid the re-reads.
 
