@@ -3,7 +3,7 @@
   "format": 1,
   "wire_major": 3,
   "storage_format": 1,
-  "storage_note": "The storage array is empty here: Device_Object_Vectors_v2.md section 6 covers OBC2 record layouts and crash cuts, which no wire codec can produce. They land with the storage slice.",
+  "storage_note": "The storage array indexes files under storage/, which obc-storage's own spec-derived producer writes: Device_Object_Vectors_v2.md section 6 covers OBC2 record layouts and crash cuts, which no wire codec can produce. This manifest lists them by name and digest; obc-storage owns their bytes and holds its own guard over them.",
   "controls": [
     {
       "name": "hello-resource-page",
@@ -1483,7 +1483,78 @@
       "sha256": "bb67be49bc9648b24c4f87e07e7af1944a3c8393c1740960735e46f74da1fa3c"
     }
   ],
-  "storage": [],
+  "storage": [
+    {
+      "name": "arm-handoff",
+      "file": "storage/arm-handoff.json",
+      "sha256": "2b903ed56dddd569d6dbc97501fdfc4f89758647ac2fd9d06af70456192d8491"
+    },
+    {
+      "name": "checkpoint-first",
+      "file": "storage/checkpoint-first.json",
+      "sha256": "d4e0522a34fe2a60106fe3010ff1bcb7a381f8bf6d54bbcacf77d8a11252a4d4"
+    },
+    {
+      "name": "checkpoint-negative",
+      "file": "storage/checkpoint-negative.json",
+      "sha256": "8437bcc798edd6f35c574e424e934102aee27d12fe2d116b8fb2bf5931aab6b6"
+    },
+    {
+      "name": "checkpoint-populated",
+      "file": "storage/checkpoint-populated.json",
+      "sha256": "84a4c66326557dea9c719b7108d824dddf996ef283eed4e192902c994e47b894"
+    },
+    {
+      "name": "crash-cut-transcripts",
+      "file": "storage/crash-cut-transcripts.json",
+      "sha256": "0283a6655ec996163bfd5dcd06bda768e6966ac7ddba4d14aa3455f690abe2d3"
+    },
+    {
+      "name": "gate-sector",
+      "file": "storage/gate-sector.json",
+      "sha256": "2cab67a3cc903554eadaedb15afabdf1b0b13fe5709914c67238ddaf2344605e"
+    },
+    {
+      "name": "init-record",
+      "file": "storage/init-record.json",
+      "sha256": "005b8aea3eaa59cb41b3e469ee09df458b04a0ac52e9da8151d690d59062c31f"
+    },
+    {
+      "name": "journal-negative",
+      "file": "storage/journal-negative.json",
+      "sha256": "34874fa9dd633b61799f0b01a81a64934fc3ff8e5b6b284c353528d7c9b0e430"
+    },
+    {
+      "name": "journal-record-kinds",
+      "file": "storage/journal-record-kinds.json",
+      "sha256": "5f9096891c2ee1dc891066b8f155e2a8e4831407ad604d63ba1c0b27f1d5e8b1"
+    },
+    {
+      "name": "journal-removal-keys",
+      "file": "storage/journal-removal-keys.json",
+      "sha256": "81cfd79370bf85fb576ac56b83b0a14a3a57f9b7a6aabf3a30ad95793795cd5b"
+    },
+    {
+      "name": "resolution-generation",
+      "file": "storage/resolution-generation.json",
+      "sha256": "f583c3fd24bc07aa36e1f14a3070198e880b5b1d6f15710c59eddaa16ecd1613"
+    },
+    {
+      "name": "ride-slot",
+      "file": "storage/ride-slot.json",
+      "sha256": "8c34308e7d5b54c4fffceb168b7eb5326a73f7ed9e2ac27d2424ecbf79c688e0"
+    },
+    {
+      "name": "slot-strides",
+      "file": "storage/slot-strides.json",
+      "sha256": "da8beb1b3028c1ec57ff0e080af9f4b79f0e2e77995477f71574019f46bbfdc1"
+    },
+    {
+      "name": "work-slot",
+      "file": "storage/work-slot.json",
+      "sha256": "8cfc75a7be7e65ef5c14e2401a3b42667a47104335e8f1b785b08d08aca5478d"
+    }
+  ],
   "negative": [
     {
       "name": "frame-bad-magic",

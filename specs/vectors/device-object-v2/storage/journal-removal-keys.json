@@ -1,0 +1,105 @@
+{
+  "name": "journal-removal-keys",
+  "suite": "device-object-v2",
+  "kind": "storage",
+  "storage_format": 1,
+  "section": "OBC2_Storage_Format.md §6.1",
+  "description": "A removal carries only key bytes, and the occupied byte where the entry shape has one.",
+  "caseCount": 6,
+  "cases": [
+  {
+    "name": "head-removal",
+    "note": "Occupied byte plus kind and logical id, everything else zero.",
+    "subject": "journalSlot",
+    "slot": 1,
+    "length": 16384,
+    "sha256": "1eeb50ca9fd4a71be436e615aa422791d4f9686d3f45a9df46b0ad297c692ed6",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b100100000000000000020000000000000001000300a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111f8040000010000000a040000000003" },
+      { "offset": 136, "hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1" },
+      { "offset": 264, "hex": "0100010007" },
+      { "offset": 712, "hex": "0100000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a111111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222010140000000000000000000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a" },
+      { "offset": 1532, "hex": "fc655c084f324a470100010001000000000000000200000000000000fc655c08039aa3f74998e32d" }
+    ]
+  },
+  {
+    "name": "head-removal-with-payload-byte",
+    "note": "One nonzero byte outside the key ranges.",
+    "subject": "journalSlot",
+    "slot": 1,
+    "length": 16384,
+    "sha256": "0f222d913901b7f9b5cf876fcb7f48383cce69824af52fdbe869559a63e53712",
+    "reject": "KeyBytes",
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b100100000000000000020000000000000001000300a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111f8040000010000000a040000000003" },
+      { "offset": 136, "hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1" },
+      { "offset": 264, "hex": "010001000700000000000000000000000000000001" },
+      { "offset": 712, "hex": "0100000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a111111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222010140000000000000000000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a" },
+      { "offset": 1532, "hex": "ba98e89e4f324a470100010001000000000000000200000000000000ba98e89e45671761a0d7305d" }
+    ]
+  },
+  {
+    "name": "head-removal-without-occupied",
+    "note": "The occupied byte must still be 1 so an all-zero region always means absent.",
+    "subject": "journalSlot",
+    "slot": 1,
+    "length": 16384,
+    "sha256": "1bd55d4b8fe2894ef297af2cf987ee1212feb04c0857a657791ebbf3e9f2698e",
+    "reject": "Occupied",
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b100100000000000000020000000000000001000300a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11111111111111111111111111111111111111111111111111111111111111111f8040000010000000a040000000003" },
+      { "offset": 136, "hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1" },
+      { "offset": 266, "hex": "010007" },
+      { "offset": 712, "hex": "0100000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a111111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222010140000000000000000000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a" },
+      { "offset": 1532, "hex": "5481bcb04f324a4701000100010000000000000002000000000000005481bcb0ab7e434f82664a2b" }
+    ]
+  },
+  {
+    "name": "active-ride-removal",
+    "note": "The singleton removal carries only the occupied byte.",
+    "subject": "journalSlot",
+    "slot": 2,
+    "length": 16384,
+    "sha256": "fb188f12640549e4db069369bf4191bc578c8ab12293aea626749d7f099dae26",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b1001000000000000000300000000000000020006" },
+      { "offset": 92, "hex": "f80400000100000000000200000006" },
+      { "offset": 1240, "hex": "01" },
+      { "offset": 1532, "hex": "c3f0acce4f324a470100020001000000000000000300000000000000c3f0acce3c0f53311ef4c42a" }
+    ]
+  },
+  {
+    "name": "active-ride-removal-with-extra-byte",
+    "note": "Any other nonzero byte is not a removal.",
+    "subject": "journalSlot",
+    "slot": 2,
+    "length": 16384,
+    "sha256": "04cae86bf985494ae2271a0de06e2dfd4bd50462f10f11b6cbaa332f2cbed926",
+    "reject": "KeyBytes",
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b1001000000000000000300000000000000020006" },
+      { "offset": 92, "hex": "f80400000100000000000200000006" },
+      { "offset": 1240, "hex": "01" },
+      { "offset": 1304, "hex": "01" },
+      { "offset": 1532, "hex": "1edca0d14f324a4701000200010000000000000003000000000000001edca0d1e1235f2ee4e6272b" }
+    ]
+  },
+  {
+    "name": "active-ride-removal-unoccupied",
+    "note": "Occupied must be exactly 1.",
+    "subject": "journalSlot",
+    "slot": 2,
+    "length": 16384,
+    "sha256": "6686b7dc18fc8e0fd973c9139e99f541e586e80d79b5b0a34dbb7e7e69c40012",
+    "reject": "Occupied",
+    "runs": [
+      { "offset": 0, "hex": "4f324a52010060003c92000099164ebaabc2342fe08f6b1001000000000000000300000000000000020006" },
+      { "offset": 92, "hex": "f80400000100000000000200000006" },
+      { "offset": 1241, "hex": "01" },
+      { "offset": 1532, "hex": "d86d86514f324a470100020001000000000000000300000000000000d86d8651279279aee1563cdd" }
+    ]
+  }
+  ]
+}

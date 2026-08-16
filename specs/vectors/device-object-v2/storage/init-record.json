@@ -1,0 +1,37 @@
+{
+  "name": "init-record",
+  "suite": "device-object-v2",
+  "kind": "storage",
+  "storage_format": 1,
+  "section": "OBC2_Storage_Format.md §12",
+  "description": "The incomplete-initialization witness, whose gate carries the StoreId's own bytes as scope and sequence so the two records are bound.",
+  "caseCount": 2,
+  "cases": [
+  {
+    "name": "witness",
+    "note": "A 512-byte body and its O2IG gate at file offset 512.",
+    "subject": "initRecord",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "740e345ee8789a306ff8d9e56134fd3b81910a0a3b974a354eb63a1c84f4ba9b",
+    "reject": null,
+    "runs": [
+      { "offset": 0, "hex": "4f32494e010018003c92000099164ebaabc2342fe08f6b10" },
+      { "offset": 508, "hex": "1d863d474f324947010000003c92000099164ebaabc2342fe08f6b101d863d47e279c2b8b290fcb9" }
+    ]
+  },
+  {
+    "name": "body-from-another-store",
+    "note": "The gate names this StoreId, so a body carrying another one does not validate under it.",
+    "subject": "initRecord",
+    "slot": 0,
+    "length": 16384,
+    "sha256": "640f1a99bf59e9d903f75868799fec71dba0568baedef52e298ddc9e4b0d004b",
+    "reject": "BodyCrc",
+    "runs": [
+      { "offset": 0, "hex": "4f32494e0100180011111111111111111111111111111111" },
+      { "offset": 508, "hex": "2e59c1c74f324947010000003c92000099164ebaabc2342fe08f6b101d863d47e279c2b8b290fcb9" }
+    ]
+  }
+  ]
+}
