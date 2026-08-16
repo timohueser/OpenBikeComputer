@@ -66,6 +66,11 @@ pub mod vectors;
 #[cfg(test)]
 mod crash;
 
+/// The Device Object System v2 identity types this kernel's records carry, re-exported so a
+/// consumer can name a `StoreId` or a `GenerationId` — both of which appear in public record
+/// fields — without taking an `obc-link` dependency of its own.
+pub use obc_link::ids::{GenerationId, LogicalObjectId, OperationId, StoreId};
+
 pub use error::{ApplyError, DecodeError, Reason, Record};
 pub use gate::Gate;
 pub use model::CatalogModel;
