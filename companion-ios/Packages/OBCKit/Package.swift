@@ -42,6 +42,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "OBCDomain", targets: ["OBCDomain"]),
+        .library(name: "OBCProtocolV3", targets: ["OBCProtocolV3"]),
         .library(name: "OBCTransport", targets: ["OBCTransport"]),
         .library(name: "OBCWeatherWire", targets: ["OBCWeatherWire"]),
         .library(name: "OBCWeather", targets: ["OBCWeather"]),
@@ -52,6 +53,15 @@ let package = Package(
     targets: [
         .target(
             name: "OBCDomain",
+            swiftSettings: languageMode
+        ),
+        // The Device Object Protocol v3 wire codec (DOS1). Deliberately standalone: it
+        // depends on nothing in this package, so it can only have been written from
+        // `specs/Device_Object_Protocol_v3.md` + `Device_Object_Registries_v2.md` and is
+        // judged solely by the shared vectors under `specs/vectors/device-object-v2/`.
+        // Nothing imports it yet — the transport cutover is a later DOS slice.
+        .target(
+            name: "OBCProtocolV3",
             swiftSettings: languageMode
         ),
         .target(
@@ -115,6 +125,13 @@ let package = Package(
             // Checked-in library files from older app versions (e.g. the v1
             // planned-route JSON) — the persistence-compat pins.
             resources: [.copy("Fixtures")],
+            swiftSettings: languageMode
+        ),
+        // Driven entirely by the checked-in shared vectors (resolved from `#filePath`,
+        // exactly as OBCTransportTests' legacy ProtocolVectorTests does).
+        .testTarget(
+            name: "OBCProtocolV3Tests",
+            dependencies: ["OBCProtocolV3"],
             swiftSettings: languageMode
         ),
         .testTarget(
