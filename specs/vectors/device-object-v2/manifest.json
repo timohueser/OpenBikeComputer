@@ -1924,6 +1924,11 @@
       "name": "stream-fault-domain-category",
       "file": "negative/stream-fault-domain-category.json",
       "sha256": "2476465edfe8d2241b3c8db1ba7ab59b5e28232d4f88275cbd0e8b665b4e44ab"
+    },
+    {
+      "name": "stream-fault-resource-limit-category",
+      "file": "negative/stream-fault-resource-limit-category.json",
+      "sha256": "fcb65984d50cf1af9342db55e5425a1104f2b2b18506f97c7d5c16c5a31337e3"
     }
   ],
   "transcripts": [
