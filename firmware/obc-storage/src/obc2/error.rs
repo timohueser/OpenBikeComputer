@@ -56,7 +56,11 @@ pub enum Record {
 }
 
 /// The rule that refused an input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Ord` is here for diagnostics only — a fuzz histogram keyed by reason, so a "reached a
+/// structural rule" claim can be held to a per-rule floor rather than one aggregate count. Nothing
+/// in the format orders these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reason {
     /// The caller offered fewer bytes than the record's fixed size, or a variable body's length
     /// disagrees with its own count field.

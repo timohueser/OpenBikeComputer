@@ -5,8 +5,16 @@
 //! written. They differ in what selects the authoritative slot. A `WORK` file alternates two slots;
 //! `RIDE.ACT` is a 16-slot ring written at `checkpoint_sequence mod 16`. In both cases recovery
 //! takes the greatest valid sequence **whose durable offset is at most the payload's observed
-//! length**, because a durable offset above the observed length is not merely stale, it is
-//! unreachable: §13.1's adapter cannot seek past a recorded length.
+//! length and whose finalized prefix CRC the payload's bytes confirm**. The first half is because a
+//! durable offset above the observed length is not merely stale, it is unreachable — §13.1's
+//! adapter cannot seek past a recorded length. The second is because §7 and §7.1 both refuse to
+//! resume from a prefix nothing proves: "nothing is ever resumed from an unverifiable prefix", and
+//! "A ride never resumes from an unreachable or unverifiable prefix either".
+//!
+//! What a failed proof *means* differs, and that difference is the format's, not a convenience:
+//! §7 discards the work and terminally aborts its operation, while §1.1 caps a ride's loss at one
+//! checkpoint interval and calls it "not a store fault", so a ride falls back to the newest slot
+//! that does verify and to offset zero when none does.
 //!
 //! ## What the restart-only profile leaves unwritten
 //!
@@ -554,20 +562,29 @@ pub struct RideIdentity {
     pub recovery_revision: u64,
 }
 
-/// §7.1's selection, over the 16-slot ring.
+/// §7.1's selection **and verification**, over the 16-slot ring.
 ///
 /// `slots[i]` is `Some` only when ring position `i` validated completely — which already proves
 /// `sequence mod 16 == i`, since [`RideRecord::validate_slot`] makes the ring position part of
-/// validity. What is left is the identity match, the greatest reachable sequence, and the
-/// equal-sequence conflict rule.
-pub fn recover_ride(
-    slots: &[Option<RideRecord>],
-    identity: Option<RideIdentity>,
-    observed_payload_len: u64,
-) -> RideRecovery {
+/// validity. What is left is the identity match, the greatest reachable sequence whose prefix the
+/// payload actually backs, and the equal-sequence conflict rule.
+///
+/// `payload` is the GEN file's bytes as they are now, for the same reason [`recover_work`] takes
+/// them: §7.1 says "A ride never resumes from an unreachable or unverifiable prefix either", and a
+/// length alone can only prove reachability. The rewind and the proof are one step here too.
+///
+/// Where the two paths part is what a failed proof means. §7 discards the work and terminally aborts
+/// its operation, because an upload that cannot prove its prefix has nothing to resume. A ride is
+/// not that: §1.1 fixes the loss of a ride slot at "at most one ride-checkpoint interval of samples
+/// and elapsed time", and says plainly that "bounded loss is accepted for a ride journal and is not
+/// a store fault". So a slot whose prefix the payload contradicts is simply not this ride's
+/// evidence — recovery falls back to the newest slot that *does* verify, and to offset zero when
+/// none does, exactly as it falls back past an unreachable offset.
+pub fn recover_ride(slots: &[Option<RideRecord>], identity: Option<RideIdentity>, payload: &[u8]) -> RideRecovery {
     // "A RIDE file alone cannot invent an active ride": without ActiveRideState there is no ride,
     // however many valid slots the file holds.
     let Some(identity) = identity else { return RideRecovery::NoRide };
+    let observed = payload.len() as u64;
 
     let mut best: Option<RideRecord> = None;
     for record in slots.iter().flatten() {
@@ -586,8 +603,12 @@ pub fn recover_ride(
             }
         }
         // §7.1 applies §7's rewind with the slot count changed: a slot recording an offset the
-        // payload cannot reach "is skipped as if invalid".
-        if !record.offset_is_reachable(observed_payload_len) {
+        // payload cannot reach "is skipped as if invalid" — and so is one whose finalized prefix
+        // CRC the payload contradicts.
+        if !record.offset_is_reachable(observed) {
+            continue;
+        }
+        if crc32(&payload[..record.durable_offset as usize]) != record.prefix_crc {
             continue;
         }
         match best {
@@ -718,49 +739,128 @@ mod tests {
         }
     }
 
+    /// A deterministic ride payload, and slots whose finalized prefix CRCs are the real CRCs of it.
+    fn ride_payload() -> std::vec::Vec<u8> {
+        (0..4_096usize).map(|index| (index * 13 + 5) as u8).collect()
+    }
+
+    fn verified_ride(sequence: u32, offset: u64, payload: &[u8]) -> RideRecord {
+        let mut record = ride(sequence, offset);
+        record.prefix_crc = super::super::raw::crc32(&payload[..offset as usize]);
+        record
+    }
+
     /// §7.1: the ring's greatest matching sequence wins, and a torn newest page costs at most one
     /// checkpoint interval because recovery falls back to the newest valid earlier slot.
     #[test]
     fn ride_recovery_selects_the_greatest_matching_sequence_and_falls_back() {
-        let slots = [Some(ride(0, 1_024)), Some(ride(1, 2_048)), None];
-        assert_eq!(recover_ride(&slots, Some(identity()), 4_096), RideRecovery::Resume(ride(1, 2_048)));
+        let payload = ride_payload();
+        let first = verified_ride(0, 1_024, &payload);
+        let second = verified_ride(1, 2_048, &payload);
+        let slots = [Some(first), Some(second), None];
+        assert_eq!(recover_ride(&slots, Some(identity()), &payload), RideRecovery::Resume(second));
 
         // The newest slot's page was torn, so it is not a valid slot at all: the previous one is
         // authoritative and one interval of samples is lost.
-        let torn = [Some(ride(0, 1_024)), None, None];
-        assert_eq!(recover_ride(&torn, Some(identity()), 4_096), RideRecovery::Resume(ride(0, 1_024)));
+        let torn = [Some(first), None, None];
+        assert_eq!(recover_ride(&torn, Some(identity()), &payload), RideRecovery::Resume(first));
+    }
+
+    /// "A ride never resumes from an unreachable or unverifiable prefix either."
+    ///
+    /// The failure is not a store fault, so it is not the WORK path's discard-and-abort: §1.1 caps a
+    /// ride's loss at one checkpoint interval, so recovery falls back to the newest slot that does
+    /// verify, and to offset zero when none does.
+    #[test]
+    fn ride_recovery_never_resumes_from_a_prefix_the_payload_contradicts() {
+        let payload = ride_payload();
+        let first = verified_ride(0, 1_024, &payload);
+        let mut second = verified_ride(1, 2_048, &payload);
+        second.prefix_crc ^= 0x5A5A;
+
+        // The newest slot's prefix is contradicted, so the older verified one is authoritative.
+        assert_eq!(
+            recover_ride(&[Some(first), Some(second), None], Some(identity()), &payload),
+            RideRecovery::Resume(first)
+        );
+
+        // With no verifiable slot at all the ride restarts at zero rather than resuming over bytes
+        // the card no longer holds.
+        let mut only = first;
+        only.prefix_crc ^= 1;
+        assert_eq!(recover_ride(&[Some(only), None, None], Some(identity()), &payload), RideRecovery::RestartAtZero);
+    }
+
+    /// The payload the ride's own bytes were replaced by — a torn GEN page — contradicts every
+    /// slot, which is exactly the state the ride cut matrix reaches.
+    #[test]
+    fn a_torn_ride_payload_restarts_rather_than_resuming() {
+        let payload = ride_payload();
+        let slots = [Some(verified_ride(0, 1_024, &payload)), Some(verified_ride(1, 2_048, &payload)), None];
+        let mut torn = payload.clone();
+        torn[7] ^= 0xFF;
+        assert_eq!(recover_ride(&slots, Some(identity()), &torn), RideRecovery::RestartAtZero);
     }
 
     /// "A RIDE file alone cannot invent an active ride."
     #[test]
     fn ride_slots_without_active_ride_state_are_not_a_ride() {
-        let slots = [Some(ride(0, 1_024))];
-        assert_eq!(recover_ride(&slots, None, 4_096), RideRecovery::NoRide);
+        let payload = ride_payload();
+        let slots = [Some(verified_ride(0, 1_024, &payload))];
+        assert_eq!(recover_ride(&slots, None, &payload), RideRecovery::NoRide);
     }
 
     /// A slot whose identity does not match the checkpoint's ActiveRideState is another ride's
-    /// evidence, not this one's.
+    /// evidence, not this one's — and the check is all four fields, not just the one a single test
+    /// would have pinned.
     #[test]
-    fn ride_slots_from_another_ride_are_ignored() {
-        let mut foreign = ride(3, 2_048);
-        foreign.generation = GenerationId::new(999);
-        assert_eq!(recover_ride(&[Some(foreign)], Some(identity()), 4_096), RideRecovery::RestartAtZero);
+    fn ride_slots_from_another_ride_are_ignored_on_every_identity_field() {
+        let payload = ride_payload();
+        let good = verified_ride(3, 2_048, &payload);
+        assert_eq!(recover_ride(&[Some(good)], Some(identity()), &payload), RideRecovery::Resume(good));
+
+        let mut other_generation = good;
+        other_generation.generation = GenerationId::new(999);
+        let mut other_store = good;
+        other_store.store = StoreId::new([0x11; 16]);
+        let mut other_operation = good;
+        other_operation.operation = OperationId::new([0x22; 16]);
+        let mut other_revision = good;
+        other_revision.recovery_revision += 1;
+
+        for (name, foreign) in [
+            ("generation", other_generation),
+            ("store", other_store),
+            ("operation", other_operation),
+            ("recovery revision", other_revision),
+        ] {
+            assert_eq!(
+                recover_ride(&[Some(foreign)], Some(identity()), &payload),
+                RideRecovery::RestartAtZero,
+                "a slot differing only in its {name} was accepted as this ride's evidence",
+            );
+        }
     }
 
     /// §7.1 applies §7's rewind with the slot count changed.
     #[test]
     fn ride_recovery_skips_an_unreachable_offset_and_restarts_when_none_qualifies() {
-        let slots = [Some(ride(0, 1_024)), Some(ride(1, 12_288)), None];
-        assert_eq!(recover_ride(&slots, Some(identity()), 4_096), RideRecovery::Resume(ride(0, 1_024)));
-        assert_eq!(recover_ride(&slots, Some(identity()), 0), RideRecovery::RestartAtZero);
+        let payload = ride_payload();
+        let first = verified_ride(0, 1_024, &payload);
+        let unreachable = ride(1, 12_288);
+        let slots = [Some(first), Some(unreachable), None];
+        assert_eq!(recover_ride(&slots, Some(identity()), &payload), RideRecovery::Resume(first));
+        assert_eq!(recover_ride(&slots, Some(identity()), &[]), RideRecovery::RestartAtZero);
     }
 
     /// "equal-sequence differing bodies are corruption."
     #[test]
     fn two_differing_ride_slots_at_one_sequence_are_corruption() {
-        let mut other = ride(0, 2_048);
+        let payload = ride_payload();
+        let first = verified_ride(0, 1_024, &payload);
+        let mut other = verified_ride(0, 2_048, &payload);
         other.sample_count += 1;
-        assert_eq!(recover_ride(&[Some(ride(0, 1_024)), Some(other)], Some(identity()), 4_096), RideRecovery::Corrupt);
+        assert_eq!(recover_ride(&[Some(first), Some(other)], Some(identity()), &payload), RideRecovery::Corrupt);
     }
 
     #[test]

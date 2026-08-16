@@ -372,6 +372,69 @@ mod tests {
         assert_eq!(HandoffRef::decode(&reference.encode()).unwrap(), reference);
     }
 
+    /// §10's observation fields at their exact widths and offsets.
+    ///
+    /// The terminal-result commit sequence at 184 is a `u64` and the observed outcome generation at
+    /// 192 is a `u32`, and they are adjacent — so a swapped `put_u64`/`put_u32` writes four bytes of
+    /// one into the other's slot and still round-trips through a decoder that reads the same way.
+    /// Pinning the *bytes* is what catches it: every field is checked at its own offset, with values
+    /// whose bytes are all distinct.
+    #[test]
+    fn the_observation_fields_land_at_their_own_offsets_and_widths() {
+        let mut reference = handoff_ref(4, HandoffPhase::OutcomeObserved);
+        reference.outcome = ObcuOutcome::Installed;
+        reference.terminal_commit = 0x0102_0304_0506_0708;
+        reference.outcome_generation = 0x090A_0B0C;
+        let bytes = reference.encode();
+
+        assert_eq!(&bytes[184..192], &0x0102_0304_0506_0708u64.to_le_bytes(), "terminal commit at 184 is a u64");
+        assert_eq!(&bytes[192..196], &0x090A_0B0Cu32.to_le_bytes(), "outcome generation at 192 is a u32");
+        // 196..200 is reserved, and a u64 written at 192 would have spilled into it.
+        assert_eq!(&bytes[196..200], &[0, 0, 0, 0], "the reserved run after the outcome generation");
+        assert_eq!(bytes[9], ObcuOutcome::Installed as u8, "the OBCU outcome at byte 9");
+        assert_eq!(HandoffRef::decode(&bytes).unwrap(), reference);
+    }
+
+    /// Every registered outcome decodes at every phase that can carry it, and an unregistered one
+    /// does not.
+    #[test]
+    fn every_registered_obcu_outcome_round_trips() {
+        for (outcome, value) in [
+            (ObcuOutcome::None, 0u8),
+            (ObcuOutcome::Installed, 1),
+            (ObcuOutcome::RolledBack, 2),
+            (ObcuOutcome::StageRejected, 3),
+            (ObcuOutcome::ArmAbandoned, 4),
+        ] {
+            let mut reference = handoff_ref(4, HandoffPhase::Complete);
+            reference.outcome = outcome;
+            let bytes = reference.encode();
+            assert_eq!(bytes[9], value);
+            assert_eq!(HandoffRef::decode(&bytes).unwrap().outcome, outcome);
+        }
+        let mut bytes = handoff_ref(4, HandoffPhase::Complete).encode();
+        bytes[9] = 5;
+        assert_eq!(HandoffRef::decode(&bytes).unwrap_err().reason, Reason::UnknownEnum);
+    }
+
+    /// Every phase round-trips, and the gate binds to it: §10 makes the phase the gate's logical
+    /// sequence, so a record at one phase cannot be read as another.
+    #[test]
+    fn every_phase_round_trips_through_its_own_gate() {
+        for phase in [
+            HandoffPhase::Prepared,
+            HandoffPhase::Armed,
+            HandoffPhase::TrialObserved,
+            HandoffPhase::OutcomeObserved,
+            HandoffPhase::Complete,
+        ] {
+            let record = record(4, phase);
+            let slot = record.encode_slot(0);
+            assert_eq!(HandoffRecord::validate_slot(&slot, 0).unwrap(), record);
+            assert_eq!(HandoffRecord::validate_slot(&slot, 0).unwrap().handoff.phase, phase);
+        }
+    }
+
     #[test]
     fn selection_orders_by_sequence_then_phase() {
         assert!(handoff_ref(4, HandoffPhase::Prepared).selector() < handoff_ref(4, HandoffPhase::Armed).selector());

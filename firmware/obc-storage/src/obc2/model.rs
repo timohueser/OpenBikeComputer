@@ -912,6 +912,41 @@ mod tests {
         assert_eq!(model.apply(&record), Err(ApplyError::GenerationCursor));
     }
 
+    /// The three saturating points in `check`, each pinned at its own boundary.
+    ///
+    /// All three are `checked_add`s that can only fire at `u64::MAX`, which no test reaches by
+    /// counting — so each is driven by placing the projection one short of the ceiling. Without
+    /// these the checks are unexecuted lines that a refactor could delete unnoticed.
+    #[test]
+    fn every_checked_add_refuses_rather_than_wrapping() {
+        // 1. The sequence successor. A projection at `u64::MAX` has no next sequence at all, so no
+        //    record can be its successor — not even one claiming `u64::MAX`.
+        let mut projection = model();
+        projection.through_sequence = u64::MAX;
+        let mut record = samples::claim(1, u64::MAX, 0, samples::OP_A, 1);
+        assert_eq!(projection.apply(&record), Err(ApplyError::Sequence));
+        record.sequence = 0;
+        assert_eq!(projection.apply(&record), Err(ApplyError::Sequence));
+
+        // 2. The generation cursor. At `u64::MAX` the reservation cannot advance, and the record
+        //    that tries is refused rather than wrapping to zero.
+        let mut projection = model();
+        projection.next_generation = u64::MAX;
+        let mut record = samples::claim(1, 1, 0, samples::OP_A, 0);
+        if let Some(Change::Put(row)) = &mut record.mutation.active {
+            row.generation = GenerationId::new(u64::MAX);
+        }
+        assert_eq!(projection.apply(&record), Err(ApplyError::GenerationCursor));
+
+        // 3. The terminal-commit counter. §5.3 makes a result's sequence the counter *after*
+        //    increment, so a counter at `u64::MAX` can produce no further result.
+        let mut projection = model();
+        projection.terminal_counter = u64::MAX;
+        projection.actives.push(samples::active(samples::OP_A)).unwrap();
+        let record = samples::publish(1, 1, 0, samples::OP_A, 0, samples::head(1, 7));
+        assert_eq!(projection.apply(&record), Err(ApplyError::TerminalCounter));
+    }
+
     /// The replay helper is the loop recovery runs; it stops at the first record that does not
     /// apply and reports how many it absorbed.
     #[test]

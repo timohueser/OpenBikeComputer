@@ -1487,7 +1487,7 @@
     {
       "name": "arm-handoff",
       "file": "storage/arm-handoff.json",
-      "sha256": "2b903ed56dddd569d6dbc97501fdfc4f89758647ac2fd9d06af70456192d8491"
+      "sha256": "a5a6927fa1bc4b57e15b521609d525de212d2a49aeeb8bcfc7872574d1be3e57"
     },
     {
       "name": "checkpoint-first",
@@ -1507,7 +1507,7 @@
     {
       "name": "crash-cut-transcripts",
       "file": "storage/crash-cut-transcripts.json",
-      "sha256": "bb2196ce9715effbb6b5f19b56da3285eccf4262c150b0e76fdbfa13fceac9da"
+      "sha256": "948752b6b6e02dc6492a47be1bec227b67d1fd41c8d3f0d97993e0becb3c8a8d"
     },
     {
       "name": "gate-sector",
@@ -1532,7 +1532,7 @@
     {
       "name": "journal-removal-keys",
       "file": "storage/journal-removal-keys.json",
-      "sha256": "1037a3327c48996bd124e7ae9aaaacd4e740e8040cbd1452d7ff3e7a227ad9b2"
+      "sha256": "1dd4749593678abf84851160e57442417c14de4f376b890ac852b3ce1627f882"
     },
     {
       "name": "resolution-generation",
