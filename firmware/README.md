@@ -89,6 +89,16 @@ in [`specs/vectors/device-object-v2/`](../specs/vectors/device-object-v2/), buil
 that lays every byte down from the spec's own offset tables rather than through the codec;
 regenerate them deliberately with `cargo test -p obc-link regenerate -- --ignored`.
 
+Its `engine` module is the device half of that contract above the codec and below the board: the
+connection state machine of §5.2, the SessionId coordinator of §3, and the upload/download/command
+machines of §15 as pure typed transitions. It still owns no transport and does no storage I/O —
+everything it needs done comes back as a typed command the board glue executes against the DOS2
+transaction seam — and it implements §6.1's **restart-only** upload profile, so no kind advertises
+resumable upload and no durable next offset above zero is ever reported. The host-only `harness`
+module beside it (behind the same `std` feature) implements the `ByteLink` seam twice, with BLE and
+USB physical framing, and drives one engine over both against an in-memory transaction and the
+checked-in semantic transcripts.
+
 `obc-storage::obc2` is the same suite's on-card half: the record codecs of
 [`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,
 `RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog reference
