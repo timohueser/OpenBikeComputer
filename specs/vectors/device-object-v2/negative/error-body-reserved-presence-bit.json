@@ -1,0 +1,14 @@
+{
+  "name": "error-body-reserved-presence-bit",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "errorBody",
+  "note": "Presence bits 7..15 are zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "110000000100000080000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

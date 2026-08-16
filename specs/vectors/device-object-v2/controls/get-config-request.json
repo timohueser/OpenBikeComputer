@@ -1,0 +1,22 @@
+{
+  "name": "get-config-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "GetConfig",
+    "value": 1025
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 0,
+    "requestId": 121
+  },
+  "boundary": "",
+  "note": "The request payload is empty.",
+  "payload": "",
+  "frame": "4f424350030001040000000079000000"
+}

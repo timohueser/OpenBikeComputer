@@ -1,0 +1,14 @@
+{
+  "name": "finalize-accepted-flag-in-the-reserved-byte",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "FinalizeDraftResponse",
+  "note": "Offset 1 is reserved in the FinalizeDraft acceptance.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f42435003003201010040000100000000010000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

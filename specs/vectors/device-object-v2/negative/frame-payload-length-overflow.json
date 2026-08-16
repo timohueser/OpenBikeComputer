@@ -1,0 +1,14 @@
+{
+  "name": "frame-payload-length-overflow",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "A payload length above 496 overflows the hard maximum frame.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "payloadLength",
+    "detailValue": 4
+  },
+  "bytes": "4f424350030002010000f1010100000011000000"
+}

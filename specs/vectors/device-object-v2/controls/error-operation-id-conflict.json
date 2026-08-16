@@ -1,0 +1,22 @@
+{
+  "name": "error-operation-id-conflict",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "operationIdConflict clears both claim-status bits: the request's own intent was never claimed.",
+  "payload": "130000000100080000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c8000000130000000100080000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

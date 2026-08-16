@@ -1,0 +1,28 @@
+[package]
+name = "obc-link"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal firmware crate — not published to crates.io
+description = "Device Object System v2 wire codec: OBCP wire major 3 control/stream frames, identities, metadata envelopes, typed results, error bodies and canonical-intent digests. no_std, allocation-free, transport-free."
+
+# The one Rust authority for the bytes frozen in `specs/Device_Object_Protocol_v3.md` and
+# `specs/Device_Object_Registries_v2.md`. It is deliberately transport-free: no obc-ble, no embassy,
+# no adapter, no storage. An adapter hands it a record and gets a typed message back; the engine
+# hands it a typed message and gets exact bytes. Swift and TypeScript implement the same tables from
+# the same specs and are held to the same fixtures under `specs/vectors/device-object-v2/`.
+[dependencies]
+# CRC-32/IEEE — the same one implementation the DFU container and the legacy data plane hash with.
+# The wire contract's §1 CRC (object payloads, prefixes, and catalog cursors) is that CRC.
+obc-crc = { path = "../obc-crc" }
+# Canonical-intent SHA-256 (`Device_Object_Protocol_v3.md` §11). `default-features = false` keeps it
+# `core`-only — no std, no allocator — which is what lets the device image link it. Same version the
+# host bakery crates already resolve to, so the workspace holds one sha2.
+sha2 = { version = "0.11", default-features = false }
+
+[features]
+default = []
+# Host-only fixture producer (`vectors`), which writes `specs/vectors/device-object-v2/`. It builds
+# every byte straight from the spec's offset tables and never calls the codec above it — that
+# independence is the whole point of a golden vector. Unit tests enable it implicitly through
+# `cfg(test)`, so `cargo test -p obc-link` and the workspace's `--all-features` run both agree.
+std = []

@@ -1,0 +1,14 @@
+{
+  "name": "start-download-reserved-revision-flag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartDownloadRequest",
+  "note": "Flag bit 0 is burned and no v3.0 peer sets it.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f4243500300100100001c000100000001000100090000000000000000000000000000000000000000000000"
+}

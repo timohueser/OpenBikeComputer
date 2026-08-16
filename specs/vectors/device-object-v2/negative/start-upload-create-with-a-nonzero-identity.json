@@ -1,0 +1,14 @@
+{
+  "name": "start-upload-create-with-a-nonzero-identity",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "In create mode both identity fields are constrained to zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243500300000100003d0001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a101000000050000000000000000000000000000000a000000000000000000000001000100050001000180010001"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "upload-accepted-restart-with-a-nonzero-offset",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadResponse",
+  "note": "Restart-at-zero forces the reported durable next offset to zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f42435003000001010040000100000000000200a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000009000000000000002900000000000000000004000000000000000400f00300000000000000000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "set-clock-gps-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "SetClock",
+    "value": 1027
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 123
+  },
+  "boundary": "",
+  "note": "The 16-byte request: epoch seconds and the offered source.",
+  "payload": "c03e1569000000000200000000000000",
+  "frame": "4f42435003000304000010007b000000c03e1569000000000200000000000000"
+}

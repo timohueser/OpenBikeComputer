@@ -1,0 +1,14 @@
+{
+  "name": "stream-status-with-no-flags",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Status with neither flag is reserved.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "malformedHeader",
+    "detailValue": 1
+  },
+  "bytes": "01000000000000000000000018000300080001000000000000000000000000000000000000000000"
+}

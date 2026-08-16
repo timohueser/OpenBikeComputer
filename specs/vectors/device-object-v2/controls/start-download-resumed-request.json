@@ -1,0 +1,22 @@
+{
+  "name": "start-download-resumed-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartDownload",
+    "value": 272
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 28,
+    "requestId": 41
+  },
+  "boundary": "",
+  "note": "A nonzero start offset is allowed only when the kind advertises resumable download.",
+  "payload": "01000200090000000000000000000000000000000000100000000000",
+  "frame": "4f4243500300100100001c002900000001000200090000000000000000000000000000000000100000000000"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "error-busy-retry-after-delay",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "Busy with retry-delay guidance carries a delay; a second request while one is outstanding is answered this way.",
+  "payload": "05000000020002020100c409000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300000103003000c800000005000000020002020100c409000000000000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "query-draft-zero-limit",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryDraftRequest",
+  "note": "The requested limit is 1 through 6.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243500300020200002c0001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000000000000000000000000000000000000000000000000000000"
+}

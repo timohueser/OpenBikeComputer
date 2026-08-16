@@ -1,0 +1,22 @@
+{
+  "name": "object-result-update-install-requested",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "InstallUpdate",
+    "value": 784
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 68,
+    "requestId": 30
+  },
+  "boundary": "",
+  "note": "Outcome 4 is emitted only after the boot handoff is durable.",
+  "payload": "01000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100040009000000000000002b00000000000000b80b00000000000044332211",
+  "frame": "4f42435003001003010044001e00000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100040009000000000000002b00000000000000b80b00000000000044332211"
+}

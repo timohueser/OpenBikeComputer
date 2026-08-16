@@ -1,0 +1,14 @@
+{
+  "name": "config-block-length-other-than-56",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "configBlock",
+  "note": "A block length other than 56 is invalidDescriptor.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "01390000030000004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

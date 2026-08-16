@@ -1,0 +1,14 @@
+{
+  "name": "stream-terminal-without-fault",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Terminal without fault is reserved: a stream has no successful terminal frame.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "malformedHeader",
+    "detailValue": 1
+  },
+  "bytes": "01000000000000000000000018000302080001000000000000000000000000000000000001000000"
+}

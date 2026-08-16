@@ -1,0 +1,14 @@
+{
+  "name": "stream-zero-payload-on-a-data-direction",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Data directions have nonempty payload.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "payloadLength",
+    "detailValue": 4
+  },
+  "bytes": "01000000000000000000000000000100"
+}

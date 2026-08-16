@@ -1,0 +1,14 @@
+{
+  "name": "set-metadata-on-a-kind-with-no-patch-schema",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "SetMetadataRequest",
+  "note": "Trip, ride, weather and update package reject SetMetadata as unsupported.",
+  "expect": {
+    "category": "unsupportedCapability",
+    "categoryValue": 2,
+    "detail": "logicalKind",
+    "detailValue": 2
+  },
+  "bytes": "4f424350030001030000310001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10200010004000000000000000c0000000000000002008000050001000180010001"
+}

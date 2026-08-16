@@ -1,0 +1,22 @@
+{
+  "name": "draft-page-empty",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryDraft",
+    "value": 514
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 44,
+    "requestId": 90
+  },
+  "boundary": "",
+  "note": "A parent with no children yet.",
+  "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c301000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020201002c005a000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c301000000000000000000000000000000000000000000000000000000"
+}

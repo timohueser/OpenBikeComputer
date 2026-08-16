@@ -1,0 +1,90 @@
+{
+  "name": "wrong-owner-cannot-advance-or-release-a-session",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "A stale same-link owner, a wrong-link owner, and a wrong principal all fail to advance or release the current session.",
+  "eventCount": 9,
+  "events": [
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "A session is live under connection generation 1.",
+      "record": "4f42435003000001010040003200000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11100000009000000000000002900000000000000000000000000000000000400f00300000000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The link drops and reconnects, creating generation 2. Every earlier SessionId is now stale.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "A FinishUpload bearing the stale SessionId.",
+      "record": "4f42435003000201000004000100000011000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "invalidSession/staleConnection; nothing advances and nothing is released.",
+      "record": "4f424350030002010300300001000000090000000200040020000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "usb-local",
+      "link": "usb",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "The same SessionId offered on the other link kind.",
+      "record": "4f4243500300010100000c0002000000110000000000040000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "usb-local",
+      "link": "usb",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "invalidSession/wrongLink: a SessionId is valid only with its link kind, principal scope, and generation.",
+      "record": "4f424350030001010300300002000000090000000400040000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "other-companion",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "A different principal queries the operation.",
+      "record": "4f424350030000020000100003000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "other-companion",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "control",
+      "note": "authorizationFailed, not status: authorization precedes operation-status facts.",
+      "record": "4f424350030000020300300003000000040000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 2,
+      "channel": "stream",
+      "note": "A frame bearing a session released earlier in this generation is silently discarded; one released in an earlier generation is stale by the generation check alone.",
+      "record": "1100000000000000000000000100010001"
+    }
+  ]
+}

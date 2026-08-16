@@ -1,0 +1,72 @@
+{
+  "name": "delete-lost-result-and-pinned-reader-continuity",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "DeleteObject's result is lost and recovered by query, while a pinned reader keeps streaming.",
+  "eventCount": 7,
+  "events": [
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "DeleteObject with the entry's exact expected revision.",
+      "record": "4f424350030000030000240046000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The catalog transaction commits; the response is lost.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "QueryOperation on the same OperationId.",
+      "record": "4f424350030000020000100047000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Committed, outcome deleted, with the deleted old head's length and CRC.",
+      "record": "4f4243500300000201004800470000000200000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100020009000000000000002c00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Reissuing the identical delete returns the same result and writes nothing.",
+      "record": "4f424350030000030000240048000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The same ObjectResult, replayed.",
+      "record": "4f42435003000003010044004800000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b100100020009000000000000002c00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "stream",
+      "note": "A reader pinned before the delete keeps streaming its generation.",
+      "record": "21000000e007000000000000d803020008090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedee"
+    }
+  ]
+}

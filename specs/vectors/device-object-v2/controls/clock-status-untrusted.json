@@ -1,0 +1,22 @@
+{
+  "name": "clock-status-untrusted",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "SetClock",
+    "value": 1027
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 16,
+    "requestId": 124
+  },
+  "boundary": "",
+  "note": "No set of any source is refused while the clock is still untrusted.",
+  "payload": "00000000000000000200000000000000",
+  "frame": "4f42435003000304010010007c00000000000000000000000200000000000000"
+}

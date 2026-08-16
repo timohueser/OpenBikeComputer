@@ -1,0 +1,14 @@
+{
+  "name": "stream-truncated-payload",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "A payload length that disagrees with the record is invalidFrame.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "payloadLength",
+    "detailValue": 4
+  },
+  "bytes": "01000000000000000000000004000100010203"
+}

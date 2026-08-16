@@ -1,0 +1,22 @@
+{
+  "name": "start-draft-part-request",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "StartDraftPart",
+    "value": 305
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 64,
+    "requestId": 61
+  },
+  "boundary": "",
+  "note": "(DraftPartKind, part key) is unique within the parent; the child OperationId is distinct from it.",
+  "payload": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30200000007000000000000000000010000000000a0e583420100000000000000",
+  "frame": "4f42435003003101000040003d000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30200000007000000000000000000010000000000a0e583420100000000000000"
+}

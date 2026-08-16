@@ -1,0 +1,14 @@
+{
+  "name": "begin-draft-zero-part-count",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "BeginDraftRequest",
+  "note": "The exact part count is nonzero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030030010000340001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3060000000000000000000000000000000000000008010000000000000000000000000000"
+}

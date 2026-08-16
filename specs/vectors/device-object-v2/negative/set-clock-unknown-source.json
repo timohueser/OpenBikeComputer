@@ -1,0 +1,14 @@
+{
+  "name": "set-clock-unknown-source",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "SetClockRequest",
+  "note": "An unknown source value is invalidDescriptor/unknownEnum.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "4f424350030003040000100001000000c03e1569000000000300000000000000"
+}

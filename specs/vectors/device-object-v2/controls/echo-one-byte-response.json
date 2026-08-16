@@ -1,0 +1,22 @@
+{
+  "name": "echo-one-byte-response",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "Echo",
+    "value": 1029
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 1,
+    "requestId": 126
+  },
+  "boundary": "",
+  "note": "The response payload is those bytes byte-identical.",
+  "payload": "00",
+  "frame": "4f42435003000504010001007e00000000"
+}

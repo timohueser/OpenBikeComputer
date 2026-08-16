@@ -1,0 +1,14 @@
+{
+  "name": "metadata-out-of-order-base-tags",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "note": "Fields are strictly increasing by base tag.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "outOfOrderField",
+    "detailValue": 7
+  },
+  "bytes": "010080000a00020002800100010180010001"
+}

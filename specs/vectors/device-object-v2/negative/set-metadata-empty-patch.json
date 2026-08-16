@@ -1,0 +1,14 @@
+{
+  "name": "set-metadata-empty-patch",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "SetMetadataRequest",
+  "note": "A well-formed zero-field patch is refused as a request.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "emptyMetadataPatch",
+    "detailValue": 10
+  },
+  "bytes": "4f4243500300010300002c0001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100010009000000000000002a000000000000000100800000000000"
+}

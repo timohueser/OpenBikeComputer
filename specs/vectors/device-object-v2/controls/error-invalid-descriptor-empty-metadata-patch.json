@@ -1,0 +1,22 @@
+{
+  "name": "error-invalid-descriptor-empty-metadata-patch",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "SetMetadata",
+    "value": 769
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "A well-formed zero-field patch envelope is refused as a request, not as a codec error.",
+  "payload": "070000000a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010303003000c8000000070000000a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

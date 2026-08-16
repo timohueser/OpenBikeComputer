@@ -1,0 +1,14 @@
+{
+  "name": "frame-payload-length-mismatch",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "A payload length that disagrees with the record is invalidFrame.",
+  "expect": {
+    "category": "invalidFrame",
+    "categoryValue": 6,
+    "detail": "payloadLength",
+    "detailValue": 4
+  },
+  "bytes": "4f4243500300020100000400010000001100000000"
+}

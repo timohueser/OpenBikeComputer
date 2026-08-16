@@ -1,0 +1,14 @@
+{
+  "name": "stream-terminal-disposition-without-the-terminal-bit",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "streamFrame",
+  "note": "Dispositions 1 and 2 are the terminal ones.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "01000000000000000000000018000301080001000000000000000000000000000000000001000000"
+}

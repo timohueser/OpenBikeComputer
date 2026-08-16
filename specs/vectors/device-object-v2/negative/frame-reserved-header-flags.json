@@ -1,0 +1,14 @@
+{
+  "name": "frame-reserved-header-flags",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "controlFrame",
+  "note": "Flags 3..15 are zero.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unsupportedFlags",
+    "detailValue": 8
+  },
+  "bytes": "4f42435003000201080004000100000011000000"
+}

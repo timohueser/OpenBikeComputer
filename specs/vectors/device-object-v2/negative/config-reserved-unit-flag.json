@@ -1,0 +1,14 @@
+{
+  "name": "config-reserved-unit-flag",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "configBlock",
+  "note": "A reserved unit-flag bit is invalidDescriptor.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unsupportedFlags",
+    "detailValue": 8
+  },
+  "bytes": "01380000030800004f4243000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

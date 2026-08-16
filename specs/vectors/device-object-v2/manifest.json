@@ -1,0 +1,1986 @@
+{
+  "suite": "device-object-v2",
+  "format": 1,
+  "wire_major": 3,
+  "storage_format": 1,
+  "storage_note": "The storage array is empty here: Device_Object_Vectors_v2.md section 6 covers OBC2 record layouts and crash cuts, which no wire codec can produce. They land with the storage slice.",
+  "controls": [
+    {
+      "name": "hello-resource-page",
+      "file": "controls/hello-resource-page.json",
+      "sha256": "76100dfb26b80385c17c72e5a2158ec3abba7b82998d7f378e5dd4b2dbf08f37"
+    },
+    {
+      "name": "hello-subject-page-one",
+      "file": "controls/hello-subject-page-one.json",
+      "sha256": "30167104ff4f79655b96f967ee503816b3413edff78dd946e01a7a80716d8c02"
+    },
+    {
+      "name": "hello-at-the-192-byte-floor",
+      "file": "controls/hello-at-the-192-byte-floor.json",
+      "sha256": "47ce9c1ec80c7e75bdce40d3052527307227e7c09e2a8a2546d54c3a4287e3e2"
+    },
+    {
+      "name": "capabilities-resource-page",
+      "file": "controls/capabilities-resource-page.json",
+      "sha256": "b37d713184b0ed9285d139ef909a13d2e6b161285b8170c3bc6bc604f3611df4"
+    },
+    {
+      "name": "capabilities-subject-page-0",
+      "file": "controls/capabilities-subject-page-0.json",
+      "sha256": "468a96bccbb86a99d7d67cb631fc446002b78634ac290d791980d11b8157e9c7"
+    },
+    {
+      "name": "capabilities-subject-page-1",
+      "file": "controls/capabilities-subject-page-1.json",
+      "sha256": "cc410b7507feacd17d4d9e8ad7dbe3f8056f302321db91febf5061ac2cdb8d72"
+    },
+    {
+      "name": "capabilities-subject-page-2",
+      "file": "controls/capabilities-subject-page-2.json",
+      "sha256": "be09dcd198ecf6029ef3adbe1d96462b48cb1efe274a4dbed605675f0180629a"
+    },
+    {
+      "name": "capabilities-subject-page-3",
+      "file": "controls/capabilities-subject-page-3.json",
+      "sha256": "7654905b501b38ccb9d93efe8b866213cfa068b997f8835f3277432999eed2d5"
+    },
+    {
+      "name": "capabilities-zero-subject-page",
+      "file": "controls/capabilities-zero-subject-page.json",
+      "sha256": "3d8b197171c1e585c4734da468c77d2ad297ca47e48318ab83efa80587161e15"
+    },
+    {
+      "name": "capabilities-unauthenticated-test-link",
+      "file": "controls/capabilities-unauthenticated-test-link.json",
+      "sha256": "a875088c2898ecb902a6e5c0ac0c7414881d5005124de648c26cc84bc4e62500"
+    },
+    {
+      "name": "start-upload-create-trip-minimum",
+      "file": "controls/start-upload-create-trip-minimum.json",
+      "sha256": "7d011741282ae88664420077f6ea49fbff492371d44d7d1f109aa98fa7acbfde"
+    },
+    {
+      "name": "start-upload-create-route",
+      "file": "controls/start-upload-create-route.json",
+      "sha256": "7bae2e031f3dfec9ac534c2da3aa8dbeff69ff2a57eb4484150beb0921ec871f"
+    },
+    {
+      "name": "start-upload-replace-route-at-revision",
+      "file": "controls/start-upload-replace-route-at-revision.json",
+      "sha256": "ce63e85abc16851808c746ddf6062fa1fa3aeaa111e43fb0e4ff54d34551911f"
+    },
+    {
+      "name": "start-upload-replace-zero-identity",
+      "file": "controls/start-upload-replace-zero-identity.json",
+      "sha256": "5d2da811be6a0abea26fcd2e2ffe93f43fa5692c840525bcc0cff5245772a5be"
+    },
+    {
+      "name": "start-upload-weather-maximum-producible",
+      "file": "controls/start-upload-weather-maximum-producible.json",
+      "sha256": "135550936ef18c248e1a3bba864093600c9c1386666d27630da69cd748428e64"
+    },
+    {
+      "name": "start-upload-restart-at-zero",
+      "file": "controls/start-upload-restart-at-zero.json",
+      "sha256": "cef5e1623074f2011b72945845d654ba529e54218c147804107350636d0c7a21"
+    },
+    {
+      "name": "upload-accepted-offset-zero",
+      "file": "controls/upload-accepted-offset-zero.json",
+      "sha256": "1df50de80d282dcda07aee4e4edfd76ee368c74e069a9104776326d3a6768d30"
+    },
+    {
+      "name": "upload-accepted-resumed",
+      "file": "controls/upload-accepted-resumed.json",
+      "sha256": "cc6939ea8c4906071309a6fb49e248cc6203370977147cd19499f4edc8beede6"
+    },
+    {
+      "name": "upload-accepted-restart-at-zero",
+      "file": "controls/upload-accepted-restart-at-zero.json",
+      "sha256": "ad57ad2431091e7831627a8e4c7ff3c8c0c4759373794e58638ea4fe87d92c5e"
+    },
+    {
+      "name": "upload-accepted-already-terminal",
+      "file": "controls/upload-accepted-already-terminal.json",
+      "sha256": "92ca43df8f95ef92ec9de65795680a9c95e12edc1c966618cf94e51aed4a76f8"
+    },
+    {
+      "name": "checkpoint-upload-request",
+      "file": "controls/checkpoint-upload-request.json",
+      "sha256": "0dcda6b6059e0a437ba63cc09ca4b8567a363480005429192b5fe3c5791bdbed"
+    },
+    {
+      "name": "checkpoint-accepted-sequence-1",
+      "file": "controls/checkpoint-accepted-sequence-1.json",
+      "sha256": "8e030dedb1d9fd25eb606ca2b37f92f6c65ea2e7d51bf8a5cd8ab6fe4bee5dd2"
+    },
+    {
+      "name": "checkpoint-accepted-sequence-2",
+      "file": "controls/checkpoint-accepted-sequence-2.json",
+      "sha256": "ea916b07b63886845957604bfb164adf633d57dc719299ac6f61bbd86df03952"
+    },
+    {
+      "name": "checkpoint-accepted-sequence-3",
+      "file": "controls/checkpoint-accepted-sequence-3.json",
+      "sha256": "f1f4e392e2ef2af730069d1f0dcabc43b649fe4c32afc245df070604665fbe95"
+    },
+    {
+      "name": "finish-upload-request",
+      "file": "controls/finish-upload-request.json",
+      "sha256": "3ebe44c618e9f27857bffe70c0374eb741e09e064e3c033d2e4441adb96cc10c"
+    },
+    {
+      "name": "finish-upload-object-result-committed",
+      "file": "controls/finish-upload-object-result-committed.json",
+      "sha256": "d3504767712c968d37d3cccc093bbd0a09341051901a720bf249898a35d67768"
+    },
+    {
+      "name": "object-result-committed",
+      "file": "controls/object-result-committed.json",
+      "sha256": "7736760e06c45be4cfab446ae221502e7446a86101d2b460a1df70376c13b610"
+    },
+    {
+      "name": "object-result-reserved-superseded-weather-decode-only",
+      "file": "controls/object-result-reserved-superseded-weather-decode-only.json",
+      "sha256": "bea0e887fee08cf2355f841a035ddaa54c9d8b592a5329ace5e1b24afa54bcfa"
+    },
+    {
+      "name": "object-result-deleted",
+      "file": "controls/object-result-deleted.json",
+      "sha256": "19beec0fb0d6a182c5d2974d10b93f7b9463fb838fac7824ed1f4d7227091640"
+    },
+    {
+      "name": "object-result-metadata-changed",
+      "file": "controls/object-result-metadata-changed.json",
+      "sha256": "4a7892eef16daee7f87d0054b3964a995f27894e1558cc69aae14159741583a1"
+    },
+    {
+      "name": "object-result-update-install-requested",
+      "file": "controls/object-result-update-install-requested.json",
+      "sha256": "ac9dece78f6c3e25b5fa40e5aba414028c18efd258b4b1010bdec1e4e1c1f7bb"
+    },
+    {
+      "name": "object-result-ride-imported",
+      "file": "controls/object-result-ride-imported.json",
+      "sha256": "bc8b14492b0b028654bb89178042b2c9fec77e9e995018d5c1891a39d369bb0a"
+    },
+    {
+      "name": "draft-part-result-sealed",
+      "file": "controls/draft-part-result-sealed.json",
+      "sha256": "741a31d9d20e312e7cbcff01a2adaa5d959f4183127b14b18b9ee1c8b96584b4"
+    },
+    {
+      "name": "abort-result-cancelled",
+      "file": "controls/abort-result-cancelled.json",
+      "sha256": "0a66f1a7f2af22eadbe45bf81e88e829883b83244f0223be667b2868c051f2ce"
+    },
+    {
+      "name": "abort-result-already-terminal",
+      "file": "controls/abort-result-already-terminal.json",
+      "sha256": "2399c6e05dd0be999ebd81f50266e334ebd42848efdb084e2d4484e851227425"
+    },
+    {
+      "name": "abort-result-already-absent",
+      "file": "controls/abort-result-already-absent.json",
+      "sha256": "6eca5004b3ce4e1c174761bfe6403dd65cd0f75de788c3b8983260a94dba71e2"
+    },
+    {
+      "name": "start-download-request",
+      "file": "controls/start-download-request.json",
+      "sha256": "47b9bd6965618bebb16e31f370931c431800e7cb395413b6d34faed808c646d8"
+    },
+    {
+      "name": "start-download-resumed-request",
+      "file": "controls/start-download-resumed-request.json",
+      "sha256": "8d5c2b4e838b939df84a52d3582f9be82b00d375bc01d52342b9348a744a5e98"
+    },
+    {
+      "name": "download-accepted",
+      "file": "controls/download-accepted.json",
+      "sha256": "cd799a49a66c9fd838a0ce7047c5405acd7fa390e14105a00fe7db1fbd9c2e13"
+    },
+    {
+      "name": "finish-download-request",
+      "file": "controls/finish-download-request.json",
+      "sha256": "3474d7eb82eb72719da1dc2a04451751f61fd52a31a44d34d56725bf38f5e287"
+    },
+    {
+      "name": "finish-download-released",
+      "file": "controls/finish-download-released.json",
+      "sha256": "b0f067df06fbd5040cb7a87b5648af8421e4044240ba576bd1eb76f02dcc532d"
+    },
+    {
+      "name": "abort-session-client-cancelled",
+      "file": "controls/abort-session-client-cancelled.json",
+      "sha256": "5255c496ff426beb086ba4b95427cecb8a7b438cd390fc11ed57bd7d78ca9212"
+    },
+    {
+      "name": "abort-session-superseded",
+      "file": "controls/abort-session-superseded.json",
+      "sha256": "8c2ef71deeea341b094fb6a877dbcf62332d76dd9bf48ccaed0d899414a60af4"
+    },
+    {
+      "name": "abort-session-user-requested",
+      "file": "controls/abort-session-user-requested.json",
+      "sha256": "7b092f5ed9be86d3151d8263eef96df3776bdae1ecc3e5af7955e6f084e9ae1c"
+    },
+    {
+      "name": "abort-session-detached",
+      "file": "controls/abort-session-detached.json",
+      "sha256": "91c417af5bd8596f1ba35da2d61c4b9be1882d6ac8a38acec133ff4ec000e21b"
+    },
+    {
+      "name": "abort-session-already-terminal",
+      "file": "controls/abort-session-already-terminal.json",
+      "sha256": "b88a4a1ab995eaefbb2f464520a18a369aff9e281125b18378a092320c98a63d"
+    },
+    {
+      "name": "abort-operation-request",
+      "file": "controls/abort-operation-request.json",
+      "sha256": "2b34dff4c0c3b400a98fecca9aced7148d3389a9b5e183d1019392517a730d42"
+    },
+    {
+      "name": "begin-draft-create-volume-manifest",
+      "file": "controls/begin-draft-create-volume-manifest.json",
+      "sha256": "572305724c2dffba3a0d9e9abc417c717af8744dd2bdcd93b6e6ca6caadf4e60"
+    },
+    {
+      "name": "begin-draft-accepted-open",
+      "file": "controls/begin-draft-accepted-open.json",
+      "sha256": "ff1400336c67446daef5fc21e12a315f39052cfa780cca5596f95f39fd1b7c3f"
+    },
+    {
+      "name": "begin-draft-already-terminal",
+      "file": "controls/begin-draft-already-terminal.json",
+      "sha256": "3a6a2e276e4fed2273fe1e01b9fd59778c18d3fc44b0ebd04815d7a393a077a3"
+    },
+    {
+      "name": "start-draft-part-request",
+      "file": "controls/start-draft-part-request.json",
+      "sha256": "00a111e54577651847c5d92a327fe612c757ed38dd1ff48c02574244381c7864"
+    },
+    {
+      "name": "start-draft-part-restart-request",
+      "file": "controls/start-draft-part-restart-request.json",
+      "sha256": "ca176f00332e38ba8b417abb75aadfa15969b98f8a3d8d0da1ceb204551252fa"
+    },
+    {
+      "name": "draft-part-accepted-offset-zero",
+      "file": "controls/draft-part-accepted-offset-zero.json",
+      "sha256": "da9b35c343d0e3c68a0a9b3ad41f1d1ad45845981c6ee49bd71df96f1b2a45ce"
+    },
+    {
+      "name": "draft-part-accepted-resumed",
+      "file": "controls/draft-part-accepted-resumed.json",
+      "sha256": "4e9d5629a5b7ec7f1e1525ec94e3a9f25e6276f3a3c13f88ce36244953e35bf9"
+    },
+    {
+      "name": "draft-part-accepted-restart-at-zero",
+      "file": "controls/draft-part-accepted-restart-at-zero.json",
+      "sha256": "4743ce2a9434763f905ac28b8246a932bc92f0d4890e891dcc8e34442c607693"
+    },
+    {
+      "name": "finalize-draft-request",
+      "file": "controls/finalize-draft-request.json",
+      "sha256": "7f66b5c0ead7e239cb02028302e56fde49a4f84a2d9c805bc395415df2a16d59"
+    },
+    {
+      "name": "finalize-accepted-offset-zero",
+      "file": "controls/finalize-accepted-offset-zero.json",
+      "sha256": "9e4adecde5d72c4c6e01f9aa9e0d20d2a0b7f1f273c2164975d52811464edc92"
+    },
+    {
+      "name": "finalize-accepted-resumed",
+      "file": "controls/finalize-accepted-resumed.json",
+      "sha256": "6bf02bafb502a1b481700a7ef1ae70b833e640bbe1095a580df3c3658f672098"
+    },
+    {
+      "name": "finalize-accepted-restart-at-zero",
+      "file": "controls/finalize-accepted-restart-at-zero.json",
+      "sha256": "bf9bb58a9e5493fced76e0869e755b11454dd0589ee39bc89f8908b466a90e76"
+    },
+    {
+      "name": "query-operation-request",
+      "file": "controls/query-operation-request.json",
+      "sha256": "210be86ab7488ab7ba5c700233fe0a6b73b78d1b47aa2993a6b21c1c5dad9502"
+    },
+    {
+      "name": "query-operation-unknown",
+      "file": "controls/query-operation-unknown.json",
+      "sha256": "74d8f6d33fe613980e58c585398afd901fad617d94309f86bddd9401c9b2a6b4"
+    },
+    {
+      "name": "query-operation-progress-start-upload-prepared",
+      "file": "controls/query-operation-progress-start-upload-prepared.json",
+      "sha256": "41c9db4aaaab309fed27d4ee20efca510dd520c5a3f9e9cd103226f3d836dcb1"
+    },
+    {
+      "name": "query-operation-progress-start-upload-streaming",
+      "file": "controls/query-operation-progress-start-upload-streaming.json",
+      "sha256": "974f4ae2776c1e5b8cfe88a7e0b6fa732f0efec2a605e0322299468000e2aa15"
+    },
+    {
+      "name": "query-operation-progress-start-upload-sealed",
+      "file": "controls/query-operation-progress-start-upload-sealed.json",
+      "sha256": "d01124dd9f0615db2e21437122fda58ca264fa9d3eb76959d3b8fd1d3c7bffbc"
+    },
+    {
+      "name": "query-operation-progress-start-upload-validating",
+      "file": "controls/query-operation-progress-start-upload-validating.json",
+      "sha256": "03c28f72b75f1bb38a39e66a22eba2e32c03edcaa903e50281f21a4abc67a125"
+    },
+    {
+      "name": "query-operation-progress-start-upload-publishing",
+      "file": "controls/query-operation-progress-start-upload-publishing.json",
+      "sha256": "854e43a8432ec053d0e7b51987ca6151e20f972e3ba9d2c283f9003cab5b2cbf"
+    },
+    {
+      "name": "query-operation-progress-start-upload-aborting",
+      "file": "controls/query-operation-progress-start-upload-aborting.json",
+      "sha256": "3716bfb10b5097e7382831a1fed310bfbb5d95c833767f2dcde74e825e171a02"
+    },
+    {
+      "name": "query-operation-progress-start-upload-prepared-not-resumable",
+      "file": "controls/query-operation-progress-start-upload-prepared-not-resumable.json",
+      "sha256": "364cf24cf5bc77a3e08f16bc137cab39e572ce260f781a68a78056116d5f319b"
+    },
+    {
+      "name": "query-operation-progress-draft-part-prepared",
+      "file": "controls/query-operation-progress-draft-part-prepared.json",
+      "sha256": "4155aa51bc5dfbe1244c2f7a59e36ad0cf9e85c2d96dd1125bd0b60bd602258f"
+    },
+    {
+      "name": "query-operation-progress-draft-part-streaming",
+      "file": "controls/query-operation-progress-draft-part-streaming.json",
+      "sha256": "c57433032bc4684cfedcfcc8e02359237df680bd9cc6ef64d3a2871185b71435"
+    },
+    {
+      "name": "query-operation-progress-draft-part-sealed",
+      "file": "controls/query-operation-progress-draft-part-sealed.json",
+      "sha256": "1c24793caa7cb8546dfdec798672c7b25dc0bbd3960c17a49c2a5fccbd4495f7"
+    },
+    {
+      "name": "query-operation-progress-draft-part-validating",
+      "file": "controls/query-operation-progress-draft-part-validating.json",
+      "sha256": "3423ce981bc641dcb8be3719fe86259e31c83c6b4b6e7721e6b867d130796dd1"
+    },
+    {
+      "name": "query-operation-progress-draft-part-publishing",
+      "file": "controls/query-operation-progress-draft-part-publishing.json",
+      "sha256": "4c4af2d5034e244cf544d92baa0471b9bae391a36703250425c74744dc7a66dc"
+    },
+    {
+      "name": "query-operation-progress-draft-part-aborting",
+      "file": "controls/query-operation-progress-draft-part-aborting.json",
+      "sha256": "6e02286b0072de608fca955dd24329300f398319ff12c6284fbc224d16ee5841"
+    },
+    {
+      "name": "query-operation-progress-draft-part-streaming-detached",
+      "file": "controls/query-operation-progress-draft-part-streaming-detached.json",
+      "sha256": "894371dac3d4179145397c9f335f0bac899059379df6b31ecfd5938ff903eb2d"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-draft-open",
+      "file": "controls/query-operation-progress-draft-parent-draft-open.json",
+      "sha256": "cde1dea1ecd4beaeaf8917134e8111777d00422b3f8e412d59bae60971cf882d"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-manifest-prepared",
+      "file": "controls/query-operation-progress-draft-parent-manifest-prepared.json",
+      "sha256": "ae616584b40902a50994e576b966cdb43e571f077c7d4e8940aef006ce212b47"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-manifest-streaming",
+      "file": "controls/query-operation-progress-draft-parent-manifest-streaming.json",
+      "sha256": "3efb966acc42d66cf61f39525b032602be6b7ab46a90fdf15db93da758e18f2f"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-manifest-sealed",
+      "file": "controls/query-operation-progress-draft-parent-manifest-sealed.json",
+      "sha256": "ed4d328c627c1a9455e820fd3b0cec42a9db0d4838c729dde1e71343ac451d28"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-manifest-validating",
+      "file": "controls/query-operation-progress-draft-parent-manifest-validating.json",
+      "sha256": "31fc73d50e63a06b11541678687189bed88bbc78e89d79c4b9875627d57b4270"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-manifest-publishing",
+      "file": "controls/query-operation-progress-draft-parent-manifest-publishing.json",
+      "sha256": "7e6470e9ecf05b800f36bbb8eefc18775b6781f35fe958523db097542e049dae"
+    },
+    {
+      "name": "query-operation-progress-draft-parent-aborting",
+      "file": "controls/query-operation-progress-draft-parent-aborting.json",
+      "sha256": "c03fb94c713e20d50b45010b7e18adec6829bc7e27f6629fe6af5fd02e423ab8"
+    },
+    {
+      "name": "query-operation-progress-delete-validating",
+      "file": "controls/query-operation-progress-delete-validating.json",
+      "sha256": "7abf2abeb015f69f91c73b4a8bedd213f99eb4a5eac837b3e664bbe42ce47775"
+    },
+    {
+      "name": "query-operation-progress-delete-publishing",
+      "file": "controls/query-operation-progress-delete-publishing.json",
+      "sha256": "56feb2273fb4c16edf78dea8be2ae2791c1f82c12e634b2f8dd115b9cc215c4f"
+    },
+    {
+      "name": "query-operation-progress-delete-aborting",
+      "file": "controls/query-operation-progress-delete-aborting.json",
+      "sha256": "52d7f048aab74c1ebdc8029d7ce2790aa5265a87c4291fec4759331d22a4c04a"
+    },
+    {
+      "name": "query-operation-progress-set-metadata-validating",
+      "file": "controls/query-operation-progress-set-metadata-validating.json",
+      "sha256": "92d813152521a366b5a0b311a07dd7e5203aa8d81948fb2c9301c7f21d8e0e42"
+    },
+    {
+      "name": "query-operation-progress-set-metadata-publishing",
+      "file": "controls/query-operation-progress-set-metadata-publishing.json",
+      "sha256": "963720f631e985262e1db6807611e99a6aba7d4d63170d345f9624b77cf10c50"
+    },
+    {
+      "name": "query-operation-progress-set-metadata-aborting",
+      "file": "controls/query-operation-progress-set-metadata-aborting.json",
+      "sha256": "cc832aa8ecc34b3b06278832e2731be2fd9be30d36c509a6ff0c2edf12e3635c"
+    },
+    {
+      "name": "query-operation-progress-abort-command-aborting",
+      "file": "controls/query-operation-progress-abort-command-aborting.json",
+      "sha256": "44fe328ca9f7e9c0c1eb2155c3c52eb5dfa419285bb89a6724d314c82fef520a"
+    },
+    {
+      "name": "query-operation-progress-install-update-validating",
+      "file": "controls/query-operation-progress-install-update-validating.json",
+      "sha256": "e9d6cc583e7eb5285295da17c99ce125a506df523c749caa808999fe0922c954"
+    },
+    {
+      "name": "query-operation-progress-install-update-publishing",
+      "file": "controls/query-operation-progress-install-update-publishing.json",
+      "sha256": "ac724ede2b8bbe368d289cfd907afe4e4f53ea1e7f56d3066cb9354863ba36b3"
+    },
+    {
+      "name": "query-operation-progress-install-update-external-handoff",
+      "file": "controls/query-operation-progress-install-update-external-handoff.json",
+      "sha256": "926e206adab8203faa775f869edb29150df45677f6f36e6762d52e4b48a2df96"
+    },
+    {
+      "name": "query-operation-progress-acknowledge-ride-validating",
+      "file": "controls/query-operation-progress-acknowledge-ride-validating.json",
+      "sha256": "5b818f1279e346de20ec826e92a938d5abff9bbb571f06a71b5ff320b52a49f7"
+    },
+    {
+      "name": "query-operation-progress-acknowledge-ride-publishing",
+      "file": "controls/query-operation-progress-acknowledge-ride-publishing.json",
+      "sha256": "6115ae62db82cd9fd5af883c71e5910679f899e1f77b80552a381be4c4052c86"
+    },
+    {
+      "name": "query-operation-progress-acknowledge-ride-aborting",
+      "file": "controls/query-operation-progress-acknowledge-ride-aborting.json",
+      "sha256": "383498a326c18dd994ef725938e67e985d2cba62fa0ae08a2058fb1ed2fea1a4"
+    },
+    {
+      "name": "query-operation-committed",
+      "file": "controls/query-operation-committed.json",
+      "sha256": "22d811730a1df1006ccfe351d6971cdd75713cbac280f8a8105ef1f827ee6dcb"
+    },
+    {
+      "name": "query-operation-aborted",
+      "file": "controls/query-operation-aborted.json",
+      "sha256": "d8b94a1ea2278426ad568f4b21a4b59a89dbf9089ab5c0ad80e131f437e7cd02"
+    },
+    {
+      "name": "query-catalog-first-page",
+      "file": "controls/query-catalog-first-page.json",
+      "sha256": "0d5fef40a12c98c1027f33c81a354be338f367ecca3dd0c235d9e89e18a6344d"
+    },
+    {
+      "name": "query-catalog-unchanged-check",
+      "file": "controls/query-catalog-unchanged-check.json",
+      "sha256": "35f691852cae479e7f6073c597b70f0cae5697267c98c8eb44e1663638e7d682"
+    },
+    {
+      "name": "query-catalog-cursor-continuation",
+      "file": "controls/query-catalog-cursor-continuation.json",
+      "sha256": "06aa293f948581ffc7a0ab578a1316f4e7c9dc6932879644146aa9c058f54704"
+    },
+    {
+      "name": "catalog-page-empty",
+      "file": "controls/catalog-page-empty.json",
+      "sha256": "42c38254b3df9155b1b5d09bee2fb655062b473b7265387dbdb9fcf265851c84"
+    },
+    {
+      "name": "catalog-page-unchanged",
+      "file": "controls/catalog-page-unchanged.json",
+      "sha256": "976ef568f341b48547b00272915efb26b7e0d5284417ffdb1ba89448999334c3"
+    },
+    {
+      "name": "catalog-page-one-entry",
+      "file": "controls/catalog-page-one-entry.json",
+      "sha256": "2e3a27fa0471abfe7f4e3ed18544009b88fda83f9121fc65a87db53c09b38523"
+    },
+    {
+      "name": "catalog-page-maximum-metadata",
+      "file": "controls/catalog-page-maximum-metadata.json",
+      "sha256": "4bdc1014ec420caa0a82ec3295cf275f21b7dea2f534ed384ad15d34b4b40d79"
+    },
+    {
+      "name": "catalog-page-maximum-count",
+      "file": "controls/catalog-page-maximum-count.json",
+      "sha256": "24a2727474eaf95c1c2c6d3e837393d811e73953cf032c7bb57b497b831aa4ae"
+    },
+    {
+      "name": "catalog-page-trip-projection",
+      "file": "controls/catalog-page-trip-projection.json",
+      "sha256": "19bdaed5947f40d6b2a74bef76cb1c536db8326ddb1196db34b06fed437b1079"
+    },
+    {
+      "name": "catalog-page-weather-projection",
+      "file": "controls/catalog-page-weather-projection.json",
+      "sha256": "66c2e3b01b148e26be41809388504fd4fb7bca2b37013072e58c5c3e42beffc3"
+    },
+    {
+      "name": "catalog-page-volume-manifest-projection",
+      "file": "controls/catalog-page-volume-manifest-projection.json",
+      "sha256": "fe9d612eeece6072d3794c80796b5e073055f0d9731c537df039cdfe4db8fac9"
+    },
+    {
+      "name": "catalog-page-update-package-projection",
+      "file": "controls/catalog-page-update-package-projection.json",
+      "sha256": "8f8197c3951edb49204fe7d2e697b0117f0bdedaf97565d939bed2e4662dde00"
+    },
+    {
+      "name": "query-draft-request",
+      "file": "controls/query-draft-request.json",
+      "sha256": "ac8aea2141aa373d61d083e0baa6df6b8de3f72963a9606a7147727ef6dcbea7"
+    },
+    {
+      "name": "draft-page-every-state",
+      "file": "controls/draft-page-every-state.json",
+      "sha256": "669f0fdd26b13b6e520473f591b12430cf236001f0b65a9869f80be477b41f53"
+    },
+    {
+      "name": "draft-page-empty",
+      "file": "controls/draft-page-empty.json",
+      "sha256": "0f2ad06ff259d8ab5991ab08b797365c40b0f91f484d63a36d16153e21238220"
+    },
+    {
+      "name": "draft-page-continuing",
+      "file": "controls/draft-page-continuing.json",
+      "sha256": "322059363fb8cf2afbcd9c8e63d5c9d5e0c6e6d85ffaedf0511ab284f3749a41"
+    },
+    {
+      "name": "query-weather-request",
+      "file": "controls/query-weather-request.json",
+      "sha256": "1de13c51e6f16d76f190c55f3fbc7b4769f9d0b25d973cf46ef303c2456e9a09"
+    },
+    {
+      "name": "weather-context-pending",
+      "file": "controls/weather-context-pending.json",
+      "sha256": "5a8eb981e793691f649c46cfea713d89ee9b2d9c71ddf1656dcd984e52b8e452"
+    },
+    {
+      "name": "weather-context-satisfied",
+      "file": "controls/weather-context-satisfied.json",
+      "sha256": "3169079c28b499ace07f18659ff3c1dc803a31749105f2c95b690400fdad4b97"
+    },
+    {
+      "name": "delete-object-request",
+      "file": "controls/delete-object-request.json",
+      "sha256": "0eb8145e0dcbaff25258858d5bab89ea7147900ffbabfe221a27bfa7f12e9182"
+    },
+    {
+      "name": "set-metadata-route-request",
+      "file": "controls/set-metadata-route-request.json",
+      "sha256": "17a9ae876db403a4c42876be0f5815985a97a44f8eebb63fe7b8e8f1bd701e61"
+    },
+    {
+      "name": "set-metadata-volume-selected-request",
+      "file": "controls/set-metadata-volume-selected-request.json",
+      "sha256": "bcee913d7870716a680944f8ecce7762ce7bc0c73ce3e4011613093d05b57638"
+    },
+    {
+      "name": "install-update-request",
+      "file": "controls/install-update-request.json",
+      "sha256": "9edfdf86c12efb4e62fa91a553a64d763e58069cb1e7cb81a72dc339c9586523"
+    },
+    {
+      "name": "acknowledge-ride-imported-request",
+      "file": "controls/acknowledge-ride-imported-request.json",
+      "sha256": "2e5db2cb3da6617f7380edff2f926310cf097e8ed4dc2d80b9129e4e6ef80946"
+    },
+    {
+      "name": "get-device-status-request",
+      "file": "controls/get-device-status-request.json",
+      "sha256": "357dca94cf809c7060ebb7a37521e24732f3db78871b540d96369d47640bae99"
+    },
+    {
+      "name": "device-status-mount-class-0",
+      "file": "controls/device-status-mount-class-0.json",
+      "sha256": "0d40c28a265f5c4cba706b24074ff4008b58fd03cd86cfa07677b58f0363fa32"
+    },
+    {
+      "name": "device-status-mount-class-1",
+      "file": "controls/device-status-mount-class-1.json",
+      "sha256": "32ffe88b4bd5cfce9bb05441762531777fe2b17504f0f03ac633925a15d7bc2a"
+    },
+    {
+      "name": "device-status-mount-class-2",
+      "file": "controls/device-status-mount-class-2.json",
+      "sha256": "75ccdbf7bd15f7f2fa6d7f814de3ab0cc3f271f3e20cd0933ed551424e705b25"
+    },
+    {
+      "name": "device-status-mount-class-3",
+      "file": "controls/device-status-mount-class-3.json",
+      "sha256": "2a10c9d2354b01d909f0c4975d3be2be6e0eac0fff6fc20310d40b1679e85207"
+    },
+    {
+      "name": "device-status-mount-class-4",
+      "file": "controls/device-status-mount-class-4.json",
+      "sha256": "7c166182a07b764ca73daba53313d560c2634cddbbc253aed8acbcf8220efbdc"
+    },
+    {
+      "name": "device-status-mount-class-5",
+      "file": "controls/device-status-mount-class-5.json",
+      "sha256": "bf4bb433ad68ebf5ae18c5c444e0046dcbc0210642289745399adfc32303dd67"
+    },
+    {
+      "name": "device-status-mount-class-6",
+      "file": "controls/device-status-mount-class-6.json",
+      "sha256": "8b1b3e49da6adbcacd4ebd185cf11a015aa9c6245e49a2b5ae8ee57216b0ddc5"
+    },
+    {
+      "name": "get-config-request",
+      "file": "controls/get-config-request.json",
+      "sha256": "18f407897c5b065158730578c4ef4dab41b64548ae3c3a37592c828670fdfdb5"
+    },
+    {
+      "name": "config-block-full-name-response",
+      "file": "controls/config-block-full-name-response.json",
+      "sha256": "8019e6542a984ad0e6795ad1a048bcccac1cc84e230f0563af3f3d009d5c17ed"
+    },
+    {
+      "name": "set-config-block-full-name-request",
+      "file": "controls/set-config-block-full-name-request.json",
+      "sha256": "5893b070bd416cfec6458f958420853162682c88dd940c01ca871116e3df6576"
+    },
+    {
+      "name": "config-block-short-name-response",
+      "file": "controls/config-block-short-name-response.json",
+      "sha256": "121d3c955567ab88fd9a2fa34df29f28aeddda2068f877da2c0b8d77c38d9611"
+    },
+    {
+      "name": "set-config-block-short-name-request",
+      "file": "controls/set-config-block-short-name-request.json",
+      "sha256": "90aaeab9dcd35db1e9095bd4084ef0c32eb1996fe2ec8a3a5306b6c818aa9a97"
+    },
+    {
+      "name": "config-block-empty-name-response",
+      "file": "controls/config-block-empty-name-response.json",
+      "sha256": "83e6f99af1381b6b110f15942f11a76da53006fb56c9b9457b3acb62347af1bc"
+    },
+    {
+      "name": "set-config-block-empty-name-request",
+      "file": "controls/set-config-block-empty-name-request.json",
+      "sha256": "21e6ea1748c2ac4ad1e52103d0f5f815a7c9815d4bb61d53c10af76c4d6b45fb"
+    },
+    {
+      "name": "set-config-response",
+      "file": "controls/set-config-response.json",
+      "sha256": "e74630a474e1839b991ab3e5307eba2f17a4790b96b8456095de7628fd55bb2a"
+    },
+    {
+      "name": "set-clock-companion-request",
+      "file": "controls/set-clock-companion-request.json",
+      "sha256": "5eeaca2f41f9e1b4275ef5ddd420a931508ca1dbe13a0977b3fe768e7ac9e3dd"
+    },
+    {
+      "name": "clock-status-companion-trusted",
+      "file": "controls/clock-status-companion-trusted.json",
+      "sha256": "278d93a9c5f2f20ac6f6342a6fec777bdde8cd061abde50dd11974a7ea642b97"
+    },
+    {
+      "name": "set-clock-gps-request",
+      "file": "controls/set-clock-gps-request.json",
+      "sha256": "d6eb460fa82037d75225ee593b66685b5858867addea65383f7d45d48fee1dc6"
+    },
+    {
+      "name": "clock-status-gps-trusted",
+      "file": "controls/clock-status-gps-trusted.json",
+      "sha256": "5a722987916d84aea09aac9be626513daa4028e677bd70067c3cee32b7f4e24e"
+    },
+    {
+      "name": "clock-status-untrusted",
+      "file": "controls/clock-status-untrusted.json",
+      "sha256": "7e3442664c7109d8e858f03c98ed9d93087eec21e364194c01f61d7a2c008331"
+    },
+    {
+      "name": "forget-bond-this-bond-request",
+      "file": "controls/forget-bond-this-bond-request.json",
+      "sha256": "b1a8287c36373ca4fe675b6f59dd3f78e584b4d0018062a606a73f223d57c086"
+    },
+    {
+      "name": "forget-bond-every-bond-request",
+      "file": "controls/forget-bond-every-bond-request.json",
+      "sha256": "58e6ef4e19d6c69a1bb656b12dcd58afabfa780ea35e7628403897eb87e61db5"
+    },
+    {
+      "name": "forget-bond-response",
+      "file": "controls/forget-bond-response.json",
+      "sha256": "4b1b93a7f2e02d23398de262051c1c7c4cb8d12538d972930dac76a1f3ff06c4"
+    },
+    {
+      "name": "echo-empty-request",
+      "file": "controls/echo-empty-request.json",
+      "sha256": "0dbf4e9fadb8a4df60bc47600c70a4472b52c3b66b2433d23aa35e1fe422de00"
+    },
+    {
+      "name": "echo-empty-response",
+      "file": "controls/echo-empty-response.json",
+      "sha256": "8fe4becdcdc52b855069e17b06bb79ffcf02d36aadcb40d9cea61f750020deec"
+    },
+    {
+      "name": "echo-one-byte-request",
+      "file": "controls/echo-one-byte-request.json",
+      "sha256": "0e83551d7fa9c8cdf7dde54d5914f061c7c9514c4f0fb93e1e44d6deff41697d"
+    },
+    {
+      "name": "echo-one-byte-response",
+      "file": "controls/echo-one-byte-response.json",
+      "sha256": "ac0d1f87cb7d52343cc1f0b9af64d5e5e66c8b6195603cad90d882849fa64668"
+    },
+    {
+      "name": "echo-negotiated-maximum-request",
+      "file": "controls/echo-negotiated-maximum-request.json",
+      "sha256": "b3be57a39dc88f4118e778a26dcaf2133339d721202eb91e89c418ba6c4279f2"
+    },
+    {
+      "name": "echo-negotiated-maximum-response",
+      "file": "controls/echo-negotiated-maximum-response.json",
+      "sha256": "8a93b77dea38869b2fe33497b901387a213c120553feec27ba7a483d471da530"
+    },
+    {
+      "name": "reset-store-request",
+      "file": "controls/reset-store-request.json",
+      "sha256": "1961ff37770c234f06041e321353ec7321cedc8f047b0f4170cb951812759fbf"
+    },
+    {
+      "name": "reset-store-result",
+      "file": "controls/reset-store-result.json",
+      "sha256": "d90246aa2b2c8b753db0bca550e17aa8b204668b2156b1fac24b5b235264d3f2"
+    },
+    {
+      "name": "error-incompatible-version",
+      "file": "controls/error-incompatible-version.json",
+      "sha256": "2c3d86edd622937af7783ac71bb101a43693b3acf91334430d764e8ab43dbd49"
+    },
+    {
+      "name": "error-unsupported-capability-opcode",
+      "file": "controls/error-unsupported-capability-opcode.json",
+      "sha256": "ee9019343c769b7c2c93f428b102a9abee7eaf5d5d7f47a495ce6ef98fca3f3c"
+    },
+    {
+      "name": "error-unsupported-capability-non-cancellable",
+      "file": "controls/error-unsupported-capability-non-cancellable.json",
+      "sha256": "e4792dbe3e4fce43215d6b7956c67a86674e4e27bcf811163cb7eb4008ed2de3"
+    },
+    {
+      "name": "error-authentication-failed",
+      "file": "controls/error-authentication-failed.json",
+      "sha256": "7e4d51710d86215d36c850a3b283a3770e811017c9547ef0f71f89f1fdb933d8"
+    },
+    {
+      "name": "error-authorization-failed-operation-owner",
+      "file": "controls/error-authorization-failed-operation-owner.json",
+      "sha256": "dfba2c17d1ebfed2bbe511a7d1d1de6d17a6c71996c1d1e6d9e7f7fd99511ae9"
+    },
+    {
+      "name": "error-authorization-failed-device-control",
+      "file": "controls/error-authorization-failed-device-control.json",
+      "sha256": "365610e858eb943a8f6f0d41765562f7e164c1bb3a341c4fd8e92d407ff7f59b"
+    },
+    {
+      "name": "error-busy-owner-none",
+      "file": "controls/error-busy-owner-none.json",
+      "sha256": "fc085a8958b4c6083f5789840591d27a2c23bdd743f27d95708e149ba1df5976"
+    },
+    {
+      "name": "error-busy-owner-ble",
+      "file": "controls/error-busy-owner-ble.json",
+      "sha256": "df515106273b9f09f0ac872ee5a998b584936875ede930ba5eef7aa5b41bcb98"
+    },
+    {
+      "name": "error-busy-owner-usb",
+      "file": "controls/error-busy-owner-usb.json",
+      "sha256": "9803101f4fc982cf8b7b85e50e253486557582b1f1c1f4973d65eaf3418b862d"
+    },
+    {
+      "name": "error-busy-owner-test",
+      "file": "controls/error-busy-owner-test.json",
+      "sha256": "aa75afc15e380c83f97bfd6d075ba4ab135d72c123e63531fb2a5d3549acbf34"
+    },
+    {
+      "name": "error-busy-owner-local-producer",
+      "file": "controls/error-busy-owner-local-producer.json",
+      "sha256": "bd6c00ab62416276675dd85bcdd2dba170cea427e1f7ba78f0ff127f3b6f02e2"
+    },
+    {
+      "name": "error-busy-owner-maintenance",
+      "file": "controls/error-busy-owner-maintenance.json",
+      "sha256": "f9d9f276eddba5d0d4013b098b4345b5096faf0c2af4b8a0d0aa31cba6fd22ae"
+    },
+    {
+      "name": "error-busy-retry-after-delay",
+      "file": "controls/error-busy-retry-after-delay.json",
+      "sha256": "205d17db1e8b7a469d4187d69cdd75956a03f7db07c40b360930043da66a92ed"
+    },
+    {
+      "name": "error-busy-draft-parents",
+      "file": "controls/error-busy-draft-parents.json",
+      "sha256": "317628dc8c66574b12fdf2e0693a550b82da5c1b29df70b77b912d26c04560d1"
+    },
+    {
+      "name": "error-busy-ride-slot",
+      "file": "controls/error-busy-ride-slot.json",
+      "sha256": "b972c81186f57e507e6847473d64ba9e4ea682cbce0f826c93572d2e4208c0e4"
+    },
+    {
+      "name": "error-busy-maintenance-claim",
+      "file": "controls/error-busy-maintenance-claim.json",
+      "sha256": "40f0f6bfaf2f804d9928c44ee98e960e4a1ab8ebf3f840b28f40c60e1ce35566"
+    },
+    {
+      "name": "error-invalid-frame-truncated",
+      "file": "controls/error-invalid-frame-truncated.json",
+      "sha256": "4ec734ad3ef1de470fbb0c25a53e16861ca58dbf08ebe0870775a092f3784a91"
+    },
+    {
+      "name": "error-invalid-descriptor-reserved-bits",
+      "file": "controls/error-invalid-descriptor-reserved-bits.json",
+      "sha256": "89a925b4b1d45112247595c8b98a4d0d51145d9f754fac5dc95d536ffa208ec1"
+    },
+    {
+      "name": "error-invalid-descriptor-empty-metadata-patch",
+      "file": "controls/error-invalid-descriptor-empty-metadata-patch.json",
+      "sha256": "5a4fb0d9bb78d0c77c4551eba9454d866424cec85c0e397cfe715ebca0e0b35e"
+    },
+    {
+      "name": "error-invalid-offset-live-claim",
+      "file": "controls/error-invalid-offset-live-claim.json",
+      "sha256": "482cdfed8a3864c7f33572d1241c006fb0829204a8db6d8df1259b4f3d01caeb"
+    },
+    {
+      "name": "error-invalid-session",
+      "file": "controls/error-invalid-session.json",
+      "sha256": "2bffb98b7eb77745b5b803bfbd3c9b79e6b8e94b69bacdf348861149ba0b0d45"
+    },
+    {
+      "name": "error-object-not-found",
+      "file": "controls/error-object-not-found.json",
+      "sha256": "99a62a5c0385ad03cb79c34766c73b9661b78f8e4a033df86b6ac92840313fe2"
+    },
+    {
+      "name": "error-object-not-found-draft-parent-unknown",
+      "file": "controls/error-object-not-found-draft-parent-unknown.json",
+      "sha256": "43c5ec9444358b61a03892e0723d8947a8b96a56d86bfdf99d1557caaf5a3f23"
+    },
+    {
+      "name": "error-object-not-found-operation-terminal",
+      "file": "controls/error-object-not-found-operation-terminal.json",
+      "sha256": "25e1437b4219c063d82c45a6be11d3c3ca90e0a445bae6a0cf5376383735795b"
+    },
+    {
+      "name": "error-object-not-found-weather-request-context",
+      "file": "controls/error-object-not-found-weather-request-context.json",
+      "sha256": "f49d3b2b31b2c376a9a60d9f7538c5d7c8004a7e8d3a52a304cfcb6679f873f3"
+    },
+    {
+      "name": "error-revision-conflict",
+      "file": "controls/error-revision-conflict.json",
+      "sha256": "2af99e98c72507f110ec55ecddb9ac69a2c0a52097aa09a1c6414b50ca444254"
+    },
+    {
+      "name": "error-insufficient-space",
+      "file": "controls/error-insufficient-space.json",
+      "sha256": "c4c8ba959e49925700e8b8034f46d816043201481527066df057b98f6049cba6"
+    },
+    {
+      "name": "error-checksum-failure-whole-payload",
+      "file": "controls/error-checksum-failure-whole-payload.json",
+      "sha256": "1358721edff15cca935a6f5092fbcfa1fb94dce096bd7e145f7a30f04ae6d60e"
+    },
+    {
+      "name": "error-checksum-failure-durable-prefix",
+      "file": "controls/error-checksum-failure-durable-prefix.json",
+      "sha256": "8cebddeb8458bfa6b5cf005b32dea4e5ab74cf4cf27442b0e0680dd54b5eddab"
+    },
+    {
+      "name": "error-semantic-validation-weather-request-mismatch",
+      "file": "controls/error-semantic-validation-weather-request-mismatch.json",
+      "sha256": "704b43c9cde4c7eb9dc0ccc31a4a025b1595d4c3833c2cec7fb89145166922ce"
+    },
+    {
+      "name": "error-semantic-validation-downgrade-denied",
+      "file": "controls/error-semantic-validation-downgrade-denied.json",
+      "sha256": "c2f83e0fc650e675b44d460aa3cdc6ddfaf5ef339bd3faea3f47d596a0826e5c"
+    },
+    {
+      "name": "error-semantic-validation-unsafe-runtime-state",
+      "file": "controls/error-semantic-validation-unsafe-runtime-state.json",
+      "sha256": "07cc5b3a73d95764912528e8ea7a52e049f975e2a65f125c2e19055d37553b07"
+    },
+    {
+      "name": "error-semantic-validation-draft-incomplete",
+      "file": "controls/error-semantic-validation-draft-incomplete.json",
+      "sha256": "157eefccaec196769c38bb96a6051d52033275dfc02531fce147cca4d9ddb83f"
+    },
+    {
+      "name": "error-semantic-validation-clock-regression",
+      "file": "controls/error-semantic-validation-clock-regression.json",
+      "sha256": "8a1ac7a5026cd4c4b3d69f99fadf86121833bd7cad319a93f9eec9d118c2e949"
+    },
+    {
+      "name": "error-media-unavailable-no-card",
+      "file": "controls/error-media-unavailable-no-card.json",
+      "sha256": "c982949868e851fa0f230d7e0bd5622c05682b1b10d4da0176dd0df208cd8325"
+    },
+    {
+      "name": "error-media-unavailable-unmounted",
+      "file": "controls/error-media-unavailable-unmounted.json",
+      "sha256": "da3c85fea372d0cc01ca749b34160512c81815caf205a5206aff87a8856ec2ca"
+    },
+    {
+      "name": "error-media-io-uncertain-commit",
+      "file": "controls/error-media-io-uncertain-commit.json",
+      "sha256": "bf9086ad5b934150ea772b9d5cf6268fccc1ff4892e042411e1737305fbcab85"
+    },
+    {
+      "name": "error-cancelled",
+      "file": "controls/error-cancelled.json",
+      "sha256": "a413e39e8c2b45d33b6338395b3444418fd08f4b6c929904e39f58f85bc20a17"
+    },
+    {
+      "name": "error-link-lost",
+      "file": "controls/error-link-lost.json",
+      "sha256": "29f3a4960a9a487748b5192cd706267ccd6c3150aff97335194904bfeeb2e601"
+    },
+    {
+      "name": "error-operation-id-conflict",
+      "file": "controls/error-operation-id-conflict.json",
+      "sha256": "381c9f88487756b2a85a755f1ab47bcb54440494184451c6e5efbed5da436702"
+    },
+    {
+      "name": "error-resource-limit-minimum-control-frame",
+      "file": "controls/error-resource-limit-minimum-control-frame.json",
+      "sha256": "8b0abc9dfbbbb16b18a9e74c1bf6fe001752b6ba93dd8fd292033dd08b09a322"
+    },
+    {
+      "name": "error-resource-limit-minimum-stream-frame",
+      "file": "controls/error-resource-limit-minimum-stream-frame.json",
+      "sha256": "e45ba3ddc87a526f43d56db5f2a95df2bcaf39b8955df9e6b6d9d89696ef921b"
+    },
+    {
+      "name": "error-resource-limit-object-length",
+      "file": "controls/error-resource-limit-object-length.json",
+      "sha256": "4cd0c6d1962cc0bbb5bdb6903a0656df04e909615ccd9b17479c862c51f4c3bc"
+    },
+    {
+      "name": "error-catalog-changed",
+      "file": "controls/error-catalog-changed.json",
+      "sha256": "6b4f500495aed97fb483690d0c3bc186385ebf711ae4252f47a8b1a46bcf8fac"
+    },
+    {
+      "name": "error-catalog-changed-draft-snapshot",
+      "file": "controls/error-catalog-changed-draft-snapshot.json",
+      "sha256": "f8a6a3c496114137e6cbe77930b223cecb07b311e504090c3a8b943e430ac9e9"
+    },
+    {
+      "name": "error-internal",
+      "file": "controls/error-internal.json",
+      "sha256": "b252e0b44a22c309042025b079e110a3d0547e326f906dd620fc45318a2cd496"
+    },
+    {
+      "name": "reserved-detail-insufficient-space-retained-previous",
+      "file": "controls/reserved-detail-insufficient-space-retained-previous.json",
+      "sha256": "beeafef7dbbef913882db1bc609638a85bfa034742385fdbd1bd30e9eec21322"
+    },
+    {
+      "name": "reserved-detail-busy-draft-parts",
+      "file": "controls/reserved-detail-busy-draft-parts.json",
+      "sha256": "2ef9a1fcad5063d83c925240c9f3157cb221466c838bb40588bbecceb3ee1a5c"
+    },
+    {
+      "name": "reserved-detail-resource-limit-draft-parents",
+      "file": "controls/reserved-detail-resource-limit-draft-parents.json",
+      "sha256": "8c3defde31cac537ba14877816c39a3033bf685e1ac89cc859cbfe8ffbde6cd7"
+    },
+    {
+      "name": "reserved-detail-busy-retained-previous",
+      "file": "controls/reserved-detail-busy-retained-previous.json",
+      "sha256": "865a1a5badd83ef9e3c200bc18e19e99a32502ab5e013727850ac3e9eb349c3e"
+    },
+    {
+      "name": "reserved-detail-resource-limit-ride-slot",
+      "file": "controls/reserved-detail-resource-limit-ride-slot.json",
+      "sha256": "8bdce9013a1841e023d818ca171dcb4a21b8aa7ee19c4be3561a9ac2b9b6a649"
+    },
+    {
+      "name": "reserved-detail-busy-maintenance",
+      "file": "controls/reserved-detail-busy-maintenance.json",
+      "sha256": "ec4efa79817d39c18303cd770456586fa47a766eeacbb5abdca9ed91323344ea"
+    },
+    {
+      "name": "reserved-detail-catalog-changed-capability-snapshot",
+      "file": "controls/reserved-detail-catalog-changed-capability-snapshot.json",
+      "sha256": "3be444699241e56f8d986b9c181e70093ec9028e01ff29f4216d30efec4752c7"
+    },
+    {
+      "name": "reserved-detail-object-not-found-requested-revision",
+      "file": "controls/reserved-detail-object-not-found-requested-revision.json",
+      "sha256": "ad9d5ec14c44cf04472244eba95f7d74e02b3975f650fbcdcc34584d7816ac20"
+    },
+    {
+      "name": "reserved-detail-object-not-found-resumable-work",
+      "file": "controls/reserved-detail-object-not-found-resumable-work.json",
+      "sha256": "1240adead36f31bcd33825d890c5bd0d0c88a495d902c0f2cb12a3a69b73c9fe"
+    },
+    {
+      "name": "retained-aborted-replay-busy",
+      "file": "controls/retained-aborted-replay-busy.json",
+      "sha256": "dbea178d15657443c0571a230018e4419786074f08827b45678f0bed1952d93d"
+    },
+    {
+      "name": "retained-aborted-replay-invalid-offset",
+      "file": "controls/retained-aborted-replay-invalid-offset.json",
+      "sha256": "f5d7b37cbd533acc9e7c6bf3337db6c42aea9036c978fefa746f085a8374ef5c"
+    },
+    {
+      "name": "retained-aborted-replay-insufficient-space",
+      "file": "controls/retained-aborted-replay-insufficient-space.json",
+      "sha256": "2770658ce015f23a3451b70ffbd96996b2a1afccf746a914977f0ac93cb086f1"
+    },
+    {
+      "name": "retained-aborted-replay-media-unavailable",
+      "file": "controls/retained-aborted-replay-media-unavailable.json",
+      "sha256": "1bafe63ab57f3a93c3cbfc5fd1baa1537414007edc6e4826a2aa47c3cab5ae00"
+    },
+    {
+      "name": "error-text-empty",
+      "file": "controls/error-text-empty.json",
+      "sha256": "0c884dfee0e2c501a018b239d6dff14cf9c7f9147f022528ecd97d122680f464"
+    },
+    {
+      "name": "error-text-exactly-64-bytes",
+      "file": "controls/error-text-exactly-64-bytes.json",
+      "sha256": "4cde8df0911a3acb6943de34c317df2b510db9201cfbcb2ddc99dd287941afc9"
+    },
+    {
+      "name": "error-text-invalid-utf8-must-still-decode",
+      "file": "controls/error-text-invalid-utf8-must-still-decode.json",
+      "sha256": "d47f6390c32a120ca99a68f9a588a460fae1de9c35fb5fe1867df0a61e5e5123"
+    },
+    {
+      "name": "error-incompatibleVersion-unsupportedMinor",
+      "file": "controls/error-incompatibleVersion-unsupportedMinor.json",
+      "sha256": "2c249aa0b55fb909d9954fc5e4a48b1a71a0a0fed9debf965a1e3ae07d8c9582"
+    },
+    {
+      "name": "error-unsupportedCapability-logicalKind",
+      "file": "controls/error-unsupportedCapability-logicalKind.json",
+      "sha256": "9ac6e87192a43dea9a601ea483e135fea46c45cb6015412c2cc2dbaeff5c3bb1"
+    },
+    {
+      "name": "error-unsupportedCapability-draftPartKind",
+      "file": "controls/error-unsupportedCapability-draftPartKind.json",
+      "sha256": "7619a47adc3b8352d7fdb65621345d6035479793f083505619ab28e41c2b919f"
+    },
+    {
+      "name": "error-unsupportedCapability-feature",
+      "file": "controls/error-unsupportedCapability-feature.json",
+      "sha256": "93b4431552bffcad768f18abc323006b57aa018b6c07bc4b379412e99b192325"
+    },
+    {
+      "name": "error-unsupportedCapability-schemaVersion",
+      "file": "controls/error-unsupportedCapability-schemaVersion.json",
+      "sha256": "5f7b1987542d10c47002e8076c411d94cc8cb7c0bfaa7bad79b9321a6b82f586"
+    },
+    {
+      "name": "error-authenticationFailed-invalidCredential",
+      "file": "controls/error-authenticationFailed-invalidCredential.json",
+      "sha256": "cbb765138f0822dec6f3603edf93519df844ee721c01faf93b6282b233184ea9"
+    },
+    {
+      "name": "error-authenticationFailed-expiredCredential",
+      "file": "controls/error-authenticationFailed-expiredCredential.json",
+      "sha256": "16971a21d6b30465e500886da55b14ff4b4c2e859d9938761fa49e7599e8f7be"
+    },
+    {
+      "name": "error-authorizationFailed-principalScope",
+      "file": "controls/error-authorizationFailed-principalScope.json",
+      "sha256": "cd15375289ffee40cfc287a26b96b27af72cf31945ba7d21a9a52eba57cf0737"
+    },
+    {
+      "name": "error-authorizationFailed-domainRead",
+      "file": "controls/error-authorizationFailed-domainRead.json",
+      "sha256": "531ce4d00829b3ea85cfb89958302954da14858b48393aa381c8c56e736d3fde"
+    },
+    {
+      "name": "error-authorizationFailed-domainWrite",
+      "file": "controls/error-authorizationFailed-domainWrite.json",
+      "sha256": "446a1f57f9b061810990256797aa8f49f2c61d0ad884107e3c160dad2f0fa354"
+    },
+    {
+      "name": "error-authorizationFailed-installAuthority",
+      "file": "controls/error-authorizationFailed-installAuthority.json",
+      "sha256": "2718e8a8beb6b238d1eb7fa40adcffd6838f2926b46deaeb18fe9e2939010dbc"
+    },
+    {
+      "name": "error-busy-uploadWorkSlots",
+      "file": "controls/error-busy-uploadWorkSlots.json",
+      "sha256": "82bc35f272bb7e0d2f838d3a6207f55b47573839d3f476fdddebee73b547c549"
+    },
+    {
+      "name": "error-busy-readerLeases",
+      "file": "controls/error-busy-readerLeases.json",
+      "sha256": "7ba018e493cd5edb363d29d9c56470c51771f84efe407291ce031ed9376d3be2"
+    },
+    {
+      "name": "error-invalidFrame-malformedHeader",
+      "file": "controls/error-invalidFrame-malformedHeader.json",
+      "sha256": "61ad2d6fcfd7dac15c7938ccc2126c3f9fc1f9f5a42466b738ac56d53f3c1c95"
+    },
+    {
+      "name": "error-invalidFrame-recordLength",
+      "file": "controls/error-invalidFrame-recordLength.json",
+      "sha256": "39aa718e80c41a1dae6b1cfe1d0f64b09cc7673f70c12e152e33e7b25fd01fae"
+    },
+    {
+      "name": "error-invalidFrame-magic",
+      "file": "controls/error-invalidFrame-magic.json",
+      "sha256": "79cf70f586b00859fa3f21cee032ac5ee9c494885c000fb2c07694bf6f3d9ac6"
+    },
+    {
+      "name": "error-invalidFrame-payloadLength",
+      "file": "controls/error-invalidFrame-payloadLength.json",
+      "sha256": "749d755d9f28a85282d39e26fb899ea071aaf1abe6a0b0e9bbac0923b2fc5a64"
+    },
+    {
+      "name": "error-invalidFrame-frameBounds",
+      "file": "controls/error-invalidFrame-frameBounds.json",
+      "sha256": "383c7cd30d1a3cd4867c4393c5a3ba742c7ac9ba0df83b4ee0dba8a97b69266f"
+    },
+    {
+      "name": "error-invalidFrame-trailingBytes",
+      "file": "controls/error-invalidFrame-trailingBytes.json",
+      "sha256": "1ba22f6f7d26f4476b8b46a4c4b21ce2ddd2c25e1f4a42344ee74e0f615c6cb1"
+    },
+    {
+      "name": "error-invalidDescriptor-unknownEnum",
+      "file": "controls/error-invalidDescriptor-unknownEnum.json",
+      "sha256": "828f8ffa59d7a590fc7a002413f4f5eb42b70d0991ccec612de931731e84e230"
+    },
+    {
+      "name": "error-invalidDescriptor-invalidCombination",
+      "file": "controls/error-invalidDescriptor-invalidCombination.json",
+      "sha256": "53f0e1a12b6bc27d0c173c0f8c131b1abb4b7b604293580555d70b914dad7aa1"
+    },
+    {
+      "name": "error-invalidDescriptor-nestedLength",
+      "file": "controls/error-invalidDescriptor-nestedLength.json",
+      "sha256": "742611f176a13967ecbe5b8742219ef5a05aedba361b473b937404512c159108"
+    },
+    {
+      "name": "error-invalidDescriptor-noncanonicalMetadata",
+      "file": "controls/error-invalidDescriptor-noncanonicalMetadata.json",
+      "sha256": "60339a27d0ab1d8550f0ae07d9e96327ec6b45f99944ab657477c777d92e6419"
+    },
+    {
+      "name": "error-invalidDescriptor-duplicateField",
+      "file": "controls/error-invalidDescriptor-duplicateField.json",
+      "sha256": "369a7d971d1713b4da05fb6f4d6e1ba88f908593bd3b6ed39390571a0260a659"
+    },
+    {
+      "name": "error-invalidDescriptor-outOfOrderField",
+      "file": "controls/error-invalidDescriptor-outOfOrderField.json",
+      "sha256": "b9be6d855257dd8b1ed723b0b60376ebbfd145c8873e9e118661024ce07086ea"
+    },
+    {
+      "name": "error-invalidDescriptor-unsupportedFlags",
+      "file": "controls/error-invalidDescriptor-unsupportedFlags.json",
+      "sha256": "84bb3ac9dedade225640b880062fd417d36c6d008c03ff09e92d6a462b29d904"
+    },
+    {
+      "name": "error-invalidOffset-checkpointBoundary",
+      "file": "controls/error-invalidOffset-checkpointBoundary.json",
+      "sha256": "c484fe66073bb915bbb8160b74943be937765d6b509623841bef0f5b6dd331ec"
+    },
+    {
+      "name": "error-invalidSession-unknown",
+      "file": "controls/error-invalidSession-unknown.json",
+      "sha256": "e2e7a53093e7bd7a1e46a37a8da59534142c36f4eb3f66a9c0d303a33daa409e"
+    },
+    {
+      "name": "error-invalidSession-wrongPrincipal",
+      "file": "controls/error-invalidSession-wrongPrincipal.json",
+      "sha256": "dc2b4bdf3862e12538423f1de51b0b365a1b38d3944672b860eb5a8ac6a966af"
+    },
+    {
+      "name": "error-invalidSession-wrongLink",
+      "file": "controls/error-invalidSession-wrongLink.json",
+      "sha256": "beaabbb220bebb7671d54bdc93a9f0cc533e8c9181e678164815a140cac99ba3"
+    },
+    {
+      "name": "error-invalidSession-wrongDirection",
+      "file": "controls/error-invalidSession-wrongDirection.json",
+      "sha256": "aba27641fa79cbe07246eb57655112f193406add894ee3c39a3517b793779a4e"
+    },
+    {
+      "name": "error-revisionConflict-repository",
+      "file": "controls/error-revisionConflict-repository.json",
+      "sha256": "a1f7cb230fefc3f5941c1f3191917ea870feb67d280d2eec639b7ab7a334348a"
+    },
+    {
+      "name": "error-revisionConflict-singleton",
+      "file": "controls/error-revisionConflict-singleton.json",
+      "sha256": "373604c1d7215b9a9cbad0f931b651c70560c1a235584beca866c652c0a28ea8"
+    },
+    {
+      "name": "error-insufficientSpace-catalogCapacity",
+      "file": "controls/error-insufficientSpace-catalogCapacity.json",
+      "sha256": "2cf3fc7aebafd0bef49dc5986f0ab57ae54969c8b0e5ab87f6fd124a636b2397"
+    },
+    {
+      "name": "error-checksumFailure-cursor",
+      "file": "controls/error-checksumFailure-cursor.json",
+      "sha256": "969251852c2f339d4d89b942fdfcefd21227570596bf2f3116d0cabd1695ee5c"
+    },
+    {
+      "name": "error-mediaUnavailable-recoveryReadOnly",
+      "file": "controls/error-mediaUnavailable-recoveryReadOnly.json",
+      "sha256": "7369d8294c7c0e58caadb54e80aa2cc228d2685d2ec7ae195fd065e6988b5f9e"
+    },
+    {
+      "name": "error-mediaIo-read",
+      "file": "controls/error-mediaIo-read.json",
+      "sha256": "20c7d434ee7531ec4b22aa46ed54f15883445aee0a09417c9490e92c8e2b0f99"
+    },
+    {
+      "name": "error-mediaIo-write",
+      "file": "controls/error-mediaIo-write.json",
+      "sha256": "e7d30c060f5dba6e540c642b9d107eb79bee8f0b76d1d6dad679a5bbe7796692"
+    },
+    {
+      "name": "error-mediaIo-synchronize",
+      "file": "controls/error-mediaIo-synchronize.json",
+      "sha256": "a10f7156f301c124424547cadebcf036fd7b9834a50d7675ffb9e98f0c1a8a62"
+    },
+    {
+      "name": "error-cancelled-clientCancelled",
+      "file": "controls/error-cancelled-clientCancelled.json",
+      "sha256": "e58487f5be8165de47bd459691ddbf8b67db987e6d859707ba1ac3236ba6d72e"
+    },
+    {
+      "name": "error-cancelled-superseded",
+      "file": "controls/error-cancelled-superseded.json",
+      "sha256": "5dc4a412565b9a4a3c719118f9d6e44089723bd2660df706386caf272a0cbcee"
+    },
+    {
+      "name": "error-cancelled-userRequested",
+      "file": "controls/error-cancelled-userRequested.json",
+      "sha256": "37ab4b99d1f1fc97525fe93eecd54010f688856cfcae716a8614a0b66bf1331e"
+    },
+    {
+      "name": "error-linkLost-control",
+      "file": "controls/error-linkLost-control.json",
+      "sha256": "c0c412154516e8d68c4f0a9319b3a2696bf67174e0ebadb83ccb70f1f869aeaf"
+    },
+    {
+      "name": "error-resourceLimit-normalOperationClaims",
+      "file": "controls/error-resourceLimit-normalOperationClaims.json",
+      "sha256": "3266a5cb40f3d0980a939869004ba3b482594c9bad5350c71d152c57d91aaec5"
+    },
+    {
+      "name": "error-resourceLimit-uploadWorkSlots",
+      "file": "controls/error-resourceLimit-uploadWorkSlots.json",
+      "sha256": "54acbe55ab42ae973b51fb1abbcd62971662e7d8029a45a9cabeeadb72f11cf4"
+    },
+    {
+      "name": "error-resourceLimit-draftParts",
+      "file": "controls/error-resourceLimit-draftParts.json",
+      "sha256": "4daf8663432faa076c0151727adec85a047a8dee004ed6e3305bc88c3482b32f"
+    },
+    {
+      "name": "error-resourceLimit-manifestChildren",
+      "file": "controls/error-resourceLimit-manifestChildren.json",
+      "sha256": "41415a5f558a6096299839ecd65bb5cb95d696d9a56a1d3fbfd9dc82ddc3bea2"
+    },
+    {
+      "name": "error-resourceLimit-readerLeases",
+      "file": "controls/error-resourceLimit-readerLeases.json",
+      "sha256": "2b8f5e8db195dc95d4ea7ff633bbd819c53fd56f2bc8140afbab6c668d879ba0"
+    },
+    {
+      "name": "error-resourceLimit-catalogHeads",
+      "file": "controls/error-resourceLimit-catalogHeads.json",
+      "sha256": "76bcbdce684086c84118f3e7dc281b771f74fae720ea4d4c35bfba47f1c048e8"
+    },
+    {
+      "name": "error-resourceLimit-mountedFiles",
+      "file": "controls/error-resourceLimit-mountedFiles.json",
+      "sha256": "793c7fca41af5f2eb4fbcf064d95c8bd960378779066794a4e52f93865b97306"
+    },
+    {
+      "name": "error-internal-recoveryReconciliation",
+      "file": "controls/error-internal-recoveryReconciliation.json",
+      "sha256": "5a54ab9cbfc51969efa33604dbf956fee8ab4f5a26755b9c4a596ebbd617dfe9"
+    },
+    {
+      "name": "intent-start-upload-create-route",
+      "file": "controls/intent-start-upload-create-route.json",
+      "sha256": "e999cfbddbefd2e301a5259fe329779c30f3f68821399545a0f03892fa444e25"
+    },
+    {
+      "name": "intent-start-upload-replace-route",
+      "file": "controls/intent-start-upload-replace-route.json",
+      "sha256": "67c3a070f76aa7463329c62237f70b3ac8b7c3ac5b2347a7147c4664e0ad88a1"
+    },
+    {
+      "name": "intent-begin-draft",
+      "file": "controls/intent-begin-draft.json",
+      "sha256": "96060ff4222feeb6c21d42b02e9662615b827cc3bb03f77d0cdaebef021ce5dc"
+    },
+    {
+      "name": "intent-start-draft-part",
+      "file": "controls/intent-start-draft-part.json",
+      "sha256": "8ea07bc82aa32c7d02b33ec061bc8156e97ca7345bba678f42a229ae14657f0e"
+    },
+    {
+      "name": "intent-delete-object",
+      "file": "controls/intent-delete-object.json",
+      "sha256": "54bda954e52c1e4ed2af2674dc73055ab920eaf458ce9a8b42494ede0e9967fc"
+    },
+    {
+      "name": "intent-set-metadata",
+      "file": "controls/intent-set-metadata.json",
+      "sha256": "a25bdb9cde906af86688edf82659b5fab2bf78d6a56209c4f512754e55f94c9d"
+    },
+    {
+      "name": "intent-abort-operation",
+      "file": "controls/intent-abort-operation.json",
+      "sha256": "a368b504b032295b23be6518a0e269ec3dd57ecdc69b53a1ff057481e54747ae"
+    },
+    {
+      "name": "intent-install-update",
+      "file": "controls/intent-install-update.json",
+      "sha256": "6385ce9b25965113977a619397be562d967843f3b9a2ee00d8abab38c5f826fe"
+    },
+    {
+      "name": "intent-acknowledge-ride-imported",
+      "file": "controls/intent-acknowledge-ride-imported.json",
+      "sha256": "1184504ee9825596f19036e6c533bf7e26880a534f8fbf7159e2f76b99a6eefc"
+    },
+    {
+      "name": "frame-limit-derivation-cases",
+      "file": "controls/frame-limit-derivation-cases.json",
+      "sha256": "be74f03388a5f7e26d85c9e713943811834be25ab5f4a6eedeba5fdf8d515af6"
+    }
+  ],
+  "streams": [
+    {
+      "name": "upload-first-frame",
+      "file": "streams/upload-first-frame.json",
+      "sha256": "e5242ca728aee39ded49517e0e525d210a84d8fcf282cb65e6e5b585d9f25650"
+    },
+    {
+      "name": "upload-middle-frame",
+      "file": "streams/upload-middle-frame.json",
+      "sha256": "2d3732df0af293baed921212284415c834d09029dfa331968c75c708329a8cdb"
+    },
+    {
+      "name": "upload-final-frame",
+      "file": "streams/upload-final-frame.json",
+      "sha256": "f58cffb3aacaf45ee08b2e59d5e7fced3d4c97aea0f78ebb0ddea282beb651b7"
+    },
+    {
+      "name": "upload-minimum-payload",
+      "file": "streams/upload-minimum-payload.json",
+      "sha256": "d55cfe0f9a7434de1a522cd1a297e16a5de8b40923440da339b9baa217c82812"
+    },
+    {
+      "name": "upload-maximum-negotiated-payload",
+      "file": "streams/upload-maximum-negotiated-payload.json",
+      "sha256": "95ea192e16e020111f31188674af462fff55e2980c15f762e6e2c39c1c0be2d9"
+    },
+    {
+      "name": "upload-offset-below-u32-maximum",
+      "file": "streams/upload-offset-below-u32-maximum.json",
+      "sha256": "24e24974aeb13e2553a66f3d6bd43b81d45cab4fea46bc3891cd6cd5bcd16477"
+    },
+    {
+      "name": "upload-offset-above-u32-maximum",
+      "file": "streams/upload-offset-above-u32-maximum.json",
+      "sha256": "4e9b5cde1a02ca1ae0506654a50b2407e0f4462579e6b3dbd794675fc3300b08"
+    },
+    {
+      "name": "download-first-frame",
+      "file": "streams/download-first-frame.json",
+      "sha256": "bb0d104b6006ada07c870b0e1021a15214a8c332aab864f7c51db4504cfb7748"
+    },
+    {
+      "name": "download-middle-frame",
+      "file": "streams/download-middle-frame.json",
+      "sha256": "33fe21c2e428e37fced7e0ee1f59eda5f0f82a2e85f6a06dd71e9b0685d35e4f"
+    },
+    {
+      "name": "download-final-frame",
+      "file": "streams/download-final-frame.json",
+      "sha256": "2ab69886c1600c2b5d3e89097125a772556e08d901d8f76f8bb245ad31047150"
+    },
+    {
+      "name": "download-minimum-payload",
+      "file": "streams/download-minimum-payload.json",
+      "sha256": "b444b4cb57aedb16e612f58065ece14332809254354953e71258c51ac79fb646"
+    },
+    {
+      "name": "download-maximum-negotiated-payload",
+      "file": "streams/download-maximum-negotiated-payload.json",
+      "sha256": "90566fcc2a4c1450f57462bf9675980aa9712969e1aa6f3ca0b70e07509c7c6b"
+    },
+    {
+      "name": "download-offset-below-u32-maximum",
+      "file": "streams/download-offset-below-u32-maximum.json",
+      "sha256": "9af3b45f97a25e06d2f17f2d0201f962301a85b0eef3ef9b51d677b52bfd3304"
+    },
+    {
+      "name": "download-offset-above-u32-maximum",
+      "file": "streams/download-offset-above-u32-maximum.json",
+      "sha256": "7c2989e5131a76f45f5916aa82ffc5efdc093642b0b1f6e467df641772f44ccc"
+    },
+    {
+      "name": "upload-resumed-prefix-frame",
+      "file": "streams/upload-resumed-prefix-frame.json",
+      "sha256": "8599b179b1a7b0394054c2d61aebcbf566b04103f2918be8e17255a1f27f3550"
+    },
+    {
+      "name": "fault-resume-with-new-session",
+      "file": "streams/fault-resume-with-new-session.json",
+      "sha256": "108aa85a2d02c9e198fc188a7ad2cae381ba1175e3d38ae4eb44ecac25d0e1b2"
+    },
+    {
+      "name": "fault-operation-durably-aborted",
+      "file": "streams/fault-operation-durably-aborted.json",
+      "sha256": "3c9866d2295fe43921bffd36c664d77a7f4372d2bb850000e12cc1a1ea02997e"
+    },
+    {
+      "name": "fault-stream-closed-query-status",
+      "file": "streams/fault-stream-closed-query-status.json",
+      "sha256": "a64228b58d0527eaea1350d44a55a10340680530d8af532176c93ac4f710ed28"
+    },
+    {
+      "name": "fault-media-io-mid-stream",
+      "file": "streams/fault-media-io-mid-stream.json",
+      "sha256": "bb67be49bc9648b24c4f87e07e7af1944a3c8393c1740960735e46f74da1fa3c"
+    }
+  ],
+  "storage": [],
+  "negative": [
+    {
+      "name": "frame-bad-magic",
+      "file": "negative/frame-bad-magic.json",
+      "sha256": "6e986811d9d7b39cda57568be725942cea9f07a2ee96cdd32ae5d5d47dcafec3"
+    },
+    {
+      "name": "frame-incompatible-major",
+      "file": "negative/frame-incompatible-major.json",
+      "sha256": "68e2e40d928f019195925dd46e578ee635f4924d94112bae2ddea77175821ae0"
+    },
+    {
+      "name": "frame-unsupported-minor",
+      "file": "negative/frame-unsupported-minor.json",
+      "sha256": "f7bb0ea81c4f07f9172c60cde863727404892b96a051041e6eed2c07e219c9b5"
+    },
+    {
+      "name": "frame-zero-request-id",
+      "file": "negative/frame-zero-request-id.json",
+      "sha256": "3bbbcd0ea2e84d2e6de2ba1fcf3057af8681094d7828ac20c0e237563beb6651"
+    },
+    {
+      "name": "frame-record-too-short",
+      "file": "negative/frame-record-too-short.json",
+      "sha256": "5573f5660de0071f10aec0507f1259ec62e4cd81156709a0236253d9b68660c3"
+    },
+    {
+      "name": "frame-payload-length-mismatch",
+      "file": "negative/frame-payload-length-mismatch.json",
+      "sha256": "b7430f31bcc6b0bba4870e8853825faf9fb2c1209921afa559342ac62965256c"
+    },
+    {
+      "name": "frame-payload-length-overflow",
+      "file": "negative/frame-payload-length-overflow.json",
+      "sha256": "d658e802046ca874d768e453ed68f8f1d3444a1f1dee92ae8e3d9f426b0bbf53"
+    },
+    {
+      "name": "frame-unknown-opcode",
+      "file": "negative/frame-unknown-opcode.json",
+      "sha256": "79f867b76649f8f2570f0c74e855d3e0c7ef71a5ed214e176bd208f8ff657f96"
+    },
+    {
+      "name": "frame-reserved-header-flags",
+      "file": "negative/frame-reserved-header-flags.json",
+      "sha256": "b8f3a8852eec56b8ffa5b4fa3eb2648725083a4ee566cac2177f3d3b1c59bc6d"
+    },
+    {
+      "name": "frame-flags-on-a-request",
+      "file": "negative/frame-flags-on-a-request.json",
+      "sha256": "355356dd32054a085727abfef423f0a7d79e382a450b0ce20c4e50af5c29fc7a"
+    },
+    {
+      "name": "frame-more-on-an-unpageable-response",
+      "file": "negative/frame-more-on-an-unpageable-response.json",
+      "sha256": "63d31f577cab7b293fa8cfa2d1482560155caa361154da1d4bcc3316c4332656"
+    },
+    {
+      "name": "metadata-duplicate-base-tag",
+      "file": "negative/metadata-duplicate-base-tag.json",
+      "sha256": "6d3510f596a5dcbb507643bfa09d2e215e4866e315e1ca6a9e4ef1a62191fe8e"
+    },
+    {
+      "name": "metadata-out-of-order-base-tags",
+      "file": "negative/metadata-out-of-order-base-tags.json",
+      "sha256": "93c8d9184aa260e08deff59ee9d869d6cfd0988e99235206cfdd7b759e507e48"
+    },
+    {
+      "name": "metadata-zero-base-tag",
+      "file": "negative/metadata-zero-base-tag.json",
+      "sha256": "620ee48ce7b54c6146765ef21d78cec0de3949c6e09036da538002e460f053cf"
+    },
+    {
+      "name": "metadata-field-count-disagrees",
+      "file": "negative/metadata-field-count-disagrees.json",
+      "sha256": "ac39bfde930805ccbfd7031bfe504ca47da5767e8ec8d48142efeee00117b27c"
+    },
+    {
+      "name": "metadata-value-length-runs-past-the-body",
+      "file": "negative/metadata-value-length-runs-past-the-body.json",
+      "sha256": "cc3c0eddd2d2e1043778977fe49009b3d3e8e8d2a4f3f2eadd7a10bd139b16ac"
+    },
+    {
+      "name": "metadata-trailing-padding",
+      "file": "negative/metadata-trailing-padding.json",
+      "sha256": "6e4a0e51c16558abda8214b0a672f6571f44e0b06a4e88dd77df89e8964a9850"
+    },
+    {
+      "name": "metadata-nonzero-header-flags",
+      "file": "negative/metadata-nonzero-header-flags.json",
+      "sha256": "c4f78cd4d1890fbc251529cf8f661883fc6ac9c7a775a1919d4201057792b070"
+    },
+    {
+      "name": "metadata-above-the-catalog-ceiling",
+      "file": "negative/metadata-above-the-catalog-ceiling.json",
+      "sha256": "cbc3f718d507b0b3e715b0519deaf273ae0d8792d297b635588f0a801a21df17"
+    },
+    {
+      "name": "start-upload-create-with-a-nonzero-identity",
+      "file": "negative/start-upload-create-with-a-nonzero-identity.json",
+      "sha256": "1eb7fdada75bc0e7d75732a1a85af37552ad888504314b16510672c7f06a87d4"
+    },
+    {
+      "name": "start-upload-resume-byte-above-one",
+      "file": "negative/start-upload-resume-byte-above-one.json",
+      "sha256": "950573b7e770f174c09bf70f2c21b73fea94afeb1e018d4c7204830bbd81307d"
+    },
+    {
+      "name": "set-metadata-empty-patch",
+      "file": "negative/set-metadata-empty-patch.json",
+      "sha256": "c5aebb892416cb041bbb0f9632966d6f6872de524fdf24001de35390cdfcf7af"
+    },
+    {
+      "name": "delete-object-without-the-mandatory-revision-flag",
+      "file": "negative/delete-object-without-the-mandatory-revision-flag.json",
+      "sha256": "ca32ba1f4eb10d972943c69a725200a19cf795067bc65f145124f5d8015b611c"
+    },
+    {
+      "name": "start-download-reserved-revision-flag",
+      "file": "negative/start-download-reserved-revision-flag.json",
+      "sha256": "1c612a9ed745855515e148c152d4dc960965dece57fa15ec573238eeac9cb384"
+    },
+    {
+      "name": "start-download-reserved-revision-field",
+      "file": "negative/start-download-reserved-revision-field.json",
+      "sha256": "9c5d23edb7858e2947db2c976b0bbfefd3ebda8ed9e4adcb91be88cf31cb6e59"
+    },
+    {
+      "name": "query-catalog-cursor-flag-alone",
+      "file": "negative/query-catalog-cursor-flag-alone.json",
+      "sha256": "f4f425c76b2d3d1a3157002abdd25134fce09614152fa5e2f6fc9dfec4be161f"
+    },
+    {
+      "name": "query-catalog-cursor-revision-mismatch",
+      "file": "negative/query-catalog-cursor-revision-mismatch.json",
+      "sha256": "3bf1ec993d00c39fea16ad26821075a27dde2edbac893c1518f443b3d93f11d5"
+    },
+    {
+      "name": "query-catalog-expected-revision-without-its-flag",
+      "file": "negative/query-catalog-expected-revision-without-its-flag.json",
+      "sha256": "b783241e04e23d36dc74762a28aab61047ac9dbf174c0cd94635fb50f26a6392"
+    },
+    {
+      "name": "query-draft-zero-limit",
+      "file": "negative/query-draft-zero-limit.json",
+      "sha256": "9a83902e26b60133df1e4ba332edf03429854e4c9a40d71133318c6865a8f7ee"
+    },
+    {
+      "name": "start-draft-part-child-equals-parent",
+      "file": "negative/start-draft-part-child-equals-parent.json",
+      "sha256": "c199ee6a02d84fbd5f76786f1823eb481bbefcb7ba959539105b14042263e205"
+    },
+    {
+      "name": "begin-draft-zero-part-count",
+      "file": "negative/begin-draft-zero-part-count.json",
+      "sha256": "92f431d2df57582b978ee58e063e079db2f34453fc8039bfc86a31424540fb1c"
+    },
+    {
+      "name": "finish-upload-zero-session",
+      "file": "negative/finish-upload-zero-session.json",
+      "sha256": "108d24dc100c6a0854dd072c19133c66dd5ec050c6a08b77a0f67bb7232993dd"
+    },
+    {
+      "name": "upload-accepted-pre-freeze-56-bytes",
+      "file": "negative/upload-accepted-pre-freeze-56-bytes.json",
+      "sha256": "8b829a3fe39e1fe9d9a4cca6d2e2c8369858b63c0090484a3819a61cc09709cc"
+    },
+    {
+      "name": "upload-accepted-both-resume-flags",
+      "file": "negative/upload-accepted-both-resume-flags.json",
+      "sha256": "b486eb15751e1ddea037c933a05f178eabe127d79f304014d65e43d82b23ce3b"
+    },
+    {
+      "name": "upload-accepted-restart-with-a-nonzero-offset",
+      "file": "negative/upload-accepted-restart-with-a-nonzero-offset.json",
+      "sha256": "4fe742d31eb7c161dc00740955d6c2e488c67a5ae3ce24917fc16997998d2d16"
+    },
+    {
+      "name": "upload-accepted-crc-over-an-empty-prefix",
+      "file": "negative/upload-accepted-crc-over-an-empty-prefix.json",
+      "sha256": "4c7d37c6869819a2da7548cae03d25e1f959d4bed333c779fc8d4871c6530801"
+    },
+    {
+      "name": "upload-accepted-flag-in-the-target-mode-byte",
+      "file": "negative/upload-accepted-flag-in-the-target-mode-byte.json",
+      "sha256": "ded17cdf518a544578969d72a844aad983a3567c554b2e5926f8134395533e11"
+    },
+    {
+      "name": "draft-part-accepted-pre-freeze-68-bytes",
+      "file": "negative/draft-part-accepted-pre-freeze-68-bytes.json",
+      "sha256": "375299e5422c12148886df895fc3aa1656887cdad2ab4581fca907b451dca96d"
+    },
+    {
+      "name": "draft-part-accepted-flag-in-the-reserved-byte",
+      "file": "negative/draft-part-accepted-flag-in-the-reserved-byte.json",
+      "sha256": "291e0fe0cdbf2f6840696224f17b00ff73820c49e096652cc0778fca66162f1a"
+    },
+    {
+      "name": "finalize-accepted-pre-freeze-56-bytes",
+      "file": "negative/finalize-accepted-pre-freeze-56-bytes.json",
+      "sha256": "e583e6297f9df12687e6d7f51a74a786ac76e9b21f4327ce467818f063e1ac3a"
+    },
+    {
+      "name": "finalize-accepted-flag-in-the-reserved-byte",
+      "file": "negative/finalize-accepted-flag-in-the-reserved-byte.json",
+      "sha256": "53887b940c7291fd23414a1f672bc8dd1a5f777b510452072b6cce9c8022f14f"
+    },
+    {
+      "name": "capabilities-codec-version-mismatch",
+      "file": "negative/capabilities-codec-version-mismatch.json",
+      "sha256": "e54b052813b03f01a7df7a603a3340e197251b4d9d224b1318986cebee64b951"
+    },
+    {
+      "name": "capabilities-subject-page-index-beyond-the-end",
+      "file": "negative/capabilities-subject-page-index-beyond-the-end.json",
+      "sha256": "7fb4c8c76f566c6aa919127c1fc31c50f3dd6fc712df47d54060ac3e4d7809d4"
+    },
+    {
+      "name": "capabilities-store-id-without-store-available",
+      "file": "negative/capabilities-store-id-without-store-available.json",
+      "sha256": "82dfd6e4dee77801cb7cd58bc616fa2cfb4d2ea8866ef2215886ef2792f1a919"
+    },
+    {
+      "name": "subject-entry-patch-version-without-the-flag",
+      "file": "negative/subject-entry-patch-version-without-the-flag.json",
+      "sha256": "11bb2c9b7d8485b96fba48f66c4716704599b1083eb9b3a3071c9bd6efd3192a"
+    },
+    {
+      "name": "subject-entry-patch-version-other-than-128",
+      "file": "negative/subject-entry-patch-version-other-than-128.json",
+      "sha256": "c64403f033424a324a6d8eb1127d371f7107f7186e9657b1d0cbf9429eb0edf0"
+    },
+    {
+      "name": "subject-entry-ride-advertising-put",
+      "file": "negative/subject-entry-ride-advertising-put.json",
+      "sha256": "bd8bd0275e1acef21849612d4b519239c4510abf358bb2761f8bc1a0de8e48b9"
+    },
+    {
+      "name": "subject-entry-draft-part-advertising-get",
+      "file": "negative/subject-entry-draft-part-advertising-get.json",
+      "sha256": "5dc1bec38dd8ef56c44ff76b89d0cc92eeb46e6d9787073bc0fb45569348d043"
+    },
+    {
+      "name": "error-body-category-zero",
+      "file": "negative/error-body-category-zero.json",
+      "sha256": "36a6c58206128405295b08eca7efe98826b1e64bb6d9b2da6af931cc3b35198e"
+    },
+    {
+      "name": "error-body-terminal-bit-without-claim-bit",
+      "file": "negative/error-body-terminal-bit-without-claim-bit.json",
+      "sha256": "283d040640a17c51b96b3838d7bc9a8c1fb706af821bf791cdaf8f94c84c4b2b"
+    },
+    {
+      "name": "error-body-reserved-presence-bit",
+      "file": "negative/error-body-reserved-presence-bit.json",
+      "sha256": "56390573d88e0ba0bc0b1a5b6c9d4576b612e2acdc3121fdb1eae820f071b559"
+    },
+    {
+      "name": "error-body-text-length-above-64",
+      "file": "negative/error-body-text-length-above-64.json",
+      "sha256": "19866d813f6794f0ebb415feed3c3ffd55dfc09d7c6ec23ce605096af0a45fe7"
+    },
+    {
+      "name": "error-body-text-length-disagrees",
+      "file": "negative/error-body-text-length-disagrees.json",
+      "sha256": "eab4a2a10ab3ac354b8ad9eb1bd988fa8f88e89257cd562438caea7f0fcae3d6"
+    },
+    {
+      "name": "config-nonzero-byte-beyond-the-name-length",
+      "file": "negative/config-nonzero-byte-beyond-the-name-length.json",
+      "sha256": "8790947721e843621ff1efe8a793ac7c3cc60647c184a8c234a28059b269e083"
+    },
+    {
+      "name": "config-name-length-above-32",
+      "file": "negative/config-name-length-above-32.json",
+      "sha256": "b4a90bf6b5c8bb18c2dec2c5543a2387686e73abe5b6575fd221f04a0d2460c7"
+    },
+    {
+      "name": "config-weather-refresh-above-4",
+      "file": "negative/config-weather-refresh-above-4.json",
+      "sha256": "815d77004cb0ede0bd314f8f8c458bbf78796beb369204827aeb8e530b57496c"
+    },
+    {
+      "name": "config-reserved-unit-flag",
+      "file": "negative/config-reserved-unit-flag.json",
+      "sha256": "5966d429c3da9a29658647525112c18a93ed57d8180c57ea764e837c9ac226c9"
+    },
+    {
+      "name": "config-block-length-other-than-56",
+      "file": "negative/config-block-length-other-than-56.json",
+      "sha256": "04c49cbf26b2584284f3fcd2cffab39dceeaf7ebd8180c0b079243cfdfd53757"
+    },
+    {
+      "name": "set-clock-unknown-source",
+      "file": "negative/set-clock-unknown-source.json",
+      "sha256": "f675d20b4768a0b4dc88ddea72a736ae52337143aad39e4b57c5a078eddbde15"
+    },
+    {
+      "name": "forget-bond-zero-scope",
+      "file": "negative/forget-bond-zero-scope.json",
+      "sha256": "14f42bda9abe8abdb4fe3934536f0ced205da69f1f6561d91a594e8ef78b524c"
+    },
+    {
+      "name": "device-status-store-id-in-a-class-that-reports-none",
+      "file": "negative/device-status-store-id-in-a-class-that-reports-none.json",
+      "sha256": "fddd0430fcd2d41d37db652395ee1715b6026e578f30a446588c569280c72b73"
+    },
+    {
+      "name": "metadata-unknown-critical-field",
+      "file": "negative/metadata-unknown-critical-field.json",
+      "sha256": "79db116f3fabda52aad4329c623fd4ed3ca8cb9b4ee53f806f7cd2ab93cf3626"
+    },
+    {
+      "name": "metadata-unknown-noncritical-field-in-a-mutating-request",
+      "file": "negative/metadata-unknown-noncritical-field-in-a-mutating-request.json",
+      "sha256": "a883fc013db61739959aa41f191823a09daae58dc843468aa1e71b57fb90e609"
+    },
+    {
+      "name": "metadata-schema-id-does-not-match-the-object-kind",
+      "file": "negative/metadata-schema-id-does-not-match-the-object-kind.json",
+      "sha256": "f633b894d67267ce0f8394123df6792568dcb512c3a3945107d78915629b2daa"
+    },
+    {
+      "name": "metadata-schema-version-is-not-the-registered-one",
+      "file": "negative/metadata-schema-version-is-not-the-registered-one.json",
+      "sha256": "53ca142be9b0316e29066332e3edc754b0d04f1586707b6c720081524f0b629b"
+    },
+    {
+      "name": "metadata-missing-a-required-field",
+      "file": "negative/metadata-missing-a-required-field.json",
+      "sha256": "544da54ec17ed31854501aefbe608a1feb3e9b40f724933b62eb0a0626bad4ea"
+    },
+    {
+      "name": "metadata-text-field-above-its-registered-length",
+      "file": "negative/metadata-text-field-above-its-registered-length.json",
+      "sha256": "fa416f1751a8b0c577846dd417218c7442057ee1c489edb1781ba6287a36a681"
+    },
+    {
+      "name": "set-metadata-on-a-kind-with-no-patch-schema",
+      "file": "negative/set-metadata-on-a-kind-with-no-patch-schema.json",
+      "sha256": "ca23dc352761063dc83648b5d7c197b7be3cf93eb413e5965ccbdaa32f098b65"
+    },
+    {
+      "name": "catalog-projection-unknown-critical-field",
+      "file": "negative/catalog-projection-unknown-critical-field.json",
+      "sha256": "0ff11866146ace93248eafbb3ce335e0014a087867a90b1348e78f7cc6ea07bd"
+    },
+    {
+      "name": "catalog-projection-oversized-for-its-registered-schema",
+      "file": "negative/catalog-projection-oversized-for-its-registered-schema.json",
+      "sha256": "79f9f8cb5802ae1661a760cf96aaf096e104a7d83dcbe1bc87776cbb05676322"
+    },
+    {
+      "name": "reset-store-echo-mismatch",
+      "file": "negative/reset-store-echo-mismatch.json",
+      "sha256": "e14d97fb8f0081f58725c2d018937f23f8359f06c90175cd742ce4d712c5f983"
+    },
+    {
+      "name": "reset-store-zero-echo-in-a-class-that-reports-a-store",
+      "file": "negative/reset-store-zero-echo-in-a-class-that-reports-a-store.json",
+      "sha256": "54187c15d8f76d541f0dfc4739e01328d363d776ac67565cf05a03ec12a4bfe6"
+    },
+    {
+      "name": "stream-zero-session",
+      "file": "negative/stream-zero-session.json",
+      "sha256": "9b98fcc3198be5f1b95c6a5e2ab006d50d4110b24baa4ee33e9985591a2062b0"
+    },
+    {
+      "name": "stream-wrong-direction-value",
+      "file": "negative/stream-wrong-direction-value.json",
+      "sha256": "56483fcc708bf19cb97f71fdcb2acb818c566b4ea865f5d1ac5c29a67736878a"
+    },
+    {
+      "name": "stream-zero-payload-on-a-data-direction",
+      "file": "negative/stream-zero-payload-on-a-data-direction.json",
+      "sha256": "31f580c3195647d5e1305b99895cb58c9ea507f0969db35f974ae4105198fc5c"
+    },
+    {
+      "name": "stream-flag-on-a-data-direction",
+      "file": "negative/stream-flag-on-a-data-direction.json",
+      "sha256": "ab216efaf57a674614c026630062ec724c6ea5a6d2a2763fcfcc1aa8ca1e21f4"
+    },
+    {
+      "name": "stream-reserved-flag-bit",
+      "file": "negative/stream-reserved-flag-bit.json",
+      "sha256": "6c830cd767ebedd7cfa17015980ed9420f3eb1f5338a465098aadc4871f2fcd1"
+    },
+    {
+      "name": "stream-terminal-without-fault",
+      "file": "negative/stream-terminal-without-fault.json",
+      "sha256": "0453294d6b0f9ce623f5a1aabf7803353081ec89c66ef415236db03b60b76a1d"
+    },
+    {
+      "name": "stream-status-with-no-flags",
+      "file": "negative/stream-status-with-no-flags.json",
+      "sha256": "78b9b184353f8abdc380eec9749ce863a5693379ad2258ba8fcd442e6fa56dd6"
+    },
+    {
+      "name": "stream-status-with-a-nonzero-offset",
+      "file": "negative/stream-status-with-a-nonzero-offset.json",
+      "sha256": "44b2d126dcf9a8adee64c01972f7293174cb1da3a295d55fdb3f040ee2a1513b"
+    },
+    {
+      "name": "stream-nonterminal-disposition-with-the-terminal-bit",
+      "file": "negative/stream-nonterminal-disposition-with-the-terminal-bit.json",
+      "sha256": "a7726e079613ba2029f8a7a8a3c2362ea24be155efb574ac5a149dc99de968a1"
+    },
+    {
+      "name": "stream-terminal-disposition-without-the-terminal-bit",
+      "file": "negative/stream-terminal-disposition-without-the-terminal-bit.json",
+      "sha256": "82683b63487573b5c05ff0bd923a1fcfbe5c64f42504edb154f3e0de28c2920c"
+    },
+    {
+      "name": "stream-truncated-payload",
+      "file": "negative/stream-truncated-payload.json",
+      "sha256": "2335ec5d11711fdf1bc5df1c51256a2fb4af33037bc8f93c649082327ec680dc"
+    },
+    {
+      "name": "stream-overlong-payload",
+      "file": "negative/stream-overlong-payload.json",
+      "sha256": "917a91eb2e0c2ea93268c68bb1f68f5fa52f9d01eb354e21f7da1d9c38a148c6"
+    },
+    {
+      "name": "stream-offset-plus-length-overflows",
+      "file": "negative/stream-offset-plus-length-overflows.json",
+      "sha256": "9367f80f158ccc4d5ef8267ffbb0cc0eee2df9ec63e0befe99d707fed803fc71"
+    },
+    {
+      "name": "stream-fault-reserved-byte",
+      "file": "negative/stream-fault-reserved-byte.json",
+      "sha256": "0d19a396b25e1998c393ac0f91b3c6bb508dc997e6d45cbead6dfdbecd49f405"
+    },
+    {
+      "name": "stream-fault-semantic-category",
+      "file": "negative/stream-fault-semantic-category.json",
+      "sha256": "38a796f64da4a1873ed51a2146bdadc3c914659989acbb4059231f6404a292fc"
+    },
+    {
+      "name": "stream-fault-domain-category",
+      "file": "negative/stream-fault-domain-category.json",
+      "sha256": "2476465edfe8d2241b3c8db1ba7ab59b5e28232d4f88275cbd0e8b665b4e44ab"
+    }
+  ],
+  "transcripts": [
+    {
+      "name": "create-upload-publish-and-download",
+      "file": "transcripts/create-upload-publish-and-download.json",
+      "sha256": "1dace227d58be6ea2ec178f51334002f54c524e5963aed2bd18df8fd299b65f6"
+    },
+    {
+      "name": "replace-conflict-at-the-commit-lock",
+      "file": "transcripts/replace-conflict-at-the-commit-lock.json",
+      "sha256": "dee431c16ae2cc400e49a36d76965bc5b0274111f4b76588ae9e4aee62956714"
+    },
+    {
+      "name": "lost-result-then-query-operation",
+      "file": "transcripts/lost-result-then-query-operation.json",
+      "sha256": "2daae7409b75ad7ee6739c97795bd814459b4457eb2927a4be808d583d9045b0"
+    },
+    {
+      "name": "disconnect-reboot-and-resume",
+      "file": "transcripts/disconnect-reboot-and-resume.json",
+      "sha256": "1a606136018c1ab65e3406a1dfbdc46ecfc3227409dc7c8f702e79154478107b"
+    },
+    {
+      "name": "result-window-eviction-boundary",
+      "file": "transcripts/result-window-eviction-boundary.json",
+      "sha256": "b9f1ddc4bbedd803fceb3fc23806085677fbb6a77d7a66dfd6c64f9ffbe7da60"
+    },
+    {
+      "name": "draft-begin-parts-finalize-and-paging",
+      "file": "transcripts/draft-begin-parts-finalize-and-paging.json",
+      "sha256": "ce6f612a6577e33b18018a2c00b6191c97f4333ebf65ccfdc4c4452aae9160b3"
+    },
+    {
+      "name": "abort-session-retains-work-abort-operation-abandons-it",
+      "file": "transcripts/abort-session-retains-work-abort-operation-abandons-it.json",
+      "sha256": "2c7d086fbf8834930212e81f6f0b8a41811e6b1311b42bfdff58c8fe7f08f2fc"
+    },
+    {
+      "name": "wrong-owner-cannot-advance-or-release-a-session",
+      "file": "transcripts/wrong-owner-cannot-advance-or-release-a-session.json",
+      "sha256": "6a6ba7ad0bff7acac3905cb15e6d7bb97c8fdd1e9026482e847f4e57e258259c"
+    },
+    {
+      "name": "download-pin-survives-replace-and-delete",
+      "file": "transcripts/download-pin-survives-replace-and-delete.json",
+      "sha256": "c211cf5d17434d711fc2c8d8085615ad77bc214c8ffee525014c218718ba1e94"
+    },
+    {
+      "name": "delete-lost-result-and-pinned-reader-continuity",
+      "file": "transcripts/delete-lost-result-and-pinned-reader-continuity.json",
+      "sha256": "a6d9f4eb27d0d74a376da8510f58ebf5eaa3410eb4100b918437707389a0e001"
+    },
+    {
+      "name": "set-metadata-compare-and-swap-and-lost-result",
+      "file": "transcripts/set-metadata-compare-and-swap-and-lost-result.json",
+      "sha256": "dad78237dfa7aa6fad0fb4aa2b0181247b63e544497870575b721f2d637b414e"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "abort-session-already-terminal",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "AbortSession",
+    "value": 288
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 1,
+    "requestId": 50
+  },
+  "boundary": "",
+  "note": "Outcome 1: the operation was already terminal, so there was no session to detach.",
+  "payload": "01",
+  "frame": "4f42435003002001010001003200000001"
+}

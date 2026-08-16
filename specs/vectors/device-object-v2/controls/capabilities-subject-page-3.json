@@ -1,0 +1,22 @@
+{
+  "name": "capabilities-subject-page-3",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "Hello",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 96,
+    "requestId": 2
+  },
+  "boundary": "",
+  "note": "Two 20-byte subject entries in ascending (namespace, kind) order; `more` is set on every page but the last.",
+  "payload": "030103003c92000099164ebaabc2342fe08f6b10f400000400040000400080006000c0004000020107000000ffff0100080001030204010002000100110001000000000000000020000000000200020011000100000000000000002000000000",
+  "frame": "4f424350030001000100600002000000030103003c92000099164ebaabc2342fe08f6b10f400000400040000400080006000c0004000020107000000ffff0100080001030204010002000100110001000000000000000020000000000200020011000100000000000000002000000000"
+}

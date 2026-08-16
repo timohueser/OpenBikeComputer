@@ -1,0 +1,22 @@
+{
+  "name": "query-operation-progress-draft-part-validating",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryOperation",
+    "value": 512
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 28,
+    "requestId": 70
+  },
+  "boundary": "",
+  "note": "A draft part reports ID-present clear and its ID zero; the offset is the durable part prefix.",
+  "payload": "01000000020301000200000000000000000000000000010000000000",
+  "frame": "4f4243500300000201001c004600000001000000020301000200000000000000000000000000010000000000"
+}

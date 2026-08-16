@@ -1,0 +1,15 @@
+{
+  "name": "intent-acknowledge-ride-imported",
+  "suite": "device-object-v2",
+  "kind": "canonicalIntent",
+  "opcode": {
+    "name": "AcknowledgeRideImported",
+    "value": 785
+  },
+  "storeId": "3c92000099164ebaabc2342fe08f6b10",
+  "prefixLength": 36,
+  "suffixLength": 18,
+  "note": "The ObjectKind field is pinned at the literal value 3.",
+  "bytes": "4f42432d444f53332d494e54454e54003c92000099164ebaabc2342fe08f6b1011030100030005000000000000003d00000000000000",
+  "sha256": "7f5f539c11464757d34aa1ae94214ec0a9d152e56a5aa2d0e22fda5b1ea583e8"
+}

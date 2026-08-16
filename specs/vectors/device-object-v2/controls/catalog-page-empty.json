@@ -1,0 +1,22 @@
+{
+  "name": "catalog-page-empty",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryCatalog",
+    "value": 513
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 44,
+    "requestId": 80
+  },
+  "boundary": "",
+  "note": "An empty page is the 44-byte prefix alone.",
+  "payload": "3c92000099164ebaabc2342fe08f6b10010000002a0000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300010201002c00500000003c92000099164ebaabc2342fe08f6b10010000002a0000000000000000000000000000000000000000000000"
+}

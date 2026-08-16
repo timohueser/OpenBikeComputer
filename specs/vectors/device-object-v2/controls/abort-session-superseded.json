@@ -1,0 +1,22 @@
+{
+  "name": "abort-session-superseded",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "AbortSession",
+    "value": 288
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 0,
+    "payloadLength": 8,
+    "requestId": 50
+  },
+  "boundary": "",
+  "note": "Detaching a resumable upload preserves its durable work; a restart-only upload is durably aborted.",
+  "payload": "1100000002000000",
+  "frame": "4f4243500300200100000800320000001100000002000000"
+}

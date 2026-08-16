@@ -1,0 +1,12 @@
+{
+  "name": "fault-media-io-mid-stream",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 17,
+  "offset": "0",
+  "payloadLength": 24,
+  "direction": 3,
+  "flags": 3,
+  "note": "Only namespace-zero transport categories are valid in this compact body.",
+  "record": "11000000000000000000000018000303100002000010000000000000000000000000000001000000"
+}

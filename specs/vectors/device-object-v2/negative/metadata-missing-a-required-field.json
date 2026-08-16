@@ -1,0 +1,14 @@
+{
+  "name": "metadata-missing-a-required-field",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "Every registered required field appears exactly once; route Put requires its retention byte.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030000010000380001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a101000000000000000000000000000000000000000a00000000000000000000000100010000000000"
+}

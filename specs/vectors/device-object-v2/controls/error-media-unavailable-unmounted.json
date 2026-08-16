@@ -1,0 +1,22 @@
+{
+  "name": "error-media-unavailable-unmounted",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "ResetStore",
+    "value": 1030
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "The device never formats a volume whose geometry or filesystem it does not accept.",
+  "payload": "0f0000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300060403003000c80000000f0000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

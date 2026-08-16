@@ -1,0 +1,14 @@
+{
+  "name": "start-draft-part-child-equals-parent",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartDraftPartRequest",
+  "note": "The child OperationId must be distinct from the parent.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424350030031010000400001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30200000001000000000000000a00000000000000000000000000000000000000"
+}

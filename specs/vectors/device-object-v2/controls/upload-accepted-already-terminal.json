@@ -1,0 +1,22 @@
+{
+  "name": "upload-accepted-already-terminal",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "StartUpload",
+    "value": 256
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 72,
+    "requestId": 11
+  },
+  "boundary": "",
+  "note": "Disposition 1 replays the retained ObjectResult of the same intent; no session is created.",
+  "payload": "0100000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646",
+  "frame": "4f42435003000001010048000b0000000100000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+}

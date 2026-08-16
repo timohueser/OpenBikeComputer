@@ -21,6 +21,7 @@ members = [
     "firmware/obc-ble",
     "firmware/obc-dfu",
     "firmware/obc-crc",
+    "firmware/obc-link",
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
     "host/obc-host-core",
     "host/obc-fixtures",

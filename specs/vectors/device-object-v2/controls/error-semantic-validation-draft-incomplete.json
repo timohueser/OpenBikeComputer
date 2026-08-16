@@ -1,0 +1,22 @@
+{
+  "name": "error-semantic-validation-draft-incomplete",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinalizeDraft",
+    "value": 306
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 200
+  },
+  "boundary": "",
+  "note": "Missing or nonsealed children return a retryable domain-state error and create no session.",
+  "payload": "0e0006000700010020000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300320103003000c80000000e0006000700010020000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

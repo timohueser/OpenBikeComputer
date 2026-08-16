@@ -1,0 +1,12 @@
+{
+  "name": "fault-stream-closed-query-status",
+  "suite": "device-object-v2",
+  "kind": "stream",
+  "sessionId": 17,
+  "offset": "0",
+  "payloadLength": 24,
+  "direction": 3,
+  "flags": 3,
+  "note": "Disposition 2 is terminal: the stream transport is closed and the client queries the operation.",
+  "record": "11000000000000000000000018000303080001000004000000000000000400000000000002000000"
+}

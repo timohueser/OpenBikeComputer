@@ -1,0 +1,14 @@
+{
+  "name": "start-upload-resume-byte-above-one",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "StartUploadRequest",
+  "note": "The resume byte has exactly two legal values.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "4f4243500300000100003d0001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a101000002000000000000000000000000000000000a000000000000000000000001000100050001000180010001"
+}

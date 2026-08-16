@@ -1,0 +1,22 @@
+{
+  "name": "query-operation-committed",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "QueryOperation",
+    "value": 512
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 1,
+    "payloadLength": 72,
+    "requestId": 70
+  },
+  "boundary": "",
+  "note": "A lost response is unknown delivery, not a failed mutation; the query returns the exact retained result.",
+  "payload": "0200000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646",
+  "frame": "4f4243500300000201004800460000000200000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+}

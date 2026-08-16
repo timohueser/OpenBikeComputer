@@ -1,0 +1,71 @@
+{
+  "name": "frame-limit-derivation-cases",
+  "suite": "device-object-v2",
+  "kind": "frameLimitDerivation",
+  "protocolMinimumControlFrame": 192,
+  "protocolMinimumStreamFrame": 64,
+  "maximumControlFrame": 512,
+  "maximumStreamFrame": 4096,
+  "cases": [
+    {
+      "channel": "control",
+      "linkValue": 247,
+      "transportCeiling": 244,
+      "clientMaximum": 512,
+      "deviceMaximum": 512,
+      "outcome": "negotiated",
+      "negotiated": 244,
+      "note": "One ATT Write Request or indication value carries at most ATT_MTU - 3 bytes, so the device's preferred 247-byte MTU yields a 244-byte ceiling."
+    },
+    {
+      "channel": "control",
+      "linkValue": 195,
+      "transportCeiling": 192,
+      "clientMaximum": 512,
+      "deviceMaximum": 512,
+      "outcome": "negotiated",
+      "negotiated": 192,
+      "note": "Carrying the 192-byte protocol minimum therefore requires ATT_MTU >= 195, and 195 yields exactly it."
+    },
+    {
+      "channel": "control",
+      "linkValue": 194,
+      "transportCeiling": 191,
+      "clientMaximum": 512,
+      "deviceMaximum": 512,
+      "outcome": "belowProtocolMinimum",
+      "negotiated": 0,
+      "note": "Below the minimum no negotiation is possible: Hello is answered resourceLimit/minimumControlFrame with retry-only-after-user-action, and nothing is admitted on that connection."
+    },
+    {
+      "channel": "control",
+      "linkValue": 66,
+      "transportCeiling": 63,
+      "clientMaximum": 512,
+      "deviceMaximum": 512,
+      "outcome": "undeliverable",
+      "negotiated": 0,
+      "note": "Below a 64-byte frame — the 16-byte header plus a text-free ErrorBody — the refusal itself is undeliverable, so the adapter disconnects rather than truncating an error."
+    },
+    {
+      "channel": "stream",
+      "linkValue": 512,
+      "transportCeiling": 512,
+      "clientMaximum": 1024,
+      "deviceMaximum": 4096,
+      "outcome": "negotiated",
+      "negotiated": 512,
+      "note": "The effective stream limit is min(negotiated stream maximum, CoC SDU), fixed at CoC establishment."
+    },
+    {
+      "channel": "stream",
+      "linkValue": 63,
+      "transportCeiling": 63,
+      "clientMaximum": 1024,
+      "deviceMaximum": 4096,
+      "outcome": "belowProtocolMinimum",
+      "negotiated": 0,
+      "note": "An SDU below the 64-byte floor refuses the channel with resourceLimit/minimumStreamFrame."
+    }
+  ]
+}

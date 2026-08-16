@@ -1,0 +1,14 @@
+{
+  "name": "query-catalog-cursor-flag-alone",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryCatalogRequest",
+  "note": "A cursor requires both bits.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243500300010200001c000100000001000200000000000000000000000000000000000000000000000000"
+}
