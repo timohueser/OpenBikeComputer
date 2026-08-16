@@ -488,7 +488,7 @@ mod tests {
     use super::*;
     use crate::fat_extents::SharedBlockDevice;
     use crate::obc2::blocklog::WriteLog;
-    use crate::obc2::fatsim::{fat32_card, geometry_sectors, touched, Layout, NullTime, SparseDisk};
+    use crate::obc2::fatsim::{self, fat32_card, geometry_sectors, touched, Layout, NullTime, SparseDisk};
     use crate::obc2::geometry::{self, Region, VolumeGeometry};
     use crate::obc2::limits::{RIDE_FILE_LEN, SLOT_FILE_LEN, SMALL_BODY_LEN, SMALL_GATE_OFFSET};
 
@@ -768,9 +768,72 @@ mod tests {
         );
         // A file that is not there.
         assert_eq!(fat.open_fixed(store.obc2, "ABSENT.BIN", SLOT_FILE_LEN as u32), Err(AdapterError::NotFound));
-        // And the classes are distinct values, which is the whole point of the split.
-        assert_ne!(AdapterError::Media, AdapterError::CorruptStore);
-        assert_ne!(AdapterError::CorruptStore, AdapterError::CallerBug);
+    }
+
+    /// **`Media`**: the card stops answering mid-operation.
+    ///
+    /// §12 reports this differently from a store fault — the store may be perfectly intact on a card
+    /// that is no longer readable — so it has to be produced, not asserted about.
+    #[test]
+    fn a_card_that_stops_answering_is_a_media_fault() {
+        let store = Store::mounted();
+        let fat = store.fat();
+        let file = store.gated_file("ARM0.HND");
+
+        store.card.device().start_failing();
+        let mut buf = [0u8; 512];
+        assert_eq!(fat.read_at(file, 0, &mut buf), Err(AdapterError::Media));
+        assert_eq!(fat.write_at(file, 0, &[0xA5; 512]), Err(AdapterError::Media));
+
+        // And the store is fine again the moment the card is: nothing about this was a store fault.
+        store.card.device().stop_failing();
+        assert_eq!(fat.write_at(file, 0, &[0xA5; 512]), Ok(()));
+        assert_eq!(fat.read_at(file, 0, &mut buf), Ok(()));
+        assert_eq!(buf, [0xA5; 512]);
+    }
+
+    /// **`CorruptStore`**: the FAT no longer describes where a file's bytes are.
+    ///
+    /// §1.1: losing a single-copy FAT structure "destroys file locations for the whole store: it is
+    /// an unrecoverable store fault, not a gated-record fault". The card answers every request here
+    /// — the volume is what is broken, and §12 mounts that recovery-failed and read-only rather than
+    /// telling the rider their card is dying.
+    #[test]
+    fn a_broken_cluster_chain_is_a_store_fault_not_a_media_one() {
+        let store = Store::mounted();
+        let fat = store.fat();
+        let mut scratch = [0u8; 4_096];
+        // Sixteen clusters at this layout, so the chain has links to break.
+        let file = fat.create_fixed(store.obc2, "RIDE.ACT", RIDE_FILE_LEN as u32, &mut scratch).expect("created");
+        let mut buf = [0u8; 512];
+        let far = RIDE_FILE_LEN as u32 - 512;
+        assert_eq!(fat.read_at(file, far, &mut buf), Ok(()), "the last cluster is reachable to begin with");
+
+        // Free every cluster from 4 up: the root directory and /OBC2 stay navigable, and every file
+        // inside them now points into free space.
+        fatsim::free_fat_entries_from(store.card.device(), Layout::default(), 4);
+        // Read from the front so the handle's cached cluster cannot answer without walking the FAT —
+        // the traversal is what meets the damage, and a cached position would hide it.
+        assert_eq!(fat.read_at(file, 0, &mut buf), Ok(()), "the first cluster is in the directory entry");
+        assert_eq!(fat.read_at(file, far, &mut buf), Err(AdapterError::CorruptStore));
+    }
+
+    /// **`CallerBug`**: a handle that is no longer a handle.
+    ///
+    /// Release-only, because the `debug_assert` at the point of translation is the intended debug
+    /// behaviour — stopping at the mistake beats propagating a typed error nobody reads.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn a_stale_handle_is_a_caller_bug_and_never_a_mount_class() {
+        let store = Store::mounted();
+        let fat = store.fat();
+        let file = store.gated_file("ARM0.HND");
+        store.vmgr.close_file(file.raw()).unwrap();
+        // The handle is dead; every use of it is this code's mistake and none of it is evidence
+        // about the card or the volume.
+        assert_eq!(fat.length(file), Err(AdapterError::CallerBug));
+        assert_eq!(fat.read_at(file, 0, &mut [0u8; 512]), Err(AdapterError::CallerBug));
+        assert_eq!(fat.sync_fixed(file, SLOT_FILE_LEN as u32), Err(AdapterError::CallerBug));
     }
 
     /// The fixed files of §3, created at their stated lengths and clean-flushable afterwards.

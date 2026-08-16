@@ -204,6 +204,16 @@ type Fat = Adapter<'static, SharedBlockDevice<'static, Log>, NullTime, 4, 16, 1>
 static mut LOG: MaybeUninit<Log> = MaybeUninit::uninit();
 static mut VMGR: MaybeUninit<Vmgr> = MaybeUninit::uninit();
 
+/// The 256 slot observations one all-slot scan produces, in `.bss` rather than on the stack.
+///
+/// `SlotObservation` is 40 bytes, so the array is **10,240 bytes** — a third of this board's
+/// ~36 KB task stack, allocated in a function that also holds the 16 KiB staging slot by reference
+/// and is called twice per recovery cycle. The nRF54L's stack overflows silently, and an async
+/// frame's slots are permanently allocated rather than scoped, which is exactly how #1084 bricked
+/// boot. Every other buffer in this file is parked the same way for the same reason; this one is no
+/// different for being an array of a kernel type.
+static mut SLOTS: [Option<SlotObservation>; JOURNAL_SLOTS] = [None; JOURNAL_SLOTS];
+
 /// Places `value` in a `.bss` slot and hands back the `'static` reference — the warm-reset-safe
 /// pattern the app uses, so nothing large lands on the executor's task frame.
 ///
@@ -308,7 +318,7 @@ async fn main(_spawner: Spawner) {
         Some(obc2) => fat
             .open_fixed(obc2, "COMMIT.JNL", JOURNAL_FILE_LEN as u32)
             .map(|file| {
-                let scan = scan_journal(&fat, file);
+                let scan = scan_journal(&fat, log, file);
                 let _ = vmgr.close_file(file.raw());
                 scan
             })
@@ -327,7 +337,7 @@ async fn main(_spawner: Spawner) {
         }
         Some(obc2) if !FORCE_REINIT && valid > 0 && valid <= RESTART_ABOVE => {
             info!("RUN   recovery cycle: §6.3 replays {=usize} durable records on this card", valid);
-            append_and_verify(&fat, obc2, scan.expect("a scan produced the replay count"));
+            append_and_verify(&fat, log, obc2, scan.expect("a scan produced the replay count"));
             park();
         }
         Some(obc2) => {
@@ -589,12 +599,19 @@ fn clean_flush_phase(fat: &Fat, log: &Log, obc2: RawDirectory, geometry: &Volume
     // data sectors, the body and its gate" are different claims and only the second one says the
     // writes actually happened.
     let expected_clean_sectors = 2;
-    info!(
-        "FLUSH VERDICT: a clean sync wrote {=u32} sector(s), {=u32} of them metadata; the fork's flush wrote {=u32} metadata",
-        clean.total,
-        clean.metadata,
-        dirty.map_or(0, |spans| spans.metadata)
-    );
+    match dirty {
+        Some(dirty) => info!(
+            "FLUSH VERDICT: a clean sync wrote {=u32} sector(s), {=u32} of them metadata; the fork's flush wrote {=u32} metadata",
+            clean.total, clean.metadata, dirty.metadata
+        ),
+        // The control window is the half that shows what the law is protecting against. An
+        // overflowed log there is not "zero metadata sectors" — it is no number at all, and printing
+        // a zero would read as the fork behaving itself.
+        None => info!(
+            "FLUSH VERDICT: a clean sync wrote {=u32} sector(s), {=u32} of them metadata; the fork's flush is INDETERMINATE (its span log overflowed)",
+            clean.total, clean.metadata
+        ),
+    }
     if clean.metadata == 0 && clean.total == expected_clean_sectors {
         info!("FLUSH §13.1 clean-flush obligation HOLDS on this card with the adapter's sync_fixed");
     } else if clean.metadata != 0 {
@@ -882,11 +899,16 @@ struct Scan {
 /// the checkpoint an initialized store would have (epoch 1, through-sequence 0) and decides the
 /// journal half from real observations. The checkpoint-selection half of §6.3 is therefore *not*
 /// exercised here.
-fn scan_journal(fat: &Fat, journal: GatedFile) -> Scan {
-    // SAFETY: sole borrow of the staging slot.
+fn scan_journal(fat: &Fat, log: &Log, journal: GatedFile) -> Scan {
+    // SAFETY: sole borrows of the staging slot and the observation table. This binary is
+    // single-threaded, `scan_journal` is never re-entered, and nothing else reads either static.
     let slot = unsafe { &mut *core::ptr::addr_of_mut!(SLOT) };
+    let slots = unsafe { &mut *core::ptr::addr_of_mut!(SLOTS) };
+    // A previous scan's observations must not survive into this one: a slot this scan cannot read
+    // would otherwise keep the last scan's answer and be replayed as though it were still there.
+    slots.fill(None);
+    log.arm();
     let started = Instant::now();
-    let mut slots: [Option<SlotObservation>; JOURNAL_SLOTS] = [None; JOURNAL_SLOTS];
     let mut foreign = 0usize;
     let mut unreadable = 0usize;
     for (index, observation) in slots.iter_mut().enumerate() {
@@ -909,14 +931,28 @@ fn scan_journal(fat: &Fat, journal: GatedFile) -> Scan {
         next_generation: 0,
         body_crc: 0,
     };
-    let decision = choose(&[Some(checkpoint), None], &slots);
+    let elapsed = us(started);
+    log.disarm();
+    let decision = choose(&[Some(checkpoint), None], slots);
     let replay = match decision {
         Decision::Mount { replay, .. } | Decision::MountReadOnly { replay, .. } => replay,
         _ => 0,
     };
+    // The scan is also the read-shape measurement, and it is the one that runs on every boot: the
+    // fork's CMD25 batching is write-only, so "one device read per 512-byte block" is the claim that
+    // explains why a full-slot scan lands an order of magnitude under the transport's rate. A ratio
+    // of 100/100 confirms it; anything else means the fork gained a read fast path.
+    let counters = log.counters();
+    info!(
+        "SCAN  {=u32} device reads for {=u32} blocks = {=u64}/100 reads per block, {=u64} us per read",
+        counters.reads,
+        counters.read_blocks,
+        u64::from(counters.reads) * 100 / u64::from(counters.read_blocks.max(1)),
+        elapsed / u64::from(counters.reads.max(1))
+    );
     info!(
         "SCAN  256 slots in {=u64} ms: §6.3 decided {}, replay {=usize}, foreign records {=usize}, unreadable {=usize}",
-        ms(started),
+        elapsed / 1_000,
         defmt::Debug2Format(&decision),
         replay,
         foreign,
@@ -929,7 +965,7 @@ fn scan_journal(fat: &Fat, journal: GatedFile) -> Scan {
 }
 
 /// The recovery cycle: verify what the last run left, append exactly one record, and prove it.
-fn append_and_verify(fat: &Fat, obc2: RawDirectory, before: Scan) {
+fn append_and_verify(fat: &Fat, log: &Log, obc2: RawDirectory, before: Scan) {
     let vmgr = fat.volume_manager();
     let Ok(journal) = fat.open_fixed(obc2, "COMMIT.JNL", JOURNAL_FILE_LEN as u32) else {
         error!("RCVR  COMMIT.JNL is not at its full length");
@@ -969,7 +1005,7 @@ fn append_and_verify(fat: &Fat, obc2: RawDirectory, before: Scan) {
         let _ = vmgr.close_file(journal.raw());
         return;
     }
-    let after = scan_journal(fat, journal);
+    let after = scan_journal(fat, log, journal);
     if after.replay == valid + 1 && matches!(after.decision, Decision::Mount { .. }) {
         info!(
             "RCVR  OK — §6.3 replayed {=usize}, one record was appended in {=u64} us, and it now replays {=usize}",

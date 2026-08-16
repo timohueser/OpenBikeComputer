@@ -19,20 +19,39 @@
 use std::collections::BTreeMap;
 use std::vec::Vec;
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx, TimeSource, Timestamp};
 
+/// What a [`SparseDisk`] fails with once a failure has been armed. A card that stopped answering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskError;
+
 /// A block device over a sparse image: every block that was never written reads as zeros.
+///
+/// It can also be made to fail, because "the card stopped answering" is one of the three classes
+/// §12's mount table distinguishes and a test that never produces one is not evidence that the
+/// distinction works.
 pub struct SparseDisk {
     blocks: RefCell<BTreeMap<u32, [u8; 512]>>,
     num_blocks: u32,
+    failing: Cell<bool>,
 }
 
 impl SparseDisk {
     /// An all-zero disk of `num_blocks` 512-byte sectors.
     pub fn blank(num_blocks: u32) -> Self {
-        SparseDisk { blocks: RefCell::new(BTreeMap::new()), num_blocks }
+        SparseDisk { blocks: RefCell::new(BTreeMap::new()), num_blocks, failing: Cell::new(false) }
+    }
+
+    /// From here on every read and write fails, as a card that has stopped answering does.
+    pub fn start_failing(&self) {
+        self.failing.set(true);
+    }
+
+    /// Answer normally again.
+    pub fn stop_failing(&self) {
+        self.failing.set(false);
     }
 
     /// Overwrites one sector.
@@ -52,9 +71,12 @@ impl SparseDisk {
 }
 
 impl BlockDevice for SparseDisk {
-    type Error = core::convert::Infallible;
+    type Error = DiskError;
 
     fn read(&self, blocks: &mut [Block], start: BlockIdx) -> Result<(), Self::Error> {
+        if self.failing.get() {
+            return Err(DiskError);
+        }
         let image = self.blocks.borrow();
         for (offset, block) in blocks.iter_mut().enumerate() {
             let lba = start.0 + offset as u32;
@@ -64,6 +86,9 @@ impl BlockDevice for SparseDisk {
     }
 
     fn write(&self, blocks: &[Block], start: BlockIdx) -> Result<(), Self::Error> {
+        if self.failing.get() {
+            return Err(DiskError);
+        }
         let mut image = self.blocks.borrow_mut();
         for (offset, block) in blocks.iter().enumerate() {
             image.insert(start.0 + offset as u32, block.contents);
@@ -177,6 +202,34 @@ pub fn fat32_card(layout: Layout) -> SparseDisk {
     disk.put(fat_start + fat_sectors, fat0);
 
     disk
+}
+
+/// Frees every FAT entry from `first_cluster` upward, breaking the chain of any file that reaches
+/// them.
+///
+/// §1.1: "Losing one of those sectors destroys file locations for the whole store: it is an
+/// unrecoverable store fault". This is how a test produces one. Clusters 2 and 3 are the root
+/// directory and `/OBC2`, so a `first_cluster` of 4 leaves the tree navigable and breaks only the
+/// files inside it — which is the interesting case, because a store that could not even find
+/// `/OBC2` would fail much earlier and prove less.
+pub fn free_fat_entries_from(disk: &SparseDisk, layout: Layout, first_cluster: u32) {
+    let fat_start = layout.partition_start_lba + u32::from(layout.reserved_sectors);
+    let entries_per_sector = 128;
+    let first_sector = first_cluster / entries_per_sector;
+    for sector in first_sector..layout.fat_sectors() {
+        let lba = fat_start + sector;
+        let mut block = disk.get(lba);
+        let base = sector * entries_per_sector;
+        for entry in 0..entries_per_sector {
+            if base + entry >= first_cluster {
+                let at = (entry * 4) as usize;
+                block[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+            }
+        }
+        disk.put(lba, block);
+        // Both copies, so the volume is consistently broken rather than half-repairable.
+        disk.put(lba + layout.fat_sectors(), block);
+    }
 }
 
 /// The two sectors a §1.1 geometry probe reads, as a host test needs them.
