@@ -1,0 +1,171 @@
+{
+  "name": "draft-begin-parts-finalize-and-paging",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "BeginDraft, a child part streamed and sealed, snapshot paging over the draft, a second BeginDraft refused while the parent is open, atomic finalization, and the explicit selection that follows an initially unselected release.",
+  "eventCount": 18,
+  "events": [
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "BeginDraft binds target, expected revision, manifest length and CRC, and the exact child count.",
+      "record": "4f424350030030010000340064000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3060000000000000000000000000000000000000008010000000000005381ea1b01000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The parent opens at draft revision 1 and consumes no terminal-result slot.",
+      "record": "4f42435003003001010020006400000000000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3010000000000000001000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "A second BeginDraft while that parent is open.",
+      "record": "4f424350030030010000340065000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2060000000000000000000000000000000000000008010000000000000100000001000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Refused busy/draftParents before any claim, reporting that parent's owner — an ownership refusal, not a compiled-capacity failure.",
+      "record": "4f424350030030010300300065000000050000000400030100000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "StartDraftPart durably claims the child; (kind, key) is unique within the parent.",
+      "record": "4f424350030031010000400066000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30100000001000000000000000000010000000000a0e583420100000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "DraftPartAccepted returns only a session and a durable offset: the opaque ref does not exist yet.",
+      "record": "4f42435003003101010048006600000000000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c331000000010000000100000000000000000000000000000000040000f003000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "stream",
+      "note": "The part's first bytes.",
+      "record": "310000000000000000000000f0030100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "FinishUpload seals the part.",
+      "record": "4f42435003000201000004006700000031000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Sealing mints the DraftPartRef and returns a DraftPartResult — never a logical result.",
+      "record": "4f4243500300020101005c006700000002000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d43c92000099164ebaabc2342fe08f6b10c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c35aa5112233445566778899000ff01ee10100000001000000000000000000010000000000a0e58342"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "QueryDraft pages the parent's children under the draft-revision snapshot.",
+      "record": "4f4243500300020200002c0068000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000600000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Draft revision 3: it moved when the child was claimed and again when it sealed, and never for a payload checkpoint. The sealed entry is the only one carrying a ref.",
+      "record": "4f424350030002020100700068000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c303000000000000000000000000000000000000000000000001000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d45aa5112233445566778899000ff01ee10100000001000000000000000200000000000100000000000000010000000000a0e58342"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "FinalizeDraft addresses the existing claim by OperationId alone.",
+      "record": "4f424350030032010000100069000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The manifest acceptance issues a fresh session for the bound manifest stream.",
+      "record": "4f42435003003201010040006900000000000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c34100000002000000000000003200000000000000000000000000000000040000f00300000000000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "stream",
+      "note": "The manifest bytes, which name exactly the sealed refs of this parent.",
+      "record": "41000000000000000000000008010100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedee000102030405060708090a0b0c0d0e0f101112131415161718"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "FinishUpload verifies the manifest against BeginDraft's declared length and CRC.",
+      "record": "4f42435003000201000004006a00000041000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "One commit publishes the manifest and every referenced part; no physical generation is exposed.",
+      "record": "4f42435003000201010044006a00000001000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c33c92000099164ebaabc2342fe08f6b10060000000200000000000000330000000000000008010000000000005381ea1b"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Initial publication derives selected false, so selecting the release is a separate compare-and-swap SetMetadata.",
+      "record": "4f42435003000103000031006b000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2060001000200000000000000330000000000000006008000050001000180010001"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "metadataChanged at the next revision.",
+      "record": "4f42435003000103010044006b00000001000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b23c92000099164ebaabc2342fe08f6b10060003000200000000000000340000000000000008010000000000005381ea1b"
+    }
+  ]
+}

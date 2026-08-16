@@ -21,7 +21,7 @@ use crate::codec::{
 };
 use crate::error::{reject_nonzero, DecodeError, ErrorBody, ERROR_BODY_PREFIX_LEN};
 use crate::ids::{LogicalObjectId, OperationId, Revision, StoreId, WeatherRequestId};
-use crate::metadata::{MetadataEnvelope, MAX_CATALOG_ENVELOPE};
+use crate::metadata::{MetadataEnvelope, Schema, SchemaClass, MAX_CATALOG_ENVELOPE};
 use crate::registry::{draft_part_kind, object_kind, DraftPartKind, ObjectKind, Phase, SubjectNamespace};
 use crate::result::ResultEnvelope;
 use crate::{BufferTooSmall, EncodeResult};
@@ -525,7 +525,7 @@ impl<'a> CatalogEntry<'a> {
     }
 
     /// Decodes one entry at the start of `bytes`, returning it and the bytes it consumed.
-    pub fn decode_prefix(bytes: &'a [u8]) -> crate::Result<(Self, usize)> {
+    pub fn decode_prefix(bytes: &'a [u8], kind: ObjectKind) -> crate::Result<(Self, usize)> {
         DecodeError::min_len(bytes, CATALOG_ENTRY_PREFIX_LEN)?;
         if u16_at(bytes, 28) != 0 {
             // §8.2: "Entry flags are zero in v3.0 and nonzero values are rejected."
@@ -544,6 +544,12 @@ impl<'a> CatalogEntry<'a> {
         if metadata.encoded_len() != metadata_len {
             return Err(DecodeError::invalid_descriptor(crate::error::detail::descriptor::NESTED_LENGTH));
         }
+        // The projection belongs to the page's kind, so the schema is knowable here and is checked
+        // here. §2.2's response rule applies: unknown *critical* fields are rejected and a
+        // well-formed unknown noncritical one may be skipped.
+        Schema::lookup(kind, SchemaClass::Catalog)
+            .ok_or_else(|| DecodeError::unsupported_capability(crate::error::detail::capability::LOGICAL_KIND))?
+            .validate(&metadata)?;
         Ok((
             CatalogEntry {
                 logical_object_id: LogicalObjectId::new(u64_at(bytes, 0)),
@@ -599,7 +605,7 @@ impl<'a> CatalogPage<'a> {
 
     /// Iterates the entries.
     pub fn entries(&self) -> CatalogEntryIter<'a> {
-        CatalogEntryIter { bytes: self.entry_bytes, offset: 0 }
+        CatalogEntryIter { bytes: self.entry_bytes, offset: 0, kind: self.kind }
     }
 
     /// Decodes a page payload.
@@ -621,7 +627,7 @@ impl<'a> CatalogPage<'a> {
         let mut offset = 0usize;
         let mut previous: Option<LogicalObjectId> = None;
         while offset < page.entry_bytes.len() {
-            let (entry, used) = CatalogEntry::decode_prefix(&page.entry_bytes[offset..])?;
+            let (entry, used) = CatalogEntry::decode_prefix(&page.entry_bytes[offset..], page.kind)?;
             if let Some(previous) = previous {
                 if entry.logical_object_id <= previous {
                     // "Entries are ordered by LogicalObjectId" — and a head appears once.
@@ -664,6 +670,7 @@ impl<'a> CatalogPage<'a> {
 pub struct CatalogEntryIter<'a> {
     bytes: &'a [u8],
     offset: usize,
+    kind: ObjectKind,
 }
 
 impl<'a> Iterator for CatalogEntryIter<'a> {
@@ -673,7 +680,7 @@ impl<'a> Iterator for CatalogEntryIter<'a> {
         if self.offset >= self.bytes.len() {
             return None;
         }
-        let (entry, used) = CatalogEntry::decode_prefix(&self.bytes[self.offset..]).ok()?;
+        let (entry, used) = CatalogEntry::decode_prefix(&self.bytes[self.offset..], self.kind).ok()?;
         self.offset += used;
         Some(entry)
     }

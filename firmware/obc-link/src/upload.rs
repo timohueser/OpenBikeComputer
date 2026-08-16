@@ -20,9 +20,9 @@
 //! CRC to zero; all three rules are enforced here rather than left to the reader.
 
 use crate::codec::{bytes16_at, put_bytes, put_u16, put_u32, put_u64, u16_at, u32_at, u64_at};
-use crate::error::{reject_nonzero, DecodeError};
+use crate::error::{detail, reject_nonzero, DecodeError};
 use crate::ids::{LogicalObjectId, OperationId, Revision, SessionId};
-use crate::metadata::{MetadataEnvelope, MAX_PUT_ENVELOPE};
+use crate::metadata::{MetadataEnvelope, Schema, SchemaClass, MAX_PUT_ENVELOPE};
 use crate::registry::{object_kind, AbortReason, ObjectKind};
 use crate::result::ResultEnvelope;
 use crate::{BufferTooSmall, EncodeResult};
@@ -270,15 +270,27 @@ impl<'a> StartUpload<'a> {
     }
 
     /// Decodes a StartUpload payload.
+    ///
+    /// The envelope is checked against the registered Put schema for the request's *own* kind, not
+    /// merely for canonical form. §2.2 requires that "Schema ID exactly matches the containing
+    /// logical ObjectKind, schema version is the one advertised for that operation/projection, and
+    /// every registered required field appears exactly once", and that mutating requests "reject
+    /// every unknown field, whether critical or not". A decoder that stopped at canonical form
+    /// would admit a Put carrying another kind's schema, or missing the very facts its typed
+    /// validator is supposed to check the payload against.
     pub fn decode(payload: &'a [u8]) -> crate::Result<Self> {
         DecodeError::min_len(payload, MIN_START_UPLOAD_LEN)?;
         let (metadata, used) = MetadataEnvelope::decode_prefix(&payload[START_UPLOAD_PREFIX_LEN..], MAX_PUT_ENVELOPE)?;
         if START_UPLOAD_PREFIX_LEN + used != payload.len() {
             return Err(DecodeError::trailing_bytes());
         }
+        let kind = object_kind(u16_at(payload, 16))?;
+        Schema::lookup(kind, SchemaClass::Put)
+            .ok_or_else(|| DecodeError::unsupported_capability(detail::capability::LOGICAL_KIND))?
+            .validate(&metadata)?;
         Ok(StartUpload {
             operation_id: OperationId::new(bytes16_at(payload, 0)),
-            kind: object_kind(u16_at(payload, 16))?,
+            kind,
             target: Target::decode(payload[18], u64_at(payload, 20), u64_at(payload, 28))?,
             resume: ResumePreference::from_u8(payload[19]).ok_or_else(DecodeError::unknown_enum)?,
             declared_length: u64_at(payload, 36),
@@ -712,9 +724,25 @@ mod tests {
         assert_eq!(StartUpload::decode(&out[..len]).unwrap(), request);
     }
 
+    /// The weather singleton's Put envelope, whose six fields are all required.
+    fn weather_put(buffer: &mut [u8]) -> MetadataEnvelope<'_> {
+        let mut writer = MetadataWriter::new(buffer).unwrap();
+        writer.push(0x8001, &42u64.to_le_bytes()).unwrap();
+        writer.push(0x8002, &480_000_000i32.to_le_bytes()).unwrap();
+        writer.push(0x8003, &77_000_000i32.to_le_bytes()).unwrap();
+        writer.push(0x8004, &50_000u32.to_le_bytes()).unwrap();
+        writer.push(0x8005, &1_700_000_000i64.to_le_bytes()).unwrap();
+        writer.push(0x8006, &1_700_086_400i64.to_le_bytes()).unwrap();
+        let bytes = writer.finish(ObjectKind::Weather, SchemaClass::Put);
+        MetadataEnvelope::decode(bytes, MAX_PUT_ENVELOPE).unwrap()
+    }
+
     #[test]
     fn replace_mode_treats_zero_as_an_ordinary_value() {
-        let mut buffer = [0u8; 32];
+        // The weather singleton is the case that makes this matter: the identity the store
+        // allocated for it is zero on every real device today, and replace mode must carry it as an
+        // ordinary opaque value rather than reading it as "absent".
+        let mut buffer = [0u8; 96];
         let request = StartUpload {
             operation_id: OperationId::new([1; 16]),
             kind: ObjectKind::Weather,
@@ -722,16 +750,47 @@ mod tests {
             resume: ResumePreference::RestartAtZero,
             declared_length: 1,
             expected_crc32: 0,
-            metadata: MetadataEnvelope::empty(ObjectKind::Weather, SchemaClass::Put),
+            metadata: weather_put(&mut buffer),
         };
-        let _ = &mut buffer;
         let mut out = [0u8; MAX_START_UPLOAD_LEN];
         let len = request.encode_into(&mut out).unwrap();
+        assert_eq!(len, MAX_PRODUCIBLE_START_UPLOAD_LEN);
         let decoded = StartUpload::decode(&out[..len]).unwrap();
         assert_eq!(
             decoded.target,
             Target::Replace { logical_object_id: LogicalObjectId::ZERO, expected_revision: Revision::ZERO }
         );
+    }
+
+    #[test]
+    fn a_put_envelope_is_checked_against_its_own_kinds_schema() {
+        // An empty envelope is canonical, and it is still not a weather Put: all six facts are
+        // required, and the typed validator has nothing to check the payload against without them.
+        let request = StartUpload {
+            operation_id: OperationId::new([1; 16]),
+            kind: ObjectKind::Weather,
+            target: Target::Create,
+            resume: ResumePreference::RestartAtZero,
+            declared_length: 1,
+            expected_crc32: 0,
+            metadata: MetadataEnvelope::empty(ObjectKind::Weather, SchemaClass::Put),
+        };
+        let mut out = [0u8; MAX_START_UPLOAD_LEN];
+        let len = request.encode_into(&mut out).unwrap();
+        assert_eq!(StartUpload::decode(&out[..len]).unwrap_err(), DecodeError::invalid_combination());
+
+        // And a route Put carrying trip's schema id is refused even though both are canonical.
+        let mut buffer = [0u8; 32];
+        let mut writer = MetadataWriter::new(&mut buffer).unwrap();
+        writer.push(0x8001, &[2]).unwrap();
+        let foreign = writer.finish(ObjectKind::Trip, SchemaClass::Put);
+        let request = StartUpload {
+            kind: ObjectKind::Route,
+            metadata: MetadataEnvelope::decode(foreign, MAX_PUT_ENVELOPE).unwrap(),
+            ..request
+        };
+        let len = request.encode_into(&mut out).unwrap();
+        assert_eq!(StartUpload::decode(&out[..len]).unwrap_err(), DecodeError::invalid_combination());
     }
 
     #[test]

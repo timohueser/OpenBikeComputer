@@ -1,0 +1,90 @@
+{
+  "name": "result-window-eviction-boundary",
+  "suite": "device-object-v2",
+  "kind": "transcript",
+  "description": "The retained-result window fills, the operation's result survives 63 newer terminals, the 64th evicts it, and Unknown is then reconciled against the catalog rather than replayed.",
+  "eventCount": 9,
+  "events": [
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The create commits and its result occupies one of the 64 retained slots.",
+      "record": "4f42435003000201010044005a00000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "63 later terminal operations commit. The window is store-global, so device-local ride, weather, update-state and import results fill it exactly as a link client's do.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "QueryOperation after 63 newer terminals.",
+      "record": "4f42435003000002000010005b000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Still Committed: retention is proven at 63 rather than assumed.",
+      "record": "4f42435003000002010048005b0000000200000001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a13c92000099164ebaabc2342fe08f6b100100000009000000000000002a00000000000000b80b00000000000085a93646"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "injected",
+      "note": "The 64th newer terminal record commits and deterministically evicts the oldest.",
+      "record": ""
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The same query again.",
+      "record": "4f42435003000002000010005c000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "Unknown. It cannot distinguish never-claimed from evicted, and the device cannot close that hole on the client's behalf.",
+      "record": "4f42435003000002010004005c00000000000000"
+    },
+    {
+      "actor": "client",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "So the client reconciles domain state instead of replaying: a create carries no prior Revision, so a blind reissue under a fresh OperationId would publish a second object.",
+      "record": "4f4243500300010200001c005d00000001000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "actor": "device",
+      "principal": "companion-ble",
+      "link": "ble",
+      "connectionGeneration": 1,
+      "channel": "control",
+      "note": "The catalog shows the head is already there, so nothing is reissued and the OperationId is never reused.",
+      "record": "4f42435003000102010082005d0000003c92000099164ebaabc2342fe08f6b10010001002a000000000000000000000000000000000000000000000009000000000000002a00000000000000b80b00000000000085a936460000320000000000010040002a000400018010004b6169736572737475686c206c6f6f70028001000203000100000400080000f1536500000000"
+    }
+  ]
+}

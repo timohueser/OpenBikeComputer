@@ -1,0 +1,14 @@
+{
+  "name": "metadata-text-field-above-its-registered-length",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "SetMetadataRequest",
+  "note": "The route display name is registered at 1-48 bytes; 49 is a schema-disallowed width.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "4f424350030001030000610001000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100010009000000000000002a0000000000000001008000350001000380310078787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878"
+}

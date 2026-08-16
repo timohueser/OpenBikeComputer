@@ -564,14 +564,30 @@ pub struct FieldIter<'a> {
 impl<'a> Iterator for FieldIter<'a> {
     type Item = MetadataField<'a>;
 
+    /// Yields the next field, or `None` at the end of the body **or** at the first byte the body
+    /// cannot describe.
+    ///
+    /// `check_canonical` has already proved that a *decoded* envelope never takes the second
+    /// branch. The bounds checks are here for the other way an envelope can exist: this type's
+    /// fields are public, so a caller may hand-build one whose `field_bytes` does not agree with
+    /// its own field headers. This crate is destined for the device image, so that must end the
+    /// iteration rather than panic — which is also what [`CatalogEntryIter`](crate::query) does
+    /// with its own re-parse.
     fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.bytes.len() {
+        let remaining = self.bytes.len().checked_sub(self.offset)?;
+        if remaining == 0 {
+            return None;
+        }
+        if remaining < 4 {
             return None;
         }
         let tag = u16_at(self.bytes, self.offset);
         let value_len = usize::from(u16_at(self.bytes, self.offset + 2));
         let start = self.offset + 4;
-        let end = start + value_len;
+        let end = start.checked_add(value_len)?;
+        if end > self.bytes.len() {
+            return None;
+        }
         self.offset = end;
         Some(MetadataField {
             base_tag: tag & !CRITICAL_BIT,

@@ -147,12 +147,36 @@ pub struct FaultBody {
 }
 
 impl FaultBody {
+    /// The categories §13 admits into the compact fault body.
+    ///
+    /// "Only namespace-zero transport category/details from Section 12 are valid in this compact
+    /// body; semantic/domain errors use a correlated control response." The body has no namespace
+    /// field at all, so `semanticValidation` — the one category whose detail is namespace-scoped —
+    /// could not be read unambiguously even if it were allowed. The rest are the transport-layer
+    /// conditions a stream receiver can actually raise while a session is attached.
+    pub const TRANSPORT_CATEGORIES: [ErrorCategory; 10] = [
+        ErrorCategory::INVALID_FRAME,
+        ErrorCategory::INVALID_DESCRIPTOR,
+        ErrorCategory::INVALID_OFFSET,
+        ErrorCategory::INVALID_SESSION,
+        ErrorCategory::CHECKSUM_FAILURE,
+        ErrorCategory::MEDIA_UNAVAILABLE,
+        ErrorCategory::MEDIA_IO,
+        ErrorCategory::CANCELLED,
+        ErrorCategory::LINK_LOST,
+        ErrorCategory::INTERNAL,
+    ];
+
     /// Decodes exactly [`FAULT_BODY_LEN`] bytes.
     pub fn decode(body: &[u8]) -> crate::Result<Self> {
         DecodeError::exact_len(body, FAULT_BODY_LEN)?;
         reject_nonzero(body, 21, 3)?;
+        let category = ErrorCategory::from_u16(u16_at(body, 0)).ok_or_else(DecodeError::unknown_enum)?;
+        if !Self::TRANSPORT_CATEGORIES.contains(&category) {
+            return Err(DecodeError::unknown_enum());
+        }
         Ok(FaultBody {
-            category: ErrorCategory::from_u16(u16_at(body, 0)).ok_or_else(DecodeError::unknown_enum)?,
+            category,
             detail: u16_at(body, 2),
             expected_next_offset: u64_at(body, 4),
             durable_next_offset: u64_at(body, 12),
@@ -465,6 +489,17 @@ mod tests {
         let mut bytes = fault(FaultDisposition::ResumeWithNewSession, false);
         bytes[STREAM_HEADER_LEN + 21] = 1;
         assert_eq!(StreamFrame::decode(&bytes).unwrap_err(), DecodeError::reserved_bits());
+
+        // A semantic/domain category in the compact body, which has no namespace field to carry
+        // the ObjectKind such a detail would be scoped to.
+        let mut bytes = fault(FaultDisposition::ResumeWithNewSession, false);
+        put_u16(&mut bytes, STREAM_HEADER_LEN, ErrorCategory::SEMANTIC_VALIDATION.get());
+        assert_eq!(StreamFrame::decode(&bytes).unwrap_err(), DecodeError::unknown_enum());
+        for category in [ErrorCategory::BUSY, ErrorCategory::REVISION_CONFLICT, ErrorCategory::OBJECT_NOT_FOUND] {
+            let mut bytes = fault(FaultDisposition::ResumeWithNewSession, false);
+            put_u16(&mut bytes, STREAM_HEADER_LEN, category.get());
+            assert_eq!(StreamFrame::decode(&bytes).unwrap_err(), DecodeError::unknown_enum());
+        }
     }
 
     #[test]

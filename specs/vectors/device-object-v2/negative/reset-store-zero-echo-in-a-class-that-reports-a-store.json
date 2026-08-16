@@ -1,0 +1,14 @@
+{
+  "name": "reset-store-zero-echo-in-a-class-that-reports-a-store",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "resetStoreEcho(mountClass=3)",
+  "note": "The all-zero form is admitted only in the two classes that report no StoreId at all.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "invalidCombination",
+    "detailValue": 3
+  },
+  "bytes": "00000000000000000000000000000000"
+}
