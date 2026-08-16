@@ -3596,6 +3596,16 @@ pub fn negatives() -> Vec<NegativeVector> {
         detail::descriptor::UNKNOWN_ENUM,
         "A revisionConflict is a domain outcome and uses a correlated control response, not a stream fault.",
     );
+    push(
+        "stream-fault-resource-limit-category",
+        NegativeTarget::StreamFrame,
+        stream_frame(1, 0, 3, 1, &fault_body(20, 3, 0, 0, 0)),
+        ErrorCategory::INVALID_DESCRIPTOR,
+        detail::descriptor::UNKNOWN_ENUM,
+        "resourceLimit is outside the ten-category transport set: every bounded resource a stream \
+         could exhaust is reserved at admission, so an attached session has no resource-limit \
+         condition to report.",
+    );
 
     all
 }
