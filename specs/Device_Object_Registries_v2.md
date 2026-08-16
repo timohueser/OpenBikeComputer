@@ -246,6 +246,10 @@ Every field is critical and required:
 | `0x8005` | `i64` | required | Validated issued UTC. |
 | `0x8006` | `i64` | required | Validated valid-until UTC. |
 
+The three coverage facts carry §3's ranges, and the validated valid-until time is later than the
+validated issued time; a Put that breaks either is `invalidDescriptor` by the convention in §4,
+before any typed validation runs.
+
 These are declared semantic facts used for bounded preflight. The typed weather validator MUST
 derive the same facts from the payload; any mismatch is `weather.payloadFactsMismatch`. The payload
 remains the weather data authority, while the catalog stores the validator-derived facts.
@@ -286,6 +290,12 @@ bytes respectively. The 96-byte catalog ceiling is not only a decoder bound: the
 reserves exactly that many bytes inside each catalog-head entry, so raising it changes the on-card
 entry size and the garbage collector's bounded read. It is a format constant, not a limit a decoder
 may relax.
+
+A value outside a field's registered range is refused by the kind of range it left: an enumerated
+field — retention, update state — reports `invalidDescriptor/unknownEnum`, and a continuous quantity
+— a coverage centre, a radius in metres — reports `invalidDescriptor/invalidCombination`. Widths and
+text keep the wire contract's `noncanonicalMetadata`, because those are rules about the encoding
+rather than about the registered value space.
 
 Every field below carries an explicit required/optional status, which is the status the wire
 contract's "every registered required field appears exactly once" rule refers to. Put and catalog
