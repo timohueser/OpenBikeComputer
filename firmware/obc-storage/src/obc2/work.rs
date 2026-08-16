@@ -22,7 +22,7 @@ use obc_link::ids::{DraftPartRef, GenerationId, OperationId, StoreId};
 
 use super::error::{DecodeError, Reason, Record, Result};
 use super::gate::{BodyBinding, Gate, MAGIC_RIDE, MAGIC_WORK};
-use super::limits::{SLOT_STRIDE, SMALL_BODY_CRC_OFFSET, SMALL_BODY_LEN, SMALL_GATE_OFFSET};
+use super::limits::{SLOT_STRIDE, SMALL_BODY_CRC_OFFSET, SMALL_BODY_LEN, SMALL_GATE_OFFSET, WORK_SLOTS};
 use super::raw::{
     bytes16_at, bytes32_at, crc32, crc32_with_hole, i64_at, is_zero, put_bytes, put_i64, put_u16, put_u32, put_u64,
     require_zero, u16_at, u32_at, u64_at,
@@ -505,19 +505,18 @@ pub enum WorkRecovery {
 /// length is not merely stale, it is unreachable") and then requires the prefix to be *proved*
 /// before a byte is accepted after it. A caller that selected a slot and skipped the CRC would
 /// resume from a prefix the card no longer holds.
-pub fn recover_work(slots: &[Option<WorkRecord>], payload: &[u8]) -> WorkRecovery {
+pub fn recover_work(slots: &[Option<WorkRecord>; WORK_SLOTS], payload: &[u8]) -> WorkRecovery {
     let observed = payload.len() as u64;
-    let mut best: Option<WorkRecord> = None;
-    for record in slots.iter().flatten() {
-        if !record.offset_is_reachable(observed) {
-            continue;
-        }
-        match best {
-            Some(held) if held.sequence >= record.sequence => {}
-            _ => best = Some(*record),
+    // The selection is [`select_by_reachable_sequence`]'s, not a second copy of it: the two WORK
+    // slots become its candidate list, and what this function adds is the prefix proof.
+    let mut candidates: [(u32, u64, Option<WorkRecord>); WORK_SLOTS] = [(0, u64::MAX, None); WORK_SLOTS];
+    for (candidate, held) in candidates.iter_mut().zip(slots.iter()) {
+        if let Some(record) = held {
+            *candidate = (record.sequence, record.durable_offset, Some(*record));
         }
     }
-    let Some(record) = best else { return WorkRecovery::RestartAtZero };
+    let selected = select_by_reachable_sequence(&candidates, observed);
+    let Some(record) = selected.and_then(|(_, _, record)| record) else { return WorkRecovery::RestartAtZero };
     let offset = record.durable_offset as usize;
     if crc32(&payload[..offset]) == record.prefix_crc {
         WorkRecovery::Resume(record)
@@ -678,13 +677,13 @@ mod tests {
         let payload = std::vec![0xABu8; 4_096];
         let mut slot = work(1, 1_024, WorkState::Streaming);
         slot.prefix_crc = super::super::raw::crc32(&payload[..1_024]);
-        assert_eq!(recover_work(&[Some(slot)], &payload), WorkRecovery::Resume(slot));
+        assert_eq!(recover_work(&[Some(slot), None], &payload), WorkRecovery::Resume(slot));
 
         // "If a qualifying slot's prefix CRC mismatches, the work is discarded and its operation
         // terminally aborted; nothing is ever resumed from an unverifiable prefix."
         let mut mismatched = slot;
         mismatched.prefix_crc ^= 1;
-        assert_eq!(recover_work(&[Some(mismatched)], &payload), WorkRecovery::DiscardAndAbort);
+        assert_eq!(recover_work(&[Some(mismatched), None], &payload), WorkRecovery::DiscardAndAbort);
     }
 
     /// The restart-only profile writes no streaming slot at all, so its claimed generation recovers
@@ -695,7 +694,7 @@ mod tests {
         let payload = std::vec![0u8; 1_024];
         assert_eq!(recover_work(&[None, None], &payload), WorkRecovery::RestartAtZero);
         let unreachable = work(2, 8_192, WorkState::Streaming);
-        assert_eq!(recover_work(&[Some(unreachable)], &payload), WorkRecovery::RestartAtZero);
+        assert_eq!(recover_work(&[Some(unreachable), None], &payload), WorkRecovery::RestartAtZero);
     }
 
     /// The newest reachable slot wins even when a newer one records an unreachable offset — §7's

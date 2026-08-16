@@ -306,15 +306,22 @@ pub fn validate_body(body: &[u8]) -> Result<CheckpointHeader> {
     }
     zero_after(body, ACTIVE, header.active_count as usize)?;
 
+    let mut parent_key: Option<[u8; 16]> = None;
     for index in 0..header.draft_parent_count as usize {
-        DraftParent::decode(&body[DRAFT_PARENT.slot(index)])?;
+        parent_key = Some(DraftParent::decode(&body[DRAFT_PARENT.slot(index)])?.parent.to_bytes());
     }
     zero_after(body, DRAFT_PARENT, header.draft_parent_count as usize)?;
 
-    // Draft parts: keyed by (parent, kind, part key).
+    // Draft parts: keyed by (parent, kind, part key). Every one of them belongs to the one parent
+    // row — §2 admits a single parent and §6.1 removes its parts in the same replay step that
+    // removes it, so a part naming another parent, or any part with no parent row at all, is a
+    // membership fact this checkpoint cannot hold.
     let mut previous_part: Option<([u8; 16], u16, u64)> = None;
     for index in 0..header.draft_part_count as usize {
         let row = DraftPart::decode(&body[DRAFT_PARTS.slot(index)])?;
+        if parent_key != Some(row.key.parent.to_bytes()) {
+            return Err(err(Reason::Combination));
+        }
         let key = row.key.sort_key();
         if let Some(previous) = previous_part {
             if key < previous {
@@ -506,6 +513,31 @@ mod tests {
         header.active_count = 0;
         header.result_start = 64;
         assert_eq!(CheckpointHeader::decode(&header.encode()).unwrap_err().reason, Reason::Count);
+    }
+
+    /// §2 admits one draft parent and §6.1 removes its parts in the same replay step that removes
+    /// it, so every part row belongs to that parent. A part with no parent row, or one naming
+    /// another parent, is a membership fact the checkpoint cannot hold.
+    #[test]
+    fn draft_parts_must_belong_to_the_one_parent_row() {
+        use super::super::samples;
+        let mut body = std::boxed::Box::new([0u8; CHECKPOINT_BODY_LEN]);
+        let mut model = super::super::model::CatalogModel::initial(samples::STORE, 4);
+
+        // A part with no parent row at all.
+        let _ = model.draft_parts.push(samples::part(1));
+        model.encode_body(body.as_mut_slice()).unwrap();
+        assert_eq!(validate_body(body.as_slice()).unwrap_err().reason, Reason::Combination);
+
+        // With its parent present it decodes.
+        model.draft_parent = Some(samples::parent());
+        model.encode_body(body.as_mut_slice()).unwrap();
+        validate_body(body.as_slice()).unwrap();
+
+        // A part naming another parent does not.
+        model.draft_parts[0].key.parent = obc_link::ids::OperationId::new(samples::OP_B);
+        model.encode_body(body.as_mut_slice()).unwrap();
+        assert_eq!(validate_body(body.as_slice()).unwrap_err().reason, Reason::Combination);
     }
 
     /// §5.2's "sequences never wrap", enforced where it can still be enforced: a header whose
