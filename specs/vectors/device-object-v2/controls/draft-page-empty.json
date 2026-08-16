@@ -17,6 +17,16 @@
   },
   "boundary": "",
   "note": "A parent with no children yet.",
+  "body": {
+    "parentOperationId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "draftRevision": "1",
+    "nextCursor.revision": "0",
+    "nextCursor.nextEntryIndex": 0,
+    "nextCursor.kindCode": 0,
+    "nextCursor.crc32": 0,
+    "entryCount": 0,
+    "flags": 0
+  },
   "payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c301000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300020201002c005a000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c301000000000000000000000000000000000000000000000000000000"
 }

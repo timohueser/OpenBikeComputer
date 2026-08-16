@@ -1,0 +1,14 @@
+{
+  "name": "catalog-page-next-cursor-with-a-broken-crc",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryCatalogResponse",
+  "note": "The next cursor's CRC covers this page's own StoreId and the cursor's first twelve bytes; one flipped bit is checksumFailure/cursor rather than a silently followed cursor.",
+  "expect": {
+    "category": "checksumFailure",
+    "categoryValue": 13,
+    "detail": "cursor",
+    "detailValue": 3
+  },
+  "bytes": "4f4243500300010205007100010000003c92000099164ebaabc2342fe08f6b10010001002a000000000000002a0000000000000001000100baa1eb3309000000000000002a00000000000000b80b0000000000003412000000002100000000000100400019000200018010004b6169736572737475686c206c6f6f700280010002"
+}

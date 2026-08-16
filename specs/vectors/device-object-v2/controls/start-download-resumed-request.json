@@ -17,6 +17,12 @@
   },
   "boundary": "",
   "note": "A nonzero start offset is allowed only when the kind advertises resumable download.",
+  "body": {
+    "objectKind": 1,
+    "flags": 2,
+    "logicalObjectId": "9",
+    "startOffset": "1048576"
+  },
   "payload": "01000200090000000000000000000000000000000000100000000000",
   "frame": "4f4243500300100100001c002900000001000200090000000000000000000000000000000000100000000000"
 }

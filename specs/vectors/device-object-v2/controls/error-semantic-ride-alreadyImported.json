@@ -1,0 +1,37 @@
+{
+  "name": "error-semantic-ride-alreadyImported",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "AcknowledgeRideImported",
+    "value": 785
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 202
+  },
+  "boundary": "",
+  "note": "A nonterminal domain refusal: the claim exists and is not terminal.",
+  "body": {
+    "category": 14,
+    "detailNamespace": 3,
+    "detail": 2,
+    "guidance": 1,
+    "owner": 0,
+    "presence": 32,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
+  "payload": "0e0003000200010020000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300110303003000ca0000000e0003000200010020000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "operationIdConflict clears both claim-status bits: the request's own intent was never claimed.",
+  "body": {
+    "category": 19,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 8,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "130000000100080000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c8000000130000000100080000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

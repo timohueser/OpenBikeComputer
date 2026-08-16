@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A replayed terminal body is exempt from the presence matrix: owner none, guidance forced to reject-permanently, both claim-status bits set.",
+  "body": {
+    "category": 8,
+    "detailNamespace": 0,
+    "detail": 1,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 96,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "080000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c8000000080000000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

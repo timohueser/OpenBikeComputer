@@ -17,6 +17,11 @@
   },
   "boundary": "",
   "note": "The response reports the clock after the request and the source the device now trusts.",
+  "body": {
+    "epochSeconds": "1763000000",
+    "source": 2,
+    "state": 1
+  },
   "payload": "c03e1569000000000201000000000000",
   "frame": "4f42435003000304010010007b000000c03e1569000000000201000000000000"
 }

@@ -17,6 +17,9 @@
   },
   "boundary": "minimum",
   "note": "Echo's maximum is the negotiated control frame less the 16-byte header.",
+  "body": {
+    "payload": ""
+  },
   "payload": "",
   "frame": "4f42435003000504000000007e000000"
 }

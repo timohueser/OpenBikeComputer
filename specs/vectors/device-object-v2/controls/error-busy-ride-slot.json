@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "An occupied ride slot is an owner, not a capacity the client can plan around.",
+  "body": {
+    "category": 5,
+    "detailNamespace": 0,
+    "detail": 9,
+    "guidance": 3,
+    "owner": 4,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "050000000900030400000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300000103003000c8000000050000000900030400000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

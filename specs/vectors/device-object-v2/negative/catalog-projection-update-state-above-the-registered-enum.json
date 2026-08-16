@@ -1,0 +1,14 @@
+{
+  "name": "catalog-projection-update-state-above-the-registered-enum",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "QueryCatalogResponse",
+  "note": "Update states run VerifiedReady `1` through failed `6`; anything outside that is an unregistered value of an enumerated field.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "unknownEnum",
+    "detailValue": 2
+  },
+  "bytes": "4f4243500300010201008a00010000003c92000099164ebaabc2342fe08f6b10070001000c000000000000000000000000000000000000000000000001000000000000000c0000000000000000100000000000003412000000003a0000000000070040003200030001800500312e342e320280010007038020007f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f"
+}

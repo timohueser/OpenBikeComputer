@@ -17,6 +17,7 @@
   },
   "boundary": "",
   "note": "The empty success releases the lease exactly once.",
+  "body": {},
   "payload": "",
   "frame": "4f42435003001101010000002a000000"
 }

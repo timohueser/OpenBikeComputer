@@ -623,6 +623,13 @@ impl<'a> CatalogPage<'a> {
             entry_count,
             entry_bytes: &payload[CATALOG_PAGE_PREFIX_LEN..],
         };
+        // §8.2's cursor CRC binds a cursor to one store, and a catalog page reports the StoreId it
+        // was minted under — so unlike a *request* cursor, whose scope the frame does not carry,
+        // this one is verifiable here and is verified here. A reader that skipped it would follow
+        // a corrupted or foreign cursor into a page it cannot interpret.
+        if !page.next_cursor.is_zero() {
+            page.next_cursor.verify_catalog(page.store_id)?;
+        }
         let mut seen = 0u16;
         let mut offset = 0usize;
         let mut previous: Option<LogicalObjectId> = None;

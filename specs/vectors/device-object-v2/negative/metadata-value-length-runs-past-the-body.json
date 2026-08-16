@@ -3,6 +3,8 @@
   "suite": "device-object-v2",
   "kind": "negative",
   "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
   "note": "encoded_field_bytes equals the exact sum of every 4 + value_length.",
   "expect": {
     "category": "invalidDescriptor",

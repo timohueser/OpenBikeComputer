@@ -1,0 +1,16 @@
+{
+  "name": "metadata-field-count-lie-and-a-schema-id-mismatch",
+  "suite": "device-object-v2",
+  "kind": "negative",
+  "target": "metadataEnvelope",
+  "class": "put",
+  "maximumEncodedLength": 128,
+  "note": "field_count equals the number of fields; that is canonical form, and it is answered before the schema identity is compared with the containing kind.",
+  "expect": {
+    "category": "invalidDescriptor",
+    "categoryValue": 7,
+    "detail": "noncanonicalMetadata",
+    "detailValue": 5
+  },
+  "bytes": "02000100050005000180010001"
+}

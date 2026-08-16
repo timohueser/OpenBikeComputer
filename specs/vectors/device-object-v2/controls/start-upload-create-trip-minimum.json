@@ -17,6 +17,20 @@
   },
   "boundary": "minimum",
   "note": "The 56-byte minimum StartUpload: create mode encodes both identity fields as zero, over an empty Put envelope.",
+  "body": {
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "objectKind": 2,
+    "targetMode": 0,
+    "resume": 0,
+    "logicalObjectId": "0",
+    "expectedRevision": "0",
+    "declaredLength": "4096",
+    "expectedCrc32": 305419896,
+    "metadata.schemaId": 2,
+    "metadata.schemaVersion": 1,
+    "metadata.encodedFieldBytes": 0,
+    "metadata.fieldCount": 0
+  },
   "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a102000000000000000000000000000000000000000010000000000000785634120200010000000000",
   "frame": "4f42435003000001000038000a000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a102000000000000000000000000000000000000000010000000000000785634120200010000000000"
 }

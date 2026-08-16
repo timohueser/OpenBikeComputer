@@ -17,6 +17,19 @@
   },
   "boundary": "",
   "note": "Initial publication derives selected false; selecting the release requires a later compare-and-swap SetMetadata.",
+  "body": {
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "objectKind": 6,
+    "flags": 1,
+    "logicalObjectId": "2",
+    "expectedRevision": "51",
+    "patch.schemaId": 6,
+    "patch.schemaVersion": 128,
+    "patch.encodedFieldBytes": 5,
+    "patch.fieldCount": 1,
+    "patch.field[0].tag": 32769,
+    "patch.field[0].value": "01"
+  },
   "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1060001000200000000000000330000000000000006008000050001000180010001",
   "frame": "4f424350030001030000310070000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1060001000200000000000000330000000000000006008000050001000180010001"
 }

@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "Resumable work whose session was detached: attachment is advisory and grants no ownership.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 2,
+    "progress.phase": 1,
+    "progress.flags": 1,
+    "progress.subjectKind": 1,
+    "progress.logicalObjectId": "0",
+    "progress.durableOffset": "4096"
+  },
   "payload": "01000000020101000100000000000000000000000010000000000000",
   "frame": "4f4243500300000201001c004600000001000000020101000100000000000000000000000010000000000000"
 }

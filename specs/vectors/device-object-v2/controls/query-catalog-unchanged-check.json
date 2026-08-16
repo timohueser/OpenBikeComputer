@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "Expected-revision alone is an incremental unchanged check.",
+  "body": {
+    "objectKind": 1,
+    "flags": 1,
+    "expectedRevision": "42",
+    "cursor.revision": "0",
+    "cursor.nextEntryIndex": 0,
+    "cursor.kindCode": 0,
+    "cursor.crc32": 0
+  },
   "payload": "010001002a0000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010200001c0051000000010001002a0000000000000000000000000000000000000000000000"
 }

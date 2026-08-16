@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "An SDU below the 64-byte floor refuses the channel at CoC establishment.",
+  "body": {
+    "category": 20,
+    "detailNamespace": 0,
+    "detail": 2,
+    "guidance": 9,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
   "payload": "140000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000",
   "frame": "4f4243500300010003003000c8000000140000000200090000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 }

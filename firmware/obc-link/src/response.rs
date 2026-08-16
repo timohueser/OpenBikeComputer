@@ -302,10 +302,19 @@ mod tests {
             DecodeError::invalid_combination()
         );
 
-        let continuing = CatalogPage {
-            next_cursor: CatalogCursor { revision: 7, next_entry_index: 3, kind_code: 1, crc32: 0x1234 },
-            ..page
-        };
+        // A continuing page carries a cursor whose CRC binds it to this page's own store, and the
+        // decoder verifies it: an invented CRC is `checksumFailure/cursor`, not a followable cursor.
+        let mut cursor = CatalogCursor { revision: 7, next_entry_index: 3, kind_code: 1, crc32: 0x1234 };
+        let continuing = CatalogPage { next_cursor: cursor, ..page };
+        let response = Response::CatalogPage(continuing);
+        let len = response.encode_frame(Opcode::QueryCatalog, RequestId::new(1).unwrap(), true, &mut out).unwrap();
+        assert_eq!(
+            Response::decode(&ControlFrame::decode(&out[..len]).unwrap()).unwrap_err(),
+            DecodeError::new(crate::ErrorCategory::CHECKSUM_FAILURE, crate::error::detail::checksum::CURSOR)
+        );
+
+        cursor.crc32 = cursor.catalog_crc(page.store_id);
+        let continuing = CatalogPage { next_cursor: cursor, ..page };
         let response = Response::CatalogPage(continuing);
         let len = response.encode_frame(Opcode::QueryCatalog, RequestId::new(1).unwrap(), true, &mut out).unwrap();
         assert!(Response::decode(&ControlFrame::decode(&out[..len]).unwrap()).is_ok());

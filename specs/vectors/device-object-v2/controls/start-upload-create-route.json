@@ -17,6 +17,22 @@
   },
   "boundary": "",
   "note": "A create with resume permitted and a one-field route Put envelope.",
+  "body": {
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "objectKind": 1,
+    "targetMode": 0,
+    "resume": 1,
+    "logicalObjectId": "0",
+    "expectedRevision": "0",
+    "declaredLength": "3000",
+    "expectedCrc32": 1177987461,
+    "metadata.schemaId": 1,
+    "metadata.schemaVersion": 1,
+    "metadata.encodedFieldBytes": 5,
+    "metadata.fieldCount": 1,
+    "metadata.field[0].tag": 32769,
+    "metadata.field[0].value": "02"
+  },
   "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000100000000000000000000000000000000b80b00000000000085a9364601000100050001000180010002",
   "frame": "4f4243500300000100003d000b000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10100000100000000000000000000000000000000b80b00000000000085a9364601000100050001000180010002"
 }

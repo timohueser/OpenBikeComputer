@@ -17,6 +17,21 @@
   },
   "boundary": "",
   "note": "A receiver MUST NOT reject a frame because its diagnostic text is malformed; it renders it lossily.",
+  "body": {
+    "category": 22,
+    "detailNamespace": 0,
+    "detail": 2,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 0,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 4,
+    "text": "fffefd80"
+  },
   "payload": "160000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000400fffefd80",
   "frame": "4f4243500300020103003400c8000000160000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000400fffefd80"
 }

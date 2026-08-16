@@ -17,6 +17,13 @@
   },
   "boundary": "",
   "note": "Delete is an idempotent catalog transaction with a mandatory expected revision.",
+  "body": {
+    "operationId": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "objectKind": 1,
+    "flags": 1,
+    "logicalObjectId": "9",
+    "expectedRevision": "42"
+  },
   "payload": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000",
   "frame": "4f42435003000003000024006e000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20100010009000000000000002a00000000000000"
 }

@@ -17,6 +17,11 @@
   },
   "boundary": "",
   "note": "Install requires a VerifiedReady package and a mandatory version-monotonicity check on the device.",
+  "body": {
+    "operationId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "logicalObjectId": "3",
+    "expectedRevision": "70"
+  },
   "payload": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a103000000000000004600000000000000",
   "frame": "4f424350030010030000200071000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a103000000000000004600000000000000"
 }

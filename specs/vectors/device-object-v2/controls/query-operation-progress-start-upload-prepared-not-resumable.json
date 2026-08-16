@@ -17,6 +17,15 @@
   },
   "boundary": "",
   "note": "The resumable bit reflects the claimed policy, so a kind that advertises no resumable upload clears it.",
+  "body": {
+    "state": 1,
+    "progress.namespace": 1,
+    "progress.phase": 0,
+    "progress.flags": 4,
+    "progress.subjectKind": 1,
+    "progress.logicalObjectId": "9",
+    "progress.durableOffset": "0"
+  },
   "payload": "01000000010004000100000009000000000000000000000000000000",
   "frame": "4f4243500300000201001c004600000001000000010004000100000009000000000000000000000000000000"
 }

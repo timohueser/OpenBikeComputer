@@ -1,0 +1,37 @@
+{
+  "name": "error-semantic-trip-invalidTripFormat",
+  "suite": "device-object-v2",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FinishUpload",
+    "value": 258
+  },
+  "header": {
+    "magic": "OBCP",
+    "major": 3,
+    "minor": 0,
+    "flags": 3,
+    "payloadLength": 48,
+    "requestId": 202
+  },
+  "boundary": "",
+  "note": "A terminal domain refusal: reject-permanently, with both claim-status bits set.",
+  "body": {
+    "category": 14,
+    "detailNamespace": 2,
+    "detail": 1,
+    "guidance": 0,
+    "owner": 0,
+    "presence": 96,
+    "retryAfterMs": 0,
+    "expectedOffset": "0",
+    "currentRevision": "0",
+    "requiredBytes": "0",
+    "availableBytes": "0",
+    "textLength": 0,
+    "text": ""
+  },
+  "payload": "0e0002000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "frame": "4f4243500300020103003000ca0000000e0002000100000060000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}
