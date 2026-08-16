@@ -56,3 +56,15 @@ resolver = "2"
 # `obc-storage`'s host tests would exercise stock 0.9 while the board runs the fork.
 [patch.crates-io]
 embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }
+
+# The weather-bakery numeric suites (canonical mosaic, event-pack replay scoring) are
+# debug-hostile: unoptimized quantize/decode loops turned the CI `test` job from ~7 into
+# ~23 minutes (755 s for canonical_mosaic alone; 0.01 s optimized). Optimizing just these
+# packages' dev/test builds restores the budget without touching any test. `profile.test`
+# inherits these package overrides from `dev`.
+[profile.dev.package.obc-wx-bake]
+opt-level = 2
+[profile.dev.package.obc-wx-client]
+opt-level = 2
+[profile.dev.package.obc-formats]
+opt-level = 2
