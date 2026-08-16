@@ -9,7 +9,8 @@
  */
 
 import { Cursor, Writer } from "./bytes";
-import { decodeErrorBody, encodeErrorBody, type ErrorBody } from "./errorBody";
+import { crc32 } from "./crc32";
+import { readErrorBody, writeErrorBody, type ErrorBody } from "./errorBody";
 import {
     draftPartRef,
     identityEquals,
@@ -34,14 +35,18 @@ import {
     type StoreId,
     type WeatherRequestId,
 } from "./ids";
-import { decodeMetadataEnvelope, decodeWireText, encodeMetadataEnvelope, type MetadataEnvelope } from "./metadata";
+import { readMetadataEnvelope, readWireText, writeMetadataEnvelope, type MetadataEnvelope } from "./metadata";
 import {
     DRAFT_PART_KIND_NAME,
     OBJECT_KIND_NAME,
+    WEATHER_LATITUDE,
+    WEATHER_LONGITUDE,
+    WEATHER_RADIUS_METRES,
     type DraftPartKindName,
+    type MetadataBounds,
     type ObjectKindName,
 } from "./registry";
-import { reject } from "./result";
+import { decoding, reject, type DosResult } from "./result";
 
 /** §6.1 target mode. Zero is not a sentinel in either identity field; the mode alone distinguishes. */
 export const TARGET_MODE = { create: 0, replace: 1 } as const;
@@ -140,6 +145,13 @@ function enumIn(value: number, allowed: readonly number[], what: string): number
     return value;
 }
 
+/** A registered continuous range, failing as `invalidCombination` the way a metadata field does. */
+function inRange(what: string, value: bigint, bounds: MetadataBounds): void {
+    if (value < bounds.min || value > bounds.max) {
+        reject("invalidDescriptor", "invalidCombination", `${what} is registered at ${bounds.min}..${bounds.max}`);
+    }
+}
+
 // ---------------------------------------------------------------------------- typed results (§10)
 
 export interface ObjectResult {
@@ -180,40 +192,40 @@ export type ResultEnvelope =
  * §10: the envelope carries no body length because it is always the final element of the payload,
  * so a decoder takes the remainder of the frame and rejects any trailing byte beyond the fixed size.
  */
-export function decodeResultEnvelope(bytes: Uint8Array): ResultEnvelope {
+export function readResultEnvelope(bytes: Uint8Array): ResultEnvelope {
     const cursor = new Cursor(bytes);
     const type = cursor.u8();
     cursor.zeros(3, "ResultEnvelope reserved bytes");
     const body = cursor.take(cursor.remaining);
     switch (type) {
         case RESULT_TYPE.objectResult:
-            return { type: "objectResult", result: decodeObjectResult(body) };
+            return { type: "objectResult", result: readObjectResult(body) };
         case RESULT_TYPE.draftPartResult:
-            return { type: "draftPartResult", result: decodeDraftPartResult(body) };
+            return { type: "draftPartResult", result: readDraftPartResult(body) };
         case RESULT_TYPE.abortResult:
-            return { type: "abortResult", result: decodeAbortResult(body) };
+            return { type: "abortResult", result: readAbortResult(body) };
         default:
             return reject("invalidDescriptor", "unknownEnum", `result type ${type} is not registered`);
     }
 }
 
-export function encodeResultEnvelope(envelope: ResultEnvelope): Uint8Array {
+export function writeResultEnvelope(envelope: ResultEnvelope): Uint8Array {
     const writer = new Writer(96);
     switch (envelope.type) {
         case "objectResult":
-            writer.u8(RESULT_TYPE.objectResult).zeros(3).raw(encodeObjectResult(envelope.result));
+            writer.u8(RESULT_TYPE.objectResult).zeros(3).raw(writeObjectResult(envelope.result));
             break;
         case "draftPartResult":
-            writer.u8(RESULT_TYPE.draftPartResult).zeros(3).raw(encodeDraftPartResult(envelope.result));
+            writer.u8(RESULT_TYPE.draftPartResult).zeros(3).raw(writeDraftPartResult(envelope.result));
             break;
         case "abortResult":
-            writer.u8(RESULT_TYPE.abortResult).zeros(3).raw(encodeAbortResult(envelope.result));
+            writer.u8(RESULT_TYPE.abortResult).zeros(3).raw(writeAbortResult(envelope.result));
             break;
     }
     return writer.finish();
 }
 
-function decodeObjectResult(bytes: Uint8Array): ObjectResult {
+function readObjectResult(bytes: Uint8Array): ObjectResult {
     const cursor = new Cursor(bytes);
     const result: ObjectResult = {
         operationId: operationId(cursor.take(16)),
@@ -232,7 +244,7 @@ function decodeObjectResult(bytes: Uint8Array): ObjectResult {
     return result;
 }
 
-function encodeObjectResult(result: ObjectResult): Uint8Array {
+function writeObjectResult(result: ObjectResult): Uint8Array {
     return new Writer(64)
         .raw(result.operationId)
         .raw(result.storeId)
@@ -245,7 +257,7 @@ function encodeObjectResult(result: ObjectResult): Uint8Array {
         .finish();
 }
 
-function decodeDraftPartResult(bytes: Uint8Array): DraftPartResult {
+function readDraftPartResult(bytes: Uint8Array): DraftPartResult {
     const cursor = new Cursor(bytes);
     const childOperationId = operationId(cursor.take(16));
     const store = storeId(cursor.take(16));
@@ -269,7 +281,7 @@ function decodeDraftPartResult(bytes: Uint8Array): DraftPartResult {
     };
 }
 
-function encodeDraftPartResult(result: DraftPartResult): Uint8Array {
+function writeDraftPartResult(result: DraftPartResult): Uint8Array {
     return new Writer(88)
         .raw(result.childOperationId)
         .raw(result.storeId)
@@ -283,7 +295,7 @@ function encodeDraftPartResult(result: DraftPartResult): Uint8Array {
         .finish();
 }
 
-function decodeAbortResult(bytes: Uint8Array): AbortResult {
+function readAbortResult(bytes: Uint8Array): AbortResult {
     const cursor = new Cursor(bytes);
     const abortOperationId = operationId(cursor.take(16));
     const store = storeId(cursor.take(16));
@@ -297,7 +309,7 @@ function decodeAbortResult(bytes: Uint8Array): AbortResult {
     return { abortOperationId, storeId: store, targetOperationId, disposition };
 }
 
-function encodeAbortResult(result: AbortResult): Uint8Array {
+function writeAbortResult(result: AbortResult): Uint8Array {
     return new Writer(56)
         .raw(result.abortOperationId)
         .raw(result.storeId)
@@ -337,7 +349,7 @@ export interface StartUploadRequest {
     readonly metadata: MetadataEnvelope;
 }
 
-export function decodeStartUpload(bytes: Uint8Array): StartUploadRequest {
+export function readStartUpload(bytes: Uint8Array): StartUploadRequest {
     const cursor = new Cursor(bytes);
     const id = operationId(cursor.take(16));
     const objectKind = objectKindOf(cursor.u16());
@@ -354,7 +366,7 @@ export function decodeStartUpload(bytes: Uint8Array): StartUploadRequest {
             "create encodes logical ID and expected revision as zero",
         );
     }
-    const metadata = decodeMetadataEnvelope(bytes.subarray(cursor.position), {
+    const metadata = readMetadataEnvelope(bytes.subarray(cursor.position), {
         kind: objectKind,
         role: "put",
         mutating: true,
@@ -375,7 +387,7 @@ export function decodeStartUpload(bytes: Uint8Array): StartUploadRequest {
     };
 }
 
-export function encodeStartUpload(request: StartUploadRequest): Uint8Array {
+export function writeStartUpload(request: StartUploadRequest): Uint8Array {
     return new Writer(176)
         .raw(request.operationId)
         .u16(OBJECT_KIND_CODE[request.objectKind])
@@ -385,7 +397,7 @@ export function encodeStartUpload(request: StartUploadRequest): Uint8Array {
         .u64(request.expectedRevision)
         .u64(request.declaredLength)
         .u32(request.expectedCrc)
-        .raw(encodeMetadataEnvelope(request.metadata))
+        .raw(writeMetadataEnvelope(request.metadata))
         .finish();
 }
 
@@ -428,10 +440,10 @@ function checkAcceptanceFlags(flags: number, durableOffset: bigint, prefixCrc: n
     }
 }
 
-export function decodeUploadAccepted(bytes: Uint8Array): DispositionResponse<UploadAcceptance> {
+export function readUploadAccepted(bytes: Uint8Array): DispositionResponse<UploadAcceptance> {
     const cursor = new Cursor(bytes);
     const disposition = cursor.u8();
-    if (disposition === 1) return { disposition: "alreadyTerminal", result: decodeTerminalDisposition(cursor, bytes) };
+    if (disposition === 1) return { disposition: "alreadyTerminal", result: readTerminalDisposition(cursor, bytes) };
     if (disposition !== 0) {
         reject("invalidDescriptor", "unknownEnum", `disposition ${disposition} is not registered`);
     }
@@ -467,8 +479,8 @@ export function decodeUploadAccepted(bytes: Uint8Array): DispositionResponse<Upl
     };
 }
 
-export function encodeUploadAccepted(response: DispositionResponse<UploadAcceptance>): Uint8Array {
-    if (response.disposition === "alreadyTerminal") return encodeTerminalDisposition(response.result);
+export function writeUploadAccepted(response: DispositionResponse<UploadAcceptance>): Uint8Array {
+    if (response.disposition === "alreadyTerminal") return writeTerminalDisposition(response.result);
     const accepted = response.accepted;
     return new Writer(64)
         .u8(0)
@@ -487,13 +499,13 @@ export function encodeUploadAccepted(response: DispositionResponse<UploadAccepta
         .finish();
 }
 
-function decodeTerminalDisposition(cursor: Cursor, bytes: Uint8Array): ResultEnvelope {
+function readTerminalDisposition(cursor: Cursor, bytes: Uint8Array): ResultEnvelope {
     cursor.zeros(3, "disposition reserved bytes");
-    return decodeResultEnvelope(bytes.subarray(cursor.position));
+    return readResultEnvelope(bytes.subarray(cursor.position));
 }
 
-function encodeTerminalDisposition(result: ResultEnvelope): Uint8Array {
-    return new Writer(96).u8(1).zeros(3).raw(encodeResultEnvelope(result)).finish();
+function writeTerminalDisposition(result: ResultEnvelope): Uint8Array {
+    return new Writer(96).u8(1).zeros(3).raw(writeResultEnvelope(result)).finish();
 }
 
 export interface CheckpointUploadRequest {
@@ -501,7 +513,7 @@ export interface CheckpointUploadRequest {
     readonly receivedNextOffset: bigint;
 }
 
-export function decodeCheckpointUpload(bytes: Uint8Array): CheckpointUploadRequest {
+export function readCheckpointUpload(bytes: Uint8Array): CheckpointUploadRequest {
     const cursor = new Cursor(bytes);
     const sessionId = nonzeroSession(cursor.u32());
     const receivedNextOffset = cursor.u64();
@@ -509,7 +521,7 @@ export function decodeCheckpointUpload(bytes: Uint8Array): CheckpointUploadReque
     return { sessionId, receivedNextOffset };
 }
 
-export const encodeCheckpointUpload = (request: CheckpointUploadRequest): Uint8Array =>
+export const writeCheckpointUpload = (request: CheckpointUploadRequest): Uint8Array =>
     new Writer(12).u32(request.sessionId).u64(request.receivedNextOffset).finish();
 
 export interface CheckpointUploadResponse {
@@ -519,7 +531,7 @@ export interface CheckpointUploadResponse {
     readonly checkpointSequence: number;
 }
 
-export function decodeCheckpointResponse(bytes: Uint8Array): CheckpointUploadResponse {
+export function readCheckpointResponse(bytes: Uint8Array): CheckpointUploadResponse {
     const cursor = new Cursor(bytes);
     const sessionId = nonzeroSession(cursor.u32());
     const durableNextOffset = cursor.u64();
@@ -529,7 +541,7 @@ export function decodeCheckpointResponse(bytes: Uint8Array): CheckpointUploadRes
     return { sessionId, durableNextOffset, finalizedPrefixCrc, checkpointSequence };
 }
 
-export const encodeCheckpointResponse = (response: CheckpointUploadResponse): Uint8Array =>
+export const writeCheckpointResponse = (response: CheckpointUploadResponse): Uint8Array =>
     new Writer(20)
         .u32(response.sessionId)
         .u64(response.durableNextOffset)
@@ -541,14 +553,14 @@ export interface SessionOnlyRequest {
     readonly sessionId: number;
 }
 
-export function decodeSessionOnly(bytes: Uint8Array, what: string): SessionOnlyRequest {
+export function readSessionOnly(bytes: Uint8Array, what: string): SessionOnlyRequest {
     const cursor = new Cursor(bytes);
     const sessionId = nonzeroSession(cursor.u32());
     cursor.end(what);
     return { sessionId };
 }
 
-export const encodeSessionOnly = (request: SessionOnlyRequest): Uint8Array => new Writer(4).u32(request.sessionId).finish();
+export const writeSessionOnly = (request: SessionOnlyRequest): Uint8Array => new Writer(4).u32(request.sessionId).finish();
 
 // ------------------------------------------------------------------------------- downloads (§7)
 
@@ -562,7 +574,7 @@ export interface StartDownloadRequest {
     readonly startOffset: bigint;
 }
 
-export function decodeStartDownload(bytes: Uint8Array): StartDownloadRequest {
+export function readStartDownload(bytes: Uint8Array): StartDownloadRequest {
     const cursor = new Cursor(bytes);
     const objectKind = objectKindOf(cursor.u16());
     const flags = cursor.u16();
@@ -579,7 +591,7 @@ export function decodeStartDownload(bytes: Uint8Array): StartDownloadRequest {
     return { objectKind, flags, logicalObjectId: logical, startOffset };
 }
 
-export const encodeStartDownload = (request: StartDownloadRequest): Uint8Array =>
+export const writeStartDownload = (request: StartDownloadRequest): Uint8Array =>
     new Writer(28)
         .u16(OBJECT_KIND_CODE[request.objectKind])
         .u16(request.flags)
@@ -599,7 +611,7 @@ export interface DownloadAccepted {
     readonly maximumStreamPayload: number;
 }
 
-export function decodeDownloadAccepted(bytes: Uint8Array): DownloadAccepted {
+export function readDownloadAccepted(bytes: Uint8Array): DownloadAccepted {
     const cursor = new Cursor(bytes);
     const store = storeId(cursor.take(16));
     const sessionId = nonzeroSession(cursor.u32());
@@ -623,7 +635,7 @@ export function decodeDownloadAccepted(bytes: Uint8Array): DownloadAccepted {
     };
 }
 
-export const encodeDownloadAccepted = (response: DownloadAccepted): Uint8Array =>
+export const writeDownloadAccepted = (response: DownloadAccepted): Uint8Array =>
     new Writer(60)
         .raw(response.storeId)
         .u32(response.sessionId)
@@ -642,7 +654,7 @@ export interface FinishDownloadRequest {
     readonly wholeSourceCrc: number;
 }
 
-export function decodeFinishDownload(bytes: Uint8Array): FinishDownloadRequest {
+export function readFinishDownload(bytes: Uint8Array): FinishDownloadRequest {
     const cursor = new Cursor(bytes);
     const sessionId = nonzeroSession(cursor.u32());
     const receivedLength = cursor.u64();
@@ -651,7 +663,7 @@ export function decodeFinishDownload(bytes: Uint8Array): FinishDownloadRequest {
     return { sessionId, receivedLength, wholeSourceCrc };
 }
 
-export const encodeFinishDownload = (request: FinishDownloadRequest): Uint8Array =>
+export const writeFinishDownload = (request: FinishDownloadRequest): Uint8Array =>
     new Writer(16).u32(request.sessionId).u64(request.receivedLength).u32(request.wholeSourceCrc).finish();
 
 // ------------------------------------------------------------------------------- aborts (§6.4)
@@ -661,7 +673,7 @@ export interface AbortSessionRequest {
     readonly reason: number;
 }
 
-export function decodeAbortSession(bytes: Uint8Array): AbortSessionRequest {
+export function readAbortSession(bytes: Uint8Array): AbortSessionRequest {
     const cursor = new Cursor(bytes);
     const sessionId = nonzeroSession(cursor.u32());
     const reason = enumIn(cursor.u8(), [1, 2, 3], "abort reason");
@@ -670,7 +682,7 @@ export function decodeAbortSession(bytes: Uint8Array): AbortSessionRequest {
     return { sessionId, reason };
 }
 
-export const encodeAbortSession = (request: AbortSessionRequest): Uint8Array =>
+export const writeAbortSession = (request: AbortSessionRequest): Uint8Array =>
     new Writer(8).u32(request.sessionId).u8(request.reason).zeros(3).finish();
 
 export interface AbortSessionResponse {
@@ -678,14 +690,14 @@ export interface AbortSessionResponse {
     readonly outcome: number;
 }
 
-export function decodeAbortSessionResponse(bytes: Uint8Array): AbortSessionResponse {
+export function readAbortSessionResponse(bytes: Uint8Array): AbortSessionResponse {
     const cursor = new Cursor(bytes);
     const outcome = enumIn(cursor.u8(), [0, 1], "AbortSession outcome");
     cursor.end("AbortSession response");
     return { outcome };
 }
 
-export const encodeAbortSessionResponse = (response: AbortSessionResponse): Uint8Array =>
+export const writeAbortSessionResponse = (response: AbortSessionResponse): Uint8Array =>
     new Writer(1).u8(response.outcome).finish();
 
 export interface AbortOperationRequest {
@@ -694,7 +706,7 @@ export interface AbortOperationRequest {
     readonly reason: number;
 }
 
-export function decodeAbortOperation(bytes: Uint8Array): AbortOperationRequest {
+export function readAbortOperation(bytes: Uint8Array): AbortOperationRequest {
     const cursor = new Cursor(bytes);
     const id = operationId(cursor.take(16));
     const target = operationId(cursor.take(16));
@@ -704,7 +716,7 @@ export function decodeAbortOperation(bytes: Uint8Array): AbortOperationRequest {
     return { operationId: id, targetOperationId: target, reason };
 }
 
-export const encodeAbortOperation = (request: AbortOperationRequest): Uint8Array =>
+export const writeAbortOperation = (request: AbortOperationRequest): Uint8Array =>
     new Writer(40).raw(request.operationId).raw(request.targetOperationId).u8(request.reason).zeros(7).finish();
 
 // ------------------------------------------------------------------------------- drafts (§6.5)
@@ -722,7 +734,7 @@ export interface BeginDraftRequest {
     readonly expectedPartCount: number;
 }
 
-export function decodeBeginDraft(bytes: Uint8Array): BeginDraftRequest {
+export function readBeginDraft(bytes: Uint8Array): BeginDraftRequest {
     const cursor = new Cursor(bytes);
     const parent = operationId(cursor.take(16));
     const objectKind = objectKindOf(cursor.u16());
@@ -757,7 +769,7 @@ export function decodeBeginDraft(bytes: Uint8Array): BeginDraftRequest {
     };
 }
 
-export const encodeBeginDraft = (request: BeginDraftRequest): Uint8Array =>
+export const writeBeginDraft = (request: BeginDraftRequest): Uint8Array =>
     new Writer(52)
         .raw(request.parentOperationId)
         .u16(OBJECT_KIND_CODE[request.objectKind])
@@ -778,10 +790,10 @@ export interface BeginDraftAcceptance {
     readonly state: number;
 }
 
-export function decodeBeginDraftResponse(bytes: Uint8Array): DispositionResponse<BeginDraftAcceptance> {
+export function readBeginDraftResponse(bytes: Uint8Array): DispositionResponse<BeginDraftAcceptance> {
     const cursor = new Cursor(bytes);
     const disposition = cursor.u8();
-    if (disposition === 1) return { disposition: "alreadyTerminal", result: decodeTerminalDisposition(cursor, bytes) };
+    if (disposition === 1) return { disposition: "alreadyTerminal", result: readTerminalDisposition(cursor, bytes) };
     if (disposition !== 0) reject("invalidDescriptor", "unknownEnum", `disposition ${disposition} is not registered`);
     cursor.zeros(3, "BeginDraft disposition reserved bytes");
     const parent = operationId(cursor.take(16));
@@ -796,8 +808,8 @@ export function decodeBeginDraftResponse(bytes: Uint8Array): DispositionResponse
     };
 }
 
-export function encodeBeginDraftResponse(response: DispositionResponse<BeginDraftAcceptance>): Uint8Array {
-    if (response.disposition === "alreadyTerminal") return encodeTerminalDisposition(response.result);
+export function writeBeginDraftResponse(response: DispositionResponse<BeginDraftAcceptance>): Uint8Array {
+    if (response.disposition === "alreadyTerminal") return writeTerminalDisposition(response.result);
     const accepted = response.accepted;
     return new Writer(32)
         .u8(0)
@@ -820,7 +832,7 @@ export interface StartDraftPartRequest {
     readonly resume: number;
 }
 
-export function decodeStartDraftPart(bytes: Uint8Array): StartDraftPartRequest {
+export function readStartDraftPart(bytes: Uint8Array): StartDraftPartRequest {
     const cursor = new Cursor(bytes);
     const child = operationId(cursor.take(16));
     const parent = operationId(cursor.take(16));
@@ -846,7 +858,7 @@ export function decodeStartDraftPart(bytes: Uint8Array): StartDraftPartRequest {
     };
 }
 
-export const encodeStartDraftPart = (request: StartDraftPartRequest): Uint8Array =>
+export const writeStartDraftPart = (request: StartDraftPartRequest): Uint8Array =>
     new Writer(64)
         .raw(request.childOperationId)
         .raw(request.parentOperationId)
@@ -872,10 +884,10 @@ export interface DraftPartAcceptance {
     readonly finalizedPrefixCrc: number;
 }
 
-export function decodeDraftPartAccepted(bytes: Uint8Array): DispositionResponse<DraftPartAcceptance> {
+export function readDraftPartAccepted(bytes: Uint8Array): DispositionResponse<DraftPartAcceptance> {
     const cursor = new Cursor(bytes);
     const disposition = cursor.u8();
-    if (disposition === 1) return { disposition: "alreadyTerminal", result: decodeTerminalDisposition(cursor, bytes) };
+    if (disposition === 1) return { disposition: "alreadyTerminal", result: readTerminalDisposition(cursor, bytes) };
     if (disposition !== 0) reject("invalidDescriptor", "unknownEnum", `disposition ${disposition} is not registered`);
     cursor.zeros(1, "DraftPartAccepted byte 1");
     const flags = cursor.u16();
@@ -909,8 +921,8 @@ export function decodeDraftPartAccepted(bytes: Uint8Array): DispositionResponse<
     };
 }
 
-export function encodeDraftPartAccepted(response: DispositionResponse<DraftPartAcceptance>): Uint8Array {
-    if (response.disposition === "alreadyTerminal") return encodeTerminalDisposition(response.result);
+export function writeDraftPartAccepted(response: DispositionResponse<DraftPartAcceptance>): Uint8Array {
+    if (response.disposition === "alreadyTerminal") return writeTerminalDisposition(response.result);
     const accepted = response.accepted;
     return new Writer(72)
         .u8(0)
@@ -934,14 +946,14 @@ export interface FinalizeDraftRequest {
     readonly parentOperationId: OperationId;
 }
 
-export function decodeFinalizeDraft(bytes: Uint8Array): FinalizeDraftRequest {
+export function readFinalizeDraft(bytes: Uint8Array): FinalizeDraftRequest {
     const cursor = new Cursor(bytes);
     const parent = operationId(cursor.take(16));
     cursor.end("FinalizeDraft");
     return { parentOperationId: parent };
 }
 
-export const encodeFinalizeDraft = (request: FinalizeDraftRequest): Uint8Array =>
+export const writeFinalizeDraft = (request: FinalizeDraftRequest): Uint8Array =>
     new Writer(16).raw(request.parentOperationId).finish();
 
 export interface FinalizeDraftAcceptance {
@@ -956,10 +968,10 @@ export interface FinalizeDraftAcceptance {
     readonly finalizedPrefixCrc: number;
 }
 
-export function decodeFinalizeDraftResponse(bytes: Uint8Array): DispositionResponse<FinalizeDraftAcceptance> {
+export function readFinalizeDraftResponse(bytes: Uint8Array): DispositionResponse<FinalizeDraftAcceptance> {
     const cursor = new Cursor(bytes);
     const disposition = cursor.u8();
-    if (disposition === 1) return { disposition: "alreadyTerminal", result: decodeTerminalDisposition(cursor, bytes) };
+    if (disposition === 1) return { disposition: "alreadyTerminal", result: readTerminalDisposition(cursor, bytes) };
     if (disposition !== 0) reject("invalidDescriptor", "unknownEnum", `disposition ${disposition} is not registered`);
     cursor.zeros(1, "FinalizeDraft acceptance byte 1");
     const flags = cursor.u16();
@@ -991,8 +1003,8 @@ export function decodeFinalizeDraftResponse(bytes: Uint8Array): DispositionRespo
     };
 }
 
-export function encodeFinalizeDraftResponse(response: DispositionResponse<FinalizeDraftAcceptance>): Uint8Array {
-    if (response.disposition === "alreadyTerminal") return encodeTerminalDisposition(response.result);
+export function writeFinalizeDraftResponse(response: DispositionResponse<FinalizeDraftAcceptance>): Uint8Array {
+    if (response.disposition === "alreadyTerminal") return writeTerminalDisposition(response.result);
     const accepted = response.accepted;
     return new Writer(64)
         .u8(0)
@@ -1017,14 +1029,14 @@ export interface QueryOperationRequest {
     readonly operationId: OperationId;
 }
 
-export function decodeQueryOperation(bytes: Uint8Array): QueryOperationRequest {
+export function readQueryOperation(bytes: Uint8Array): QueryOperationRequest {
     const cursor = new Cursor(bytes);
     const id = operationId(cursor.take(16));
     cursor.end("QueryOperation");
     return { operationId: id };
 }
 
-export const encodeQueryOperation = (request: QueryOperationRequest): Uint8Array =>
+export const writeQueryOperation = (request: QueryOperationRequest): Uint8Array =>
     new Writer(16).raw(request.operationId).finish();
 
 export interface OperationProgress {
@@ -1042,7 +1054,7 @@ export type QueryOperationResponse =
     | { readonly state: "committed"; readonly result: ResultEnvelope }
     | { readonly state: "aborted"; readonly error: ErrorBody };
 
-export function decodeQueryOperationResponse(bytes: Uint8Array): QueryOperationResponse {
+export function readQueryOperationResponse(bytes: Uint8Array): QueryOperationResponse {
     const cursor = new Cursor(bytes);
     const state = cursor.u8();
     cursor.zeros(3, "QueryOperation state reserved bytes");
@@ -1052,31 +1064,31 @@ export function decodeQueryOperationResponse(bytes: Uint8Array): QueryOperationR
             if (rest.length !== 0) reject("invalidFrame", "trailingBytes", "Unknown carries no further bytes");
             return { state: "unknown" };
         case OPERATION_STATE.inProgress:
-            return { state: "inProgress", progress: decodeOperationProgress(rest) };
+            return { state: "inProgress", progress: readOperationProgress(rest) };
         case OPERATION_STATE.committed:
-            return { state: "committed", result: decodeResultEnvelope(rest) };
+            return { state: "committed", result: readResultEnvelope(rest) };
         case OPERATION_STATE.aborted:
-            return { state: "aborted", error: decodeErrorBody(rest) };
+            return { state: "aborted", error: readErrorBody(rest) };
         default:
             return reject("invalidDescriptor", "unknownEnum", `operation state ${state} is not registered`);
     }
 }
 
-export function encodeQueryOperationResponse(response: QueryOperationResponse): Uint8Array {
+export function writeQueryOperationResponse(response: QueryOperationResponse): Uint8Array {
     const writer = new Writer(80);
     switch (response.state) {
         case "unknown":
             return writer.u8(OPERATION_STATE.unknown).zeros(3).finish();
         case "inProgress":
-            return writer.u8(OPERATION_STATE.inProgress).zeros(3).raw(encodeOperationProgress(response.progress)).finish();
+            return writer.u8(OPERATION_STATE.inProgress).zeros(3).raw(writeOperationProgress(response.progress)).finish();
         case "committed":
-            return writer.u8(OPERATION_STATE.committed).zeros(3).raw(encodeResultEnvelope(response.result)).finish();
+            return writer.u8(OPERATION_STATE.committed).zeros(3).raw(writeResultEnvelope(response.result)).finish();
         case "aborted":
-            return writer.u8(OPERATION_STATE.aborted).zeros(3).raw(encodeErrorBody(response.error)).finish();
+            return writer.u8(OPERATION_STATE.aborted).zeros(3).raw(writeErrorBody(response.error)).finish();
     }
 }
 
-function decodeOperationProgress(bytes: Uint8Array): OperationProgress {
+function readOperationProgress(bytes: Uint8Array): OperationProgress {
     const cursor = new Cursor(bytes);
     const namespace = cursor.u8();
     const phase = cursor.u8();
@@ -1107,7 +1119,7 @@ function decodeOperationProgress(bytes: Uint8Array): OperationProgress {
     return { namespace, phase, flags, subjectKind, logicalObjectId: logical, durableOffset };
 }
 
-const encodeOperationProgress = (progress: OperationProgress): Uint8Array =>
+const writeOperationProgress = (progress: OperationProgress): Uint8Array =>
     new Writer(24)
         .u8(progress.namespace)
         .u8(progress.phase)
@@ -1147,7 +1159,32 @@ export function readCatalogCursor(cursor: Uint8Array): CatalogCursorFields {
     };
 }
 
-export function decodeQueryCatalog(bytes: Uint8Array): QueryCatalogRequest {
+/**
+ * §8.2/§8.3: the cursor's trailing word is a CRC-32 over the current StoreId — and, for a draft
+ * cursor, the parent OperationId — followed by the cursor's own first twelve bytes. Cursors are
+ * "opaque to application code despite their normative codec", and this is what that opacity rests
+ * on: a cursor minted against another store or another draft parent does not verify, so a client
+ * cannot page one snapshot with another's bookmark.
+ *
+ * The check needs a fact the request frame does not carry, so it runs wherever the input is at hand
+ * — always on a catalog page, which reports its own StoreId, and on a request when the caller
+ * supplies the StoreId it is connected to.
+ */
+export function verifyPageCursor(cursor: Uint8Array, scope: readonly Uint8Array[]): void {
+    const expected = crc32(...scope, cursor.subarray(0, 12));
+    const carried = new DataView(cursor.buffer, cursor.byteOffset, cursor.byteLength).getUint32(12, true);
+    if (carried !== expected) {
+        reject("checksumFailure", "cursor", "the page cursor does not verify against this store and parent");
+    }
+}
+
+/** The connection facts a body decoder needs but the frame does not carry. */
+export interface BodyContext {
+    /** The StoreId this connection reported, when the caller knows it. Scopes a page cursor. */
+    readonly storeId?: Uint8Array;
+}
+
+export function readQueryCatalog(bytes: Uint8Array, context: BodyContext = {}): QueryCatalogRequest {
     const reader = new Cursor(bytes);
     const objectKind = objectKindOf(reader.u16());
     const flags = reader.u16();
@@ -1177,11 +1214,12 @@ export function decodeQueryCatalog(bytes: Uint8Array): QueryCatalogRequest {
         if (fields.objectKind !== OBJECT_KIND_CODE[objectKind]) {
             reject("invalidDescriptor", "invalidCombination", "the cursor names another ObjectKind");
         }
+        if (context.storeId !== undefined) verifyPageCursor(cursorBytes, [context.storeId]);
     }
     return { objectKind, flags, expectedRevision: expected, cursor: cursorBytes };
 }
 
-export const encodeQueryCatalog = (request: QueryCatalogRequest): Uint8Array =>
+export const writeQueryCatalog = (request: QueryCatalogRequest): Uint8Array =>
     new Writer(28)
         .u16(OBJECT_KIND_CODE[request.objectKind])
         .u16(request.flags)
@@ -1210,7 +1248,7 @@ export const CATALOG_ENTRY_PREFIX_BYTES = 36;
 export const CATALOG_PAGE_PREFIX_BYTES = 44;
 export const MAX_CATALOG_ENTRIES_PER_PAGE = 10;
 
-export function decodeQueryCatalogResponse(bytes: Uint8Array, more: boolean): QueryCatalogResponse {
+export function readQueryCatalogResponse(bytes: Uint8Array, more: boolean): QueryCatalogResponse {
     const reader = new Cursor(bytes);
     const store = storeId(reader.take(16));
     const objectKind = objectKindOf(reader.u16());
@@ -1221,6 +1259,8 @@ export function decodeQueryCatalogResponse(bytes: Uint8Array, more: boolean): Qu
     if (!more && !identityIsZero(nextCursor)) {
         reject("invalidDescriptor", "reservedBits", "the next cursor is zero unless `more` is set");
     }
+    // The page carries the StoreId its own cursor is scoped to, so this one always verifies.
+    if (more) verifyPageCursor(nextCursor, [store]);
     if (entryCount > MAX_CATALOG_ENTRIES_PER_PAGE) {
         reject("invalidDescriptor", "invalidCombination", `a page returns at most ${MAX_CATALOG_ENTRIES_PER_PAGE} entries`);
     }
@@ -1237,7 +1277,7 @@ export function decodeQueryCatalogResponse(bytes: Uint8Array, more: boolean): Qu
         reader.zeros(4, "catalog entry byte 32");
         if (flags !== 0) reject("invalidDescriptor", "reservedBits", "catalog entry flags are zero in v3.0");
         const metadataBytes = reader.take(metadataLength);
-        const metadata = decodeMetadataEnvelope(metadataBytes, { kind: objectKind, role: "catalog", mutating: false });
+        const metadata = readMetadataEnvelope(metadataBytes, { kind: objectKind, role: "catalog", mutating: false });
         if (metadata.byteLength !== metadataLength) {
             reject("invalidDescriptor", "nestedLength", "the entry metadata length disagrees with the envelope");
         }
@@ -1251,7 +1291,7 @@ export function decodeQueryCatalogResponse(bytes: Uint8Array, more: boolean): Qu
     return { storeId: store, objectKind, repositoryRevision, nextCursor, entries };
 }
 
-export function encodeQueryCatalogResponse(response: QueryCatalogResponse): Uint8Array {
+export function writeQueryCatalogResponse(response: QueryCatalogResponse): Uint8Array {
     const writer = new Writer(CATALOG_PAGE_PREFIX_BYTES + 128);
     writer
         .raw(response.storeId)
@@ -1260,7 +1300,7 @@ export function encodeQueryCatalogResponse(response: QueryCatalogResponse): Uint
         .u64(response.repositoryRevision)
         .raw(response.nextCursor);
     for (const entry of response.entries) {
-        const metadata = encodeMetadataEnvelope(entry.metadata);
+        const metadata = writeMetadataEnvelope(entry.metadata);
         writer
             .u64(entry.logicalObjectId)
             .u64(entry.objectRevision)
@@ -1287,7 +1327,7 @@ export interface QueryDraftRequest {
     readonly cursor: PageCursor;
 }
 
-export function decodeQueryDraft(bytes: Uint8Array): QueryDraftRequest {
+export function readQueryDraft(bytes: Uint8Array, context: BodyContext = {}): QueryDraftRequest {
     const reader = new Cursor(bytes);
     const parent = operationId(reader.take(16));
     const flags = reader.u16();
@@ -1322,11 +1362,14 @@ export function decodeQueryDraft(bytes: Uint8Array): QueryDraftRequest {
         if (fields.objectKind !== 0) {
             reject("invalidDescriptor", "reservedBits", "the draft cursor's third field is zero");
         }
+        // A draft cursor is scoped to the parent as well as the store, which is what stops one
+        // parent's bookmark from paging another's children.
+        if (context.storeId !== undefined) verifyPageCursor(cursorBytes, [context.storeId, parent]);
     }
     return { parentOperationId: parent, flags, limit, expectedDraftRevision: expected, cursor: cursorBytes };
 }
 
-export const encodeQueryDraft = (request: QueryDraftRequest): Uint8Array =>
+export const writeQueryDraft = (request: QueryDraftRequest): Uint8Array =>
     new Writer(44)
         .raw(request.parentOperationId)
         .u16(request.flags)
@@ -1357,7 +1400,7 @@ export interface QueryDraftResponse {
     readonly entries: readonly DraftEntry[];
 }
 
-export function decodeQueryDraftResponse(bytes: Uint8Array, more: boolean): QueryDraftResponse {
+export function readQueryDraftResponse(bytes: Uint8Array, more: boolean, context: BodyContext = {}): QueryDraftResponse {
     const reader = new Cursor(bytes);
     const parent = operationId(reader.take(16));
     const revisionValue = makeDraftRevision(reader.u64());
@@ -1369,6 +1412,9 @@ export function decodeQueryDraftResponse(bytes: Uint8Array, more: boolean): Quer
     if (!more && !identityIsZero(nextCursor)) {
         reject("invalidDescriptor", "reservedBits", "the next cursor is zero unless `more` is set");
     }
+    // A draft page reports its parent but not its store, so this one verifies only when the caller
+    // supplies the StoreId the connection reported.
+    if (more && context.storeId !== undefined) verifyPageCursor(nextCursor, [context.storeId, parent]);
     if ((flags & ~0x03) !== 0) reject("invalidDescriptor", "reservedBits", "draft page flags above bit 1 are zero");
     if (count > MAX_DRAFT_PAGE_ENTRIES) {
         reject("invalidDescriptor", "invalidCombination", `a draft page carries at most ${MAX_DRAFT_PAGE_ENTRIES} entries`);
@@ -1413,7 +1459,7 @@ export function decodeQueryDraftResponse(bytes: Uint8Array, more: boolean): Quer
 
 const cursorState = (state: number): number => enumIn(state, [0, 1, 2, 3], "draft part state");
 
-export function encodeQueryDraftResponse(response: QueryDraftResponse): Uint8Array {
+export function writeQueryDraftResponse(response: QueryDraftResponse): Uint8Array {
     const writer = new Writer(44 + response.entries.length * DRAFT_ENTRY_BYTES);
     writer
         .raw(response.parentOperationId)
@@ -1458,7 +1504,7 @@ export interface WeatherRequestContext {
     readonly contextState: number;
 }
 
-export function decodeWeatherRequestContext(bytes: Uint8Array): WeatherRequestContext {
+export function readWeatherRequestContext(bytes: Uint8Array): WeatherRequestContext {
     const reader = new Cursor(bytes);
     const store = storeId(reader.take(16));
     const currentWeatherRequestId = weatherRequestId(reader.u64());
@@ -1479,6 +1525,11 @@ export function decodeWeatherRequestContext(bytes: Uint8Array): WeatherRequestCo
     if ((flags & WEATHER_FLAG.headPresent) === 0 && headWeatherRequestId !== 0n) {
         reject("invalidDescriptor", "reservedBits", "the head WeatherRequestId is zero when head-present is clear");
     }
+    // Registry §3 bounds the durable request context's coverage fields, and this response is that
+    // context on the wire. A centre 2,000,000,000 microdegrees north is not a place.
+    inRange("centre latitude", BigInt(centreLatitude), WEATHER_LATITUDE);
+    inRange("centre longitude", BigInt(centreLongitude), WEATHER_LONGITUDE);
+    inRange("required radius", BigInt(radiusMetres), WEATHER_RADIUS_METRES);
     return {
         storeId: store,
         currentWeatherRequestId,
@@ -1496,7 +1547,7 @@ export function decodeWeatherRequestContext(bytes: Uint8Array): WeatherRequestCo
     };
 }
 
-export const encodeWeatherRequestContext = (context: WeatherRequestContext): Uint8Array =>
+export const writeWeatherRequestContext = (context: WeatherRequestContext): Uint8Array =>
     new Writer(96)
         .raw(context.storeId)
         .u64(context.currentWeatherRequestId)
@@ -1550,24 +1601,24 @@ function writeMutationTarget(writer: Writer, target: MutationTarget): Writer {
         .u64(target.expectedRevision);
 }
 
-export function decodeDeleteObject(bytes: Uint8Array): MutationTarget {
+export function readDeleteObject(bytes: Uint8Array): MutationTarget {
     const reader = new Cursor(bytes);
     const target = readMutationTarget(reader);
     reader.end("DeleteObject");
     return target;
 }
 
-export const encodeDeleteObject = (target: MutationTarget): Uint8Array =>
+export const writeDeleteObject = (target: MutationTarget): Uint8Array =>
     writeMutationTarget(new Writer(36), target).finish();
 
 export interface SetMetadataRequest extends MutationTarget {
     readonly metadata: MetadataEnvelope;
 }
 
-export function decodeSetMetadata(bytes: Uint8Array): SetMetadataRequest {
+export function readSetMetadata(bytes: Uint8Array): SetMetadataRequest {
     const reader = new Cursor(bytes);
     const target = readMutationTarget(reader);
-    const metadata = decodeMetadataEnvelope(bytes.subarray(reader.position), {
+    const metadata = readMetadataEnvelope(bytes.subarray(reader.position), {
         kind: target.objectKind,
         role: "patch",
         mutating: true,
@@ -1585,8 +1636,8 @@ export function decodeSetMetadata(bytes: Uint8Array): SetMetadataRequest {
     return { ...target, metadata };
 }
 
-export const encodeSetMetadata = (request: SetMetadataRequest): Uint8Array =>
-    writeMutationTarget(new Writer(176), request).raw(encodeMetadataEnvelope(request.metadata)).finish();
+export const writeSetMetadata = (request: SetMetadataRequest): Uint8Array =>
+    writeMutationTarget(new Writer(176), request).raw(writeMetadataEnvelope(request.metadata)).finish();
 
 export interface OperationOnObject {
     readonly operationId: OperationId;
@@ -1594,7 +1645,7 @@ export interface OperationOnObject {
     readonly expectedRevision: Revision;
 }
 
-export function decodeOperationOnObject(bytes: Uint8Array, what: string): OperationOnObject {
+export function readOperationOnObject(bytes: Uint8Array, what: string): OperationOnObject {
     const reader = new Cursor(bytes);
     const id = operationId(reader.take(16));
     const logical = logicalObjectId(reader.u64());
@@ -1603,7 +1654,7 @@ export function decodeOperationOnObject(bytes: Uint8Array, what: string): Operat
     return { operationId: id, logicalObjectId: logical, expectedRevision: expected };
 }
 
-export const encodeOperationOnObject = (request: OperationOnObject): Uint8Array =>
+export const writeOperationOnObject = (request: OperationOnObject): Uint8Array =>
     new Writer(32).raw(request.operationId).u64(request.logicalObjectId).u64(request.expectedRevision).finish();
 
 // ------------------------------------------------------------------- device-control plane (§16)
@@ -1625,7 +1676,7 @@ export interface DeviceStatus {
 
 export const DEVICE_STATUS_FLAG = { cardPresent: 1 << 0, developerUnlocked: 1 << 1 } as const;
 
-export function decodeDeviceStatus(bytes: Uint8Array): DeviceStatus {
+export function readDeviceStatus(bytes: Uint8Array): DeviceStatus {
     const reader = new Cursor(bytes);
     const firmwareMajor = reader.u16();
     const firmwareMinor = reader.u16();
@@ -1665,7 +1716,7 @@ export function decodeDeviceStatus(bytes: Uint8Array): DeviceStatus {
     };
 }
 
-export const encodeDeviceStatus = (status: DeviceStatus): Uint8Array =>
+export const writeDeviceStatus = (status: DeviceStatus): Uint8Array =>
     new Writer(64)
         .u16(status.firmwareMajor)
         .u16(status.firmwareMinor)
@@ -1693,7 +1744,10 @@ export interface ConfigBlock {
     readonly deviceName: string;
 }
 
-export function decodeConfigBlock(bytes: Uint8Array): ConfigBlock {
+/** Total entry point; the config block is a whole-block read/modify/write, so callers hold one. */
+export const decodeConfigBlock = (bytes: Uint8Array): DosResult<ConfigBlock> => decoding(() => readConfigBlock(bytes));
+
+export function readConfigBlock(bytes: Uint8Array): ConfigBlock {
     const reader = new Cursor(bytes);
     const codecVersion = reader.u8();
     const blockLength = reader.u8();
@@ -1727,11 +1781,11 @@ export function decodeConfigBlock(bytes: Uint8Array): ConfigBlock {
             reject("invalidDescriptor", "reservedBits", "the name field is zero padded beyond its stated length");
         }
     }
-    const deviceName = deviceNameLength === 0 ? "" : decodeWireText(nameField.subarray(0, deviceNameLength), "device name");
+    const deviceName = deviceNameLength === 0 ? "" : readWireText(nameField.subarray(0, deviceNameLength), "device name");
     return { codecVersion, blockLength, unitFlags, weatherRefresh, deviceNameLength, deviceName };
 }
 
-export function encodeConfigBlock(config: ConfigBlock): Uint8Array {
+export function writeConfigBlock(config: ConfigBlock): Uint8Array {
     const name = new Uint8Array(MAX_DEVICE_NAME_BYTES);
     name.set(new TextEncoder().encode(config.deviceName).subarray(0, MAX_DEVICE_NAME_BYTES));
     return new Writer(CONFIG_BLOCK_BYTES)
@@ -1752,7 +1806,7 @@ export interface SetClockRequest {
     readonly source: number;
 }
 
-export function decodeSetClock(bytes: Uint8Array): SetClockRequest {
+export function readSetClock(bytes: Uint8Array): SetClockRequest {
     const reader = new Cursor(bytes);
     const epochSeconds = reader.i64();
     const source = enumIn(reader.u8(), [CLOCK_SOURCE.companion, CLOCK_SOURCE.gps], "clock source");
@@ -1761,7 +1815,7 @@ export function decodeSetClock(bytes: Uint8Array): SetClockRequest {
     return { epochSeconds, source };
 }
 
-export const encodeSetClock = (request: SetClockRequest): Uint8Array =>
+export const writeSetClock = (request: SetClockRequest): Uint8Array =>
     new Writer(16).i64(request.epochSeconds).u8(request.source).zeros(7).finish();
 
 export interface ClockStatus {
@@ -1770,7 +1824,7 @@ export interface ClockStatus {
     readonly clockState: number;
 }
 
-export function decodeClockStatus(bytes: Uint8Array): ClockStatus {
+export function readClockStatus(bytes: Uint8Array): ClockStatus {
     const reader = new Cursor(bytes);
     const epochSeconds = reader.i64();
     const source = enumIn(reader.u8(), [0, CLOCK_SOURCE.companion, CLOCK_SOURCE.gps], "clock source");
@@ -1780,14 +1834,14 @@ export function decodeClockStatus(bytes: Uint8Array): ClockStatus {
     return { epochSeconds, source, clockState };
 }
 
-export const encodeClockStatus = (status: ClockStatus): Uint8Array =>
+export const writeClockStatus = (status: ClockStatus): Uint8Array =>
     new Writer(16).i64(status.epochSeconds).u8(status.source).u8(status.clockState).zeros(6).finish();
 
 export interface ForgetBondRequest {
     readonly scope: number;
 }
 
-export function decodeForgetBond(bytes: Uint8Array): ForgetBondRequest {
+export function readForgetBond(bytes: Uint8Array): ForgetBondRequest {
     const reader = new Cursor(bytes);
     const scope = enumIn(reader.u8(), [FORGET_BOND_SCOPE.thisBond, FORGET_BOND_SCOPE.everyBond], "ForgetBond scope");
     reader.zeros(7, "ForgetBond reserved bytes");
@@ -1795,28 +1849,34 @@ export function decodeForgetBond(bytes: Uint8Array): ForgetBondRequest {
     return { scope };
 }
 
-export const encodeForgetBond = (request: ForgetBondRequest): Uint8Array =>
+export const writeForgetBond = (request: ForgetBondRequest): Uint8Array =>
     new Writer(8).u8(request.scope).zeros(7).finish();
 
 export interface StoreIdMessage {
     readonly storeId: StoreId;
 }
 
-export function decodeStoreIdMessage(bytes: Uint8Array, what: string): StoreIdMessage {
+export function readStoreIdMessage(bytes: Uint8Array, what: string): StoreIdMessage {
     const reader = new Cursor(bytes);
     const store = storeId(reader.take(16));
     reader.end(what);
     return { storeId: store };
 }
 
-export const encodeStoreIdMessage = (message: StoreIdMessage): Uint8Array => new Writer(16).raw(message.storeId).finish();
+export const writeStoreIdMessage = (message: StoreIdMessage): Uint8Array => new Writer(16).raw(message.storeId).finish();
 
 /**
  * §16's ResetStore admission check, which needs a fact the frame does not carry: the mount class the
  * device currently reports. "The echo is the confirmation, and it is checked before anything is
  * deleted."
  */
-export function validateResetStoreEcho(echo: Uint8Array, mountClass: number, currentStoreId?: Uint8Array): void {
+export const validateResetStoreEcho = (
+    echo: Uint8Array,
+    mountClass: number,
+    currentStoreId?: Uint8Array,
+): DosResult<void> => decoding(() => checkResetStoreEcho(echo, mountClass, currentStoreId));
+
+export function checkResetStoreEcho(echo: Uint8Array, mountClass: number, currentStoreId?: Uint8Array): void {
     if (mountClass === MOUNT_CLASS.noCard) {
         reject("mediaUnavailable", "noCard", "ResetStore is the one device-control member that needs the medium");
     }

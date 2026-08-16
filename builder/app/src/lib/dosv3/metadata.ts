@@ -4,11 +4,19 @@
  * The envelope is the one place a domain adds a bounded declared fact without touching the wire
  * contract, so it is also the one place with two independent layers of rules: a *canonical form*
  * (strictly increasing unique base tags, an exact field-byte sum, no padding) and a *schema* (which
- * tags exist, how wide each is, which are required, and what a decoder does with one it does not
- * know). They report different things — the structural faults are `noncanonicalMetadata`,
- * `duplicateField` and `outOfOrderField`, and the schema faults are `invalidCombination`,
- * `schemaVersion` and `logicalKind` — and §2.2 says outright that a decoder reporting the wrong one
- * is nonconforming.
+ * tags exist, how wide each is, what values each admits, which are required, and what a decoder
+ * does with one it does not know). They report different things — the structural faults are
+ * `noncanonicalMetadata`, `duplicateField` and `outOfOrderField`, and the schema faults are
+ * `invalidCombination`, `schemaVersion` and `logicalKind` — and §2.2 says outright that a decoder
+ * reporting the wrong one is nonconforming.
+ *
+ * **The order between those layers is normative**, because an envelope that breaks more than one
+ * rule must still report one deterministic error: "canonical form first, then the schema's field
+ * rules (identity, version, required/optional, widths, ranges, text validity), and the per-kind
+ * registered maximum last. An envelope is measured against that maximum only after its fields
+ * validate, so an unknown critical field in an oversized envelope reports the field error, not the
+ * size." Every check below is placed to satisfy that sequence, and the sequence is what the
+ * doubly-invalid unit vectors in `codec.test.ts` pin.
  */
 
 import { Cursor, Writer } from "./bytes";
@@ -23,7 +31,7 @@ import {
     type ObjectKindName,
     type SchemaRole,
 } from "./registry";
-import { reject } from "./result";
+import { decoding, reject, type DosResult } from "./result";
 
 export const CRITICAL_BIT = 0x8000;
 export const BASE_TAG_MASK = 0x7fff;
@@ -62,25 +70,27 @@ export interface EnvelopeContext {
     readonly mutating: boolean;
 }
 
-/** Reads the declared total length of an envelope without validating it. Used for framing. */
-export function envelopeLength(bytes: Uint8Array, at: number): number {
-    if (bytes.length < at + ENVELOPE_HEADER_BYTES) {
-        reject("invalidDescriptor", "nestedLength", "a metadata envelope needs its eight-byte header");
-    }
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    return ENVELOPE_HEADER_BYTES + view.getUint16(at + 4, true);
-}
+/** Total entry point. The throwing reader below is what the message decoders call. */
+export const decodeMetadataEnvelope = (bytes: Uint8Array, context: EnvelopeContext): DosResult<MetadataEnvelope> =>
+    decoding(() => readMetadataEnvelope(bytes, context));
 
-export function decodeMetadataEnvelope(bytes: Uint8Array, context: EnvelopeContext): MetadataEnvelope {
+export function readMetadataEnvelope(bytes: Uint8Array, context: EnvelopeContext): MetadataEnvelope {
     const head = new Cursor(bytes, { category: "invalidDescriptor", detail: "nestedLength" });
     const schemaId = head.u16();
     const schemaVersion = head.u8();
     const flags = head.u8();
     const encodedFieldBytes = head.u16();
     const fieldCount = head.u16();
+    const byteLength = ENVELOPE_HEADER_BYTES + encodedFieldBytes;
 
+    // --- canonical form -----------------------------------------------------------------------
+    // Everything the §2.2 canonical-form paragraph governs, and nothing else: the header's own
+    // reserved flags, then the field body read against the length the header declares. None of it
+    // needs to know which schema this is, which is precisely why it comes first.
     if (flags !== 0) reject("invalidDescriptor", "reservedBits", "metadata envelope header flags are zero");
+    const fields = readFields(bytes.subarray(ENVELOPE_HEADER_BYTES, byteLength), fieldCount);
 
+    // --- schema field rules -------------------------------------------------------------------
     const role = SCHEMA_ROLE_OF_VERSION.get(schemaVersion);
     if (role === undefined) {
         reject("unsupportedCapability", "schemaVersion", `schema version ${schemaVersion} is not registered`);
@@ -92,14 +102,18 @@ export function decodeMetadataEnvelope(bytes: Uint8Array, context: EnvelopeConte
             `this operation carries a ${context.role} envelope, not a ${role} one`,
         );
     }
-
-    const byteLength = ENVELOPE_HEADER_BYTES + encodedFieldBytes;
+    // The common ceiling is a property of the role, so it can only be applied once the role is
+    // known; the same is true of the availability check, which needs the declared boundary to be
+    // plausible before it means anything.
     if (byteLength > ENVELOPE_CEILING[role]) {
         reject(
             "invalidDescriptor",
             "nestedLength",
             `a ${role} envelope is at most ${ENVELOPE_CEILING[role]} bytes, this one declares ${byteLength}`,
         );
+    }
+    if (bytes.length < byteLength) {
+        reject("invalidDescriptor", "nestedLength", "the metadata envelope runs past its containing message");
     }
 
     const kind = OBJECT_KIND_NAME.get(schemaId);
@@ -117,16 +131,9 @@ export function decodeMetadataEnvelope(bytes: Uint8Array, context: EnvelopeConte
     if (schema === undefined) {
         reject("unsupportedCapability", "logicalKind", `${kind} has no ${role} schema`);
     }
-    if (bytes.length < byteLength) {
-        reject("invalidDescriptor", "nestedLength", "the metadata envelope runs past its containing message");
-    }
-
-    const fields = decodeFields(bytes.subarray(ENVELOPE_HEADER_BYTES, byteLength), fieldCount);
     const values = applySchema(fields, schema, context.mutating);
-    // The registry's per-kind maximum is the *last* schema check, not the first. A projection
-    // carrying an unknown critical field is rejected for that field even when its envelope also
-    // happens to be oversized; a projection whose unknown field is noncritical is skipped, and then
-    // its size is what remains wrong. The two catalog-projection negatives pin exactly that order.
+
+    // --- the per-kind registered maximum, last ------------------------------------------------
     if (byteLength > schema.maxBytes) {
         reject(
             "invalidDescriptor",
@@ -137,7 +144,7 @@ export function decodeMetadataEnvelope(bytes: Uint8Array, context: EnvelopeConte
     return { schemaId, schemaVersion, kind, role, fields, values, byteLength };
 }
 
-function decodeFields(body: Uint8Array, declaredCount: number): MetadataField[] {
+function readFields(body: Uint8Array, declaredCount: number): MetadataField[] {
     const fields: MetadataField[] = [];
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     let at = 0;
@@ -246,6 +253,25 @@ function widthOf(spec: MetadataFieldSpec): number | undefined {
     }
 }
 
+/**
+ * A registered range is a field rule, not a courtesy. The two kinds fail differently: a value
+ * outside an *enumeration* names no registered case, which is `unknownEnum`; a continuous quantity
+ * outside its bounds is a legal number in an illegal place, which is the generic illegal-field-value
+ * detail `invalidCombination`.
+ */
+function checkBounds(spec: MetadataFieldSpec, value: bigint): void {
+    const bounds = spec.bounds;
+    if (bounds === undefined || (value >= bounds.min && value <= bounds.max)) return;
+    if (bounds.enumerated) {
+        reject("invalidDescriptor", "unknownEnum", `${spec.name} value ${value} is not a registered case`);
+    }
+    reject(
+        "invalidDescriptor",
+        "invalidCombination",
+        `${spec.name} is registered at ${bounds.min}..${bounds.max} and carries ${value}`,
+    );
+}
+
 function decodeFieldValue(spec: MetadataFieldSpec, value: Uint8Array): MetadataValue {
     const width = widthOf(spec);
     if (width !== undefined && value.length !== width) {
@@ -256,19 +282,23 @@ function decodeFieldValue(spec: MetadataFieldSpec, value: Uint8Array): MetadataV
         );
     }
     const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+    const numeric = (raw: number | bigint): number | bigint => {
+        checkBounds(spec, BigInt(raw));
+        return raw;
+    };
     switch (spec.type.kind) {
         case "u8":
-            return view.getUint8(0);
+            return numeric(view.getUint8(0));
         case "u16":
-            return view.getUint16(0, true);
+            return numeric(view.getUint16(0, true));
         case "u32":
-            return view.getUint32(0, true);
+            return numeric(view.getUint32(0, true));
         case "u64":
-            return view.getBigUint64(0, true);
+            return numeric(view.getBigUint64(0, true));
         case "i32":
-            return view.getInt32(0, true);
+            return numeric(view.getInt32(0, true));
         case "i64":
-            return view.getBigInt64(0, true);
+            return numeric(view.getBigInt64(0, true));
         case "bool": {
             const raw = view.getUint8(0);
             if (raw > 1) reject("invalidDescriptor", "unknownEnum", `${spec.name} is exactly 0 or 1`);
@@ -284,12 +314,12 @@ function decodeFieldValue(spec: MetadataFieldSpec, value: Uint8Array): MetadataV
                     `${spec.name} is registered at ${spec.type.min}-${spec.type.max} bytes and carries ${value.length}`,
                 );
             }
-            return decodeWireText(value, spec.name);
+            return readWireText(value, spec.name);
         }
     }
 }
 
-export function encodeMetadataEnvelope(envelope: MetadataEnvelope): Uint8Array {
+export function writeMetadataEnvelope(envelope: MetadataEnvelope): Uint8Array {
     let encodedFieldBytes = 0;
     for (const encoded of envelope.fields) encodedFieldBytes += 4 + encoded.value.length;
     const writer = new Writer(ENVELOPE_HEADER_BYTES + encodedFieldBytes);
@@ -306,7 +336,7 @@ export function encodeMetadataEnvelope(envelope: MetadataEnvelope): Uint8Array {
  * `TextDecoder` cannot stand in for it: it replaces bad sequences rather than reporting them, and
  * even in fatal mode it says nothing about C0 controls or noncharacters.
  */
-export function decodeWireText(bytes: Uint8Array, what: string): string {
+export function readWireText(bytes: Uint8Array, what: string): string {
     const scalars: number[] = [];
     let at = 0;
     const bad = (why: string): never =>
@@ -361,7 +391,7 @@ export function renderDiagnosticText(bytes: Uint8Array): string {
         for (let width = Math.min(4, bytes.length - at); width >= 1; width--) {
             const slice = bytes.subarray(at, at + width);
             try {
-                out += decodeWireText(slice, "text");
+                out += readWireText(slice, "text");
                 at += width;
                 break;
             } catch {

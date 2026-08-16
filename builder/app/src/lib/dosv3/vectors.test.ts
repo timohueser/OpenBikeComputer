@@ -25,50 +25,40 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { bytesToHex, hexToBytes } from "./bytes";
+// Everything here comes through the public barrel on purpose: the suite has to exercise the surface
+// a caller gets, including its promise that no entry point throws.
 import {
-    bleControlCeiling,
-    decodeCapabilities,
-    decodeSubjectEntry,
-    encodeCapabilities,
-    encodeSubjectEntry,
-    negotiateFrameLimit,
     MAX_CONTROL_FRAME,
     MAX_STREAM_FRAME,
     MIN_CONTROL_FRAME,
     MIN_STREAM_FRAME,
-} from "./capabilities";
-import { decodeErrorBody, encodeErrorBody } from "./errorBody";
-import { decodeControlFrame, encodeControlFrame, OPCODE, type ControlBody, type OpcodeName } from "./frame";
-import { storeId } from "./ids";
-import { canonicalIntent, intentDigest, INTENT_PREFIX_BYTES, type IntentSource } from "./intent";
-import { decodeMetadataEnvelope, encodeMetadataEnvelope } from "./metadata";
-import {
-    decodeBeginDraft,
+    OPCODE,
+    bleControlCeiling,
+    bytesToHex,
+    canonicalIntent,
+    decodeCapabilities,
     decodeConfigBlock,
-    decodeDeleteObject,
-    decodeDeviceStatus,
-    decodeDraftPartAccepted,
-    decodeFinalizeDraftResponse,
-    decodeFinishDownload,
-    decodeForgetBond,
-    decodeQueryCatalog,
-    decodeQueryCatalogResponse,
-    decodeQueryDraft,
-    decodeSessionOnly,
-    decodeSetClock,
-    decodeSetMetadata,
-    decodeStartDownload,
-    decodeStartDraftPart,
-    decodeStartUpload,
-    decodeUploadAccepted,
-    encodeConfigBlock,
-    encodeDeviceStatus,
+    decodeControlFrame,
+    decodeErrorBody,
+    decodeMetadataEnvelope,
+    decodeStreamFrame,
+    decodeSubjectEntry,
+    encodeControlFrame,
+    encodeStreamFrame,
+    hexToBytes,
+    intentDigest,
+    negotiateFrameLimit,
+    storeId,
+    unwrap,
     validateResetStoreEcho,
-} from "./messages";
+    INTENT_PREFIX_BYTES,
+    type CategoryName,
+    type ControlBody,
+    type DosResult,
+    type IntentSource,
+    type OpcodeName,
+} from "./index";
 import { SCHEMA_ROLE_OF_VERSION } from "./registry";
-import { decoding, type CategoryName, type DosResult } from "./result";
-import { decodeStreamFrame, encodeStreamFrame } from "./stream";
 
 /** Walk up from this file to the repo root (the directory holding `specs/vectors/`). */
 function repoRoot(): string {
@@ -232,7 +222,7 @@ describe("control vectors decode and re-encode byte for byte", () => {
         expect(bytes.length - 16).toBe(vector.header.payloadLength);
         expect(bytesToHex(bytes.subarray(16))).toBe(vector.payload);
 
-        expect(bytesToHex(encodeControlFrame(frame))).toBe(vector.frame);
+        expect(bytesToHex(unwrap(encodeControlFrame(frame)))).toBe(vector.frame);
     });
 
     it("covers every opcode in the §4 registry", () => {
@@ -320,7 +310,7 @@ describe("canonical intent", () => {
         const request = JSON.parse(read(pair.file)) as ControlFixture;
         const decoded = decodeControlFrame(hexToBytes(request.frame));
         if (!decoded.ok) throw new Error(`${pair.file} did not decode`);
-        const rebuilt = canonicalIntent(store, pair.build(decoded.value.body));
+        const rebuilt = unwrap(canonicalIntent(store, pair.build(decoded.value.body)));
         expect(bytesToHex(rebuilt)).toBe(vector.bytes);
         expect(bytesToHex(rebuilt.subarray(0, 16))).toBe("4f42432d444f53332d494e54454e5400");
         expect(new DataView(rebuilt.buffer, rebuilt.byteOffset).getUint16(32, true)).toBe(vector.opcode.value);
@@ -367,7 +357,7 @@ describe("stream vectors decode and re-encode byte for byte", () => {
     it.each(MANIFEST.streams.map((row) => [row.name, row] as const))("%s", (_name, row) => {
         const vector = fixture<StreamFixture>(row);
         const bytes = hexToBytes(vector.record);
-        const decoded = decoding(() => decodeStreamFrame(bytes));
+        const decoded = decodeStreamFrame(bytes);
         if (!decoded.ok) throw new Error(`${vector.name}: ${decoded.error.category}/${decoded.error.detail}`);
         const frame = decoded.value;
         expect(frame.sessionId).toBe(vector.sessionId);
@@ -375,7 +365,7 @@ describe("stream vectors decode and re-encode byte for byte", () => {
         expect(frame.payload.length).toBe(vector.payloadLength);
         expect(frame.direction).toBe(vector.direction);
         expect(frame.flags).toBe(vector.flags);
-        expect(bytesToHex(encodeStreamFrame(frame))).toBe(vector.record);
+        expect(bytesToHex(unwrap(encodeStreamFrame(frame)))).toBe(vector.record);
     });
 });
 
@@ -395,15 +385,15 @@ describe("transcripts replay", () => {
             if (event.channel === "control") {
                 const decoded = decodeControlFrame(bytes);
                 if (!decoded.ok) throw new Error(`${where}: ${decoded.error.category}/${decoded.error.detail}: ${decoded.error.message}`);
-                expect(bytesToHex(encodeControlFrame(decoded.value)), where).toBe(event.record);
+                expect(bytesToHex(unwrap(encodeControlFrame(decoded.value))), where).toBe(event.record);
                 // Every control record in a transcript is one complete frame in the direction its
                 // actor implies: a device answers, a client asks.
                 expect(decoded.value.response, where).toBe(event.actor === "device");
             } else {
                 expect(event.channel, where).toBe("stream");
-                const decoded = decoding(() => decodeStreamFrame(bytes));
+                const decoded = decodeStreamFrame(bytes);
                 if (!decoded.ok) throw new Error(`${where}: ${decoded.error.category}/${decoded.error.detail}`);
-                expect(bytesToHex(encodeStreamFrame(decoded.value)), where).toBe(event.record);
+                expect(bytesToHex(unwrap(encodeStreamFrame(decoded.value))), where).toBe(event.record);
             }
         }
     });
@@ -444,26 +434,24 @@ function rejectByTarget(target: string, bytes: Uint8Array): DosResult<unknown> {
     }
     switch (target) {
         case "streamFrame":
-            return decoding(() => decodeStreamFrame(bytes));
+            return decodeStreamFrame(bytes);
         case "metadataEnvelope":
-            return decoding(() =>
-                decodeMetadataEnvelope(bytes, {
-                    // The version byte names the role, and the role fixes the ceiling: put and patch
-                    // envelopes are bounded at 128 bytes and a catalog projection at 96.
-                    role: SCHEMA_ROLE_OF_VERSION.get(bytes[2]),
-                    mutating: SCHEMA_ROLE_OF_VERSION.get(bytes[2]) !== "catalog",
-                }),
-            );
+            return decodeMetadataEnvelope(bytes, {
+                // The version byte names the role, and the role fixes the ceiling: put and patch
+                // envelopes are bounded at 128 bytes and a catalog projection at 96.
+                role: SCHEMA_ROLE_OF_VERSION.get(bytes[2]),
+                mutating: SCHEMA_ROLE_OF_VERSION.get(bytes[2]) !== "catalog",
+            });
         case "errorBody":
-            return decoding(() => decodeErrorBody(bytes));
+            return decodeErrorBody(bytes);
         case "subjectEntry":
-            return decoding(() => decodeSubjectEntry(bytes));
+            return decodeSubjectEntry(bytes);
         case "capabilities":
-            return decoding(() => decodeCapabilities(bytes));
+            return decodeCapabilities(bytes);
         case "configBlock":
-            return decoding(() => decodeConfigBlock(bytes));
+            return decodeConfigBlock(bytes);
         case "resetStoreEcho(mountClass=3)":
-            return decoding(() => validateResetStoreEcho(bytes, 3, SUITE_STORE_ID));
+            return validateResetStoreEcho(bytes, 3, SUITE_STORE_ID);
         default:
             throw new Error(`no decode entry point for the negative target "${target}"`);
     }
@@ -471,69 +459,136 @@ function rejectByTarget(target: string, bytes: Uint8Array): DosResult<unknown> {
 
 // ------------------------------------------------------------- substructure round trips (§2, §5)
 
-describe("substructures re-encode independently of their frame", () => {
+describe("the public substructure decoders agree with the frame dispatcher", () => {
     /**
-     * The frame round trip above already proves byte identity end to end. These pin the pieces a
-     * *different* message could carry, so a future caller that assembles one by hand — a catalog
-     * projection, a subject entry, an ErrorBody in a fault path — gets the same bytes.
+     * A caller does not always hold a whole frame. It holds a Capabilities page it is walking, a
+     * config block it is about to edit and write back, an ErrorBody it kept from a fault path. Those
+     * are the public entry points; everything else is reached through the frame, and this checks the
+     * two paths report the same thing rather than drifting into two dialects.
      */
     const sample = (file: string): ControlFixture => JSON.parse(read(file)) as ControlFixture;
+    const payloadOf = (file: string): Uint8Array => hexToBytes(sample(file).payload);
+    const bodyOf = (file: string): ControlBody => unwrap(decodeControlFrame(hexToBytes(sample(file).frame))).body;
 
-    it("re-encodes a Capabilities resource page and a subject page", () => {
+    it("reads a Capabilities page the same way the frame does", () => {
         for (const file of ["controls/capabilities-resource-page.json", "controls/capabilities-subject-page-0.json"]) {
-            const payload = hexToBytes(sample(file).payload);
-            expect(bytesToHex(encodeCapabilities(decodeCapabilities(payload)))).toBe(sample(file).payload);
+            const direct = unwrap(decodeCapabilities(payloadOf(file)));
+            expect(expectBody(bodyOf(file), "Capabilities").capabilities).toEqual(direct);
         }
-        const page = decodeCapabilities(hexToBytes(sample("controls/capabilities-subject-page-0.json").payload));
+        const page = unwrap(decodeCapabilities(payloadOf("controls/capabilities-subject-page-0.json")));
         if (page.page.kind !== "subjects") throw new Error("expected a subject page");
-        for (const entry of page.page.entries) expect(encodeSubjectEntry(entry).length).toBe(20);
+        expect(page.page.entries.length).toBe(2);
+        for (const entry of page.page.entries) expect(entry.namespace).toBe(1);
     });
 
-    it("re-encodes a catalog projection envelope", () => {
-        const payload = hexToBytes(sample("controls/catalog-page-one-entry.json").payload);
-        const page = decodeQueryCatalogResponse(payload, false);
+    it("reads a config block, an ErrorBody and a device status the same way the frame does", () => {
+        const config = "controls/config-block-full-name-response.json";
+        expect(expectBody(bodyOf(config), "ConfigBlock").config).toEqual(unwrap(decodeConfigBlock(payloadOf(config))));
+
+        const error = "controls/error-text-exactly-64-bytes.json";
+        expect(expectBody(bodyOf(error), "Error").error).toEqual(unwrap(decodeErrorBody(payloadOf(error))));
+
+        const status = "controls/device-status-mount-class-3.json";
+        expect(expectBody(bodyOf(status), "DeviceStatus").response.mountClass).toBe(3);
+    });
+
+    it("carries a catalog projection envelope out of its page", () => {
+        const page = expectBody(bodyOf("controls/catalog-page-one-entry.json"), "CatalogPage").response;
         expect(page.entries.length).toBe(1);
         const envelope = page.entries[0].metadata;
         expect(envelope.role).toBe("catalog");
-        expect(bytesToHex(encodeMetadataEnvelope(envelope)).length / 2).toBe(envelope.byteLength);
-    });
-
-    it("re-encodes an ErrorBody, a config block and a device status on their own", () => {
-        const error = hexToBytes(sample("controls/error-text-exactly-64-bytes.json").payload);
-        expect(bytesToHex(encodeErrorBody(decodeErrorBody(error)))).toBe(bytesToHex(error));
-
-        const config = hexToBytes(sample("controls/config-block-full-name-response.json").payload);
-        expect(bytesToHex(encodeConfigBlock(decodeConfigBlock(config)))).toBe(bytesToHex(config));
-
-        const status = hexToBytes(sample("controls/device-status-mount-class-3.json").payload);
-        expect(bytesToHex(encodeDeviceStatus(decodeDeviceStatus(status)))).toBe(bytesToHex(status));
-    });
-
-    it("decodes each request body through its own entry point", () => {
-        // The frame dispatcher is one path into these; a caller that already has a payload is
-        // another, and both have to agree.
-        const body = (file: string): Uint8Array => hexToBytes(sample(file).payload);
-        expect(decodeStartUpload(body("controls/start-upload-create-route.json")).objectKind).toBe("route");
-        expect(decodeBeginDraft(body("controls/begin-draft-create-volume-manifest.json")).objectKind).toBe("volumeManifest");
-        expect(decodeStartDraftPart(body("controls/start-draft-part-request.json")).draftPartKind).toBeTruthy();
-        expect(decodeDeleteObject(body("controls/delete-object-request.json")).objectKind).toBe("route");
-        expect(decodeSetMetadata(body("controls/set-metadata-route-request.json")).metadata.role).toBe("patch");
-        expect(decodeStartDownload(body("controls/start-download-request.json")).objectKind).toBeTruthy();
-        expect(decodeFinishDownload(body("controls/finish-download-request.json")).sessionId).toBeGreaterThan(0);
-        expect(decodeSessionOnly(body("controls/finish-upload-request.json"), "FinishUpload").sessionId).toBeGreaterThan(0);
-        expect(decodeQueryCatalog(body("controls/query-catalog-first-page.json")).objectKind).toBeTruthy();
-        expect(decodeQueryDraft(body("controls/query-draft-request.json")).limit).toBeGreaterThan(0);
-        expect(decodeSetClock(body("controls/set-clock-gps-request.json")).source).toBe(2);
-        expect(decodeForgetBond(body("controls/forget-bond-this-bond-request.json")).scope).toBe(1);
+        expect(envelope.values.get("displayName")).toBeTruthy();
     });
 
     it("reads the three resumable acceptances at their frozen sizes", () => {
-        const payload = (file: string): Uint8Array => hexToBytes(sample(file).payload);
-        expect(payload("controls/upload-accepted-offset-zero.json").length).toBe(64);
-        expect(payload("controls/draft-part-accepted-offset-zero.json").length).toBe(72);
-        expect(payload("controls/finalize-accepted-offset-zero.json").length).toBe(64);
-        expect(decodeUploadAccepted(payload("controls/upload-accepted-offset-zero.json")).disposition).toBe("accepted");
-        expect(decodeDraftPartAccepted(payload("controls/draft-part-accepted-offset-zero.json")).disposition).toBe("accepted");
-        expect(decodeFinalizeDraftResponse(payload("controls/finalize-accepted-offset-zero.json")).disposition).toBe("accepted");
+        expect(payloadOf("controls/upload-accepted-offset-zero.json").length).toBe(64);
+        expect(payloadOf("controls/draft-part-accepted-offset-zero.json").length).toBe(72);
+        expect(payloadOf("controls/finalize-accepted-offset-zero.json").length).toBe(64);
+        const upload = expectBody(bodyOf("controls/upload-accepted-offset-zero.json"), "UploadAccepted");
+        const part = expectBody(bodyOf("controls/draft-part-accepted-offset-zero.json"), "DraftPartAccepted");
+        const finalize = expectBody(bodyOf("controls/finalize-accepted-offset-zero.json"), "FinalizeDraftAccepted");
+        expect(upload.response.disposition).toBe("accepted");
+        expect(part.response.disposition).toBe("accepted");
+        expect(finalize.response.disposition).toBe("accepted");
+    });
+});
+
+// ------------------------------------------------------- boundaries derived from a real vector
+
+/**
+ * A checked-in vector is a *valid* frame; several rules can only be shown by taking one and
+ * breaking exactly the field under test. These do that, so the case is anchored in bytes the Rust
+ * producer emitted rather than in a frame this suite invented. Each pins a boundary a shared
+ * negative fixture is expected to cover later.
+ */
+describe("boundaries derived by mutating a checked-in vector", () => {
+    const sample = (file: string): ControlFixture => JSON.parse(read(file)) as ControlFixture;
+    const payloadOf = (file: string): Uint8Array => hexToBytes(sample(file).payload);
+    const failure = (result: DosResult<unknown>): { category: string; detail: string } => {
+        if (result.ok) throw new Error("expected a rejection, and the codec accepted the bytes");
+        return { category: result.error.category, detail: result.error.detail };
+    };
+
+    it("rejects a negotiated frame limit outside the §1 hard bounds", () => {
+        const page = payloadOf("controls/capabilities-resource-page.json");
+        const view = (bytes: Uint8Array): DataView => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        expect(decodeCapabilities(page).ok).toBe(true);
+
+        // A *negotiated* control frame below 192 cannot exist: a device in that position answers
+        // Hello with resourceLimit/minimumControlFrame instead of a Capabilities page.
+        const tooSmall = page.slice();
+        view(tooSmall).setUint16(20, 100, true);
+        expect(failure(decodeCapabilities(tooSmall))).toEqual({ category: "invalidFrame", detail: "frameBounds" });
+
+        const tooLarge = page.slice();
+        view(tooLarge).setUint16(20, MAX_CONTROL_FRAME + 1, true);
+        expect(failure(decodeCapabilities(tooLarge))).toEqual({ category: "invalidFrame", detail: "frameBounds" });
+
+        const streamTooLarge = page.slice();
+        view(streamTooLarge).setUint16(22, MAX_STREAM_FRAME + 1, true);
+        expect(failure(decodeCapabilities(streamTooLarge))).toEqual({ category: "invalidFrame", detail: "frameBounds" });
+    });
+
+    it("rejects a subject page that returns fewer whole entries than remain", () => {
+        // §5: "The server never silently truncates the registry." Page 0 of 8 subjects carries two.
+        const page = payloadOf("controls/capabilities-subject-page-0.json");
+        expect(decodeSubjectEntry(page.subarray(56, 76)).ok).toBe(true);
+
+        const short = page.slice(0, 56 + 20);
+        short[52] = 1; // returned subject count
+        expect(failure(decodeCapabilities(short))).toEqual({
+            category: "invalidDescriptor",
+            detail: "invalidCombination",
+        });
+    });
+
+    it("verifies the CRC in a catalog page's next cursor", () => {
+        // §8.2's cursor CRC covers the StoreId and the cursor's own first twelve bytes, and a
+        // catalog page reports the StoreId it was minted under — so this one always verifies.
+        const file = "controls/catalog-page-maximum-count.json";
+        const frame = hexToBytes(sample(file).frame);
+        expect(decodeControlFrame(frame).ok).toBe(true);
+
+        const tampered = frame.slice();
+        tampered[16 + 44 - 1] ^= 0x01; // one bit of the next cursor's CRC word
+        expect(failure(decodeControlFrame(tampered))).toEqual({ category: "checksumFailure", detail: "cursor" });
+
+        const reScoped = frame.slice();
+        reScoped[16] ^= 0x01; // a different StoreId, same cursor
+        expect(failure(decodeControlFrame(reScoped))).toEqual({ category: "checksumFailure", detail: "cursor" });
+    });
+
+    it("verifies a request cursor once the caller supplies the StoreId it is connected to", () => {
+        const frame = hexToBytes(sample("controls/query-catalog-cursor-continuation.json").frame);
+        // Without the StoreId the request still decodes: the frame does not carry the scope.
+        expect(decodeControlFrame(frame).ok).toBe(true);
+        expect(decodeControlFrame(frame, { storeId: SUITE_STORE_ID }).ok).toBe(true);
+
+        const otherStore = SUITE_STORE_ID.slice();
+        otherStore[0] ^= 0x01;
+        expect(failure(decodeControlFrame(frame, { storeId: otherStore }))).toEqual({
+            category: "checksumFailure",
+            detail: "cursor",
+        });
     });
 });

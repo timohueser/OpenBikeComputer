@@ -16,87 +16,88 @@
 import { Cursor, Writer } from "./bytes";
 import {
     MAX_CONTROL_PAYLOAD,
-    decodeCapabilities,
-    decodeHello,
-    encodeCapabilities,
-    encodeHello,
+    readCapabilities,
+    readHello,
+    writeCapabilities,
+    writeHello,
     type Capabilities,
     type HelloRequest,
 } from "./capabilities";
-import { decodeErrorBody, encodeErrorBody, type ErrorBody } from "./errorBody";
+import { readErrorBody, writeErrorBody, type ErrorBody } from "./errorBody";
 import { requestId as makeRequestId, type RequestId } from "./ids";
 import {
-    decodeAbortOperation,
-    decodeAbortSession,
-    decodeAbortSessionResponse,
-    decodeBeginDraft,
-    decodeBeginDraftResponse,
-    decodeCheckpointResponse,
-    decodeCheckpointUpload,
-    decodeClockStatus,
-    decodeConfigBlock,
-    decodeDeleteObject,
-    decodeDeviceStatus,
-    decodeDownloadAccepted,
-    decodeDraftPartAccepted,
-    decodeFinalizeDraft,
-    decodeFinalizeDraftResponse,
-    decodeFinishDownload,
-    decodeForgetBond,
-    decodeOperationOnObject,
-    decodeQueryCatalog,
-    decodeQueryCatalogResponse,
-    decodeQueryDraft,
-    decodeQueryDraftResponse,
-    decodeQueryOperation,
-    decodeQueryOperationResponse,
-    decodeResultEnvelope,
-    decodeSessionOnly,
-    decodeSetClock,
-    decodeSetMetadata,
-    decodeStartDownload,
-    decodeStartDraftPart,
-    decodeStartUpload,
-    decodeStoreIdMessage,
-    decodeUploadAccepted,
-    decodeWeatherRequestContext,
-    encodeAbortOperation,
-    encodeAbortSession,
-    encodeAbortSessionResponse,
-    encodeBeginDraft,
-    encodeBeginDraftResponse,
-    encodeCheckpointResponse,
-    encodeCheckpointUpload,
-    encodeClockStatus,
-    encodeConfigBlock,
-    encodeDeleteObject,
-    encodeDeviceStatus,
-    encodeDownloadAccepted,
-    encodeDraftPartAccepted,
-    encodeFinalizeDraft,
-    encodeFinalizeDraftResponse,
-    encodeFinishDownload,
-    encodeForgetBond,
-    encodeOperationOnObject,
-    encodeQueryCatalog,
-    encodeQueryCatalogResponse,
-    encodeQueryDraft,
-    encodeQueryDraftResponse,
-    encodeQueryOperation,
-    encodeQueryOperationResponse,
-    encodeResultEnvelope,
-    encodeSessionOnly,
-    encodeSetClock,
-    encodeSetMetadata,
-    encodeStartDownload,
-    encodeStartDraftPart,
-    encodeStartUpload,
-    encodeStoreIdMessage,
-    encodeUploadAccepted,
-    encodeWeatherRequestContext,
+    readAbortOperation,
+    readAbortSession,
+    readAbortSessionResponse,
+    readBeginDraft,
+    readBeginDraftResponse,
+    readCheckpointResponse,
+    readCheckpointUpload,
+    readClockStatus,
+    readConfigBlock,
+    readDeleteObject,
+    readDeviceStatus,
+    readDownloadAccepted,
+    readDraftPartAccepted,
+    readFinalizeDraft,
+    readFinalizeDraftResponse,
+    readFinishDownload,
+    readForgetBond,
+    readOperationOnObject,
+    readQueryCatalog,
+    readQueryCatalogResponse,
+    readQueryDraft,
+    readQueryDraftResponse,
+    readQueryOperation,
+    readQueryOperationResponse,
+    readResultEnvelope,
+    readSessionOnly,
+    readSetClock,
+    readSetMetadata,
+    readStartDownload,
+    readStartDraftPart,
+    readStartUpload,
+    readStoreIdMessage,
+    readUploadAccepted,
+    readWeatherRequestContext,
+    writeAbortOperation,
+    writeAbortSession,
+    writeAbortSessionResponse,
+    writeBeginDraft,
+    writeBeginDraftResponse,
+    writeCheckpointResponse,
+    writeCheckpointUpload,
+    writeClockStatus,
+    writeConfigBlock,
+    writeDeleteObject,
+    writeDeviceStatus,
+    writeDownloadAccepted,
+    writeDraftPartAccepted,
+    writeFinalizeDraft,
+    writeFinalizeDraftResponse,
+    writeFinishDownload,
+    writeForgetBond,
+    writeOperationOnObject,
+    writeQueryCatalog,
+    writeQueryCatalogResponse,
+    writeQueryDraft,
+    writeQueryDraftResponse,
+    writeQueryOperation,
+    writeQueryOperationResponse,
+    writeResultEnvelope,
+    writeSessionOnly,
+    writeSetClock,
+    writeSetMetadata,
+    writeStartDownload,
+    writeStartDraftPart,
+    writeStartUpload,
+    writeStoreIdMessage,
+    writeUploadAccepted,
+    writeWeatherRequestContext,
     type AbortOperationRequest,
     type AbortSessionRequest,
     type AbortSessionResponse,
+    type BodyContext,
     type BeginDraftAcceptance,
     type BeginDraftRequest,
     type CheckpointUploadRequest,
@@ -132,7 +133,6 @@ import {
 } from "./messages";
 import { decoding, reject, type DosResult } from "./result";
 
-export const CONTROL_MAGIC = 0x4f424350; // "OBCP"
 export const CONTROL_MAGIC_BYTES = Uint8Array.of(0x4f, 0x42, 0x43, 0x50);
 export const WIRE_MAJOR = 3;
 export const WIRE_MINOR = 0;
@@ -236,7 +236,7 @@ export interface ControlFrame {
     readonly body: ControlBody;
 }
 
-export interface ControlDecodeOptions {
+export interface ControlDecodeOptions extends BodyContext {
     /** The negotiated control frame maximum, when one has been established (§1). */
     readonly maximumFrameBytes?: number;
 }
@@ -298,7 +298,9 @@ function readControlFrame(bytes: Uint8Array, options: ControlDecodeOptions): Con
         reject("unsupportedCapability", "opcode", `opcode 0x${opcodeValue.toString(16)} is not registered`);
     }
     const payload = cursor.take(payloadLength);
-    const body = error ? { kind: "Error" as const, error: decodeErrorBody(payload) } : decodeBody(opcodeName, response, more, payload);
+    const body = error
+        ? { kind: "Error" as const, error: readErrorBody(payload) }
+        : readBody(opcodeName, response, more, payload, options);
     return {
         opcode: OPCODE[opcodeName],
         opcodeName,
@@ -314,117 +316,147 @@ function empty(payload: Uint8Array, what: string): void {
     if (payload.length !== 0) reject("invalidFrame", "trailingBytes", `${what} has an empty payload`);
 }
 
-function decodeBody(opcode: OpcodeName, response: boolean, more: boolean, payload: Uint8Array): ControlBody {
+function readBody(
+    opcode: OpcodeName,
+    response: boolean,
+    more: boolean,
+    payload: Uint8Array,
+    context: BodyContext,
+): ControlBody {
     switch (opcode) {
         case "Hello":
             return response
-                ? { kind: "Capabilities", capabilities: decodeCapabilities(payload) }
-                : { kind: "Hello", hello: decodeHello(payload) };
+                ? { kind: "Capabilities", capabilities: readCapabilities(payload) }
+                : { kind: "Hello", hello: readHello(payload) };
         case "StartUpload":
             return response
-                ? { kind: "UploadAccepted", response: decodeUploadAccepted(payload) }
-                : { kind: "StartUpload", request: decodeStartUpload(payload) };
+                ? { kind: "UploadAccepted", response: readUploadAccepted(payload) }
+                : { kind: "StartUpload", request: readStartUpload(payload) };
         case "CheckpointUpload":
             return response
-                ? { kind: "CheckpointAccepted", response: decodeCheckpointResponse(payload) }
-                : { kind: "CheckpointUpload", request: decodeCheckpointUpload(payload) };
+                ? { kind: "CheckpointAccepted", response: readCheckpointResponse(payload) }
+                : { kind: "CheckpointUpload", request: readCheckpointUpload(payload) };
         case "FinishUpload":
             return response
-                ? { kind: "TerminalResult", result: decodeResultEnvelope(payload) }
-                : { kind: "FinishUpload", request: decodeSessionOnly(payload, "FinishUpload") };
+                ? { kind: "TerminalResult", result: readResultEnvelope(payload) }
+                : { kind: "FinishUpload", request: readSessionOnly(payload, "FinishUpload") };
         case "StartDownload":
             return response
-                ? { kind: "DownloadAccepted", response: decodeDownloadAccepted(payload) }
-                : { kind: "StartDownload", request: decodeStartDownload(payload) };
+                ? { kind: "DownloadAccepted", response: readDownloadAccepted(payload) }
+                : { kind: "StartDownload", request: readStartDownload(payload) };
         case "FinishDownload":
             if (response) {
                 empty(payload, "the FinishDownload response");
                 return { kind: "Empty" };
             }
-            return { kind: "FinishDownload", request: decodeFinishDownload(payload) };
+            return { kind: "FinishDownload", request: readFinishDownload(payload) };
         case "AbortSession":
             return response
-                ? { kind: "AbortSessionResult", response: decodeAbortSessionResponse(payload) }
-                : { kind: "AbortSession", request: decodeAbortSession(payload) };
+                ? { kind: "AbortSessionResult", response: readAbortSessionResponse(payload) }
+                : { kind: "AbortSession", request: readAbortSession(payload) };
         case "BeginDraft":
             return response
-                ? { kind: "BeginDraftAccepted", response: decodeBeginDraftResponse(payload) }
-                : { kind: "BeginDraft", request: decodeBeginDraft(payload) };
+                ? { kind: "BeginDraftAccepted", response: readBeginDraftResponse(payload) }
+                : { kind: "BeginDraft", request: readBeginDraft(payload) };
         case "StartDraftPart":
             return response
-                ? { kind: "DraftPartAccepted", response: decodeDraftPartAccepted(payload) }
-                : { kind: "StartDraftPart", request: decodeStartDraftPart(payload) };
+                ? { kind: "DraftPartAccepted", response: readDraftPartAccepted(payload) }
+                : { kind: "StartDraftPart", request: readStartDraftPart(payload) };
         case "FinalizeDraft":
             return response
-                ? { kind: "FinalizeDraftAccepted", response: decodeFinalizeDraftResponse(payload) }
-                : { kind: "FinalizeDraft", request: decodeFinalizeDraft(payload) };
+                ? { kind: "FinalizeDraftAccepted", response: readFinalizeDraftResponse(payload) }
+                : { kind: "FinalizeDraft", request: readFinalizeDraft(payload) };
         case "QueryOperation":
             return response
-                ? { kind: "OperationStatus", response: decodeQueryOperationResponse(payload) }
-                : { kind: "QueryOperation", request: decodeQueryOperation(payload) };
+                ? { kind: "OperationStatus", response: readQueryOperationResponse(payload) }
+                : { kind: "QueryOperation", request: readQueryOperation(payload) };
         case "QueryCatalog":
             return response
-                ? { kind: "CatalogPage", response: decodeQueryCatalogResponse(payload, more) }
-                : { kind: "QueryCatalog", request: decodeQueryCatalog(payload) };
+                ? { kind: "CatalogPage", response: readQueryCatalogResponse(payload, more) }
+                : { kind: "QueryCatalog", request: readQueryCatalog(payload, context) };
         case "QueryDraft":
             return response
-                ? { kind: "DraftPage", response: decodeQueryDraftResponse(payload, more) }
-                : { kind: "QueryDraft", request: decodeQueryDraft(payload) };
+                ? { kind: "DraftPage", response: readQueryDraftResponse(payload, more, context) }
+                : { kind: "QueryDraft", request: readQueryDraft(payload, context) };
         case "QueryWeatherRequest":
-            if (response) return { kind: "WeatherRequestContext", response: decodeWeatherRequestContext(payload) };
+            if (response) return { kind: "WeatherRequestContext", response: readWeatherRequestContext(payload) };
             empty(payload, "the QueryWeatherRequest request");
             return { kind: "QueryWeatherRequest" };
         case "DeleteObject":
             return response
-                ? { kind: "TerminalResult", result: decodeResultEnvelope(payload) }
-                : { kind: "DeleteObject", request: decodeDeleteObject(payload) };
+                ? { kind: "TerminalResult", result: readResultEnvelope(payload) }
+                : { kind: "DeleteObject", request: readDeleteObject(payload) };
         case "SetMetadata":
             return response
-                ? { kind: "TerminalResult", result: decodeResultEnvelope(payload) }
-                : { kind: "SetMetadata", request: decodeSetMetadata(payload) };
+                ? { kind: "TerminalResult", result: readResultEnvelope(payload) }
+                : { kind: "SetMetadata", request: readSetMetadata(payload) };
         case "AbortOperation":
             return response
-                ? { kind: "TerminalResult", result: decodeResultEnvelope(payload) }
-                : { kind: "AbortOperation", request: decodeAbortOperation(payload) };
+                ? { kind: "TerminalResult", result: readResultEnvelope(payload) }
+                : { kind: "AbortOperation", request: readAbortOperation(payload) };
         case "InstallUpdate":
             return response
-                ? { kind: "TerminalResult", result: decodeResultEnvelope(payload) }
-                : { kind: "OperationOnObject", request: decodeOperationOnObject(payload, "InstallUpdate") };
+                ? { kind: "TerminalResult", result: readResultEnvelope(payload) }
+                : { kind: "OperationOnObject", request: readOperationOnObject(payload, "InstallUpdate") };
         case "AcknowledgeRideImported":
             return response
-                ? { kind: "TerminalResult", result: decodeResultEnvelope(payload) }
-                : { kind: "OperationOnObject", request: decodeOperationOnObject(payload, "AcknowledgeRideImported") };
+                ? { kind: "TerminalResult", result: readResultEnvelope(payload) }
+                : { kind: "OperationOnObject", request: readOperationOnObject(payload, "AcknowledgeRideImported") };
         case "GetDeviceStatus":
-            if (response) return { kind: "DeviceStatus", response: decodeDeviceStatus(payload) };
+            if (response) return { kind: "DeviceStatus", response: readDeviceStatus(payload) };
             empty(payload, "the GetDeviceStatus request");
             return { kind: "GetDeviceStatus" };
         case "GetConfig":
-            if (response) return { kind: "ConfigBlock", config: decodeConfigBlock(payload) };
+            if (response) return { kind: "ConfigBlock", config: readConfigBlock(payload) };
             empty(payload, "the GetConfig request");
             return { kind: "GetConfig" };
         case "SetConfig":
-            return { kind: "ConfigBlock", config: decodeConfigBlock(payload) };
+            return { kind: "ConfigBlock", config: readConfigBlock(payload) };
         case "SetClock":
             return response
-                ? { kind: "ClockStatus", response: decodeClockStatus(payload) }
-                : { kind: "SetClock", request: decodeSetClock(payload) };
+                ? { kind: "ClockStatus", response: readClockStatus(payload) }
+                : { kind: "SetClock", request: readSetClock(payload) };
         case "ForgetBond":
             if (response) {
                 empty(payload, "the ForgetBond response");
                 return { kind: "Empty" };
             }
-            return { kind: "ForgetBond", request: decodeForgetBond(payload) };
+            return { kind: "ForgetBond", request: readForgetBond(payload) };
         case "Echo":
             return { kind: "Echo", payload: payload.slice() };
         case "ResetStore":
             return response
-                ? { kind: "ResetStoreResult", response: decodeStoreIdMessage(payload, "the ResetStore response") }
-                : { kind: "ResetStore", request: decodeStoreIdMessage(payload, "ResetStore") };
+                ? { kind: "ResetStoreResult", response: readStoreIdMessage(payload, "the ResetStore response") }
+                : { kind: "ResetStore", request: readStoreIdMessage(payload, "ResetStore") };
     }
 }
 
-export function encodeControlFrame(frame: ControlFrame): Uint8Array {
-    const payload = encodeBody(frame.body);
+export interface ControlEncodeOptions {
+    /** The negotiated control frame maximum. A frame above it is unsendable on this link (§1). */
+    readonly maximumFrameBytes?: number;
+}
+
+/**
+ * Total encode. §1: "A request whose complete encoding exceeds the negotiated control frame is
+ * unsendable. The client MUST NOT truncate, split, or drop a field to make it fit" — so an
+ * over-long body is a refusal the caller has to handle, never a `u16` that quietly wraps.
+ */
+export const encodeControlFrame = (frame: ControlFrame, options: ControlEncodeOptions = {}): DosResult<Uint8Array> =>
+    decoding(() => writeControlFrame(frame, options));
+
+export function writeControlFrame(frame: ControlFrame, options: ControlEncodeOptions = {}): Uint8Array {
+    const payload = writeBody(frame.body);
+    if (payload.length > MAX_CONTROL_PAYLOAD) {
+        reject(
+            "invalidFrame",
+            "payloadLength",
+            `a ${payload.length}-byte payload exceeds the ${MAX_CONTROL_PAYLOAD}-byte maximum`,
+        );
+    }
+    const limit = options.maximumFrameBytes;
+    if (limit !== undefined && CONTROL_HEADER_BYTES + payload.length > limit) {
+        reject("invalidFrame", "frameBounds", `the encoded frame exceeds the ${limit}-byte negotiated maximum`);
+    }
     let flags = 0;
     if (frame.response) flags |= HEADER_FLAG.response;
     if (frame.error) flags |= HEADER_FLAG.error;
@@ -441,85 +473,85 @@ export function encodeControlFrame(frame: ControlFrame): Uint8Array {
         .finish();
 }
 
-function encodeBody(body: ControlBody): Uint8Array {
+function writeBody(body: ControlBody): Uint8Array {
     switch (body.kind) {
         case "Hello":
-            return encodeHello(body.hello);
+            return writeHello(body.hello);
         case "Capabilities":
-            return encodeCapabilities(body.capabilities);
+            return writeCapabilities(body.capabilities);
         case "StartUpload":
-            return encodeStartUpload(body.request);
+            return writeStartUpload(body.request);
         case "UploadAccepted":
-            return encodeUploadAccepted(body.response);
+            return writeUploadAccepted(body.response);
         case "CheckpointUpload":
-            return encodeCheckpointUpload(body.request);
+            return writeCheckpointUpload(body.request);
         case "CheckpointAccepted":
-            return encodeCheckpointResponse(body.response);
+            return writeCheckpointResponse(body.response);
         case "FinishUpload":
-            return encodeSessionOnly(body.request);
+            return writeSessionOnly(body.request);
         case "StartDownload":
-            return encodeStartDownload(body.request);
+            return writeStartDownload(body.request);
         case "DownloadAccepted":
-            return encodeDownloadAccepted(body.response);
+            return writeDownloadAccepted(body.response);
         case "FinishDownload":
-            return encodeFinishDownload(body.request);
+            return writeFinishDownload(body.request);
         case "AbortSession":
-            return encodeAbortSession(body.request);
+            return writeAbortSession(body.request);
         case "AbortSessionResult":
-            return encodeAbortSessionResponse(body.response);
+            return writeAbortSessionResponse(body.response);
         case "BeginDraft":
-            return encodeBeginDraft(body.request);
+            return writeBeginDraft(body.request);
         case "BeginDraftAccepted":
-            return encodeBeginDraftResponse(body.response);
+            return writeBeginDraftResponse(body.response);
         case "StartDraftPart":
-            return encodeStartDraftPart(body.request);
+            return writeStartDraftPart(body.request);
         case "DraftPartAccepted":
-            return encodeDraftPartAccepted(body.response);
+            return writeDraftPartAccepted(body.response);
         case "FinalizeDraft":
-            return encodeFinalizeDraft(body.request);
+            return writeFinalizeDraft(body.request);
         case "FinalizeDraftAccepted":
-            return encodeFinalizeDraftResponse(body.response);
+            return writeFinalizeDraftResponse(body.response);
         case "QueryOperation":
-            return encodeQueryOperation(body.request);
+            return writeQueryOperation(body.request);
         case "OperationStatus":
-            return encodeQueryOperationResponse(body.response);
+            return writeQueryOperationResponse(body.response);
         case "QueryCatalog":
-            return encodeQueryCatalog(body.request);
+            return writeQueryCatalog(body.request);
         case "CatalogPage":
-            return encodeQueryCatalogResponse(body.response);
+            return writeQueryCatalogResponse(body.response);
         case "QueryDraft":
-            return encodeQueryDraft(body.request);
+            return writeQueryDraft(body.request);
         case "DraftPage":
-            return encodeQueryDraftResponse(body.response);
+            return writeQueryDraftResponse(body.response);
         case "DeleteObject":
-            return encodeDeleteObject(body.request);
+            return writeDeleteObject(body.request);
         case "SetMetadata":
-            return encodeSetMetadata(body.request);
+            return writeSetMetadata(body.request);
         case "AbortOperation":
-            return encodeAbortOperation(body.request);
+            return writeAbortOperation(body.request);
         case "OperationOnObject":
-            return encodeOperationOnObject(body.request);
+            return writeOperationOnObject(body.request);
         case "TerminalResult":
-            return encodeResultEnvelope(body.result);
+            return writeResultEnvelope(body.result);
         case "WeatherRequestContext":
-            return encodeWeatherRequestContext(body.response);
+            return writeWeatherRequestContext(body.response);
         case "DeviceStatus":
-            return encodeDeviceStatus(body.response);
+            return writeDeviceStatus(body.response);
         case "ConfigBlock":
-            return encodeConfigBlock(body.config);
+            return writeConfigBlock(body.config);
         case "SetClock":
-            return encodeSetClock(body.request);
+            return writeSetClock(body.request);
         case "ClockStatus":
-            return encodeClockStatus(body.response);
+            return writeClockStatus(body.response);
         case "ForgetBond":
-            return encodeForgetBond(body.request);
+            return writeForgetBond(body.request);
         case "Echo":
             return body.payload.slice();
         case "ResetStore":
         case "ResetStoreResult":
-            return encodeStoreIdMessage(body.kind === "ResetStore" ? body.request : body.response);
+            return writeStoreIdMessage(body.kind === "ResetStore" ? body.request : body.response);
         case "Error":
-            return encodeErrorBody(body.error);
+            return writeErrorBody(body.error);
         case "QueryWeatherRequest":
         case "GetDeviceStatus":
         case "GetConfig":
