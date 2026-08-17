@@ -114,7 +114,8 @@ admits, and `model`, the reference state a recovered card is compared against by
 `cfg(test)`: the crash matrix (every media operation of every durable path, cut before, during and
 after), the decoder fuzz, and both specs' vectors.
 
-`obc-storage::obc2` — superseded by the above and deleted in the epic's last slice — is the same suite's on-card half: the record codecs of
+`obc-storage::obc2` — superseded by the above, and deleted in the epic's last slice — is the
+Device Object System v2 suite's on-card half: the record codecs of
 [`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,
 `RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog projection
 whose `apply` is the meaning of a journal record, §7's and §7.1's WORK/RIDE recovery rules, §6.3's
