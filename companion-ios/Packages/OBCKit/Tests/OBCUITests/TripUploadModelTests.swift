@@ -41,6 +41,30 @@ struct TripUploadModelTests {
         }
     }
 
+    /// The device-side half of a retention postcondition, waited for rather than
+    /// asserted into the gap.
+    ///
+    /// The sheet's `.done` does **not** promise the device has the level yet:
+    /// `MainScreenModel.pushRetention` fires the `setRouteRetention` write off in
+    /// a detached task and ignores its result on purpose — the record is updated
+    /// optimistically and "a failed send self-heals at the next reconcile". So
+    /// `.done` orders the *library* half (see the `record?.retention` assertions,
+    /// which are synchronous) but not this one.
+    ///
+    /// What finding #876-4 asks for is that the level **lands**, not that it
+    /// lands synchronously with the sheet — so waiting for it tests the real
+    /// postcondition. Asserting immediately tested the scheduler, and failed
+    /// under load with the previous level still on the device.
+    private func pollDeviceRetention(
+        _ control: MockControl, _ objectID: DeviceObjectID, _ expected: Retention,
+        _ comment: Comment? = nil
+    ) async {
+        await poll("device retention \(expected) on \(objectID)") {
+            control.routeRetention(for: objectID) == expected
+        }
+        #expect(control.routeRetention(for: objectID) == expected, comment)
+    }
+
     /// Start the sheet and clear the `.ready` confirm. The happy-path device is
     /// retention-capable (epic #638), so the queue now holds on the Auto-delete
     /// confirm until the rider taps Upload; `beginUpload()` is a no-op on an
@@ -216,7 +240,7 @@ struct TripUploadModelTests {
         for id in stageIDs {
             let record = library.plannedRoutes().first { $0.id == id }
             let objectID = try! #require(record?.deviceLink?.objectID)
-            #expect(control.routeRetention(for: objectID) == .twoMonths)
+            await pollDeviceRetention(control, objectID, .twoMonths)
             #expect(record?.retention == .twoMonths)
         }
     }
@@ -238,7 +262,7 @@ struct TripUploadModelTests {
         await poll("first done") { first.phase == .done }
         for id in stageIDs {
             let objectID = try! #require(library.plannedRoutes().first { $0.id == id }?.deviceLink?.objectID)
-            #expect(control.routeRetention(for: objectID) == .twoWeeks)
+            await pollDeviceRetention(control, objectID, .twoWeeks)
         }
 
         // Re-run: everything is current → an all-skip queue, no payload bytes. Pick a
@@ -255,7 +279,8 @@ struct TripUploadModelTests {
         for id in stageIDs {
             let record = library.plannedRoutes().first { $0.id == id }
             let objectID = try! #require(record?.deviceLink?.objectID)
-            #expect(control.routeRetention(for: objectID) == .twoMonths, "a skipped stage still got the trip's level")
+            await pollDeviceRetention(
+                control, objectID, .twoMonths, "a skipped stage still got the trip's level")
             #expect(record?.retention == .twoMonths)
         }
     }
@@ -288,7 +313,8 @@ struct TripUploadModelTests {
         for id in stageIDs {
             let record = library.plannedRoutes().first { $0.id == id }
             let objectID = try! #require(record?.deviceLink?.objectID)
-            #expect(control.routeRetention(for: objectID) == .oneMonth, "fresh and skipped stages both land the trip level")
+            await pollDeviceRetention(
+                control, objectID, .oneMonth, "fresh and skipped stages both land the trip level")
             #expect(record?.retention == .oneMonth)
         }
     }
@@ -298,11 +324,19 @@ struct TripUploadModelTests {
     /// pushes nothing.
     @Test
     func reRunAtTheSameLevelSendsNoRedundantRetentionCommand() async {
-        let (model, control, _) = await makeRetentionMain()
+        let (model, control, library) = await makeRetentionMain()
+        let stageIDs = model.tripStages(tripID).map(\.id)
 
         let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(first)  // lands both stages at the .twoWeeks default
         await poll("first done") { first.phase == .done }
+        // Let the first run's pushes land before counting. They ride detached
+        // tasks (see `pollDeviceRetention`), so a snapshot taken at `.done` can
+        // miss one and then read it as the second run's redundant write.
+        for id in stageIDs {
+            let objectID = try! #require(library.plannedRoutes().first { $0.id == id }?.deviceLink?.objectID)
+            await pollDeviceRetention(control, objectID, .twoWeeks)
+        }
         let writesAfterFirst = control.routeRetentionWriteCount
 
         let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
