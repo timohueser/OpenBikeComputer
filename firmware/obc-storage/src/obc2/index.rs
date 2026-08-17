@@ -21,29 +21,25 @@
 //! [`NO_JOURNAL_SLOT`] is the absent value rather than an `Option<u16>`, because §13 counts this
 //! field as a `u16` in a budget that has no room for the discriminant an `Option` would add.
 //!
-//! ## What this is not
+//! ## There is still exactly one `apply`
 //!
-//! It is not a second `apply`. [`CatalogModel`](super::model::CatalogModel) is the reference model
-//! and the meaning of a journal record; this is the resident *shape* of the same facts, projected
-//! from it by [`RamIndex::project_into`]. Keeping one `apply` is deliberate: two would be two
-//! definitions of what a record means, and the compaction proof — that a streamed body equals
-//! `CatalogModel::encode_body` — only means something while the index is derived from the model
-//! rather than maintained beside it.
+//! [`CatalogModel`](super::model::CatalogModel) and this index are two instantiations of one generic
+//! [`Projection`](super::model::Projection): every region but the heads and the results is the same
+//! type in both, and the two that differ are reached through [`HeadRow`](super::model::HeadRow) and
+//! [`ResultRow`](super::model::ResultRow). So `apply` is written once and means one thing, which is
+//! what the compaction proof — that a streamed body equals `CatalogModel::encode_body` — rests on.
+//! [`RamIndex::project_into`] remains, as the host oracle's way of getting from one to the other.
 
-use heapless::Vec;
 use obc_link::ids::{GenerationId, LogicalObjectId, OperationId, Revision, StoreId};
 
-use super::checkpoint::CheckpointHeader;
+use super::checkpoint;
 use super::entries::{
     ActiveOperation, ActiveRide, CatalogHead, DraftParent, DraftPart, HeadKey, RepositoryState, RetainedPrevious,
-    WeatherState,
+    TerminalResult, WeatherState,
 };
 use super::handoff::HandoffRef;
 use super::leases::LeaseTable;
-use super::limits::{
-    MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS, MAX_DRAFT_PARTS, MAX_REPOSITORY_STATES, MAX_RETAINED_PREVIOUS,
-    MAX_TERMINAL_RESULTS,
-};
+use super::model::{HeadRow, Projection, ResultRow};
 
 /// The absent journal-slot reference: this head's newest bytes are in the active checkpoint.
 ///
@@ -84,8 +80,8 @@ impl HeadIndexEntry {
         HeadKey { kind: self.kind, id: self.id }
     }
 
-    /// The resident half of a decoded head entry.
-    pub fn from_head(head: &CatalogHead, journal_slot: u16) -> Self {
+    /// The resident half of a decoded head entry, with the journal reference the caller resolved.
+    pub fn carried(head: &CatalogHead, journal_slot: u16) -> Self {
         HeadIndexEntry {
             id: head.key.id,
             revision: head.revision,
@@ -96,6 +92,20 @@ impl HeadIndexEntry {
             journal_slot,
             flags: head.flags & !CatalogHead::FLAG_RESOLUTION_PRESENT,
         }
+    }
+}
+
+impl HeadRow for HeadIndexEntry {
+    fn head_key(&self) -> HeadKey {
+        self.key()
+    }
+
+    /// A head put by a record starts with **no** journal reference. `apply` cannot install one: it
+    /// is handed a decoded body and does not know which physical slot carried it. The caller that
+    /// wrote or replayed that slot installs it afterwards through
+    /// [`note_head_record`](RamIndex::note_head_record), which is also the only caller that knows.
+    fn from_head(head: &CatalogHead) -> Self {
+        HeadIndexEntry::carried(head, NO_JOURNAL_SLOT)
     }
 }
 
@@ -123,6 +133,25 @@ impl ResultIndexEntry {
     pub const RESIDENT_TARGET: usize = 32;
 }
 
+impl ResultRow for ResultIndexEntry {
+    fn operation_id(&self) -> OperationId {
+        self.operation
+    }
+
+    fn sequence(&self) -> u64 {
+        self.commit_sequence
+    }
+
+    /// Same as a head's: the slot reference is the writer's to install, not `apply`'s.
+    fn from_result(result: &TerminalResult) -> Self {
+        ResultIndexEntry {
+            operation: result.operation,
+            commit_sequence: result.commit_sequence,
+            journal_slot: NO_JOURNAL_SLOT,
+        }
+    }
+}
+
 /// §13's budget formula at the §2 capacities, before the lease table and the bounded staging:
 /// `12,800 + 2,048 + 1,152 + 128 + 3,072 + 512`.
 pub const SECTION_13_FORMULA: usize = 19_712;
@@ -135,76 +164,24 @@ pub const SECTION_13_FORMULA: usize = 19_712;
 /// less, never more.
 pub const MEASURED_RESIDENT: usize = 19_848;
 
-/// The bounded resident index.
-#[derive(Debug, Clone)]
-pub struct RamIndex {
-    /// The store this index belongs to.
-    pub store: StoreId,
-    /// The selected checkpoint's epoch.
-    pub epoch: u64,
-    /// The last sequence absorbed, checkpoint plus replayed suffix.
-    pub through_sequence: u64,
-    /// The next `GenerationId` cursor.
-    pub next_generation: u64,
-    /// The terminal-commit counter.
-    pub terminal_counter: u64,
-    /// Header flags; bit 0 is the durable store-wide degraded record.
-    pub flags: u8,
-    /// Repository rows, sorted by kind.
-    pub repositories: Vec<RepositoryState, MAX_REPOSITORY_STATES>,
-    /// Head index entries, sorted by `(kind, logical id)`.
-    pub heads: Vec<HeadIndexEntry, MAX_CATALOG_HEADS>,
-    /// Active rows, sorted by `OperationId` wire bytes.
-    pub actives: Vec<ActiveOperation, MAX_ACTIVE_OPERATIONS>,
-    /// The one draft parent.
-    pub draft_parent: Option<DraftParent>,
-    /// Its parts, sorted by `(parent, kind, part key)`.
-    pub draft_parts: Vec<DraftPart, MAX_DRAFT_PARTS>,
-    /// Retained generations, sorted by `GenerationId`.
-    pub retained: Vec<RetainedPrevious, MAX_RETAINED_PREVIOUS>,
-    /// The result ring's start index.
-    pub result_start: usize,
-    /// The result ring's keys, in ring order from `result_start`.
-    pub results: Vec<ResultIndexEntry, MAX_TERMINAL_RESULTS>,
-    /// The one update-handoff projection.
-    pub handoff: Option<HandoffRef>,
-    /// The one weather-request state.
-    pub weather: Option<WeatherState>,
-    /// The one active-ride state.
-    pub ride: Option<ActiveRide>,
-    /// The four RAM-only download leases (§9).
-    pub leases: LeaseTable,
-}
+/// The bounded resident index: §13's shape of [`Projection`].
+///
+/// It is the same generic projection [`CatalogModel`](super::model::CatalogModel) is, instantiated
+/// over the two rows §13 shrinks — so there is one `apply`, one set of ordering rules and one
+/// `header()`, and the only difference between the device's state and the host oracle's is what a
+/// head and a result *are*.
+///
+/// §9's four download leases are resident too and §13 counts them, but they live beside this value
+/// in the transaction that owns it rather than inside it: a lease is a RAM ownership fact that no
+/// projection reconstructs, so a re-projection must not be able to touch one.
+/// [`resident_bytes`] adds them back.
+pub type RamIndex = Projection<HeadIndexEntry, ResultIndexEntry>;
 
 impl RamIndex {
     /// An empty index. `const` so it can initialize a `static` rather than travel through a return
     /// slot, for the reason [`CatalogModel::empty`](super::model::CatalogModel::empty) gives.
     pub const fn new(store: StoreId) -> Self {
-        RamIndex {
-            store,
-            epoch: 1,
-            through_sequence: 0,
-            next_generation: 0,
-            terminal_counter: 0,
-            flags: 0,
-            repositories: Vec::new(),
-            heads: Vec::new(),
-            actives: Vec::new(),
-            draft_parent: None,
-            draft_parts: Vec::new(),
-            retained: Vec::new(),
-            result_start: 0,
-            results: Vec::new(),
-            handoff: None,
-            weather: None,
-            ride: None,
-            leases: LeaseTable::new(),
-        }
-    }
-
-    /// The head a `(kind, logical id)` names.
-    pub fn head(&self, key: HeadKey) -> Option<&HeadIndexEntry> {
-        self.heads.iter().find(|entry| entry.key() == key)
+        Projection::empty(store)
     }
 
     /// Records that journal slot `slot` carries this head's newest entry (§6.3).
@@ -238,6 +215,28 @@ impl RamIndex {
         }
     }
 
+    /// Applies one record **and** installs the journal-slot references it produced (§6.3).
+    ///
+    /// This is the only way a record should reach the index. `apply` is handed a decoded body and
+    /// cannot install a reference — it does not know which physical slot carried it — so a caller
+    /// that applied without noting would leave a head or a result whose card-resident half is in a
+    /// journal record nothing points at, and the next read of it would go to the active checkpoint
+    /// and find the *older* bytes. Writing it and replaying it are the same act here, which is why
+    /// the commit path and both mount paths call this one function.
+    pub fn absorb(
+        &mut self,
+        record: &super::journal::JournalBody,
+    ) -> core::result::Result<(), super::error::ApplyError> {
+        self.apply(record)?;
+        if let Some(super::journal::Change::Put(head)) = &record.mutation.head {
+            self.note_head_record(head.key, record.slot);
+        }
+        if let Some(result) = &record.mutation.result {
+            self.note_result_record(result.commit_sequence, record.slot);
+        }
+        Ok(())
+    }
+
     /// Forgets every journal-slot reference, of a head and of a result alike.
     ///
     /// §6.3: the reference is "meaningful only within the selected epoch and reset by compaction".
@@ -252,35 +251,12 @@ impl RamIndex {
         }
     }
 
-    /// The header a compaction pass writes for this index.
-    pub fn header(&self) -> CheckpointHeader {
-        CheckpointHeader {
-            store: self.store,
-            epoch: self.epoch,
-            through_sequence: self.through_sequence,
-            next_generation: self.next_generation,
-            repository_count: self.repositories.len() as u16,
-            head_count: self.heads.len() as u16,
-            active_count: self.actives.len() as u8,
-            draft_parent_count: u8::from(self.draft_parent.is_some()),
-            draft_part_count: self.draft_parts.len() as u8,
-            retained_count: self.retained.len() as u8,
-            result_start: self.result_start as u8,
-            result_count: self.results.len() as u8,
-            handoff_count: u8::from(self.handoff.is_some()),
-            flags: self.flags,
-            terminal_counter: self.terminal_counter,
-            weather_count: u8::from(self.weather.is_some()),
-            ride_count: u8::from(self.ride.is_some()),
-        }
-    }
-
     /// Projects a reference model into this index, in place.
     ///
     /// Every journal-slot reference is left absent: the caller installs the ones its replay
-    /// produced through [`note_head_record`](Self::note_head_record). The lease table is *not*
-    /// touched — §9 makes leases RAM ownership facts that no projection can reconstruct, and
-    /// silently clearing them here would release a live reader's pin.
+    /// produced through [`note_head_record`](Self::note_head_record). No lease is touched, because
+    /// none is held here — §9 makes leases RAM ownership facts that no projection reconstructs, and
+    /// keeping them outside this value is what makes that structural rather than a rule to remember.
     pub fn project_into(&mut self, model: &super::model::CatalogModel) {
         self.store = model.store;
         self.epoch = model.epoch;
@@ -296,7 +272,7 @@ impl RamIndex {
         }
         self.heads.clear();
         for head in &model.heads {
-            let _ = self.heads.push(HeadIndexEntry::from_head(head, NO_JOURNAL_SLOT));
+            let _ = self.heads.push(HeadIndexEntry::carried(head, NO_JOURNAL_SLOT));
         }
         self.actives.clear();
         for row in &model.actives {
@@ -334,20 +310,199 @@ impl RamIndex {
     }
 }
 
-/// The measured resident footprint of one index, in bytes.
+/// Streams the selected checkpoint into `index`, staging nothing beyond `scratch`.
 ///
-/// §13 requires DOS2 to "measure the exact figure and size its arena from it". This is that figure
-/// for the host build; the board's differs only where a `usize` differs, and the two `usize` fields
-/// this type has — a `heapless::Vec` length and `result_start` — are the whole of that difference.
-pub const fn resident_bytes() -> usize {
-    core::mem::size_of::<RamIndex>()
+/// This is §13's mount, and the whole reason [`checkpoint::validate_streamed`] takes a sink: the
+/// body is validated and projected in **one** forward pass, so no step of a mount ever holds the
+/// 65,024 bytes. The index is left holding only what §13 keeps — the envelopes, the resolution
+/// generations and the terminal-result bodies stay on the card and are re-read on demand.
+///
+/// Every journal-slot reference is absent afterwards, which is correct: nothing has been replayed
+/// yet, so every card-resident field is in the checkpoint this just read. The caller installs the
+/// references its suffix produces through [`RamIndex::absorb`].
+///
+/// A failed scan leaves the index holding whatever prefix it got to; the caller must discard it.
+pub fn load_checkpoint<S: checkpoint::FileSource>(
+    index: &mut RamIndex,
+    source: &mut S,
+    scratch: &mut [u8],
+) -> core::result::Result<checkpoint::CheckpointHeader, checkpoint::StreamError<S::Error>> {
+    let mut sink = IndexSink { index, wrapped: 0 };
+    let header = checkpoint::validate_streamed(source, scratch, &mut sink)?;
+    sink.finish();
+    Ok(header)
 }
+
+/// The [`EntrySink`](checkpoint::EntrySink) that fills a [`RamIndex`] as the scan passes over it.
+struct IndexSink<'i> {
+    index: &'i mut RamIndex,
+    /// How many occupied results were seen at a physical position below `result_start`.
+    ///
+    /// The scan walks the ring physically and the index holds it in ring order, so the two differ by
+    /// exactly this rotation: the wrapped entries are visited first and belong last.
+    wrapped: usize,
+}
+
+impl IndexSink<'_> {
+    fn finish(self) {
+        self.index.results.rotate_left(self.wrapped);
+    }
+}
+
+impl checkpoint::EntrySink for IndexSink<'_> {
+    fn header(&mut self, header: &checkpoint::CheckpointHeader) {
+        // Every region is cleared here rather than by the caller: a decode that reused a populated
+        // index would let a previous store's heads survive into the next one's catalog, and the
+        // header is the first thing the scan produces.
+        self.index.store = header.store;
+        self.index.epoch = header.epoch;
+        self.index.through_sequence = header.through_sequence;
+        self.index.next_generation = header.next_generation;
+        self.index.terminal_counter = header.terminal_counter;
+        self.index.flags = header.flags;
+        self.index.result_start = header.result_start as usize;
+        self.index.repositories.clear();
+        self.index.heads.clear();
+        self.index.actives.clear();
+        self.index.draft_parent = None;
+        self.index.draft_parts.clear();
+        self.index.retained.clear();
+        self.index.results.clear();
+        self.index.handoff = None;
+        self.index.weather = None;
+        self.index.ride = None;
+        self.wrapped = 0;
+    }
+
+    fn repository(&mut self, row: &RepositoryState) {
+        let _ = self.index.repositories.push(*row);
+    }
+
+    fn head(&mut self, row: &CatalogHead) {
+        let _ = self.index.heads.push(HeadIndexEntry::carried(row, NO_JOURNAL_SLOT));
+    }
+
+    fn active(&mut self, row: &ActiveOperation) {
+        let _ = self.index.actives.push(*row);
+    }
+
+    fn draft_parent(&mut self, row: &DraftParent) {
+        self.index.draft_parent = Some(*row);
+    }
+
+    fn draft_part(&mut self, row: &DraftPart) {
+        let _ = self.index.draft_parts.push(*row);
+    }
+
+    fn retained(&mut self, row: &RetainedPrevious) {
+        let _ = self.index.retained.push(*row);
+    }
+
+    fn result(&mut self, physical: usize, row: &TerminalResult) {
+        if physical < self.index.result_start {
+            self.wrapped += 1;
+        }
+        let _ = self.index.results.push(ResultIndexEntry {
+            operation: row.operation,
+            commit_sequence: row.commit_sequence,
+            journal_slot: NO_JOURNAL_SLOT,
+        });
+    }
+
+    fn handoff(&mut self, row: &HandoffRef) {
+        self.index.handoff = Some(*row);
+    }
+
+    fn weather(&mut self, row: &WeatherState) {
+        self.index.weather = Some(*row);
+    }
+
+    fn ride(&mut self, row: &ActiveRide) {
+        self.index.ride = Some(*row);
+    }
+}
+
+/// The measured resident footprint of one index **plus §9's lease table**, in bytes.
+///
+/// §13 requires DOS2 to "measure the exact figure and size its arena from it", and the list it
+/// measures includes "the live-lease table". The table is not a field of [`RamIndex`] — see that
+/// type's note — so it is added here, which keeps the figure §13 records and the figure an arena is
+/// sized from the same number whichever value happens to hold the leases.
+///
+/// It is the host build's; the board's differs only where a `usize` differs, and the two `usize`
+/// members these types have — a `heapless::Vec` length and `result_start` — are the whole of that
+/// difference.
+pub const fn resident_bytes() -> usize {
+    core::mem::size_of::<RamIndex>() + core::mem::size_of::<LeaseTable>()
+}
+
+/// Both measured figures, pinned so neither can drift unremarked.
+///
+/// Anonymous module-level consts for the reason
+/// [`CatalogModel::init_empty`](super::model::CatalogModel::init_empty)'s size assert gives: an
+/// associated const is evaluated lazily and would gate nothing. Two values because the board is
+/// 32-bit thumbv8m and the host suite 64-bit, and the difference is exactly the seven `usize`
+/// members these types carry — six `heapless::Vec` lengths and `result_start`.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(resident_bytes() == MEASURED_RESIDENT);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(resident_bytes() == 19_840);
 
 #[cfg(test)]
 mod tests {
+    use super::super::limits::MAX_REPOSITORY_STATES;
     use super::super::samples;
     use super::*;
     use core::mem::size_of;
+    use heapless::Vec;
+
+    /// §13's mount: streaming the checkpoint into the index produces exactly the projection the
+    /// whole-body decode would, **including the ring's rotation**.
+    ///
+    /// The scan walks the result region physically and the index holds it in ring order, so a start
+    /// that is not zero is the case where the two disagree — and a `result_start` past the wrap is
+    /// reached only after 64 commits, which is why the fixture forces one rather than hoping.
+    #[test]
+    fn streaming_a_checkpoint_into_the_index_equals_projecting_the_decoded_one() {
+        use super::super::limits::CHECKPOINT_BODY_LEN;
+        for commits in [2u64, 66, 70] {
+            let mut model = super::super::model::CatalogModel::initial(samples::STORE, 4);
+            for step in 1..=commits {
+                model.apply(&samples::claim(1, step * 2 - 1, 0, [step as u8; 16], step)).unwrap();
+                model
+                    .apply(&samples::publish(1, step * 2, 0, [step as u8; 16], step, samples::head(1, step % 200)))
+                    .unwrap();
+            }
+            let mut body = std::boxed::Box::new([0u8; CHECKPOINT_BODY_LEN]);
+            model.encode_body(body.as_mut_slice()).unwrap();
+
+            let mut streamed = std::boxed::Box::new(RamIndex::new(samples::STORE));
+            let mut scratch = [0u8; 512];
+            let header = load_checkpoint(&mut streamed, &mut checkpoint::SliceSource(body.as_slice()), &mut scratch)
+                .expect("the streamed mount");
+            assert_eq!(header, model.header());
+            assert_eq!(*streamed, *RamIndex::project(&model), "commits {commits}");
+            assert_eq!(streamed.result_start, model.result_start);
+        }
+    }
+
+    /// A streamed mount reuses whatever index it is handed, so a previous store's rows must not
+    /// survive into the next one's catalog.
+    #[test]
+    fn streaming_into_a_populated_index_leaves_nothing_of_the_old_one() {
+        use super::super::limits::CHECKPOINT_BODY_LEN;
+        let mut model = super::super::model::CatalogModel::initial(samples::STORE, 4);
+        model.apply(&samples::claim(1, 1, 0, samples::OP_A, 1)).unwrap();
+        model.apply(&samples::publish(1, 2, 1, samples::OP_A, 1, samples::head(1, 7))).unwrap();
+        let mut populated = RamIndex::project(&model);
+        assert!(!populated.heads.is_empty() && !populated.results.is_empty());
+
+        let mut fresh = std::boxed::Box::new([0u8; CHECKPOINT_BODY_LEN]);
+        super::super::model::CatalogModel::encode_initial_body(fresh.as_mut_slice(), samples::STORE, 4).unwrap();
+        let mut scratch = [0u8; 512];
+        load_checkpoint(&mut populated, &mut checkpoint::SliceSource(fresh.as_slice()), &mut scratch).unwrap();
+        assert_eq!(*populated, *RamIndex::project(&super::super::model::CatalogModel::initial(samples::STORE, 4)));
+    }
 
     /// §13's per-entry targets, which the budget formula is built out of.
     #[test]
@@ -413,7 +568,7 @@ mod tests {
     fn the_resolution_present_bit_is_not_resident() {
         let manifest = samples::manifest_head(3, 92);
         assert_ne!(manifest.flags & CatalogHead::FLAG_RESOLUTION_PRESENT, 0);
-        let entry = HeadIndexEntry::from_head(&manifest, NO_JOURNAL_SLOT);
+        let entry = HeadIndexEntry::carried(&manifest, NO_JOURNAL_SLOT);
         assert_eq!(entry.flags & CatalogHead::FLAG_RESOLUTION_PRESENT, 0);
         assert_eq!(entry.generation, manifest.generation);
         assert_eq!(entry.key(), manifest.key);
@@ -453,16 +608,19 @@ mod tests {
         assert_eq!(index.heads[0].journal_slot, NO_JOURNAL_SLOT);
     }
 
-    /// §9's leases are RAM ownership facts, so a re-projection of the catalog must not disturb
-    /// them: a replay that cleared a live reader's pin would let GC collect what it is streaming.
+    /// §9's leases are RAM ownership facts no projection reconstructs, so a re-projection must not
+    /// be able to disturb one — a replay that cleared a live reader's pin would let GC collect what
+    /// it is streaming. Keeping the table outside the index makes that structural, and this is the
+    /// statement of that: a re-projection is total over the index and reaches no lease at all.
     #[test]
-    fn projecting_a_model_leaves_the_lease_table_alone() {
+    fn a_re_projection_cannot_reach_a_lease() {
         let model = super::super::model::CatalogModel::initial(samples::STORE, 4);
         let mut index = RamIndex::project(&model);
+        let mut leases = LeaseTable::new();
         let session = obc_link::ids::SessionId::new(1).unwrap();
-        let _lease = index.leases.pin(1, session, GenerationId::new(42)).unwrap();
+        let _lease = leases.pin(1, session, GenerationId::new(42)).unwrap();
         index.project_into(&model);
-        assert_eq!(index.leases.live(), 1);
-        assert!(index.leases.holds(GenerationId::new(42)));
+        assert_eq!(leases.live(), 1);
+        assert!(leases.holds(GenerationId::new(42)));
     }
 }

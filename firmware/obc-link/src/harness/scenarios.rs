@@ -868,7 +868,11 @@ pub fn the_retained_window_is_sixty_four_and_eviction_makes_a_query_unknown<F: F
     driver.pump().unwrap();
 
     // 63 later terminal operations of any producer keep it; the 64th evicts it.
-    for index in 0..63u8 {
+    //
+    // The identities start at one: §6.1 reserves the zero OperationId/digest for retention, domain
+    // and handoff-cleanup records, so a claim or terminal record carrying one is not a record the
+    // journal can encode.
+    for index in 1..64u8 {
         driver.transaction.retain_local_result(OperationId::new([index; 16]));
     }
     driver
@@ -1993,7 +1997,11 @@ pub fn set_metadata_install_update_and_ride_acknowledgement_each_publish_their_o
     for operation_id in [OP_A, OP_B, OP_ABORT] {
         assert!(driver.transaction.retains(operation_id));
     }
-    assert_eq!(driver.transaction.retained_results(), 3);
+    // Six, not three: §6.1 admits a head change only in a terminal record and a terminal record
+    // "requires active remove and result append", so each of the three seeded local publications
+    // retained a result of its own. §8.1's window is store-global, and a local producer is a
+    // producer.
+    assert_eq!(driver.transaction.retained_results(), 6);
 }
 
 pub fn an_abort_operation_naming_an_install_update_is_refused_as_non_cancellable<F: Fixture>(f: &mut F) {
@@ -2367,7 +2375,8 @@ pub fn a_mutation_dropped_mid_chain_still_reaches_a_terminal_state<F: Fixture>(f
     assert_eq!(operation_id, OP_B);
     let outcome = transaction.execute(Command::Abort { operation_id, cause: AbortCause::LinkLost }, &mut scratch);
     assert_eq!(engine.resume(context, outcome, &mut out), Reaction::Idle);
-    assert_eq!(transaction.retained_results(), 1);
+    // Two: the abandoned claim's, and the one the seeded local publication retained (§6.1).
+    assert_eq!(transaction.retained_results(), 2);
     assert!(transaction.retains(OP_B));
     assert_eq!(
         transaction.head(ObjectKind::Route, logical_object_id).map(|(revision, _, _)| revision),
@@ -2425,7 +2434,8 @@ pub fn two_connections_that_drop_with_claims_in_flight_both_reach_a_terminal_sta
             }
         }
     }
-    assert_eq!(transaction.retained_results(), 0, "two live claims, no results yet");
+    // The two seeded local publications retained one result each (§6.1); neither live claim has.
+    assert_eq!(transaction.retained_results(), 2, "two live claims, no results of their own yet");
 
     // Both connections drop, then both outcomes land.
     engine.close_connection(over_ble);
@@ -2438,7 +2448,8 @@ pub fn two_connections_that_drop_with_claims_in_flight_both_reach_a_terminal_sta
         let outcome = transaction.execute(Command::Abort { operation_id, cause: AbortCause::LinkLost }, &mut scratch);
         assert_eq!(engine.resume(link, outcome, &mut out), Reaction::Idle);
     }
-    assert_eq!(transaction.retained_results(), 2, "both claims reached a terminal state");
+    // Four: the two abandoned claims, plus the two the seeded local publications retained (§6.1).
+    assert_eq!(transaction.retained_results(), 4, "both claims reached a terminal state");
     assert!(transaction.retains(OP_A) && transaction.retains(OP_B));
 }
 

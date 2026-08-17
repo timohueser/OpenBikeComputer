@@ -61,17 +61,19 @@ use obc_link::result::{AbortDisposition, AbortResult, ObjectResult, ResultEnvelo
 use obc_link::upload::Target;
 use obc_link::ErrorBody;
 
+use super::checkpoint;
+use super::compaction::{self, CardHeadFields, CheckpointPass, CompactionError};
 use super::entries::{
     ActiveOperation, CatalogHead, HeadKey, OperationPhase, ResultType, RetainedPrevious, TerminalResult,
 };
 use super::generation::{Capability, GenerationMedia, GenerationWriter, Intent, WriteError};
+use super::index::{HeadIndexEntry, RamIndex, ResultIndexEntry, NO_JOURNAL_SLOT};
 use super::journal::{Change, JournalBody, Mutation, RecordKind, RepositoryChange};
 use super::leases::{LeaseHandle, LeaseTable, ReleaseEffect};
 use super::limits::{
     GATE_LEN, JOURNAL_BODY_LEN, JOURNAL_COMPACTION_TRIGGER, MAX_ACTIVE_OPERATIONS, MAX_NORMAL_ACTIVE_OPERATIONS,
-    MAX_TERMINAL_RESULTS, SLOT_STRIDE,
+    MAX_TERMINAL_RESULTS, SECTOR, SLOT_STRIDE,
 };
-use super::model::CatalogModel;
 use super::work::Subject;
 
 /// The §5.1 ceiling on normal claimed operations, re-exported so a caller can size against it.
@@ -135,6 +137,145 @@ pub trait KernelMedia: GenerationMedia {
 
     /// Destroys the store and recreates its fixed files under `store` (§16's ResetStore).
     fn reset_store(&mut self, store: StoreId) -> Result<(), Self::Error>;
+
+    // -- §13's on-demand re-reads ---------------------------------------------------------------
+    //
+    // §13 leaves three things on the card — a head's catalog-projection envelope, its resolution
+    // `GenerationId` with the flag that travels with it, and a terminal result's 208-byte body —
+    // and says they "are re-read on demand through the mounted-file budget". These two primitives
+    // are that budget; everything above them is a provided method, so a media supplies two bounded
+    // reads and gets §6.3's newest-source rule for free rather than reimplementing it.
+
+    /// Reads `into` from the file §6.3 selected as the **active** checkpoint.
+    fn read_checkpoint(&mut self, offset: usize, into: &mut [u8]) -> Result<(), Self::Error>;
+
+    /// Reads and validates one journal slot, `None` when it holds no valid record.
+    ///
+    /// The whole 16,384-byte stride is read, not the 2,048 bytes the body occupies: §6 makes the
+    /// pad part of what a valid record proves, and reading less and zero-filling the rest would
+    /// falsify that check rather than defer it.
+    fn read_record(&mut self, slot: u16) -> Result<Option<JournalBody>, Self::Error>;
+
+    /// The two card-resident fields of one head, from §6.3's newest source.
+    ///
+    /// "The catalog-projection envelope and the resolution `GenerationId` with its flag come from
+    /// the journal's carried head entry when a head-putting record has been replayed since the
+    /// active checkpoint … otherwise all of them are copied across from the active checkpoint's
+    /// stored bytes by one bounded read."
+    fn head_fields(&mut self, entry: &HeadIndexEntry) -> Result<CardHeadFields, RereadError<Self::Error>> {
+        if entry.journal_slot != NO_JOURNAL_SLOT {
+            let record = self.read_record(entry.journal_slot).map_err(RereadError::Media)?;
+            let Some(Change::Put(head)) = record.and_then(|body| body.mutation.head) else {
+                return Err(RereadError::Missing);
+            };
+            if head.key != entry.key() {
+                return Err(RereadError::Missing);
+            }
+            return Ok(CardHeadFields::of(&head));
+        }
+        // The heads region is sorted by `(kind, logical id)` and its occupancy is in the header, so
+        // the stored entry is found by bisection: the header read plus at most eight 160-byte
+        // probes, rather than a scan of 256.
+        let mut header = [0u8; checkpoint::HEADER_LEN];
+        self.read_checkpoint(0, &mut header).map_err(RereadError::Media)?;
+        let header = checkpoint::CheckpointHeader::decode(&header).map_err(|_| RereadError::Missing)?;
+        let mut stage = [0u8; CatalogHead::LEN];
+        let (mut low, mut high) = (0usize, header.head_count as usize);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            self.read_checkpoint(checkpoint::HEADS.slot(middle).start, &mut stage).map_err(RereadError::Media)?;
+            let stored = CatalogHead::decode(&stage).map_err(|_| RereadError::Missing)?;
+            match stored.key.cmp(&entry.key()) {
+                core::cmp::Ordering::Less => low = middle + 1,
+                core::cmp::Ordering::Greater => high = middle,
+                core::cmp::Ordering::Equal => return Ok(CardHeadFields::of(&stored)),
+            }
+        }
+        Err(RereadError::Missing)
+    }
+
+    /// The 208 stored bytes of one terminal result, from the same newest source.
+    ///
+    /// `physical` is the ring index the entry occupies in the checkpoint — the ring's start and
+    /// count are resident, so a result does not move when the checkpoint is rewritten.
+    fn result_entry(
+        &mut self,
+        physical: usize,
+        key: &ResultIndexEntry,
+    ) -> Result<[u8; TerminalResult::LEN], RereadError<Self::Error>> {
+        let mut stage = [0u8; TerminalResult::LEN];
+        if key.journal_slot != NO_JOURNAL_SLOT {
+            // A result appended since the active checkpoint exists in no checkpoint at all, so
+            // "re-read from card" can only mean re-read from the record that appended it.
+            let record = self.read_record(key.journal_slot).map_err(RereadError::Media)?;
+            let Some(result) = record.and_then(|body| body.mutation.result) else {
+                return Err(RereadError::Missing);
+            };
+            if result.operation != key.operation || result.commit_sequence != key.commit_sequence {
+                return Err(RereadError::Missing);
+            }
+            stage.copy_from_slice(&result.encode());
+            return Ok(stage);
+        }
+        self.read_checkpoint(checkpoint::RESULTS.slot(physical).start, &mut stage).map_err(RereadError::Media)?;
+        Ok(stage)
+    }
+
+    // -- §6.3's compaction, at the media seam ---------------------------------------------------
+
+    /// §6.3 step 2: invalidate the **inactive** checkpoint's gate and synchronize.
+    fn begin_checkpoint(&mut self) -> Result<(), Self::Error>;
+
+    /// §6.3 step 3: write one 512-byte sector of that checkpoint's body.
+    fn write_checkpoint_sector(&mut self, offset: usize, sector: &[u8; SECTOR]) -> Result<(), Self::Error>;
+
+    /// §6.3 step 4: synchronize the body, write and synchronize the gate over the epoch, sequence
+    /// and body CRC the pass produced, and make the file just written the active checkpoint.
+    ///
+    /// The gate's own `slot` field is the checkpoint file's index, which is a media fact — this side
+    /// of the seam is the only one that knows which of the pair it just wrote.
+    fn finish_checkpoint(&mut self, epoch: u64, through_sequence: u64, body_crc: u32) -> Result<(), Self::Error>;
+}
+
+/// §6.3's step 3 driven against a [`KernelMedia`]: the index's fixed fields, the card's everything
+/// else, and the inactive checkpoint's sectors as the destination.
+///
+/// It exists so [`compaction::materialize`] — which is written against nothing but its own three
+/// sources — is reached end to end from the real store rather than only from a host fixture.
+struct Pass<'m, M: KernelMedia> {
+    media: &'m mut M,
+}
+
+impl<M: KernelMedia> CheckpointPass for Pass<'_, M> {
+    type Error = RereadError<M::Error>;
+
+    fn head_fields(&mut self, entry: &HeadIndexEntry) -> Result<CardHeadFields, Self::Error> {
+        self.media.head_fields(entry)
+    }
+
+    fn result_entry(
+        &mut self,
+        physical: usize,
+        key: &ResultIndexEntry,
+    ) -> Result<[u8; TerminalResult::LEN], Self::Error> {
+        self.media.result_entry(physical, key)
+    }
+
+    fn write_body_sector(&mut self, offset: usize, sector: &[u8; SECTOR]) -> Result<(), Self::Error> {
+        self.media.write_checkpoint_sector(offset, sector).map_err(RereadError::Media)
+    }
+}
+
+/// Why an on-demand re-read of a card-resident field did not produce one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RereadError<E> {
+    /// A bounded read of the active checkpoint or of a journal slot failed.
+    Media(E),
+    /// The card does not hold what the index says it does — an invalid slot where a reference
+    /// points, a head the checkpoint's region has no entry for, a result whose stored identity is
+    /// not the one the ring names. It is a kernel invariant break rather than a client error: RAM
+    /// and card must never be able to disagree about a fact one of them derived from the other.
+    Missing,
 }
 
 /// The typed validator §6.3 runs over sealed bytes, before publication and never before the seal.
@@ -287,9 +428,16 @@ pub struct KernelTransaction<M: KernelMedia, V: Validator = AcceptEverything, H:
     media: M,
     validator: V,
     hooks: H,
-    model: CatalogModel,
+    index: RamIndex,
     /// The journal cursor: the next sequence and the slot it lands in.
     sequence: u64,
+    /// The `through_sequence` of the checkpoint this epoch was opened by (§6.3).
+    ///
+    /// Physical journal slot `i` carries sequence `epoch_base + i + 1`, so the slot a commit lands
+    /// in is a *relative* index — and it is relative to the checkpoint, not to the store. Compaction
+    /// moves it to the sequence it materialized, which is what makes the next record land at slot
+    /// zero of the new epoch instead of running off the end of the ring.
+    epoch_base: u64,
     /// The store-wide monotone revision every publication stamps.
     revision: u64,
     /// The store-wide logical-id cursor.
@@ -313,18 +461,19 @@ pub struct KernelTransaction<M: KernelMedia, V: Validator = AcceptEverything, H:
 }
 
 impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
-    /// Opens a transaction over a store whose projection is `model`.
+    /// Opens a transaction over a store whose resident index is `index`.
     ///
-    /// `sequence` is the journal cursor a mount established: the next record's sequence, which is
-    /// the projection's `through_sequence` plus one.
-    pub fn mount(media: M, validator: V, hooks: H, model: CatalogModel) -> Self {
-        let store = model.store;
+    /// `epoch_base` is the `through_sequence` of the checkpoint that index was mounted from — the
+    /// origin §6.3 maps physical journal slots against. A store that has never compacted has zero.
+    pub fn mount(media: M, validator: V, hooks: H, index: RamIndex, epoch_base: u64) -> Self {
+        let store = index.store;
         let mut this = KernelTransaction {
             media,
             validator,
             hooks,
-            model,
+            index,
             sequence: 1,
+            epoch_base: 0,
             revision: 0,
             next_logical_id: 1,
             leases: LeaseTable::new(),
@@ -337,7 +486,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             status: initial_status(store),
             clock: initial_clock(),
         };
-        this.rebind();
+        this.rebind(epoch_base);
         this
     }
 
@@ -381,10 +530,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             core::ptr::addr_of_mut!((*at).media).write(media);
             core::ptr::addr_of_mut!((*at).validator).write(validator);
             core::ptr::addr_of_mut!((*at).hooks).write(hooks);
-            // Not `.write(CatalogModel::empty(store))`: that is the 56 KiB return-slot temporary
-            // this constructor exists to avoid, and it would put the whole of it back.
-            CatalogModel::init_empty(&mut *core::ptr::addr_of_mut!((*at).model).cast(), store);
+            // Not `.write(RamIndex::new(store))`: that is the return-slot temporary this
+            // constructor exists to avoid, and it would put the whole of it back.
+            RamIndex::init_empty(&mut *core::ptr::addr_of_mut!((*at).index).cast(), store);
             core::ptr::addr_of_mut!((*at).sequence).write(1);
+            core::ptr::addr_of_mut!((*at).epoch_base).write(0);
             core::ptr::addr_of_mut!((*at).revision).write(0);
             core::ptr::addr_of_mut!((*at).next_logical_id).write(1);
             core::ptr::addr_of_mut!((*at).leases).write(LeaseTable::new());
@@ -405,8 +555,8 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// They are handed out as a pair because that is the only way to have both: a store's mount
     /// reads a checkpoint *through its own media* into *its own projection*, and two separate
     /// accessors could not be held at once.
-    pub fn media_and_model_mut(&mut self) -> (&mut M, &mut CatalogModel) {
-        (&mut self.media, &mut self.model)
+    pub fn media_and_index_mut(&mut self) -> (&mut M, &mut RamIndex) {
+        (&mut self.media, &mut self.index)
     }
 
     /// Derives the journal cursor and the two identity cursors from the projection now in place.
@@ -422,31 +572,95 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// §6.3: the next record's sequence is the projection's `through_sequence` plus one. The
     /// revision and logical-id cursors are the maxima the repository rows carry, which is what makes
     /// a remount continue the store rather than restart it.
-    pub fn rebind(&mut self) {
-        self.sequence = self.model.through_sequence.saturating_add(1);
-        self.revision = self.model.repositories.iter().map(|row| row.revision.get()).max().unwrap_or(0);
+    pub fn rebind(&mut self, epoch_base: u64) {
+        self.epoch_base = epoch_base;
+        self.sequence = self.index.through_sequence.saturating_add(1);
+        self.revision = self.index.repositories.iter().map(|row| row.revision.get()).max().unwrap_or(0);
         self.next_logical_id =
-            self.model.repositories.iter().map(|row| row.next_logical_id.get()).max().unwrap_or(0).max(1);
-        self.status.store_id = self.model.store;
+            self.index.repositories.iter().map(|row| row.next_logical_id.get()).max().unwrap_or(0).max(1);
+        self.status.store_id = self.index.store;
     }
 
-    /// True once the journal has reached §6.3's compaction trigger.
+    /// True once the journal has reached §6.3's compaction trigger: "before accepting a 193rd
+    /// record in one epoch, `CardStore` blocks new mutations and compacts".
     ///
-    /// A store that answers `true` here must materialize a checkpoint and start a new epoch before
-    /// its next commit. This transaction cannot — the pass is #1359's — so it refuses instead of
-    /// wrapping the ring, and this is the predicate that decides.
+    /// [`commit`](Self::commit) consults it and runs [`compact`](Self::compact) itself, so this is a
+    /// predicate a caller may observe rather than a duty a caller has.
     pub fn compaction_required(&self) -> bool {
-        self.sequence > JOURNAL_COMPACTION_TRIGGER as u64
+        self.next_slot() >= JOURNAL_COMPACTION_TRIGGER as u64
+    }
+
+    /// The physical journal slot the next record lands in (§6.3: slot `i` carries sequence
+    /// `epoch_base + i + 1`).
+    fn next_slot(&self) -> u64 {
+        self.sequence.saturating_sub(self.epoch_base + 1)
     }
 
     /// The store's identity.
     pub fn store_id(&self) -> StoreId {
-        self.model.store
+        self.index.store
     }
 
-    /// The projection, for a caller that wants to compare a mount against what was committed.
-    pub fn model(&self) -> &CatalogModel {
-        &self.model
+    /// Runs §6.3's compaction cycle: steps 2 through 4, over the index and the card.
+    ///
+    /// Step 1 — "apply all valid records through sequence `S` in memory" — has already happened:
+    /// every record this store wrote or replayed is in the index, and `through_sequence` is that
+    /// `S`. What is left is the ordering, and it is the whole of this function:
+    ///
+    /// 2. invalidate and synchronize the inactive checkpoint's gate;
+    /// 3. write its complete body at epoch `E + 1` and through-sequence `S`, in one bounded forward
+    ///    pass that stages [`compaction::STAGING_BYTES`] and never the projection;
+    /// 4. write and synchronize its `O2CG` gate, which is the moment the new epoch exists.
+    ///
+    /// Step 5 is the next commit: `epoch_base` moves to `S`, so the record after this one lands at
+    /// physical slot zero, and every old-epoch slot is inert because its epoch no longer matches.
+    ///
+    /// The journal-slot references are cleared **after** step 4 and not before. §6.3 makes them
+    /// "meaningful only within the selected epoch", and the epoch does not change until that gate is
+    /// durable — so a cut between steps 3 and 4 must still find the old checkpoint with an index that
+    /// remembers where its newest head entries were.
+    pub fn compact(&mut self) -> Result<(), FailureCause> {
+        let write = |_| FailureCause::MediaIo { detail: detail::media_io::WRITE };
+        self.media.begin_checkpoint().map_err(write)?;
+        let epoch = self.index.epoch;
+        let through = self.index.through_sequence;
+        // The body carries the *new* epoch, so the header the pass emits must already hold it.
+        self.index.epoch = epoch + 1;
+        let crc = {
+            let mut pass = Pass { media: &mut self.media };
+            match compaction::materialize(&self.index, &mut pass) {
+                Ok(crc) => crc,
+                Err(error) => {
+                    // The old checkpoint is still the active, valid one and its journal still
+                    // replays, so the honest state to leave behind is the one this pass started in.
+                    self.index.epoch = epoch;
+                    return Err(match error {
+                        CompactionError::Media(RereadError::Media(_)) => {
+                            FailureCause::MediaIo { detail: detail::media_io::WRITE }
+                        }
+                        _ => FailureCause::Internal { detail: detail::internal::INVARIANT },
+                    });
+                }
+            }
+        };
+        if let Err(error) = self.media.finish_checkpoint(epoch + 1, through, crc) {
+            self.index.epoch = epoch;
+            return Err(write(error));
+        }
+        self.index.clear_journal_slots();
+        self.epoch_base = through;
+        Ok(())
+    }
+
+    /// The resident index, for a caller that wants to compare a mount against what was committed.
+    pub fn index(&self) -> &RamIndex {
+        &self.index
+    }
+
+    /// The §9 lease table. §13 counts it resident beside the index; it lives here because a lease is
+    /// a RAM ownership fact no projection reconstructs.
+    pub fn leases(&self) -> &LeaseTable {
+        &self.leases
     }
 
     /// The media, for a harness that reboots it under the transaction.
@@ -475,19 +689,19 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
     /// The current head of one logical object, as `(revision, length, crc)`.
     pub fn head(&self, kind: ObjectKind, logical_object_id: LogicalObjectId) -> Option<(Revision, u64, u32)> {
-        self.model
+        self.index
             .head(HeadKey { kind: kind.to_u16(), id: logical_object_id })
             .map(|head| (head.revision, head.length, head.crc))
     }
 
     /// How many terminal results are retained. The ring never grows past [`RESULT_RING`].
     pub fn retained_results(&self) -> usize {
-        self.model.results.len()
+        self.index.results.len()
     }
 
     /// True when the operation's result is still inside the retained window.
     pub fn retains(&self, operation_id: OperationId) -> bool {
-        self.model.result_for(operation_id).is_some()
+        self.index.result_for(operation_id).is_some()
     }
 
     /// True while a reader lease is held.
@@ -502,7 +716,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         logical_object_id: LogicalObjectId,
         into: &mut [u8],
     ) -> Option<usize> {
-        let head = *self.model.head(HeadKey { kind: kind.to_u16(), id: logical_object_id })?;
+        let head = *self.index.head(HeadKey { kind: kind.to_u16(), id: logical_object_id })?;
         let len = (head.length as usize).min(into.len());
         self.media.read_generation(head.generation, 0, &mut into[..len]).ok()
     }
@@ -544,10 +758,19 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
     /// Retains one terminal result under a synthetic identity, as any device-local producer's
     /// terminal commit does. §8.1: the window "is store-global in the strict sense".
+    ///
+    /// It claims first. §6.1 fixes a terminal record as "requires active remove **and** result
+    /// append", so a result cannot be retired from a claim that was never made — and a record
+    /// carrying the result alone is one this store can apply and cannot read back. That went
+    /// unnoticed while the whole projection was resident, because nothing ever asked the card what
+    /// the record said; §13's on-demand re-read asks on every `QueryOperation`.
     pub fn retain_local_result(&mut self, operation_id: OperationId) {
+        if self.commit(RecordKind::Claim, operation_id, LOCAL_INTENT, local_claim(operation_id, None)).is_err() {
+            return;
+        }
         let envelope = ResultEnvelope::Object(ObjectResult {
             operation_id,
-            store_id: self.model.store,
+            store_id: self.index.store,
             kind: ObjectKind::Ride,
             outcome: ObjectOutcome::Committed,
             logical_object_id: LogicalObjectId::ZERO,
@@ -555,8 +778,9 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             length: 0,
             crc32: 0,
         });
-        let result = self.result_entry(operation_id, LOCAL_INTENT, LOCAL_PRINCIPAL, Ok(envelope));
-        let mutation = Mutation { result: Some(result), ..Mutation::default() };
+        let result = self.new_result(operation_id, LOCAL_INTENT, LOCAL_PRINCIPAL, Ok(envelope));
+        let mutation =
+            Mutation { active: Some(Change::Remove(operation_id)), result: Some(result), ..Mutation::default() };
         // §6.1 makes the record's identity and the result's the same pair, so both carry the local
         // producer's intent rather than one of them carrying zero.
         let _ = self.commit(RecordKind::Terminal, operation_id, LOCAL_INTENT, mutation);
@@ -589,10 +813,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 repository_revision: Revision::new(self.revision),
             };
         }
-        let Some(result) = self.model.result_for(intent.operation_id) else {
-            return ClaimOutcome::Unclaimed;
+        let result = match self.retained_result(intent.operation_id) {
+            Ok(Some(result)) => result,
+            Ok(None) => return ClaimOutcome::Unclaimed,
+            Err(cause) => return ClaimOutcome::Refused(cause),
         };
-        let result = *result;
         if result.principal != principal_bytes(intent.principal) {
             return ClaimOutcome::ForeignPrincipal;
         }
@@ -623,7 +848,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         if let Some(cause) = self.hooks.admit_claim() {
             return ClaimOutcome::Refused(cause);
         }
-        if self.model.actives.len() >= ACTIVE_CLAIMS {
+        if self.index.actives.len() >= ACTIVE_CLAIMS {
             return ClaimOutcome::Refused(FailureCause::ResourceLimit {
                 detail: detail::resource::NORMAL_OPERATION_CLAIMS,
             });
@@ -749,7 +974,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         self.media.truncate_payload().map_err(write)?;
         self.media.sync_payload().map_err(|_| FailureCause::MediaIo { detail: detail::media_io::SYNCHRONIZE })?;
         let generation_intent = Intent {
-            store: self.model.store,
+            store: self.index.store,
             operation: intent.operation_id,
             intent: intent.digest,
             parent: OperationId::ZERO,
@@ -786,10 +1011,17 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
     /// Whether an `AbortOperation` may name this target at all (§3's ownership, §9's
     /// non-cancellable `InstallUpdate`). `None` means it may.
-    fn target_admissibility(&self, target: OperationId, principal: PrincipalScope) -> Option<FailureCause> {
+    fn target_admissibility(&mut self, target: OperationId, principal: PrincipalScope) -> Option<FailureCause> {
+        let owner = match self.active(target).map(|row| row.principal) {
+            Some(owner) => Some(owner),
+            // §3 puts authorization ahead of every existence fact, so the owning principal has to be
+            // known — and for a spent identifier it is in the result body, which §13 leaves on card.
+            None => match self.retained_result(target) {
+                Ok(result) => result.map(|result| result.principal),
+                Err(cause) => return Some(cause),
+            },
+        };
         let active = self.active(target);
-        let retained = self.model.result_for(target);
-        let owner = active.map(|row| row.principal).or_else(|| retained.map(|result| result.principal));
         if let Some(owner) = owner {
             if owner != principal_bytes(principal) {
                 // §6.4 "requires the target's owning principal", and §3 puts authorization ahead of
@@ -1010,8 +1242,14 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         let key = HeadKey { kind: kind.to_u16(), id: logical_object_id };
 
         if self.hooks.races_publication() {
-            // A device-local producer commits a competing mutation just before the commit lock.
-            let existing = *self.model.head(key).expect("the raced head exists");
+            // A device-local producer commits a competing mutation just before the commit lock. It
+            // restamps the head it found, so it needs the whole of it — envelope and resolution
+            // included, which §13 leaves on the card.
+            let existing = match self.stored_head(key) {
+                Ok(Some(head)) => head,
+                Ok(None) => return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT }),
+                Err(cause) => return Outcome::Failed(cause),
+            };
             let head = CatalogHead { revision: Revision::new(self.revision + 1), ..existing };
             if self.commit_local_publication(head, None).is_err() {
                 return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
@@ -1020,7 +1258,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
         // The compare-and-swap is rechecked here, under the commit lock, exactly as §6.3 requires.
         if let Some(expected) = replace_expectation(&row, opcode) {
-            let current = self.model.head(key).map_or(Revision::ZERO, |head| head.revision);
+            let current = self.index.head(key).map_or(Revision::ZERO, |head| head.revision);
             if current.get() != expected {
                 return Outcome::Failed(FailureCause::RevisionConflict { detail: detail::revision::OBJECT, current });
             }
@@ -1049,7 +1287,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 };
                 let result = ObjectResult {
                     operation_id,
-                    store_id: self.model.store,
+                    store_id: self.index.store,
                     kind,
                     outcome: ObjectOutcome::Committed,
                     logical_object_id,
@@ -1064,11 +1302,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 envelope
             }
             Opcode::DeleteObject => {
-                let previous = self.model.head(key).map(|head| (head.length, head.crc)).unwrap_or((0, 0));
+                let previous = self.index.head(key).map(|head| (head.length, head.crc)).unwrap_or((0, 0));
                 let revision = Revision::new(self.revision + 1);
                 let envelope = ResultEnvelope::Object(ObjectResult {
                     operation_id,
-                    store_id: self.model.store,
+                    store_id: self.index.store,
                     kind,
                     outcome: ObjectOutcome::Deleted,
                     logical_object_id,
@@ -1082,14 +1320,22 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 envelope
             }
             Opcode::SetMetadata => {
-                let Some(existing) = self.model.head(key).copied() else {
-                    return Outcome::Failed(FailureCause::ObjectNotFound { detail: detail::not_found::LOGICAL_OBJECT });
+                // The new head keeps everything but the revision, so this is the one publishing
+                // path that has to re-read the envelope and resolution §13 leaves on the card.
+                let existing = match self.stored_head(key) {
+                    Ok(Some(head)) => head,
+                    Ok(None) => {
+                        return Outcome::Failed(FailureCause::ObjectNotFound {
+                            detail: detail::not_found::LOGICAL_OBJECT,
+                        })
+                    }
+                    Err(cause) => return Outcome::Failed(cause),
                 };
                 let revision = Revision::new(self.revision + 1);
                 let head = CatalogHead { revision, ..existing };
                 let envelope = ResultEnvelope::Object(ObjectResult {
                     operation_id,
-                    store_id: self.model.store,
+                    store_id: self.index.store,
                     kind,
                     outcome: ObjectOutcome::MetadataChanged,
                     logical_object_id,
@@ -1112,10 +1358,10 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 // revision advanced would tell every other client that something it can see has
                 // changed, and nothing has. §10's ObjectResult reports the revision the target
                 // still holds.
-                let revision = self.model.head(key).map_or(Revision::ZERO, |head| head.revision);
+                let revision = self.index.head(key).map_or(Revision::ZERO, |head| head.revision);
                 let envelope = ResultEnvelope::Object(ObjectResult {
                     operation_id,
-                    store_id: self.model.store,
+                    store_id: self.index.store,
                     kind,
                     outcome,
                     logical_object_id,
@@ -1133,7 +1379,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 let disposition = live.and_then(|live| live.disposition).unwrap_or(AbortDisposition::AlreadyAbsent);
                 let envelope = ResultEnvelope::Abort(AbortResult {
                     operation_id,
-                    store_id: self.model.store,
+                    store_id: self.index.store,
                     // §6.4 gives the abort command's own result the target it named.
                     target_operation_id: live.and_then(|live| live.target).unwrap_or(OperationId::ZERO),
                     disposition,
@@ -1180,7 +1426,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
     fn resolve<'s>(&mut self, kind: ObjectKind, logical_object_id: LogicalObjectId) -> Outcome<'s> {
         let key = HeadKey { kind: kind.to_u16(), id: logical_object_id };
-        let Some(head) = self.model.head(key).copied() else {
+        let Some(head) = self.index.head(key).copied() else {
             return Outcome::Failed(FailureCause::ObjectNotFound { detail: detail::not_found::LOGICAL_OBJECT });
         };
         // §9: the pin is fixed at the generation the resolve returned and never re-resolved, which
@@ -1225,7 +1471,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             // second release naming no live lease is §9's explicit no-op.
             return Outcome::LeaseReleased;
         };
-        if let ReleaseEffect::Retention(change) = self.leases.release(pinned.handle, &self.model.retained) {
+        if let ReleaseEffect::Retention(change) = self.leases.release(pinned.handle, &self.index.retained) {
             let mutation = Mutation { retained: Some(change), ..Mutation::default() };
             let _ = self.commit(RecordKind::Retention, OperationId::ZERO, [0; 32], mutation);
             // §9: the entry's last reason has been cleared, so the bytes are unreachable and this
@@ -1259,18 +1505,18 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 DeviceControlAnswer::Echo(&scratch[..len])
             }
             DeviceControlRequest::ResetStore(echoed) => {
-                if echoed != self.model.store {
+                if echoed != self.index.store {
                     return DeviceControlAnswer::Refused(FailureCause::MediaUnavailable {
                         detail: detail::media::UNMOUNTED,
                     });
                 }
-                let store = self.hooks.mint_store_id(self.model.store);
+                let store = self.hooks.mint_store_id(self.index.store);
                 if self.media.reset_store(store).is_err() {
                     return DeviceControlAnswer::Refused(FailureCause::MediaIo { detail: detail::media_io::WRITE });
                 }
                 // §16: reset destroys "every object, operation result, and lease". The projection
                 // is rebuilt as §12's first checkpoint, and nothing of the old store survives it.
-                self.model.reset_to_initial(store, ObjectKind::Weather.to_u16());
+                self.index.reset_to_initial(store, ObjectKind::Weather.to_u16());
                 self.sequence = 1;
                 self.revision = 0;
                 self.next_logical_id = 1;
@@ -1286,30 +1532,45 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
     /// The report an operation gets when `principal` asks about it (§3: authorization precedes
     /// status, so a foreign principal never learns whether the ID exists).
-    pub fn report_for(&self, operation_id: OperationId, principal: PrincipalScope) -> OperationReport {
-        let owner = self
-            .active(operation_id)
-            .map(|row| row.principal)
-            .or_else(|| self.model.result_for(operation_id).map(|result| result.principal));
-        match owner {
-            Some(owner) if owner != principal_bytes(principal) => OperationReport::NotAuthorized,
-            _ => self.report(operation_id),
+    /// It re-reads the card, because §13 leaves both the owning principal and the typed outcome in
+    /// the retained result's body. A re-read the medium refuses is reported as the media failure it
+    /// is rather than as §8.1's `Unknown`, which would say "neither active nor retained" about an
+    /// identity this store is still holding.
+    pub fn report_for(
+        &mut self,
+        operation_id: OperationId,
+        principal: PrincipalScope,
+    ) -> Result<OperationReport, FailureCause> {
+        if let Some(owner) = self.active(operation_id).map(|row| row.principal) {
+            if owner != principal_bytes(principal) {
+                return Ok(OperationReport::NotAuthorized);
+            }
+            return self.report(operation_id, None);
+        }
+        match self.retained_result(operation_id)? {
+            Some(result) if result.principal != principal_bytes(principal) => Ok(OperationReport::NotAuthorized),
+            retained => self.report(operation_id, retained),
         }
     }
 
-    fn report(&self, operation_id: OperationId) -> OperationReport {
+    /// `retained` is the result body the caller already re-read, so one query costs one card read.
+    fn report(
+        &mut self,
+        operation_id: OperationId,
+        retained: Option<TerminalResult>,
+    ) -> Result<OperationReport, FailureCause> {
         if let Some(row) = self.active(operation_id) {
             // §8.1's matrix fixes every field from the originating claim, and a row outside it "is
             // an internal state/codec error and MUST NOT be emitted".
             if row.opcode == Opcode::AbortOperation.to_u16() {
-                return OperationReport::InProgress(OperationProgress {
+                return Ok(OperationReport::InProgress(OperationProgress {
                     namespace: SubjectNamespace::None,
                     subject_kind: 0,
                     phase: Phase::Aborting,
                     flags: 0,
                     logical_object_id: LogicalObjectId::ZERO,
                     durable_offset: 0,
-                });
+                }));
             }
             let live = self.live_for(operation_id);
             let phase = live.map_or(wire_phase(row.phase), |live| live.phase);
@@ -1328,24 +1589,56 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 (true, _) => live.map_or(0, |live| live.durable_offset),
                 (false, _) => 0,
             };
-            return OperationReport::InProgress(OperationProgress {
+            return Ok(OperationReport::InProgress(OperationProgress {
                 namespace: SubjectNamespace::Logical,
                 subject_kind: row.subject_kind,
                 phase,
                 flags,
                 logical_object_id: LogicalObjectId::new(row.logical_id),
                 durable_offset,
-            });
+            }));
         }
-        match self.model.result_for(operation_id) {
-            Some(result) => match decode_result(result) {
+        let retained = match retained {
+            Some(result) => Some(result),
+            None => self.retained_result(operation_id)?,
+        };
+        Ok(match retained {
+            Some(result) => match decode_result(&result) {
                 Ok(envelope) => OperationReport::Committed(envelope),
                 Err(terminal) => OperationReport::Aborted(terminal),
             },
             // §8.1: "Unknown means only that the ID is neither active nor retained. It cannot
             // distinguish never claimed from evicted."
             None => OperationReport::Unknown,
+        })
+    }
+
+    // -- §13's on-demand re-reads, in the shapes this transaction needs them ---------------------
+
+    /// The retained terminal result an `OperationId` names, its 208 bytes re-read from the card.
+    ///
+    /// `Ok(None)` is §8.1's honest "neither active nor retained"; a medium that refused the read is
+    /// a `MediaIo` failure, and a card holding something other than what the ring names is a kernel
+    /// invariant break, because RAM and card derive that identity from one another.
+    fn retained_result(&mut self, operation: OperationId) -> Result<Option<TerminalResult>, FailureCause> {
+        let Some((physical, key)) = self.index.result_position(operation) else { return Ok(None) };
+        let bytes = self.media.result_entry(physical, &key).map_err(reread_failure)?;
+        match TerminalResult::decode(&bytes) {
+            Ok(stored) if stored.operation == key.operation && stored.commit_sequence == key.commit_sequence => {
+                Ok(Some(stored))
+            }
+            _ => Err(FailureCause::Internal { detail: detail::internal::INVARIANT }),
         }
+    }
+
+    /// The whole catalog head a key names: the index's fixed fields, with the envelope and the
+    /// resolution generation re-read from §6.3's newest source.
+    fn stored_head(&mut self, key: HeadKey) -> Result<Option<CatalogHead>, FailureCause> {
+        let Some(entry) = self.index.head(key).copied() else { return Ok(None) };
+        let fields = self.media.head_fields(&entry).map_err(reread_failure)?;
+        compaction::compose_head::<()>(&entry, &fields)
+            .map(Some)
+            .map_err(|_| FailureCause::Internal { detail: detail::internal::INVARIANT })
     }
 
     // -- committing -------------------------------------------------------------------------------
@@ -1362,23 +1655,20 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         intent: [u8; 32],
         mutation: Mutation,
     ) -> Result<(), FailureCause> {
-        if self.sequence == 0 || self.compaction_required() {
-            // §6.3's compaction is what frees the journal ring, and it is a store-level background
-            // pass with its own cursor and budget rather than something a client's FinishUpload
-            // should pay for. Until #1359 owns that pass this store cannot honour the §6.3 trigger,
-            // and committing past it would wrap a slot — making recovery choose a suffix that spans
-            // two epochs — or overwrite a record the selected checkpoint still needs.
-            //
-            // §12's registry has no journal-capacity detail, and deliberately: a conforming device
-            // compacts, so the capacity is never one a client can meet by trying later or by
-            // sending less. A device that reaches its own trigger and cannot run the pass is
-            // reporting a broken invariant of its own, which is what `internal/invariant` says.
+        if self.sequence == 0 {
             return Err(FailureCause::Internal { detail: detail::internal::INVARIANT });
         }
-        let slot = (self.sequence - 1) as u16;
+        // §6.3: "before accepting a 193rd record in one epoch, `CardStore` blocks new mutations and
+        // compacts". Committing past the trigger would wrap a slot — making recovery choose a suffix
+        // that spans two epochs — or overwrite a record the selected checkpoint still needs, so the
+        // pass runs here rather than being owed to a caller who might not know it is due.
+        if self.compaction_required() {
+            self.compact()?;
+        }
+        let slot = self.next_slot() as u16;
         let record = JournalBody {
-            store: self.model.store,
-            epoch: self.model.epoch,
+            store: self.index.store,
+            epoch: self.index.epoch,
             sequence: self.sequence,
             slot,
             kind,
@@ -1387,11 +1677,27 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             mutation,
         };
         let body = record.encode_body();
+        // The card and RAM must never be able to disagree, and a record this store can apply but
+        // cannot read back is exactly that disagreement — invisible while the projection was
+        // resident, and a `QueryOperation` failure once §13's re-reads look at the bytes. Debug-only
+        // because it is a second decode of every commit, and release builds have the crash matrix.
+        debug_assert!(
+            JournalBody::decode_body(&body).is_ok(),
+            "a committed record does not decode: {:?} kind {:?} op {:?} intent0 {}",
+            JournalBody::decode_body(&body).err(),
+            kind,
+            record.operation,
+            record.intent[0],
+        );
         let gate = record.gate_for(&body).encode();
         if self.media.append_journal(slot, &body, &gate).is_err() {
             return Err(FailureCause::MediaIo { detail: detail::media_io::WRITE });
         }
-        if self.model.apply(&record).is_err() {
+        // `absorb`, not `apply`: the record is now on the card at `slot`, and the head or result it
+        // carries has its card-resident half *there* rather than in the active checkpoint until the
+        // next compaction. A plain `apply` would leave the index pointing every later re-read at the
+        // checkpoint, which holds the older bytes or none at all.
+        if self.index.absorb(&record).is_err() {
             // The record is on the card and the projection refused it. That is a kernel invariant
             // break, not a client error: the two must never be able to disagree.
             return Err(FailureCause::Internal { detail: detail::internal::INVARIANT });
@@ -1420,7 +1726,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 next_logical_id: None,
                 flags: 0,
             }),
-            result: Some(self.result_entry(operation, intent, principal, Ok(envelope))),
+            result: Some(self.new_result(operation, intent, principal, Ok(envelope))),
             ..Mutation::default()
         };
         if let Some(head) = head {
@@ -1453,17 +1759,17 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         let revision = self.revision + 1;
         let mutation = Mutation {
             active: Some(Change::Remove(operation)),
-            head: self.model.head(key).map(|_| Change::Remove(key)),
+            head: self.index.head(key).map(|_| Change::Remove(key)),
             repository: Some(RepositoryChange {
                 kind: key.kind,
                 revision: Some(revision),
                 next_logical_id: None,
                 flags: 0,
             }),
-            result: Some(self.result_entry(operation, intent, principal, Ok(envelope))),
+            result: Some(self.new_result(operation, intent, principal, Ok(envelope))),
             ..Mutation::default()
         };
-        let displaced = self.model.head(key).map(|head| head.generation);
+        let displaced = self.index.head(key).map(|head| head.generation);
         self.commit(RecordKind::Terminal, operation, intent, mutation)?;
         self.revision = revision;
         if let Some(generation) = displaced {
@@ -1481,7 +1787,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         outcome: Result<ResultEnvelope, TerminalError>,
     ) -> Result<(), FailureCause> {
         let Some(row) = self.active(operation).copied() else { return Ok(()) };
-        let result = self.result_entry(operation, row.intent, row.principal, outcome);
+        let result = self.new_result(operation, row.intent, row.principal, outcome);
         let mutation =
             Mutation { active: Some(Change::Remove(operation)), result: Some(result), ..Mutation::default() };
         self.commit(RecordKind::Terminal, operation, row.intent, mutation)?;
@@ -1532,31 +1838,24 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// does. `reserve` is `None` for a publication that only restamps an existing head, which
     /// reserves nothing and therefore claims no generation.
     ///
-    /// The terminal record carries **no** retained result. That is the one place this path differs
-    /// from a wire operation's, and it is deliberate: a local publication answers no client, so
-    /// there is no typed result for §8.1's window to hold. The identity it claims under is derived
-    /// from the generation so two local publications can never collide.
+    /// Its terminal record carries a retained result like any other. §6.1 admits a head put only in
+    /// a terminal record and fixes a terminal record as "requires active remove **and** result
+    /// append", so there is no legal record shape that publishes a head without one — and §8.1 says
+    /// the same thing from the other side, that the window "is store-global in the strict sense".
+    /// The result was omitted here until the index-backed store started reading records back and
+    /// found one it had written and could not decode. The identity it claims under is derived from
+    /// the generation so two local publications can never collide.
     fn commit_local_publication(
         &mut self,
         head: CatalogHead,
         reserve: Option<GenerationId>,
     ) -> Result<(), FailureCause> {
         let operation = local_operation_id(head.generation);
-        let row = ActiveOperation {
-            operation,
-            intent: LOCAL_INTENT,
-            principal: LOCAL_PRINCIPAL,
-            opcode: Opcode::StartUpload.to_u16(),
-            subject_kind: head.key.kind,
-            phase: OperationPhase::Sealed,
-            flags: if reserve.is_some() { ActiveOperation::FLAG_GENERATION_RESERVED } else { 0 },
-            logical_id: head.key.id.get(),
-            expected_revision: 0,
-            generation: head.generation,
-            progress_counter: 0,
-            work_sequence: 0,
-            abort_reason: 0,
-        };
+        let mut row = local_claim_row(operation);
+        row.subject_kind = head.key.kind;
+        row.flags = if reserve.is_some() { ActiveOperation::FLAG_GENERATION_RESERVED } else { 0 };
+        row.logical_id = head.key.id.get();
+        row.generation = head.generation;
         let claim = Mutation {
             active: Some(Change::Put(row)),
             generation_cursor: reserve.map(|generation| generation.get() + 1),
@@ -1565,6 +1864,16 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         self.commit(RecordKind::Claim, operation, LOCAL_INTENT, claim)?;
 
         let revision = self.revision + 1;
+        let envelope = ResultEnvelope::Object(ObjectResult {
+            operation_id: operation,
+            store_id: self.index.store,
+            kind: ObjectKind::from_u16(head.key.kind).unwrap_or(ObjectKind::Ride),
+            outcome: ObjectOutcome::Committed,
+            logical_object_id: head.key.id,
+            revision: Revision::new(revision),
+            length: head.length,
+            crc32: head.crc,
+        });
         let mut mutation = Mutation {
             active: Some(Change::Remove(operation)),
             head: Some(Change::Put(head)),
@@ -1574,6 +1883,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 next_logical_id: Some(self.next_logical_id),
                 flags: 0,
             }),
+            result: Some(self.new_result(operation, LOCAL_INTENT, LOCAL_PRINCIPAL, Ok(envelope))),
             ..Mutation::default()
         };
         if let Some(retention) = self.retention_for_displaced(head.key, head.generation) {
@@ -1592,13 +1902,13 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
     /// The generation a publication over `key` displaces, when there is one and it is not the same.
     fn displaced_generation(&self, key: HeadKey, incoming: GenerationId) -> Option<GenerationId> {
-        let head = self.model.head(key)?;
+        let head = self.index.head(key)?;
         (head.generation != incoming).then_some(head.generation)
     }
 
     /// §9's retained-previous entry, when a live lease still pins the bytes being displaced.
     fn retention_for_displaced(&self, key: HeadKey, incoming: GenerationId) -> Option<RetainedPrevious> {
-        let head = *self.model.head(key)?;
+        let head = *self.index.head(key)?;
         if head.generation == incoming {
             return None;
         }
@@ -1609,8 +1919,8 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         Some(RetainedPrevious {
             reasons: RetainedPrevious::REASON_LIVE_LEASE,
             lease_count,
-            kind: head.key.kind,
-            logical_id: head.key.id,
+            kind: head.kind,
+            logical_id: head.id,
             generation: head.generation,
             length: head.length,
             crc: head.crc,
@@ -1619,7 +1929,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         })
     }
 
-    fn result_entry(
+    fn new_result(
         &self,
         operation: OperationId,
         intent: [u8; 32],
@@ -1650,7 +1960,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             }
         };
         TerminalResult {
-            commit_sequence: self.model.terminal_counter + 1,
+            commit_sequence: self.index.terminal_counter + 1,
             operation,
             intent,
             principal,
@@ -1663,11 +1973,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     // -- small helpers ----------------------------------------------------------------------------
 
     fn active(&self, operation: OperationId) -> Option<&ActiveOperation> {
-        self.model.actives.iter().find(|row| row.operation == operation)
+        self.index.actives.iter().find(|row| row.operation == operation)
     }
 
     fn reserve_generation(&mut self) -> GenerationId {
-        GenerationId::new(self.model.next_generation)
+        GenerationId::new(self.index.next_generation)
     }
 
     fn allocate_logical_id(&mut self) -> LogicalObjectId {
@@ -1717,9 +2027,10 @@ impl<M: KernelMedia, V: Validator, H: Hooks> Transaction for KernelTransaction<M
             Command::ReadSource { offset, length } => self.read_source(offset, length, scratch),
             Command::ReleaseLease => self.release_lease(),
             Command::DeviceControl(request) => Outcome::DeviceControl(self.device_control(request, scratch)),
-            Command::QueryOperation { operation_id, principal } => {
-                Outcome::OperationReport(self.report_for(operation_id, principal))
-            }
+            Command::QueryOperation { operation_id, principal } => match self.report_for(operation_id, principal) {
+                Ok(report) => Outcome::OperationReport(report),
+                Err(cause) => Outcome::Failed(cause),
+            },
         }
     }
 }
@@ -1800,6 +2111,39 @@ const LOCAL_PRINCIPAL: [u8; 32] = {
 /// local producer has none to be confused with.
 const LOCAL_INTENT: [u8; 32] = [0xA7; 32];
 
+/// The active row a device-local producer claims under (§6.1's "a claim record requires active put").
+fn local_claim_row(operation: OperationId) -> ActiveOperation {
+    ActiveOperation {
+        operation,
+        intent: LOCAL_INTENT,
+        principal: LOCAL_PRINCIPAL,
+        opcode: Opcode::StartUpload.to_u16(),
+        subject_kind: ObjectKind::Ride.to_u16(),
+        phase: OperationPhase::Sealed,
+        flags: 0,
+        logical_id: 0,
+        expected_revision: 0,
+        generation: GenerationId::ZERO,
+        progress_counter: 0,
+        work_sequence: 0,
+        abort_reason: 0,
+    }
+}
+
+/// The claim mutation that row belongs to.
+fn local_claim(operation: OperationId, reserve: Option<GenerationId>) -> Mutation {
+    let mut row = local_claim_row(operation);
+    if let Some(generation) = reserve {
+        row.flags = ActiveOperation::FLAG_GENERATION_RESERVED;
+        row.generation = generation;
+    }
+    Mutation {
+        active: Some(Change::Put(row)),
+        generation_cursor: reserve.map(|generation| generation.get() + 1),
+        ..Mutation::default()
+    }
+}
+
 /// The identity a device-local publication claims under, derived from the generation it creates.
 ///
 /// §11 requires every claim to have an OperationId, and two local publications must never share
@@ -1842,6 +2186,14 @@ const fn replace_expectation(row: &ActiveOperation, opcode: Opcode) -> Option<u6
     match opcode {
         Opcode::StartUpload if row.expected_revision == 0 => None,
         _ => Some(row.expected_revision),
+    }
+}
+
+/// The §12 cause a refused on-demand re-read reports as.
+fn reread_failure<E>(error: RereadError<E>) -> FailureCause {
+    match error {
+        RereadError::Media(_) => FailureCause::MediaIo { detail: detail::media_io::READ },
+        RereadError::Missing => FailureCause::Internal { detail: detail::internal::INVARIANT },
     }
 }
 
@@ -1932,6 +2284,21 @@ mod tests {
     }
 
     impl KernelMedia for NoMedia {
+        fn read_checkpoint(&mut self, _offset: usize, _into: &mut [u8]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn read_record(&mut self, _slot: u16) -> Result<Option<JournalBody>, ()> {
+            Ok(None)
+        }
+        fn begin_checkpoint(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn write_checkpoint_sector(&mut self, _offset: usize, _sector: &[u8; SECTOR]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn finish_checkpoint(&mut self, _epoch: u64, _through_sequence: u64, _body_crc: u32) -> Result<(), ()> {
+            Ok(())
+        }
         fn append_journal(
             &mut self,
             _slot: u16,
@@ -1966,8 +2333,12 @@ mod tests {
     /// where something reads it, which would make this look like a guard while gating nothing.
     /// Two values because the two targets have different pointer widths — the board is 32-bit
     /// thumbv8m, the host suite 64-bit. Re-pinning one is the moment the field list gets checked.
+    ///
+    /// It was 73,384 while the transaction held the whole projection. Swapping that for §13's
+    /// bounded index took 36,344 bytes out of it, and what is left is dominated by the 16 KiB seal
+    /// stride rather than by any catalog state.
     #[cfg(target_pointer_width = "64")]
-    const _: () = assert!(core::mem::size_of::<Pinned>() == 73_384);
+    const _: () = assert!(core::mem::size_of::<Pinned>() == 37_040);
 
     /// **The compile-time half of `mount_in_place`'s safety argument.**
     ///
@@ -1984,8 +2355,9 @@ mod tests {
             media: _,
             validator: _,
             hooks: _,
-            model,
+            index,
             sequence,
+            epoch_base,
             revision,
             next_logical_id,
             leases: _,
@@ -1998,8 +2370,8 @@ mod tests {
             status,
             clock,
         } = placed;
-        assert_eq!(model.store, store);
-        assert_eq!((*sequence, *revision, *next_logical_id), (1, 0, 1));
+        assert_eq!(index.store, store);
+        assert_eq!((*sequence, *epoch_base, *revision, *next_logical_id), (1, 0, 0, 1));
         assert!(pinned.is_none() && writing.is_none() && live.iter().all(|row| row.is_none()));
         assert_eq!(*lease_connection, 0);
         assert!(stride.iter().all(|byte| *byte == 0));
@@ -2015,15 +2387,11 @@ mod tests {
         let store = StoreId::new([0x4C; 16]);
         let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
         let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
-        let by_value = std::boxed::Box::new(KernelTransaction::mount(
-            NoMedia,
-            AcceptEverything,
-            NoHooks,
-            CatalogModel::empty(store),
-        ));
+        let by_value =
+            std::boxed::Box::new(KernelTransaction::mount(NoMedia, AcceptEverything, NoHooks, RamIndex::new(store), 0));
 
         assert_eq!(placed.store_id(), by_value.store_id());
-        assert_eq!(*placed.model(), *by_value.model());
+        assert_eq!(*placed.index(), *by_value.index());
         assert_eq!(placed.sequence, by_value.sequence);
         assert_eq!(placed.revision, by_value.revision);
         assert_eq!(placed.next_logical_id, by_value.next_logical_id);
@@ -2044,14 +2412,17 @@ mod tests {
         let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
         let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
         {
-            let (_, model) = placed.media_and_model_mut();
-            model.reset_to_initial(store, ObjectKind::Weather.to_u16());
-            model.through_sequence = 41;
-            model.repositories[0].revision = Revision::new(7);
-            model.repositories[0].next_logical_id = LogicalObjectId::new(9);
+            let (_, index) = placed.media_and_index_mut();
+            index.reset_to_initial(store, ObjectKind::Weather.to_u16());
+            index.through_sequence = 41;
+            index.repositories[0].revision = Revision::new(7);
+            index.repositories[0].next_logical_id = LogicalObjectId::new(9);
         }
-        placed.rebind();
+        // §6.3's slot origin: this checkpoint absorbed through 30, so slot zero of its epoch carries
+        // 31 and the record after sequence 41 lands at slot 11.
+        placed.rebind(30);
         assert_eq!(placed.sequence, 42, "the journal cursor is through_sequence + 1");
+        assert_eq!(placed.next_slot(), 11, "the slot is relative to the checkpoint, not to the store");
         assert_eq!(placed.revision, 7);
         assert_eq!(placed.next_logical_id, 9);
         assert_eq!(placed.status.store_id, store);

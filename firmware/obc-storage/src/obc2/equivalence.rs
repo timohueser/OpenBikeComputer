@@ -36,8 +36,8 @@ use obc_link::upload::{FinishUpload, Target};
 #[cfg(test)]
 use obc_link::{Request, Response};
 
-use super::card::Card;
-use super::model::CatalogModel;
+use super::card::{Card, Mounted};
+use super::index::RamIndex;
 use super::transaction::{Hooks, KernelTransaction, Validator};
 
 /// The validator and the fault points, in one value that is installed twice.
@@ -119,12 +119,25 @@ impl KernelStore {
     /// happens to produce.
     pub fn seeded(seed: u64, store: StoreId) -> Self {
         let (card, model) = Card::initialize(seed, store);
-        KernelStore(Box::new(KernelTransaction::mount(card, TestPolicy::default(), TestPolicy::default(), *model)))
+        // A freshly initialized store has compacted nothing, so §6.3's slot origin is zero and no
+        // journal-slot reference exists: every card-resident field is in the first checkpoint.
+        KernelStore::over(card, *RamIndex::project(&model), 0)
     }
 
     /// A store over an already-mounted card.
-    pub fn over(card: Card, model: CatalogModel) -> Self {
-        KernelStore(Box::new(KernelTransaction::mount(card, TestPolicy::default(), TestPolicy::default(), model)))
+    pub fn over(card: Card, index: RamIndex, epoch_base: u64) -> Self {
+        KernelStore(Box::new(KernelTransaction::mount(
+            card,
+            TestPolicy::default(),
+            TestPolicy::default(),
+            index,
+            epoch_base,
+        )))
+    }
+
+    /// The same, from what a mount produced.
+    pub fn remounted(card: Card, mounted: Mounted) -> Self {
+        KernelStore::over(card, *mounted.index, mounted.epoch_base)
     }
 
     /// The transaction underneath, for a test that cuts the medium or remounts it.
@@ -288,6 +301,88 @@ mod tests {
         assert!(total >= 40, "the suite carries {total} scenarios");
     }
 
+    /// §6.3's compaction, driven end to end from the store rather than from a fixture.
+    ///
+    /// The pass sources three things — the index's fixed fields, a journal-carried head entry
+    /// through its `u16` slot reference, and the active checkpoint's stored bytes — and the only way
+    /// to know the wiring is right is to compact a store that has all three and then mount what it
+    /// wrote. The assertion is the strongest one available: the remounted resident state is
+    /// **equal** to the state that was compacted, so every envelope, resolution and result body the
+    /// index does not hold came back off the card unchanged.
+    #[test]
+    fn a_compaction_reproduces_the_resident_state_it_was_run_over() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        // Heads whose envelopes and resolutions live only on the card, and results whose 208-byte
+        // bodies do too. Publishing locally is enough: each one is a claim plus a terminal record,
+        // so after this the index's references point into the journal rather than the checkpoint.
+        for index in 0..4u8 {
+            store.publish_local(ObjectKind::Route, &[index; 96]);
+        }
+        store.retain_local_result(OperationId::new([0x5E; 16]));
+        let before = store.inner_mut().index().clone();
+        assert!(
+            before.heads.iter().all(|head| head.journal_slot != crate::obc2::index::NO_JOURNAL_SLOT),
+            "the fixture must have journal-carried heads, or the pass is only reading the checkpoint",
+        );
+
+        store.inner_mut().compact().expect("the pass writes a checkpoint");
+        assert_eq!(store.inner_mut().index().epoch, 2, "step 3 opens the next epoch");
+        assert!(
+            store.inner_mut().index().heads.iter().all(|head| head.journal_slot == crate::obc2::index::NO_JOURNAL_SLOT),
+            "§6.3 resets the references after step 4",
+        );
+
+        // One more commit, which §6.3 puts at physical slot zero of the new epoch.
+        store.retain_local_result(OperationId::new([0x5F; 16]));
+
+        let mut card = store.into_card();
+        card.reboot();
+        let mounted = card.mount().expect("the compacted store mounts");
+        assert_eq!(mounted.epoch_base, before.through_sequence, "the new checkpoint absorbed the old journal");
+        assert_eq!(mounted.index.epoch, 2);
+
+        // Everything the compacted checkpoint had to carry, back from the card: the four heads with
+        // their envelopes, the result ring, the repository cursors and the scalars.
+        let replayed = mounted.index.through_sequence - before.through_sequence;
+        assert_eq!(replayed, 2, "the suffix is the two records the post-compaction commit wrote");
+        assert_eq!(mounted.index.heads.len(), before.heads.len());
+        for (after, before) in mounted.index.heads.iter().zip(before.heads.iter()) {
+            assert_eq!(after.key(), before.key());
+            assert_eq!(
+                (after.revision, after.generation, after.length, after.crc),
+                (before.revision, before.generation, before.length, before.crc)
+            );
+        }
+        // And the results it did not evict are still answerable, which is the on-demand re-read
+        // working against a checkpoint this pass wrote rather than one initialization did.
+        let mut store = KernelStore::remounted(card, mounted);
+        assert!(store.retains(OperationId::new([0x5E; 16])));
+        assert_eq!(
+            store.inner_mut().report_for(OperationId::new([0x5E; 16]), PrincipalScope::new([0xFF; 16])),
+            Ok(obc_link::engine::OperationReport::NotAuthorized),
+            "the retained body came back off the compacted checkpoint",
+        );
+    }
+
+    /// §6.3: "before accepting a 193rd record in one epoch, `CardStore` blocks new mutations and
+    /// compacts". The store does it itself, so a caller cannot forget.
+    #[test]
+    fn reaching_the_trigger_compacts_instead_of_wrapping_the_ring() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        // Two records per publication, so this crosses the 192-record trigger inside the loop.
+        for index in 0..120u16 {
+            let mut bytes = [0x11u8; 16];
+            bytes[14] = (index >> 8) as u8;
+            bytes[15] = index as u8;
+            store.retain_local_result(OperationId::new(bytes));
+        }
+        assert!(store.inner_mut().index().epoch > 1, "the trigger ran a pass");
+        let mut card = store.into_card();
+        card.reboot();
+        let mounted = card.mount().expect("a store that compacted itself still mounts");
+        assert!(mounted.index.epoch > 1);
+    }
+
     /// §11: "Failure returns without claiming."
     ///
     /// The one media act §11 and §12 put *before* the claim record is the lazy creation of the
@@ -344,7 +439,7 @@ mod tests {
         store.retain_local_result(OperationId::new([0x4c; 16]));
         assert_eq!(
             store.inner_mut().report_for(OperationId::new([0x4c; 16]), zero),
-            obc_link::engine::OperationReport::NotAuthorized,
+            Ok(obc_link::engine::OperationReport::NotAuthorized),
             "an all-zero wire scope is still not the local producer"
         );
     }
@@ -403,8 +498,8 @@ enum Truth {
 fn truth_after_reboot(store: KernelStore) -> (Truth, KernelStore) {
     let mut card = store.into_card();
     card.reboot();
-    let model = card.mount().expect("a cut card still mounts");
-    let store = KernelStore::over(card, *model);
+    let mounted = card.mount().expect("a cut card still mounts");
+    let store = KernelStore::remounted(card, mounted);
     let mut driver = Kernel.driver_over(store);
     scenarios::negotiate(&mut driver);
     driver.link.deliver(

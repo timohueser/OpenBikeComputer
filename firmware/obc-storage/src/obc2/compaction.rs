@@ -265,7 +265,10 @@ pub fn gate_for(index: &RamIndex, body_crc: u32, slot: u16) -> Gate {
     Gate { magic: super::gate::MAGIC_CHECKPOINT, slot, scope: index.epoch, sequence: index.through_sequence, body_crc }
 }
 
-fn compose_head<E>(entry: &HeadIndexEntry, fields: &CardHeadFields) -> Result<CatalogHead, CompactionError<E>> {
+pub(crate) fn compose_head<E>(
+    entry: &HeadIndexEntry,
+    fields: &CardHeadFields,
+) -> Result<CatalogHead, CompactionError<E>> {
     if fields.envelope_len < CatalogHead::MIN_ENVELOPE || fields.envelope_len as usize > CatalogHead::ENVELOPE_CAPACITY
     {
         return Err(CompactionError::Envelope { head: entry.key(), len: fields.envelope_len });
@@ -1046,7 +1049,7 @@ mod tests {
     #[test]
     fn a_head_and_its_card_fields_recompose_the_entry_they_came_from() {
         for head in [samples::head(1, 7), samples::manifest_head(3, 92)] {
-            let entry = HeadIndexEntry::from_head(&head, NO_JOURNAL_SLOT);
+            let entry = HeadIndexEntry::carried(&head, NO_JOURNAL_SLOT);
             assert_eq!(compose_head::<()>(&entry, &CardHeadFields::of(&head)), Ok(head));
         }
     }

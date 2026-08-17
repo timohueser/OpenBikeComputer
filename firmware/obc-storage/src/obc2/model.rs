@@ -35,14 +35,72 @@ use super::error::{ApplyError, Record, Result};
 use super::handoff::HandoffRef;
 use super::journal::{Change, JournalBody, RecordKind};
 use super::limits::{
-    CHECKPOINT_BODY_LEN, MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS, MAX_DRAFT_PARTS, MAX_REPOSITORY_STATES,
-    MAX_RETAINED_PREVIOUS, MAX_TERMINAL_RESULTS,
+    CHECKPOINT_BODY_CRC_OFFSET, CHECKPOINT_BODY_LEN, MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS, MAX_DRAFT_PARTS,
+    MAX_REPOSITORY_STATES, MAX_RETAINED_PREVIOUS, MAX_TERMINAL_RESULTS,
 };
 use super::raw::put_bytes;
 
-/// The bounded catalog projection.
+/// One row of the head region, in whichever shape its holder keeps.
+///
+/// [`CatalogHead`] is the whole on-card entry, which is what a host oracle holds; the device holds
+/// [`HeadIndexEntry`](super::index::HeadIndexEntry), which drops the envelope and the resolution
+/// generation because §13 leaves those on the card. `apply` is written once against this trait so
+/// the two shapes cannot acquire two meanings of a record.
+pub trait HeadRow: Copy {
+    /// The `(kind, logical id)` this row is keyed by.
+    fn head_key(&self) -> HeadKey;
+
+    /// The row a `Change::Put` of this decoded head produces.
+    fn from_head(head: &CatalogHead) -> Self;
+}
+
+impl HeadRow for CatalogHead {
+    fn head_key(&self) -> HeadKey {
+        self.key
+    }
+
+    fn from_head(head: &CatalogHead) -> Self {
+        *head
+    }
+}
+
+/// One row of the terminal-result ring, in whichever shape its holder keeps.
+///
+/// The device keeps §13's `(OperationId, commit sequence)` pair and re-reads the 208-byte body from
+/// the card; a host oracle keeps the whole [`TerminalResult`].
+pub trait ResultRow: Copy {
+    /// The operation this result belongs to — the key `QueryOperation` looks up.
+    fn operation_id(&self) -> OperationId;
+
+    /// Its terminal commit sequence, which is also the ring's ordering.
+    fn sequence(&self) -> u64;
+
+    /// The row a `Mutation::result` of this decoded entry produces.
+    fn from_result(result: &TerminalResult) -> Self;
+}
+
+impl ResultRow for TerminalResult {
+    fn operation_id(&self) -> OperationId {
+        self.operation
+    }
+
+    fn sequence(&self) -> u64 {
+        self.commit_sequence
+    }
+
+    fn from_result(result: &TerminalResult) -> Self {
+        *result
+    }
+}
+
+/// The bounded catalog projection, over whichever head and result shapes its holder keeps.
+///
+/// [`CatalogModel`] is the host oracle's instantiation and [`RamIndex`](super::index::RamIndex) the
+/// device's. Everything that is not a head or a result — the repository rows, the active table, the
+/// draft tables, the retained table, the three singletons and the six scalars — is identical in
+/// both, which is why they are one type rather than two.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogModel {
+pub struct Projection<H: HeadRow, R: ResultRow> {
     /// The store this projection belongs to.
     pub store: StoreId,
     /// The compaction epoch.
@@ -58,7 +116,7 @@ pub struct CatalogModel {
     /// Repository rows, sorted by kind.
     pub repositories: Vec<RepositoryState, MAX_REPOSITORY_STATES>,
     /// Catalog heads, sorted by `(kind, logical id)`.
-    pub heads: Vec<CatalogHead, MAX_CATALOG_HEADS>,
+    pub heads: Vec<H, MAX_CATALOG_HEADS>,
     /// Active rows, sorted by `OperationId` wire bytes.
     pub actives: Vec<ActiveOperation, MAX_ACTIVE_OPERATIONS>,
     /// The one draft parent.
@@ -70,7 +128,7 @@ pub struct CatalogModel {
     /// The result ring's start index.
     pub result_start: usize,
     /// The result ring, in ring order from `result_start`.
-    pub results: Vec<TerminalResult, MAX_TERMINAL_RESULTS>,
+    pub results: Vec<R, MAX_TERMINAL_RESULTS>,
     /// The one update-handoff projection.
     pub handoff: Option<HandoffRef>,
     /// The one weather-request state.
@@ -78,6 +136,12 @@ pub struct CatalogModel {
     /// The one active-ride state.
     pub ride: Option<ActiveRide>,
 }
+
+/// The host oracle's projection: whole heads and whole terminal results.
+///
+/// It is deliberately **not** the device's resident state — §13 fixes that as
+/// [`RamIndex`](super::index::RamIndex) — and nothing in the device image instantiates one.
+pub type CatalogModel = Projection<CatalogHead, TerminalResult>;
 
 /// The size [`CatalogModel::init_empty`]'s field list was written against.
 ///
@@ -96,7 +160,7 @@ const _: () = assert!(core::mem::size_of::<CatalogModel>() == 56_112);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(core::mem::size_of::<CatalogModel>() == 56_120);
 
-impl CatalogModel {
+impl<H: HeadRow, R: ResultRow> Projection<H, R> {
     /// An empty projection, `const` so it can initialize a `static` rather than be returned by
     /// value.
     ///
@@ -105,7 +169,7 @@ impl CatalogModel {
     /// hands back a [`Box`]. A board crate that copied one through a stack temporary would blow the
     /// ~36 KiB task stack the nRF54L notes measure.
     pub const fn empty(store: StoreId) -> Self {
-        CatalogModel {
+        Projection {
             store,
             epoch: 1,
             through_sequence: 0,
@@ -205,14 +269,14 @@ impl CatalogModel {
     /// The same first checkpoint, boxed. Host-only for the reason [`empty`](Self::empty) gives.
     #[cfg(any(test, feature = "std"))]
     pub fn initial(store: StoreId, weather_kind: u16) -> std::boxed::Box<Self> {
-        let mut model = std::boxed::Box::new(CatalogModel::empty(store));
+        let mut model = std::boxed::Box::new(Self::empty(store));
         model.reset_to_initial(store, weather_kind);
         model
     }
 
     /// The head a `(kind, logical id)` names.
-    pub fn head(&self, key: HeadKey) -> Option<&CatalogHead> {
-        self.heads.iter().find(|head| head.key == key)
+    pub fn head(&self, key: HeadKey) -> Option<&H> {
+        self.heads.iter().find(|head| head.head_key() == key)
     }
 
     /// The retained entry a generation names.
@@ -224,8 +288,18 @@ impl CatalogModel {
     ///
     /// §2: after eviction `QueryOperation` returns `Unknown`, "which is an indeterminate old
     /// outcome, not permission to retry that identity".
-    pub fn result_for(&self, operation: OperationId) -> Option<&TerminalResult> {
-        self.results.iter().find(|result| result.operation == operation)
+    pub fn result_for(&self, operation: OperationId) -> Option<&R> {
+        self.results.iter().find(|result| result.operation_id() == operation)
+    }
+
+    /// The ring position and the row an `OperationId` names.
+    ///
+    /// The position is the *physical* index the entry occupies in both checkpoints, which is what a
+    /// card re-read of the 208-byte body addresses (§6.3): the ring's start and count are resident,
+    /// so a result does not move when the checkpoint is rewritten.
+    pub fn result_position(&self, operation: OperationId) -> Option<(usize, R)> {
+        let step = self.results.iter().position(|result| result.operation_id() == operation)?;
+        Some(((self.result_start + step) % MAX_TERMINAL_RESULTS, self.results[step]))
     }
 
     /// Applies one decoded journal record.
@@ -314,11 +388,11 @@ impl CatalogModel {
 
         match &mutation.head {
             Some(Change::Put(row)) => {
-                if !self.heads.iter().any(|held| held.key == row.key) && self.heads.len() == MAX_CATALOG_HEADS {
+                if !self.heads.iter().any(|held| held.head_key() == row.key) && self.heads.len() == MAX_CATALOG_HEADS {
                     return Err(ApplyError::ResourceLimit(Record::CatalogHead));
                 }
             }
-            Some(Change::Remove(key)) if !self.heads.iter().any(|held| held.key == *key) => {
+            Some(Change::Remove(key)) if !self.heads.iter().any(|held| held.head_key() == *key) => {
                 return Err(ApplyError::MissingKey(Record::CatalogHead))
             }
             Some(Change::Remove(_)) => {}
@@ -451,15 +525,15 @@ impl CatalogModel {
         }
 
         match &mutation.head {
-            Some(Change::Put(row)) => match self.heads.iter().position(|held| held.key == row.key) {
-                Some(index) => self.heads[index] = *row,
+            Some(Change::Put(row)) => match self.heads.iter().position(|held| held.head_key() == row.key) {
+                Some(index) => self.heads[index] = H::from_head(row),
                 None => {
-                    let position = self.heads.iter().position(|held| held.key > row.key);
-                    insert(&mut self.heads, position, *row);
+                    let position = self.heads.iter().position(|held| held.head_key() > row.key);
+                    insert(&mut self.heads, position, H::from_head(row));
                 }
             },
             Some(Change::Remove(key)) => {
-                if let Some(index) = self.heads.iter().position(|held| held.key == *key) {
+                if let Some(index) = self.heads.iter().position(|held| held.head_key() == *key) {
                     remove(&mut self.heads, index);
                 }
             }
@@ -515,11 +589,11 @@ impl CatalogModel {
                 // "Ring append writes `(result_start + result_count) mod 64`; when already full it
                 // overwrites `result_start` and advances that index by one. This is the only
                 // eviction path."
-                self.results[0] = *result;
+                self.results[0] = R::from_result(result);
                 self.results.rotate_left(1);
                 self.result_start = (self.result_start + 1) % MAX_TERMINAL_RESULTS;
             } else {
-                let _ = self.results.push(*result);
+                let _ = self.results.push(R::from_result(result));
             }
         }
 
@@ -564,7 +638,9 @@ impl CatalogModel {
             ride_count: u8::from(self.ride.is_some()),
         }
     }
+}
 
+impl CatalogModel {
     /// Materializes the complete 65,024-byte checkpoint body, CRC included.
     ///
     /// The caller owns the buffer, which is what lets the device write it a sector at a time
@@ -618,35 +694,52 @@ impl CatalogModel {
             return Err(DecodeError::new(Record::Checkpoint, Reason::Length));
         }
         out.fill(0);
-        let header = CheckpointHeader {
-            store,
-            epoch: 1,
-            through_sequence: 0,
-            next_generation: 0,
-            repository_count: 1,
-            head_count: 0,
-            active_count: 0,
-            draft_parent_count: 0,
-            draft_part_count: 0,
-            retained_count: 0,
-            result_start: 0,
-            result_count: 0,
-            handoff_count: 0,
-            flags: 0,
-            terminal_counter: 0,
-            weather_count: 0,
-            ride_count: 0,
-        };
-        put_bytes(out, 0, &header.encode());
-        let row = RepositoryState {
-            kind: weather_kind,
-            flags: 0,
-            revision: obc_link::ids::Revision::ZERO,
-            next_logical_id: obc_link::ids::LogicalObjectId::new(1),
-        };
-        put_bytes(out, checkpoint::REPOSITORIES.slot(0).start, &row.encode());
+        put_bytes(out, 0, &initial_header(store).encode());
+        put_bytes(out, checkpoint::REPOSITORIES.slot(0).start, &initial_repository(weather_kind).encode());
         checkpoint::seal_body(out);
         Ok(())
+    }
+
+    /// The same initial body, emitted in bounded chunks, returning the body CRC its gate carries.
+    ///
+    /// §12's birth point needs these 65,024 bytes on the card and nothing needs them in RAM: the
+    /// only non-zero bytes are the header and one repository row, both inside the first chunk. So a
+    /// device stages `chunk` — one sector is enough, one stride is faster — instead of the 65,536-byte
+    /// image a whole-body encode would ask for, which is the same reason §13 gives for streaming the
+    /// mount.
+    ///
+    /// `write` is handed `(offset, bytes)` spans in ascending order and must write all of them.
+    pub fn stream_initial_body<E>(
+        store: StoreId,
+        weather_kind: u16,
+        chunk: &mut [u8],
+        mut write: impl FnMut(usize, &[u8]) -> core::result::Result<(), E>,
+    ) -> core::result::Result<u32, E> {
+        debug_assert!(chunk.len() >= checkpoint::HEADER_LEN + RepositoryState::LEN, "the first chunk holds both rows");
+        let mut crc = obc_crc::Crc32::new();
+        let mut at = 0usize;
+        let mut sealed = 0u32;
+        while at < CHECKPOINT_BODY_LEN {
+            let take = chunk.len().min(CHECKPOINT_BODY_LEN - at);
+            let span = &mut chunk[..take];
+            span.fill(0);
+            if at == 0 {
+                put_bytes(span, 0, &initial_header(store).encode());
+                put_bytes(span, checkpoint::REPOSITORIES.slot(0).start, &initial_repository(weather_kind).encode());
+            }
+            // §1 treats a CRC field as zero while its record is checksummed, and it is still zero
+            // here — so the accumulator is already the value by the time the last span is reached.
+            crc.update(span);
+            if at + take == CHECKPOINT_BODY_LEN {
+                sealed = crc.finalize();
+                super::raw::put_u32(span, CHECKPOINT_BODY_CRC_OFFSET - at, sealed);
+                write(at, span)?;
+                break;
+            }
+            write(at, span)?;
+            at += take;
+        }
+        Ok(sealed)
     }
 
     /// Reconstructs a projection from a validated checkpoint body, into a buffer the caller owns.
@@ -721,6 +814,40 @@ impl CatalogModel {
     }
 }
 
+/// §12's first header: epoch one, nothing absorbed, nothing claimed.
+fn initial_header(store: StoreId) -> CheckpointHeader {
+    CheckpointHeader {
+        store,
+        epoch: 1,
+        through_sequence: 0,
+        next_generation: 0,
+        repository_count: 1,
+        head_count: 0,
+        active_count: 0,
+        draft_parent_count: 0,
+        draft_part_count: 0,
+        retained_count: 0,
+        result_start: 0,
+        result_count: 0,
+        handoff_count: 0,
+        flags: 0,
+        terminal_counter: 0,
+        weather_count: 0,
+        ride_count: 0,
+    }
+}
+
+/// The one row §12's first checkpoint carries: the weather repository, with logical ID zero reserved
+/// by starting its candidate at one.
+fn initial_repository(weather_kind: u16) -> RepositoryState {
+    RepositoryState {
+        kind: weather_kind,
+        flags: 0,
+        revision: obc_link::ids::Revision::ZERO,
+        next_logical_id: obc_link::ids::LogicalObjectId::new(1),
+    }
+}
+
 fn write_region<T, const N: usize, const L: usize>(
     out: &mut [u8],
     region: Region,
@@ -771,8 +898,8 @@ fn retain_parts<const N: usize>(parts: &mut Vec<DraftPart, N>, parent: Operation
 /// Returns how many records were absorbed. §6.3's *selection* of that suffix — which records are
 /// valid, and whether stopping early is a fault — belongs to [`super::recovery`]; this is only the
 /// application of an already-chosen sequence.
-pub fn replay<'a>(
-    model: &mut CatalogModel,
+pub fn replay<'a, H: HeadRow, R: ResultRow>(
+    model: &mut Projection<H, R>,
     records: impl IntoIterator<Item = &'a JournalBody>,
 ) -> core::result::Result<usize, ApplyError> {
     let mut applied = 0;
