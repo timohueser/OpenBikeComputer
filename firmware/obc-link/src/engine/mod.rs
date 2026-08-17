@@ -46,6 +46,7 @@ mod link;
 mod phase;
 mod profile;
 mod session;
+mod transaction;
 
 pub use connection::{Connection, ConnectionRefusal, LinkCeilings, Negotiated};
 pub use effect::{
@@ -58,6 +59,7 @@ pub use phase::{
 };
 pub use profile::{DeviceProfile, SubjectTable};
 pub use session::{LinkContext, PrincipalScope, SessionCoordinator, SessionRejection, StreamAdmission};
+pub use transaction::Transaction;
 
 use crate::download::{DownloadAccepted, StartDownload};
 use crate::error::{detail, ErrorBody, ErrorCategory, Owner, RetryGuidance};
@@ -646,6 +648,7 @@ impl Engine {
                 self.reply(pending, &Response::UploadResult(envelope), out)
             }
             (Stage::Abort(reply), Outcome::Aborted(terminal)) => self.after_abort(pending, reply, terminal, out),
+            (Stage::Abort(reply), Outcome::Failed(cause)) => self.after_failed_abort(pending, reply, cause, out),
             (Stage::Resolve(request), Outcome::Resolved(source)) => self.after_resolve(pending, request, source, out),
             (Stage::ReadSource, Outcome::SourceBytes { offset, bytes }) => {
                 self.emit_download(pending, offset, bytes, out)
@@ -1406,6 +1409,55 @@ impl Engine {
                 self.clear_pending(pending.context.link_kind);
                 Reaction::Idle
             }
+        }
+    }
+
+    /// An abort the store could not make durable.
+    ///
+    /// §11 makes a durable claim something that must reach a terminal state — but that is the
+    /// *store's* obligation, and a medium that fails under the terminal record has not discharged
+    /// it. What the engine must not do is retry: the failure comes back from `Stage::Abort`, and
+    /// treating it like any other failure would issue another `Abort`, which fails the same way, for
+    /// ever. So the session is released, the request is answered exactly once with the claim still
+    /// **live**, and the client is sent to `QueryOperation` — which is where a mount's recovery pass
+    /// makes the truth available, because the claim it left behind is still on the card.
+    fn after_failed_abort<'a>(
+        &mut self,
+        pending: Pending,
+        reply: AbortReply,
+        cause: FailureCause,
+        out: &mut [u8],
+    ) -> Reaction<'a> {
+        self.step_upload(UploadEvent::Aborted);
+        self.release_transfer();
+        match reply {
+            AbortReply::StreamFault { session_id, .. } => {
+                self.clear_pending(pending.context.link_kind);
+                // §13's disposition 2, exactly as it reads: "the stream transport is closed; query
+                // the operation's status". Reporting `operationDurablyAborted` here would be a lie.
+                let frame = StreamFrame::Fault {
+                    session_id,
+                    terminal: true,
+                    body: FaultBody {
+                        category: ErrorCategory::MEDIA_IO,
+                        detail: detail::media_io::UNCERTAIN_COMMIT,
+                        expected_next_offset: 0,
+                        durable_next_offset: 0,
+                        disposition: FaultDisposition::StreamClosedQueryStatus,
+                    },
+                };
+                match frame.encode_into(out) {
+                    Ok(len) => Reaction::Emit { channel: LinkChannel::Stream, len },
+                    Err(_) => Reaction::Close(LinkChannel::Stream),
+                }
+            }
+            AbortReply::Silent => {
+                self.clear_pending(pending.context.link_kind);
+                Reaction::Idle
+            }
+            // Including a ResetStore whose preceding abort failed: the store is not destroyed under
+            // work that is still claimed.
+            _ => self.reply(pending, &Response::Error(cause.body(ClaimStatus::Live)), out),
         }
     }
 
