@@ -30,6 +30,19 @@ pub const MAX_PUT_ENVELOPE: usize = 128;
 /// The common ceiling on a catalog projection envelope (§1).
 pub const MAX_CATALOG_ENVELOPE: usize = 96;
 
+/// The largest envelope any registered **mutating** schema can actually produce, header included.
+///
+/// [`MAX_PUT_ENVELOPE`] is the *decoder's* ceiling — the point past which a body is malformed before
+/// anything looks at its kind. This is the tighter, registry-derived truth: [`Schema::validate`]
+/// refuses an envelope longer than its own row in `Device_Object_Registries_v2.md` §4, and the
+/// longest of those rows across every Put and patch schema is the route patch at 70 bytes. Anything
+/// that survived decoding is therefore at most this long, which is what lets a store keep a claimed
+/// envelope inline without reserving the decoder's ceiling for it in every live claim.
+///
+/// `registered_mutation_maximum_is_recomputed_from_the_schema_table` recomputes it from the field
+/// tables, so a schema that grows past it cannot land quietly.
+pub const MAX_REGISTERED_MUTATION_ENVELOPE: usize = 70;
+
 /// The largest field body a Put or patch envelope may carry: 128 less the header.
 pub const MAX_PUT_FIELD_BYTES: usize = MAX_PUT_ENVELOPE - ENVELOPE_HEADER_LEN;
 
@@ -993,5 +1006,22 @@ mod tests {
         assert_eq!(writer.push(0x8001, &[1]), Err(WriteError::OutOfOrder));
         assert_eq!(writer.push(0x8002, &[1]), Err(WriteError::OutOfOrder));
         assert_eq!(writer.push(0x0000, &[1]), Err(WriteError::OutOfOrder));
+    }
+
+    /// The registries own the maximum, and this recomputes it rather than trusting the constant.
+    #[test]
+    fn registered_mutation_maximum_is_recomputed_from_the_schema_table() {
+        let mut widest = 0usize;
+        for kind in ObjectKind::ALL {
+            for class in [SchemaClass::Put, SchemaClass::Patch] {
+                if let Some(schema) = Schema::lookup(kind, class) {
+                    widest = widest.max(schema.max_encoded_len);
+                }
+            }
+        }
+        assert_eq!(widest, MAX_REGISTERED_MUTATION_ENVELOPE);
+        // A const comparison, so it is a compile-time claim rather than a runtime one: the
+        // registry maximum can never exceed the decoder ceiling it is measured against.
+        const _: () = assert!(MAX_REGISTERED_MUTATION_ENVELOPE <= MAX_PUT_ENVELOPE);
     }
 }

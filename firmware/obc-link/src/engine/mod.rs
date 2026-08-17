@@ -51,7 +51,7 @@ mod transaction;
 pub use connection::{Connection, ConnectionRefusal, LinkCeilings, Negotiated};
 pub use effect::{
     AbortCause, ClaimIntent, ClaimOutcome, ClaimStatus, Command, DeviceControlAnswer, DeviceControlRequest,
-    FailureCause, OperationReport, Outcome, PinnedSource, TerminalError,
+    FailureCause, IntentMetadata, OperationReport, Outcome, PinnedSource, TerminalError,
 };
 pub use link::{ByteLink, LinkChannel, LinkError};
 pub use phase::{
@@ -756,11 +756,17 @@ impl Engine {
                     subject_flags::DELETE,
                     target,
                     digest,
+                    IntentMetadata::NONE,
                     out,
                 )
             }
             Request::SetMetadata(request) => {
                 let Some(digest) = self.intent_digest(&Request::SetMetadata(request)) else {
+                    return self.reply_error(link, opcode, request_id, internal_body(), out);
+                };
+                // The patch travels with the claim for the same reason the Put envelope does: only
+                // the repository can apply it, and it can only apply it under the commit lock.
+                let Some(patch) = IntentMetadata::of(&request.patch) else {
                     return self.reply_error(link, opcode, request_id, internal_body(), out);
                 };
                 let target = Target::Replace {
@@ -776,6 +782,7 @@ impl Engine {
                     subject_flags::SET_METADATA,
                     target,
                     digest,
+                    patch,
                     out,
                 )
             }
@@ -794,6 +801,7 @@ impl Engine {
                     target: Target::Create,
                     declared_length: 0,
                     expected_crc: 0,
+                    metadata: IntentMetadata::NONE,
                     target_operation_id: Some(request.target_operation_id),
                 };
                 self.lookup(
@@ -820,6 +828,7 @@ impl Engine {
                     subject_flags::GET,
                     target,
                     digest,
+                    IntentMetadata::NONE,
                     out,
                 )
             }
@@ -840,6 +849,7 @@ impl Engine {
                     subject_flags::GET,
                     target,
                     digest,
+                    IntentMetadata::NONE,
                     out,
                 )
             }
@@ -879,6 +889,12 @@ impl Engine {
         let Some(digest) = self.intent_digest(&Request::StartUpload(request)) else {
             return self.reply_error(link, Opcode::StartUpload, request_id, internal_body(), out);
         };
+        // The envelope goes to the claim whole. It is already part of `digest` — §11's canonical
+        // intent covers it — so the two can never describe different metadata, which is what lets a
+        // §6.1 restart re-supply it from an identical intent rather than remember it across a cut.
+        let Some(metadata) = IntentMetadata::of(&request.metadata) else {
+            return self.reply_error(link, Opcode::StartUpload, request_id, internal_body(), out);
+        };
         // §12's precedence: the idempotency lookup precedes owner/resources and size/space, so the
         // busy and object-length checks live in `preflight` and run only once the lookup has said
         // this identifier carries no retained result and no conflicting intent.
@@ -895,6 +911,7 @@ impl Engine {
                 target: request.target,
                 declared_length: request.declared_length,
                 expected_crc: request.expected_crc32,
+                metadata,
                 target_operation_id: None,
             }),
         )
@@ -911,6 +928,7 @@ impl Engine {
         operation: u16,
         target: Target,
         digest: [u8; 32],
+        metadata: IntentMetadata,
         out: &mut [u8],
     ) -> Reaction<'a> {
         if let Err(body) = self.profile.require_operation(kind, operation) {
@@ -929,6 +947,7 @@ impl Engine {
                 target,
                 declared_length: 0,
                 expected_crc: 0,
+                metadata,
                 target_operation_id: None,
             }),
         )

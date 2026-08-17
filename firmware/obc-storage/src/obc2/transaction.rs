@@ -50,7 +50,7 @@
 use obc_link::control::{ClockStatus, ConfigBlock, DeviceStatus};
 use obc_link::engine::{
     AbortCause, ClaimIntent, ClaimOutcome, Command, DeviceControlAnswer, DeviceControlRequest, FailureCause,
-    OperationReport, Outcome, PinnedSource, PrincipalScope, TerminalError, Transaction,
+    IntentMetadata, OperationReport, Outcome, PinnedSource, PrincipalScope, TerminalError, Transaction,
 };
 use obc_link::error::detail;
 use obc_link::frame::Opcode;
@@ -62,6 +62,7 @@ use obc_link::upload::Target;
 use obc_link::ErrorBody;
 
 use super::checkpoint;
+use super::commit::{ChangeKind, CommitEvent};
 use super::compaction::{self, CardHeadFields, CheckpointPass, CompactionError};
 use super::entries::{
     ActiveOperation, CatalogHead, HeadKey, OperationPhase, ResultType, RetainedPrevious, TerminalResult,
@@ -82,13 +83,13 @@ pub const ACTIVE_CLAIMS: usize = MAX_NORMAL_ACTIVE_OPERATIONS;
 /// The §8.1 retained-result window.
 pub const RESULT_RING: usize = MAX_TERMINAL_RESULTS;
 
-/// The eight canonical bytes every head's envelope reservation carries until the effect seam
-/// carries the wire's own metadata envelope.
+/// The eight bytes a head reserves when **no repository derived a projection for it**.
 ///
-/// §5.3 gives a head an eight-to-ninety-six byte canonical envelope and refuses a shorter one.
-/// `ClaimIntent` does not carry `StartUpload`'s envelope — the engine drops it — so the kernel has
-/// nothing authentic to store yet and writes the minimum well-formed reservation instead. Threading
-/// the envelope through the seam is a DOS5 change to both crates, and is called out as such.
+/// §5.3 gives a head an eight-to-ninety-six byte canonical envelope and refuses a shorter one, so
+/// there has to be something. What there is not, any more, is a kernel that *invents* the head's
+/// metadata: the envelope a head carries is now whatever the [`Validator`] returned, and this is
+/// only what a store running [`AcceptEverything`] — a device with no domain repositories at all —
+/// leaves behind. A device-local publication that names no operation is the other user of it.
 const PLACEHOLDER_ENVELOPE: [u8; 8] = [0; 8];
 
 // ---------------------------------------------------------------------------------------------
@@ -278,23 +279,134 @@ pub enum RereadError<E> {
     Missing,
 }
 
-/// The typed validator §6.3 runs over sealed bytes, before publication and never before the seal.
+/// A bounded reader over the bytes a validator is judging.
 ///
-/// The domain validators are DOS5's. What this seam fixes now is the shape of the refusal: a
-/// `semanticValidation` detail in the kind's **own** namespace, which is what makes a rejection
-/// legible to a client that has never heard of this device's repositories.
-pub trait Validator {
-    /// Validates one sealed generation. `Err(detail)` is the kind-scoped semantic detail.
-    fn validate(&mut self, kind: ObjectKind, generation: GenerationId, length: u64, crc: u32) -> Result<(), u16>;
+/// It is what the sealed generation looks like to a repository, and it is deliberately *only* this:
+/// §2 of the system contract keeps the storage-private `GenerationId` and every path on the far side
+/// of the repository seam, so a validator is handed the ability to read the bytes and never the name
+/// of the thing holding them. `None` is a medium that refused; a short read is the end of the
+/// payload.
+pub trait SealedBytes {
+    /// Reads into `into` at `offset`, returning how many bytes the payload had there.
+    fn read_at(&mut self, offset: u64, into: &mut [u8]) -> Option<usize>;
 }
 
-/// The validator a device without domain rules runs: every sealed generation is admissible.
+/// The bytes a validator is judging, and the metadata that came with them.
+#[derive(Debug, Clone, Copy)]
+pub struct Validation<'a> {
+    /// The kind whose repository owns the rules.
+    pub kind: ObjectKind,
+    /// Which mutation is being validated: `StartUpload`, `SetMetadata`, or one of the commands that
+    /// changes no head at all.
+    pub opcode: Opcode,
+    /// The canonical envelope the request declared — a Put envelope, or a `SetMetadata` patch — and
+    /// empty for an opcode that declares neither.
+    pub metadata: &'a [u8],
+    /// The catalog projection the head currently carries, for a mutation that has one to patch.
+    pub current: Option<&'a [u8]>,
+    /// The sealed payload length; zero for a direct mutation.
+    pub length: u64,
+    /// The sealed payload CRC; zero for a direct mutation.
+    pub crc: u32,
+}
+
+/// The canonical catalog-projection envelope a repository derived for a head (§5.3, registries §4.3).
+///
+/// It is a *result*, not an input: the registries make every catalog field validator-derived, so the
+/// only code allowed to say what a head's metadata is, is the repository that just validated the
+/// payload it describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogProjection {
+    bytes: [u8; CatalogHead::ENVELOPE_CAPACITY],
+    len: u16,
+}
+
+impl CatalogProjection {
+    /// The minimum well-formed reservation, for a store with no repository for this kind.
+    pub const RESERVATION: Self = {
+        let mut bytes = [0u8; CatalogHead::ENVELOPE_CAPACITY];
+        let mut at = 0;
+        while at < PLACEHOLDER_ENVELOPE.len() {
+            bytes[at] = PLACEHOLDER_ENVELOPE[at];
+            at += 1;
+        }
+        CatalogProjection { bytes, len: PLACEHOLDER_ENVELOPE.len() as u16 }
+    };
+
+    /// Takes `bytes` as the projection, or `None` when §5.3 would refuse the length.
+    pub fn of(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < CatalogHead::MIN_ENVELOPE as usize || bytes.len() > CatalogHead::ENVELOPE_CAPACITY {
+            return None;
+        }
+        let mut this = CatalogProjection { bytes: [0; CatalogHead::ENVELOPE_CAPACITY], len: bytes.len() as u16 };
+        this.bytes[..bytes.len()].copy_from_slice(bytes);
+        Some(this)
+    }
+
+    /// The canonical bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// The declared length §5.3 stores beside the reservation.
+    pub const fn len(&self) -> u16 {
+        self.len
+    }
+
+    /// Never: §5.3's minimum is eight bytes.
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+/// The typed validator §6.3 runs over sealed bytes, before publication and never before the seal.
+///
+/// It is the one seam a concrete repository reaches the commit path through, and it does two jobs
+/// that §2 gives the same owner: it decides whether the bytes are admissible at all — `Err(detail)`
+/// is the kind-scoped semantic detail, which is what makes a rejection legible to a client that has
+/// never heard of this device's repositories — and it derives the catalog projection the published
+/// head will carry. Neither job is the kernel's: the kernel owns byte counts, CRCs, ordering,
+/// publication and recovery, and never parses a domain payload.
+pub trait Validator {
+    /// Validates one mutation and derives the projection its head should carry.
+    fn validate(&mut self, subject: &Validation<'_>, bytes: &mut dyn SealedBytes) -> Result<CatalogProjection, u16>;
+}
+
+/// The validator a device without domain rules runs: every sealed generation is admissible, and
+/// every head it publishes carries §5.3's bare reservation because nothing here can derive more.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AcceptEverything;
 
 impl Validator for AcceptEverything {
-    fn validate(&mut self, _kind: ObjectKind, _generation: GenerationId, _length: u64, _crc: u32) -> Result<(), u16> {
-        Ok(())
+    fn validate(&mut self, _subject: &Validation<'_>, _bytes: &mut dyn SealedBytes) -> Result<CatalogProjection, u16> {
+        Ok(CatalogProjection::RESERVATION)
+    }
+}
+
+/// The sealed generation, as the [`SealedBytes`] a validator reads.
+struct SealedGeneration<'m, M: KernelMedia> {
+    media: &'m mut M,
+    generation: GenerationId,
+    length: u64,
+}
+
+impl<M: KernelMedia> SealedBytes for SealedGeneration<'_, M> {
+    fn read_at(&mut self, offset: u64, into: &mut [u8]) -> Option<usize> {
+        let Some(remaining) = self.length.checked_sub(offset) else { return Some(0) };
+        let wanted = into.len().min(remaining.min(into.len() as u64) as usize);
+        if wanted == 0 {
+            return Some(0);
+        }
+        self.media.read_generation(self.generation, offset, &mut into[..wanted]).ok().map(|read| read.min(wanted))
+    }
+}
+
+/// The bytes a direct mutation has: none. It sealed no generation of its own.
+struct NoBytes;
+
+impl SealedBytes for NoBytes {
+    fn read_at(&mut self, _offset: u64, _into: &mut [u8]) -> Option<usize> {
+        Some(0)
     }
 }
 
@@ -334,6 +446,18 @@ pub trait Hooks {
     /// True when a device-local producer commits a competing mutation just before the commit lock.
     fn races_publication(&mut self) -> bool {
         false
+    }
+
+    /// One durable catalog commit happened (§4's `CommitEvent`).
+    ///
+    /// It is called from the commit path **after** the record's validity gate is synchronized and
+    /// never before — §4 fixes that ordering and nothing else about delivery — and it is called for
+    /// a device-local producer's publication exactly as for a client's, because §4 gives both the
+    /// same path. A `Hooks` that does nothing with it is a device with no consumer; the store's own
+    /// [`CommitLog`](super::commit::CommitLog) is the one that keeps the latest revision per
+    /// repository.
+    fn committed(&mut self, event: super::commit::CommitEvent) {
+        let _ = event;
     }
 
     /// The identity a `ResetStore` mints (§16). The default derives it from the store it replaces,
@@ -387,6 +511,18 @@ struct Live {
     target: Option<OperationId>,
     /// What an `AbortOperation` command found when it reached its target (§6.4).
     disposition: Option<AbortDisposition>,
+    /// The metadata envelope the claim declared, kept for the validator that will read it.
+    ///
+    /// It is **resident**, and that is sound for exactly the reason the phase above is: the envelope
+    /// is part of §11's canonical intent, so a claim this store finds at mount can only be driven
+    /// forward by a request carrying a byte-identical envelope, which re-supplies it. There is no
+    /// state a cut can lose here that the intent does not carry back.
+    metadata: IntentMetadata,
+    /// The catalog projection the repository derived at `Validate`, for `Publish` to store.
+    ///
+    /// Kept per claim rather than in one slot because §5.1 admits nine live claims and any of them
+    /// may be between its validation and its publication.
+    projection: Option<CatalogProjection>,
 }
 
 /// Whether a terminal commit moves the repository revision.
@@ -677,6 +813,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         self.media
     }
 
+    /// The hooks, for a caller that reads what they have collected.
+    pub fn hooks(&self) -> &H {
+        &self.hooks
+    }
+
     /// The hooks, so a test can arm the next one.
     pub fn hooks_mut(&mut self) -> &mut H {
         &mut self.hooks
@@ -685,6 +826,18 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// The typed validator, so a domain can be installed or a refusal armed.
     pub fn validator_mut(&mut self) -> &mut V {
         &mut self.validator
+    }
+
+    /// The catalog projection a head carries, copied into `into` and re-read from §13's newest
+    /// source. `Ok(None)` is a key no head occupies.
+    ///
+    /// It is a **card read**: §13 leaves the envelope on the card precisely so RAM does not hold 256
+    /// of them, and a caller that wants a page of metadata pays one bounded read per entry.
+    pub fn head_projection(&mut self, key: HeadKey, into: &mut [u8]) -> Result<Option<usize>, FailureCause> {
+        let Some(head) = self.stored_head(key)? else { return Ok(None) };
+        let len = usize::from(head.envelope_len).min(into.len());
+        into[..len].copy_from_slice(&head.envelope[..len]);
+        Ok(Some(len))
     }
 
     /// The current head of one logical object, as `(revision, length, crc)`.
@@ -947,6 +1100,8 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             checkpoint_sequence: 0,
             target: intent.target_operation_id,
             disposition: None,
+            metadata: intent.metadata,
+            projection: None,
         };
         match self.live.iter_mut().find(|slot| slot.is_none()) {
             Some(slot) => *slot = Some(live),
@@ -1074,6 +1229,10 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             live.checkpoint_sequence = 0;
             // A readmission issues a fresh session, so the claim is attached again.
             live.attached = intent.opcode == Opcode::StartUpload;
+            // The digest matched, so these bytes are the ones already held — but the work restarted
+            // and any projection derived from the discarded bytes is now about nothing.
+            live.metadata = intent.metadata;
+            live.projection = None;
         }
         Ok(())
     }
@@ -1176,15 +1335,58 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         let Some(kind) = ObjectKind::from_u16(row.subject_kind) else {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         };
+        let Some(opcode) = Opcode::from_u16(row.opcode) else {
+            return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
+        };
         // §7 runs domain validation only after the seal, over bytes the card is known to hold, so
         // what the validator is handed is the sealed generation's own length and CRC. A direct
         // mutation has no generation of its own and is validated on its request alone.
-        let (generation, length, crc) = match self.writing.as_ref().filter(|writing| writing.sealed) {
+        // The writer has to be *this* operation's. It never mattered while the validator was handed
+        // only a generation it ignored; it matters now, because a direct mutation validated beside a
+        // sealed upload would be handed that upload's bytes and judge the wrong payload.
+        let sealed = self.writing.as_ref().filter(|writing| writing.sealed && writing.operation == operation_id);
+        let (generation, length, crc) = match sealed {
             Some(writing) => (writing.generation, writing.writer.written(), writing.writer.declared_crc()),
             None => (row.generation, 0, 0),
         };
-        match self.validator.validate(kind, generation, length, crc) {
-            Ok(()) => {
+        let streaming = sealed.is_some();
+        let Some(metadata) = self.live_for(operation_id).map(|live| live.metadata) else {
+            return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
+        };
+        // A patch is applied *to* something, so the repository needs the projection the head carries
+        // — which §13 leaves on the card. Only the one opcode that patches pays for the re-read.
+        let existing = if opcode == Opcode::SetMetadata {
+            match self.stored_head(HeadKey { kind: kind.to_u16(), id: LogicalObjectId::new(row.logical_id) }) {
+                Ok(head) => head,
+                Err(cause) => return Outcome::Failed(cause),
+            }
+        } else {
+            None
+        };
+        let subject = Validation {
+            kind,
+            opcode,
+            metadata: metadata.as_bytes(),
+            current: existing.as_ref().map(|head| &head.envelope[..head.envelope_len as usize]),
+            length,
+            crc,
+        };
+        // The two are borrowed apart rather than through `self` because a validator reads the
+        // payload *while* it runs: the repository is the domain half and the media the byte half of
+        // one step, and neither is reachable from the other.
+        let this = &mut *self;
+        let validator = &mut this.validator;
+        let outcome = if streaming {
+            let mut bytes = SealedGeneration { media: &mut this.media, generation, length };
+            validator.validate(&subject, &mut bytes)
+        } else {
+            validator.validate(&subject, &mut NoBytes)
+        };
+        match outcome {
+            Ok(projection) => {
+                if let Some(live) = self.live_mut(operation_id) {
+                    live.projection = Some(projection);
+                }
                 self.set_phase(operation_id, Phase::Validating);
                 Outcome::Validated
             }
@@ -1266,6 +1468,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
 
         let principal = row.principal;
         let digest = row.intent;
+        // What the repository derived at `Validate`. A store with no repository for this kind
+        // derived §5.3's bare reservation, which is what the fallback names — never a head whose
+        // metadata the kernel made up.
+        let projection = self.live_for(operation_id).and_then(|live| live.projection);
+        let change = change_kind(opcode, &row);
         let envelope = match opcode {
             Opcode::StartUpload => {
                 let Some(writing) = self.writing.take() else {
@@ -1274,6 +1481,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 let length = writing.writer.written();
                 let crc = writing.writer.declared_crc();
                 let revision = Revision::new(self.revision + 1);
+                let projection = projection.unwrap_or(CatalogProjection::RESERVATION);
                 let head = CatalogHead {
                     key,
                     flags: 0,
@@ -1281,8 +1489,8 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                     generation: writing.generation,
                     length,
                     crc,
-                    envelope_len: PLACEHOLDER_ENVELOPE.len() as u16,
-                    envelope: envelope_reservation(),
+                    envelope_len: projection.len(),
+                    envelope: reserve(&projection),
                     resolution: GenerationId::ZERO,
                 };
                 let result = ObjectResult {
@@ -1332,7 +1540,18 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                     Err(cause) => return Outcome::Failed(cause),
                 };
                 let revision = Revision::new(self.revision + 1);
-                let head = CatalogHead { revision, ..existing };
+                // The patched projection is the repository's, not the kernel's: it was derived at
+                // `Validate` from this patch *and* the envelope the head already carried, which is
+                // why a patch adds a field instead of replacing the whole projection with itself.
+                let head = match projection {
+                    Some(projection) => CatalogHead {
+                        revision,
+                        envelope_len: projection.len(),
+                        envelope: reserve(&projection),
+                        ..existing
+                    },
+                    None => CatalogHead { revision, ..existing },
+                };
                 let envelope = ResultEnvelope::Object(ObjectResult {
                     operation_id,
                     store_id: self.index.store,
@@ -1391,6 +1610,24 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             }
             _ => return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT }),
         };
+        // §4: the event fires "after a catalog commit's validity gate is durable", and never
+        // before. Every arm above either committed its record — gate included — or returned, so
+        // reaching this line *is* that gate.
+        //
+        // An `AbortOperation` is the one publication that emits nothing, and deliberately: §4 gives
+        // the event to a *repository*, and an abort command belongs to none. It names no head, moves
+        // no revision, and the kind its claim carries is a placeholder the engine had to write
+        // somewhere — attributing an abort to the route repository would be a lie a consumer acts on.
+        if let ResultEnvelope::Object(result) = envelope {
+            self.hooks.committed(CommitEvent {
+                store: result.store_id,
+                kind: result.kind,
+                logical_object_id: Some(result.logical_object_id),
+                revision: result.revision,
+                change,
+                operation: operation_id,
+            });
+        }
         self.clear_live(operation_id);
         Outcome::Published(envelope)
     }
@@ -1906,8 +2143,21 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             mutation.retained = Some(Change::Put(retention));
         }
         let displaced = self.displaced_generation(head.key, head.generation);
+        let existed = self.index.head(head.key).is_some();
         self.commit(RecordKind::Terminal, operation, LOCAL_INTENT, mutation)?;
         self.revision = revision;
+        // §4: "Device-local producers publish through exactly that path", so a locally produced head
+        // wakes a consumer exactly as an uploaded one does — after the same gate.
+        if let Some(kind) = ObjectKind::from_u16(head.key.kind) {
+            self.hooks.committed(CommitEvent {
+                store: self.index.store,
+                kind,
+                logical_object_id: Some(head.key.id),
+                revision: head.revision,
+                change: if existed { ChangeKind::Replaced } else { ChangeKind::Created },
+                operation,
+            });
+        }
         if let Some(generation) = displaced {
             if !self.leases.holds(generation) {
                 let _ = self.media.collect_generation(generation);
@@ -2002,8 +2252,10 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         id
     }
 
-    fn live_for(&self, operation: OperationId) -> Option<Live> {
-        self.live.iter().flatten().find(|live| live.operation == operation).copied()
+    /// The resident half of one live claim, **by reference**: it carries the claim's whole metadata
+    /// envelope, and returning it by value would put that on every caller's frame.
+    fn live_for(&self, operation: OperationId) -> Option<&Live> {
+        self.live.iter().flatten().find(|live| live.operation == operation)
     }
 
     fn live_mut(&mut self, operation: OperationId) -> Option<&mut Live> {
@@ -2179,9 +2431,30 @@ fn local_operation_id(revision: Revision) -> OperationId {
 }
 
 fn envelope_reservation() -> [u8; CatalogHead::ENVELOPE_CAPACITY] {
+    reserve(&CatalogProjection::RESERVATION)
+}
+
+/// A projection in the fixed 96-byte reservation §5.3 gives every head, zero-padded.
+fn reserve(projection: &CatalogProjection) -> [u8; CatalogHead::ENVELOPE_CAPACITY] {
     let mut envelope = [0u8; CatalogHead::ENVELOPE_CAPACITY];
-    envelope[..PLACEHOLDER_ENVELOPE.len()].copy_from_slice(&PLACEHOLDER_ENVELOPE);
+    let bytes = projection.as_bytes();
+    envelope[..bytes.len()].copy_from_slice(bytes);
     envelope
+}
+
+/// Which §4 change a publication is, from the opcode and the claim's target.
+///
+/// The wire's `Committed` covers both halves of a Put; the claim row is what separates them, because
+/// a create records no expected revision and a compare-and-swap replace always does.
+fn change_kind(opcode: Opcode, row: &ActiveOperation) -> ChangeKind {
+    match opcode {
+        Opcode::StartUpload if row.expected_revision == 0 => ChangeKind::Created,
+        Opcode::StartUpload => ChangeKind::Replaced,
+        Opcode::DeleteObject => ChangeKind::Deleted,
+        Opcode::SetMetadata => ChangeKind::MetadataChanged,
+        Opcode::InstallUpdate => ChangeKind::InstallRequested,
+        _ => ChangeKind::RideAcknowledged,
+    }
 }
 
 /// The wire phase one storage phase projects to (§8.1).
@@ -2360,8 +2633,15 @@ mod tests {
     /// It was 73,384 while the transaction held the whole projection. Swapping that for §13's
     /// bounded index took 36,344 bytes out of it, and what is left is dominated by the 16 KiB seal
     /// stride rather than by any catalog state.
+    ///
+    /// It then grew by **1,584 bytes** when the claimed metadata envelope and the repository's
+    /// derived catalog projection joined the resident half of a live claim: 176 bytes per row across
+    /// §5.1's nine, which is the price of a head whose metadata is the client's own rather than a
+    /// placeholder. Both are resident rather than durable on purpose — the envelope is part of §11's
+    /// canonical intent and comes back with any request that could drive the claim forward, and the
+    /// projection is derived from bytes that a restart discards anyway.
     #[cfg(target_pointer_width = "64")]
-    const _: () = assert!(core::mem::size_of::<Pinned>() == 37_040);
+    const _: () = assert!(core::mem::size_of::<Pinned>() == 38_624);
 
     /// **The compile-time half of `mount_in_place`'s safety argument.**
     ///

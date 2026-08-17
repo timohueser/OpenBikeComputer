@@ -17,7 +17,7 @@ use std::vec::Vec;
 use crate::control::{ClockStatus, ConfigBlock, DeviceStatus};
 use crate::engine::{
     AbortCause, ClaimIntent, ClaimOutcome, Command, DeviceControlAnswer, DeviceControlRequest, FailureCause,
-    OperationReport, Outcome, PinnedSource, PrincipalScope, TerminalError,
+    IntentMetadata, OperationReport, Outcome, PinnedSource, PrincipalScope, TerminalError,
 };
 use crate::error::detail;
 use crate::frame::Opcode;
@@ -259,6 +259,7 @@ impl FakeTransaction {
                 target: Target::Create,
                 declared_length: 0,
                 expected_crc: 0,
+                metadata: IntentMetadata::NONE,
                 target_operation_id: None,
             },
             logical_object_id: LogicalObjectId::ZERO,

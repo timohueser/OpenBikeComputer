@@ -13,11 +13,67 @@
 use crate::error::{detail, presence, ErrorBody, ErrorCategory, Owner, RetryGuidance};
 use crate::frame::Opcode;
 use crate::ids::{LogicalObjectId, OperationId, Revision, StoreId};
+use crate::metadata::{MetadataEnvelope, SchemaClass, MAX_REGISTERED_MUTATION_ENVELOPE};
 use crate::registry::ObjectKind;
 use crate::result::ResultEnvelope;
 use crate::upload::Target;
 
 use super::session::PrincipalScope;
+
+/// The metadata envelope a mutating request declared, carried whole to the claim.
+///
+/// `StartUpload` takes a Put envelope and `SetMetadata` a patch; both are part of §11's canonical
+/// intent, and both are facts the *repository* needs — the one to derive the catalog projection a
+/// head stores, the other to patch the projection a head already has. Neither is a fact the engine
+/// interprets: it carries the bytes and never looks inside them.
+///
+/// It is **owned** rather than borrowed, and that is forced rather than chosen. The engine keeps a
+/// claim's intent across the `resume` round-trip that separates §11's lookup from its durable
+/// claim, so the arriving request's bytes are long gone by the time the claim is made. The buffer
+/// is [`MAX_REGISTERED_MUTATION_ENVELOPE`] rather than the decoder's ceiling, because a request
+/// whose envelope is longer than its own registered schema allows was refused at decode and never
+/// reaches a claim — the tighter bound is what this value costs in every live claim a store holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntentMetadata {
+    bytes: [u8; MAX_REGISTERED_MUTATION_ENVELOPE],
+    len: u16,
+}
+
+impl IntentMetadata {
+    /// No envelope at all: the opcodes that declare none (`DeleteObject`, `AbortOperation`,
+    /// `InstallUpdate`, `AcknowledgeRideImported`).
+    pub const NONE: Self = IntentMetadata { bytes: [0; MAX_REGISTERED_MUTATION_ENVELOPE], len: 0 };
+
+    /// Copies a decoded envelope in, or `None` when it is longer than any registered schema
+    /// allows — which a decoded request never is, because `Schema::validate` refused it first.
+    pub fn of(envelope: &MetadataEnvelope<'_>) -> Option<Self> {
+        let mut this = IntentMetadata::NONE;
+        let len = envelope.encode_into(&mut this.bytes).ok()?;
+        this.len = len as u16;
+        Some(this)
+    }
+
+    /// The canonical bytes, empty when the request declared no envelope.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// True when the request declared none.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Decodes the carried bytes against `class`'s ceiling, for a consumer that reads fields.
+    pub fn decode(&self, class: SchemaClass) -> crate::Result<MetadataEnvelope<'_>> {
+        MetadataEnvelope::decode(self.as_bytes(), class.ceiling())
+    }
+}
+
+impl Default for IntentMetadata {
+    fn default() -> Self {
+        IntentMetadata::NONE
+    }
+}
 
 /// The intent of a claim, in the form §11's four claim-lock actions need it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +94,15 @@ pub struct ClaimIntent {
     pub declared_length: u64,
     /// The declared whole-object CRC; zero for a direct mutation.
     pub expected_crc: u32,
+    /// The metadata envelope the request declared: `StartUpload`'s Put envelope, `SetMetadata`'s
+    /// patch, and [`IntentMetadata::NONE`] for every opcode that declares neither.
+    ///
+    /// It rides with the claim because the *repository* needs it and nothing between here and the
+    /// repository does. §5.3 gives every catalog head an eight-to-ninety-six byte canonical
+    /// envelope, and a store that never received the client's own metadata has nothing authentic to
+    /// put there — which is how a well-formed page of wrong catalog metadata gets served. The
+    /// engine carries the bytes and reads none of them.
+    pub metadata: IntentMetadata,
     /// The operation an AbortOperation command names, and `None` for every other opcode.
     ///
     /// §11 makes target admissibility part of preflight — "such as an AbortOperation naming a

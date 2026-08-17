@@ -644,6 +644,10 @@ fn lifecycle(store: &mut Store, log: &'static Log, geometry: &VolumeGeometry, in
         target: Target::Create,
         declared_length: PAYLOAD_LEN as u64,
         expected_crc: crc,
+        // The bench runs `AcceptEverything`, which derives no projection, so the head it publishes
+        // carries §5.3's bare reservation either way. A real Put envelope belongs to a bench that
+        // installs a repository, and this one deliberately measures the kernel alone.
+        metadata: obc_link::engine::IntentMetadata::NONE,
         target_operation_id: None,
     };
 

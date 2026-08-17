@@ -10,9 +10,10 @@
 //!
 //! ## What this is not
 //!
-//! It is **not** `CardStore`. There is no admission lock, no session table, no repository, no
-//! commit event and no garbage collector here — those are #1359's later slices. What this is, is
-//! the layer directly beneath them: the `/OBC2` tree's handles, §12's mount classification against a
+//! It is **not** `CardStore` — that is [`super::store`], which composes this module's media with the
+//! kernel, the repositories and the commit log. There is no admission lock, no session table, no
+//! repository and no garbage-collector schedule *here*. What this is, is the layer directly beneath
+//! them: the `/OBC2` tree's handles, §12's mount classification against a
 //! real directory listing, §12's initialization order, and the eleven media operations
 //! [`GenerationMedia`] and [`KernelMedia`] name. Nothing in this module is wired into the shipping
 //! image; the board reaches it through `obc2_store_bench`.
@@ -1143,6 +1144,7 @@ mod tests {
             target: Target::Create,
             declared_length: length,
             expected_crc: crc,
+            metadata: obc_link::engine::IntentMetadata::NONE,
             target_operation_id: None,
         }
     }
@@ -1677,5 +1679,79 @@ mod tests {
             other => panic!("query answered {other:?}"),
         }
         let _ = LogicalObjectId::ZERO;
+    }
+
+    /// The same lifecycle through **`CardStore`** — the owner, the route repository and the commit
+    /// log — over a real FAT volume rather than a simulated card.
+    ///
+    /// The store's own tests run over the sector-level simulation; this is the one that proves the
+    /// composition works against the media the board actually runs: `survey` → `initialize` →
+    /// `attach` → `CardStore`, a real OBCR payload validated by the real route repository, and a
+    /// projection that survives being read back out of the card's own bytes.
+    #[test]
+    fn a_card_store_publishes_a_validated_route_over_a_real_volume() {
+        use crate::obc2::store::CardStore;
+        use obc_link::engine::IntentMetadata;
+        use obc_link::metadata::{MetadataEnvelope, MetadataWriter, SchemaClass, MAX_CATALOG_ENVELOPE};
+        use obc_link::registry::retention;
+
+        /// `specs/vectors/route-plain.obcr`, named "Vector Loop".
+        const ROUTE: &[u8] = include_bytes!("../../../../specs/vectors/route-plain.obcr");
+
+        let (_card, media, index, base) = mounted();
+        let mut store = Box::new(CardStore::mount(media, index.as_ref().clone(), base));
+
+        let mut buffer = [0u8; 32];
+        let mut writer = MetadataWriter::new(&mut buffer).expect("a writer");
+        writer.push(0x8001, &[retention::MONTH]).expect("retention");
+        let put = writer.finish(ObjectKind::Route, SchemaClass::Put);
+        let metadata = IntentMetadata::of(&MetadataEnvelope::decode(put, 128).expect("canonical")).expect("it fits");
+
+        let operation = OperationId::new([0xC7; 16]);
+        let crc = obc_crc::crc32(ROUTE);
+        let mut scratch = [0u8; 512];
+        let mut claim = intent(operation, ROUTE.len() as u64, crc);
+        claim.metadata = metadata;
+        let logical = match store.execute(Command::Claim(claim), &mut scratch) {
+            EngineOutcome::Claim(obc_link::engine::ClaimOutcome::Claimed { logical_object_id, .. }) => {
+                logical_object_id
+            }
+            other => panic!("the claim was refused: {other:?}"),
+        };
+        for (step, chunk) in ROUTE.chunks(64).enumerate() {
+            let offset = (step * 64) as u64;
+            assert!(matches!(
+                store.execute(Command::Append { operation_id: operation, offset, bytes: chunk }, &mut scratch),
+                EngineOutcome::Appended
+            ));
+        }
+        assert!(matches!(
+            store.execute(
+                Command::Seal { operation_id: operation, declared_length: ROUTE.len() as u64, expected_crc: crc },
+                &mut scratch
+            ),
+            EngineOutcome::Sealed
+        ));
+        assert!(matches!(
+            store.execute(Command::Validate { operation_id: operation }, &mut scratch),
+            EngineOutcome::Validated
+        ));
+        assert!(matches!(
+            store.execute(Command::Publish { operation_id: operation }, &mut scratch),
+            EngineOutcome::Published(_)
+        ));
+
+        let event = store.next_commit().expect("a durable commit wakes its repository");
+        assert_eq!(event.kind, ObjectKind::Route);
+        assert_eq!(event.logical_object_id, Some(logical));
+
+        let mut staged = [0u8; MAX_CATALOG_ENVELOPE];
+        let len = store.routes().projection(logical, &mut staged).expect("the re-read").expect("a published head");
+        let envelope = MetadataEnvelope::decode(&staged[..len], MAX_CATALOG_ENVELOPE).expect("canonical");
+        // Base tags: the critical bit is part of the encoding, not of a field's identity.
+        assert_eq!(envelope.field(0x0001).and_then(|field| field.as_str()), Some("Vector Loop"));
+        assert_eq!(envelope.field(0x0002).and_then(|field| field.as_u8()), Some(retention::MONTH));
+        assert_eq!(store.routes().retention(logical).expect("a re-read"), Some(retention::MONTH));
+        store.into_media().unmount();
     }
 }

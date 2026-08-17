@@ -19,7 +19,7 @@ use std::vec::Vec;
 
 use obc_link::engine::{FailureCause, PrincipalScope};
 use obc_link::harness::scenarios::{self, Fault, Fixture, Store};
-use obc_link::ids::{GenerationId, LogicalObjectId, OperationId, Revision, StoreId};
+use obc_link::ids::{LogicalObjectId, OperationId, Revision, StoreId};
 use obc_link::registry::ObjectKind;
 
 // The crash matrix below drives a whole connection; nothing outside it needs a link or a request.
@@ -38,7 +38,7 @@ use obc_link::{Request, Response};
 
 use super::card::{Card, Mounted};
 use super::index::RamIndex;
-use super::transaction::{Hooks, KernelTransaction, Validator};
+use super::transaction::{CatalogProjection, Hooks, KernelTransaction, SealedBytes, Validation, Validator};
 
 /// The validator and the fault points, in one value that is installed twice.
 ///
@@ -62,11 +62,15 @@ pub struct TestPolicy {
 }
 
 impl Validator for TestPolicy {
-    fn validate(&mut self, _kind: ObjectKind, _generation: GenerationId, _length: u64, _crc: u32) -> Result<(), u16> {
-        match self.refuse_validation {
-            Some(detail) => Err(detail),
-            None => Ok(()),
+    fn validate(&mut self, subject: &Validation<'_>, _bytes: &mut dyn SealedBytes) -> Result<CatalogProjection, u16> {
+        if let Some(detail) = self.refuse_validation {
+            return Err(detail);
         }
+        // A stand-in, not a projection: it echoes the envelope the request declared so the whole
+        // thread — wire request, claim intent, live claim, published head — is exercised by every
+        // scenario that carries metadata, without this file having to own a domain's projection
+        // rules. A repository derives the catalog envelope from the payload; a harness cannot.
+        Ok(CatalogProjection::of(subject.metadata).unwrap_or(CatalogProjection::RESERVATION))
     }
 }
 

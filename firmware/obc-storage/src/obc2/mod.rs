@@ -21,21 +21,27 @@
 //! with the catalog-projection envelopes, the resolution `GenerationId`s and the terminal-result
 //! bodies left on the card and re-read on demand. The device places the second and never the first.
 //!
-//! ## What this deliberately is not
+//! ## The kernel, and the store above it
 //!
-//! It is not `CardStore`. There is no owner, no admission lock, no claim coordinator, no session
-//! table and no domain repository; those arrive with #1359, and nothing here is wired into a
-//! production path.
+//! Most of this module is the kernel: bounded, allocation-free machinery that owns bytes and knows
+//! no domain. Above it sit the three pieces #1359 adds — [`store::CardStore`], the one owner of a
+//! mounted volume; [`repositories`], the concrete per-kind types it lends that owner's capabilities
+//! to one at a time; and [`commit`], §4's coalescing commit event. Still absent, and named rather
+//! than implied: the transfer coordinator's session table, the resource arbiter, a typed mount/
+//! recovery status snapshot, and any garbage-collector schedule. Nothing here is wired into the
+//! shipping image yet.
 //!
-//! What *is* here now is the kernel's own machinery. The §13.1 adapter seam — [`adapter`] over
+//! What the kernel half is. The §13.1 adapter seam — [`adapter`] over
 //! `embedded_sdmmc`, with [`geometry`] deciding §1.1's volume preconditions ahead of it. The
 //! resident [`index`] §13 fixes, and the [`compaction`] pass §6.3 materializes a checkpoint through.
 //! The [`generation`] writer, [`leases`], the [`gc`] collector, [`mount`]'s classification, and
 //! §3's `GEN`/`WORK` [`names`] mapping. Each is a bounded, allocation-free piece with a seam a store
 //! composes rather than a trait that is the union of what a store does.
 //!
-//! It also holds no domain knowledge. §1: domain repositories "provide validated projections and
-//! immutable payloads"; the kernel owns byte counts, CRCs, ordering, publication and recovery, and
+//! The kernel half holds no domain knowledge, and that separation is now enforced by a seam rather
+//! than by care: §1 gives domain repositories "validated projections and immutable payloads", so a
+//! [`transaction::Validator`] is handed the sealed bytes and hands back the catalog projection its
+//! head will carry, while the kernel owns byte counts, CRCs, ordering, publication and recovery and
 //! never parses OBCR, OBCW, a map, a ride, or an update image.
 //!
 //! ## Reading order
@@ -58,6 +64,7 @@
 pub mod adapter;
 pub mod blocklog;
 pub mod checkpoint;
+pub mod commit;
 pub mod compaction;
 pub mod entries;
 pub mod error;
@@ -77,7 +84,9 @@ pub mod mount;
 pub mod names;
 mod raw;
 pub mod recovery;
+pub mod repositories;
 pub mod resolution;
+pub mod store;
 pub mod transaction;
 pub mod work;
 
@@ -102,11 +111,13 @@ mod crash;
 /// fields — without taking an `obc-link` dependency of its own.
 pub use obc_link::ids::{GenerationId, LogicalObjectId, OperationId, StoreId};
 
+pub use commit::{ChangeKind, CommitEvent, CommitLog};
 pub use error::{ApplyError, DecodeError, Reason, Record};
 pub use gate::Gate;
 pub use index::RamIndex;
 pub use model::{CatalogModel, Projection};
 pub use recovery::{Decision, FailClosed};
+pub use store::CardStore;
 
 /// The OBC2 storage-format version this kernel implements.
 pub const FORMAT_VERSION: u16 = 1;
