@@ -21,15 +21,22 @@
 //! 1. **Initialization (§8).** Two superblocks, one gate, sixteen slot headers, one empty catalog.
 //! 2. **Mount (§5.6)**, at four catalog shapes: empty, [`LADDER_MID`] entries, [`LADDER_TOP`]
 //!    entries, and with a ride recording (which is the only shape that reads the journal).
-//! 3. **The commit ladder (§5.5).** One create per step, timed at every step, reported at 0,
-//!    [`LADDER_MID`] and [`LADDER_TOP`] entries with the device writes each one issued against
-//!    §5.5's `ceil(n/4) + 3`.
+//! 3. **The commit ladder (§5.5).** One create per step, and at 0, [`LADDER_MID`] and
+//!    [`LADDER_TOP`] entries a create/remove pair repeated [`COMMIT_SAMPLES`] times, so the reported
+//!    figure carries a spread rather than being one observation. Also [`measure_opens`]: what §5.3's
+//!    lookup costs twelve times over, which is a rendered set coming up.
 //! 4. **The ride journal (§7.2).** One checkpoint every [`RIDE_GROWTH`] bytes, timed, split by
 //!    whether it flushed a payload page.
 //! 5. **The read path (§6.1)** into a multi-GiB object: one sequential sweep and three random
 //!    passes, each with the **read amplification** — device blocks read over payload blocks
 //!    required — which is the flat store's version of #1379's read-ratio check.
-//! 6. **Resident cost** against §9's table, plus the stack high-water the whole run reached.
+//! 6. **Resident cost** as a build assertion (see [`RESIDENT`]), plus the stack high-water the whole
+//!    run reached.
+//!
+//! Every timed figure is reported through [`report_split`]: the card's write half, its read half and
+//! the M33's residue, measured *inside* the block-device adapter. A commit is not one number — at 300
+//! entries it writes 79 blocks and reads 156, and attributing the reads to the program cycle is how
+//! the first round of this bench got its headline wrong.
 //!
 //! Phase two, after `probe-rs reset`, on the ride phase one left recording:
 //!
@@ -60,8 +67,8 @@ use embassy_time::Instant;
 use obc_crc::Crc32;
 use obc_storage::flat::store::{MAX_OPEN_OBJECTS, MAX_RESERVATIONS};
 use obc_storage::flat::{
-    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectKind, PutSource,
-    Revision, RideCheckpoint, RideRecovery, Store as _, StoreId,
+    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId, ObjectKind,
+    PutSource, Revision, RideCheckpoint, RideRecovery, Store as _, StoreId,
 };
 
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set); MPSL is
@@ -132,6 +139,10 @@ const LADDER_TOP: u16 = 1_024;
 /// extent — and the ladder's card cost is `LADDER_TOP` MiB rather than its payload.
 const LADDER_PAYLOAD: usize = 512;
 
+/// Samples taken at each reported catalog size. Three is enough to show whether a figure is stable;
+/// the same commit moved ten per cent between two runs of the first round of this bench.
+const COMMIT_SAMPLES: usize = 3;
+
 /// The ride reserve §9 budgets: 32 MiB.
 const RIDE_RESERVE: u64 = 32 * EXTENT_SIZE;
 /// Payload bytes one checkpoint interval adds. A recorded ride is a few hundred bytes a second and
@@ -144,6 +155,14 @@ const RIDE_GROWTH: usize = 2_048;
 /// eight, so the ride is left with a partial page in its slot and phase two's ride end has to move
 /// those bytes into the extents rather than finding everything already flushed.
 const RIDE_CHECKPOINTS: u64 = 23;
+
+/// What phase one's ride adds up to, from the constants it recorded with. Phase two anchors every
+/// expectation here and never on what recovery reported — see the comment in [`phase_two`].
+const RIDE_LEN: u64 = RIDE_CHECKPOINTS * RIDE_GROWTH as u64;
+/// Payload bytes §7.2 will have flushed into the ride's own extents at that point.
+const RIDE_FLUSHED: u64 = RIDE_LEN / PROGRAM_PAGE as u64 * PROGRAM_PAGE as u64;
+/// And what is left in the newest journal slot: deliberately not zero.
+const RIDE_TAIL_LEN: u32 = (RIDE_LEN - RIDE_FLUSHED) as u32;
 
 /// The read-path object, if the card has room for it. `FLAT_Store_Format.md` §6.1's addressing is
 /// arithmetic over 1 MiB extents, and only an object spanning thousands of them exercises it.
@@ -177,12 +196,17 @@ static mut BOUNCE: Aligned<4_096> = Aligned([0; 4_096]);
 struct Counters {
     reads: u32,
     read_blocks: u32,
+    /// Microseconds spent inside the driver on those reads.
+    read_us: u64,
     writes: u32,
     write_blocks: u32,
+    /// Microseconds spent inside the driver on those writes.
+    write_us: u64,
     syncs: u32,
 }
 
-static mut COUNTERS: Counters = Counters { reads: 0, read_blocks: 0, writes: 0, write_blocks: 0, syncs: 0 };
+static mut COUNTERS: Counters =
+    Counters { reads: 0, read_blocks: 0, read_us: 0, writes: 0, write_blocks: 0, write_us: 0, syncs: 0 };
 
 /// Everything the card has been asked to do since [`arm`].
 fn counters() -> Counters {
@@ -228,11 +252,12 @@ impl BlockDevice for Card {
 
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
         let start = Card::lba(lba)?;
-        Card::count(|c| {
-            c.reads += 1;
-            c.read_blocks += (buf.len() / BLOCK_BYTES) as u32;
-        });
-        Card::with(|sd| {
+        let blocks = (buf.len() / BLOCK_BYTES) as u32;
+        // The stopwatch is around the driver call and nothing else. An interval measured above the
+        // seam is the card *and* the M33, and the two have different fixes: attributing one to the
+        // other is exactly the error this bench's first round made.
+        let started = Instant::now();
+        let outcome = Card::with(|sd| {
             if (buf.as_ptr() as usize).is_multiple_of(4) {
                 return sd.read_blocks(start, buf);
             }
@@ -246,16 +271,21 @@ impl BlockDevice for Card {
                 done += take;
             }
             Ok(())
-        })
+        });
+        let elapsed = us(started);
+        Card::count(|c| {
+            c.reads += 1;
+            c.read_blocks += blocks;
+            c.read_us += elapsed;
+        });
+        outcome
     }
 
     fn write(&self, lba: u64, buf: &[u8]) -> Result<(), SemmcError> {
         let start = Card::lba(lba)?;
-        Card::count(|c| {
-            c.writes += 1;
-            c.write_blocks += (buf.len() / BLOCK_BYTES) as u32;
-        });
-        Card::with(|sd| {
+        let blocks = (buf.len() / BLOCK_BYTES) as u32;
+        let started = Instant::now();
+        let outcome = Card::with(|sd| {
             if (buf.as_ptr() as usize).is_multiple_of(4) {
                 return sd.write_blocks(start, buf);
             }
@@ -269,7 +299,14 @@ impl BlockDevice for Card {
                 done += take;
             }
             Ok(())
-        })
+        });
+        let elapsed = us(started);
+        Card::count(|c| {
+            c.writes += 1;
+            c.write_blocks += blocks;
+            c.write_us += elapsed;
+        });
+        outcome
     }
 
     /// **The one thing this transport gets for free.**
@@ -359,7 +396,7 @@ async fn main(_spawner: Spawner) {
 fn run() {
     report_footprint();
 
-    let boot = measure_boot("SURVEY");
+    let boot = measure_boot("SURVEY", Some(PLAN_BOOT_US));
     let ours = boot.mode.readable() && boot.store_id == BENCH_STORE;
     if boot.mode.readable() && !ours && !FORCE_REINIT {
         error!("BOOT  this card carries another store's StoreId — REFUSING to wipe it (set FORCE_REINIT)");
@@ -379,7 +416,7 @@ fn phase_one() {
 
     let Some(extents) = initialize() else { return };
 
-    measure_boot("BOOT  empty catalog");
+    measure_boot("BOOT  empty catalog", Some(PLAN_BOOT_US));
 
     // How much of the card the three phases may take. The ladder is one extent per object; the ride
     // takes §9's 32 MiB reserve; the read-path object takes whatever is left, up to 2 GiB.
@@ -461,8 +498,13 @@ struct Boot {
 ///
 /// The store is dropped before this returns: a boot figure is what a mount costs, and holding one of
 /// these open would put a second ten-kilobyte store beside whichever one the caller already has.
+///
+/// `plan` is a parameter and a mount that recovered a ride is reported against **no** budget,
+/// because §5.6's ~100 ms is scoped to its own sentence: "on a card with no ride in progress a mount
+/// reads at most 3 blocks plus the live catalog prefix". A mount that reads sixteen slot headers and
+/// CRCs a 32 KiB slot is doing more than that figure covers, and the spec states no figure for it.
 #[inline(never)]
-fn measure_boot(label: &str) -> Boot {
+fn measure_boot(label: &str, plan: Option<u64>) -> Boot {
     arm();
     let started = Instant::now();
     let store = FlatStore::mount(Card);
@@ -506,7 +548,15 @@ fn measure_boot(label: &str) -> Boot {
             recovered.tail_len
         );
     }
-    verdict(label, boot.us, PLAN_BOOT_US);
+    report_split(label, boot.us, &boot.counters);
+    match (plan, boot.recovered) {
+        (_, Some(_)) => info!(
+            "{=str}: reported against NO budget — §5.6's ~100 ms is scoped to a card with no ride in progress, and the spec states no figure for a mount that also recovers one",
+            label
+        ),
+        (Some(plan), None) => verdict(label, boot.us, plan),
+        (None, None) => {}
+    }
     boot
 }
 
@@ -517,58 +567,32 @@ fn measure_boot(label: &str) -> Boot {
 /// left behind.
 fn ladder(top: u16) -> u32 {
     let mut store = FlatStore::mount(Card);
-    let payload = [0x5Au8; LADDER_PAYLOAD];
-    let crc = obc_crc::crc32(&payload);
-    let name = DisplayName::new("fs4-ladder").unwrap_or_default();
-
     let mut total = 0u64;
     let mut worst = 0u64;
     let mut worst_at = 0u16;
     let mut publish_total = 0u64;
     for _ in 0..=top {
         let entries = store.entry_count();
-        let mut allocation = match store.allocate(LADDER_PAYLOAD as u64) {
-            Ok(allocation) => allocation,
-            Err(error) => {
-                error!("LADDER allocate at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
-                return store.free_extents();
+        // At a reported catalog size the figure is **sampled**, not taken once: the same commit moved
+        // ten per cent between two runs of this bench, so one observation is an anecdote rather than
+        // a cost. The ladder's own commit below still feeds the aggregate.
+        if entries == 0 || entries == LADDER_MID || entries == top {
+            sample_commits(&mut store, entries);
+            if entries > 0 {
+                measure_opens(&mut store, entries);
             }
-        };
+        }
         let started = Instant::now();
-        if let Err(error) = store.write(&mut allocation, &payload) {
-            error!("LADDER write at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
-            store.cancel(allocation);
-            return store.free_extents();
-        }
-        let meta = EntryMeta {
-            id: store.next_object_id(),
-            revision: Revision(1),
-            kind: ObjectKind::Route,
-            flags: EntryFlags::NONE,
-            payload_len: LADDER_PAYLOAD as u64,
-            payload_crc: crc,
-            name,
-        };
-        arm();
-        let commit_started = Instant::now();
-        let outcome = store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]);
-        let commit_us = us(commit_started);
+        let Some((commit_us, _, _)) = create_once(&mut store) else { return store.free_extents() };
         publish_total += us(started);
-        let counted = counters();
-        if let Err(error) = outcome {
-            error!("LADDER commit at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
-            return store.free_extents();
-        }
         total += commit_us;
         if commit_us > worst {
             worst = commit_us;
             worst_at = entries;
         }
-        if entries == 0 || entries == LADDER_MID || entries == top {
-            report_commit(entries, commit_us, &counted);
-        }
         if entries == LADDER_MID || entries == top {
-            measure_boot(if entries == LADDER_MID { "BOOT  300 entries" } else { "BOOT  full ladder" });
+            let label = if entries == LADDER_MID { "BOOT  300 entries" } else { "BOOT  full ladder" };
+            measure_boot(label, Some(PLAN_BOOT_US));
         }
     }
     let steps = u64::from(top) + 1;
@@ -584,31 +608,137 @@ fn ladder(top: u16) -> u32 {
     store.free_extents()
 }
 
-/// One commit, against §5.5's own cost model.
-fn report_commit(entries: u16, elapsed: u64, counted: &Counters) {
+/// One create: allocate, write the payload, commit. Only the commit is on the clock, because it is
+/// the step §5.5 puts a figure on.
+fn create_once(store: &mut FlatStore<Card>) -> Option<(u64, Counters, ObjectId)> {
+    let entries = store.entry_count();
+    let payload = [0x5Au8; LADDER_PAYLOAD];
+    let mut allocation = match store.allocate(LADDER_PAYLOAD as u64) {
+        Ok(allocation) => allocation,
+        Err(error) => {
+            error!("LADDER allocate at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
+            return None;
+        }
+    };
+    if let Err(error) = store.write(&mut allocation, &payload) {
+        error!("LADDER write at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
+        store.cancel(allocation);
+        return None;
+    }
+    let meta = EntryMeta {
+        id: store.next_object_id(),
+        revision: Revision(1),
+        kind: ObjectKind::Route,
+        flags: EntryFlags::NONE,
+        payload_len: LADDER_PAYLOAD as u64,
+        payload_crc: obc_crc::crc32(&payload),
+        name: DisplayName::new("fs4-ladder").unwrap_or_default(),
+    };
+    let id = meta.id;
+    arm();
+    let started = Instant::now();
+    let outcome = store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]);
+    let elapsed = us(started);
+    let counted = counters();
+    if let Err(error) = outcome {
+        error!("LADDER commit at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
+        return None;
+    }
+    Some((elapsed, counted, id))
+}
+
+/// One removal, timed: the same whole-prefix rewrite a create pays, without a payload write.
+fn remove_once(store: &mut FlatStore<Card>, id: ObjectId) -> Option<(u64, Counters)> {
+    arm();
+    let started = Instant::now();
+    let outcome = store.commit(&[Mutation::Remove { id, revision: Revision(1) }]);
+    let elapsed = us(started);
+    let counted = counters();
+    if let Err(error) = outcome {
+        error!("LADDER remove of object {=u64} refused ({})", id.0, defmt::Debug2Format(&error));
+        return None;
+    }
+    Some((elapsed, counted))
+}
+
+/// §5.5's figure at one catalog size, sampled [`COMMIT_SAMPLES`] times.
+///
+/// Each sample is a create followed by the removal that puts the catalog back where it was, so every
+/// one of them runs against exactly `entries` entries. The removals are timed too, and they are the
+/// control: same whole-prefix rewrite, one fewer payload write.
+fn sample_commits(store: &mut FlatStore<Card>, entries: u16) {
+    let mut creates = [0u64; COMMIT_SAMPLES];
+    let mut removes = [0u64; COMMIT_SAMPLES];
+    let mut last = Counters::default();
+    for index in 0..COMMIT_SAMPLES {
+        let Some((elapsed, counted, id)) = create_once(store) else { return };
+        creates[index] = elapsed;
+        last = counted;
+        let Some((elapsed, _)) = remove_once(store, id) else { return };
+        removes[index] = elapsed;
+    }
     // §5.5: `ceil(n/4) + 3` block writes — the body's `1 + ceil(n/4)` blocks (header included), the
     // gate invalidation and the gate itself — and three synchronizations.
     let predicted = 1 + (u32::from(entries) + 1).div_ceil(4) + 2;
+    let (mean, least, greatest) = spread(&creates);
     info!(
-        "COMMIT at {=u16} entries: {=u64} us — {=u32} writes / {=u32} blocks (§5.5 predicts {=u32} blocks), {=u32} reads / {=u32} blocks, {=u32} syncs",
+        "COMMIT at {=u16} entries, {=usize} samples: {=u64} us mean, {=u64}..{=u64} — {=u32} blocks written, §5.5 predicts {=u32}",
+        entries, COMMIT_SAMPLES, mean, least, greatest, last.write_blocks, predicted
+    );
+    report_split("COMMIT create (last sample)", creates[COMMIT_SAMPLES - 1], &last);
+    let (mean_remove, least_remove, greatest_remove) = spread(&removes);
+    info!(
+        "COMMIT at {=u16} entries, the removal that undoes each sample: {=u64} us mean, {=u64}..{=u64}",
+        entries, mean_remove, least_remove, greatest_remove
+    );
+    info!(
+        "COMMIT at {=u16} entries: the {=u32} syncs are no-ops on this transport — `write_blocks` already waited out the program cycle, so none of the time above is theirs",
+        entries, last.syncs
+    );
+    verdict("COMMIT", mean, PLAN_COMMIT_US);
+}
+
+/// What `open` costs — §5.3's binary search over the live prefix, then the hold row.
+///
+/// Twelve of them, because [`MAX_OPEN_OBJECTS`] is sized for the eleven map shards a rendered set
+/// mounts plus one transfer: this is the figure a renderer pays to bring a set up. The same search is
+/// `find`, which every commit's `resolve` runs once per mutation — so it is also half of why the
+/// commit figures above carry the read time they do.
+fn measure_opens(store: &mut FlatStore<Card>, entries: u16) {
+    let mut ids = [ObjectId::NONE; MAX_OPEN_OBJECTS];
+    let step = (entries as usize / MAX_OPEN_OBJECTS).max(1);
+    let mut found = 0usize;
+    for (index, meta) in store.entries().enumerate() {
+        if index.is_multiple_of(step) && found < MAX_OPEN_OBJECTS {
+            ids[found] = meta.id;
+            found += 1;
+        }
+    }
+    if found == 0 {
+        return;
+    }
+    let mut handles: [Option<Handle>; MAX_OPEN_OBJECTS] = core::array::from_fn(|_| None);
+    arm();
+    let started = Instant::now();
+    for (slot, id) in ids[..found].iter().enumerate() {
+        handles[slot] = store.open(*id, None).ok();
+    }
+    let elapsed = us(started);
+    let counted = counters();
+    let opened = handles.iter().flatten().count().max(1) as u64;
+    info!(
+        "OPEN  {=u64} objects spread across {=u16} entries: {=u64} us total, {=u64} us each — {=u32} entry-block reads, {=u64} per open",
+        opened,
         entries,
         elapsed,
-        counted.writes,
-        counted.write_blocks,
-        predicted,
-        counted.reads,
+        elapsed / opened,
         counted.read_blocks,
-        counted.syncs
+        u64::from(counted.read_blocks) / opened
     );
-    if counted.write_blocks > 0 {
-        info!(
-            "COMMIT at {=u16} entries: {=u64} us per written block, and the {=u32} syncs cost nothing on this transport",
-            entries,
-            elapsed / u64::from(counted.write_blocks),
-            counted.syncs
-        );
+    report_split("OPEN ", elapsed, &counted);
+    for handle in handles.into_iter().flatten() {
+        store.close(handle);
     }
-    verdict("COMMIT", elapsed, PLAN_COMMIT_US);
 }
 
 // ── 4: the ride journal ─────────────────────────────────────────────────────────────────────────
@@ -951,10 +1081,21 @@ fn amplification(label: &str, counted: &Counters, required: u64, elapsed: u64) {
 
 // ── 6: resident cost ────────────────────────────────────────────────────────────────────────────
 
+/// The resident total, and the build assertion that keeps it under §9's figure.
+const RESIDENT: usize = core::mem::size_of::<FlatStore<Card>>() + TAIL_CAPACITY;
+
+// **An assertion, not a measurement.** `size_of` is a compile-time fact, and the ~42 KiB plan figure
+// is the sum of the same two addends — reporting one against the other as a ratio dresses an
+// identity up as a result, which is what the first round of this bench did. So it is stated the
+// honest way: the build fails if the store plus a recording caller's tail ever leaves §9's budget,
+// and the number below is reported without a verdict. Nothing here is in `obc-storage`; the
+// constants are §9's, restated at the top of this file.
+const _: () = assert!(RESIDENT <= PLAN_RESIDENT, "the flat store plus §7.1's tail no longer fits §9's resident budget");
+const _: () = assert!(core::mem::size_of::<FlatStore<Card>>() > FREE_BITMAP);
+
 fn report_footprint() {
     let store = core::mem::size_of::<FlatStore<Card>>();
     let handle = core::mem::size_of::<obc_storage::flat::Handle>();
-    let total = store + TAIL_CAPACITY;
     info!(
         "RAM   [addend 1] FlatStore<Card> {=usize} B = the {=usize} B free bitmap (§6.2) + {=usize} reservation row(s) + {=usize} hold row(s) + the mounted rows",
         store, FREE_BITMAP, MAX_RESERVATIONS, MAX_OPEN_OBJECTS
@@ -966,10 +1107,8 @@ fn report_footprint() {
     info!("RAM   [component] one open Handle: {=usize} B; the entry array is never resident (§5.1)", handle);
     info!("RAM   [component] this bench's own buffers, which are not the store's: {=usize} B", CHUNK * 2 + 4_096);
     info!(
-        "RAM   TOTAL for one mounted store with a ride recording: {=usize} B vs the {=usize} B plan figure — {=u32}/100x",
-        total,
-        PLAN_RESIDENT,
-        (total * 100 / PLAN_RESIDENT) as u32
+        "RAM   TOTAL for one mounted store with a ride recording: {=usize} B. The build ASSERTS this stays within §9's {=usize} B — it is a compile-time identity, so it is reported without a verdict",
+        RESIDENT, PLAN_RESIDENT
     );
 }
 
@@ -985,24 +1124,33 @@ fn phase_two(boot: &Boot) {
         return;
     };
 
-    // What phase one recorded is a function of the checkpoint sequence alone, so this is an
-    // expectation rather than an echo of what the store just said.
-    let expected_len = recovered.checkpoint_sequence * RIDE_GROWTH as u64;
+    // **Every expectation below is anchored on the constants phase one wrote with, not on anything
+    // the store just said.** Deriving the expected length from `checkpoint_sequence` — as the first
+    // round of this bench did — makes the check self-fulfilling: a store that silently selected slot
+    // 22 instead of 23 would hand back a shorter ride and a CRC over the shorter ride, and both would
+    // "match". §7.4's loss cap is exactly the claim that would go unchecked.
     let mut digest = Crc32::new();
-    for offset in 0..expected_len {
+    for offset in 0..RIDE_LEN {
         digest.update(&[ride_byte(offset)]);
     }
     let expected_crc = digest.finalize();
     let mut ok = recovered.id == entry.id && recovered.revision == entry.revision;
-    if recovered.payload_len() != expected_len {
+    if recovered.checkpoint_sequence != RIDE_CHECKPOINTS {
         error!(
-            "RCVR  checkpoint {=u64} says {=u64} B, but {=u64} checkpoints of {=usize} B is {=u64} B",
-            recovered.checkpoint_sequence,
-            recovered.payload_len(),
-            recovered.checkpoint_sequence,
-            RIDE_GROWTH,
-            expected_len
+            "RCVR  §7.3 selected checkpoint {=u64}, but phase one wrote {=u64} — a checkpoint was lost or a stale slot won",
+            recovered.checkpoint_sequence, RIDE_CHECKPOINTS
         );
+        ok = false;
+    }
+    if (recovered.flushed, recovered.tail_len) != (RIDE_FLUSHED, RIDE_TAIL_LEN) {
+        error!(
+            "RCVR  recovery says {=u64} B flushed + {=u32} B tail; {=u64} checkpoints of {=usize} B is {=u64} + {=u32}",
+            recovered.flushed, recovered.tail_len, RIDE_CHECKPOINTS, RIDE_GROWTH, RIDE_FLUSHED, RIDE_TAIL_LEN
+        );
+        ok = false;
+    }
+    if recovered.payload_len() != RIDE_LEN {
+        error!("RCVR  recovery says {=u64} B of ride; phase one recorded {=u64} B", recovered.payload_len(), RIDE_LEN);
         ok = false;
     }
     if recovered.payload_crc != expected_crc {
@@ -1021,17 +1169,20 @@ fn phase_two(boot: &Boot) {
         recovered.payload_crc
     );
     if ok {
-        info!("RCVR  the recovery matches what the boot before the reset recorded, to the byte and the CRC");
+        info!(
+            "RCVR  the recovery matches the {=u64} checkpoints phase one wrote — sequence, flush point, length and CRC, all against the bench's own constants",
+            RIDE_CHECKPOINTS
+        );
     }
 
-    ride_end(&entry, &recovered);
-    measure_boot("BOOT  after the ride ended");
+    ride_end(&entry, expected_crc);
+    measure_boot("BOOT  after the ride ended", Some(PLAN_BOOT_US));
     info!("PHASE two done. `probe-rs reset` now runs phase one again — the card has no ride left to recover.");
 }
 
 /// §7.2's ride end and what it makes readable, with the store scoped to this call.
 #[inline(never)]
-fn ride_end(entry: &EntryMeta, recovered: &RideRecovery) {
+fn ride_end(entry: &EntryMeta, expected_crc: u32) {
     let mut store = FlatStore::mount(Card);
     // SAFETY: sole borrows.
     let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
@@ -1039,12 +1190,12 @@ fn ride_end(entry: &EntryMeta, recovered: &RideRecovery) {
 
     // The tail the store hands back is the part of the payload that is in a journal slot rather than
     // in the ride's extents. It has to be the tail of what phase one generated.
-    match store.recovered_tail(&mut tail[..recovered.tail_len as usize]) {
+    match store.recovered_tail(&mut tail[..RIDE_TAIL_LEN as usize]) {
         Ok(len) => {
             let bad = tail[..len]
                 .iter()
                 .enumerate()
-                .find(|(at, byte)| **byte != ride_byte(recovered.flushed + *at as u64))
+                .find(|(at, byte)| **byte != ride_byte(RIDE_FLUSHED + *at as u64))
                 .map(|(at, _)| at);
             match bad {
                 None => info!("RCVR  the {=usize} B tail came back out of the slot byte for byte", len),
@@ -1061,8 +1212,11 @@ fn ride_end(entry: &EntryMeta, recovered: &RideRecovery) {
         revision: entry.revision,
         kind: ObjectKind::Ride,
         flags: EntryFlags::NONE,
-        payload_len: recovered.payload_len(),
-        payload_crc: recovered.payload_crc,
+        // The constants again, not the recovery's own numbers: if §7.3 had selected a stale slot,
+        // this length would not match the tail that slot holds and the store would refuse the commit
+        // — which is the loud failure a self-anchored expectation quietly turns into a pass.
+        payload_len: RIDE_LEN,
+        payload_crc: expected_crc,
         name: DisplayName::new("fs4-ride").unwrap_or_default(),
     };
     arm();
@@ -1085,8 +1239,8 @@ fn ride_end(entry: &EntryMeta, recovered: &RideRecovery) {
             let mut digest = Crc32::new();
             let mut offset = 0u64;
             let mut bad = None;
-            while offset < recovered.payload_len() {
-                let want = ((recovered.payload_len() - offset) as usize).min(readback.len());
+            while offset < RIDE_LEN {
+                let want = ((RIDE_LEN - offset) as usize).min(readback.len());
                 let Ok(got) = store.read(&handle, offset, &mut readback[..want]) else {
                     error!("RCVR  the finalised ride would not read at {=u64} B", offset);
                     return;
@@ -1102,11 +1256,11 @@ fn ride_end(entry: &EntryMeta, recovered: &RideRecovery) {
                 offset += got as u64;
             }
             match bad {
-                None if digest.finalize() == recovered.payload_crc => info!(
+                None if digest.finalize() == expected_crc => info!(
                     "RCVR  the whole {=u64} B ride read back byte for byte through the ordinary read path",
-                    recovered.payload_len()
+                    RIDE_LEN
                 ),
-                None => error!("RCVR  the finalised ride's CRC does not match the checkpoint's"),
+                None => error!("RCVR  the finalised ride's CRC is not the one phase one recorded"),
                 Some(at) => error!("RCVR  the finalised ride differs from what was recorded at byte {=u64}", at),
             }
             store.close(handle);
@@ -1159,6 +1313,40 @@ fn spot_check(store: &mut FlatStore<Card>, meta: &EntryMeta) {
 }
 
 // ── verdicts and helpers ────────────────────────────────────────────────────────────────────────
+
+/// Where a measured interval went: the card's write half, its read half, and what was left over for
+/// the M33.
+///
+/// Every figure this bench reports carries this line, because the halves have different causes and
+/// different fixes. A commit that spends 79 blocks of writing and 156 blocks of *reading* is not one
+/// figure — the reads are `merge` streaming the live prefix twice plus `find`'s binary search, and
+/// dividing the total by the blocks written attributes all of it to the program cycle. That is the
+/// error the first round of this bench made, and this function is the fix.
+fn report_split(label: &str, elapsed: u64, counted: &Counters) {
+    info!(
+        "{=str}: {=u64} us WRITE {=u64} us ({=u32} calls / {=u32} blocks = {=u64} us per block) · READ {=u64} us ({=u32} / {=u32} = {=u64} us per block) · M33 {=u64} us",
+        label,
+        elapsed,
+        counted.write_us,
+        counted.writes,
+        counted.write_blocks,
+        counted.write_us / u64::from(counted.write_blocks.max(1)),
+        counted.read_us,
+        counted.reads,
+        counted.read_blocks,
+        counted.read_us / u64::from(counted.read_blocks.max(1)),
+        elapsed.saturating_sub(counted.read_us + counted.write_us)
+    );
+}
+
+/// The mean, least and greatest of a sample set, so a single-sample figure is never quoted as if it
+/// were the cost.
+fn spread(samples: &[u64]) -> (u64, u64, u64) {
+    let mean = samples.iter().sum::<u64>() / samples.len() as u64;
+    let least = samples.iter().copied().min().unwrap_or(0);
+    let greatest = samples.iter().copied().max().unwrap_or(0);
+    (mean, least, greatest)
+}
 
 /// One measured figure against its plan figure, in the form #1386 asks for: within plan, or a miss,
 /// and past 2× a miss that goes back to the epic.
