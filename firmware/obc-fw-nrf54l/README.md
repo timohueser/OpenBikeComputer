@@ -228,7 +228,10 @@ own.
 # destroys the partition table too. Anything on the card is gone. It refuses a card that already
 # carries a flat store under another `StoreId` (override with `FORCE_REINIT`).
 #
-# One run takes ~20 minutes, most of it writing and sweeping the 2 GiB read-path object.
+# Phase one takes ~45 minutes on a 64 GB card: ~8 of them are the commit ladder, ~5 the 2 GiB
+# write, ~3 the sweep, and ~20 the two CRC-32 folds over those 2 GiB — `obc-crc` folds at
+# 3.4 MB/s here, which is a measurement of its own and the reason the folds are timed apart.
+# Phase two takes 3 seconds.
 cargo run --release --bin flat_store_bench
 ```
 

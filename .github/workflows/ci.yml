@@ -373,11 +373,12 @@ jobs:
             --match obc2 --limit 8192
       # The flat store's own stack ceiling (#1386), the same guard one layer down. It is gated at the
       # measured figure rather than at a target: `FlatStore::mount` builds a 10,416-byte store in a
-      # return slot and `initialize` chains two of those, which put **32,256 B of transient stack** on
-      # this board — measured, against the 33,952 B high-water the whole bench run reached and the
-      # 51,576 B residual main stack the shipping image has. That is inside the budget and outside the
-      # margin, so the number is pinned here: an in-place constructor is what moves it, and anything
-      # that moves it the other way fails the build instead of arriving on glass.
+      # return slot and `initialize` chains two of those, which put **32,256 B of transient stack** in
+      # one frame — measured on glass, where the whole phase-one run reached 58,096 B of high-water
+      # (a bench that deliberately holds two stores at once) against the 51,576 B residual main stack
+      # the shipping image has. Inside the budget, outside the margin, so the number is pinned here:
+      # an in-place constructor is what moves it, and anything that moves it the other way fails the
+      # build instead of arriving on glass.
       - name: "obc-fw-nrf54l: flat store frame ceiling"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
