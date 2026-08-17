@@ -51,6 +51,8 @@ pub mod model;
 pub mod sim;
 
 #[cfg(test)]
+mod cost;
+#[cfg(test)]
 mod crash;
 #[cfg(test)]
 mod fuzz;
