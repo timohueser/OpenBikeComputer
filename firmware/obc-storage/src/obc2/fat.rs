@@ -20,14 +20,25 @@
 //! ## The handle budget is the shape of this module
 //!
 //! §13 gives the adapter **four directory handles and sixteen file handles**, and four is the exact
-//! depth of a leaf: volume root, `OBC2`, role, shard. So the root directory is closed the moment
-//! `/OBC2` is open, and a leaf is reached through a transient role/shard pair that is closed again
-//! before the call returns — `make_dir_in_dir` needs a free slot even though it keeps none, so a
-//! store that held the root open would be exactly one handle short of creating a shard.
+//! depth of a leaf: volume root, `OBC2`, role, shard. This module holds `/OBC2` and reaches a leaf
+//! through a transient role/shard pair that is closed again before the call returns.
 //!
-//! Permanently open: `COMMIT.JNL`, `CAT0.CHK`, `CAT1.CHK`, and — while a transaction is writing —
-//! one `GEN` payload and its `WORK` file. Five files against sixteen, which is the budget §13
-//! records and the reason the mount limit for map files is eleven.
+//! The arithmetic, exactly, because it has **zero** headroom. With the volume root also held by the
+//! composition — which is what the bench does — the peak is root + `/OBC2` + role + shard = **4 of
+//! 4**. `make_dir_in_dir` refuses only when the table is already full and keeps no handle of its
+//! own, and [`ensure_shards`](GenerationMedia::ensure_shards) calls it while three are held, so the
+//! one free slot it needs is there. The budget is met and not one handle is spare.
+//!
+//! **That is a precondition on the cutover, not a property of this module.** Today `sd.rs` holds
+//! root, `/routes` and `/tracks` open for the life of the mount. A composition that shared one
+//! `VolumeManager` between v1 and OBC2 would reach four before `/OBC2` was even open, and the first
+//! upload's `open_dir(OBC2, "GEN")` would fail `TooManyOpenDirs`. Either `SD_MAX_DIRS` rises or v1
+//! releases its held handles before OBC2 goes live; this bench avoids the question by owning its own
+//! volume manager.
+//!
+//! Files are not tight: permanently open are `COMMIT.JNL`, `CAT0.CHK`, `CAT1.CHK` and — while a
+//! transaction is writing — one `GEN` payload and its `WORK` file. Five against sixteen, which is
+//! the budget §13 records and the reason the mount limit for map files is eleven.
 //!
 //! ## Two syncs, and why they are different calls
 //!
@@ -268,9 +279,10 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
 
     /// Opens `role`'s shard directory for `generation`, creating it when asked.
     ///
-    /// The role directory is opened, used and closed inside the call: two handles are live at the
-    /// peak and the caller is left holding one, which is what keeps `/OBC2` + role + shard inside
-    /// §13's budget of four with a slot to spare for `make_dir_in_dir`.
+    /// The role directory is opened, used and closed inside the call, so the caller is left holding
+    /// one handle rather than two. With the volume root held above this module the peak is exactly
+    /// §13's four, and the `make_dir` below runs while three are held — which is the free slot
+    /// `make_dir_in_dir` requires without keeping.
     fn open_shard(&self, role: Role, generation: GenerationId, create: bool) -> Result<RawDirectory, AdapterError> {
         let vmgr = self.fat.volume_manager();
         let shard = LeafName::of(generation).shard;
@@ -312,7 +324,14 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
             // Absent, or present but short — a cut during its own zero-fill. Either way the
             // recorded length is not one that can be slot-addressed, so it is written afresh.
             Err(AdapterError::NotFound) | Err(AdapterError::LengthChanged { .. }) => {
-                self.fat.create_fixed(shard, name, WORK_FILE_LEN as u32, &mut self.stride[..])
+                let created = self.fat.create_fixed(shard, name, WORK_FILE_LEN as u32, &mut self.stride[..]);
+                if created.is_ok() {
+                    // The other half of what `collect_generation` credits back. A `WORK` file is
+                    // 32,768 bytes of allocated space, so a free-space figure that ignored it here
+                    // and returned it there would drift *up* on every generation.
+                    self.free = self.free.saturating_sub(WORK_FILE_LEN as u64);
+                }
+                created
             }
             Err(error) => Err(error),
         };
@@ -400,6 +419,11 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
         // the cluster chain, records length zero and writes the directory entry, which is exactly
         // §7's rewind, so the handle is closed and retaken in that mode.
         vmgr.close_file(open.payload).map_err(classify)?;
+        // The handle is gone the instant `close_file` returns, so the resident record of it has to
+        // go with it. Leaving `self.open` naming a closed file would make every later media call
+        // report `CallerBug` — a real I/O failure misreported as this code's mistake, for the rest
+        // of the mount, and a `debug_assert` in every debug build.
+        self.open = None;
         let payload = self.open_payload(open.generation, Mode::ReadWriteCreateOrTruncate)?;
         self.open = Some(Open { payload, ..open });
         self.free = self.free.saturating_add(length);
@@ -526,11 +550,12 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
             // §9: "Deleting an unreachable GEN/WORK pair may be interrupted at either file; both
             // orderings recover as harmless orphan cleanup because no catalog fact points to it."
             let Ok(shard) = self.open_shard(role, generation, false) else { continue };
-            if role == Role::Gen {
-                if let Ok(file) = vmgr.open_file_in_dir(shard, name, Mode::ReadOnly) {
-                    collected = u64::from(vmgr.file_length(file).unwrap_or(0));
-                    let _ = vmgr.close_file(file);
-                }
+            // Both leaves are credited back, not just the payload: the `WORK` file is 32,768 bytes
+            // of allocated space per generation, so accounting only the `GEN` half would let the
+            // resident free-space figure drift down by that much on every collection.
+            if let Ok(file) = vmgr.open_file_in_dir(shard, name, Mode::ReadOnly) {
+                collected += u64::from(vmgr.file_length(file).unwrap_or(0));
+                let _ = vmgr.close_file(file);
             }
             let _ = vmgr.delete_file_in_dir(shard, name);
             let _ = vmgr.close_dir(shard);
@@ -702,6 +727,8 @@ pub fn survey<
     let witness = if is_file(WITNESS_NAME) { read_witness(fat, obc2, stride) } else { None };
     let mut checkpoints: [Option<CheckpointObservation>; 2] = [None, None];
     let mut checkpoints_valid = [false; 2];
+    // §12's class 6, per checkpoint file, recorded while that file's bytes are still staged.
+    let mut degraded = [false; 2];
     for (index, name) in CHECKPOINT_NAMES.iter().enumerate() {
         if !is_file(name) {
             continue;
@@ -719,6 +746,13 @@ pub fn survey<
         }
         if let Ok(header) = checkpoint::validate_file(&image[..], index as u16) {
             checkpoints_valid[index] = true;
+            // §5.2 byte 59 bit 0, captured **here**, while this checkpoint's bytes are the ones in
+            // the staging image. Re-deriving it after the decision would read whichever file was
+            // validated last, and §6.3's choice is deterministic — so a store whose degraded bit
+            // lives in the checkpoint that was *not* read last would drop it at every mount, not
+            // just this one. It is a §12 class input rather than a §6.3 decision input, which is
+            // why it rides beside `CheckpointObservation` instead of inside it.
+            degraded[index] = header.flags & 1 != 0;
             checkpoints[index] = Some(CheckpointObservation {
                 store: header.store,
                 epoch: header.epoch,
@@ -756,9 +790,7 @@ pub fn survey<
 
     let decision = recovery::choose(&checkpoints, slots);
     let store_degraded = match decision {
-        Decision::Mount { checkpoint, .. } | Decision::MountReadOnly { checkpoint, .. } => {
-            checkpoints[checkpoint].is_some() && degraded_bit(image, checkpoint, checkpoints_valid)
-        }
+        Decision::Mount { checkpoint, .. } | Decision::MountReadOnly { checkpoint, .. } => degraded[checkpoint],
         _ => false,
     };
     let entries: heapless::Vec<Entry<'_>, MAX_LISTED> = listed[..count]
@@ -785,19 +817,6 @@ pub fn survey<
         mount::classify(None, Some(shape))
     };
     Survey { class: outcome.class(), outcome, valid_slots, checkpoints_valid, witness, entries: count }
-}
-
-/// The selected checkpoint header's durable recovery-degraded bit (§12's class 6).
-///
-/// The image buffer holds whichever checkpoint was validated **last**, so the bit is only read when
-/// that is also the one §6.3 selected; otherwise the honest answer is "not observed", which is what
-/// `false` means here — class 6 is durable and the next mount reads it again.
-fn degraded_bit(image: &CheckpointImage, checkpoint: usize, valid: [bool; 2]) -> bool {
-    let last_validated = if valid[1] { 1 } else { 0 };
-    if checkpoint != last_validated {
-        return false;
-    }
-    checkpoint::validate_file(&image[..], checkpoint as u16).map(|header| header.flags & 1 != 0).unwrap_or(false)
 }
 
 /// Reads and validates `INIT.REC`, §12's incomplete-initialization witness.
@@ -1003,8 +1022,9 @@ mod tests {
 
     use super::*;
     use crate::fat_extents::SharedBlockDevice;
-    use crate::obc2::fatsim::{fat32_card, geometry_sectors, Layout, NullTime, SparseDisk};
-    use crate::obc2::geometry;
+    use crate::obc2::blocklog::WriteLog;
+    use crate::obc2::fatsim::{fat32_card, geometry_sectors, touched, Layout, NullTime, SparseDisk};
+    use crate::obc2::geometry::{self, Region};
     use crate::obc2::transaction::{AcceptEverything, KernelTransaction, NoHooks};
 
     type Vmgr = VolumeManager<SharedBlockDevice<'static, SparseDisk>, NullTime, 4, 16, 1>;
@@ -1265,7 +1285,7 @@ mod tests {
     /// gate. What the test proves is that the record reads back as a record.
     #[test]
     fn a_journal_record_survives_its_append() {
-        let (card, mut media, mut model) = mounted();
+        let (card, mut media, model) = mounted();
         let body = crate::obc2::samples::retention_remove(model.epoch, 1, 3, 7);
         let encoded = body.encode_body();
         let gate = body.gate_for(&encoded).encode();
@@ -1279,7 +1299,6 @@ mod tests {
         assert!(survey.is_mountable());
         // The record is at the physical slot it named, and nowhere else.
         assert!(slots[3].is_some() && slots[..3].iter().all(|slot| slot.is_none()));
-        let _ = &mut model;
     }
 
     /// §6.3's alternating pair, which the media bench could not cover because it writes no
@@ -1310,6 +1329,83 @@ mod tests {
         media.load_projection(&survey, &mut remounted).expect("projection");
         assert_eq!(remounted.through_sequence, 1);
         assert_eq!(remounted.actives.len(), 1, "the newer checkpoint's active row is missing");
+
+        // The other parity. A third checkpoint alternates back to file 0, and §6.3 must select it —
+        // which is also the parity that catches a class-6 bit read from the wrong staged file, since
+        // a survey validates 0 first and 1 second.
+        media.write_checkpoint(0, &remounted).expect("the third checkpoint");
+        assert_eq!(media.active_checkpoint(), 0);
+        media.unmount();
+        let survey = super::survey(&card.fat(), card.root, None, stride, image, &mut slots);
+        assert_eq!(survey.checkpoints_valid, [true, true]);
+        assert!(matches!(survey.outcome, Outcome::Mount { checkpoint: 0, .. }), "{survey:?}");
+    }
+
+    /// §12's class 6, in **both** parities.
+    ///
+    /// The durable recovery-degraded bit lives in the selected checkpoint's header, and a survey
+    /// stages the two files one after the other into one buffer. Reading the bit after the decision
+    /// therefore reads whichever file was staged last — and because [`recovery::choose`] is
+    /// deterministic, a store whose bit lives in the other file would drop it at *every* mount and
+    /// report a fully writable store where §12 fixes a read-only one. So the bit is asserted from
+    /// each file in turn, with the other one holding a clear bit.
+    #[test]
+    fn the_store_degraded_bit_is_observed_from_whichever_checkpoint_is_selected() {
+        for degraded_slot in [0usize, 1] {
+            let (card, mut media, mut model) = mounted();
+            // Two checkpoints, alternating, the later one in `degraded_slot`. The clear one is
+            // written first so the degraded one always carries the greater through-sequence.
+            let clear_slot = 1 - degraded_slot;
+            let claim = crate::obc2::journal::JournalBody {
+                store: STORE,
+                ..crate::obc2::samples::claim(model.epoch, 1, 0, [0x31; 16], 1)
+            };
+            media.write_checkpoint(clear_slot, &model).expect("the clear checkpoint");
+            model.apply(&claim).expect("a claim applies");
+            model.flags |= 1;
+            media.write_checkpoint(degraded_slot, &model).expect("the degraded checkpoint");
+            media.unmount();
+
+            let (stride, image, mut slots) = buffers();
+            let fat = card.fat();
+            let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+            assert!(
+                matches!(survey.outcome, Outcome::Mount { checkpoint, store_degraded: true, .. } if checkpoint == degraded_slot),
+                "the degraded bit was dropped with the flag in CAT{degraded_slot}: {survey:?}"
+            );
+            // §12's class 6 is what makes the store read-only, so the class and the refusal are the
+            // two facts that matter downstream.
+            assert_eq!(survey.class, MountClass::MountedStoreDegraded, "CAT{degraded_slot}");
+            assert!(!survey.outcome.admits_mutation(), "a degraded store admitted a mutation");
+        }
+    }
+
+    /// The complement: a clear bit in both files is not degraded in either parity, so the assertion
+    /// above is testing the bit rather than the code path.
+    #[test]
+    fn a_store_with_no_degraded_bit_is_mounted_writable_in_either_parity() {
+        for newer_slot in [0usize, 1] {
+            let (card, mut media, model) = mounted();
+            media.write_checkpoint(1 - newer_slot, &model).expect("the first checkpoint");
+            let mut later = model.clone();
+            later
+                .apply(&crate::obc2::journal::JournalBody {
+                    store: STORE,
+                    ..crate::obc2::samples::claim(model.epoch, 1, 0, [0x31; 16], 1)
+                })
+                .expect("a claim applies");
+            media.write_checkpoint(newer_slot, &later).expect("the second checkpoint");
+            media.unmount();
+
+            let (stride, image, mut slots) = buffers();
+            let survey = super::survey(&card.fat(), card.root, None, stride, image, &mut slots);
+            assert!(
+                matches!(survey.outcome, Outcome::Mount { checkpoint, store_degraded: false, .. } if checkpoint == newer_slot),
+                "{survey:?}"
+            );
+            assert_eq!(survey.class, MountClass::Mounted);
+            assert!(survey.outcome.admits_mutation());
+        }
     }
 
     /// §16's reset: every object, result and journal record is gone, the identity is the new one,
@@ -1348,6 +1444,111 @@ mod tests {
         assert_eq!(remounted.store, REPLACEMENT, "the StoreId did not change");
         assert!(remounted.heads.is_empty() && remounted.results.is_empty());
         assert_eq!(*remounted, *CatalogModel::initial(REPLACEMENT, ObjectKind::Weather.to_u16()));
+    }
+
+    /// **The simulator twin of the board's clean-flush measurement.**
+    ///
+    /// `obc2_store_bench` records every sector one `Command::Publish` writes on the real card and
+    /// checks that none of them is single-copy metadata. That is the strongest evidence there is —
+    /// and it runs on one card, on one desk, when somebody remembers to flash the bench. §13.1's
+    /// obligation is what the whole commit path rests on, so it also needs a guard that runs on
+    /// every push.
+    ///
+    /// This is that guard: the same publish, through the same kernel, over a genuine FAT32 volume
+    /// with a logging block device under it. A sector written into FSInfo, either FAT, the root
+    /// directory or `/OBC2`'s own directory sector fails the test — which is exactly what a
+    /// `flush_file` reintroduced anywhere on the commit path would do.
+    #[test]
+    fn a_publish_writes_no_single_copy_metadata_sector() {
+        type Logged = WriteLog<SparseDisk, 512>;
+        type LoggedVmgr = VolumeManager<SharedBlockDevice<'static, Logged>, NullTime, 4, 16, 1>;
+        type LoggedFat = Adapter<'static, SharedBlockDevice<'static, Logged>, NullTime, 4, 16, 1>;
+        type LoggedMedia = FatMedia<'static, SharedBlockDevice<'static, Logged>, NullTime, 4, 16, 1>;
+
+        let layout = Layout::default();
+        let logged: &'static Logged = Box::leak(Box::new(WriteLog::new(fat32_card(layout))));
+        let vmgr: &'static LoggedVmgr =
+            Box::leak(Box::new(VolumeManager::new_with_limits(SharedBlockDevice(logged), NullTime, 9_000)));
+        let (mbr, bpb) = geometry_sectors(logged.device(), layout.partition_start_lba);
+        let geometry = geometry::admit(&mbr, &bpb, 0).expect("the simulated card is conforming");
+        let volume = vmgr.open_raw_volume(VolumeIdx(0)).expect("mounts");
+        let root = vmgr.open_root_dir(volume).expect("a root directory");
+
+        let fat: LoggedFat = Adapter::new(vmgr);
+        let (stride, image, mut slots) = buffers();
+        initialize(&fat, root, STORE, stride, image).expect("initialization");
+        let survey = super::survey(&fat, root, None, stride, image, &mut slots);
+        assert!(survey.is_mountable(), "{survey:?}");
+        let mut model = Box::new(CatalogModel::empty(STORE));
+        let mut media: LoggedMedia = attach(fat, root, &survey, stride, image, 8 * 1024 * 1024).expect("attach");
+        media.load_projection(&survey, &mut model).expect("projection");
+
+        // The sector holding `COMMIT.JNL`'s own 32-byte directory entry. On FAT32 a directory lives
+        // in the data region, so an entry rewrite is indistinguishable from a record write unless
+        // this is known — the board bench refuses a verdict without it, and so does this.
+        let mut entry_lba = None;
+        vmgr.iterate_dir(media.obc2(), |entry| {
+            if entry.name.base_name() == b"COMMIT" {
+                entry_lba = Some(entry.entry_block.0);
+            }
+        })
+        .expect("the /OBC2 listing");
+        let entry_lba = entry_lba.expect("COMMIT.JNL has a directory entry");
+
+        let mut store = Box::new(KernelTransaction::mount(media, AcceptEverything, NoHooks, *model));
+        let operation = OperationId::new([0xE7; 16]);
+        let payload = [0x6C; 2_048];
+        let crc = obc_crc::crc32(&payload);
+        let mut scratch = [0u8; 512];
+        assert!(matches!(
+            store.execute(Command::Claim(intent(operation, payload.len() as u64, crc)), &mut scratch),
+            EngineOutcome::Claim(obc_link::engine::ClaimOutcome::Claimed { .. })
+        ));
+        store.execute(Command::Append { operation_id: operation, offset: 0, bytes: &payload }, &mut scratch);
+        store.execute(
+            Command::Seal { operation_id: operation, declared_length: payload.len() as u64, expected_crc: crc },
+            &mut scratch,
+        );
+        store.execute(Command::Validate { operation_id: operation }, &mut scratch);
+
+        // Only the publish is armed: the claim and the seal legitimately create files and change a
+        // recorded length, so they *must* write directory entries. §13.1's obligation is about the
+        // commit, which writes into files that reached their final length at initialization.
+        logged.arm();
+        let published = store.execute(Command::Publish { operation_id: operation }, &mut scratch);
+        logged.disarm();
+        assert!(matches!(published, EngineOutcome::Published(_)), "{published:?}");
+
+        assert_eq!(logged.dropped(), 0, "the span log overflowed, so this window proves nothing");
+        let written = logged.with_spans(touched);
+        assert!(!written.is_empty(), "the publish wrote nothing at all — the log is not armed");
+        let offenders: std::vec::Vec<(u32, Region)> = written
+            .iter()
+            .map(|&lba| (lba, geometry.region(lba)))
+            .filter(|(lba, region)| *region != Region::Data || *lba == entry_lba)
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "§13.1's clean flush was violated: a publish wrote single-copy metadata {offenders:?} \
+             (/OBC2's directory entry is LBA {entry_lba}, FSInfo {:?})",
+            geometry.fs_info_lba
+        );
+        // And the positive half, because a publish that wrote *nothing* would also have no metadata.
+        //
+        // Two counts, and the difference between them is the reason to state both. **32** is the set
+        // of distinct sectors: one 16,384-byte journal stride, contiguous. **33** is the number of
+        // sector *writes*, because §6 makes the gate a second durability point — and the gate sits
+        // at slot base + 1,536, which is sector 3 of the stride the body write already covered. So
+        // the commit programs that one sector twice, on purpose, and the board bench's 33 and this
+        // 32 are the same measurement counted two ways.
+        assert_eq!(written.len(), 32, "a commit's distinct sectors are one journal stride: {written:?}");
+        let first = written[0];
+        assert!(
+            written.iter().enumerate().all(|(step, lba)| *lba == first + step as u32),
+            "the stride was not written contiguously: {written:?}"
+        );
+        let sector_writes: usize = logged.with_spans(|spans| spans.iter().map(|span| span.blocks as usize).sum());
+        assert_eq!(sector_writes, 33, "the gate must re-program exactly one sector of the stride");
     }
 
     /// **The slice's acceptance**: one whole upload lifecycle through the kernel over a real FAT
