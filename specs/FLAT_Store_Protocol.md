@@ -153,6 +153,10 @@ destructive and explicit.
   may drop that prefix from its own tail. A `journal` that returns `Err` has flushed **none** of it: the
   caller keeps the whole tail and retries with the same bytes, or with a tail that extends them. The
   flushed length moves only when the store says it did.
+- A `write` that returns `Err` has advanced the allocation by nothing: the caller may retry the same
+  bytes — a fragmented allocation is several media writes, and the ones that landed are the bytes the
+  retry writes there again — or abandon the transfer, and a `cancel` of an allocation a `write` failed on
+  always releases its row and its extents.
 
 ## 3. Protocol v4
 
