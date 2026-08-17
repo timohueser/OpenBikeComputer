@@ -66,6 +66,13 @@ pub enum When {
     /// wide command can leave. `(!tear, !durable)` is omitted because it is
     /// [`Before`](Self::Before): nothing happened.
     ///
+    /// One acknowledged narrowing: `FLAT_Store_Format.md` §1 permits an arbitrary **subset** of the
+    /// command's blocks to have landed, and this generates only the ordered **prefixes** — `blocks` of
+    /// them, in order. That is the shape a card that streams a command actually produces, and the
+    /// general subset is not left untested either: [`sync`](SparseDisk::sync)'s own `During` model
+    /// commits a seeded arbitrary subset of everything pending, which is where a scattered outcome
+    /// comes from.
+    ///
     /// Meaningless for a read (nothing changes) and for a sync (which has its own subset model), and
     /// ignored when `blocks` is not below the command's block count.
     Inside { blocks: u32, tear: bool, durable: bool },
