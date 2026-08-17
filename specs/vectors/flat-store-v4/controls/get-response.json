@@ -1,0 +1,24 @@
+{
+  "name": "get-response",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "GET",
+    "value": 3
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 24,
+    "requestId": 10756
+  },
+  "note": "Sent once the last payload byte has been handed to the transport; the client verifies both.",
+  "body": {
+    "revisionServed": "3",
+    "payloadLength": "42137",
+    "payloadCrc32": 2622127649
+  },
+  "frame": "4f4243340403010018000000042a0000030000000000000099a4000000000000217e4a9c00000000"
+}

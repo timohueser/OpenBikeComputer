@@ -1,0 +1,25 @@
+{
+  "name": "list-response-empty-catalog",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "LIST",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 24,
+    "requestId": 10754
+  },
+  "note": "A freshly initialized card: the page carries the identity a client keys its cache on and no entries.",
+  "body": {
+    "storeId": "8f2c41d96b074ea3b1559c207de83466",
+    "commitSequence": "1",
+    "entries": 0,
+    "more": false
+  },
+  "frame": "4f4243340401010018000000022a00008f2c41d96b074ea3b1559c207de834660100000000000000"
+}

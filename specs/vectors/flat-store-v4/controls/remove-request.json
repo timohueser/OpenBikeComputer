@@ -1,0 +1,23 @@
+{
+  "name": "remove-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "REMOVE",
+    "value": 5
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 10757
+  },
+  "note": "One commit removes the entry and frees its extents; a retained previous revision goes with it.",
+  "body": {
+    "objectId": "1",
+    "expectedRevision": "3"
+  },
+  "frame": "4f4243340405000010000000052a000001000000000000000300000000000000"
+}

@@ -1,0 +1,25 @@
+{
+  "name": "put-response",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 32,
+    "requestId": 10753
+  },
+  "note": "The commit happened: the assigned ObjectId, the new Revision, and what the catalog now holds.",
+  "body": {
+    "objectId": "1",
+    "revision": "1",
+    "payloadLength": "42137",
+    "payloadCrc32": 2622127649
+  },
+  "frame": "4f4243340404010020000000012a00000100000000000000010000000000000099a4000000000000217e4a9c00000000"
+}

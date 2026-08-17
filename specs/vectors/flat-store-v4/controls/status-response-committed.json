@@ -1,0 +1,25 @@
+{
+  "name": "status-response-committed",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "STATUS",
+    "value": 2
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 24,
+    "requestId": 10755
+  },
+  "note": "The catalog holds exactly the revision asked about as the head: the upload landed.",
+  "body": {
+    "state": 1,
+    "headRevision": "3",
+    "headPayloadLength": "42137",
+    "headPayloadCrc32": 2622127649
+  },
+  "frame": "4f4243340402010018000000032a000001000000030000000000000099a4000000000000217e4a9c"
+}

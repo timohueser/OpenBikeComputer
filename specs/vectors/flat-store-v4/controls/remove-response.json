@@ -1,0 +1,22 @@
+{
+  "name": "remove-response",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "REMOVE",
+    "value": 5
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 8,
+    "requestId": 10757
+  },
+  "note": "The new catalog commit sequence, and nothing else.",
+  "body": {
+    "commitSequence": "8"
+  },
+  "frame": "4f4243340405010008000000052a00000800000000000000"
+}

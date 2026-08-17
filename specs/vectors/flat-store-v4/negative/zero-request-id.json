@@ -1,0 +1,11 @@
+{
+  "name": "zero-request-id",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "A zero RequestId is unanswerable — a response would have to echo it — so the receiver emits nothing and closes that record stream.",
+  "expect": {
+    "disposition": "closeRecordStream"
+  },
+  "bytes": "4f4243340404000054000000000000000000000000000000000000000000000099a4000000000000217e4a9c010000000c0000004772696d73656c204c6f6f70000000000000000000000000000000000000000000000000000000000000000000000000"
+}

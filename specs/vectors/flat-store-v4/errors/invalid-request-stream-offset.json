@@ -1,0 +1,19 @@
+{
+  "name": "invalid-request-stream-offset",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "streamOffset",
+    "detailValue": 4,
+    "context": "0"
+  },
+  "note": "A gap, an overlap or a zero length on the stream channel terminates the transfer.",
+  "frame": "4f4243340404030010000000012a000003000400000000000000000000000000"
+}

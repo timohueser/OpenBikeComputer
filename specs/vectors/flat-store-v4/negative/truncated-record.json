@@ -1,0 +1,15 @@
+{
+  "name": "truncated-record",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "A record short of its stated payload.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidFrame",
+    "codeValue": 2,
+    "detail": "truncated",
+    "detailValue": 3
+  },
+  "bytes": "4f4243340404000054000000012a00000000000000000000000000000000000099a4000000000000217e4a9c010000000c0000004772696d73656c204c6f6f700000000000000000000000000000000000000000000000000000000000000000000000"
+}

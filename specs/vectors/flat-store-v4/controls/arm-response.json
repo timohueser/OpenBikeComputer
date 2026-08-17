@@ -1,0 +1,23 @@
+{
+  "name": "arm-response",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "ARM",
+    "value": 7
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 16,
+    "requestId": 10759
+  },
+  "note": "The rollback reserve's ObjectId and the sequence of the one commit ARM makes.",
+  "body": {
+    "rollbackObjectId": "6",
+    "commitSequence": "8"
+  },
+  "frame": "4f4243340407010010000000072a000006000000000000000800000000000000"
+}

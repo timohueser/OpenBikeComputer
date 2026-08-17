@@ -1,0 +1,23 @@
+{
+  "name": "get-request-head",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "GET",
+    "value": 3
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 10756
+  },
+  "note": "Revision zero takes the current head.",
+  "body": {
+    "objectId": "1",
+    "revision": "0"
+  },
+  "frame": "4f4243340403000010000000042a000001000000000000000000000000000000"
+}

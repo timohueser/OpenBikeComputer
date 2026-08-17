@@ -1,0 +1,19 @@
+{
+  "name": "checksum-failure-payload",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "checksumFailure",
+    "codeValue": 7,
+    "detail": "payload",
+    "detailValue": 1,
+    "context": "2622127649"
+  },
+  "note": "The whole-payload CRC did not match, and the context is the CRC the request declared.",
+  "frame": "4f4243340404030010000000012a000007000100217e4a9c0000000000000000"
+}

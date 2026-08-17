@@ -1,0 +1,15 @@
+{
+  "name": "list-cursor-fields-without-the-cursor-bit",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "The three cursor fields are zero unless the cursor bit is set.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "badCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243340401000020000000022a00000000000000000000010000000000000000000000000000000000000000000000"
+}

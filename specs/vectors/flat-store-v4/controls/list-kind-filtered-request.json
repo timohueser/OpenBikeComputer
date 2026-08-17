@@ -1,0 +1,23 @@
+{
+  "name": "list-kind-filtered-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "LIST",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 32,
+    "requestId": 10754
+  },
+  "note": "A listing of one kind: rides, so a client can see whether RECORDING has cleared.",
+  "body": {
+    "kindFilter": 3,
+    "cursor": false
+  },
+  "frame": "4f4243340401000020000000022a00000300000000000000000000000000000000000000000000000000000000000000"
+}
