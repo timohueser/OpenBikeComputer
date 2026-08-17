@@ -103,15 +103,23 @@ and the rest name the device state or profile they would need.
 
 `obc-storage::obc2` is the same suite's on-card half: the record codecs of
 [`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,
-`RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog reference
-model whose `apply` is the meaning of a journal record, §7's and §7.1's WORK/RIDE recovery rules,
-and §6.3's recovery decision as a pure function. Three host-only modules sit beside them behind the
-crate's `std` feature — a deterministic faulting-media harness that models five of §13.1's eight
-adapter obligations plus §1.1's program-page tearing, the shared sample records, and the storage
-half of the vector suite (`cargo test -p obc-storage regenerate_storage_vectors -- --ignored`, then
-the `obc-link` regenerate above, which indexes it) — and the crash matrix itself is a fourth, under
-`cfg(test)`. There is no engine here yet: no transaction API, no leases, no garbage collector, no
-FAT adapter, and nothing in it knows a filename.
+`RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog projection
+whose `apply` is the meaning of a journal record, §7's and §7.1's WORK/RIDE recovery rules, §6.3's
+recovery decision as a pure function and its streaming compaction pass, §9's leases and incremental
+collector, and the `KernelTransaction` that implements `obc-link`'s effect seam over all of it. The
+projection is generic over its head and result rows and has two instantiations: `CatalogModel`, the
+host oracle holding whole entries, and §13's `RamIndex`, which is what a device places — the
+catalog-projection envelopes, resolution `GenerationId`s and terminal-result bodies stay on the card
+and are re-read on demand. `fat` is the §13.1 adapter that mounts one on a real card, streaming the
+checkpoint rather than staging it.
+
+Four host-only modules sit beside them behind the crate's `std` feature — a deterministic
+faulting-media harness that models five of §13.1's eight adapter obligations plus §1.1's
+program-page tearing, the whole simulated card composed out of it, the shared sample records, and
+the storage half of the vector suite (`cargo test -p obc-storage regenerate_storage_vectors --
+--ignored`, then the `obc-link` regenerate above, which indexes it). The crash matrix and the
+equivalence suite — `obc-link`'s entire scenario list run against the real kernel over that card —
+are two more, under `cfg(test)`.
 
 ## Test
 
