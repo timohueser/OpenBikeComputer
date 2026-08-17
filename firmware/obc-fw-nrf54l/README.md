@@ -228,10 +228,14 @@ own.
 # destroys the partition table too. Anything on the card is gone. It refuses a card that already
 # carries a flat store under another `StoreId` (override with `FORCE_REINIT`).
 #
-# Phase one takes ~45 minutes on a 64 GB card: ~8 of them are the commit ladder, ~5 the 2 GiB
+# Phase one takes ~44 minutes on a 64 GB card: ~8 of them are the commit ladder, ~5 the 2 GiB
 # write, ~3 the sweep, and ~20 the two CRC-32 folds over those 2 GiB — `obc-crc` folds at
 # 3.4 MB/s here, which is a measurement of its own and the reason the folds are timed apart.
 # Phase two takes 3 seconds.
+#
+# Every timed figure is reported as three terms — the card's write half, its read half, and what
+# was left for the M33 — measured inside the block-device adapter. A commit at 300 entries writes
+# 79 blocks and reads 156 of them, so one number for it would say nothing about which to fix.
 cargo run --release --bin flat_store_bench
 ```
 
