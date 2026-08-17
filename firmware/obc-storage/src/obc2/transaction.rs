@@ -1517,14 +1517,19 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 // §16: reset destroys "every object, operation result, and lease". The projection
                 // is rebuilt as §12's first checkpoint, and nothing of the old store survives it.
                 self.index.reset_to_initial(store, ObjectKind::Weather.to_u16());
-                self.sequence = 1;
-                self.revision = 0;
-                self.next_logical_id = 1;
+                // Every cursor comes back through `rebind`, not by hand. §12's reset writes a first
+                // checkpoint with `through_sequence` zero, so §6.3's slot origin for the new store
+                // is zero too — and a reset that restored the three obvious cursors and left
+                // `epoch_base` at a compacted store's `S` would compute slot zero for the whole
+                // range `1..=S`. Every commit would overwrite the same slot, replay would stop at
+                // nothing, and §6.3's fail-closed rule would turn the next mount into a
+                // recovery-failed one. Deriving all four from the index that was just reset is the
+                // only form of this that cannot go stale when a cursor is added.
+                self.rebind(0);
                 self.leases.clear();
                 self.pinned = None;
                 self.live = [None; MAX_ACTIVE_OPERATIONS];
                 self.writing = None;
-                self.status.store_id = store;
                 DeviceControlAnswer::ResetStore(store)
             }
         }
@@ -1662,6 +1667,17 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         // compacts". Committing past the trigger would wrap a slot — making recovery choose a suffix
         // that spans two epochs — or overwrite a record the selected checkpoint still needs, so the
         // pass runs here rather than being owed to a caller who might not know it is due.
+        //
+        // **It is measured and it is expensive.** On the shipped media (#1359) the pass took
+        // **715 ms** over 30 card-sourced entries, of which ~441 ms was the 30 whole-stride journal
+        // reads §6.3's newest-source rule makes and ~274 ms the 127 sector writes, the two syncs and
+        // the gate. An epoch that reaches the trigger carries up to 192 journal-carried entries, so
+        // the same rate projects **3-5 s** — blocked inside one client's `FinishUpload`, which is
+        // exactly the objection the previous slice's comment raised against running store-level
+        // passes inside a command. Correctness first: a store that reaches its trigger and does not
+        // compact cannot commit at all. Moving this to a background pass with its own budget is a
+        // cutover-slice decision with a measured figure behind it now, and is deliberately not
+        // taken here.
         if self.compaction_required() {
             self.compact()?;
         }
@@ -1848,7 +1864,9 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         head: CatalogHead,
         reserve: Option<GenerationId>,
     ) -> Result<(), FailureCause> {
-        let operation = local_operation_id(head.generation);
+        // `head.revision` is the revision this publication stamps — both callers set it to
+        // `self.revision + 1` — so it is the store's next one and has never been used before.
+        let operation = local_operation_id(head.revision);
         let mut row = local_claim_row(operation);
         row.subject_kind = head.key.kind;
         row.flags = if reserve.is_some() { ActiveOperation::FLAG_GENERATION_RESERVED } else { 0 };
@@ -2142,14 +2160,21 @@ fn local_claim(operation: OperationId, reserve: Option<GenerationId>) -> Mutatio
     }
 }
 
-/// The identity a device-local publication claims under, derived from the generation it creates.
+/// The identity a device-local publication claims under, derived from the Revision it stamps.
 ///
 /// §11 requires every claim to have an OperationId, and two local publications must never share
-/// one. Deriving it from the reserved generation makes that structural: generations are never
-/// reused, so neither are these.
-fn local_operation_id(generation: GenerationId) -> OperationId {
+/// one — §8.1 answers `QueryOperation` by that identity, so a repeat makes the answer ambiguous.
+///
+/// **Not the generation.** That was the obvious derivation and it is wrong for the one local
+/// publication that creates no bytes: a restamp of an existing head — §6.3's raced publication, and
+/// `SetMetadata`'s local twin — reserves nothing and republishes the generation that is already
+/// there, so two publications a revision apart would mint the same identity. The store-wide
+/// revision is monotone and every publication advances it, so deriving from that is unique by
+/// construction for both shapes. `CatalogModel::check` refuses a duplicate outright, which is what
+/// turned this from an argument into a caught collision.
+fn local_operation_id(revision: Revision) -> OperationId {
     let mut bytes = [0xFFu8; 16];
-    bytes[8..].copy_from_slice(&generation.get().to_be_bytes());
+    bytes[8..].copy_from_slice(&revision.get().to_be_bytes());
     OperationId::new(bytes)
 }
 

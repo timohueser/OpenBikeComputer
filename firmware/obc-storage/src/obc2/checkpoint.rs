@@ -502,7 +502,16 @@ impl Scan {
             let chunk = &bytes[..take];
             self.crc_push(chunk);
             if end <= REGIONS[REGIONS.len() - 1].end() {
-                // The header and every entry are staged; both fit MAX_STAGE by construction.
+                // The header and every entry are staged. Both fit `MAX_STAGE` by construction —
+                // `span_end` never returns a span longer than one entry, and `MAX_STAGE` is the
+                // largest entry §5.1 has — but the copy below is the one place that is *relied* on,
+                // so it is stated rather than left to the reader of `span_end`.
+                debug_assert!(
+                    self.staged + take <= MAX_STAGE,
+                    "a span of {} bytes at {} does not fit the {MAX_STAGE}-byte entry stage",
+                    self.staged + take,
+                    self.at,
+                );
                 self.stage[self.staged..self.staged + take].copy_from_slice(chunk);
             } else if !chunk_tail_is_zero(self.at, chunk) {
                 self.fail(Reason::Reserved);

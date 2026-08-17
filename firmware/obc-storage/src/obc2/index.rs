@@ -161,7 +161,27 @@ pub const SECTION_13_FORMULA: usize = 19_712;
 /// Pinned exactly rather than bounded, so a field added to any resident table has to change this
 /// line and be argued for. It is a 64-bit-host figure: this type's only width-dependent members are
 /// the `usize` length each `heapless::Vec` carries and `result_start`, so a 32-bit target measures
-/// less, never more.
+/// less, never more — 19,840, which is pinned separately below.
+///
+/// ## What it does and does not count, against §13's own sentence
+///
+/// §13: "Add the four-entry lease table, the repository rows and the three singleton projections
+/// above, **and the bounded staging**. The measured figure at these capacities is 19,848 bytes, 136
+/// above the formula: the additions cost 872."
+///
+/// The enumeration is one item longer than the arithmetic. Measured here, the additions are the
+/// three singleton projections plus the repository rows at **792 bytes** and the lease table at
+/// **80** — 872 exactly, and the four small tables come in 736 under their on-card shapes, which is
+/// the 136. **The bounded staging is not in the 872 and is not in the 19,848.** §13 sizes that
+/// separately in the same section — "the staging compaction needs is one entry of at most 240 bytes
+/// plus one 512-byte sector — 752 bytes" — and this crate holds it as
+/// [`compaction::STAGING_BYTES`](super::compaction::STAGING_BYTES), on the frame of the pass that
+/// needs it rather than in any resident value.
+///
+/// So the figure is the resident *index*, and a caller sizing an arena adds the 752 itself if it
+/// wants the pass's stage in the same allocation. The spec sentence would read truer with the
+/// staging struck from its list, which is a one-line amendment for whoever owns the freeze; the
+/// number it records is right either way and is what this asserts against.
 pub const MEASURED_RESIDENT: usize = 19_848;
 
 /// The bounded resident index: §13's shape of [`Projection`].
