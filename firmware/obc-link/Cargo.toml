@@ -19,6 +19,15 @@ obc-crc = { path = "../obc-crc" }
 # host bakery crates already resolve to, so the workspace holds one sha2.
 sha2 = { version = "0.11", default-features = false }
 
+[dev-dependencies]
+# The flat store, host-only, for the tests that hold the engine to a real card: the sim-backed
+# `FlatStore` and its deterministic faulting device. It is a **dev**-dependency because the
+# production edge runs the other way — `obc-storage` is a platform adapter and this crate is a
+# foundation crate, so `firmware/tools/dependency_rules.json` forbids `obc-link -> obc-storage` for
+# anything the device image links. The engine declares its own store seam (`flat::store`) and the
+# store binds it (`obc_storage::flat::wire`), which is what lets these tests run the real thing.
+obc-storage = { path = "../obc-storage", features = ["std"] }
+
 [features]
 default = []
 # Host-only fixture producer (`vectors`), which writes `specs/vectors/device-object-v2/`. It builds

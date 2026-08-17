@@ -1,4 +1,14 @@
-//! `obc-link` — the Device Object System v2 wire codec.
+//! `obc-link` — the device's wire codecs and its one transfer engine.
+//!
+//! [`flat`] is the live one: **protocol v4**, the wire of the flat card store, frozen by
+//! [`FLAT_Store_Protocol.md`] — the `OBC4` control frame, the seven opcodes, the stream frame, the
+//! error body, the store seam the engine declares, and the transfer engine itself. Start there.
+//!
+//! [`FLAT_Store_Protocol.md`]: ../../../specs/FLAT_Store_Protocol.md
+//!
+//! Everything below this paragraph is the **superseded** Device Object System v2 wire (major 3) and
+//! its engine, kept while the OBC2 consumers that still read it are migrated (epic #1256, FS11
+//! deletes both). It is not extended and nothing in [`flat`] forwards to it.
 //!
 //! One Rust implementation of the bytes frozen by the normative suite in `specs/`:
 //!
@@ -57,6 +67,7 @@ pub mod download;
 pub mod draft;
 pub mod engine;
 pub mod error;
+pub mod flat;
 pub mod frame;
 pub mod hello;
 pub mod ids;

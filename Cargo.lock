@@ -2825,6 +2825,7 @@ name = "obc-link"
 version = "0.1.0"
 dependencies = [
  "obc-crc",
+ "obc-storage",
  "sha2",
 ]
 
