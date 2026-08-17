@@ -327,11 +327,6 @@ impl<D> FaultOnce<D> {
         self.fired.get()
     }
 
-    /// The card underneath.
-    pub fn inner(&self) -> &D {
-        &self.inner
-    }
-
     /// Refuses this operation, or lets it through.
     fn gate(&self, op: MediaOp) -> Result<(), DiskError> {
         match self.armed.get() {
