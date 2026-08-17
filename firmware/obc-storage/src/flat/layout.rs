@@ -33,6 +33,24 @@ pub const ENTRY_STRIDE: usize = 128;
 /// Entries one copy holds: `479 × 4` (§5.1).
 pub const ENTRY_CAPACITY: usize = (ENTRY_BLOCKS - 1) * ENTRIES_PER_BLOCK;
 
+/// Blocks the catalog moves per media operation.
+///
+/// §5.5's block *count* is a property of the format and this does not change it: what changes is how
+/// many card commands those blocks are issued in. The card charges roughly one program cycle per
+/// write command — 1.34 ms measured on the sEMMC path, which polls CMD13 per write so durability is
+/// folded into it — and about 74 µs a block beyond the first, so a 76-block body written a block at a
+/// time costs 102 ms and the same body in windows costs 18. Reads pay the same shape at 0.5 ms a
+/// command and ~41 µs a block.
+///
+/// Eight is 4 KiB. A commit places two of these — one to read the live prefix through, one to stage
+/// the body it writes — and a mount one, against a 51.2 KB residual main stack; widening it is one
+/// constant and buys a per-command cycle each time it doubles, which is why it is stated here rather
+/// than spelled `8` at three call sites.
+pub const STREAM_BLOCKS: usize = 8;
+/// One streaming window, in bytes. A whole number of entries (`4096 / 128 = 32`), so a window never
+/// splits an entry across two of them.
+pub const STREAM_WINDOW: usize = STREAM_BLOCKS * BLOCK;
+
 /// The ride journal (§2), 16 slots of 32 KiB.
 pub const JOURNAL: u64 = 1_088;
 /// Blocks in one journal slot: two program pages.
@@ -260,6 +278,21 @@ mod tests {
         for (entries, blocks) in [(0u16, 1usize), (1, 2), (4, 2), (5, 3), (ENTRY_CAPACITY as u16, ENTRY_BLOCKS)] {
             assert_eq!(body_len(entries).div_ceil(BLOCK), blocks);
         }
+    }
+
+    /// The streaming window divides §5.1's body region exactly, which is what makes a batched body write
+    /// safe at the array's widest: the block after the region is the copy's **gate**, and a window that
+    /// pads its last blocks past the live prefix therefore still stays inside blocks `0..480`. If either
+    /// of these two divisibility facts stopped holding, a commit at capacity would program the gate as
+    /// part of the body it certifies.
+    #[test]
+    fn a_streaming_window_divides_the_body_region() {
+        assert_eq!(STREAM_WINDOW, 4_096);
+        assert_eq!(STREAM_WINDOW % ENTRY_STRIDE, 0, "a window would split an entry across two of them");
+        assert_eq!(ENTRY_BLOCKS % STREAM_BLOCKS, 0, "a window could run past the entry array");
+        assert_eq!(CATALOG_GATE_BLOCK, ENTRY_BLOCKS as u64, "the gate is the block after the body region");
+        assert_eq!(body_len(ENTRY_CAPACITY as u16).div_ceil(STREAM_WINDOW), 60);
+        assert_eq!(ENTRY_BLOCKS / STREAM_BLOCKS, 60);
     }
 
     /// §4.1's card: 62,914,560 blocks recompute to 30,718 extents. And §6's cap holds above 64 GiB.
