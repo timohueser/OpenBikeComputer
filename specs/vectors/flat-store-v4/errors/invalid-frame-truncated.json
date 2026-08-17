@@ -1,0 +1,19 @@
+{
+  "name": "invalid-frame-truncated",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "invalidFrame",
+    "codeValue": 2,
+    "detail": "truncated",
+    "detailValue": 3,
+    "context": "0"
+  },
+  "note": "The record carries fewer bytes than its stated payload length.",
+  "frame": "4f4243340404030010000000012a000002000300000000000000000000000000"
+}

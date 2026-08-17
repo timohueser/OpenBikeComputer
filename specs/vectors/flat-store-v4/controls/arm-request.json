@@ -1,0 +1,23 @@
+{
+  "name": "arm-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "ARM",
+    "value": 7
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 10759
+  },
+  "note": "Uploading never installs: ARM is the separate step that makes an installed image the next boot.",
+  "body": {
+    "packageObjectId": "5",
+    "expectedRevision": "1"
+  },
+  "frame": "4f4243340407000010000000072a000005000000000000000100000000000000"
+}

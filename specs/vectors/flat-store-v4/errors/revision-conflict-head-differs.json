@@ -1,0 +1,19 @@
+{
+  "name": "revision-conflict-head-differs",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "revisionConflict",
+    "codeValue": 5,
+    "detail": "headDiffers",
+    "detailValue": 1,
+    "context": "5"
+  },
+  "note": "Section 3.10's error response: the route already exists at another revision, and the context is the head.",
+  "frame": "4f4243340404030010000000012a000005000100050000000000000000000000"
+}

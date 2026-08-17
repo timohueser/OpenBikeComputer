@@ -1,0 +1,15 @@
+{
+  "name": "declared-length-is-not-the-opcodes",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "Every message is a fixed layout; a payload length that is not this opcode's is a framing error.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidFrame",
+    "codeValue": 2,
+    "detail": "length",
+    "detailValue": 2
+  },
+  "bytes": "4f4243340404000053000000012a00000000000000000000000000000000000099a4000000000000217e4a9c010000000c0000004772696d73656c204c6f6f70000000000000000000000000000000000000000000000000000000000000000000000000"
+}

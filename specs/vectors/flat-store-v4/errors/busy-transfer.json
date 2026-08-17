@@ -1,0 +1,19 @@
+{
+  "name": "busy-transfer",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "GET",
+    "value": 3
+  },
+  "requestId": 10761,
+  "body": {
+    "code": "busy",
+    "codeValue": 9,
+    "detail": "transfer",
+    "detailValue": 1,
+    "context": "10753"
+  },
+  "note": "One transfer at a time, and the context names the live one.",
+  "frame": "4f4243340403030010000000092a000009000100012a00000000000000000000"
+}

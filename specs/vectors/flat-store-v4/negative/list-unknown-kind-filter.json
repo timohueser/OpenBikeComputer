@@ -1,0 +1,15 @@
+{
+  "name": "list-unknown-kind-filter",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "A filter naming a kind this major does not register.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "unsupported",
+    "codeValue": 1,
+    "detail": "kind",
+    "detailValue": 2
+  },
+  "bytes": "4f4243340401000020000000022a00000900000000000000000000000000000000000000000000000000000000000000"
+}

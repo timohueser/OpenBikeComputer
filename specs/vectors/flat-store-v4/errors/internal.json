@@ -1,0 +1,19 @@
+{
+  "name": "internal",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "ARM",
+    "value": 7
+  },
+  "requestId": 10759,
+  "body": {
+    "code": "internal",
+    "codeValue": 12,
+    "detail": "none",
+    "detailValue": 0,
+    "context": "0"
+  },
+  "note": "A failure the device cannot classify. It carries no detail.",
+  "frame": "4f4243340407030010000000072a00000c000000000000000000000000000000"
+}
