@@ -551,20 +551,20 @@ impl Scan {
         // A header that did not decode leaves every count unknown, so no entry can be judged
         // occupied or absent and none is.
         let Some(header) = self.header else { return };
-        for (region, index) in REGIONS.iter().enumerate() {
-            if end <= index.offset {
+        for (which, region) in REGIONS.iter().enumerate() {
+            if end <= region.offset {
                 continue;
             }
-            if end <= index.end() {
-                let slot = (end - index.offset) / index.entry - 1;
-                self.entry(region, slot, &header, sink);
+            if end <= region.end() {
+                let slot = (end - region.offset) / region.entry - 1;
+                self.entry(which, slot, &header, sink);
                 return;
             }
         }
     }
 
-    fn entry<K: EntrySink>(&mut self, region: usize, slot: usize, header: &CheckpointHeader, sink: &mut K) {
-        let occupied = match region {
+    fn entry<K: EntrySink>(&mut self, which: usize, slot: usize, header: &CheckpointHeader, sink: &mut K) {
+        let occupied = match which {
             REGION_REPOSITORIES => slot < header.repository_count as usize,
             REGION_HEADS => slot < header.head_count as usize,
             REGION_ACTIVE => slot < header.active_count as usize,
@@ -581,7 +581,7 @@ impl Scan {
             REGION_WEATHER => slot < header.weather_count as usize,
             _ => slot < header.ride_count as usize,
         };
-        let len = REGIONS[region].entry;
+        let len = REGIONS[which].entry;
         if !occupied {
             if !absent(&self.stage[..len]) {
                 self.fail(Reason::Count);
@@ -589,7 +589,7 @@ impl Scan {
             return;
         }
         let bytes = &self.stage[..len];
-        match region {
+        match which {
             REGION_REPOSITORIES => match RepositoryState::decode(bytes) {
                 Ok(row) => {
                     if let Some(previous) = self.previous_kind {
