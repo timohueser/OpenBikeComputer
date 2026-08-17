@@ -318,50 +318,104 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// `sequence` is the journal cursor a mount established: the next record's sequence, which is
     /// the projection's `through_sequence` plus one.
     pub fn mount(media: M, validator: V, hooks: H, model: CatalogModel) -> Self {
-        let sequence = model.through_sequence.saturating_add(1);
-        let revision = model.repositories.iter().map(|row| row.revision.get()).max().unwrap_or(0);
-        let next_logical_id = model.repositories.iter().map(|row| row.next_logical_id.get()).max().unwrap_or(0).max(1);
         let store = model.store;
-        KernelTransaction {
+        let mut this = KernelTransaction {
             media,
             validator,
             hooks,
             model,
-            sequence,
-            revision,
-            next_logical_id,
+            sequence: 1,
+            revision: 0,
+            next_logical_id: 1,
             leases: LeaseTable::new(),
             pinned: None,
             lease_connection: 0,
             live: [None; MAX_ACTIVE_OPERATIONS],
             writing: None,
             stride: [0; SLOT_STRIDE],
-            config: ConfigBlock {
-                unit_flags: 0,
-                weather_refresh: obc_link::control::WeatherRefresh::Off,
-                name: [0; obc_link::control::MAX_DEVICE_NAME],
-                name_len: 0,
-            },
-            status: DeviceStatus {
-                firmware_major: 0,
-                firmware_minor: 1,
-                firmware_patch: 0,
-                hardware_revision: 1,
-                device_serial: [0x0b; 16],
-                boot_count: 1,
-                uptime_seconds: 60,
-                stack_high_water: 4_096,
-                status_flags: obc_link::control::status_flags::CARD_PRESENT,
-                mount_class: obc_link::control::MountClass::Mounted,
-                firmware_build: 1,
-                store_id: store,
-            },
-            clock: ClockStatus {
-                epoch_seconds: 1_700_000_000,
-                source: obc_link::control::ClockSource::Companion,
-                state: obc_link::control::ClockState::Trusted,
-            },
+            config: initial_config(),
+            status: initial_status(store),
+            clock: initial_clock(),
+        };
+        this.rebind();
+        this
+    }
+
+    /// Mounts into storage the caller already owns, over a projection that is not yet loaded.
+    ///
+    /// ## Why this exists, measured
+    ///
+    /// [`mount`](Self::mount) takes the projection by value and returns this whole value by value.
+    /// Both are large — the projection alone is around 56 KiB and the transaction around 73 KiB —
+    /// so placing one in a board's `.bss` through it costs **206,080 bytes of transient stack**,
+    /// measured on the nRF54L with a painted stack. The shipping image's residual main stack is
+    /// **51,576 bytes**. A device that mounted a store that way would not fault at some future
+    /// depth; it would fault during the mount.
+    ///
+    /// So this writes each field into the caller's slot directly and never materializes a
+    /// `KernelTransaction` anywhere. The projection starts empty: a mount decodes the selected
+    /// checkpoint straight into [`model_mut`](Self::model_mut) — through
+    /// [`media_and_model_mut`](Self::media_and_model_mut), which hands out the media that reads it
+    /// and the projection it is read into together — and then calls [`rebind`](Self::rebind) to
+    /// derive the cursors from what landed.
+    ///
+    /// The host path keeps [`mount`](Self::mount): a test boxes the value and the copies cost
+    /// nothing that matters.
+    pub fn mount_in_place(
+        slot: &mut core::mem::MaybeUninit<Self>,
+        media: M,
+        validator: V,
+        hooks: H,
+        store: StoreId,
+    ) -> &mut Self {
+        let at = slot.as_mut_ptr();
+        // SAFETY: every field of `Self` is written exactly once below, through a raw pointer into
+        // the caller's uninitialized slot, and none of them is read before it is written. The list
+        // is exhaustive against the struct definition — a field added without a line here would be
+        // a genuine hole, which is why the two are adjacent in this file.
+        unsafe {
+            core::ptr::addr_of_mut!((*at).media).write(media);
+            core::ptr::addr_of_mut!((*at).validator).write(validator);
+            core::ptr::addr_of_mut!((*at).hooks).write(hooks);
+            // Not `.write(CatalogModel::empty(store))`: that is the 56 KiB return-slot temporary
+            // this constructor exists to avoid, and it would put the whole of it back.
+            CatalogModel::init_empty(&mut *core::ptr::addr_of_mut!((*at).model).cast(), store);
+            core::ptr::addr_of_mut!((*at).sequence).write(1);
+            core::ptr::addr_of_mut!((*at).revision).write(0);
+            core::ptr::addr_of_mut!((*at).next_logical_id).write(1);
+            core::ptr::addr_of_mut!((*at).leases).write(LeaseTable::new());
+            core::ptr::addr_of_mut!((*at).pinned).write(None);
+            core::ptr::addr_of_mut!((*at).lease_connection).write(0);
+            core::ptr::addr_of_mut!((*at).live).write([None; MAX_ACTIVE_OPERATIONS]);
+            core::ptr::addr_of_mut!((*at).writing).write(None);
+            core::ptr::addr_of_mut!((*at).stride).write([0; SLOT_STRIDE]);
+            core::ptr::addr_of_mut!((*at).config).write(initial_config());
+            core::ptr::addr_of_mut!((*at).status).write(initial_status(store));
+            core::ptr::addr_of_mut!((*at).clock).write(initial_clock());
+            slot.assume_init_mut()
         }
+    }
+
+    /// The media and the projection together, so a mount can read one into the other.
+    ///
+    /// They are handed out as a pair because that is the only way to have both: a store's mount
+    /// reads a checkpoint *through its own media* into *its own projection*, and two separate
+    /// accessors could not be held at once.
+    pub fn media_and_model_mut(&mut self) -> (&mut M, &mut CatalogModel) {
+        (&mut self.media, &mut self.model)
+    }
+
+    /// Derives the journal cursor and the two identity cursors from the projection now in place.
+    ///
+    /// §6.3: the next record's sequence is the projection's `through_sequence` plus one. The
+    /// revision and logical-id cursors are the maxima the repository rows carry, which is what makes
+    /// a remount continue the store rather than restart it.
+    pub fn rebind(&mut self) {
+        self.sequence = self.model.through_sequence.saturating_add(1);
+        self.revision = self.model.repositories.iter().map(|row| row.revision.get()).max().unwrap_or(0);
+        self.next_logical_id =
+            self.model.repositories.iter().map(|row| row.next_logical_id.get()).max().unwrap_or(0).max(1);
+        self.status.store_id = self.model.store;
     }
 
     /// True once the journal has reached §6.3's compaction trigger.
@@ -1661,6 +1715,46 @@ impl<M: KernelMedia, V: Validator, H: Hooks> Transaction for KernelTransaction<M
 // ---------------------------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------------------------
+
+/// The device-control plane's config block, as a fresh transaction carries it (§16).
+///
+/// The three `initial_*` functions exist so the by-value and the in-place constructor cannot drift:
+/// each writes exactly these values into its own destination.
+fn initial_config() -> ConfigBlock {
+    ConfigBlock {
+        unit_flags: 0,
+        weather_refresh: obc_link::control::WeatherRefresh::Off,
+        name: [0; obc_link::control::MAX_DEVICE_NAME],
+        name_len: 0,
+    }
+}
+
+/// The device-control plane's status, as a fresh transaction carries it (§16).
+fn initial_status(store: StoreId) -> DeviceStatus {
+    DeviceStatus {
+        firmware_major: 0,
+        firmware_minor: 1,
+        firmware_patch: 0,
+        hardware_revision: 1,
+        device_serial: [0x0b; 16],
+        boot_count: 1,
+        uptime_seconds: 60,
+        stack_high_water: 4_096,
+        status_flags: obc_link::control::status_flags::CARD_PRESENT,
+        mount_class: obc_link::control::MountClass::Mounted,
+        firmware_build: 1,
+        store_id: store,
+    }
+}
+
+/// The device-control plane's clock, as a fresh transaction carries it (§16).
+fn initial_clock() -> ClockStatus {
+    ClockStatus {
+        epoch_seconds: 1_700_000_000,
+        source: obc_link::control::ClockSource::Companion,
+        state: obc_link::control::ClockState::Trusted,
+    }
+}
 
 /// The 32-byte principal digest a §5.3 row stores, from the 16-byte scope the adapter established.
 ///
