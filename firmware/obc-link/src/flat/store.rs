@@ -155,15 +155,13 @@ pub trait Store {
 /// The detail values a refusal carries are the kind's own: §3.9 gives `rejected` a detail space and
 /// says the kind's validator owns it.
 pub trait Policy {
-    /// One contiguous run of an upload's payload, in ascending offset order, as it streams. The
-    /// engine calls this before the bytes reach the card, so a refusal costs nothing but the
+    /// §3.6's "runs the kind's validator": the upload is complete and its whole-payload CRC has
+    /// checked out, and this is the last word before the commit. A refusal costs nothing but the
     /// allocation the engine then cancels.
-    fn inspect(&mut self, kind: ObjectKind, offset: u64, bytes: &[u8]) -> Result<(), u16> {
-        let _ = (kind, offset, bytes);
-        Ok(())
-    }
-
-    /// The upload is complete and its CRC checked. This is the last word before the commit.
+    ///
+    /// It is deliberately whole-payload rather than streaming. The kinds that need validating —
+    /// OBCR, OBCW, OBCM, OBCU — are all read from their own header outward, and the engine has no
+    /// buffer to offer a validator that wanted the bytes twice.
     fn accept(&mut self, kind: ObjectKind, payload_len: u64) -> Result<(), u16> {
         let _ = (kind, payload_len);
         Ok(())

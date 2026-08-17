@@ -124,11 +124,6 @@ impl EntryFlags {
         EntryFlags(self.0 | other.0)
     }
 
-    /// This flag word with `other` cleared.
-    pub fn without(self, other: EntryFlags) -> Self {
-        EntryFlags(self.0 & !other.0)
-    }
-
     /// True for the two flags that make an entry untouchable from the wire: the store did not write
     /// a reserve's bytes, and a recording ride's length and CRC are stale until it ends (§3.5, §3.6,
     /// §3.7).
@@ -251,7 +246,7 @@ mod tests {
         assert!(EntryFlags::RECORDING.is_untouchable());
         assert!(EntryFlags::RESERVED.is_untouchable());
         assert!(!EntryFlags::RETAINED.is_untouchable());
-        assert_eq!(EntryFlags::NONE.with(EntryFlags::RETAINED).without(EntryFlags::RETAINED), EntryFlags::NONE);
+        assert_eq!(EntryFlags::NONE.with(EntryFlags::RETAINED), EntryFlags::RETAINED);
     }
 
     #[test]
