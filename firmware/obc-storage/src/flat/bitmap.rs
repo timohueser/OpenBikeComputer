@@ -22,7 +22,9 @@ pub struct FreeMap {
 
 impl Default for FreeMap {
     fn default() -> Self {
-        FreeMap { words: [0; WORDS], extents: 0 }
+        // A card of no extents, none of them free — which is what a store that is serving no catalog
+        // has to answer, rather than the whole address space.
+        FreeMap { words: [u64::MAX; WORDS], extents: 0 }
     }
 }
 
@@ -62,9 +64,14 @@ impl FreeMap {
     pub fn release(&mut self, ranges: &Ranges) {
         for (first, count) in ranges.iter() {
             for extent in first as u32..first as u32 + count as u32 {
-                self.words[extent as usize / 64] &= !(1 << (extent % 64));
+                self.release_one(extent);
             }
         }
+    }
+
+    /// Returns one extent to the allocator.
+    pub fn release_one(&mut self, extent: u32) {
+        self.words[extent as usize / 64] &= !(1 << (extent % 64));
     }
 
     /// Free extents.

@@ -21,22 +21,29 @@
 //! initialization, the alternating commit, and the ride journal's write half.
 //!
 //! Decoding is **total** — every input is either a typed record or a typed
-//! [`DecodeError`](error::DecodeError) — bounded, and allocation-free. Resident state is the 8 KiB
-//! free bitmap plus a handful of rows; the entry array stays on the card.
+//! [`DecodeError`](error::DecodeError) — bounded, and allocation-free. The seam is total in the same
+//! way: every operation either does its work or returns a typed [`StoreError`], including on hostile
+//! arguments. Both counters stop one short of wrapping rather than overflowing — a `Revision` or an
+//! `ObjectId` at `u64::MAX` is refused, and a card whose newest gate carries commit sequence
+//! `u64::MAX` mounts read-only. Resident state is the 8 KiB free bitmap plus a handful of rows; the
+//! entry array stays on the card.
 //!
 //! [`sim`] and [`model`] are host-only: a sparse block device that tears exactly the pages the fault
 //! model admits, and the reference model the crash matrix holds a recovered card to.
 
-pub mod bitmap;
-pub mod catalog;
+// The card's own byte layout, and nothing above the seam may name it: an LBA, an extent range and a
+// gate sector are this module's business. `seam`, `error`, `device` and `store` are the public face —
+// a board crate has to be able to name `BlockDevice`, and a consumer `Store`.
+pub(crate) mod bitmap;
+pub(crate) mod catalog;
 pub mod device;
 pub mod error;
-pub mod journal;
-pub mod layout;
+pub(crate) mod journal;
+pub(crate) mod layout;
 pub(crate) mod raw;
 pub mod seam;
 pub mod store;
-pub mod superblock;
+pub(crate) mod superblock;
 
 #[cfg(any(test, feature = "std"))]
 pub mod model;

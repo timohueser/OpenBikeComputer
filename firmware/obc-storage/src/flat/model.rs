@@ -14,7 +14,7 @@ use std::vec::Vec;
 use super::catalog::{Entry, Header};
 use super::device::BlockDevice;
 use super::layout::{body_len, BLOCK};
-use super::seam::{EntryMeta, ObjectId, Revision, StoreId};
+use super::seam::{EntryFlags, EntryMeta, ObjectId, Revision, StoreId};
 use super::store::FlatStore;
 
 /// One entry mutation, as the model sees it: the entry to write — extents included, because the model
@@ -36,23 +36,34 @@ pub struct Model {
     pub next_object: u64,
     pub entries: Vec<Entry>,
     pub extents: u32,
+    /// What §7.3 must recover: the ride's flushed length and its length at the newest slot. `None`
+    /// when no entry is recording.
+    pub ride: Option<(u64, u64)>,
 }
 
 /// Everything a mounted card observably is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub sequence: u64,
+    /// The mark §5.5 step 2 continues from, which a fallback mount leaves above `sequence`.
+    pub high_water: u64,
     pub next_object: u64,
     pub entries: Vec<EntryMeta>,
     pub free_extents: u32,
     /// The serving copy's body bytes, exactly `512 + n × 128` of them.
     pub body: Vec<u8>,
+    /// Every readable object's payload, read back through the seam and hashed. The catalog states a
+    /// length and a CRC for each; this is whether the bytes on the card agree, which is the one thing
+    /// a byte-image comparison of the *catalog* cannot see.
+    pub payloads: Vec<(ObjectId, Revision, u32)>,
+    /// The recovered ride, as `(flushed, payload length)`.
+    pub ride: Option<(u64, u64)>,
 }
 
 impl Model {
     /// The card §8 leaves behind: commit sequence `1`, next `ObjectId` `1`, no entries.
     pub fn empty(store: StoreId, extents: u32) -> Self {
-        Model { store, sequence: 1, high_water: 1, next_object: 1, entries: Vec::new(), extents }
+        Model { store, sequence: 1, high_water: 1, next_object: 1, entries: Vec::new(), extents, ride: None }
     }
 
     /// §5.5: one batch, applied atomically. The entry array stays sorted by `(ObjectId, Revision)`,
@@ -104,14 +115,28 @@ impl Model {
         used
     }
 
+    /// Entries whose payload a reader can ask for, and the CRC the catalog claims for each. A reserve
+    /// has no bytes the store wrote, and a recording ride's length is zero until the commit that ends
+    /// it, so neither is readable.
+    pub fn payloads(&self) -> Vec<(ObjectId, Revision, u32)> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.meta.payload_len > 0 && !entry.meta.flags.has(EntryFlags::RESERVED))
+            .map(|entry| (entry.meta.id, entry.meta.revision, entry.meta.payload_crc))
+            .collect()
+    }
+
     /// What a mount of a card in this state must produce.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             sequence: self.sequence,
+            high_water: self.high_water,
             next_object: self.next_object,
             entries: self.entries.iter().map(|entry| entry.meta).collect(),
             free_extents: self.extents - self.used_extents().len() as u32,
             body: self.body(),
+            payloads: self.payloads(),
+            ride: self.ride,
         }
     }
 }
@@ -120,12 +145,15 @@ impl Model {
 ///
 /// The body comes from the copy the store says it is serving, so a commit that wrote the wrong copy
 /// or left the wrong one selected shows up as a byte difference rather than as a passing test.
-pub fn snapshot<D: BlockDevice>(store: &FlatStore<D>) -> Option<Snapshot> {
+pub fn snapshot<D: BlockDevice>(store: &mut FlatStore<D>) -> Option<Snapshot> {
     use super::seam::Store;
     if !store.mode().readable() {
         return None;
     }
     let entries: Vec<EntryMeta> = store.entries().collect();
+    // §2's listing has no way to report a read failure, so the harness asks the store whether the
+    // iterator it just drained was complete instead of accepting a short list as the truth.
+    assert!(store.entries_ok(), "the entry listing was truncated by a media failure");
     let want = body_len(store.entry_count());
     let mut body = Vec::new();
     let mut block = [0u8; BLOCK];
@@ -135,11 +163,30 @@ pub fn snapshot<D: BlockDevice>(store: &FlatStore<D>) -> Option<Snapshot> {
         body.extend_from_slice(&block);
     }
     body.truncate(want);
+
+    // Every readable payload, read back through the seam and hashed. This is what proves the bytes the
+    // catalog describes are on the card.
+    let mut payloads = Vec::new();
+    for meta in &entries {
+        if meta.payload_len == 0 || meta.flags.has(EntryFlags::RESERVED) {
+            continue;
+        }
+        let handle = store.open(meta.id, Some(meta.revision)).expect("a listed entry opens");
+        let mut bytes = std::vec![0u8; meta.payload_len as usize];
+        let read = store.read(&handle, 0, &mut bytes).expect("a listed entry reads");
+        assert_eq!(read as u64, meta.payload_len, "the seam returned a short read inside the payload");
+        payloads.push((meta.id, meta.revision, super::raw::crc32(&bytes)));
+        store.close(handle);
+    }
+
     Some(Snapshot {
         sequence: store.sequence(),
+        high_water: store.high_water(),
         next_object: store.next_object_id().0,
         entries,
         free_extents: store.free_extents(),
         body,
+        payloads,
+        ride: store.recovered_ride().map(|ride| (ride.flushed, ride.payload_len())),
     })
 }

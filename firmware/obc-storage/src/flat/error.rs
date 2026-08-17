@@ -38,10 +38,7 @@ pub enum Record {
 }
 
 /// The rule that refused an input.
-///
-/// `Ord` is here for diagnostics only — a fuzz histogram keyed by reason, so a "reached a structural
-/// rule" claim can be held to a per-rule floor rather than one aggregate count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// The caller offered fewer bytes than the record's fixed size.
     Length,
@@ -72,8 +69,6 @@ pub enum Reason {
     Revisions,
     /// An extent range is empty, leaves the extent area, or does not cover the payload.
     Ranges,
-    /// Two entries name the same extent.
-    Overlap,
 }
 
 /// A total decoder's refusal.
