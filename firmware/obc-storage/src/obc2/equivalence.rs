@@ -364,6 +364,108 @@ mod tests {
         );
     }
 
+    /// §8.1's `QueryOperation` is an observation, and a store that cannot make it says so —
+    /// **without touching the operation it names or the upload running beside it**.
+    ///
+    /// This is new ground for the index-backed store: §13 puts the retained result's body on the
+    /// card, so answering a query is now a read that can fail. The engine's default for a failed
+    /// outcome is to abandon the pending operation, which for a query would abort the *queried*
+    /// identity — somebody else's — and step the live upload's phase on the strength of a failed
+    /// read. So the query gets a failure arm of its own, and this is what it is for.
+    #[test]
+    fn a_query_whose_re_read_fails_leaves_the_live_upload_and_its_target_alone() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        // A committed operation whose result body is on the card, and therefore re-read.
+        store.retain_local_result(scenarios::OP_B);
+        let mut driver = Kernel.driver_over(store);
+        scenarios::negotiate(&mut driver);
+
+        // A live upload, mid-stream, owned by a different identity than the one queried.
+        let bytes = scenarios::payload(512);
+        let mut buffer = [0u8; 32];
+        let metadata = scenarios::route_put(&mut buffer, 1);
+        let request = scenarios::start_upload(scenarios::OP_A, Target::Create, &bytes, metadata);
+        driver.link.deliver(LinkChannel::Control, &scenarios::record(&Request::StartUpload(request), 3));
+        driver.pump().unwrap();
+        let session_id = driver.engine.live_session().expect("the upload is live");
+        driver.link.deliver(LinkChannel::Stream, &scenarios::data_frame(session_id, 0, &bytes[..256]));
+        driver.pump().unwrap();
+
+        // Now every §13 re-read fails, and the client asks about the other operation.
+        driver.transaction.inner_mut().media_mut().fail_rereads = true;
+        driver.link.deliver(
+            LinkChannel::Control,
+            &scenarios::record(&Request::QueryOperation(QueryOperation { operation_id: scenarios::OP_B }), 4),
+        );
+        driver.pump().expect("the query is answered rather than wedging the link");
+        let body = scenarios::error_of(driver.link.sent(LinkChannel::Control).last().unwrap());
+        assert_eq!(body.category, obc_link::ErrorCategory::MEDIA_IO, "a failed read is reported as one");
+        assert_eq!(
+            body.presence & obc_link::error::presence::DURABLE_CLAIM_EXISTS,
+            0,
+            "the query itself claimed nothing",
+        );
+
+        // The upload is exactly where it was: same session, still live, nothing aborted.
+        assert_eq!(driver.engine.live_session(), Some(session_id), "the query disturbed the live upload");
+        driver.transaction.inner_mut().media_mut().fail_rereads = false;
+        assert!(driver.transaction.retains(scenarios::OP_B), "the queried operation's result is untouched");
+
+        // And the upload still finishes, which is the property a stepped phase would have broken.
+        driver.link.deliver(LinkChannel::Stream, &scenarios::data_frame(session_id, 256, &bytes[256..]));
+        driver.pump().unwrap();
+        driver
+            .link
+            .deliver(LinkChannel::Control, &scenarios::record(&Request::FinishUpload(FinishUpload { session_id }), 5));
+        driver.pump().unwrap();
+        assert!(driver.transaction.retains(scenarios::OP_A), "the upload committed after the failed query");
+    }
+
+    /// §16's reset, run on a store that has already compacted.
+    ///
+    /// §12's reset writes a first checkpoint at `through_sequence` zero, so §6.3's slot origin for
+    /// the new store is zero — and a reset that restored the journal cursor but not the origin would
+    /// leave the origin at the compacted store's `S`. Every record of the new store's first `S`
+    /// sequences would then compute physical slot zero, overwrite each other, and leave a journal
+    /// that replays nothing; §6.3's fail-closed rule turns the next valid record beyond that stop
+    /// into a recovery-failed mount. This is the shape of that: compact, reset, publish twice,
+    /// reboot, and require both records back.
+    #[test]
+    fn a_reset_after_a_compaction_starts_its_journal_at_slot_zero() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        for index in 0..3u8 {
+            store.publish_local(ObjectKind::Route, &[index; 64]);
+        }
+        store.inner_mut().compact().expect("the pass writes a checkpoint");
+        let compacted_origin = store.inner_mut().index().through_sequence;
+        assert!(compacted_origin > 0, "the fixture must compact something, or it proves nothing");
+
+        let replacement = match obc_link::engine::Transaction::execute(
+            store.inner_mut(),
+            obc_link::engine::Command::DeviceControl(obc_link::engine::DeviceControlRequest::ResetStore(
+                scenarios::STORE,
+            )),
+            &mut [0u8; 64],
+        ) {
+            obc_link::engine::Outcome::DeviceControl(obc_link::engine::DeviceControlAnswer::ResetStore(store)) => store,
+            other => panic!("expected a reset, got {other:?}"),
+        };
+        assert_eq!(store.inner_mut().store_id(), replacement);
+
+        // Two publications, which is four journal records: they must land at physical slots 0..=3.
+        store.publish_local(ObjectKind::Route, &[0xA1; 64]);
+        store.publish_local(ObjectKind::Route, &[0xA2; 64]);
+
+        let mut card = store.into_card();
+        card.reboot();
+        let mounted = card.mount().expect("a reset store mounts");
+        assert_eq!(mounted.index.store, replacement);
+        assert_eq!(mounted.epoch_base, 0, "§12's first checkpoint absorbed nothing");
+        assert_eq!(mounted.index.through_sequence, 4, "all four records replayed");
+        assert_eq!(mounted.index.heads.len(), 2, "both publications came back");
+        assert_eq!(mounted.index.results.len(), 2);
+    }
+
     /// §6.3: "before accepting a 193rd record in one epoch, `CardStore` blocks new mutations and
     /// compacts". The store does it itself, so a caller cannot forget.
     #[test]

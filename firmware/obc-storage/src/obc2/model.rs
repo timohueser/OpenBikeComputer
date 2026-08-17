@@ -461,6 +461,19 @@ impl<H: HeadRow, R: ResultRow> Projection<H, R> {
             if result.commit_sequence != next {
                 return Err(ApplyError::TerminalCounter);
             }
+            // §8.1 answers `QueryOperation` by `OperationId`, so two ring entries under one identity
+            // make the answer ambiguous — `result_for` would return whichever came first and the
+            // client would be told about an outcome that is not the newest. §11 already makes this
+            // unreachable from the wire, because an identifier is spent once terminal and a
+            // readmission is served the retained result rather than re-claiming; the identities a
+            // device-local producer mints are unique by construction for the same reason. So this
+            // refuses a state no record can legitimately reach rather than one that merely should
+            // not happen — and it is what makes "unique by construction" checkable instead of
+            // argued. An identity the 64-entry window has already evicted is not in the ring and is
+            // free to be claimed again.
+            if self.results.iter().any(|held| held.operation_id() == result.operation) {
+                return Err(ApplyError::MissingKey(Record::TerminalResult));
+            }
         }
 
         if matches!(mutation.handoff, Some(Change::Remove(()))) && self.handoff.is_none() {

@@ -674,6 +674,16 @@ impl Engine {
                 // A lookup or preflight failure creates no state, so there is nothing to abort.
                 self.reply(pending, &Response::Error(cause.body(ClaimStatus::None)), out)
             }
+            (Stage::Query, Outcome::Failed(cause)) => {
+                // A query is a read. It creates no state of its own, and the operation it *names*
+                // is somebody else's — so falling through to `abandon` would abort the queried
+                // operation and step the live upload's phase, on the strength of a failed read.
+                // §8.1 makes `QueryOperation` an observation; a store that cannot answer says so.
+                //
+                // `ClaimStatus::None` is about *this request*: the query claimed nothing. Whatever
+                // durable claim the queried identity has is untouched and the client may ask again.
+                self.reply(pending, &Response::Error(cause.body(ClaimStatus::None)), out)
+            }
             (_, Outcome::Failed(cause)) => self.abandon(pending, cause),
             _ => {
                 debug_assert!(false, "an outcome arrived that the pending stage cannot use");

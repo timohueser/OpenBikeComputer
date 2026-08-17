@@ -65,6 +65,13 @@ pub struct Card {
     /// Refuses the next `ensure_shards`, so §11's preflight can be failed at the one media act that
     /// happens before the claim record.
     pub fail_ensure_shards: bool,
+    /// Refuses every §13 on-demand re-read — the active checkpoint and the journal slots.
+    ///
+    /// It is the fault point the index-backed store needs and the model-backed one did not have:
+    /// once envelopes and result bodies are card-resident, a read failure is a new way for an
+    /// ordinary command to fail, and what a store does *around* that failure is the part worth
+    /// testing.
+    pub fail_rereads: bool,
 }
 
 impl Card {
@@ -84,6 +91,7 @@ impl Card {
             open: None,
             shards_created: Vec::new(),
             fail_ensure_shards: false,
+            fail_rereads: false,
         };
         let mut model = Box::new(CatalogModel::empty(store));
         model.reset_to_initial(store, obc_link::registry::ObjectKind::Weather.to_u16());
@@ -389,12 +397,18 @@ impl KernelMedia for Card {
     }
 
     fn read_checkpoint(&mut self, offset: usize, into: &mut [u8]) -> Result<(), MediaError> {
+        if self.fail_rereads {
+            return Err(MediaError::NoSuchFile);
+        }
         let bytes = self.media.read_at(self.cat[self.active_checkpoint], offset, into.len())?;
         into.copy_from_slice(&bytes);
         Ok(())
     }
 
     fn read_record(&mut self, slot: u16) -> Result<Option<JournalBody>, MediaError> {
+        if self.fail_rereads {
+            return Err(MediaError::NoSuchFile);
+        }
         let stride = self.media.read_at(self.journal, slot as usize * SLOT_STRIDE, SLOT_STRIDE)?;
         Ok(JournalBody::validate_slot(&stride, slot).ok())
     }
