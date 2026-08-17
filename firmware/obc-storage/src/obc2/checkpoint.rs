@@ -83,6 +83,26 @@ pub const RIDE: Region = Region::new(59_968, ActiveRide::LEN, 1);
 /// The zero tail between the last region and the body CRC.
 pub const TAIL: core::ops::Range<usize> = 60_096..CHECKPOINT_BODY_CRC_OFFSET;
 
+/// §5.1's regions in body order, so anything that needs to reason about *all* of them — the
+/// tiling, the largest entry shape, a forward pass — derives it from one list rather than
+/// restating it.
+pub const REGIONS: [Region; 10] =
+    [REPOSITORIES, HEADS, ACTIVE, DRAFT_PARENT, DRAFT_PARTS, RETAINED, RESULTS, HANDOFF, WEATHER, RIDE];
+
+/// The largest entry any region holds — the update-handoff projection's 240 bytes, which is what
+/// §6.3's forward pass must be able to stage.
+pub const fn largest_entry() -> usize {
+    let mut largest = 0;
+    let mut index = 0;
+    while index < REGIONS.len() {
+        if REGIONS[index].entry > largest {
+            largest = REGIONS[index].entry;
+        }
+        index += 1;
+    }
+    largest
+}
+
 /// The decoded 128-byte header (§5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckpointHeader {
@@ -438,6 +458,20 @@ fn zero_after(body: &[u8], region: Region, count: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The region list is the table in body order, and it tiles without a gap — which is what lets
+    /// a forward pass emit region after region and land exactly on the zero tail.
+    #[test]
+    fn the_region_list_is_the_body_in_order() {
+        assert_eq!(REGIONS[0].offset, HEADER_LEN);
+        for pair in REGIONS.windows(2) {
+            assert_eq!(pair[0].end(), pair[1].offset, "a gap between {:?} and {:?}", pair[0], pair[1]);
+        }
+        assert_eq!(REGIONS.last().unwrap().end(), TAIL.start);
+        // §6.3's staging bound is this number, and §5.1's largest shape is the handoff projection.
+        assert_eq!(largest_entry(), super::super::limits::HANDOFF_REF_LEN);
+        assert_eq!(largest_entry(), 240);
+    }
 
     /// §5.1's table, region by region: each starts where the previous ended and the last one ends
     /// at the zero tail.
