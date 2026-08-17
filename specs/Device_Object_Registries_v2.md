@@ -1,5 +1,7 @@
 # Device Object System v2 registries
 
+> **Superseded** by Epic #1256 / FS2. Do not extend; deletion lands in FS11 (#1393).
+
 Status: **normative** for Device Object System v2. The
 [system contract](Device_Object_System_v2.md) owns identities and layer boundaries; the
 [wire contract](Device_Object_Protocol_v3.md) owns message layouts. This registry owns stable

@@ -1,3 +1,5 @@
+//! Superseded — see #1256. Do not extend.
+//!
 //! The OBC2 storage kernel: the record codecs, the catalog reference model, and the recovery
 //! decision frozen by [`OBC2_Storage_Format.md`].
 //!

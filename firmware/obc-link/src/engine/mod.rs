@@ -1,3 +1,6 @@
+//! Protocol-v3 / DOS2 bindings superseded — see #1256; the engine ports to v4 in FS5. Do not
+//! extend them.
+//!
 //! The transfer engine: one session model and one set of state machines for both links.
 //!
 //! The engine is the device side of `Device_Object_Protocol_v3.md` above the codec and below the
