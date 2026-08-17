@@ -44,6 +44,14 @@ is #1383, deferred for want of board access. If it later fails, the remedy is re
 counts inside this document and inside the store — nothing above the seam of
 [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §2 changes.
 
+A **multi-block write command** is not a unit of atomicity either, and nothing below may assume it is.
+A cut inside one leaves an arbitrary **subset** of its blocks on the card: the card is free to have
+committed any of them already and to lose the rest with the power, and the block it was mid-programming
+is corrupted by the page rule above — or none is, if it stopped cleanly between two blocks. So a store
+may issue a region's blocks in as few commands as the media rewards without changing what a reader must
+tolerate: what makes a record all-or-nothing is its CRC and, where the record is too large for one
+shot, its gate. Never the command count.
+
 Two consequences are used throughout and stated once here:
 
 - A record written **in one shot and covered by one CRC over all of its pages** is all or nothing to
@@ -342,10 +350,37 @@ atomically, because the mechanism rewrites the whole live prefix regardless. Wea
 the new head, set `RETAINED` on the displaced entry) and finalising a ride (clear `RECORDING`, trim
 the ranges, set length and CRC) are each one commit.
 
-The cost is `ceil(n/4) + 3` block writes and three synchronizations: about **15–20 ms** at a few
-hundred entries, dominated by the synchronizations. That budget assumes commits are rare —
-publication events, not a running log. If a future feature needs to commit more than about once per
-second, the whole-catalog copy is the thing to re-examine, not the thing to work around.
+The cost is `ceil(n/4) + 3` block **writes** and three synchronizations, and — because the mechanism
+rewrites the whole live prefix — two passes over the array's `ceil(n/4)` blocks to produce them: one to
+check everything the batch would write against §5.3 before the card is touched, one to write it.
+
+Those counts were measured exactly right on glass (#1409 round 2): 79 write blocks at 300 entries, 260
+at 1,024. The **time** they take was not, and the earlier claim of "about 15–20 ms at a few hundred
+entries, dominated by the synchronizations" was wrong three ways:
+
+- A synchronization is not the cost. On the sEMMC transport the device uses, a write polls CMD13 for
+  the program cycle to finish, so durability is folded into every write and a `sync` is free.
+- What the card charges is per **command**: about 1.47 ms for a write command, then ~72 µs a block
+  inside it, and about 340 µs for a read command plus ~42 µs a block. So a block count fixes the bytes
+  moved and says nothing about the time; 79 blocks issued one per command cost 116 ms, and the same 79
+  blocks in thirteen commands cost 24.
+- **A third of a commit is not I/O at all.** Entry decode, this section's §5.3 pass, entry encode and
+  the body CRC fold are the MCU's, they scale with the entry count, and no schedule touches them. A
+  commit at 300 entries measured 116 ms writing / 53 ms reading / **42 ms on the M33**; at 1,024,
+  390 / 178 / **141**. That is ~138 µs an entry, and it is the term that survives every I/O
+  improvement.
+
+A store is therefore free to issue these blocks in as few multi-block commands as it likes, and should:
+nothing in this section is a statement about command granularity. What it does fix is the blocks, their
+addresses, their contents, and their order relative to the three synchronizations — a cut inside a wide
+command is still a cut, and the isolation assumption of §1 is per program page whatever command was
+programming it. The device's store batches to 4 KiB windows, which puts a commit at a few hundred
+entries near **80 ms** and at 1,024 near **250 ms** — projections from the figures above, not fresh
+measurements, and in both the M33's share is now the larger half.
+
+The budget assumes commits are rare — publication events, not a running log. If a future feature needs
+to commit more than about once per second, the whole-catalog copy is the thing to re-examine, not the
+thing to work around.
 
 ### 5.6 Mount
 
@@ -371,7 +406,20 @@ Those five steps are the whole of mount. There is **no journal replay** — the 
 commit; **no garbage collection** — an extent is free exactly when no entry names it; and **no
 recovery scan** — nothing on the card can be committed that the winning gate does not already
 describe. On a card with no ride in progress a mount reads at most 3 blocks plus the live catalog
-prefix, which is why boot is about 100 ms.
+prefix — 261 blocks at 1,025 entries, the whole boot cost.
+
+As in §5.5, that block count is the normative part and the time is not all of it. Those 261 blocks
+measured **184.1 ms** on glass (#1409 round 2) against the ~100 ms this section planned for, and the
+split is the finding: **88.5 ms reading, 95.6 ms on the M33** — a mount is CPU-bound, not I/O-bound.
+Decoding 1,025 entries, checking §5.3, claiming their extents and folding the body CRC is ~93 µs an
+entry and no schedule reaches it.
+
+Reading the same blocks in 2 KiB windows takes the I/O half from 88.5 ms to about 31.5, which projects
+a mount near **127 ms**. That is a large improvement and still **misses** this section's ~100 ms, by
+about a quarter. Getting under it means making the per-entry work cheaper or reading fewer entries —
+neither is a scheduling change, and neither is done. (The window is half the one a commit uses because
+the device's mount reads in the frame that is building the store itself, which is that store's largest;
+the wider window would buy ~9 ms and cost 2 KiB of stack there.)
 
 One thing that reads like mount is deliberately outside it: reconciling an update that armed before
 the last reboot, which may remove an orphaned rollback reserve
