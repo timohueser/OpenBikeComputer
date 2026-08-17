@@ -247,8 +247,10 @@ pub struct RideCheckpoint<'a> {
 pub trait Store {
     type Handle;
 
-    /// Reserve space for `bytes`. RAM state until a commit names it; freed by drop, by cancel,
-    /// and by the next mount, which rebuilds the free map from the catalog and cannot see it.
+    /// Reserve space for `bytes`. RAM state until a commit names it; released by
+    /// [`cancel`](super::store::FlatStore::cancel) and by the next mount, which rebuilds the free
+    /// map from the catalog and cannot see it. **Dropping an `Allocation` releases nothing** — it is
+    /// `Copy`, and the row it names lives in the store.
     fn allocate(&mut self, bytes: u64) -> core::result::Result<Allocation, StoreError>;
 
     /// Append to an allocation. Writes are sequential and the total may not exceed the reservation.
