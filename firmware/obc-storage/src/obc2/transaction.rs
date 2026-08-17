@@ -318,50 +318,116 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// `sequence` is the journal cursor a mount established: the next record's sequence, which is
     /// the projection's `through_sequence` plus one.
     pub fn mount(media: M, validator: V, hooks: H, model: CatalogModel) -> Self {
-        let sequence = model.through_sequence.saturating_add(1);
-        let revision = model.repositories.iter().map(|row| row.revision.get()).max().unwrap_or(0);
-        let next_logical_id = model.repositories.iter().map(|row| row.next_logical_id.get()).max().unwrap_or(0).max(1);
         let store = model.store;
-        KernelTransaction {
+        let mut this = KernelTransaction {
             media,
             validator,
             hooks,
             model,
-            sequence,
-            revision,
-            next_logical_id,
+            sequence: 1,
+            revision: 0,
+            next_logical_id: 1,
             leases: LeaseTable::new(),
             pinned: None,
             lease_connection: 0,
             live: [None; MAX_ACTIVE_OPERATIONS],
             writing: None,
             stride: [0; SLOT_STRIDE],
-            config: ConfigBlock {
-                unit_flags: 0,
-                weather_refresh: obc_link::control::WeatherRefresh::Off,
-                name: [0; obc_link::control::MAX_DEVICE_NAME],
-                name_len: 0,
-            },
-            status: DeviceStatus {
-                firmware_major: 0,
-                firmware_minor: 1,
-                firmware_patch: 0,
-                hardware_revision: 1,
-                device_serial: [0x0b; 16],
-                boot_count: 1,
-                uptime_seconds: 60,
-                stack_high_water: 4_096,
-                status_flags: obc_link::control::status_flags::CARD_PRESENT,
-                mount_class: obc_link::control::MountClass::Mounted,
-                firmware_build: 1,
-                store_id: store,
-            },
-            clock: ClockStatus {
-                epoch_seconds: 1_700_000_000,
-                source: obc_link::control::ClockSource::Companion,
-                state: obc_link::control::ClockState::Trusted,
-            },
+            config: initial_config(),
+            status: initial_status(store),
+            clock: initial_clock(),
+        };
+        this.rebind();
+        this
+    }
+
+    /// Mounts into storage the caller already owns, over a projection that is not yet loaded.
+    ///
+    /// ## Why this exists, measured
+    ///
+    /// [`mount`](Self::mount) takes the projection by value and returns this whole value by value.
+    /// Both are large — the projection alone is around 56 KiB and the transaction around 73 KiB —
+    /// so placing one in a board's `.bss` through it costs **206,080 bytes of transient stack**,
+    /// measured on the nRF54L with a painted stack. The shipping image's residual main stack is
+    /// **51,576 bytes**. A device that mounted a store that way would not fault at some future
+    /// depth; it would fault during the mount.
+    ///
+    /// So this writes each field into the caller's slot directly and never materializes a
+    /// `KernelTransaction` anywhere. The projection starts empty: a mount decodes the selected
+    /// checkpoint straight into [`model_mut`](Self::model_mut) — through
+    /// [`media_and_model_mut`](Self::media_and_model_mut), which hands out the media that reads it
+    /// and the projection it is read into together — and then calls [`rebind`](Self::rebind) to
+    /// derive the cursors from what landed.
+    ///
+    /// The host path keeps [`mount`](Self::mount): a test boxes the value and the copies cost
+    /// nothing that matters.
+    pub fn mount_in_place(
+        slot: &mut core::mem::MaybeUninit<Self>,
+        media: M,
+        validator: V,
+        hooks: H,
+        store: StoreId,
+    ) -> &mut Self {
+        let at = slot.as_mut_ptr();
+        // SAFETY: every field of `Self` is written exactly once below, through a raw pointer into
+        // the caller's uninitialized slot, and none of them is read before it is written.
+        //
+        // "Exhaustive" is the whole safety argument, and prose does not enforce it. Two things do:
+        // `SIZE_32`/`SIZE_64` below, which any layout change trips, and
+        // `every_field_is_named_by_the_in_place_constructor` in this module's tests, which
+        // destructures the struct by name so a field added to it cannot compile until someone has
+        // looked at this list.
+        unsafe {
+            core::ptr::addr_of_mut!((*at).media).write(media);
+            core::ptr::addr_of_mut!((*at).validator).write(validator);
+            core::ptr::addr_of_mut!((*at).hooks).write(hooks);
+            // Not `.write(CatalogModel::empty(store))`: that is the 56 KiB return-slot temporary
+            // this constructor exists to avoid, and it would put the whole of it back.
+            CatalogModel::init_empty(&mut *core::ptr::addr_of_mut!((*at).model).cast(), store);
+            core::ptr::addr_of_mut!((*at).sequence).write(1);
+            core::ptr::addr_of_mut!((*at).revision).write(0);
+            core::ptr::addr_of_mut!((*at).next_logical_id).write(1);
+            core::ptr::addr_of_mut!((*at).leases).write(LeaseTable::new());
+            core::ptr::addr_of_mut!((*at).pinned).write(None);
+            core::ptr::addr_of_mut!((*at).lease_connection).write(0);
+            core::ptr::addr_of_mut!((*at).live).write([None; MAX_ACTIVE_OPERATIONS]);
+            core::ptr::addr_of_mut!((*at).writing).write(None);
+            core::ptr::addr_of_mut!((*at).stride).write([0; SLOT_STRIDE]);
+            core::ptr::addr_of_mut!((*at).config).write(initial_config());
+            core::ptr::addr_of_mut!((*at).status).write(initial_status(store));
+            core::ptr::addr_of_mut!((*at).clock).write(initial_clock());
+            slot.assume_init_mut()
         }
+    }
+
+    /// The media and the projection together, so a mount can read one into the other.
+    ///
+    /// They are handed out as a pair because that is the only way to have both: a store's mount
+    /// reads a checkpoint *through its own media* into *its own projection*, and two separate
+    /// accessors could not be held at once.
+    pub fn media_and_model_mut(&mut self) -> (&mut M, &mut CatalogModel) {
+        (&mut self.media, &mut self.model)
+    }
+
+    /// Derives the journal cursor and the two identity cursors from the projection now in place.
+    ///
+    /// **Call this after the projection is loaded and before the first command.** A transaction
+    /// built by [`mount_in_place`](Self::mount_in_place) starts on an empty projection, so its
+    /// cursors are the empty store's; a mount that decoded a real checkpoint through
+    /// [`media_and_model_mut`](Self::media_and_model_mut) and skipped this would append its next
+    /// journal record at sequence one, over a slot the store is still replaying, and hand out a
+    /// `LogicalObjectId` some existing head already owns. [`mount`](Self::mount) calls it for the
+    /// caller, which is why the by-value path needs no such note.
+    ///
+    /// §6.3: the next record's sequence is the projection's `through_sequence` plus one. The
+    /// revision and logical-id cursors are the maxima the repository rows carry, which is what makes
+    /// a remount continue the store rather than restart it.
+    pub fn rebind(&mut self) {
+        self.sequence = self.model.through_sequence.saturating_add(1);
+        self.revision = self.model.repositories.iter().map(|row| row.revision.get()).max().unwrap_or(0);
+        self.next_logical_id =
+            self.model.repositories.iter().map(|row| row.next_logical_id.get()).max().unwrap_or(0).max(1);
+        self.status.store_id = self.model.store;
     }
 
     /// True once the journal has reached §6.3's compaction trigger.
@@ -1662,6 +1728,46 @@ impl<M: KernelMedia, V: Validator, H: Hooks> Transaction for KernelTransaction<M
 // Free functions
 // ---------------------------------------------------------------------------------------------
 
+/// The device-control plane's config block, as a fresh transaction carries it (§16).
+///
+/// The three `initial_*` functions exist so the by-value and the in-place constructor cannot drift:
+/// each writes exactly these values into its own destination.
+fn initial_config() -> ConfigBlock {
+    ConfigBlock {
+        unit_flags: 0,
+        weather_refresh: obc_link::control::WeatherRefresh::Off,
+        name: [0; obc_link::control::MAX_DEVICE_NAME],
+        name_len: 0,
+    }
+}
+
+/// The device-control plane's status, as a fresh transaction carries it (§16).
+fn initial_status(store: StoreId) -> DeviceStatus {
+    DeviceStatus {
+        firmware_major: 0,
+        firmware_minor: 1,
+        firmware_patch: 0,
+        hardware_revision: 1,
+        device_serial: [0x0b; 16],
+        boot_count: 1,
+        uptime_seconds: 60,
+        stack_high_water: 4_096,
+        status_flags: obc_link::control::status_flags::CARD_PRESENT,
+        mount_class: obc_link::control::MountClass::Mounted,
+        firmware_build: 1,
+        store_id: store,
+    }
+}
+
+/// The device-control plane's clock, as a fresh transaction carries it (§16).
+fn initial_clock() -> ClockStatus {
+    ClockStatus {
+        epoch_seconds: 1_700_000_000,
+        source: obc_link::control::ClockSource::Companion,
+        state: obc_link::control::ClockState::Trusted,
+    }
+}
+
 /// The 32-byte principal digest a §5.3 row stores, from the 16-byte scope the adapter established.
 ///
 /// §5.3 reserves 32 bytes for "the opaque stable principal-scope digest"; the wire's scope is 16.
@@ -1789,4 +1895,165 @@ fn decode_result(result: &TerminalResult) -> Result<ResultEnvelope, TerminalErro
         current_revision: (body.presence & obc_link::error::presence::CURRENT_REVISION != 0)
             .then_some(body.current_revision),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A media that does nothing, so the size assert below measures **this struct's** layout rather
+    /// than whatever media a particular board composes it with.
+    struct NoMedia;
+
+    impl GenerationMedia for NoMedia {
+        type Error = ();
+
+        fn ensure_shards(&mut self, _generation: GenerationId) -> Result<(), ()> {
+            Ok(())
+        }
+        fn payload_length(&mut self) -> Result<u64, ()> {
+            Ok(0)
+        }
+        fn write_payload(&mut self, _offset: u64, _bytes: &[u8]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn sync_payload(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn truncate_payload(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn write_work(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn sync_work(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    impl KernelMedia for NoMedia {
+        fn append_journal(
+            &mut self,
+            _slot: u16,
+            _body: &[u8; JOURNAL_BODY_LEN],
+            _gate: &[u8; GATE_LEN],
+        ) -> Result<(), ()> {
+            Ok(())
+        }
+        fn open_generation(&mut self, _generation: GenerationId) -> Result<(), ()> {
+            Ok(())
+        }
+        fn read_generation(&mut self, _generation: GenerationId, _offset: u64, _into: &mut [u8]) -> Result<usize, ()> {
+            Ok(0)
+        }
+        fn collect_generation(&mut self, _generation: GenerationId) -> Result<(), ()> {
+            Ok(())
+        }
+        fn free_bytes(&mut self) -> u64 {
+            u64::MAX
+        }
+        fn reset_store(&mut self, _store: StoreId) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    type Pinned = KernelTransaction<NoMedia, AcceptEverything, NoHooks>;
+
+    /// The size [`KernelTransaction::mount_in_place`]'s field list was written against, over a
+    /// zero-sized media so the figure is this struct's own rather than a particular board's.
+    ///
+    /// Anonymous and at module scope so it is evaluated eagerly — a *named* const is checked only
+    /// where something reads it, which would make this look like a guard while gating nothing.
+    /// Two values because the two targets have different pointer widths — the board is 32-bit
+    /// thumbv8m, the host suite 64-bit. Re-pinning one is the moment the field list gets checked.
+    #[cfg(target_pointer_width = "64")]
+    const _: () = assert!(core::mem::size_of::<Pinned>() == 73_384);
+
+    /// **The compile-time half of `mount_in_place`'s safety argument.**
+    ///
+    /// The constructor writes a `MaybeUninit<Self>` field by field, so its soundness is exactly the
+    /// claim that the list is complete. This destructures with no `..`: a field added to
+    /// `KernelTransaction` stops this file compiling until someone looks at it, and the only reason
+    /// to look is the raw-pointer list.
+    #[test]
+    fn every_field_is_named_by_the_in_place_constructor() {
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
+        let store = StoreId::new([0x4C; 16]);
+        let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
+        let KernelTransaction {
+            media: _,
+            validator: _,
+            hooks: _,
+            model,
+            sequence,
+            revision,
+            next_logical_id,
+            leases: _,
+            pinned,
+            lease_connection,
+            live,
+            writing,
+            stride,
+            config,
+            status,
+            clock,
+        } = placed;
+        assert_eq!(model.store, store);
+        assert_eq!((*sequence, *revision, *next_logical_id), (1, 0, 1));
+        assert!(pinned.is_none() && writing.is_none() && live.iter().all(|row| row.is_none()));
+        assert_eq!(*lease_connection, 0);
+        assert!(stride.iter().all(|byte| *byte == 0));
+        assert_eq!(config.name_len, initial_config().name_len);
+        assert_eq!(status.store_id, store);
+        assert_eq!(clock.epoch_seconds, initial_clock().epoch_seconds);
+    }
+
+    /// The board runs `mount_in_place`; every host test runs `mount`. They must produce the same
+    /// transaction, or the board is exercising something the suite never sees.
+    #[test]
+    fn the_in_place_constructor_agrees_with_the_by_value_one() {
+        let store = StoreId::new([0x4C; 16]);
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
+        let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
+        let by_value = std::boxed::Box::new(KernelTransaction::mount(
+            NoMedia,
+            AcceptEverything,
+            NoHooks,
+            CatalogModel::empty(store),
+        ));
+
+        assert_eq!(placed.store_id(), by_value.store_id());
+        assert_eq!(*placed.model(), *by_value.model());
+        assert_eq!(placed.sequence, by_value.sequence);
+        assert_eq!(placed.revision, by_value.revision);
+        assert_eq!(placed.next_logical_id, by_value.next_logical_id);
+        assert_eq!(placed.retained_results(), by_value.retained_results());
+        assert_eq!(placed.has_lease(), by_value.has_lease());
+        assert_eq!(placed.compaction_required(), by_value.compaction_required());
+        assert_eq!(placed.config.name_len, by_value.config.name_len);
+        assert_eq!(placed.status.store_id, by_value.status.store_id);
+        assert_eq!(placed.clock.epoch_seconds, by_value.clock.epoch_seconds);
+        assert_eq!(placed.stride, by_value.stride);
+    }
+
+    /// A mount over a projection that already carries state derives the cursors from it, which is
+    /// what makes a remount continue the store rather than restart it.
+    #[test]
+    fn rebind_derives_the_cursors_from_the_projection_in_place() {
+        let store = StoreId::new([0x4C; 16]);
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
+        let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
+        {
+            let (_, model) = placed.media_and_model_mut();
+            model.reset_to_initial(store, ObjectKind::Weather.to_u16());
+            model.through_sequence = 41;
+            model.repositories[0].revision = Revision::new(7);
+            model.repositories[0].next_logical_id = LogicalObjectId::new(9);
+        }
+        placed.rebind();
+        assert_eq!(placed.sequence, 42, "the journal cursor is through_sequence + 1");
+        assert_eq!(placed.revision, 7);
+        assert_eq!(placed.next_logical_id, 9);
+        assert_eq!(placed.status.store_id, store);
+    }
 }

@@ -1371,6 +1371,7 @@ dependencies = [
  "obc-display",
  "obc-elevation",
  "obc-formats",
+ "obc-link",
  "obc-map-scene",
  "obc-platform",
  "obc-ports",

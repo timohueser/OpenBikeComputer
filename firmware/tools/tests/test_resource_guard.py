@@ -382,3 +382,41 @@ class BootChainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ModuleFrameGateTests(unittest.TestCase):
+    """The `frames` subcommand: the OBC2 store's own stack ceiling (#1359).
+
+    The regression it exists for is a measured one — a 56 KiB projection built in a return slot put
+    206,080 B on the stack and HardFaulted the board — so the gate is tested against a disassembly
+    that contains exactly that shape.
+    """
+
+    DISASSEMBLY = """
+00001000 <obc_storage::obc2::transaction::KernelTransaction::commit>:
+    1000: b5f0          push {r4, r5, r6, r7, lr}
+    1002: b084          sub.w sp, sp, #6080
+00002000 <obc_storage::obc2::fat::FatMedia::append_journal>:
+    2000: b082          sub sp, #0x8
+00003000 <unrelated::renderer::draw>:
+    3000: b084          sub.w sp, sp, #40000
+"""
+
+    def _run(self, limit, match="obc2"):
+        args = SimpleNamespace(elf=Path("image.elf"), match=match, limit=limit)
+        with mock.patch.object(resource_guard, "run_tool", return_value=self.DISASSEMBLY):
+            resource_guard.check_frames(args)
+
+    def test_the_measured_ceiling_passes(self):
+        self._run(8_192)
+
+    def test_a_return_slot_constructor_fails_the_gate(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "above the 4096 B limit"):
+            self._run(4_096)
+
+    def test_frames_outside_the_match_are_not_gated(self):
+        # The 40,000 B renderer frame is far over the limit and belongs to another module.
+        self._run(8_192)
+
+    def test_a_module_that_vanished_is_a_stale_guard_rather_than_a_pass(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "guard is stale"):
+            self._run(8_192, match="obc3")
