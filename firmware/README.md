@@ -101,7 +101,20 @@ checked-in semantic transcripts are held to their framing and decoding on both b
 driven end to end through the engine and one more has its semantics reproduced from a preamble,
 and the rest name the device state or profile they would need.
 
-`obc-storage::obc2` is the same suite's on-card half: the record codecs of
+`obc-storage::flat` is the **flat card store** (Device Object System v3): the whole of
+[`FLAT_Store_Format.md`](../specs/FLAT_Store_Format.md) and §2 of
+[`FLAT_Store_Protocol.md`](../specs/FLAT_Store_Protocol.md). `seam` is the five-operation `Store`
+trait everything above the card sees; `device` is the 512-byte block seam it sits on; `layout`,
+`superblock`, `catalog` and `journal` are the geometry and the three record shapes; `bitmap` is the
+free map, which is the catalog's complement and nothing else; and `store` composes them into mount,
+initialization, the alternating gate-sector commit and the ride journal's write half. Resident state
+is the 8 KiB free bitmap plus a handful of rows — the entry array stays on the card. Host-only, behind
+the same `std` feature: `sim`, a sparse card that tears exactly the program pages §1's fault model
+admits, and `model`, the reference state a recovered card is compared against byte for byte. Under
+`cfg(test)`: the crash matrix (every media operation of every durable path, cut before, during and
+after), the decoder fuzz, and both specs' vectors.
+
+`obc-storage::obc2` — superseded by the above and deleted in the epic's last slice — is the same suite's on-card half: the record codecs of
 [`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,
 `RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog projection
 whose `apply` is the meaning of a journal record, §7's and §7.1's WORK/RIDE recovery rules, §6.3's
