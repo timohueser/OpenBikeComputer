@@ -1,0 +1,28 @@
+{
+  "name": "put-replace-retaining-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 84,
+    "requestId": 10753
+  },
+  "note": "A weather bundle replacing revision 2 and asking the same commit to leave it RETAINED.",
+  "body": {
+    "objectId": "4",
+    "expectedRevision": "2",
+    "payloadLength": "8192",
+    "payloadCrc32": 305419896,
+    "kind": 4,
+    "retainPrevious": true,
+    "displayName": "weather"
+  },
+  "frame": "4f4243340404000054000000012a0000040000000000000002000000000000000020000000000000785634120400010007000000776561746865720000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

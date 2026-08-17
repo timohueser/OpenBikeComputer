@@ -1,0 +1,19 @@
+{
+  "name": "cancelled-by-client",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "cancelled",
+    "codeValue": 10,
+    "detail": "byClient",
+    "detailValue": 1,
+    "context": "0"
+  },
+  "note": "The answer the cancelled transfer gets, beside the CANCEL's own one-byte response.",
+  "frame": "4f4243340404030010000000012a00000a000100000000000000000000000000"
+}

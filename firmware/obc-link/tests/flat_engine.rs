@@ -264,7 +264,7 @@ fn a_cancelled_download_closes_its_handle() {
     let disk = formatted_card(10);
     let mut device = boot(&disk);
     let bytes = body();
-    let (id, revision) = device.seed(ObjectKind::Route, &bytes, "one");
+    let (id, _revision) = device.seed(ObjectKind::Route, &bytes, "one");
 
     // One record goes out and the client cancels with the rest of the payload still to come.
     let wire = device.control_upto(&client::get(0x61, id, 0), 1);
@@ -275,7 +275,7 @@ fn a_cancelled_download_closes_its_handle() {
 
     // A hold the engine failed to close would keep the entry's extents out of the allocator when it
     // is removed; one extent coming back is the proof it did close.
-    assert_eq!(device.remove_and_measure(id, revision), 1);
+    assert_eq!(device.remove_and_measure(id), 1);
 }
 
 #[test]

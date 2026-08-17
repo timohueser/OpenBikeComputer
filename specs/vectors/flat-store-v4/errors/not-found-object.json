@@ -1,0 +1,19 @@
+{
+  "name": "not-found-object",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "GET",
+    "value": 3
+  },
+  "requestId": 10756,
+  "body": {
+    "code": "notFound",
+    "codeValue": 4,
+    "detail": "object",
+    "detailValue": 1,
+    "context": "0"
+  },
+  "note": "No entry names that ObjectId.",
+  "frame": "4f4243340403030010000000042a000004000100000000000000000000000000"
+}

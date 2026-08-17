@@ -1,0 +1,23 @@
+{
+  "name": "list-first-page-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "LIST",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 32,
+    "requestId": 10754
+  },
+  "note": "Every kind, no cursor: the request a client issues before it does anything else.",
+  "body": {
+    "kindFilter": 0,
+    "cursor": false
+  },
+  "frame": "4f4243340401000020000000022a00000000000000000000000000000000000000000000000000000000000000000000"
+}

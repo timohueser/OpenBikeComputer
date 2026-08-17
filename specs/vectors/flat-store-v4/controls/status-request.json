@@ -1,0 +1,23 @@
+{
+  "name": "status-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "STATUS",
+    "value": 2
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 10755
+  },
+  "note": "The reconcile path after a broken link: is this object at this revision committed?",
+  "body": {
+    "objectId": "1",
+    "revision": "3"
+  },
+  "frame": "4f4243340402000010000000032a000001000000000000000300000000000000"
+}

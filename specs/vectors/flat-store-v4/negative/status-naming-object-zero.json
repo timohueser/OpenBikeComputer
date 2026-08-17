@@ -1,0 +1,15 @@
+{
+  "name": "status-naming-object-zero",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "The identity of the store comes from LIST, not from a STATUS of ObjectId zero.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "badCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243340402000010000000032a000000000000000000000000000000000000"
+}

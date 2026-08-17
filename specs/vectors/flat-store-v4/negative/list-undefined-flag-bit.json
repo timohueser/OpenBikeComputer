@@ -1,0 +1,15 @@
+{
+  "name": "list-undefined-flag-bit",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "Bit 0 is the cursor and the other bits are zero.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f4243340401000020000000022a00000000020000000000000000000000000000000000000000000000000000000000"
+}

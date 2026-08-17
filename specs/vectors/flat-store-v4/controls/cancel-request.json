@@ -1,0 +1,22 @@
+{
+  "name": "cancel-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "CANCEL",
+    "value": 6
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 4,
+    "requestId": 10758
+  },
+  "note": "Cancel is bilateral: this names the transfer, which also receives its own cancelled response.",
+  "body": {
+    "transferRequestId": 10753
+  },
+  "frame": "4f4243340406000004000000062a0000012a0000"
+}

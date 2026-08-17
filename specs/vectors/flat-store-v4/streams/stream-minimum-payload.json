@@ -1,0 +1,10 @@
+{
+  "name": "stream-minimum-payload",
+  "suite": "flat-store-v4",
+  "kind": "stream",
+  "requestId": 10753,
+  "offset": "42136",
+  "payloadLength": 1,
+  "note": "One byte: the smallest legal record, because a zero length terminates the transfer.",
+  "record": "012a000098a40000000000000100000000"
+}

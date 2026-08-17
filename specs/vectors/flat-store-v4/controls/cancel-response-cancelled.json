@@ -1,0 +1,22 @@
+{
+  "name": "cancel-response-cancelled",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "CANCEL",
+    "value": 6
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 1,
+    "requestId": 10758
+  },
+  "note": "0: the live transfer was dropped and its allocation released.",
+  "body": {
+    "outcome": 0
+  },
+  "frame": "4f4243340406010001000000062a000000"
+}

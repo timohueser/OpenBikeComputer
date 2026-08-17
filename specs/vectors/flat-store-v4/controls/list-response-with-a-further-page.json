@@ -1,0 +1,25 @@
+{
+  "name": "list-response-with-a-further-page",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "LIST",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 5,
+    "payloadLength": 112,
+    "requestId": 10754
+  },
+  "note": "One entry and the more bit: the client repeats the request with that entry's pair.",
+  "body": {
+    "storeId": "8f2c41d96b074ea3b1559c207de83466",
+    "commitSequence": "7",
+    "entries": 1,
+    "more": true
+  },
+  "frame": "4f4243340401050070000000022a00008f2c41d96b074ea3b1559c207de8346607000000000000000100000000000000030000000000000099a4000000000000217e4a9c010000000c0000004772696d73656c204c6f6f7000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

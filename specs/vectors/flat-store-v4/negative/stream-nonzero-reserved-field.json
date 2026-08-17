@@ -1,0 +1,11 @@
+{
+  "name": "stream-nonzero-reserved-field",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "streamRecord",
+  "note": "The two bytes after the length are zero.",
+  "expect": {
+    "disposition": "terminateTransfer"
+  },
+  "bytes": "012a000000000000000000000400010000000000"
+}

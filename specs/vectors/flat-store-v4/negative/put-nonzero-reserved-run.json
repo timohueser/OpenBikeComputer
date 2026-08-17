@@ -1,0 +1,15 @@
+{
+  "name": "put-nonzero-reserved-run",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "The three bytes after the name length are zero.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "reservedBits",
+    "detailValue": 1
+  },
+  "bytes": "4f4243340404000054000000012a00000000000000000000000000000000000099a4000000000000217e4a9c010000000c0100004772696d73656c204c6f6f70000000000000000000000000000000000000000000000000000000000000000000000000"
+}

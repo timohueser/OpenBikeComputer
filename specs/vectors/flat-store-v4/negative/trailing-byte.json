@@ -1,0 +1,15 @@
+{
+  "name": "trailing-byte",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "A frame carrying a byte past the end of its stated layout is a framing error, exactly as a short one is.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidFrame",
+    "codeValue": 2,
+    "detail": "trailing",
+    "detailValue": 4
+  },
+  "bytes": "4f4243340404000054000000012a00000000000000000000000000000000000099a4000000000000217e4a9c010000000c0000004772696d73656c204c6f6f7000000000000000000000000000000000000000000000000000000000000000000000000000"
+}

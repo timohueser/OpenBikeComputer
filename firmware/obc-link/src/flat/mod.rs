@@ -28,6 +28,9 @@ pub mod ids;
 pub mod store;
 pub mod wire;
 
+#[cfg(any(test, feature = "std"))]
+pub mod vectors;
+
 pub use engine::{Ceilings, Channel, Engine, Reaction, DEFAULT_STAGE};
 pub use ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
 pub use store::{Mode, Mutation, OpenPolicy, Policy, PutSource, Store, StoreError};

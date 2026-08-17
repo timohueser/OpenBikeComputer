@@ -1,0 +1,19 @@
+{
+  "name": "media-io-write",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "mediaIo",
+    "codeValue": 8,
+    "detail": "write",
+    "detailValue": 2,
+    "context": "0"
+  },
+  "note": "The card refused a write. The mutation did not happen.",
+  "frame": "4f4243340404030010000000012a000008000200000000000000000000000000"
+}

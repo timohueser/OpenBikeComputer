@@ -133,10 +133,16 @@ impl Device<'_> {
         self.drive(first, budget)
     }
 
-    /// Pumps a live transfer once more.
+    /// Pumps a live transfer until it goes quiet.
     pub fn pump(&mut self) -> Wire {
         let first = self.engine.poll(&mut self.store, &mut self.out);
         self.drive(first, usize::MAX)
+    }
+
+    /// Pumps exactly one record out of it.
+    pub fn pump_once(&mut self) -> Wire {
+        let first = self.engine.poll(&mut self.store, &mut self.out);
+        self.drive(first, 1)
     }
 
     /// One stream record.
@@ -256,13 +262,18 @@ impl Device<'_> {
         Store::entries(&self.store).collect()
     }
 
-    /// Removes one entry through the seam, and reports the extents that came back with it. A hold
-    /// the engine failed to close keeps them out of the allocator, so this is how a leaked hold is
-    /// caught.
-    pub fn remove_and_measure(&mut self, id: u64, revision: u64) -> u32 {
+    /// Removes every entry of one `ObjectId` through the seam, and reports the extents that came
+    /// back with them. A hold the engine failed to close keeps them out of the allocator, so this is
+    /// how a leaked hold is caught. Both entries go in one commit, because §5.3 has no state in which
+    /// a retained revision is an object's only entry.
+    pub fn remove_and_measure(&mut self, id: u64) -> u32 {
         let before = self.free_extents();
-        Store::commit(&mut self.store, &[Mutation::Remove { id: ObjectId(id), revision: Revision(revision) }])
-            .expect("the probe removes");
+        let batch: Vec<Mutation> = Store::entries(&self.store)
+            .filter(|meta| meta.id == ObjectId(id))
+            .map(|meta| Mutation::Remove { id: meta.id, revision: meta.revision })
+            .collect();
+        assert!(!batch.is_empty(), "the probe names an entry that is not there");
+        Store::commit(&mut self.store, &batch).expect("the probe removes");
         self.free_extents() - before
     }
 }
