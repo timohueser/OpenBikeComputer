@@ -535,6 +535,17 @@ revision space, or a card §5.6 step 1 classified as **not a flat store**
 including the reads, because there is nothing to read; only the exhausted case still serves reads.
 Initializing such a card is destructive and device-local — no wire opcode formats a card.
 
+Two of the store's read-only modes share one detail and one card too small shares another, so the
+mapping is written out rather than inferred:
+
+| `Mode` (§2) | detail |
+| :-- | :-- |
+| `CatalogUnreadable` | `catalogUnreadable 1` |
+| `RevisionSpaceExhausted` | `revisionSpaceExhausted 2` |
+| `SequenceSpaceExhausted` | `revisionSpaceExhausted 2` — no third value is registered, and from a client's side both are this card's counters running out |
+| `Unformatted` | `unformatted 3` |
+| `CardTooSmall` | `unformatted 3` — the card the superblock describes is not the card in the slot, so there is no flat store here either |
+
 An error means the mutation did not happen, with exactly one exception a client must handle: a
 response lost after the commit. That is what §3.4 is for, and it is why no error code claims an
 uncertain outcome.
@@ -615,6 +626,14 @@ Request, 16 bytes: package `ObjectId u64`, expected `Revision u64`. The device t
    sequence `u64` — must reach the transport before the reboot, or the adapter's bounded drain
    timeout must expire.
 5. **Reboots.**
+
+Step 3 is also the one place an `ARM` can fail with a commit already made. A refusal there — the page
+did not read back — is **not** the cut below: a cut reboots, and the reboot is what runs the
+reconciliation. So the device takes step 2's commit back and answers `internal`, and §3.9's rule that
+an error means the mutation did not happen holds. If that removal is refused too, the device answers
+the error and stops: what it leaves is exactly the state a cut leaves — a boot page that does not
+decode and an orphaned reserve — which the next boot's reconciliation settles with one commit. It
+self-heals; it does not accumulate.
 
 `ARM` is not cancellable once it has been answered. A cut anywhere before step 3 completes leaves a
 boot page that does not decode, which the bootloader reads as *no pending update*; the rollback
