@@ -276,11 +276,21 @@ synchronized, and it is the only thing that makes the body it names authoritativ
 | 504 | 4 | gate CRC-32 over bytes `0..504` |
 | 508 | 4 | zero |
 
-A gate is valid only when: its magic and version are known; its copy index equals its physical
-position; its `StoreId` equals the superblock's; its gate CRC checks; its entry count is within
-capacity; and the body CRC equals a fresh CRC of the body it describes. There is no partially valid
-gate and no repair path. The gate CRC already covers the body-CRC field, so the body CRC needs no
-mirror or complement of its own.
+Gate validity is two-tiered, because selecting a copy and trusting one are different questions and
+the body read sits between them.
+
+A gate is **well-formed** when its magic and version are known, its copy index equals its physical
+position, its `StoreId` equals the superblock's, its gate CRC checks, and its entry count is within
+capacity. All five are properties of the 512 gate bytes alone, so being well-formed is decidable from
+the two gate reads of §5.6 step 2 — which is exactly what selecting a copy and taking a sequence
+high-water mark may rely on. It also means no field of a gate that is not well-formed is ever read:
+media garbage in a dead gate's sequence field cannot poison the high-water mark or burn sequence
+space, because that gate contributes nothing.
+
+A gate is **valid** when it is well-formed **and** its body CRC equals a fresh CRC of the body it
+describes. Only a valid gate certifies a catalog. There is no partially valid gate and no repair path,
+and the gate CRC already covers the body-CRC field, so the body CRC needs no mirror or complement of
+its own.
 
 **Invalidating** a gate means writing 512 zero bytes over exactly that block and synchronizing. An
 all-zero gate fails magic and CRC, so invalidation needs neither a sentinel value nor a
@@ -295,14 +305,14 @@ at any point before step 3 leaves those bytes anonymous and their extents free a
 Let `A` be the copy the store is **currently serving** — the one mount selected in §5.6, or the one
 the last commit wrote — and `B` the other. The target is defined by what the store is serving, not by
 which gate has the greater sequence, because those differ: mount falls back to the older copy when the
-newer one's gate is valid but its body fails, and a commit that then overwrote the copy it was serving
+newer one's gate is well-formed but its body fails, and a commit that then overwrote the copy it served
 would leave the card with no valid catalog at all.
 
 1. Invalidate `B`'s gate; synchronize.
 2. Write `B`'s body — one header block, then `ceil(entry_count / 4)` entry blocks — with a commit
-   sequence one greater than the highest any gate on this card has carried; synchronize. Mount notes
-   that high-water mark from **both** gates it parsed, valid body or not, so the sequence a client
-   caches never repeats even after a fallback.
+   sequence one greater than the highest any gate on this card has carried; synchronize. That
+   high-water mark comes from every **well-formed** gate mount saw (§5.4), not only from the one whose
+   body validated, so the sequence a client caches never repeats even after a fallback.
 3. Write `B`'s gate; synchronize.
 
 After step 3 the store's truth is `B`. A cut anywhere before step 3 completes leaves `A` valid with
@@ -328,15 +338,17 @@ second, the whole-catalog copy is the thing to re-examine, not the thing to work
 
 1. Read superblock A block 0; on failure read superblock B. Neither valid ⇒ the card is not a flat
    store: initialization (§8) is the only transition, and it is destructive and explicit.
-2. Read both gate blocks (2 reads) and note the highest commit sequence either carries. Neither gate
-   valid ⇒ read-only, evidence preserved: a valid superblock implies a catalog was written before it
-   (§8), and §5.5 never leaves both gates invalid, so this is media damage rather than any state the
-   store can produce. Two valid gates at equal sequences is likewise corruption and mounts read-only.
-   Otherwise take the valid gate with the greater sequence.
-3. Read that copy's body — `1 + ceil(entry_count / 4)` blocks — and check the body CRC and every
-   structural rule of §5.3. On failure, fall back to the other copy and repeat. Both bad ⇒ read-only,
-   evidence preserved, no repair. The copy that succeeds is the one the store **serves**, and §5.5's
-   next commit targets the other one.
+2. Read both gate blocks (2 reads) and consider only the **well-formed** ones (§5.4). The highest
+   commit sequence any of them carries is the sequence high-water mark §5.5 continues from. No
+   well-formed gate ⇒ read-only, evidence preserved: a valid superblock implies a catalog was written
+   and no superblock survives an interrupted initialization (§8), and §5.5 never leaves both gates
+   ill-formed, so this is media damage rather than any state the store can produce. Two well-formed
+   gates at equal sequences is likewise corruption and mounts read-only. Otherwise order them by
+   sequence, greatest first.
+3. Promote to **valid**: read the leading candidate's body — `1 + ceil(entry_count / 4)` blocks —
+   and check the body CRC and every structural rule of §5.3. On failure, fall back to the next
+   candidate and repeat. None valid ⇒ read-only, evidence preserved, no repair. The copy that
+   succeeds is the one the store **serves**, and §5.5's next commit targets the other one.
 4. Build the free-extent bitmap: every extent free, then mark the ranges of every entry used. An
    overlap is a structural failure of that copy.
 5. If exactly one entry carries `RECORDING`, read the 16 ride journal slots and recover the ride
@@ -584,20 +596,23 @@ does not carry.
 Initialization is explicit, destructive, and the only transition into this format. A card that is not
 already a valid flat store is never written to implicitly.
 
-1. Draw a fresh `StoreId` from the device CSPRNG.
-2. Zero the gate block of catalog copy B; synchronize.
-3. Zero the 16 ride-journal slot header blocks; synchronize.
-4. Write catalog copy A's body — header with commit sequence `1`, next `ObjectId` `1`, entry count
+1. Zero block 0 of superblock copy A and of copy B; synchronize.
+2. Draw a fresh `StoreId` from the device CSPRNG.
+3. Zero the gate block of catalog copy B; synchronize.
+4. Zero the 16 ride-journal slot header blocks; synchronize.
+5. Write catalog copy A's body — header with commit sequence `1`, next `ObjectId` `1`, entry count
    `0` — then its gate; synchronize each.
-5. Write superblock copy A, then copy B; synchronize.
+6. Write superblock copy A, then copy B; synchronize.
 
-**The superblocks go last, and that ordering is the invariant.** A valid superblock therefore implies
-a valid catalog: every cut before step 5 leaves a card §5.6 step 1 classifies as *not a flat store*,
-which is the destructive-initialization path and not a data-loss one. Writing them first would leave a
-card that mounts — a valid `StoreId` and no catalog at all — which §5.6 step 2 can only answer with
-read-only.
+**The superblocks are destroyed first and written last, and that bracket is the invariant.** A valid
+superblock therefore implies a valid catalog, unconditionally: a cut anywhere between steps 1 and 6
+leaves a card §5.6 step 1 classifies as *not a flat store*, which is the destructive-initialization
+path and not a data-loss one. Step 1 is what makes that hold when the card was **already** a flat
+store — re-initialization is the ordinary case, since old cards are re-initialized rather than
+migrated — because the old superblock at LBA 0 would otherwise keep validating right up to step 6 and
+a cut in between would present a card that mounts with a valid `StoreId` and no catalog at all.
 
-A mount after step 5 finds copy A valid and copy B invalid, an empty catalog, and every extent free.
+A mount after step 6 finds copy A valid and copy B ill-formed, an empty catalog, and every extent free.
 There is no migration path from any earlier layout: an old card is re-initialized, and every object
 on it is gone.
 
