@@ -13,6 +13,11 @@
 //!   durable. A cut before the sync loses it, and a cut *during* one commits a seeded subset — which
 //!   is the state every "body synchronized before the gate" rule exists for.
 //! - **Page tearing.** A cut during a write corrupts every block of every program page it touched.
+//! - **A cut inside one multi-block write.** A write of several blocks is one card command, and the
+//!   supply can drop part-way through it. [`When::Inside`] is that, in the three shapes a card may
+//!   leave behind, and it is what keeps a batched write from narrowing the matrix: a `During` cut on a
+//!   wide command tears *every* page of it at once, which is blunter and less interesting than the
+//!   partial images a real interruption produces.
 //! - **A card that stops answering.** Reads and writes fail, which is how the read-only mount paths
 //!   get produced rather than asserted.
 //!
@@ -44,11 +49,40 @@ pub enum When {
     /// The card was mid-operation: a write tears the pages it was programming, and a sync commits an
     /// arbitrary subset of what was pending.
     During,
+    /// A cut inside one multi-block **write**, which is where a batched write earns the coverage a
+    /// block-at-a-time one had. `blocks` of the command were programmed before the supply dropped and
+    /// the ones past that never reached the card; the two flags are what the card may have done with
+    /// the boundary and with the prefix, and each combination is a different durable image:
+    ///
+    /// - `tear` — the block at `blocks` was mid-program, so its page is corrupted (§1's rule, applied
+    ///   to one page rather than to every page the command touched). Without it the card stopped
+    ///   cleanly between two blocks, which it is equally free to do.
+    /// - `durable` — the card had already committed that prefix. Without it the prefix was still in the
+    ///   volatile cache and dies with the power, which is precisely the outcome a *single-block*
+    ///   write's [`During`](Self::During) cut used to produce at that block.
+    ///
+    /// So the three enumerated combinations — `(tear, durable)`, `(tear, !durable)`, `(!tear, durable)`
+    /// — contain the whole set a block-at-a-time write offered *and* the partial durable bodies only a
+    /// wide command can leave. `(!tear, !durable)` is omitted because it is
+    /// [`Before`](Self::Before): nothing happened.
+    ///
+    /// One acknowledged narrowing: `FLAT_Store_Format.md` §1 permits an arbitrary **subset** of the
+    /// command's blocks to have landed, and this generates only the ordered **prefixes** — `blocks` of
+    /// them, in order. That is the shape a card that streams a command actually produces, and the
+    /// general subset is not left untested either: [`sync`](SparseDisk::sync)'s own `During` model
+    /// commits a seeded arbitrary subset of everything pending, which is where a scattered outcome
+    /// comes from.
+    ///
+    /// Meaningless for a read (nothing changes) and for a sync (which has its own subset model), and
+    /// ignored when `blocks` is not below the command's block count.
+    Inside { blocks: u32, tear: bool, durable: bool },
     /// The operation completed and then power was lost. Anything still unsynced is gone.
     After,
 }
 
-/// Every cut point [`When`] admits, in the order the matrix enumerates them.
+/// Every cut point [`When`] admits of *any* operation, in the order the matrix enumerates them.
+/// [`When::Inside`] is per-command — how many there are depends on how many blocks the write moved —
+/// so it is enumerated from [`SparseDisk::write_widths`] rather than from here.
 pub const EVERY_WHEN: [When; 3] = [When::Before, When::During, When::After];
 
 /// A scheduled power cut: the one-based index of the media operation it lands on, and where in it.
@@ -70,6 +104,10 @@ pub struct SparseDisk {
     total: u64,
     plan: Cell<Option<FaultPlan>>,
     ops: Cell<u32>,
+    /// Every counted operation, as `(operation, kind, blocks)`. Two things read it: a matrix, to
+    /// enumerate the interior cut points of the writes that moved more than a block, and the cost tests,
+    /// to count card *commands* rather than blocks.
+    ledger: RefCell<Vec<(u32, MediaOp, u64)>>,
     powered: Cell<bool>,
     rng: Cell<u64>,
 }
@@ -83,6 +121,7 @@ impl SparseDisk {
             total,
             plan: Cell::new(None),
             ops: Cell::new(0),
+            ledger: RefCell::new(Vec::new()),
             powered: Cell::new(true),
             rng: Cell::new(seed | 1),
         }
@@ -98,6 +137,25 @@ impl SparseDisk {
     /// plan and reading this.
     pub fn ops(&self) -> u32 {
         self.ops.get()
+    }
+
+    /// Every counted operation, in order: its one-based index, what it was, and how many blocks it
+    /// moved. This is what a caller counts card *commands* from — the cost the media actually charges is
+    /// per command plus a little per block, so blocks alone say nothing about time.
+    pub fn ledger(&self) -> Vec<(u32, MediaOp, u64)> {
+        self.ledger.borrow().clone()
+    }
+
+    /// Every counted write and how many blocks it moved, as `(operation, blocks)`. A matrix enumerates
+    /// a scenario by running it once with no plan; this is the other half of that enumeration, and it
+    /// is what tells it which operations have interiors to cut inside.
+    pub fn write_widths(&self) -> Vec<(u32, u64)> {
+        self.ledger
+            .borrow()
+            .iter()
+            .filter(|(_, kind, _)| *kind == MediaOp::Write)
+            .map(|(at, _, blocks)| (*at, *blocks))
+            .collect()
     }
 
     /// Restores power and drops everything that was never synced — which is what a reboot does. The
@@ -147,6 +205,16 @@ impl SparseDisk {
         self.plan.get().is_some_and(|plan| plan.op == op && plan.when == when)
     }
 
+    /// The interior cut this operation carries, if the plan names one: `(blocks, tear, durable)`.
+    fn cut_inside(&self, op: u32) -> Option<(u64, bool, bool)> {
+        match self.plan.get() {
+            Some(FaultPlan { op: planned, when: When::Inside { blocks, tear, durable } }) if planned == op => {
+                Some((u64::from(blocks), tear, durable))
+            }
+            _ => None,
+        }
+    }
+
     fn power_off(&self) {
         self.powered.set(false);
         self.pending.borrow_mut().clear();
@@ -181,6 +249,7 @@ impl BlockDevice for &SparseDisk {
         if !buf.len().is_multiple_of(BLOCK) || lba + blocks > self.total {
             return Err(DiskError);
         }
+        self.ledger.borrow_mut().push((op, MediaOp::Read, blocks));
         if self.cut_is(op, When::Before) || self.cut_is(op, When::During) {
             self.power_off();
             return Err(DiskError);
@@ -213,7 +282,27 @@ impl BlockDevice for &SparseDisk {
         if !buf.len().is_multiple_of(BLOCK) || blocks == 0 || lba + blocks > self.total {
             return Err(DiskError);
         }
+        self.ledger.borrow_mut().push((op, MediaOp::Write, blocks));
         if self.cut_is(op, When::Before) {
+            self.power_off();
+            return Err(DiskError);
+        }
+        // A cut inside the command: the prefix it had taken, the boundary block, and nothing past it.
+        // `power_off` drops whatever was merely pending, so a prefix the card had committed is written
+        // straight to the durable image — see [`When::Inside`] for the three shapes and why each is
+        // admissible.
+        if let Some((taken, tear, durable)) = self.cut_inside(op).filter(|(taken, _, _)| *taken < blocks) {
+            if durable {
+                let mut image = self.durable.borrow_mut();
+                for index in 0..taken {
+                    let mut block = [0u8; BLOCK];
+                    block.copy_from_slice(&buf[index as usize * BLOCK..(index as usize + 1) * BLOCK]);
+                    image.insert(lba + index, block);
+                }
+            }
+            if tear {
+                self.tear(lba + taken, 1);
+            }
             self.power_off();
             return Err(DiskError);
         }
@@ -239,6 +328,7 @@ impl BlockDevice for &SparseDisk {
 
     fn sync(&self) -> Result<(), DiskError> {
         let op = self.begin()?;
+        self.ledger.borrow_mut().push((op, MediaOp::Sync, 0));
         if self.cut_is(op, When::Before) {
             self.power_off();
             return Err(DiskError);
@@ -416,6 +506,64 @@ mod tests {
         assert_eq!(disk.block(2 * PAGE_BLOCKS), [0x11; BLOCK], "page 2 was damaged");
         assert_ne!(disk.block(PAGE_BLOCKS), [0x11; BLOCK], "page 1 was not torn");
         assert_ne!(disk.block(PAGE_BLOCKS + 31), [0; BLOCK], "the whole page was not torn");
+    }
+
+    /// [`When::Inside`]'s three shapes, each producing the durable image it claims. Without this the cut
+    /// model would be an assertion in a doc comment: a harness whose interior cut quietly did nothing
+    /// would still report hundreds of green cut points, which is the shape of coverage that looks like
+    /// evidence and is not.
+    #[test]
+    fn a_cut_inside_a_multi_block_write_leaves_the_prefix_and_tears_the_boundary() {
+        // Four pages, so the prefix, the boundary and the tail are all in program pages of their own and
+        // a tear cannot be confused with a neighbour's.
+        let blocks = 4 * PAGE_BLOCKS;
+        let old = [0x11u8; BLOCK];
+        let fresh: Vec<u8> = (0..blocks * BLOCK as u64).map(|index| (index % 251 + 1) as u8).collect();
+        let page = |lba: u64| lba * PAGE_BLOCKS;
+
+        for (tear, durable) in [(true, true), (true, false), (false, true)] {
+            let disk = disk();
+            for block in 0..blocks {
+                (&disk).write(block, &old).unwrap();
+            }
+            (&disk).sync().unwrap();
+
+            // One command over all four pages, cut two pages in.
+            let taken = 2 * PAGE_BLOCKS;
+            disk.plan(FaultPlan { op: disk.ops() + 1, when: When::Inside { blocks: taken as u32, tear, durable } });
+            assert_eq!((&disk).write(0, &fresh), Err(DiskError));
+            disk.reboot();
+
+            // The prefix: on the card if the card had committed it, otherwise still the old bytes.
+            for lba in [0, page(1), taken - 1] {
+                let at = lba as usize * BLOCK;
+                let want = if durable { &fresh[at..at + BLOCK] } else { &old[..] };
+                assert_eq!(&disk.block(lba)[..], want, "block {lba} of a ({tear}, {durable}) cut's prefix is wrong");
+            }
+
+            // The boundary block's page: torn, or untouched.
+            if tear {
+                assert_ne!(disk.block(taken), old, "the boundary block's page was not torn");
+                assert_ne!(disk.block(taken + PAGE_BLOCKS - 1), old, "the whole boundary page was not torn");
+            } else {
+                assert_eq!(disk.block(taken), old, "a clean stop damaged the boundary block");
+            }
+
+            // And nothing past the boundary page happened at all.
+            assert_eq!(disk.block(page(3)), old, "blocks past the cut reached the card");
+        }
+    }
+
+    /// The counted-operation ledger the cost tests and the matrix read: one row per operation, in order,
+    /// with the blocks it moved — and a sync moves none.
+    #[test]
+    fn the_ledger_records_every_operation_and_its_width() {
+        let disk = disk();
+        (&disk).write(0, &[0xAB; 3 * BLOCK]).unwrap();
+        (&disk).sync().unwrap();
+        (&disk).read(0, &mut [0u8; 2 * BLOCK]).unwrap();
+        assert_eq!(disk.ledger(), std::vec![(1, MediaOp::Write, 3), (2, MediaOp::Sync, 0), (3, MediaOp::Read, 2)],);
+        assert_eq!(disk.write_widths(), std::vec![(1, 3)]);
     }
 
     #[test]

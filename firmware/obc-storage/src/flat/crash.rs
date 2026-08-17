@@ -14,6 +14,13 @@
 //! "the byte image of the catalog is a function of the store's state" — so this is not "the same
 //! entries somehow", it is the same 768 bytes.
 //!
+//! **What a cut point is.** [`EVERY_WHEN`] for every counted media operation, *plus* three
+//! [`When::Inside`] shapes per block of every write that moved more than one — because a batched write
+//! is one operation covering many blocks, and a matrix that only cut at its edges would test a body
+//! written in ten commands less thoroughly than the same body written in seventy-six. Each scenario
+//! pins its own total, so a change that makes cut points disappear fails rather than quietly passing:
+//! the count is the argument, and [`cut_points`] is where it is made.
+//!
 //! The last section is the other failure media produces: one operation refused, the card still there,
 //! and a caller that gets to retry. A power cut cannot reach those paths, because after a cut there is
 //! no store left to ask — so they get [`FaultOnce`] and a probe each.
@@ -31,7 +38,7 @@ use super::seam::{
     DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision, RideCheckpoint, Store,
     StoreId,
 };
-use super::sim::{FaultOnce, FaultPlan, MediaOp, SparseDisk, EVERY_WHEN};
+use super::sim::{FaultOnce, FaultPlan, MediaOp, SparseDisk, When, EVERY_WHEN};
 use super::store::{FlatStore, Mode, RideRecovery};
 use super::superblock::Superblock;
 
@@ -43,7 +50,7 @@ const STORE: StoreId = StoreId([0x11; 16]);
 
 type Card<'a> = FlatStore<&'a SparseDisk>;
 
-fn entry(
+pub(super) fn entry(
     id: u64,
     revision: u64,
     kind: ObjectKind,
@@ -71,7 +78,7 @@ fn entry(
 }
 
 /// The payload bytes every scenario writes, so a stored CRC means something.
-fn payload(len: usize) -> Vec<u8> {
+pub(super) fn payload(len: usize) -> Vec<u8> {
     (0..len).map(|index| (index * 7 + 11) as u8).collect()
 }
 
@@ -92,10 +99,12 @@ fn builder(model: &Model, copy: usize) -> impl Fn(u64) -> SparseDisk + '_ {
     move |seed| card(seed, model, copy)
 }
 
-/// The catalog, its gate, and every entry's payload bytes. Installing the payloads is what makes the
-/// pre-state a *consistent* card: the entries claim a length and a CRC, and `Snapshot` reads those
-/// bytes back through the seam, so a scenario would otherwise start from a card that already lies.
-fn install_catalog(disk: &SparseDisk, model: &Model, copy: usize) {
+/// The catalog, its gate, and every entry's payload bytes. `pub(super)` because the sibling cost tests
+/// build their cards the same way, and a second copy of this would be a second definition of what a
+/// consistent pre-state is. Installing the payloads is what makes it consistent: the entries claim a
+/// length and a CRC, and `Snapshot` reads those bytes back through the seam, so a scenario would
+/// otherwise start from a card that already lies.
+pub(super) fn install_catalog(disk: &SparseDisk, model: &Model, copy: usize) {
     let body = model.body();
     disk.install(CATALOG[copy], &body);
     let gate = Gate {
@@ -143,50 +152,118 @@ fn snapshot(store: &mut Card) -> Snapshot {
     model::snapshot(store).expect("a mounted store")
 }
 
+/// Every cut point a scenario admits: the three [`EVERY_WHEN`] positions of each of its `total` media
+/// operations, and [`When::Inside`]'s three shapes for each block of every write that moved more than
+/// one.
+///
+/// Those interior points are what makes a batched write reviewable, and the claim they carry is a
+/// containment one rather than an arithmetic one. Take a region written as `n` single-block writes: its
+/// cut points were `3n`, and the only ones with a durable effect were the `n` `During` cuts, each
+/// tearing the page of one block. Written in windows instead, the same region gets `3n` interior points
+/// — `(tear, !durable)` at each block *is* that old `During` cut, block for block — plus one
+/// whole-command `During` per window, which tears every page the window touched at once, plus `2n`
+/// partial-durable images no single-block write could produce. Strictly more, per block.
+///
+/// The totals nonetheless fall, and it is worth being exact about where: batching removes **read**
+/// operations (a mount's scan and each of a commit's two passes), and a cut inside a read changes no
+/// byte on the card — it powers the card off, and what it exercises is the abort path, which is the
+/// same one whatever block the scan had reached. Writes are where the durable outcomes are, and no
+/// write's coverage got smaller.
+fn cut_points(total: u32, widths: &[(u32, u64)]) -> Vec<(u32, When)> {
+    let mut cuts = Vec::new();
+    for op in 1..=total {
+        for when in EVERY_WHEN {
+            cuts.push((op, when));
+        }
+    }
+    for (op, width) in widths.iter().filter(|(_, width)| *width > 1) {
+        for blocks in 0..*width as u32 {
+            for (tear, durable) in [(true, true), (true, false), (false, true)] {
+                cuts.push((*op, When::Inside { blocks, tear, durable }));
+            }
+        }
+    }
+    cuts
+}
+
+/// The card seed one cut point runs on. The three whole-operation positions keep the seed they always
+/// had — so the matrix this change inherits runs on exactly the bytes it used to — and an interior cut
+/// takes a stream of its own, because two cut points sharing a seed share a torn page's contents too.
+fn seed(base: u64, when: When) -> u64 {
+    match when {
+        When::Inside { blocks, tear, durable } => {
+            base + (1 + u64::from(blocks)) * 1_000_003 + u64::from(tear) * 31 + u64::from(durable) * 131
+        }
+        _ => base,
+    }
+}
+
 /// The crash matrix for one scenario, over whatever card `build` hands it: the old state or the new
-/// one, and nothing else.
-fn matrix(name: &str, before: &Model, after: &Model, build: impl Fn(u64) -> SparseDisk, scenario: impl Fn(&mut Card)) {
-    matrix_admitting(name, &[before.snapshot(), after.snapshot()], after, build, scenario);
+/// one, and nothing else. `cuts` is [`cut_points`]'s census, pinned.
+fn matrix(
+    name: &str,
+    cuts: usize,
+    before: &Model,
+    after: &Model,
+    build: impl Fn(u64) -> SparseDisk,
+    scenario: impl Fn(&mut Card),
+) {
+    matrix_admitting(name, cuts, &[before.snapshot(), after.snapshot()], after, build, scenario);
 }
 
 /// The same, for the one scenario whose cut points admit a third state §5.5 names.
 fn matrix_admitting(
     name: &str,
+    cuts: usize,
     admissible: &[Snapshot],
     expected: &Model,
     build: impl Fn(u64) -> SparseDisk,
     scenario: impl Fn(&mut Card),
 ) {
-    let total = {
+    let (total, widths) = {
         let disk = build(1);
         let mut store = FlatStore::mount(&disk);
         let baseline = disk.ops();
         scenario(&mut store);
-        disk.ops() - baseline
+        let widths: Vec<(u32, u64)> = disk
+            .write_widths()
+            .into_iter()
+            .filter(|(op, _)| *op > baseline)
+            .map(|(op, blocks)| (op - baseline, blocks))
+            .collect();
+        (disk.ops() - baseline, widths)
     };
     assert!(total > 0, "{name}: the scenario performs no media operation");
+    let points = cut_points(total, &widths);
+    assert_eq!(
+        points.len(),
+        cuts,
+        "{name}: {} cut points over {total} media operations ({} of them multi-block writes), not the \
+         {cuts} this scenario is pinned to — a count that *fell* means a cut point stopped existing, \
+         which is the one thing batching must not do",
+        points.len(),
+        widths.iter().filter(|(_, blocks)| *blocks > 1).count(),
+    );
 
-    for op in 1..=total {
-        for when in EVERY_WHEN {
-            let disk = build(u64::from(op) * 31 + 7);
-            let mut store = FlatStore::mount(&disk);
-            disk.plan(FaultPlan { op: disk.ops() + op, when });
-            scenario(&mut store);
-            disk.reboot();
+    for (op, when) in points {
+        let disk = build(seed(u64::from(op) * 31 + 7, when));
+        let mut store = FlatStore::mount(&disk);
+        disk.plan(FaultPlan { op: disk.ops() + op, when });
+        scenario(&mut store);
+        disk.reboot();
 
-            let mut store = FlatStore::mount(&disk);
-            assert_eq!(store.mode(), Mode::ReadWrite, "{name}: cut at op {op} {when:?} did not mount read-write");
-            let recovered = snapshot(&mut store);
-            assert!(
-                admissible.contains(&recovered),
-                "{name}: cut at op {op} {when:?} recovered no admissible state \
-                 (sequence {}, high water {}, {} entries, ride {:?})",
-                recovered.sequence,
-                recovered.high_water,
-                recovered.entries.len(),
-                recovered.ride,
-            );
-        }
+        let mut store = FlatStore::mount(&disk);
+        assert_eq!(store.mode(), Mode::ReadWrite, "{name}: cut at op {op} {when:?} did not mount read-write");
+        let recovered = snapshot(&mut store);
+        assert!(
+            admissible.contains(&recovered),
+            "{name}: cut at op {op} {when:?} recovered no admissible state \
+             (sequence {}, high water {}, {} entries, ride {:?})",
+            recovered.sequence,
+            recovered.high_water,
+            recovered.entries.len(),
+            recovered.ride,
+        );
     }
     let after = expected;
 
@@ -204,9 +281,9 @@ fn matrix_admitting(
 /// The same scenario cut on a card whose catalog starts in copy A and again on one where it starts in
 /// copy B, so the commit under test targets B in one run and A in the other. §5.5's target is "the copy
 /// the store is not serving", and a matrix that only ever wrote B would not have tested that sentence.
-fn matrix_both_copies(name: &str, before: &Model, after: &Model, scenario: impl Fn(&mut Card) + Copy) {
+fn matrix_both_copies(name: &str, cuts: usize, before: &Model, after: &Model, scenario: impl Fn(&mut Card) + Copy) {
     for copy in [0, 1] {
-        matrix(name, before, after, builder(before, copy), scenario);
+        matrix(name, cuts, before, after, builder(before, copy), scenario);
     }
 }
 
@@ -219,7 +296,7 @@ fn creating_an_object_recovers_the_old_or_the_new_catalog() {
     let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
     let before = empty();
     let after = empty().apply(&[Change::Put(route)]).clone();
-    matrix_both_copies("create", &before, &after, |store: &mut Card| {
+    matrix_both_copies("create", 48, &before, &after, |store: &mut Card| {
         let Ok(mut allocation) = store.allocate(3_000) else { return };
         if store.write(&mut allocation, &payload(3_000)).is_err() {
             return;
@@ -234,7 +311,7 @@ fn replacing_an_object_is_atomic_and_frees_the_old_extents() {
     let second = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 5_000, "Grimsel Loop", &[(1, 1)]);
     let before = holding(&[first], 4);
     let after = holding(&[first], 4).apply(&[Change::Put(second), Change::Remove(first.meta.key())]).clone();
-    matrix_both_copies("replace", &before, &after, |store: &mut Card| {
+    matrix_both_copies("replace", 69, &before, &after, |store: &mut Card| {
         let Ok(mut allocation) = store.allocate(5_000) else { return };
         if store.write(&mut allocation, &payload(5_000)).is_err() {
             return;
@@ -255,7 +332,7 @@ fn retaining_the_previous_revision_is_one_commit() {
     let new = entry(1, 2, ObjectKind::WeatherBundle, EntryFlags::NONE, 3_000, "", &[(1, 1)]);
     let before = holding(&[old], 4);
     let after = holding(&[old], 4).apply(&[Change::Put(retained), Change::Put(new)]).clone();
-    matrix_both_copies("retain", &before, &after, |store: &mut Card| {
+    matrix_both_copies("retain", 57, &before, &after, |store: &mut Card| {
         let Ok(mut allocation) = store.allocate(3_000) else { return };
         if store.write(&mut allocation, &payload(3_000)).is_err() {
             return;
@@ -273,7 +350,7 @@ fn removing_an_object_recovers_the_old_or_the_new_catalog() {
     let trip = entry(2, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
     let before = holding(&[route, trip], 9);
     let after = holding(&[route, trip], 9).apply(&[Change::Remove(route.meta.key())]).clone();
-    matrix_both_copies("remove", &before, &after, |store: &mut Card| {
+    matrix_both_copies("remove", 30, &before, &after, |store: &mut Card| {
         let _ = store.commit(&[Mutation::Remove { id: route.meta.id, revision: route.meta.revision }]);
     });
 }
@@ -331,7 +408,7 @@ fn a_commit_after_a_fallback_targets_the_copy_it_is_not_serving() {
         model.snapshot()
     };
     let admissible = [served.snapshot(), mark_erased, after.snapshot()];
-    matrix_admitting("fallback commit", &admissible, &after, build, |store: &mut Card| {
+    matrix_admitting("fallback commit", 39, &admissible, &after, build, |store: &mut Card| {
         let Ok(mut allocation) = store.allocate(600) else { return };
         if store.write(&mut allocation, &payload(600)).is_err() {
             return;
@@ -382,7 +459,7 @@ fn a_multi_page_catalog_body_recovers_the_old_or_the_new_state() {
         install_catalog(&disk, &before, 0);
         disk
     };
-    matrix("multi-page body", &before, &after, build, |store: &mut Card| {
+    matrix("multi-page body", 663, &before, &after, build, |store: &mut Card| {
         let _ = store.commit(&[Mutation::Remove { id: removed.meta.id, revision: removed.meta.revision }]);
     });
 }
@@ -443,38 +520,38 @@ fn initialization_produces_no_store_or_a_complete_empty_one() {
         model.high_water = 12;
         model
     };
-    let total = {
+    let (total, widths) = {
         let disk = SparseDisk::blank(TOTAL_BLOCKS, 1);
         FlatStore::initialize(&disk, STORE).unwrap();
-        disk.ops()
+        (disk.ops(), disk.write_widths())
     };
-    for op in 1..=total {
-        for when in EVERY_WHEN {
-            let disk = card(u64::from(op) * 23 + 3, &old, 0);
-            let baseline = disk.ops();
-            disk.plan(FaultPlan { op: baseline + op, when });
-            let _ = FlatStore::initialize(&disk, STORE);
-            disk.reboot();
+    let points = cut_points(total, &widths);
+    assert_eq!(points.len(), 99, "initialization: {} cut points, not the pinned count", points.len());
+    for (op, when) in points {
+        let disk = card(seed(u64::from(op) * 23 + 3, when), &old, 0);
+        let baseline = disk.ops();
+        disk.plan(FaultPlan { op: baseline + op, when });
+        let _ = FlatStore::initialize(&disk, STORE);
+        disk.reboot();
 
-            let mut store = FlatStore::mount(&disk);
-            let recovered = store.store_id();
-            match store.mode() {
-                Mode::Unformatted => {}
-                Mode::ReadWrite if recovered == STORE => assert_eq!(
+        let mut store = FlatStore::mount(&disk);
+        let recovered = store.store_id();
+        match store.mode() {
+            Mode::Unformatted => {}
+            Mode::ReadWrite if recovered == STORE => assert_eq!(
+                snapshot(&mut store),
+                expected,
+                "initialization: cut at op {op} {when:?} mounted the new store over something else",
+            ),
+            Mode::ReadWrite => {
+                assert_eq!(recovered, old.store, "cut at op {op} {when:?} mounted an identity from nowhere");
+                assert_eq!(
                     snapshot(&mut store),
-                    expected,
-                    "initialization: cut at op {op} {when:?} mounted the new store over something else",
-                ),
-                Mode::ReadWrite => {
-                    assert_eq!(recovered, old.store, "cut at op {op} {when:?} mounted an identity from nowhere");
-                    assert_eq!(
-                        snapshot(&mut store),
-                        old.snapshot(),
-                        "initialization: cut at op {op} {when:?} left the old store half-erased",
-                    );
-                }
-                other => panic!("initialization: cut at op {op} {when:?} mounted {other:?}"),
+                    old.snapshot(),
+                    "initialization: cut at op {op} {when:?} left the old store half-erased",
+                );
             }
+            other => panic!("initialization: cut at op {op} {when:?} mounted {other:?}"),
         }
     }
 
@@ -498,7 +575,7 @@ fn starting_a_ride_recovers_the_old_or_the_new_catalog() {
     let ride = recording();
     let before = empty();
     let after = empty().apply(&[Change::Put(ride)]).clone();
-    matrix_both_copies("ride start", &before, &after, |store: &mut Card| {
+    matrix_both_copies("ride start", 27, &before, &after, |store: &mut Card| {
         let Ok(allocation) = store.allocate(32 << 20) else { return };
         let _ = store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]);
     });
@@ -562,7 +639,7 @@ fn finalising_a_ride_publishes_the_bytes_it_claims() {
         model.apply(&[Change::Put(finalised)]);
         model
     };
-    matrix("ride end", &before, &after, recording_card(&before, &ride, FLUSHED, TAIL), |store: &mut Card| {
+    matrix("ride end", 147, &before, &after, recording_card(&before, &ride, FLUSHED, TAIL), |store: &mut Card| {
         let _ = store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]);
     });
 }
@@ -580,7 +657,7 @@ fn finalising_a_ride_shorter_than_one_page_publishes_all_of_it() {
         model.apply(&[Change::Put(finalised)]);
         model
     };
-    matrix("short ride end", &before, &after, recording_card(&before, &ride, 0, 900), |store: &mut Card| {
+    matrix("short ride end", 99, &before, &after, recording_card(&before, &ride, 0, 900), |store: &mut Card| {
         let _ = store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]);
     });
 }
@@ -670,7 +747,7 @@ impl Rider {
 
 /// The checkpoint, cut at every media operation: recovery yields the previous checkpoint or this one,
 /// never a mixture, and never a ride that rolled back further than one interval — §7.4's loss cap.
-fn checkpoint_matrix(name: &str, growths: &[usize]) {
+fn checkpoint_matrix(name: &str, cuts: usize, growths: &[usize]) {
     let start = holding(&[recording()], 6);
     let mut admissible: Vec<Option<(RideRecovery, Vec<u8>)>> = vec![None];
     let mut rider = Rider::new();
@@ -696,43 +773,51 @@ fn checkpoint_matrix(name: &str, growths: &[usize]) {
         }
         rider.grow(growths[last]);
         rider.checkpoint(&mut store);
-        disk.ops() - baseline
+        // The operations of the checkpoint under test alone: the setup ones are the card this scenario
+        // starts from, not part of what it is cut inside.
+        let widths = disk
+            .write_widths()
+            .into_iter()
+            .filter(|(op, _)| *op > baseline)
+            .map(|(op, blocks)| (op - baseline, blocks))
+            .collect::<Vec<_>>();
+        (disk.ops() - baseline, widths)
     };
 
-    let total = run(&card(1, &start, 0), None);
-    for op in 1..=total {
-        for when in EVERY_WHEN {
-            let disk = card(u64::from(op) * 41 + 13, &start, 0);
-            run(&disk, Some(FaultPlan { op, when }));
-            disk.reboot();
+    let (total, widths) = run(&card(1, &start, 0), None);
+    let points = cut_points(total, &widths);
+    assert_eq!(points.len(), cuts, "{name}: {} cut points, not the {cuts} pinned", points.len());
+    for (op, when) in points {
+        let disk = card(seed(u64::from(op) * 41 + 13, when), &start, 0);
+        run(&disk, Some(FaultPlan { op, when }));
+        disk.reboot();
 
-            let mut store = FlatStore::mount(&disk);
-            assert_eq!(store.mode(), Mode::ReadWrite, "{name}: cut at op {op} {when:?} did not mount");
-            let recovered_state = Snapshot { ride: None, ..snapshot(&mut store) };
-            assert_eq!(recovered_state, start.snapshot(), "{name}: a checkpoint changed the catalog");
-            let recovered = store.recovered_ride();
-            let expected = &admissible[last..];
-            assert!(
-                expected.iter().any(|state| state.as_ref().map(|(recovery, _)| *recovery) == recovered),
-                "{name}: cut at op {op} {when:?} recovered {recovered:?}, neither admissible checkpoint",
-            );
-            if let Some(recovered) = recovered {
-                let (_, tail) = expected
-                    .iter()
-                    .flatten()
-                    .find(|(recovery, _)| *recovery == recovered)
-                    .expect("the recovered state was just matched");
-                let mut read = vec![0u8; recovered.tail_len as usize];
-                store.recovered_tail(&mut read).unwrap();
-                assert_eq!(&read, tail, "{name}: the recovered tail is not that checkpoint's bytes");
-            }
+        let mut store = FlatStore::mount(&disk);
+        assert_eq!(store.mode(), Mode::ReadWrite, "{name}: cut at op {op} {when:?} did not mount");
+        let recovered_state = Snapshot { ride: None, ..snapshot(&mut store) };
+        assert_eq!(recovered_state, start.snapshot(), "{name}: a checkpoint changed the catalog");
+        let recovered = store.recovered_ride();
+        let expected = &admissible[last..];
+        assert!(
+            expected.iter().any(|state| state.as_ref().map(|(recovery, _)| *recovery) == recovered),
+            "{name}: cut at op {op} {when:?} recovered {recovered:?}, neither admissible checkpoint",
+        );
+        if let Some(recovered) = recovered {
+            let (_, tail) = expected
+                .iter()
+                .flatten()
+                .find(|(recovery, _)| *recovery == recovered)
+                .expect("the recovered state was just matched");
+            let mut read = vec![0u8; recovered.tail_len as usize];
+            store.recovered_tail(&mut read).unwrap();
+            assert_eq!(&read, tail, "{name}: the recovered tail is not that checkpoint's bytes");
         }
     }
 }
 
 #[test]
 fn a_checkpoint_recovers_the_previous_one_or_itself() {
-    checkpoint_matrix("checkpoint", &[200, 200]);
+    checkpoint_matrix("checkpoint", 219, &[200, 200]);
 }
 
 /// The page flush and the slot, in the order §7.2 fixes: a payload page is written only when every
@@ -741,14 +826,14 @@ fn a_checkpoint_recovers_the_previous_one_or_itself() {
 /// recovery simply rewrites the page.
 #[test]
 fn a_checkpoint_that_flushes_a_page_recovers_either_side_of_the_flush() {
-    checkpoint_matrix("checkpoint with flush", &[100, PROGRAM_PAGE + 200]);
+    checkpoint_matrix("checkpoint with flush", 321, &[100, PROGRAM_PAGE + 200]);
 }
 
 /// The first checkpoint of a ride: the admissible states are "no slot at all" — a ride start commits
 /// its entry before any checkpoint exists — and this one.
 #[test]
 fn the_first_checkpoint_recovers_nothing_or_itself() {
-    checkpoint_matrix("first checkpoint", &[300]);
+    checkpoint_matrix("first checkpoint", 219, &[300]);
 }
 
 /// §7.3's optional prefix check, done here because the spec says a host harness should: the flushed
@@ -1415,6 +1500,55 @@ fn a_full_catalog_refuses_one_more_entry() {
     assert_eq!(store.commit(&batch).unwrap_err(), super::error::StoreError::CatalogFull);
     store.cancel(allocation);
     assert_eq!(snapshot(&mut store), model.snapshot(), "a refused commit changed the card");
+}
+
+/// The batched body write at the array's widest, which is the one place it could reach something that is
+/// not body: §5.1 gives the entry array 480 blocks and puts the copy's **gate** in the block after them.
+///
+/// What this pins is the *boundary* — a window whose base drifted, or a body length miscounted at
+/// capacity, would program that gate as part of the body it is about to certify and then write a real
+/// gate over it. What it does **not** pin is the no-padding rule, and the distinction is worth stating
+/// because it is easy to assume otherwise: 480 blocks is exactly 60 windows, so at capacity the last
+/// window is already full and a writer that padded every window to eight blocks would pass this test
+/// unchanged. Padding is caught instead by [`cost`](super::cost), whose commit at 300 entries pins a
+/// 77-block body written in ten commands — nine full windows and a five-block one — so a writer that
+/// rounded that last window up would report 83 write blocks instead of 80 and fail.
+#[test]
+fn a_commit_at_capacity_never_programs_the_gate_as_body() {
+    const AT: usize = super::layout::ENTRY_CAPACITY - 1;
+    const BIG: u32 = super::layout::ENTRY_CAPACITY as u32 + 4;
+    let mut model = Model::empty(STORE, BIG);
+    for id in 1..=AT as u64 {
+        model.entries.push(entry(id, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "", &[(id as u16 - 1, 1)]));
+    }
+    model.next_object = AT as u64 + 1;
+    model.sequence = 4;
+    model.high_water = 4;
+
+    let blocks = EXTENT_AREA + EXTENT_BLOCKS * BIG as u64;
+    let disk = SparseDisk::blank(blocks, 61);
+    let superblock = Superblock { store: STORE, total_blocks: blocks }.encode();
+    disk.install(SUPERBLOCK[0], &superblock);
+    disk.install(SUPERBLOCK[1], &superblock);
+    install_catalog(&disk, &model, 0);
+
+    let mut store = FlatStore::mount(&disk);
+    let last = entry(AT as u64 + 1, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "last", &[(AT as u16, 1)]);
+    let mut allocation = store.allocate(600).unwrap();
+    store.write(&mut allocation, &payload(600)).unwrap();
+    store.commit(&[Mutation::Put { meta: last.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    assert_eq!(store.entry_count() as usize, super::layout::ENTRY_CAPACITY);
+    assert_eq!(store.serving_copy(), 1, "the commit did not target the copy it was not serving");
+
+    // The body now fills blocks 0..480 of copy B, and 480 is its gate.
+    assert_eq!(super::layout::body_len(super::layout::ENTRY_CAPACITY as u16).div_ceil(BLOCK) as u64, 480);
+    let gate = Gate::decode(&disk.block(catalog_gate(1)), 1, &STORE).expect("the gate survived the body write");
+    assert_eq!(gate.entry_count as usize, super::layout::ENTRY_CAPACITY);
+
+    model.apply(&[Change::Put(last)]);
+    assert_eq!(snapshot(&mut store), model.snapshot());
+    disk.reboot();
+    assert_eq!(snapshot(&mut FlatStore::mount(&disk)), model.snapshot(), "the card the commit left does not remount");
 }
 
 // -------------------------------------------------------------------------------------------
