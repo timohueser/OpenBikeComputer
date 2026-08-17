@@ -45,16 +45,27 @@ final class UploadSheetModelTests: XCTestCase {
         return (model, control)
     }
 
+    /// Poll until `condition` holds, or **throw**. Recording a failure and
+    /// returning would let the test fall through into assertions that were never
+    /// going to hold, turning one timeout into a cascade of downstream failures
+    /// that hide which wait actually blew (the shape this suite failed in CI).
+    ///
+    /// The deadline is generous for the reason spelled out in
+    /// `WeatherSettingsModelTests`: Swift Testing schedules its suites
+    /// concurrently in the same process as these `@MainActor` XCTest cases, so on
+    /// a loaded runner a continuation can wait a long time for its turn on the
+    /// main actor. The bound is here to catch a genuine hang, not to police
+    /// latency. Prefer ``fulfillment(of:timeout:)`` on a signal the model itself
+    /// fires for anything spanning a whole transfer — see the happy path.
     private func waitFor(
         _ what: String,
         timeout: Duration = .seconds(30),
         _ condition: () -> Bool
-    ) async {
+    ) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while !condition() {
             if ContinuousClock.now > deadline {
-                XCTFail("timed out waiting for \(what)")
-                return
+                throw WaitTimedOut(what: what, timeout: timeout)
             }
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -62,27 +73,42 @@ final class UploadSheetModelTests: XCTestCase {
 
     // MARK: Happy path (F → F₂ → dismiss)
 
-    func testHappyPathMovesThroughDoneAndAutoDismisses() async {
+    func testHappyPathMovesThroughDoneAndAutoDismisses() async throws {
+        // F₂ is *signalled*, not polled: `onCompleted` is the event under test, so
+        // waiting on it directly can't race it. Polling could also only ever hurt
+        // here — the mock paces a transfer in ~100 sequential hops that each need
+        // the main actor, and a poll loop spinning on that same actor competes
+        // with the very watcher it is waiting for.
+        let completed = expectation(description: "onCompleted fires")
         var assignedObjectID: DeviceObjectID??
-        let (model, _) = makeModel(.happyPath, onCompleted: { id, _, _ in assignedObjectID = id })
+        let (model, _) = makeModel(.happyPath, onCompleted: { id, _, _ in
+            assignedObjectID = id
+            completed.fulfill()
+        })
 
         XCTAssertEqual(model.phase, .uploading)
         XCTAssertEqual(model.fraction, 0)
         model.start()
 
-        await waitFor("progress movement") { model.progress.bytesDone > 0 }
+        try await waitFor("progress movement") { model.progress.bytesDone > 0 }
         // The mock paces uploads over a design-scale size (≈37 B/m), so the total
         // reflects the paced transfer, not the tiny real OBCR payload.
         XCTAssertGreaterThan(model.progress.total, 0)
         XCTAssertLessThanOrEqual(model.progress.bytesDone, model.progress.total)
         XCTAssertEqual(model.phase, .uploading)
 
-        await waitFor("F₂") { model.phase == .done }
-        XCTAssertNotNil(assignedObjectID, "onCompleted must fire on .completed")
+        // `fulfill()` only *schedules* this test's resume, so the watcher runs on
+        // to `phase = .done` before its next suspension — the model's documented
+        // "fires before `phase` reads `.done`" contract, observed from the side
+        // that contract is written for.
+        await fulfillment(of: [completed], timeout: 30)
+        // Reaching here *is* "onCompleted fired on .completed" — the expectation
+        // covers the outer optional, so what's left to check is the id it carried.
         XCTAssertNotNil(assignedObjectID ?? nil, "the mock reports the device-assigned object id")
+        XCTAssertEqual(model.phase, .done, "F₂ is observable once the save has run")
         XCTAssertEqual(model.fraction, 1)
 
-        await waitFor("auto-dismiss") { model.shouldDismiss }
+        try await waitFor("auto-dismiss") { model.shouldDismiss }
     }
 
     func testDerivedLinesMatchTheDesignReadout() {
@@ -107,25 +133,25 @@ final class UploadSheetModelTests: XCTestCase {
 
     // MARK: Cancel
 
-    func testCancelResolvesCanceledAndDismisses() async {
+    func testCancelResolvesCanceledAndDismisses() async throws {
         let (model, _) = makeModel(.happyPath, payloadBytes: 10_000_000)
         model.start()
-        await waitFor("progress movement") { model.progress.bytesDone > 0 }
+        try await waitFor("progress movement") { model.progress.bytesDone > 0 }
 
         model.cancel()
-        await waitFor("dismiss after cancel") { model.shouldDismiss }
+        try await waitFor("dismiss after cancel") { model.shouldDismiss }
         XCTAssertNotEqual(model.phase, .done, "a cancel must never read as success")
         XCTAssertLessThan(model.progress.bytesDone, model.progress.total)
     }
 
     // MARK: Drop → interrupted → restart (uploadDrop scenario)
 
-    func testDropInterruptsAndResumeRestartsFromScratch() async {
+    func testDropInterruptsAndResumeRestartsFromScratch() async throws {
         let (model, _) = makeModel(.uploadDrop, payloadBytes: 100_000)
         model.start()
 
         // The armed drop (62%) parks the transfer and flags the link.
-        await waitFor("interrupted") { model.phase == .interrupted }
+        try await waitFor("interrupted") { model.phase == .interrupted }
         let stallBytes = model.progress.bytesDone
         XCTAssertGreaterThan(stallBytes, 0)
         XCTAssertLessThan(stallBytes, model.progress.total)
@@ -139,17 +165,17 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .uploading)
         // Restart, not resume: the whole object is re-sent (the device discarded
         // its partial), so the bar starts over and still reaches F₂.
-        await waitFor("completion after restart") { model.phase == .done }
+        try await waitFor("completion after restart") { model.phase == .done }
         XCTAssertEqual(model.fraction, 1)
     }
 
-    func testCancelWhileInterruptedDismisses() async {
+    func testCancelWhileInterruptedDismisses() async throws {
         let (model, _) = makeModel(.uploadDrop)
         model.start()
-        await waitFor("interrupted") { model.phase == .interrupted }
+        try await waitFor("interrupted") { model.phase == .interrupted }
 
         model.cancel()
-        await waitFor("dismiss after cancel") { model.shouldDismiss }
+        try await waitFor("dismiss after cancel") { model.shouldDismiss }
         XCTAssertNotEqual(model.phase, .done)
     }
 
@@ -157,7 +183,7 @@ final class UploadSheetModelTests: XCTestCase {
     /// `.outOfRange`) must still park the sheet in `.interrupted` — the same drop
     /// the sync watch reacts to. Without treating `.disconnected` as a drop the
     /// sheet wedges in `.uploading` with no Resume.
-    func testDisconnectedMidUploadInterrupts() async {
+    func testDisconnectedMidUploadInterrupts() async throws {
         let (model, control) = makeModel(.happyPath, payloadBytes: 100_000)
         // Pace the upload glacially so the transfer can't complete (or tick)
         // before the drop lands — the test is about the drop, nothing else.
@@ -165,7 +191,7 @@ final class UploadSheetModelTests: XCTestCase {
         model.start()
 
         control.connection = .disconnected
-        await waitFor("interrupted on .disconnected") { model.phase == .interrupted }
+        try await waitFor("interrupted on .disconnected") { model.phase == .interrupted }
         XCTAssertFalse(model.shouldDismiss, "a drop is not terminal")
 
         model.sheetDismissed()
@@ -218,12 +244,12 @@ final class UploadSheetModelTests: XCTestCase {
 
     // MARK: Hard failure (H4 — no link at all)
 
-    func testUploadWithLinkDownFails() async {
+    func testUploadWithLinkDownFails() async throws {
         let (model, control) = makeModel(.happyPath)
         control.connection = .disconnected
         model.start()
 
-        await waitFor("failed") { model.phase == .failed }
+        try await waitFor("failed") { model.phase == .failed }
         XCTAssertFalse(model.shouldDismiss, "failure holds the sheet for the Close action")
         model.dismiss()
         XCTAssertTrue(model.shouldDismiss)
@@ -233,7 +259,7 @@ final class UploadSheetModelTests: XCTestCase {
 
     /// Build a model over a transport we drive straight to a chosen failure, so
     /// the copy mapping can be asserted without a scenario for each reject kind.
-    private func failedModel(_ error: DeviceError) async -> UploadSheetModel {
+    private func failedModel(_ error: DeviceError) async throws -> UploadSheetModel {
         let transport = ControlledUploadTransport()
         let blob = RouteBlob(
             summary: RouteSummary(
@@ -250,12 +276,12 @@ final class UploadSheetModelTests: XCTestCase {
         model.start()
         try? await Task.sleep(for: .milliseconds(20))  // let the outcome watcher suspend
         transport.outcomePromise.fulfill(.failed(error))
-        await waitFor("failed") { model.phase == .failed }
+        try await waitFor("failed") { model.phase == .failed }
         return model
     }
 
-    func testStorageFullFailureGetsDedicatedCopy() async {
-        let model = await failedModel(.storageFull)
+    func testStorageFullFailureGetsDedicatedCopy() async throws {
+        let model = try await failedModel(.storageFull)
         XCTAssertEqual(model.failure, .storageFull)
         XCTAssertEqual(model.failedTitle, "Device storage full")
         XCTAssertEqual(
@@ -266,11 +292,11 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertFalse(model.failedMessage.lowercased().contains("update"))
     }
 
-    func testGenericRejectKeepsTheDefaultCopy() async {
+    func testGenericRejectKeepsTheDefaultCopy() async throws {
         // A non-storage reject — including the forward-compat generic
         // `.transferRejected` an unknown status code decodes to — keeps the
         // "didn't answer" framing, byte-for-byte unchanged.
-        let model = await failedModel(.transferRejected)
+        let model = try await failedModel(.transferRejected)
         XCTAssertEqual(model.failure, .transferRejected)
         XCTAssertNotEqual(model.failure, .storageFull)
         XCTAssertEqual(model.failedTitle, "Couldn't upload")
@@ -278,6 +304,17 @@ final class UploadSheetModelTests: XCTestCase {
             model.failedMessage,
             "Trailhead didn't answer. Check that it's awake and nearby, then try again."
         )
+    }
+}
+
+/// A `waitFor` that gave up. Thrown rather than recorded, so the test that was
+/// waiting stops instead of falling through into assertions it has already lost.
+private struct WaitTimedOut: Error, CustomStringConvertible {
+    let what: String
+    let timeout: Duration
+
+    var description: String {
+        "timed out after \(timeout) waiting for \(what)"
     }
 }
 
