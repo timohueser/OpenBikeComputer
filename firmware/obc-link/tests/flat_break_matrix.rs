@@ -81,6 +81,16 @@ struct Plan {
     /// built from the wrong batch would agree with itself. This says what the batch was supposed to
     /// produce.
     settled: Vec<(u64, u64, bool)>,
+    /// Objects besides the subject whose extents must come back when they are removed — the hold
+    /// probe, for a flow that commits an entry of its own. Probed only in the states that hold them.
+    probe: Vec<u64>,
+}
+
+impl Plan {
+    /// The common shape: no second object to probe.
+    fn new(steps: Vec<Step>, subject: (u64, u64), subject_survives: bool, settled: Vec<(u64, u64, bool)>) -> Self {
+        Plan { steps, subject, subject_survives, settled, probe: Vec::new() }
+    }
 }
 
 /// Feeds `plan`'s records from `from` up to `steps`.
@@ -186,13 +196,17 @@ fn matrix(name: &str, seed: u64, build: Build) -> usize {
         // The hold table let go: a handle the engine failed to close keeps the entry's extents out
         // of the allocator when it is removed. The subject is in the catalog in every state a flow
         // that never removes it can reach, so for those the probe is unconditional.
-        let present = device.entry(plan.subject.0).is_some();
         if plan.subject_survives {
-            assert!(present, "{where_}: the subject is not in the catalog and this flow never removes it");
+            assert!(
+                device.entry(plan.subject.0).is_some(),
+                "{where_}: the subject is not in the catalog and this flow never removes it"
+            );
         }
-        if present {
-            let freed = device.remove_and_measure(plan.subject.0);
-            assert!(freed > 0, "{where_}: a hold kept the entry's extents after it was removed");
+        for id in core::iter::once(plan.subject.0).chain(plan.probe.iter().copied()) {
+            if device.entry(id).is_some() {
+                let freed = device.remove_and_measure(id);
+                assert!(freed > 0, "{where_}: a hold kept object {id}'s extents after it was removed");
+            }
         }
     }
     breaks
@@ -206,7 +220,7 @@ fn create(_device: &mut Plain<'_>) -> Plan {
     let bytes = payload(2_600);
     let mut steps = vec![Step::Control(client::put(1, 0, 0, &bytes, ROUTE, false, "created"))];
     steps.extend(stream_steps(1, &bytes));
-    Plan { steps, subject: (1, 1), subject_survives: false, settled: vec![(1, 1, false)] }
+    Plan::new(steps, (1, 1), false, vec![(1, 1, false)])
 }
 
 /// A create long enough that most of its break points are inside the stream, which is where a
@@ -215,7 +229,7 @@ fn long_create(_device: &mut Plain<'_>) -> Plan {
     let bytes = payload(8_000);
     let mut steps = vec![Step::Control(client::put(1, 0, 0, &bytes, ROUTE, false, "long"))];
     steps.extend(stream_steps(1, &bytes));
-    Plan { steps, subject: (1, 1), subject_survives: false, settled: vec![(1, 1, false)] }
+    Plan::new(steps, (1, 1), false, vec![(1, 1, false)])
 }
 
 fn replace(device: &mut Plain<'_>) -> Plan {
@@ -223,7 +237,8 @@ fn replace(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "first");
     let mut steps = vec![Step::Control(client::put(1, id, revision, &bytes, ROUTE, false, "second"))];
     steps.extend(stream_steps(1, &bytes));
-    Plan { steps, subject: (id, revision + 1), subject_survives: true, settled: vec![(id, revision + 1, false)] }
+    // §3.6: an ordinary replace leaves the object with a head and nothing else.
+    Plan::new(steps, (id, revision + 1), true, vec![(id, revision + 1, false)])
 }
 
 fn retaining_replace(device: &mut Plain<'_>) -> Plan {
@@ -231,12 +246,9 @@ fn retaining_replace(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::WeatherBundle, &payload(600), "yesterday");
     let mut steps = vec![Step::Control(client::put(1, id, revision, &bytes, WEATHER, true, "today"))];
     steps.extend(stream_steps(1, &bytes));
-    Plan {
-        steps,
-        subject: (id, revision + 1),
-        subject_survives: true,
-        settled: vec![(id, revision, true), (id, revision + 1, false)],
-    }
+    // §3.6: `retain-previous` asks the same commit to leave the displaced revision `RETAINED`, and
+    // `FLAT_Store_Format.md` §5.3 sorts it before the head.
+    Plan::new(steps, (id, revision + 1), true, vec![(id, revision, true), (id, revision + 1, false)])
 }
 
 /// Two retaining replaces in one flow, so the second one's **three**-mutation commit — publish the
@@ -251,23 +263,13 @@ fn stepped_double_retention(device: &mut Plain<'_>) -> Plan {
     steps.extend(stream_steps(1, &first));
     steps.push(Step::Control(client::put(2, id, revision + 1, &second, WEATHER, true, "wednesday")));
     steps.extend(stream_steps(2, &second));
-    Plan {
-        steps,
-        subject: (id, revision + 2),
-        subject_survives: true,
-        // Two entries, not three: a second retaining replace frees the first retained revision.
-        settled: vec![(id, revision + 1, true), (id, revision + 2, false)],
-    }
+    // §3.6: "a second retaining replace frees the first" — so two entries, not three.
+    Plan::new(steps, (id, revision + 2), true, vec![(id, revision + 1, true), (id, revision + 2, false)])
 }
 
 fn remove(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "doomed");
-    Plan {
-        steps: vec![Step::Control(client::remove(1, id, revision))],
-        subject: (id, revision),
-        subject_survives: false,
-        settled: vec![],
-    }
+    Plan::new(vec![Step::Control(client::remove(1, id, revision))], (id, revision), false, vec![])
 }
 
 /// A remove of an object that also has a retained revision: one commit takes both.
@@ -279,19 +281,16 @@ fn remove_with_retention(device: &mut Plain<'_>) -> Plan {
         device.stream(&record);
     }
     assert_eq!(device.entries().len(), 2, "the setup left a retained revision");
-    Plan {
-        steps: vec![Step::Control(client::remove(1, id, revision + 1))],
-        subject: (id, revision + 1),
-        subject_survives: false,
-        settled: vec![],
-    }
+    // §3.7: "a retained previous revision of the same object goes with it" — one commit, no entries
+    // left, and the retained revision is not orphaned behind the head.
+    Plan::new(vec![Step::Control(client::remove(1, id, revision + 1))], (id, revision + 1), false, vec![])
 }
 
 fn download(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(2_600), "served");
     // The control record emits the first payload record; two more and the answer follow.
     let steps = vec![Step::Control(client::get(1, id, 0)), Step::Pump, Step::Pump, Step::Pump];
-    Plan { steps, subject: (id, revision), subject_survives: true, settled: vec![(id, revision, false)] }
+    Plan::new(steps, (id, revision), true, vec![(id, revision, false)])
 }
 
 fn cancelled_upload(device: &mut Plain<'_>) -> Plan {
@@ -304,13 +303,13 @@ fn cancelled_upload(device: &mut Plain<'_>) -> Plan {
         Step::Control(client::cancel(2, 1)),
         Step::Pump,
     ];
-    Plan { steps, subject: (id, revision), subject_survives: true, settled: vec![(id, revision, false)] }
+    Plan::new(steps, (id, revision), true, vec![(id, revision, false)])
 }
 
 fn cancelled_download(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(2_600), "half served");
     let steps = vec![Step::Control(client::get(1, id, 0)), Step::Pump, Step::Control(client::cancel(2, 1)), Step::Pump];
-    Plan { steps, subject: (id, revision), subject_survives: true, settled: vec![(id, revision, false)] }
+    Plan::new(steps, (id, revision), true, vec![(id, revision, false)])
 }
 
 fn paged_listing(device: &mut Plain<'_>) -> Plan {
@@ -318,40 +317,37 @@ fn paged_listing(device: &mut Plain<'_>) -> Plan {
         device.seed(ObjectKind::Route, &payload(64), &format!("object {index}"));
     }
     let steps = vec![Step::Control(client::list(1, None)), Step::Control(client::list_from(2, None, (2, 1), 6))];
-    Plan { steps, subject: (1, 1), subject_survives: true, settled: (1..=5).map(|id| (id, 1, false)).collect() }
+    Plan::new(steps, (1, 1), true, (1..=5).map(|id| (id, 1, false)).collect())
 }
 
-/// §4's own hazard, which nothing else covers: `ARM` commits a rollback reserve and *then* writes the
-/// boot handoff, so the break points run either side of the one commit it makes.
+/// The one flow whose commit is the device's rather than a client's: §4 step 2 commits a rollback
+/// reserve of kind 8. A break can land before the `ARM` or after its answer, and not between the
+/// commit and the boot handoff — those are one engine call, so that window is unbreakable *here* and
+/// is covered instead by `a_failed_boot_handoff_takes_its_own_reserve_back` and its double-fault
+/// twin in `flat_engine.rs`, which drive the refusal directly.
 fn arm_succeeds(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
-    Plan {
-        steps: vec![Step::Arm(client::arm(1, id, revision))],
-        subject: (id, revision),
-        subject_survives: true,
-        settled: vec![(id, revision, false), (id + 1, 1, false)],
-    }
+    // §4 step 2: one entry of kind 8 with `RESERVED`, beside the package it will roll back to.
+    let mut plan = Plan::new(
+        vec![Step::Arm(client::arm(1, id, revision))],
+        (id, revision),
+        true,
+        vec![(id, revision, false), (id + 1, 1, false)],
+    );
+    // The reserve owns extents the store never writes, so its own release is worth measuring.
+    plan.probe = vec![id + 1];
+    plan
 }
 
 fn arm_refused(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
     // The harness device has no update path, so §4 step 1 refuses and nothing is committed.
-    Plan {
-        steps: vec![Step::Control(client::arm(1, id, revision))],
-        subject: (id, revision),
-        subject_survives: true,
-        settled: vec![(id, revision, false)],
-    }
+    Plan::new(vec![Step::Control(client::arm(1, id, revision))], (id, revision), true, vec![(id, revision, false)])
 }
 
 fn status_only(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "asked about");
-    Plan {
-        steps: vec![Step::Control(client::status(1, id, revision))],
-        subject: (id, revision),
-        subject_survives: true,
-        settled: vec![(id, revision, false)],
-    }
+    Plan::new(vec![Step::Control(client::status(1, id, revision))], (id, revision), true, vec![(id, revision, false)])
 }
 
 #[test]

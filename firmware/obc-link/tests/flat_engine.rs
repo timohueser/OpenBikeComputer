@@ -698,6 +698,7 @@ fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
     let faulty = FaultOnce::new(&disk);
     let mut device = boot(&faulty);
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "there");
+    let (package, package_revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
 
     for (name, record) in [
         ("LIST", client::list(1, None)),
@@ -705,6 +706,7 @@ fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
         ("GET", client::get(3, id, 0)),
         ("REMOVE", client::remove(4, id, revision)),
         ("PUT", client::put(5, id, revision, &payload(600), ROUTE, false, "replace")),
+        ("ARM", client::arm(6, package, package_revision)),
     ] {
         faulty.fault_next(MediaOp::Read);
         let answer = Answer::of(device.control(&record).answer());
@@ -712,7 +714,77 @@ fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
         expect_error(&answer, ErrorCode::MediaIo, detail::media_io::READ);
     }
     assert!(device.is_quiet());
-    assert_eq!(device.free_extents(), 63, "no refusal left a reservation behind");
+    assert_eq!(device.free_extents(), 62, "no refusal left a reservation behind");
+}
+
+/// The seventh listing site, and the one furthest from a client's reach: §3.6's re-check of the
+/// expected `Revision` "immediately before the commit". A listing that stopped early there would
+/// make an absent head out of a media failure — and an absent head is exactly what a create expects,
+/// so the upload would publish over whatever the short listing failed to see.
+#[test]
+fn a_short_listing_at_the_pre_commit_re_check_refuses_rather_than_publishing() {
+    let disk = formatted_card(34);
+    let faulty = FaultOnce::new(&disk);
+    let mut device = boot(&faulty);
+    let bytes = body();
+    let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "head");
+    let free = device.free_extents();
+    let sequence = device.commit_sequence();
+    let records = client::stream_all(1, &bytes, 1_008);
+
+    device.control(&client::put(1, id, revision, &bytes, ROUTE, false, "replacement"));
+    for record in records.iter().take(records.len() - 1) {
+        device.stream(record);
+    }
+    // Nothing between here and `publish` reads: the last record's bytes are written, its CRC is
+    // folded, and the staging flush is a write. The first read is the re-check's own listing.
+    faulty.fault_next(MediaOp::Read);
+    let answer = Answer::of(device.stream(records.last().unwrap()).answer());
+    assert!(faulty.fired(), "the armed read fault never fired");
+    expect_error(&answer, ErrorCode::MediaIo, detail::media_io::READ);
+    assert_eq!(device.commit_sequence(), sequence, "nothing was published");
+    assert_eq!(device.entry(id).unwrap().revision.0, revision, "the head is the one that was there");
+    assert_eq!(device.free_extents(), free, "and the allocation came back");
+    assert!(device.is_quiet());
+}
+
+/// Both halves of §4 failing at once: the boot handoff refuses, and so does the commit that would
+/// take the reserve back. The engine has nothing further to offer, so it answers the error and
+/// leaves a state §4 already knows how to settle — the boot page does not decode, so the next boot
+/// reads *no pending update* and the reserve is an ordinary object its reconciliation removes.
+#[test]
+fn a_rollback_that_also_fails_leaves_a_reserve_the_next_boot_can_settle() {
+    let disk = formatted_card(35);
+    let faulty = FaultOnce::new(&disk);
+    let mut device = boot(&faulty);
+    let (id, revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
+    let mut armer = Armer { reserve: 900_000, handoff_fails: true, ..Armer::default() };
+
+    // The reserve's own commit synchronizes four times; the fifth is the rollback's first.
+    faulty.fault_after(MediaOp::Sync, 4);
+    let wire = device.control_with(&client::arm(1, id, revision), &mut armer);
+    assert!(faulty.fired(), "the armed sync fault never fired — the commit's shape moved");
+    assert!(!wire.reboot);
+    expect_error(&Answer::of(wire.answer()), ErrorCode::Internal, 0);
+
+    // The reserve is still there, and a client can see it: it is an ordinary entry of kind 8 with
+    // `RESERVED` set, which `LIST` reports and `REMOVE` refuses (§3.7).
+    let listed = Answer::of(device.control(&client::list(2, Some(8))).answer());
+    assert_eq!(listed.body.len(), 24 + 88, "the reserve is in the catalog");
+    let reserve = u64::from_le_bytes(listed.body[24..32].try_into().unwrap());
+    expect_error(
+        &Answer::of(device.control(&client::remove(3, reserve, 1)).answer()),
+        ErrorCode::InvalidRequest,
+        detail::invalid_request::BAD_COMBINATION,
+    );
+
+    // And the state is the one §4 calls reconcilable: a fresh mount finds the reserve, and the
+    // device-local reconciliation §5.6 keeps outside mount removes it with one commit.
+    let mut rebooted = boot(&disk);
+    let orphan = rebooted.entry(reserve).expect("the next boot finds it");
+    assert_eq!(orphan.kind, obc_storage::flat::ObjectKind::RollbackReserve);
+    assert!(orphan.flags.has(obc_storage::flat::EntryFlags::RESERVED));
+    assert!(rebooted.remove_and_measure(reserve) > 0, "its extents come back with it");
 }
 
 /// §2.1 gives a failed `write` two admissible answers — retry the same bytes, or abandon. The engine
