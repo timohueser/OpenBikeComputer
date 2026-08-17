@@ -45,16 +45,19 @@ Stated once, because most of what follows is short for these reasons and does no
 
 ## 2. The store seam
 
-Five operations. Nothing above this boundary names a block, an extent, an LBA, a path or a filename;
-`ObjectId`, `Revision`, byte offsets and byte lengths are the whole vocabulary.
+Five object operations, and beside them the housekeeping a caller cannot do without: the two
+releases, the catalog view and its honesty flag, the four facts a `LIST` page and an admission are
+built from, and the ride's one exception. Nothing above this boundary names a block, an extent, an
+LBA, a path or a filename; `ObjectId`, `Revision`, byte offsets and byte lengths are the whole
+vocabulary.
 
 ```rust
 /// The card, as everything above it sees it.
 pub trait Store {
     type Handle;
 
-    /// Reserve space for `bytes`. RAM state until a commit names it; freed by drop, by cancel,
-    /// and by the next mount, which rebuilds the free map from the catalog and cannot see it.
+    /// Reserve space for `bytes`. RAM state until a commit names it; released by `cancel` and by
+    /// the next mount, which rebuilds the free map from the catalog and cannot see it.
     fn allocate(&mut self, bytes: u64) -> Result<Allocation, StoreError>;
 
     /// Append to an allocation. Writes are sequential and the total may not exceed the reservation.
@@ -73,9 +76,39 @@ pub trait Store {
 
     // Beside the five, and not object operations.
 
+    /// Release a reservation without publishing it. **Mandatory** on every path that abandons a
+    /// transfer — a cancel, a refusal, a validator rejection, a lost link — because dropping an
+    /// `Allocation` releases nothing.
+    fn cancel(&mut self, allocation: Allocation);
+
+    /// Close an open object, releasing its hold. **Mandatory** for the same reason: dropping a
+    /// `Handle` leaks its row and the extents it is holding until the next mount, so `open` and
+    /// `close` are a pair.
+    fn close(&mut self, handle: Self::Handle);
+
     /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
     /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
+
+    /// True when the last `entries` listing reached the end of the array. A listing that hit a
+    /// media failure stops early with nowhere to report it, so anything that treats one as the
+    /// catalog asks here first.
+    fn entries_ok(&self) -> bool;
+
+    /// Why this store refuses writes, if it does — the `readOnly` details of §3.9 come from here.
+    fn mode(&self) -> Mode;
+
+    /// The card's identity, which every `LIST` page carries.
+    fn store_id(&self) -> StoreId;
+
+    /// The catalog commit sequence: the staleness hint a paged listing is checked against.
+    fn commit_sequence(&self) -> u64;
+
+    /// The next `ObjectId` the cursor will hand out. **Reading it reserves nothing**: two creates
+    /// that both read it before either commits name the same id, and the second commit is refused
+    /// as a duplicate key. Safe only because §1 serves one transfer at a time, and safest read at
+    /// the commit rather than held across one.
+    fn next_object_id(&self) -> ObjectId;
 
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
     /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
@@ -110,6 +143,18 @@ pub struct RideCheckpoint<'a> {
     pub payload_crc: u32,
 }
 
+/// Why a mounted store refuses writes, or refuses everything (`FLAT_Store_Format.md` §5.6). The
+/// `readOnly` details of §3.9 are chosen from it: the two exhausted cases still serve reads, and
+/// `CardTooSmall` — the card is not the card the superblock describes — reads out as `unformatted`.
+pub enum Mode {
+    ReadWrite,
+    RevisionSpaceExhausted,
+    SequenceSpaceExhausted,
+    CatalogUnreadable,
+    Unformatted,
+    CardTooSmall,
+}
+
 pub enum StoreError {
     NotFound,
     RevisionConflict { current: Revision },
@@ -122,9 +167,16 @@ pub enum StoreError {
 }
 ```
 
-The two members below the comment separator sit beside the five and are counted separately because
-they are not object operations: `entries` mutates nothing and names nothing below the seam, and
-`journal` is the ride exception the epic granted.
+The members below the comment separator sit beside the five and are counted separately because they
+are not object operations. `cancel` and `close` are the releases the five have no way to express —
+Rust's `Drop` cannot reach the store, so an abandoned reservation or a dropped handle would otherwise
+hold its row until the next mount. `entries` mutates nothing and names nothing below the seam, and
+`entries_ok` is how its one failure mode reports itself. `mode`, `store_id`, `commit_sequence` and
+`next_object_id` are facts, not verbs: they read resident state, touch no media, and a `LIST` page or
+a `PUT` admission is built from them. `journal` is the ride exception the epic granted.
+
+A binding may of course name them differently or fold the four facts into one; what is normative is
+that each is reachable and that nothing else is.
 
 `EntryMeta` is the metadata half of a catalog entry — kind, flags, `ObjectId`, `Revision`, payload
 length, payload CRC, display name — and nothing else. `Allocation` is opaque: it exposes its reserved
@@ -144,9 +196,12 @@ destructive and explicit.
 
 - A `commit` that returns is durable. A `commit` that returns `Err` changed nothing.
 - Bytes written to an `Allocation` that is never committed are unreachable and their space is free
-  again at the next mount. There is no cleanup step and nothing to sweep.
+  again at the next mount, or immediately on `cancel`. There is no cleanup step and nothing to sweep.
 - An open `Handle` keeps reading the revision it resolved, even across a commit that replaces or
-  removes it, until it is dropped. This hold is RAM-only.
+  removes it, until it is **closed**. This hold is RAM-only. Dropping the handle instead of closing
+  it releases nothing: the row and its extents stay taken until the next mount, and the same is true
+  of a dropped `Allocation`. `close` and `cancel` are the only ways back, and every abandonment path
+  owes one of them.
 - `read` is arithmetic on the entry's ranges: cost is one media read, with no chain walk and no
   indirection block. A reader that needs many small reads pays for the media, not for the format.
 - A `journal` that returns `Ok` has flushed exactly `tail.len() / 16_384` whole pages, and the caller
@@ -376,6 +431,13 @@ entry, and no client sets them. `retain-previous` asks the same commit to leave 
 `RETAINED` (`FLAT_Store_Format.md` §5.3); it is legal only for kinds whose reader needs continuity —
 weather, today — and a second retaining replace frees the first.
 
+**A replace leaves at most what it asked for.** One commit publishes the new head, retains or removes
+the revision it displaced, and frees any revision the object was already keeping retained — so a
+replace *without* the flag clears retention outright, and never leaves a revision two generations back
+alive behind a head that did not ask for it. That matters to a client because retention is durable and
+visible: `LIST` shows the retained entry, `GET` can pin it, and `REMOVE` takes it with the head. A
+client that wants continuity sets the flag on every replace of that object.
+
 **Any break before the commit leaves the card as if nothing happened**: the allocation is released,
 the written bytes are anonymous, the catalog is untouched, and the client restarts from zero. That
 holds for a cable pull, a cancel, a CRC failure, a validator refusal, and a power cut alike.
@@ -413,7 +475,16 @@ terminal flags and no acknowledgements on this channel: the transfer's one outco
 its control request.
 
 A frame bearing a `RequestId` that is not the live transfer's is discarded in silence. Late frames
-from a transfer the peer has already been told about are ordinary in-flight traffic, not an attack.
+from a transfer the peer has already been told about are ordinary in-flight traffic, not an attack. A
+frame bearing the `RequestId` of a live **`GET`** is discarded the same way: that identifier already
+settles which way the bytes go, so bytes arriving against the direction it names belong to no transfer
+the receiver can be sure of.
+
+That silence is also why a client **SHOULD NOT** reuse a `RequestId` immediately after the answer to
+the request that carried it. A `PUT` that was terminated mid-stream can leave in-flight stream frames
+on the link; a new transfer that reuses the identifier absorbs them as its own, and a stale offset
+kills it with `invalidRequest`/`streamOffset`. Identifiers are 32 bits and cost nothing — advancing is
+the whole remedy.
 
 **Cancel is bilateral and symmetric.** The client cancels with `CANCEL`, request 4 bytes
 (`RequestId u32`), response 1 byte: `0` cancelled, `1` no such transfer. The cancelled `PUT` or `GET`
