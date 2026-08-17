@@ -15,9 +15,9 @@
 use super::error::{DecodeError, Reason, Record, Result};
 use super::gate::{BodyBinding, Gate, MAGIC_CHECKPOINT};
 use super::limits::{
-    CHECKPOINT_BODY_CRC_OFFSET, CHECKPOINT_BODY_LEN, MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS, MAX_DRAFT_PARENTS,
-    MAX_DRAFT_PARTS, MAX_NORMAL_ACTIVE_OPERATIONS, MAX_REPOSITORY_STATES, MAX_RETAINED_PREVIOUS, MAX_TERMINAL_RESULTS,
-    RESERVED_ACTIVE_OPERATIONS,
+    CHECKPOINT_BODY_CRC_OFFSET, CHECKPOINT_BODY_LEN, GATE_LEN, MAX_ACTIVE_OPERATIONS, MAX_CATALOG_HEADS,
+    MAX_DRAFT_PARENTS, MAX_DRAFT_PARTS, MAX_NORMAL_ACTIVE_OPERATIONS, MAX_REPOSITORY_STATES, MAX_RETAINED_PREVIOUS,
+    MAX_TERMINAL_RESULTS, RESERVED_ACTIVE_OPERATIONS,
 };
 use super::raw::{crc32_with_hole, is_zero, put_bytes, put_u16, put_u32, put_u64, u16_at, u32_at, u64_at};
 use obc_link::ids::StoreId;
@@ -247,6 +247,95 @@ impl CheckpointHeader {
     }
 }
 
+/// One checkpoint file's bytes, read in bounded spans.
+///
+/// §13's mount budget is what this exists for: "the staging a commit needs is one journal-slot body,
+/// and the staging compaction needs is … 752 bytes". Nothing there authorizes a 65,536-byte mount
+/// image, and one was only ever needed because validation took the body as a single slice. A source
+/// hands the scan whatever span it asks for, so the staging becomes the caller's scratch — a sector
+/// on a device that has nothing else, a stride on one that already holds one.
+pub trait FileSource {
+    /// What a bounded read of the checkpoint file can fail with.
+    type Error;
+
+    /// Fills `into` from file offset `offset`. A short read is an error, never a success (§13.1).
+    fn read_span(&mut self, offset: usize, into: &mut [u8]) -> core::result::Result<(), Self::Error>;
+}
+
+/// Why a streamed validation stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamError<E> {
+    /// A bounded read of the checkpoint file failed.
+    Media(E),
+    /// The bytes are not a valid checkpoint.
+    Invalid(DecodeError),
+}
+
+impl<E> From<DecodeError> for StreamError<E> {
+    fn from(error: DecodeError) -> Self {
+        StreamError::Invalid(error)
+    }
+}
+
+/// What a streamed validation hands out as each entry passes under it.
+///
+/// Every method has a default, so a validation that only wants the verdict passes `&mut ()` and the
+/// compiler removes them. The one real implementation builds §13's resident index without the body
+/// ever existing in one place, which is the whole point of streaming it.
+///
+/// **A sink is only meaningful after the validation returns `Ok`.** Entries are handed over as they
+/// are decoded, and the body CRC is not known until the last sector, so a failed scan leaves
+/// whatever prefix it got to. Every caller here re-validates before it projects.
+pub trait EntrySink {
+    /// The 128-byte header, before any entry.
+    fn header(&mut self, header: &CheckpointHeader) {
+        let _ = header;
+    }
+    /// One occupied repository row, in key order.
+    fn repository(&mut self, row: &RepositoryState) {
+        let _ = row;
+    }
+    /// One occupied catalog head, in key order.
+    fn head(&mut self, row: &CatalogHead) {
+        let _ = row;
+    }
+    /// One occupied active row, in key order.
+    fn active(&mut self, row: &ActiveOperation) {
+        let _ = row;
+    }
+    /// The one draft parent.
+    fn draft_parent(&mut self, row: &DraftParent) {
+        let _ = row;
+    }
+    /// One occupied draft part, in key order.
+    fn draft_part(&mut self, row: &DraftPart) {
+        let _ = row;
+    }
+    /// One occupied retained-previous row, in key order.
+    fn retained(&mut self, row: &RetainedPrevious) {
+        let _ = row;
+    }
+    /// One occupied terminal result, at its **physical** ring index and in physical order.
+    fn result(&mut self, physical: usize, row: &TerminalResult) {
+        let _ = (physical, row);
+    }
+    /// The one update-handoff projection.
+    fn handoff(&mut self, row: &super::handoff::HandoffRef) {
+        let _ = row;
+    }
+    /// The one weather-request state.
+    fn weather(&mut self, row: &WeatherState) {
+        let _ = row;
+    }
+    /// The one active-ride state.
+    fn ride(&mut self, row: &ActiveRide) {
+        let _ = row;
+    }
+}
+
+/// The sink a validation that wants only the verdict passes.
+impl EntrySink for () {}
+
 /// Structurally validates a complete 65,024-byte body and returns its header.
 ///
 /// The checks are §5.1's, in the order §1 requires — counts before derived offsets:
@@ -256,154 +345,50 @@ impl CheckpointHeader {
 /// 3. occupied entries are sorted by their stated key, with no duplicate;
 /// 4. every entry past the occupied prefix is zero, and so is the region tail;
 /// 5. the active region holds at most eight normal rows and at most one reserved row.
+///
+/// It is the same scan [`validate_streamed`] runs, over a source that is the slice itself: there is
+/// one definition of what a valid checkpoint is, and a host that has the body in hand and a device
+/// that has 512 bytes of scratch both reach it.
 pub fn validate_body(body: &[u8]) -> Result<CheckpointHeader> {
-    const R: Record = Record::Checkpoint;
-    let err = |reason| DecodeError::new(R, reason);
     if body.len() != CHECKPOINT_BODY_LEN {
-        return Err(err(Reason::Length));
+        return Err(DecodeError::new(Record::Checkpoint, Reason::Length));
     }
-    if u32_at(body, CHECKPOINT_BODY_CRC_OFFSET) != body_crc(body) {
-        return Err(err(Reason::BodyCrc));
-    }
-    let header = CheckpointHeader::decode(body)?;
+    let mut scan = Scan::new();
+    scan.push(body, &mut ());
+    scan.finish().map(|(header, _)| header)
+}
 
-    // Repository states: keyed by kind, strictly ascending.
-    let mut previous_kind: Option<u16> = None;
-    for index in 0..header.repository_count as usize {
-        let row = RepositoryState::decode(&body[REPOSITORIES.slot(index)])?;
-        if let Some(previous) = previous_kind {
-            if row.kind < previous {
-                return Err(err(Reason::Order));
-            }
-            if row.kind == previous {
-                return Err(err(Reason::Duplicate));
-            }
-        }
-        previous_kind = Some(row.kind);
-    }
-    zero_after(body, REPOSITORIES, header.repository_count as usize)?;
+/// The streamed form: the same scan, over spans of at most `scratch`.
+///
+/// `scratch` may be as small as one sector and as large as the caller likes; it bounds the read
+/// size and nothing else. The sink sees every occupied entry as it is decoded.
+pub fn validate_streamed<S: FileSource, K: EntrySink>(
+    source: &mut S,
+    scratch: &mut [u8],
+    sink: &mut K,
+) -> core::result::Result<CheckpointHeader, StreamError<S::Error>> {
+    scan_streamed(source, scratch, sink).map(|(header, _)| header)
+}
 
-    // Catalog heads: keyed by (kind, logical id), strictly ascending.
-    let mut previous_head: Option<HeadKey> = None;
-    for index in 0..header.head_count as usize {
-        let row = CatalogHead::decode(&body[HEADS.slot(index)])?;
-        if let Some(previous) = previous_head {
-            if row.key < previous {
-                return Err(err(Reason::Order));
-            }
-            if row.key == previous {
-                return Err(err(Reason::Duplicate));
-            }
-        }
-        previous_head = Some(row.key);
+/// The same scan, also handing back the body CRC it accumulated, so a gate binding does not need a
+/// second sweep of 65,024 bytes to recompute a value that has already been proved.
+fn scan_streamed<S: FileSource, K: EntrySink>(
+    source: &mut S,
+    scratch: &mut [u8],
+    sink: &mut K,
+) -> core::result::Result<(CheckpointHeader, u32), StreamError<S::Error>> {
+    if scratch.is_empty() {
+        return Err(StreamError::Invalid(DecodeError::new(Record::Checkpoint, Reason::Length)));
     }
-    zero_after(body, HEADS, header.head_count as usize)?;
-
-    // Active operations: keyed by OperationId, compared lexicographically over wire bytes.
-    let mut previous_op: Option<[u8; 16]> = None;
-    let mut reserved_rows = 0usize;
-    let mut normal_rows = 0usize;
-    for index in 0..header.active_count as usize {
-        let row = ActiveOperation::decode(&body[ACTIVE.slot(index)])?;
-        let key = row.operation.to_bytes();
-        if let Some(previous) = previous_op {
-            if key < previous {
-                return Err(err(Reason::Order));
-            }
-            if key == previous {
-                return Err(err(Reason::Duplicate));
-            }
-        }
-        previous_op = Some(key);
-        if row.flags & ActiveOperation::FLAG_RESERVED_SLOT != 0 {
-            reserved_rows += 1;
-        } else {
-            normal_rows += 1;
-        }
+    let mut scan = Scan::new();
+    let mut offset = 0usize;
+    while offset < CHECKPOINT_BODY_LEN {
+        let take = scratch.len().min(CHECKPOINT_BODY_LEN - offset);
+        source.read_span(offset, &mut scratch[..take]).map_err(StreamError::Media)?;
+        scan.push(&scratch[..take], sink);
+        offset += take;
     }
-    if reserved_rows > RESERVED_ACTIVE_OPERATIONS || normal_rows > MAX_NORMAL_ACTIVE_OPERATIONS {
-        return Err(err(Reason::Count));
-    }
-    zero_after(body, ACTIVE, header.active_count as usize)?;
-
-    let mut parent_key: Option<[u8; 16]> = None;
-    for index in 0..header.draft_parent_count as usize {
-        parent_key = Some(DraftParent::decode(&body[DRAFT_PARENT.slot(index)])?.parent.to_bytes());
-    }
-    zero_after(body, DRAFT_PARENT, header.draft_parent_count as usize)?;
-
-    // Draft parts: keyed by (parent, kind, part key). Every one of them belongs to the one parent
-    // row — §2 admits a single parent and §6.1 removes its parts in the same replay step that
-    // removes it, so a part naming another parent, or any part with no parent row at all, is a
-    // membership fact this checkpoint cannot hold.
-    let mut previous_part: Option<([u8; 16], u16, u64)> = None;
-    for index in 0..header.draft_part_count as usize {
-        let row = DraftPart::decode(&body[DRAFT_PARTS.slot(index)])?;
-        if parent_key != Some(row.key.parent.to_bytes()) {
-            return Err(err(Reason::Combination));
-        }
-        let key = row.key.sort_key();
-        if let Some(previous) = previous_part {
-            if key < previous {
-                return Err(err(Reason::Order));
-            }
-            if key == previous {
-                return Err(err(Reason::Duplicate));
-            }
-        }
-        previous_part = Some(key);
-    }
-    zero_after(body, DRAFT_PARTS, header.draft_part_count as usize)?;
-
-    // Retained previous: keyed by GenerationId.
-    let mut previous_generation: Option<u64> = None;
-    for index in 0..header.retained_count as usize {
-        let row = RetainedPrevious::decode(&body[RETAINED.slot(index)])?;
-        if let Some(previous) = previous_generation {
-            if row.generation.get() < previous {
-                return Err(err(Reason::Order));
-            }
-            if row.generation.get() == previous {
-                return Err(err(Reason::Duplicate));
-            }
-        }
-        previous_generation = Some(row.generation.get());
-    }
-    zero_after(body, RETAINED, header.retained_count as usize)?;
-
-    // The result ring is the one region that is not a sorted prefix: `result_start` and
-    // `result_count` select its occupied entries, and everything else in it is zero.
-    let mut occupied = [false; MAX_TERMINAL_RESULTS];
-    for step in 0..header.result_count as usize {
-        let index = (header.result_start as usize + step) % RESULTS.capacity;
-        occupied[index] = true;
-        TerminalResult::decode(&body[RESULTS.slot(index)])?;
-    }
-    for (index, taken) in occupied.iter().enumerate() {
-        if !taken && !absent(&body[RESULTS.slot(index)]) {
-            return Err(err(Reason::Count));
-        }
-    }
-
-    for index in 0..header.handoff_count as usize {
-        super::handoff::HandoffRef::decode(&body[HANDOFF.slot(index)])?;
-    }
-    zero_after(body, HANDOFF, header.handoff_count as usize)?;
-
-    for index in 0..header.weather_count as usize {
-        WeatherState::decode(&body[WEATHER.slot(index)])?;
-    }
-    zero_after(body, WEATHER, header.weather_count as usize)?;
-
-    for index in 0..header.ride_count as usize {
-        ActiveRide::decode(&body[RIDE.slot(index)])?;
-    }
-    zero_after(body, RIDE, header.ride_count as usize)?;
-
-    if !is_zero(body, TAIL.start, TAIL.end - TAIL.start) {
-        return Err(err(Reason::Reserved));
-    }
-    Ok(header)
+    Ok(scan.finish()?)
 }
 
 /// Proves the whole checkpoint file: its body against its gate at file offset 65,024 (§5).
@@ -414,14 +399,392 @@ pub fn validate_file(file: &[u8], slot: u16) -> Result<CheckpointHeader> {
     }
     let body = &file[..CHECKPOINT_BODY_LEN];
     let header = validate_body(body)?;
-    let gate = Gate::decode(&file[super::limits::CHECKPOINT_GATE_OFFSET..], MAGIC_CHECKPOINT, slot)?;
-    gate.bind(&BodyBinding {
-        stored_crc: u32_at(body, CHECKPOINT_BODY_CRC_OFFSET),
-        fresh_crc: body_crc(body),
-        scope: header.epoch,
-        sequence: header.through_sequence,
-    })?;
+    bind_gate(&file[super::limits::CHECKPOINT_GATE_OFFSET..], slot, &header, body_crc(body))?;
     Ok(header)
+}
+
+/// The streamed form of [`validate_file`]: body then gate, staging only `scratch`.
+///
+/// `scratch` must hold one gate sector, which is 512 bytes — the same floor §6.3's compaction pass
+/// already works to. The body CRC comes back with the header because the scan has already proved it
+/// and §6.3's recovery decision needs it: re-deriving it would be a second sweep of 65,024 bytes.
+pub fn validate_file_streamed<S: FileSource, K: EntrySink>(
+    source: &mut S,
+    slot: u16,
+    scratch: &mut [u8],
+    sink: &mut K,
+) -> core::result::Result<(CheckpointHeader, u32), StreamError<S::Error>> {
+    if scratch.len() < GATE_LEN {
+        return Err(StreamError::Invalid(DecodeError::new(Record::Checkpoint, Reason::Length)));
+    }
+    // The scan already proved the stored CRC equals the fresh one, so the binding's two CRCs are
+    // one value here. Recomputing it would mean a second sweep of 65,024 bytes for a comparison
+    // that has already been made.
+    let (header, crc) = scan_streamed(source, scratch, sink)?;
+    source.read_span(super::limits::CHECKPOINT_GATE_OFFSET, &mut scratch[..GATE_LEN]).map_err(StreamError::Media)?;
+    bind_gate(&scratch[..GATE_LEN], slot, &header, crc)?;
+    Ok((header, crc))
+}
+
+fn bind_gate(gate_bytes: &[u8], slot: u16, header: &CheckpointHeader, crc: u32) -> Result<()> {
+    let gate = Gate::decode(gate_bytes, MAGIC_CHECKPOINT, slot)?;
+    gate.bind(&BodyBinding { stored_crc: crc, fresh_crc: crc, scope: header.epoch, sequence: header.through_sequence })
+}
+
+/// The forward scan §5.1's rules are stated once in.
+///
+/// It walks the body span by span — the header, then every entry of every region in body order, then
+/// the zero tail — staging at most one entry (240 bytes) and accumulating the body CRC as it goes.
+/// A structural failure is **remembered rather than returned**, so the scan still finishes and
+/// [`finish`](Scan::finish) can report the CRC first: §1 puts the checksum ahead of every derived
+/// judgement, and a torn body must not be reported as a mis-sorted one.
+struct Scan {
+    at: usize,
+    crc: obc_crc::Crc32,
+    stored_crc: u32,
+    stage: [u8; MAX_STAGE],
+    staged: usize,
+    header: Option<CheckpointHeader>,
+    error: Option<DecodeError>,
+    previous_kind: Option<u16>,
+    previous_head: Option<HeadKey>,
+    previous_op: Option<[u8; 16]>,
+    reserved_rows: usize,
+    normal_rows: usize,
+    parent_key: Option<[u8; 16]>,
+    previous_part: Option<([u8; 16], u16, u64)>,
+    previous_generation: Option<u64>,
+}
+
+/// The scan's whole entry stage: §5.1's largest entry shape, which is the handoff projection's 240.
+const MAX_STAGE: usize = largest_entry();
+
+impl Scan {
+    fn new() -> Self {
+        Scan {
+            at: 0,
+            crc: obc_crc::Crc32::new(),
+            stored_crc: 0,
+            stage: [0; MAX_STAGE],
+            staged: 0,
+            header: None,
+            error: None,
+            previous_kind: None,
+            previous_head: None,
+            previous_op: None,
+            reserved_rows: 0,
+            normal_rows: 0,
+            parent_key: None,
+            previous_part: None,
+            previous_generation: None,
+        }
+    }
+
+    fn fail(&mut self, reason: Reason) {
+        if self.error.is_none() {
+            self.error = Some(DecodeError::new(Record::Checkpoint, reason));
+        }
+    }
+
+    fn note(&mut self, outcome: Result<()>) {
+        if let Err(error) = outcome {
+            if self.error.is_none() {
+                self.error = Some(error);
+            }
+        }
+    }
+
+    /// Consumes the next contiguous run of body bytes.
+    fn push<K: EntrySink>(&mut self, mut bytes: &[u8], sink: &mut K) {
+        while !bytes.is_empty() {
+            let end = span_end(self.at);
+            let take = (end - self.at).min(bytes.len());
+            let chunk = &bytes[..take];
+            self.crc_push(chunk);
+            if end <= REGIONS[REGIONS.len() - 1].end() {
+                // The header and every entry are staged. Both fit `MAX_STAGE` by construction —
+                // `span_end` never returns a span longer than one entry, and `MAX_STAGE` is the
+                // largest entry §5.1 has — but the copy below is the one place that is *relied* on,
+                // so it is stated rather than left to the reader of `span_end`.
+                debug_assert!(
+                    self.staged + take <= MAX_STAGE,
+                    "a span of {} bytes at {} does not fit the {MAX_STAGE}-byte entry stage",
+                    self.staged + take,
+                    self.at,
+                );
+                self.stage[self.staged..self.staged + take].copy_from_slice(chunk);
+            } else if !chunk_tail_is_zero(self.at, chunk) {
+                self.fail(Reason::Reserved);
+            }
+            self.staged += take;
+            self.at += take;
+            bytes = &bytes[take..];
+            if self.at == end {
+                self.complete(end, sink);
+                self.staged = 0;
+            }
+        }
+    }
+
+    /// Accumulates the CRC with §1's hole: the body's own CRC field counts as four zeros, and its
+    /// stored value is captured on the way past.
+    fn crc_push(&mut self, chunk: &[u8]) {
+        let start = self.at;
+        let end = start + chunk.len();
+        if end <= CHECKPOINT_BODY_CRC_OFFSET {
+            self.crc.update(chunk);
+            return;
+        }
+        let split = CHECKPOINT_BODY_CRC_OFFSET.saturating_sub(start).min(chunk.len());
+        self.crc.update(&chunk[..split]);
+        for (step, byte) in chunk[split..].iter().enumerate() {
+            let position = start + split + step - CHECKPOINT_BODY_CRC_OFFSET;
+            // §5's scalars are little-endian, so the field's first byte is its least significant.
+            self.stored_crc |= u32::from(*byte) << (8 * position);
+        }
+        self.crc.update(&[0u8; 4][..chunk.len() - split]);
+    }
+
+    /// Judges the span that ends at `end`.
+    fn complete<K: EntrySink>(&mut self, end: usize, sink: &mut K) {
+        if end == HEADER_LEN {
+            match CheckpointHeader::decode(&self.stage[..HEADER_LEN]) {
+                Ok(header) => {
+                    sink.header(&header);
+                    self.header = Some(header);
+                }
+                Err(error) => self.note(Err(error)),
+            }
+            return;
+        }
+        // A header that did not decode leaves every count unknown, so no entry can be judged
+        // occupied or absent and none is.
+        let Some(header) = self.header else { return };
+        for (which, region) in REGIONS.iter().enumerate() {
+            if end <= region.offset {
+                continue;
+            }
+            if end <= region.end() {
+                let slot = (end - region.offset) / region.entry - 1;
+                self.entry(which, slot, &header, sink);
+                return;
+            }
+        }
+    }
+
+    fn entry<K: EntrySink>(&mut self, which: usize, slot: usize, header: &CheckpointHeader, sink: &mut K) {
+        let occupied = match which {
+            REGION_REPOSITORIES => slot < header.repository_count as usize,
+            REGION_HEADS => slot < header.head_count as usize,
+            REGION_ACTIVE => slot < header.active_count as usize,
+            REGION_DRAFT_PARENT => slot < header.draft_parent_count as usize,
+            REGION_DRAFT_PARTS => slot < header.draft_part_count as usize,
+            REGION_RETAINED => slot < header.retained_count as usize,
+            // §5.1's one exception: the ring's start and count select its occupied entries, and it
+            // is walked physically here rather than in ring order.
+            REGION_RESULTS => {
+                (slot + MAX_TERMINAL_RESULTS - header.result_start as usize) % MAX_TERMINAL_RESULTS
+                    < header.result_count as usize
+            }
+            REGION_HANDOFF => slot < header.handoff_count as usize,
+            REGION_WEATHER => slot < header.weather_count as usize,
+            _ => slot < header.ride_count as usize,
+        };
+        let len = REGIONS[which].entry;
+        if !occupied {
+            if !absent(&self.stage[..len]) {
+                self.fail(Reason::Count);
+            }
+            return;
+        }
+        let bytes = &self.stage[..len];
+        match which {
+            REGION_REPOSITORIES => match RepositoryState::decode(bytes) {
+                Ok(row) => {
+                    if let Some(previous) = self.previous_kind {
+                        if row.kind < previous {
+                            self.fail(Reason::Order);
+                        } else if row.kind == previous {
+                            self.fail(Reason::Duplicate);
+                        }
+                    }
+                    self.previous_kind = Some(row.kind);
+                    sink.repository(&row);
+                }
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_HEADS => match CatalogHead::decode(bytes) {
+                Ok(row) => {
+                    if let Some(previous) = self.previous_head {
+                        if row.key < previous {
+                            self.fail(Reason::Order);
+                        } else if row.key == previous {
+                            self.fail(Reason::Duplicate);
+                        }
+                    }
+                    self.previous_head = Some(row.key);
+                    sink.head(&row);
+                }
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_ACTIVE => match ActiveOperation::decode(bytes) {
+                Ok(row) => {
+                    let key = row.operation.to_bytes();
+                    if let Some(previous) = self.previous_op {
+                        if key < previous {
+                            self.fail(Reason::Order);
+                        } else if key == previous {
+                            self.fail(Reason::Duplicate);
+                        }
+                    }
+                    self.previous_op = Some(key);
+                    if row.flags & ActiveOperation::FLAG_RESERVED_SLOT != 0 {
+                        self.reserved_rows += 1;
+                    } else {
+                        self.normal_rows += 1;
+                    }
+                    if self.reserved_rows > RESERVED_ACTIVE_OPERATIONS
+                        || self.normal_rows > MAX_NORMAL_ACTIVE_OPERATIONS
+                    {
+                        self.fail(Reason::Count);
+                    }
+                    sink.active(&row);
+                }
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_DRAFT_PARENT => match DraftParent::decode(bytes) {
+                Ok(row) => {
+                    self.parent_key = Some(row.parent.to_bytes());
+                    sink.draft_parent(&row);
+                }
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_DRAFT_PARTS => match DraftPart::decode(bytes) {
+                Ok(row) => {
+                    // Every part belongs to the one parent row — §2 admits a single parent and §6.1
+                    // removes its parts in the same replay step — so a part naming another parent,
+                    // or any part with no parent row at all, is not a membership fact this
+                    // checkpoint can hold.
+                    if self.parent_key != Some(row.key.parent.to_bytes()) {
+                        self.fail(Reason::Combination);
+                    }
+                    let key = row.key.sort_key();
+                    if let Some(previous) = self.previous_part {
+                        if key < previous {
+                            self.fail(Reason::Order);
+                        } else if key == previous {
+                            self.fail(Reason::Duplicate);
+                        }
+                    }
+                    self.previous_part = Some(key);
+                    sink.draft_part(&row);
+                }
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_RETAINED => match RetainedPrevious::decode(bytes) {
+                Ok(row) => {
+                    if let Some(previous) = self.previous_generation {
+                        if row.generation.get() < previous {
+                            self.fail(Reason::Order);
+                        } else if row.generation.get() == previous {
+                            self.fail(Reason::Duplicate);
+                        }
+                    }
+                    self.previous_generation = Some(row.generation.get());
+                    sink.retained(&row);
+                }
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_RESULTS => match TerminalResult::decode(bytes) {
+                Ok(row) => sink.result(slot, &row),
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_HANDOFF => match super::handoff::HandoffRef::decode(bytes) {
+                Ok(row) => sink.handoff(&row),
+                Err(error) => self.note(Err(error)),
+            },
+            REGION_WEATHER => match WeatherState::decode(bytes) {
+                Ok(row) => sink.weather(&row),
+                Err(error) => self.note(Err(error)),
+            },
+            _ => match ActiveRide::decode(bytes) {
+                Ok(row) => sink.ride(&row),
+                Err(error) => self.note(Err(error)),
+            },
+        }
+    }
+
+    /// The verdict, with §1's precedence: the checksum first, then everything derived from it.
+    fn finish(self) -> Result<(CheckpointHeader, u32)> {
+        const R: Record = Record::Checkpoint;
+        if self.at != CHECKPOINT_BODY_LEN {
+            return Err(DecodeError::new(R, Reason::Length));
+        }
+        let crc = self.crc.finalize();
+        if self.stored_crc != crc {
+            return Err(DecodeError::new(R, Reason::BodyCrc));
+        }
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        self.header.map(|header| (header, crc)).ok_or_else(|| DecodeError::new(R, Reason::Magic))
+    }
+}
+
+// The region list's own indices, so the scan's match arms name §5.1's regions rather than numbers.
+const REGION_REPOSITORIES: usize = 0;
+const REGION_HEADS: usize = 1;
+const REGION_ACTIVE: usize = 2;
+const REGION_DRAFT_PARENT: usize = 3;
+const REGION_DRAFT_PARTS: usize = 4;
+const REGION_RETAINED: usize = 5;
+const REGION_RESULTS: usize = 6;
+const REGION_HANDOFF: usize = 7;
+const REGION_WEATHER: usize = 8;
+
+/// Where the span containing body offset `at` ends: the header, one entry, or the whole zero tail.
+fn span_end(at: usize) -> usize {
+    if at < HEADER_LEN {
+        return HEADER_LEN;
+    }
+    let mut index = 0;
+    while index < REGIONS.len() {
+        let region = REGIONS[index];
+        if at < region.end() {
+            let slot = (at - region.offset) / region.entry;
+            return region.offset + (slot + 1) * region.entry;
+        }
+        index += 1;
+    }
+    CHECKPOINT_BODY_LEN
+}
+
+/// Whether the tail bytes of `chunk`, which starts at body offset `at`, are the zeros §5.1 requires.
+///
+/// The body's own CRC field is inside this span and is exempt: it holds the stored checksum.
+fn chunk_tail_is_zero(at: usize, chunk: &[u8]) -> bool {
+    let end = (at + chunk.len()).min(CHECKPOINT_BODY_CRC_OFFSET);
+    if end <= at {
+        return true;
+    }
+    chunk[..end - at].iter().all(|byte| *byte == 0)
+}
+
+/// A [`FileSource`] over bytes the caller already holds, so the host path and the device path run
+/// the identical scan.
+pub struct SliceSource<'a>(pub &'a [u8]);
+
+impl FileSource for SliceSource<'_> {
+    type Error = DecodeError;
+
+    fn read_span(&mut self, offset: usize, into: &mut [u8]) -> core::result::Result<(), DecodeError> {
+        let end = offset.checked_add(into.len()).ok_or_else(|| DecodeError::new(Record::Checkpoint, Reason::Length))?;
+        if end > self.0.len() {
+            return Err(DecodeError::new(Record::Checkpoint, Reason::Length));
+        }
+        into.copy_from_slice(&self.0[offset..end]);
+        Ok(())
+    }
 }
 
 /// The body CRC of a complete body, with the CRC field itself treated as zero (§1).
@@ -446,18 +809,95 @@ pub fn gate_for(body: &[u8], slot: u16) -> Gate {
     }
 }
 
-fn zero_after(body: &[u8], region: Region, count: usize) -> Result<()> {
-    for index in count..region.capacity {
-        if !absent(&body[region.slot(index)]) {
-            return Err(DecodeError::new(Record::Checkpoint, Reason::Count));
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A [`FileSource`] that counts what it was asked for, so a test can prove the scan staged
+    /// nothing bigger than the scratch it was handed.
+    struct Counting<'a> {
+        bytes: &'a [u8],
+        largest: usize,
+        reads: usize,
+    }
+
+    impl FileSource for Counting<'_> {
+        type Error = DecodeError;
+
+        fn read_span(&mut self, offset: usize, into: &mut [u8]) -> Result<()> {
+            self.largest = self.largest.max(into.len());
+            self.reads += 1;
+            SliceSource(self.bytes).read_span(offset, into)
+        }
+    }
+
+    fn populated_body() -> std::boxed::Box<[u8; CHECKPOINT_BODY_LEN]> {
+        use super::super::{model::CatalogModel, samples};
+        let mut model = CatalogModel::initial(samples::STORE, 4);
+        // Enough of every region that the scan has entries to order, wrapped results to rotate, and
+        // an occupied prefix followed by zeros.
+        for step in 1..=5u64 {
+            model.apply(&samples::claim(1, step * 2 - 1, 0, [step as u8; 16], step)).unwrap();
+            model.apply(&samples::publish(1, step * 2, 0, [step as u8; 16], step, samples::head(1, step))).unwrap();
+        }
+        let mut body = std::boxed::Box::new([0u8; CHECKPOINT_BODY_LEN]);
+        model.encode_body(body.as_mut_slice()).unwrap();
+        body
+    }
+
+    /// The streamed scan and the slice scan are one implementation, so the streamed one must accept
+    /// exactly what the slice one accepts — at **every** scratch size, because the entry stage and
+    /// the CRC hole are the two places a chunk boundary could fall wrongly.
+    #[test]
+    fn the_streamed_scan_agrees_with_the_slice_scan_at_every_scratch_size() {
+        let body = populated_body();
+        let expected = validate_body(body.as_slice()).expect("the fixture is valid");
+        // 512 is the floor a device works to; 3 is deliberately absurd, and lands mid-header,
+        // mid-entry and mid-CRC-field; 65,024 is the whole body in one span.
+        for size in [3usize, 7, 128, 160, 512, 513, 1_024, 16_384, CHECKPOINT_BODY_LEN] {
+            let mut scratch = std::vec![0u8; size];
+            let mut source = Counting { bytes: body.as_slice(), largest: 0, reads: 0 };
+            let scanned = validate_streamed(&mut source, &mut scratch, &mut ()).expect("the streamed scan agrees");
+            assert_eq!(scanned, expected, "scratch {size}");
+            assert!(source.largest <= size, "the scan read more than its scratch at {size}");
+        }
+    }
+
+    /// And it refuses exactly what the slice scan refuses, with the same reason — §1's precedence
+    /// included, which is why the scan finishes before it reports rather than returning at the first
+    /// structural fault it meets.
+    #[test]
+    fn the_streamed_scan_refuses_what_the_slice_scan_refuses() {
+        // One corruption per region shape: a body CRC, a head that no longer decodes, a head order
+        // inversion, an entry past the occupied prefix, and a nonzero tail.
+        type Corruption = (&'static str, fn(&mut [u8]));
+        let cases: [Corruption; 5] = [
+            ("body crc", |body| body[CHECKPOINT_BODY_CRC_OFFSET] ^= 0xFF),
+            ("head decode", |body| body[HEADS.slot(0).start + 40] = 0xFF),
+            ("head order", |body| {
+                let (first, second) = (HEADS.slot(0), HEADS.slot(1));
+                let mut swap = [0u8; CatalogHead::LEN];
+                swap.copy_from_slice(&body[first.clone()]);
+                let mut other = [0u8; CatalogHead::LEN];
+                other.copy_from_slice(&body[second.clone()]);
+                body[first].copy_from_slice(&other);
+                body[second].copy_from_slice(&swap);
+            }),
+            ("entry past the prefix", |body| body[HEADS.slot(200).start] = 1),
+            ("nonzero tail", |body| body[TAIL.start + 17] = 1),
+        ];
+        for (name, corrupt) in cases {
+            let mut body = populated_body();
+            corrupt(body.as_mut_slice());
+            let sliced = validate_body(body.as_slice());
+            let mut scratch = [0u8; 512];
+            let streamed = validate_streamed(&mut SliceSource(body.as_slice()), &mut scratch, &mut ());
+            match (sliced, streamed) {
+                (Err(expected), Err(StreamError::Invalid(got))) => assert_eq!(expected, got, "{name}"),
+                (sliced, streamed) => panic!("{name}: sliced {sliced:?}, streamed {streamed:?}"),
+            }
+        }
+    }
 
     /// The region list is the table in body order, and it tiles without a gap — which is what lets
     /// a forward pass emit region after region and land exactly on the zero tail.

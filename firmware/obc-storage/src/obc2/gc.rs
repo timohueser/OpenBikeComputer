@@ -53,6 +53,7 @@ use obc_link::ids::{GenerationId, LogicalObjectId};
 use super::compaction::CardHeadFields;
 use super::entries::ActiveOperation;
 use super::index::{HeadIndexEntry, RamIndex};
+use super::leases::LeaseTable;
 use super::names::{LeafName, Role, SHARD_COUNT};
 use super::resolution::{self, Resolution};
 
@@ -163,6 +164,7 @@ pub trait ReachabilitySource {
 /// when it removes a `WORK` leaf it never classified on its own.
 pub fn classify<S: ReachabilitySource>(
     index: &RamIndex,
+    leases: &LeaseTable,
     generation: GenerationId,
     source: &mut S,
     scratch: &mut [u8; resolution::MAX_BODY_LEN],
@@ -174,7 +176,7 @@ pub fn classify<S: ReachabilitySource>(
     if index.retained.iter().any(|entry| entry.generation == generation) {
         return Ok(Class::Referenced(Reference::Retained));
     }
-    if index.leases.holds(generation) {
+    if leases.holds(generation) {
         return Ok(Class::Referenced(Reference::Lease));
     }
     if let Some(parent) = &index.draft_parent {
@@ -349,6 +351,7 @@ impl Collector {
     pub fn step<S, D>(
         &mut self,
         index: &RamIndex,
+        leases: &LeaseTable,
         source: &mut S,
         directory: &mut D,
         scratch: &mut [u8; resolution::MAX_BODY_LEN],
@@ -377,7 +380,7 @@ impl Collector {
         let Some(generation) = leaf.generation() else {
             return Ok(Step::Unknown { leaf });
         };
-        let class = classify(index, generation, source, scratch).map_err(GcError::Source)?;
+        let class = classify(index, leases, generation, source, scratch).map_err(GcError::Source)?;
         if !class.is_collectable() {
             return Ok(Step::Kept { generation, class });
         }
@@ -534,6 +537,10 @@ mod tests {
         (index, model)
     }
 
+    /// The lease table §9 makes a RAM ownership fact, empty: most of these cases hold none, and a
+    /// pass that consulted a stale one would keep bytes nothing is reading.
+    const NO_LEASES: LeaseTable = LeaseTable::new();
+
     fn scratch() -> std::boxed::Box<[u8; resolution::MAX_BODY_LEN]> {
         std::boxed::Box::new([0u8; resolution::MAX_BODY_LEN])
     }
@@ -545,60 +552,61 @@ mod tests {
         let (mut index, _model) = index_with_head();
         let mut card = Card::default();
         let mut scratch = scratch();
-        let mut class = |index: &RamIndex, card: &mut Card, generation: u64| {
-            classify(index, GenerationId::new(generation), card, &mut scratch).unwrap()
+        let mut leases = LeaseTable::new();
+        let mut class = |index: &RamIndex, leases: &LeaseTable, card: &mut Card, generation: u64| {
+            classify(index, leases, GenerationId::new(generation), card, &mut scratch).unwrap()
         };
 
         // The published head's own generation. `samples::head` uses generation 42.
         assert_eq!(
-            class(&index, &mut card, 42),
+            class(&index, &leases, &mut card, 42),
             Class::Referenced(Reference::Head { kind: 1, id: LogicalObjectId::new(7) }),
         );
         // Nothing names 900.
-        assert_eq!(class(&index, &mut card, 900), Class::Orphan);
+        assert_eq!(class(&index, &leases, &mut card, 900), Class::Orphan);
 
         // A retained-previous entry.
         let _ = index.retained.push(samples::retained(900));
-        assert_eq!(class(&index, &mut card, 900), Class::Referenced(Reference::Retained));
+        assert_eq!(class(&index, &leases, &mut card, 900), Class::Referenced(Reference::Retained));
         index.retained.clear();
 
         // A live lease, which nothing on the card records until the head is displaced.
-        let lease = index.leases.pin(1, SessionId::new(1).unwrap(), GenerationId::new(900)).unwrap();
-        assert_eq!(class(&index, &mut card, 900), Class::Referenced(Reference::Lease));
-        index.leases.release(lease, &[]);
-        assert_eq!(class(&index, &mut card, 900), Class::Orphan);
+        let lease = leases.pin(1, SessionId::new(1).unwrap(), GenerationId::new(900)).unwrap();
+        assert_eq!(class(&index, &leases, &mut card, 900), Class::Referenced(Reference::Lease));
+        leases.release(lease, &[]);
+        assert_eq!(class(&index, &leases, &mut card, 900), Class::Orphan);
 
         // The open draft parent's manifest and its reserved resolution generation.
         let mut parent = samples::parent();
         parent.manifest_generation = GenerationId::new(900);
         parent.resolution = GenerationId::new(901);
         index.draft_parent = Some(parent);
-        assert_eq!(class(&index, &mut card, 900), Class::Referenced(Reference::DraftParent));
-        assert_eq!(class(&index, &mut card, 901), Class::Referenced(Reference::DraftParent));
+        assert_eq!(class(&index, &leases, &mut card, 900), Class::Referenced(Reference::DraftParent));
+        assert_eq!(class(&index, &leases, &mut card, 901), Class::Referenced(Reference::DraftParent));
 
         // A sealed part of it. `samples::part` uses generation 91.
         let mut part = samples::part(1);
         part.state = DraftPartState::Sealed;
         let _ = index.draft_parts.push(part);
-        assert_eq!(class(&index, &mut card, 91), Class::Referenced(Reference::DraftPart));
+        assert_eq!(class(&index, &leases, &mut card, 91), Class::Referenced(Reference::DraftPart));
         index.draft_parent = None;
         index.draft_parts.clear();
 
         // The recording ride's prospective generation, which is 77.
         index.ride = Some(samples::ride());
-        assert_eq!(class(&index, &mut card, 77), Class::Referenced(Reference::ActiveRide));
+        assert_eq!(class(&index, &leases, &mut card, 77), Class::Referenced(Reference::ActiveRide));
         index.ride = None;
 
         // The update handoff's package, which is 31.
         index.handoff = Some(samples::handoff_ref(4, super::super::handoff::HandoffPhase::Armed));
-        assert_eq!(class(&index, &mut card, 31), Class::Referenced(Reference::UpdateHandoff));
+        assert_eq!(class(&index, &leases, &mut card, 31), Class::Referenced(Reference::UpdateHandoff));
         index.handoff = None;
 
         // An active claim's reserved generation is resumable work, not an orphan.
         let mut row = samples::active(samples::OP_B);
         row.generation = GenerationId::new(902);
         let _ = index.actives.push(row);
-        assert_eq!(class(&index, &mut card, 902), Class::ResumableWork);
+        assert_eq!(class(&index, &leases, &mut card, 902), Class::ResumableWork);
     }
 
     /// §9's "active operations and WORK records" are one root, not two: §7 reserves the generation
@@ -619,7 +627,10 @@ mod tests {
         row.generation = GenerationId::new(902);
         assert_ne!(row.flags & ActiveOperation::FLAG_GENERATION_RESERVED, 0);
         let _ = index.actives.push(row);
-        assert_eq!(classify(&index, GenerationId::new(902), &mut card, &mut scratch).unwrap(), Class::ResumableWork,);
+        assert_eq!(
+            classify(&index, &NO_LEASES, GenerationId::new(902), &mut card, &mut scratch).unwrap(),
+            Class::ResumableWork,
+        );
 
         // A row that reserved nothing roots nothing, even carrying the same numeric generation.
         index.actives.clear();
@@ -627,7 +638,10 @@ mod tests {
         without.generation = GenerationId::new(902);
         without.flags &= !ActiveOperation::FLAG_GENERATION_RESERVED;
         let _ = index.actives.push(without);
-        assert_eq!(classify(&index, GenerationId::new(902), &mut card, &mut scratch).unwrap(), Class::Orphan);
+        assert_eq!(
+            classify(&index, &NO_LEASES, GenerationId::new(902), &mut card, &mut scratch).unwrap(),
+            Class::Orphan
+        );
 
         // And the collector removes both leaves of that orphan, WORK included, without ever having
         // classified the WORK leaf on its own.
@@ -638,7 +652,7 @@ mod tests {
         while collector.passes() == 0 {
             steps += 1;
             assert!(steps < 4_000);
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
         }
         assert!(tree.generations(Role::Gen).is_empty());
         assert!(tree.generations(Role::Work).is_empty(), "the WORK leaf of an orphan was stranded");
@@ -664,17 +678,20 @@ mod tests {
 
         for child in [500u64, 501] {
             assert_eq!(
-                classify(&index, GenerationId::new(child), &mut card, &mut scratch).unwrap(),
+                classify(&index, &NO_LEASES, GenerationId::new(child), &mut card, &mut scratch).unwrap(),
                 Class::Referenced(Reference::ManifestChild { manifest: manifest.generation }),
             );
         }
         // The resolution generation itself is reachable from the head's own field.
         assert_eq!(
-            classify(&index, GenerationId::new(92), &mut card, &mut scratch).unwrap(),
+            classify(&index, &NO_LEASES, GenerationId::new(92), &mut card, &mut scratch).unwrap(),
             Class::Referenced(Reference::ResolutionTable { manifest: manifest.generation }),
         );
         // A generation the table does not name is an orphan.
-        assert_eq!(classify(&index, GenerationId::new(502), &mut card, &mut scratch).unwrap(), Class::Orphan);
+        assert_eq!(
+            classify(&index, &NO_LEASES, GenerationId::new(502), &mut card, &mut scratch).unwrap(),
+            Class::Orphan
+        );
         // §9 costs a pass at most eight bounded 776-byte reads: one manifest head, one read each.
         assert!(card.reads <= 8 * 4, "a classification read the table {} times", card.reads);
     }
@@ -695,7 +712,7 @@ mod tests {
         let mut card = Card::default();
         card.manifest(&manifest);
         assert_eq!(
-            classify(&index, GenerationId::new(500), &mut card, &mut scratch).unwrap(),
+            classify(&index, &NO_LEASES, GenerationId::new(500), &mut card, &mut scratch).unwrap(),
             Class::Unresolved { manifest: manifest.generation },
         );
 
@@ -706,7 +723,7 @@ mod tests {
         );
         card.unreadable.insert(92);
         assert_eq!(
-            classify(&index, GenerationId::new(700), &mut card, &mut scratch).unwrap(),
+            classify(&index, &NO_LEASES, GenerationId::new(700), &mut card, &mut scratch).unwrap(),
             Class::Unresolved { manifest: manifest.generation },
         );
 
@@ -716,7 +733,7 @@ mod tests {
         let torn = card.resolutions.get_mut(&92).unwrap();
         torn.truncate(torn.len() - 1);
         assert_eq!(
-            classify(&index, GenerationId::new(700), &mut card, &mut scratch).unwrap(),
+            classify(&index, &NO_LEASES, GenerationId::new(700), &mut card, &mut scratch).unwrap(),
             Class::Unresolved { manifest: manifest.generation },
         );
 
@@ -726,7 +743,7 @@ mod tests {
         let mut collector = Collector::new();
         let mut steps = 0;
         while collector.passes() == 0 && steps < 4_000 {
-            let step = collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            let step = collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
             assert!(!matches!(step, Step::Deleted { .. }), "torn evidence authorized a deletion");
             steps += 1;
         }
@@ -807,7 +824,8 @@ mod tests {
                 tree.add(entry.generation.get());
             }
             let leased = 6_000 + round;
-            index.leases.pin(1, SessionId::new(1).unwrap(), GenerationId::new(leased)).unwrap();
+            let mut leases = LeaseTable::new();
+            leases.pin(1, SessionId::new(1).unwrap(), GenerationId::new(leased)).unwrap();
             expected_kept.insert(leased);
             tree.add(leased);
 
@@ -829,7 +847,7 @@ mod tests {
             while collector.passes() == 0 {
                 steps += 1;
                 assert!(steps < 4_000, "the pass did not terminate");
-                match collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap() {
+                match collector.step(&index, &leases, &mut card, &mut tree, &mut scratch).unwrap() {
                     Step::Deleted { generation } => {
                         deleted.insert(generation.get());
                     }
@@ -864,12 +882,12 @@ mod tests {
         let mut collector = Collector::new();
 
         for expected in 1..=3u64 {
-            let step = collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            let step = collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
             assert_eq!(step, Step::Deleted { generation: GenerationId::new(expected << 8) });
         }
         // And the shard is then done; the cursor moves on rather than looping.
         assert_eq!(
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap(),
             Step::ShardComplete { role: Role::Gen, shard: 0 },
         );
         assert_eq!(collector.cursor().shard, 1);
@@ -888,7 +906,7 @@ mod tests {
         while collector.passes() == 0 {
             steps += 1;
             assert!(steps <= 2 * SHARD_COUNT + 1, "a lazily created tree did not walk cleanly");
-            let step = collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            let step = collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
             assert!(matches!(step, Step::ShardComplete { .. } | Step::PassComplete), "{step:?}");
         }
         assert_eq!(steps, 2 * SHARD_COUNT, "every shard of both roles is visited exactly once");
@@ -914,15 +932,18 @@ mod tests {
         let mut collector = Collector::new();
 
         assert_eq!(
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap(),
             Step::Deleted { generation: GenerationId::new(0x100) },
         );
         assert_eq!(
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap(),
             Step::Deleted { generation: GenerationId::new(0x200) },
         );
         let deletes_before = tree.deletes;
-        assert_eq!(collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(), Step::Unknown { leaf: stray });
+        assert_eq!(
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap(),
+            Step::Unknown { leaf: stray }
+        );
         assert_eq!(tree.deletes, deletes_before, "an unknown name was deleted");
         assert!(tree.files.contains(&(Role::Gen, stray)), "an unknown name was removed");
 
@@ -930,14 +951,14 @@ mod tests {
         // a later orphan in a later shard is still collected.
         tree.add(0x105);
         assert_eq!(
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap(),
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap(),
             Step::ShardComplete { role: Role::Gen, shard: 0 },
         );
         let mut steps = 0;
         while collector.passes() == 0 {
             steps += 1;
             assert!(steps < 4_000, "the pass halted on the unknown name");
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
         }
         assert!(!tree.generations(Role::Gen).contains(&0x105), "the orphan behind the stray was never collected");
         assert!(tree.files.contains(&(Role::Gen, stray)), "the stray survived the whole pass, untouched");
@@ -958,7 +979,7 @@ mod tests {
             let mut collector = Collector::new();
 
             assert_eq!(
-                collector.step(&index, &mut card, &mut tree, &mut scratch),
+                collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch),
                 Err(GcError::Directory("injected")),
                 "cut at delete {cut_at}",
             );
@@ -973,7 +994,7 @@ mod tests {
             while collector.passes() == 0 {
                 steps += 1;
                 assert!(steps < 4_000);
-                collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+                collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
             }
             assert!(!tree.generations(Role::Gen).contains(&0x300), "cut at {cut_at}: the GEN leaf survived");
             assert!(!tree.generations(Role::Work).contains(&0x300), "cut at {cut_at}: the WORK leaf survived");
@@ -994,19 +1015,19 @@ mod tests {
         // Walk past shard 3 of both role trees — the pass visits `GEN` and then `WORK`, so a file
         // is only behind the cursor once both have been passed.
         for _ in 0..(SHARD_COUNT + 4) {
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
         }
         assert_eq!((collector.cursor().role, collector.cursor().shard), (Role::Work, 4));
         tree.add(0x100 | 3); // shard 3, behind the cursor in both trees
 
         while collector.passes() == 0 {
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
         }
         assert!(tree.generations(Role::Gen).contains(&0x103), "the pass collected behind its own cursor");
 
         // The next pass sees it.
         while collector.passes() == 1 {
-            collector.step(&index, &mut card, &mut tree, &mut scratch).unwrap();
+            collector.step(&index, &NO_LEASES, &mut card, &mut tree, &mut scratch).unwrap();
         }
         assert!(tree.generations(Role::Gen).is_empty());
     }

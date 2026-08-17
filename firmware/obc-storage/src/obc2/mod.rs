@@ -11,10 +11,15 @@
 //! bytes: fixed-size records return fixed-size arrays, and the one variable record (the resolution
 //! generation) writes into a caller-provided slice.
 //!
-//! On top of the codecs sit two pure pieces: [`model::CatalogModel`], the bounded projection whose
+//! On top of the codecs sit two pure pieces: [`model::Projection`], the bounded projection whose
 //! `apply` *is* the meaning of a journal record, and [`recovery::choose`], §6.3's decision written
 //! as a function of what a mount observed. Between them they say what the store's state is after
 //! any sequence of records and any crash, without touching a filesystem.
+//!
+//! The projection has two instantiations and one `apply`. [`model::CatalogModel`] holds whole
+//! entries and is the **host oracle**; [`index::RamIndex`] is §13's resident shape — the same rows
+//! with the catalog-projection envelopes, the resolution `GenerationId`s and the terminal-result
+//! bodies left on the card and re-read on demand. The device places the second and never the first.
 //!
 //! ## What this deliberately is not
 //!
@@ -99,7 +104,8 @@ pub use obc_link::ids::{GenerationId, LogicalObjectId, OperationId, StoreId};
 
 pub use error::{ApplyError, DecodeError, Reason, Record};
 pub use gate::Gate;
-pub use model::CatalogModel;
+pub use index::RamIndex;
+pub use model::{CatalogModel, Projection};
 pub use recovery::{Decision, FailClosed};
 
 /// The OBC2 storage-format version this kernel implements.

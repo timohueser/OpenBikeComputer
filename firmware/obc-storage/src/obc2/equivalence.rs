@@ -36,8 +36,8 @@ use obc_link::upload::{FinishUpload, Target};
 #[cfg(test)]
 use obc_link::{Request, Response};
 
-use super::card::Card;
-use super::model::CatalogModel;
+use super::card::{Card, Mounted};
+use super::index::RamIndex;
 use super::transaction::{Hooks, KernelTransaction, Validator};
 
 /// The validator and the fault points, in one value that is installed twice.
@@ -119,12 +119,25 @@ impl KernelStore {
     /// happens to produce.
     pub fn seeded(seed: u64, store: StoreId) -> Self {
         let (card, model) = Card::initialize(seed, store);
-        KernelStore(Box::new(KernelTransaction::mount(card, TestPolicy::default(), TestPolicy::default(), *model)))
+        // A freshly initialized store has compacted nothing, so §6.3's slot origin is zero and no
+        // journal-slot reference exists: every card-resident field is in the first checkpoint.
+        KernelStore::over(card, *RamIndex::project(&model), 0)
     }
 
     /// A store over an already-mounted card.
-    pub fn over(card: Card, model: CatalogModel) -> Self {
-        KernelStore(Box::new(KernelTransaction::mount(card, TestPolicy::default(), TestPolicy::default(), model)))
+    pub fn over(card: Card, index: RamIndex, epoch_base: u64) -> Self {
+        KernelStore(Box::new(KernelTransaction::mount(
+            card,
+            TestPolicy::default(),
+            TestPolicy::default(),
+            index,
+            epoch_base,
+        )))
+    }
+
+    /// The same, from what a mount produced.
+    pub fn remounted(card: Card, mounted: Mounted) -> Self {
+        KernelStore::over(card, *mounted.index, mounted.epoch_base)
     }
 
     /// The transaction underneath, for a test that cuts the medium or remounts it.
@@ -288,6 +301,190 @@ mod tests {
         assert!(total >= 40, "the suite carries {total} scenarios");
     }
 
+    /// §6.3's compaction, driven end to end from the store rather than from a fixture.
+    ///
+    /// The pass sources three things — the index's fixed fields, a journal-carried head entry
+    /// through its `u16` slot reference, and the active checkpoint's stored bytes — and the only way
+    /// to know the wiring is right is to compact a store that has all three and then mount what it
+    /// wrote. The assertion is the strongest one available: the remounted resident state is
+    /// **equal** to the state that was compacted, so every envelope, resolution and result body the
+    /// index does not hold came back off the card unchanged.
+    #[test]
+    fn a_compaction_reproduces_the_resident_state_it_was_run_over() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        // Heads whose envelopes and resolutions live only on the card, and results whose 208-byte
+        // bodies do too. Publishing locally is enough: each one is a claim plus a terminal record,
+        // so after this the index's references point into the journal rather than the checkpoint.
+        for index in 0..4u8 {
+            store.publish_local(ObjectKind::Route, &[index; 96]);
+        }
+        store.retain_local_result(OperationId::new([0x5E; 16]));
+        let before = store.inner_mut().index().clone();
+        assert!(
+            before.heads.iter().all(|head| head.journal_slot != crate::obc2::index::NO_JOURNAL_SLOT),
+            "the fixture must have journal-carried heads, or the pass is only reading the checkpoint",
+        );
+
+        store.inner_mut().compact().expect("the pass writes a checkpoint");
+        assert_eq!(store.inner_mut().index().epoch, 2, "step 3 opens the next epoch");
+        assert!(
+            store.inner_mut().index().heads.iter().all(|head| head.journal_slot == crate::obc2::index::NO_JOURNAL_SLOT),
+            "§6.3 resets the references after step 4",
+        );
+
+        // One more commit, which §6.3 puts at physical slot zero of the new epoch.
+        store.retain_local_result(OperationId::new([0x5F; 16]));
+
+        let mut card = store.into_card();
+        card.reboot();
+        let mounted = card.mount().expect("the compacted store mounts");
+        assert_eq!(mounted.epoch_base, before.through_sequence, "the new checkpoint absorbed the old journal");
+        assert_eq!(mounted.index.epoch, 2);
+
+        // Everything the compacted checkpoint had to carry, back from the card: the four heads with
+        // their envelopes, the result ring, the repository cursors and the scalars.
+        let replayed = mounted.index.through_sequence - before.through_sequence;
+        assert_eq!(replayed, 2, "the suffix is the two records the post-compaction commit wrote");
+        assert_eq!(mounted.index.heads.len(), before.heads.len());
+        for (after, before) in mounted.index.heads.iter().zip(before.heads.iter()) {
+            assert_eq!(after.key(), before.key());
+            assert_eq!(
+                (after.revision, after.generation, after.length, after.crc),
+                (before.revision, before.generation, before.length, before.crc)
+            );
+        }
+        // And the results it did not evict are still answerable, which is the on-demand re-read
+        // working against a checkpoint this pass wrote rather than one initialization did.
+        let mut store = KernelStore::remounted(card, mounted);
+        assert!(store.retains(OperationId::new([0x5E; 16])));
+        assert_eq!(
+            store.inner_mut().report_for(OperationId::new([0x5E; 16]), PrincipalScope::new([0xFF; 16])),
+            Ok(obc_link::engine::OperationReport::NotAuthorized),
+            "the retained body came back off the compacted checkpoint",
+        );
+    }
+
+    /// §8.1's `QueryOperation` is an observation, and a store that cannot make it says so —
+    /// **without touching the operation it names or the upload running beside it**.
+    ///
+    /// This is new ground for the index-backed store: §13 puts the retained result's body on the
+    /// card, so answering a query is now a read that can fail. The engine's default for a failed
+    /// outcome is to abandon the pending operation, which for a query would abort the *queried*
+    /// identity — somebody else's — and step the live upload's phase on the strength of a failed
+    /// read. So the query gets a failure arm of its own, and this is what it is for.
+    #[test]
+    fn a_query_whose_re_read_fails_leaves_the_live_upload_and_its_target_alone() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        // A committed operation whose result body is on the card, and therefore re-read.
+        store.retain_local_result(scenarios::OP_B);
+        let mut driver = Kernel.driver_over(store);
+        scenarios::negotiate(&mut driver);
+
+        // A live upload, mid-stream, owned by a different identity than the one queried.
+        let bytes = scenarios::payload(512);
+        let mut buffer = [0u8; 32];
+        let metadata = scenarios::route_put(&mut buffer, 1);
+        let request = scenarios::start_upload(scenarios::OP_A, Target::Create, &bytes, metadata);
+        driver.link.deliver(LinkChannel::Control, &scenarios::record(&Request::StartUpload(request), 3));
+        driver.pump().unwrap();
+        let session_id = driver.engine.live_session().expect("the upload is live");
+        driver.link.deliver(LinkChannel::Stream, &scenarios::data_frame(session_id, 0, &bytes[..256]));
+        driver.pump().unwrap();
+
+        // Now every §13 re-read fails, and the client asks about the other operation.
+        driver.transaction.inner_mut().media_mut().fail_rereads = true;
+        driver.link.deliver(
+            LinkChannel::Control,
+            &scenarios::record(&Request::QueryOperation(QueryOperation { operation_id: scenarios::OP_B }), 4),
+        );
+        driver.pump().expect("the query is answered rather than wedging the link");
+        let body = scenarios::error_of(driver.link.sent(LinkChannel::Control).last().unwrap());
+        assert_eq!(body.category, obc_link::ErrorCategory::MEDIA_IO, "a failed read is reported as one");
+        assert_eq!(
+            body.presence & obc_link::error::presence::DURABLE_CLAIM_EXISTS,
+            0,
+            "the query itself claimed nothing",
+        );
+
+        // The upload is exactly where it was: same session, still live, nothing aborted.
+        assert_eq!(driver.engine.live_session(), Some(session_id), "the query disturbed the live upload");
+        driver.transaction.inner_mut().media_mut().fail_rereads = false;
+        assert!(driver.transaction.retains(scenarios::OP_B), "the queried operation's result is untouched");
+
+        // And the upload still finishes, which is the property a stepped phase would have broken.
+        driver.link.deliver(LinkChannel::Stream, &scenarios::data_frame(session_id, 256, &bytes[256..]));
+        driver.pump().unwrap();
+        driver
+            .link
+            .deliver(LinkChannel::Control, &scenarios::record(&Request::FinishUpload(FinishUpload { session_id }), 5));
+        driver.pump().unwrap();
+        assert!(driver.transaction.retains(scenarios::OP_A), "the upload committed after the failed query");
+    }
+
+    /// §16's reset, run on a store that has already compacted.
+    ///
+    /// §12's reset writes a first checkpoint at `through_sequence` zero, so §6.3's slot origin for
+    /// the new store is zero — and a reset that restored the journal cursor but not the origin would
+    /// leave the origin at the compacted store's `S`. Every record of the new store's first `S`
+    /// sequences would then compute physical slot zero, overwrite each other, and leave a journal
+    /// that replays nothing; §6.3's fail-closed rule turns the next valid record beyond that stop
+    /// into a recovery-failed mount. This is the shape of that: compact, reset, publish twice,
+    /// reboot, and require both records back.
+    #[test]
+    fn a_reset_after_a_compaction_starts_its_journal_at_slot_zero() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        for index in 0..3u8 {
+            store.publish_local(ObjectKind::Route, &[index; 64]);
+        }
+        store.inner_mut().compact().expect("the pass writes a checkpoint");
+        let compacted_origin = store.inner_mut().index().through_sequence;
+        assert!(compacted_origin > 0, "the fixture must compact something, or it proves nothing");
+
+        let replacement = match obc_link::engine::Transaction::execute(
+            store.inner_mut(),
+            obc_link::engine::Command::DeviceControl(obc_link::engine::DeviceControlRequest::ResetStore(
+                scenarios::STORE,
+            )),
+            &mut [0u8; 64],
+        ) {
+            obc_link::engine::Outcome::DeviceControl(obc_link::engine::DeviceControlAnswer::ResetStore(store)) => store,
+            other => panic!("expected a reset, got {other:?}"),
+        };
+        assert_eq!(store.inner_mut().store_id(), replacement);
+
+        // Two publications, which is four journal records: they must land at physical slots 0..=3.
+        store.publish_local(ObjectKind::Route, &[0xA1; 64]);
+        store.publish_local(ObjectKind::Route, &[0xA2; 64]);
+
+        let mut card = store.into_card();
+        card.reboot();
+        let mounted = card.mount().expect("a reset store mounts");
+        assert_eq!(mounted.index.store, replacement);
+        assert_eq!(mounted.epoch_base, 0, "§12's first checkpoint absorbed nothing");
+        assert_eq!(mounted.index.through_sequence, 4, "all four records replayed");
+        assert_eq!(mounted.index.heads.len(), 2, "both publications came back");
+        assert_eq!(mounted.index.results.len(), 2);
+    }
+
+    /// §6.3: "before accepting a 193rd record in one epoch, `CardStore` blocks new mutations and
+    /// compacts". The store does it itself, so a caller cannot forget.
+    #[test]
+    fn reaching_the_trigger_compacts_instead_of_wrapping_the_ring() {
+        let mut store = KernelStore::new(scenarios::STORE);
+        // Two records per publication, so this crosses the 192-record trigger inside the loop.
+        for index in 0..120u16 {
+            let mut bytes = [0x11u8; 16];
+            bytes[14] = (index >> 8) as u8;
+            bytes[15] = index as u8;
+            store.retain_local_result(OperationId::new(bytes));
+        }
+        assert!(store.inner_mut().index().epoch > 1, "the trigger ran a pass");
+        let mut card = store.into_card();
+        card.reboot();
+        let mounted = card.mount().expect("a store that compacted itself still mounts");
+        assert!(mounted.index.epoch > 1);
+    }
+
     /// §11: "Failure returns without claiming."
     ///
     /// The one media act §11 and §12 put *before* the claim record is the lazy creation of the
@@ -344,7 +541,7 @@ mod tests {
         store.retain_local_result(OperationId::new([0x4c; 16]));
         assert_eq!(
             store.inner_mut().report_for(OperationId::new([0x4c; 16]), zero),
-            obc_link::engine::OperationReport::NotAuthorized,
+            Ok(obc_link::engine::OperationReport::NotAuthorized),
             "an all-zero wire scope is still not the local producer"
         );
     }
@@ -403,8 +600,8 @@ enum Truth {
 fn truth_after_reboot(store: KernelStore) -> (Truth, KernelStore) {
     let mut card = store.into_card();
     card.reboot();
-    let model = card.mount().expect("a cut card still mounts");
-    let store = KernelStore::over(card, *model);
+    let mounted = card.mount().expect("a cut card still mounts");
+    let store = KernelStore::remounted(card, mounted);
     let mut driver = Kernel.driver_over(store);
     scenarios::negotiate(&mut driver);
     driver.link.deliver(

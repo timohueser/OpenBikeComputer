@@ -71,11 +71,11 @@ use obc_link::upload::Target;
 use obc_storage::fat_extents::SharedBlockDevice;
 use obc_storage::obc2::adapter::Adapter;
 use obc_storage::obc2::blocklog::WriteLog;
-use obc_storage::obc2::fat::{self, CheckpointImage, FatMedia, SlotTable, Stride, Survey, NO_SLOTS};
+use obc_storage::obc2::fat::{self, FatMedia, SlotTable, Stride, Survey, NO_SLOTS};
 use obc_storage::obc2::generation::GenerationMedia as _;
 use obc_storage::obc2::geometry::{self, FatType, Region, VolumeGeometry};
-use obc_storage::obc2::limits::{CHECKPOINT_FILE_LEN, INITIALIZATION_ZERO_FILL, SLOT_STRIDE, WORK_FILE_LEN};
-use obc_storage::obc2::model::CatalogModel;
+use obc_storage::obc2::index;
+use obc_storage::obc2::limits::{INITIALIZATION_ZERO_FILL, SLOT_STRIDE, WORK_FILE_LEN};
 use obc_storage::obc2::mount::{Outcome, CREATION_ORDER};
 use obc_storage::obc2::transaction::KernelMedia as _;
 use obc_storage::obc2::transaction::{AcceptEverything, KernelTransaction, NoHooks};
@@ -206,7 +206,6 @@ static mut STRIDE: Aligned<SLOT_STRIDE> = Aligned([0; SLOT_STRIDE]);
 /// One whole checkpoint file. §13 budgets a *commit*'s staging at one journal body; a **mount**
 /// validates and decodes the checkpoint as one slice, so this 65,536-byte buffer is the mount-time
 /// figure and is reported as its own number rather than folded into the commit budget.
-static mut IMAGE: Aligned<CHECKPOINT_FILE_LEN> = Aligned([0; CHECKPOINT_FILE_LEN]);
 /// The 256 slot observations one all-slot scan produces: 10,240 bytes, in `.bss` and never on a
 /// task frame.
 static mut SLOTS: SlotTable = NO_SLOTS;
@@ -259,6 +258,19 @@ const REINITIALIZE_ABOVE: u64 = 60;
 /// Flip to `true` for one flash to force the destructive path — the wipe, the §12 skeleton and the
 /// initialization timings — on a card this bench has already initialized.
 const FORCE_REINIT: bool = false;
+
+/// Flip to `true` for one flash to run §6.3's compaction pass at the end of the cycle and time it.
+///
+/// A commit runs the pass itself once the journal reaches §6.3's 192-record trigger, which is the
+/// cost a client's `FinishUpload` pays on the boot that crosses it. Waiting for a real crossing
+/// costs 80-odd upload lifecycles of card time, and the pass's duration does not depend on how it
+/// was reached — so this calls it directly and reports what it had to materialize alongside, which
+/// is what makes the figure extrapolable to a full 256-head epoch instead of only true for this
+/// store's shape.
+///
+/// It is **not** destructive: the pass writes the inactive checkpoint and advances the epoch, which
+/// is an ordinary thing for the store to do and a later boot mounts normally.
+const FORCE_COMPACT: bool = false;
 
 /// The OperationId of the `index`-th object this bench commits. Deterministic, so a boot after a
 /// reset can ask about the one the previous boot published.
@@ -339,11 +351,10 @@ fn run(vmgr: &'static Vmgr, log: &'static Log, root: RawDirectory, geometry: &Vo
     let fat: Fat = Adapter::new(vmgr);
     // SAFETY: sole borrows. This binary is single-threaded and nothing else reads these statics.
     let stride: &'static mut Stride = unsafe { &mut (*core::ptr::addr_of_mut!(STRIDE)).0 };
-    let image: &'static mut CheckpointImage = unsafe { &mut (*core::ptr::addr_of_mut!(IMAGE)).0 };
     let slots: &'static mut SlotTable = unsafe { &mut *core::ptr::addr_of_mut!(SLOTS) };
 
     let started = Instant::now();
-    let survey = fat::survey(&fat, root, None, stride, image, slots);
+    let survey = fat::survey(&fat, root, None, stride, slots);
     report_survey("MOUNT", &survey, ms(started));
 
     // Initialization **deletes the seven fixed files**, so the conditions under which this bench is
@@ -372,7 +383,7 @@ fn run(vmgr: &'static Vmgr, log: &'static Log, root: RawDirectory, geometry: &Vo
         error!("MOUNT REFUSING to initialize: {=str} (set FORCE_REINIT to override)", reason);
         return;
     } else {
-        match initialize_phase(&fat, root, stride, image, slots) {
+        match initialize_phase(&fat, root, stride, slots) {
             Some(survey) => survey,
             None => return,
         }
@@ -380,7 +391,7 @@ fn run(vmgr: &'static Vmgr, log: &'static Log, root: RawDirectory, geometry: &Vo
 
     let free = geometry.volume_bytes() / 4;
     let started = Instant::now();
-    let media = match fat::attach(Adapter::new(vmgr), root, &survey, stride, image, free) {
+    let media = match fat::attach(Adapter::new(vmgr), root, &survey, stride, free) {
         Ok(media) => media,
         Err(error) => {
             error!("MOUNT attach refused ({})", defmt::Debug2Format(&error));
@@ -402,13 +413,18 @@ fn run(vmgr: &'static Vmgr, log: &'static Log, root: RawDirectory, geometry: &Vo
             BENCH_STORE,
         )
     };
-    let (media, model) = store.media_and_model_mut();
-    if let Err(error) = media.load_projection(&survey, model) {
-        error!("MOUNT the projection would not load ({})", defmt::Debug2Format(&error));
-        return;
-    }
-    store.rebind();
-    info!("MOUNT attach + projection (checkpoint decode + suffix replay): {=u64} us", us(started));
+    let (media, index) = store.media_and_index_mut();
+    // §13: the checkpoint is *streamed* into the bounded index, so this step stages the 16 KiB
+    // stride and nothing else. It used to read the whole 65,536-byte file into `.bss` first.
+    let epoch_base = match media.load_index(&survey, index) {
+        Ok(base) => base,
+        Err(error) => {
+            error!("MOUNT the index would not load ({})", defmt::Debug2Format(&error));
+            return;
+        }
+    };
+    store.rebind(epoch_base);
+    info!("MOUNT attach + index (streamed checkpoint + suffix replay): {=u64} us", us(started));
     if store.store_id() != BENCH_STORE {
         error!("MOUNT this store is not this bench's — REFUSING to write to it");
         return;
@@ -502,13 +518,7 @@ fn report_survey(tag: &str, survey: &Survey, elapsed_ms: u64) {
 // ── 3. initialization (§12), with lazy shards ───────────────────────────────────────────────────
 
 /// Wipes this bench's store and rebuilds it, timing every stage.
-fn initialize_phase(
-    fat: &Fat,
-    root: RawDirectory,
-    stride: &mut Stride,
-    image: &mut CheckpointImage,
-    slots: &mut SlotTable,
-) -> Option<Survey> {
+fn initialize_phase(fat: &Fat, root: RawDirectory, stride: &mut Stride, slots: &mut SlotTable) -> Option<Survey> {
     let vmgr = fat.volume_manager();
     // §12: "store reset … is defined as file deletion, never directory deletion". The skeleton — and
     // whatever shard directories an earlier bench left behind — survives and is reused in place.
@@ -525,7 +535,7 @@ fn initialize_phase(
     }
 
     let started = Instant::now();
-    let report = match fat::initialize(fat, root, BENCH_STORE, stride, image) {
+    let report = match fat::initialize(fat, root, BENCH_STORE, stride) {
         Ok(report) => report,
         Err(error) => {
             error!("INIT  initialization failed ({})", defmt::Debug2Format(&error));
@@ -546,7 +556,7 @@ fn initialize_phase(
     info!("INIT  zero-fill rate {=u64} kB/s over the seven fixed files", rate(report.zero_filled, elapsed));
 
     let started = Instant::now();
-    let survey = fat::survey(fat, root, None, stride, image, slots);
+    let survey = fat::survey(fat, root, None, stride, slots);
     report_survey("MOUNT", &survey, ms(started));
     if !survey.is_mountable() {
         error!("INIT  the store did not mount after initialization");
@@ -743,7 +753,44 @@ fn lifecycle(store: &mut Store, log: &'static Log, geometry: &VolumeGeometry, in
         }
         other => error!("LIFE  QueryOperation answered {} — the result is not retained", defmt::Debug2Format(&other)),
     }
+    if FORCE_COMPACT {
+        compaction_phase(store);
+    }
     info!("LIFE  reset the board (`probe-rs reset`) and run again: object {=u64} must come back intact", index);
+}
+
+/// §6.3's compaction pass, timed on the real card, with the shape it ran over.
+///
+/// The pass is a single forward pass over 127 sectors of the inactive checkpoint, and for each
+/// occupied entry it sources the two card-resident head fields and the 208-byte result bodies from
+/// §6.3's newest source. That source is a **whole 16,384-byte journal stride** for anything a record
+/// replayed since the active checkpoint carries, and a bounded checkpoint read for everything else —
+/// so the counts below are what turn one duration into a rate.
+fn compaction_phase(store: &mut Store) {
+    let index = store.index();
+    let (heads, results, journal_heads, journal_results) = (
+        index.heads.len(),
+        index.results.len(),
+        index.heads.iter().filter(|head| head.journal_slot != obc_storage::obc2::index::NO_JOURNAL_SLOT).count(),
+        index.results.iter().filter(|row| row.journal_slot != obc_storage::obc2::index::NO_JOURNAL_SLOT).count(),
+    );
+    let epoch = index.epoch;
+    info!(
+        "CMPCT §6.3 pass over epoch {=u64}: {=usize} heads ({=usize} journal-carried), {=usize} results ({=usize} journal-carried)",
+        epoch, heads, journal_heads, results, journal_results
+    );
+    let started = Instant::now();
+    let outcome = store.compact();
+    let elapsed = us(started);
+    match outcome {
+        Ok(()) => info!(
+            "CMPCT §6.3 steps 2-4 (invalidate + 65,024 B streamed body + gate): {=u64} us — epoch {=u64} now, {=usize} card-sourced entries",
+            elapsed,
+            store.index().epoch,
+            journal_heads + journal_results
+        ),
+        Err(error) => error!("CMPCT the pass refused ({})", defmt::Debug2Format(&error)),
+    }
 }
 
 /// What one armed window wrote, named by the structure it landed in.
@@ -825,41 +872,44 @@ fn directory_entry_lba(store: &mut Store, base: &str) -> Option<u32> {
 /// §13: "RAM holds a bounded index, not the projection … The measured figure at these capacities is
 /// **19,848 bytes**. DOS2 sizes its arena from that figure."
 ///
-/// The overshoot is reported as three separate figures rather than one ratio, because they are three
-/// different questions with three different answers and a single "8×" would flatten them:
+/// Still three separate figures rather than one ratio, because they are three different questions:
 ///
-/// 1. **The projection.** §13's 19,848 B *is* the budget for the resident catalog, so this is the
-///    one line that compares like with like — DOS3 holds whole entries where §13 holds an index with
-///    envelopes and result bodies re-read from card.
-/// 2. **The transaction around it.** The projection plus the 16 KiB seal stride and the resident
-///    tables. §13 budgets none of this explicitly; it is the kernel's own working set.
-/// 3. **Mount staging.** A whole checkpoint file, a slot stride and the observation table. §13
-///    budgets *commit* staging at one journal body and *compaction* staging at 752 B and names no
-///    mount-time figure at all, so this is unbudgeted rather than over budget.
+/// 1. **The resident catalog.** §13's 19,848 B *is* the budget, and this is now the same design —
+///    a bounded index with envelopes, resolution generations and result bodies re-read from card.
+///    It is the one line that compares like with like.
+/// 2. **The transaction around it.** The index plus the 16 KiB seal stride and the resident tables.
+///    §13 budgets none of this explicitly; it is the kernel's own working set, and after the swap it
+///    is dominated by the stride rather than by catalog state.
+/// 3. **Mount staging.** A slot stride and the observation table. The 65,536-byte checkpoint image
+///    is gone: §13's mount streams, so the largest thing a mount touches is the stride it already
+///    needed for the journal scan.
 const RAM_INDEX_BUDGET: usize = 19_848;
 
 fn report_footprint() {
-    let model = core::mem::size_of::<CatalogModel>();
+    let resident = index::resident_bytes();
     let store = core::mem::size_of::<Store>();
     let media = core::mem::size_of::<Media>();
     let slots = core::mem::size_of::<SlotTable>();
-    let staging = CHECKPOINT_FILE_LEN + SLOT_STRIDE + slots;
+    let staging = SLOT_STRIDE + slots;
+    // Two of these are addends and two are components, and the total is the sum of the addends
+    // alone. `KernelTransaction` *contains* the media and the index by value, so adding either to
+    // the total would count it twice — which is exactly the arithmetic a reader checks first.
     info!(
-        "RAM   1. projection: CatalogModel {=usize} B vs §13's {=usize} B RAM-index budget — {=u32}/100x",
-        model,
+        "RAM   [component] resident catalog: RamIndex + lease table {=usize} B vs §13's {=usize} B budget — {=u32}/100x",
+        resident,
         RAM_INDEX_BUDGET,
-        (model * 100 / RAM_INDEX_BUDGET) as u32
+        (resident * 100 / RAM_INDEX_BUDGET) as u32
     );
+    info!("RAM   [component] FatMedia inside it (handles + one staging reference): {=usize} B", media);
     info!(
-        "RAM   2. transaction: KernelTransaction {=usize} B (the projection + a {=usize} B seal stride + tables); §13 budgets no figure for this",
+        "RAM   [addend 1] transaction: KernelTransaction {=usize} B — the two components above plus a {=usize} B seal stride and the resident tables; §13 budgets no figure for this",
         store, SLOT_STRIDE
     );
     info!(
-        "RAM   3. mount staging: {=usize} B = {=usize} B checkpoint image + {=usize} B stride + {=usize} B slot table; §13 names no mount-time staging figure — unbudgeted, not over budget",
-        staging, CHECKPOINT_FILE_LEN, SLOT_STRIDE, slots
+        "RAM   [addend 2] mount staging: {=usize} B = {=usize} B stride + {=usize} B slot table; no checkpoint image — §13's mount streams",
+        staging, SLOT_STRIDE, slots
     );
-    info!("RAM   FatMedia itself (handles + two staging references): {=usize} B", media);
-    info!("RAM   placed in .bss for one mounted store: {=usize} B", store + staging);
+    info!("RAM   TOTAL placed in .bss for one mounted store (addends only): {=usize} B", store + staging);
 }
 
 // ── 6. reboot recovery ──────────────────────────────────────────────────────────────────────────
