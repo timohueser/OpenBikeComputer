@@ -198,7 +198,8 @@ exactly.
 
 The commit sequence starts at `1` at initialization and increments by exactly one per commit. It is
 store-global, never wraps, and is the value a client uses to tell whether its cached listing is
-stale. `next ObjectId` is strictly greater than every `ObjectId` in the array and is never rewound;
+stale — a staleness hint, not a version a client may pin bytes to, for the reason §5.5 step 2 gives.
+`next ObjectId` is strictly greater than every `ObjectId` in the array and is never rewound;
 an object removed does not return its id.
 
 The header carries no CRC of its own — it is part of the body, and the gate is what certifies the
@@ -312,7 +313,10 @@ would leave the card with no valid catalog at all.
 2. Write `B`'s body — one header block, then `ceil(entry_count / 4)` entry blocks — with a commit
    sequence one greater than the highest any gate on this card has carried; synchronize. That
    high-water mark comes from every **well-formed** gate mount saw (§5.4), not only from the one whose
-   body validated, so the sequence a client caches never repeats even after a fallback.
+   body validated, so a fallback alone cannot make the sequence repeat. It is not global uniqueness —
+   the mark lives only in the gates and step 1 erases the one that carried it — so a cut inside the
+   commit following a fallback can still reissue a sequence; the sequence is a staleness hint, not a
+   version a client may pin bytes to.
 3. Write `B`'s gate; synchronize.
 
 After step 3 the store's truth is `B`. A cut anywhere before step 3 completes leaves `A` valid with
