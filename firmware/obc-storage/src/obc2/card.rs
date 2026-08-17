@@ -14,6 +14,7 @@
 
 use std::boxed::Box;
 use std::format;
+use std::string::String;
 use std::vec;
 use std::vec::Vec;
 
@@ -42,7 +43,6 @@ struct Pair {
     generation: GenerationId,
     payload: FileId,
     work: FileId,
-    collected: bool,
 }
 
 /// A simulated OBC2 card.
@@ -52,10 +52,18 @@ pub struct Card {
     journal: FileId,
     /// Which checkpoint file the last compaction wrote, so the next one alternates.
     active_checkpoint: usize,
+    /// The generation leaves this card has created, as a directory listing would report them.
+    ///
+    /// Cleared by [`reboot`](Self::reboot): it is a cache of what the medium already holds, and a
+    /// real store rebuilds it by listing §3's shards. Every entry is re-derivable from the file
+    /// names, which is what makes clearing it safe rather than merely tidy.
     pairs: Vec<Pair>,
     open: Option<Pair>,
     /// The shards `ensure_shards` has been asked to create, in call order.
     pub shards_created: Vec<super::names::ShardName>,
+    /// Refuses the next `ensure_shards`, so §11's preflight can be failed at the one media act that
+    /// happens before the claim record.
+    pub fail_ensure_shards: bool,
 }
 
 impl Card {
@@ -74,6 +82,7 @@ impl Card {
             pairs: Vec::new(),
             open: None,
             shards_created: Vec::new(),
+            fail_ensure_shards: false,
         };
         let mut model = Box::new(CatalogModel::empty(store));
         model.reset_to_initial(store, obc_link::registry::ObjectKind::Weather.to_u16());
@@ -91,10 +100,22 @@ impl Card {
         &self.media
     }
 
-    /// Cuts power and drops everything no sync made durable.
+    /// Cuts power and drops everything no sync made durable — including this card's own RAM.
+    ///
+    /// §12 mounts a store from what the medium holds, so a harness that kept a resident map of
+    /// generation leaves across a reboot would let a test see something the card never had to
+    /// prove. The map is cleared and re-derived from the file names on demand.
+    ///
+    /// One fidelity note. The medium has no `delete`, so [`collect_generation`] empties a leaf
+    /// rather than removing it: after a reboot a collected generation is a zero-length file rather
+    /// than an absent one. Nothing here asserts the difference — a reader of either observes no
+    /// bytes — and the enumeration that would tell them apart is the collector's, which is #1359's.
+    ///
+    /// [`collect_generation`]: KernelMedia::collect_generation
     pub fn reboot(&mut self) {
         self.media.reboot();
         self.open = None;
+        self.pairs.clear();
     }
 
     /// Mounts the card the way §6.3 says to: validate both checkpoints, validate all 256 journal
@@ -186,28 +207,48 @@ impl Card {
         }
     }
 
-    fn pair_for(&mut self, generation: GenerationId) -> Pair {
-        if let Some(pair) = self.pairs.iter().find(|pair| pair.generation == generation) {
-            return *pair;
+    /// This generation's two files, **creating them** if they are not there.
+    ///
+    /// Only the two calls that are allowed to make a generation exist — `ensure_shards` and
+    /// `open_generation` — go through here. A read or a collection must not: creating a leaf
+    /// because somebody asked about it would turn "no such generation" into "an empty one", and the
+    /// difference is the whole of §9's answer to a reader that outlived its bytes.
+    fn create_pair(&mut self, generation: GenerationId) -> Pair {
+        if let Some(pair) = self.lookup_pair(generation) {
+            return pair;
         }
-        let payload_name = format!("GEN.{:016X}", generation.get());
-        let work_name = format!("WORK.{:016X}", generation.get());
-        let payload = match self.media.file(&payload_name) {
-            Ok(file) => file,
-            Err(_) => self.media.create_payload(&payload_name),
-        };
-        let work = match self.media.file(&work_name) {
-            Ok(file) => file,
-            Err(_) => self.media.create(&work_name, WORK_FILE_LEN),
-        };
-        let pair = Pair { generation, payload, work, collected: false };
+        let payload = self.media.create_payload(&payload_name(generation));
+        let work = self.media.create(&work_name(generation), WORK_FILE_LEN);
+        let pair = Pair { generation, payload, work };
         self.pairs.push(pair);
         pair
+    }
+
+    /// This generation's two files, if the medium already holds them.
+    fn lookup_pair(&mut self, generation: GenerationId) -> Option<Pair> {
+        if let Some(pair) = self.pairs.iter().find(|pair| pair.generation == generation) {
+            return Some(*pair);
+        }
+        // Not in the resident map: it may still be on the card — a reboot clears the map, and a
+        // mount re-derives it from §3's names, which is exactly this lookup.
+        let payload = self.media.file(&payload_name(generation)).ok()?;
+        let work = self.media.file(&work_name(generation)).ok()?;
+        let pair = Pair { generation, payload, work };
+        self.pairs.push(pair);
+        Some(pair)
     }
 
     fn open_pair(&mut self) -> Result<Pair, MediaError> {
         self.open.ok_or(MediaError::NoSuchFile)
     }
+}
+
+fn payload_name(generation: GenerationId) -> String {
+    format!("GEN.{:016X}", generation.get())
+}
+
+fn work_name(generation: GenerationId) -> String {
+    format!("WORK.{:016X}", generation.get())
 }
 
 /// Why a mount produced no store.
@@ -223,13 +264,16 @@ impl GenerationMedia for Card {
     type Error = MediaError;
 
     fn ensure_shards(&mut self, generation: GenerationId) -> Result<(), MediaError> {
+        if self.fail_ensure_shards {
+            return Err(MediaError::Full);
+        }
         // §12's lazy shards, recorded as the crash harness records them: the directory the leaf
         // lands in, created on first use and idempotent afterwards.
         let shard = super::names::LeafName::of(generation).shard;
         if !self.shards_created.contains(&shard) {
             self.shards_created.push(shard);
         }
-        let pair = self.pair_for(generation);
+        let pair = self.create_pair(generation);
         self.open = Some(pair);
         Ok(())
     }
@@ -286,19 +330,16 @@ impl KernelMedia for Card {
     }
 
     fn open_generation(&mut self, generation: GenerationId) -> Result<(), MediaError> {
-        let pair = self.pair_for(generation);
-        if pair.collected {
-            return Err(MediaError::NoSuchFile);
-        }
+        let pair = self.create_pair(generation);
         self.open = Some(pair);
         Ok(())
     }
 
     fn read_generation(&mut self, generation: GenerationId, offset: u64, into: &mut [u8]) -> Result<usize, MediaError> {
-        let pair = self.pair_for(generation);
-        if pair.collected {
-            return Err(MediaError::NoSuchFile);
-        }
+        // §9: a generation nothing names is gone, and a read of one is not an empty read — it is a
+        // read of a file that is not there. Resolving it would hide exactly the mistake a lease
+        // exists to prevent.
+        let pair = self.lookup_pair(generation).ok_or(MediaError::NoSuchFile)?;
         let len = self.media.len(pair.payload);
         let start = (offset as usize).min(len);
         let take = into.len().min(len - start);
@@ -308,13 +349,17 @@ impl KernelMedia for Card {
     }
 
     fn collect_generation(&mut self, generation: GenerationId) -> Result<(), MediaError> {
-        let pair = self.pair_for(generation);
-        // §9 deletes the `GEN`/`WORK` pair; the medium models deletion as emptying, which is what a
-        // later reader of either name observes.
+        // §9: "Deleting an unreachable GEN/WORK pair may be interrupted at either file; both
+        // orderings recover as harmless orphan cleanup because no catalog fact points to it." A
+        // generation that was never created is already collected.
+        let Some(pair) = self.lookup_pair(generation) else { return Ok(()) };
+        // The medium has no `delete`, so **both** files are emptied — the pair, not half of it,
+        // because a `WORK` slot left behind would still validate and §7's recovery reads it.
         let _ = self.media.truncate(pair.payload);
-        if let Some(entry) = self.pairs.iter_mut().find(|entry| entry.generation == generation) {
-            entry.collected = true;
-        }
+        let blank = vec![0u8; WORK_FILE_LEN];
+        let _ = self.media.write_at(pair.work, 0, &blank);
+        let _ = self.media.sync(pair.work);
+        self.pairs.retain(|entry| entry.generation != generation);
         if self.open.is_some_and(|open| open.generation == generation) {
             self.open = None;
         }
@@ -329,10 +374,8 @@ impl KernelMedia for Card {
     fn reset_store(&mut self, store: StoreId) -> Result<(), MediaError> {
         // §16: reset destroys every object, result and lease. The fixed files are rewritten and
         // every generation's bytes go with them.
-        for index in 0..self.pairs.len() {
-            let pair = self.pairs[index];
+        for pair in core::mem::take(&mut self.pairs) {
             let _ = self.media.truncate(pair.payload);
-            self.pairs[index].collected = true;
         }
         self.open = None;
         let mut model = Box::new(CatalogModel::empty(store));
