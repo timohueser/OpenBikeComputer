@@ -3,9 +3,15 @@
 //! (`FLAT_Store_Protocol.md` §2).
 //!
 //! Resident state is the 8 KiB free bitmap, a handful of rows, and nothing else: the entry array
-//! lives on the card and is read block by block, which is what makes a lookup nine block reads and
-//! a mount a fixed cost. Every buffer here is fixed and on the stack — no allocation, on the device
-//! or on the host.
+//! lives on the card and is read off it, which is what makes a lookup nine block reads and a mount a
+//! fixed cost. A **scan** of that array — a mount, and each of a commit's two passes over it — moves
+//! it in [`STREAM_WINDOW`] windows rather than a block at a time, and a commit stages the body it
+//! writes in one too, because the card charges a program cycle per command and only microseconds per
+//! block inside one (see [`STREAM_BLOCKS`]). A **lookup** stays one block, because a binary search's
+//! probes are scattered and a wide window would read 4 KiB to look at 128 bytes of it. None of this
+//! changes a block address, a byte or an ordering: it is the same body in the same places before the
+//! same synchronization. Every buffer here is fixed and on the stack — no allocation, on the device or
+//! on the host.
 
 use core::cell::{Cell, RefCell};
 
@@ -18,7 +24,7 @@ use super::error::StoreError;
 use super::journal::{self, Slot, TAIL_CAPACITY, ZERO_PAD};
 use super::layout::{
     catalog_gate, extent_count, extents_for, slot_block, Ranges, BLOCK, CATALOG, ENTRIES_PER_BLOCK, ENTRY_CAPACITY,
-    ENTRY_STRIDE, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, SUPERBLOCK,
+    ENTRY_STRIDE, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, STREAM_BLOCKS, STREAM_WINDOW, SUPERBLOCK,
 };
 use super::seam::{
     Allocation, EntryFlags, EntryMeta, Mutation, ObjectId, PutSource, Revision, RideCheckpoint, Store, StoreId,
@@ -207,59 +213,113 @@ fn fill<D: BlockDevice>(dev: &D, row: &mut Reservation, mut input: &[u8]) -> Res
     Ok(())
 }
 
-/// Reads the entry array of one catalog copy, one block at a time.
-struct EntryReader<'a, D> {
+/// Reads the entry array of one catalog copy through a window of `BYTES` bytes.
+///
+/// `BYTES` is the whole of the cost model at this seam. A scan of the live prefix takes
+/// [`STREAM_WINDOW`] and pays one card command every 32 entries; a binary search takes one
+/// [`BLOCK`], because its probes are scattered and a wide window would read 4 KiB to look at 128
+/// bytes of it. Both are the same code — only the buffer differs — so `find` and a scan cannot drift
+/// apart in how they decode an entry.
+struct EntryReader<'a, D, const BYTES: usize> {
     dev: &'a D,
     base: u64,
     extents: u32,
-    cached: Option<u64>,
-    buf: [u8; BLOCK],
+    /// Blocks the live prefix occupies. The window is clamped to it, so a small catalog is never read
+    /// wider than it is and a full one never reaches the gate block that follows the array.
+    live: u64,
+    /// The window: its first block, and how many blocks of it are valid.
+    cached: Option<(u64, u64)>,
+    buf: [u8; BYTES],
 }
 
-impl<'a, D: BlockDevice> EntryReader<'a, D> {
-    fn new(dev: &'a D, copy: usize, extents: u32) -> Self {
-        EntryReader { dev, base: CATALOG[copy] + 1, extents, cached: None, buf: [0; BLOCK] }
+impl<'a, D: BlockDevice, const BYTES: usize> EntryReader<'a, D, BYTES> {
+    fn new(dev: &'a D, copy: usize, extents: u32, entries: u16) -> Self {
+        EntryReader {
+            dev,
+            base: CATALOG[copy] + 1,
+            extents,
+            live: (entries as u64).div_ceil(ENTRIES_PER_BLOCK as u64),
+            cached: None,
+            buf: [0; BYTES],
+        }
     }
 
     fn get(&mut self, index: u16) -> Result<Entry, StoreError> {
         let block = index as u64 / ENTRIES_PER_BLOCK as u64;
-        if self.cached != Some(block) {
-            read_blocks(self.dev, self.base + block, &mut self.buf)?;
-            self.cached = Some(block);
-        }
-        let at = index as usize % ENTRIES_PER_BLOCK * ENTRY_STRIDE;
+        let held = self.cached.filter(|(first, count)| block >= *first && block - *first < *count);
+        let (first, _) = match held {
+            Some(window) => window,
+            None => {
+                // The window starts at the block asked for and runs forward, which is what makes a
+                // scan pay one command per window: a reader walking indices upward never re-reads a
+                // block it has already seen.
+                let count = (BYTES / BLOCK) as u64;
+                let count = count.min(self.live.saturating_sub(block)).max(1);
+                read_blocks(self.dev, self.base + block, &mut self.buf[..count as usize * BLOCK])?;
+                self.cached = Some((block, count));
+                (block, count)
+            }
+        };
+        let at = (block - first) as usize * BLOCK + index as usize % ENTRIES_PER_BLOCK * ENTRY_STRIDE;
         Entry::decode(&self.buf[at..at + ENTRY_STRIDE], self.extents).map_err(|_| StoreError::Invalid)
     }
 }
 
-/// Writes a catalog body: the entries stream through it, and it folds them into the body CRC the
-/// gate will carry.
+/// Writes a catalog body: the header block and then the entries stream through it, and it folds them
+/// into the body CRC the gate will carry.
+///
+/// The window is [`STREAM_WINDOW`] rather than one block for the reason in [`STREAM_BLOCKS`], and it
+/// changes nothing else: the same blocks land at the same addresses carrying the same bytes, in the
+/// same order, before the same synchronization. What a cut sees is the subject of
+/// [`sim::When::Inside`](super::sim::When::Inside).
 struct BodyWriter<'a, D> {
     dev: &'a D,
+    /// The block the first byte of the window belongs to.
     block: u64,
-    buf: [u8; BLOCK],
+    buf: [u8; STREAM_WINDOW],
     filled: usize,
     digest: Crc32,
 }
 
 impl<'a, D: BlockDevice> BodyWriter<'a, D> {
+    /// A writer over the body of one catalog copy, positioned at its header block.
+    fn new(dev: &'a D, block: u64) -> Self {
+        BodyWriter { dev, block, buf: [0; STREAM_WINDOW], filled: 0, digest: Crc32::new() }
+    }
+
+    /// The header block, which is block 0 of the body and the first thing the CRC covers. It goes
+    /// through the window so that a body of one header and a few entries is one card command.
+    fn push_header(&mut self, header: &[u8; BLOCK]) -> Result<(), StoreError> {
+        self.digest.update(header);
+        self.buf[self.filled..self.filled + BLOCK].copy_from_slice(header);
+        self.filled += BLOCK;
+        self.full()
+    }
+
     fn push(&mut self, entry: &Entry) -> Result<(), StoreError> {
         let bytes = entry.encode();
         self.digest.update(&bytes);
         self.buf[self.filled..self.filled + ENTRY_STRIDE].copy_from_slice(&bytes);
         self.filled += ENTRY_STRIDE;
-        if self.filled == BLOCK {
+        self.full()
+    }
+
+    fn full(&mut self) -> Result<(), StoreError> {
+        if self.filled == STREAM_WINDOW {
             self.flush()?;
         }
         Ok(())
     }
 
+    /// Writes the whole blocks the window holds, and only those. A window that is short of a block
+    /// boundary is padded — the bytes past the live prefix are whatever an earlier commit left there,
+    /// nothing reads them and no CRC covers them — but the write never runs past the last block the
+    /// body occupies: at [`ENTRY_CAPACITY`] entries the block after it is the copy's gate.
     fn flush(&mut self) -> Result<(), StoreError> {
-        // The bytes past the live prefix are whatever an earlier commit left there: nothing reads
-        // them and no CRC covers them, so zeroing the tail of the last block is a convenience.
-        self.buf[self.filled..].fill(0);
-        write_blocks(self.dev, self.block, &self.buf)?;
-        self.block += 1;
+        let blocks = self.filled.div_ceil(BLOCK);
+        self.buf[self.filled..blocks * BLOCK].fill(0);
+        write_blocks(self.dev, self.block, &self.buf[..blocks * BLOCK])?;
+        self.block += blocks as u64;
         self.filled = 0;
         Ok(())
     }
@@ -575,26 +635,37 @@ impl<D: BlockDevice> FlatStore<D> {
     /// next candidate — the bitmap is rebuilt from scratch each attempt.
     fn load(&mut self, copy: usize, gate: &Gate) -> Result<Loaded, StoreError> {
         self.free.reset(self.extents);
-        let mut block = [0u8; BLOCK];
-        read_blocks(&self.dev, CATALOG[copy], &mut block)?;
-        let header = Header::decode(&block, &self.store).map_err(|_| StoreError::Invalid)?;
+        // One window serves the header block and then the array, and it is the boot path's whole
+        // buffer: a full catalog is the header plus sixty 4 KiB windows, where it used to be 480
+        // single-block reads.
+        let mut window = [0u8; STREAM_WINDOW];
+        read_blocks(&self.dev, CATALOG[copy], &mut window[..BLOCK])?;
+        let header = Header::decode(&window[..BLOCK], &self.store).map_err(|_| StoreError::Invalid)?;
         if header.entry_count != gate.entry_count || header.sequence != gate.sequence {
             return Err(StoreError::Invalid);
         }
         let mut digest = Crc32::new();
-        digest.update(&block);
+        digest.update(&window[..BLOCK]);
 
         let mut structure = Structure::default();
         let mut loaded = Loaded { next_object: header.next_object, recording: None, exhausted: false };
         let mut done = 0usize;
         while done < header.entry_count as usize {
-            read_blocks(&self.dev, CATALOG[copy] + 1 + (done / ENTRIES_PER_BLOCK) as u64, &mut block)?;
-            let count = (header.entry_count as usize - done).min(ENTRIES_PER_BLOCK);
-            digest.update(&block[..count * ENTRY_STRIDE]);
+            // Only the blocks the live prefix occupies, so a short catalog is never read wider than it
+            // is and a full one stops on the last entry block rather than reaching the gate past it.
+            let remaining = header.entry_count as usize - done;
+            let blocks = remaining.div_ceil(ENTRIES_PER_BLOCK).min(STREAM_BLOCKS);
+            read_blocks(
+                &self.dev,
+                CATALOG[copy] + 1 + (done / ENTRIES_PER_BLOCK) as u64,
+                &mut window[..blocks * BLOCK],
+            )?;
+            let count = remaining.min(blocks * ENTRIES_PER_BLOCK);
+            digest.update(&window[..count * ENTRY_STRIDE]);
             for index in 0..count {
                 let at = index * ENTRY_STRIDE;
                 let entry =
-                    Entry::decode(&block[at..at + ENTRY_STRIDE], self.extents).map_err(|_| StoreError::Invalid)?;
+                    Entry::decode(&window[at..at + ENTRY_STRIDE], self.extents).map_err(|_| StoreError::Invalid)?;
                 structure.accept(&entry).map_err(|_| StoreError::Invalid)?;
                 self.free.claim(&entry.ranges).map_err(|_| StoreError::Invalid)?;
                 if entry.meta.flags.has(EntryFlags::RECORDING) {
@@ -682,7 +753,7 @@ impl<D: BlockDevice> FlatStore<D> {
     /// The retained and the head entry of one `ObjectId`: a binary search over the live prefix, then
     /// at most two entry reads.
     fn find(&self, id: ObjectId) -> Result<(Option<Entry>, Option<Entry>), StoreError> {
-        let mut reader = EntryReader::new(&self.dev, self.serving, self.extents);
+        let mut reader = EntryReader::<_, BLOCK>::new(&self.dev, self.serving, self.extents, self.entry_count);
         let mut low = 0u16;
         let mut high = self.entry_count;
         while low < high {
@@ -716,7 +787,16 @@ impl<D: BlockDevice> FlatStore<D> {
     }
 
     /// Walks the new entry array in key order: the serving copy's entries with the batch applied.
-    fn merge<F>(&self, plan: &[Resolved], mut emit: F) -> Result<u16, StoreError>
+    ///
+    /// The reader is the caller's, so a commit's two passes share one window: the second pass over a
+    /// catalog that fits inside a single window costs no read at all, and the two passes can never
+    /// disagree about which copy they are reading.
+    fn merge<F>(
+        &self,
+        reader: &mut EntryReader<'_, D, STREAM_WINDOW>,
+        plan: &[Resolved],
+        mut emit: F,
+    ) -> Result<u16, StoreError>
     where
         F: FnMut(&Entry) -> Result<(), StoreError>,
     {
@@ -727,7 +807,6 @@ impl<D: BlockDevice> FlatStore<D> {
         let order = &mut order[..plan.len()];
         order.sort_unstable_by_key(|index| plan[*index as usize].key);
 
-        let mut reader = EntryReader::new(&self.dev, self.serving, self.extents);
         let mut next = 0usize;
         let mut written = 0u16;
         for index in 0..self.entry_count {
@@ -991,7 +1070,9 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             entry_count: count as u16,
         };
         let mut structure = Structure::default();
-        let written = self.merge(plan, |entry| structure.accept(entry).map_err(|_| StoreError::Invalid))?;
+        let mut reader = EntryReader::new(&self.dev, self.serving, self.extents, self.entry_count);
+        let written =
+            self.merge(&mut reader, plan, |entry| structure.accept(entry).map_err(|_| StoreError::Invalid))?;
         structure.finish(&header).map_err(|_| StoreError::Invalid)?;
         if written != header.entry_count {
             return Err(StoreError::Invalid);
@@ -1025,12 +1106,12 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         write_blocks(&self.dev, catalog_gate(target), &INVALIDATED)?;
         sync(&self.dev)?;
 
-        let body = header.encode();
-        write_blocks(&self.dev, CATALOG[target], &body)?;
-        let mut digest = Crc32::new();
-        digest.update(&body);
-        let mut writer = BodyWriter { dev: &self.dev, block: CATALOG[target] + 1, buf: [0; BLOCK], filled: 0, digest };
-        self.merge(plan, |entry| writer.push(entry))?;
+        // §5.5 step 2's body, header block first and the entries after it, through one window: the
+        // header is block 0 of the body and the first bytes its CRC covers, so streaming it here is
+        // what makes a small catalog one card command rather than two.
+        let mut writer = BodyWriter::new(&self.dev, CATALOG[target]);
+        writer.push_header(&header.encode())?;
+        self.merge(&mut reader, plan, |entry| writer.push(entry))?;
         let body_crc = writer.finish()?;
         sync(&self.dev)?;
 
@@ -1144,7 +1225,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
         self.listing_failed.set(false);
         Entries {
-            reader: EntryReader::new(&self.dev, self.serving, self.extents),
+            reader: EntryReader::new(&self.dev, self.serving, self.extents, self.entry_count),
             index: 0,
             count: self.entry_count,
             failed: &self.listing_failed,
@@ -1247,7 +1328,12 @@ impl<D: BlockDevice> FlatStore<D> {
     /// remainder is the partial page no checkpoint ever flushes, because a checkpoint only ever writes
     /// whole 16 KiB pages. The slot is where those bytes live, so the slot is where they come from:
     /// re-reading it costs 63 blocks once per ride and needs no buffer of its own.
-    fn flush_ride_tail(&mut self, plan: &[Resolved]) -> Result<bool, StoreError> {
+    ///
+    /// `&self`, which it always could have been: it moves bytes on the card and settles no resident
+    /// state — that is [`settle_ride`](Self::settle_ride)'s job, after the gate. Saying so is now load
+    /// bearing as well as honest, because the commit around this call holds an [`EntryReader`] over
+    /// `self.dev` across it.
+    fn flush_ride_tail(&self, plan: &[Resolved]) -> Result<bool, StoreError> {
         let Some((ride, entry)) = self.finalising(plan) else { return Ok(false) };
         let length = entry.meta.payload_len;
         if length == ride.flushed {
@@ -1327,7 +1413,9 @@ impl<D: BlockDevice> FlatStore<D> {
 
 /// §2's read-only catalog view: every entry, in the catalog's own `(ObjectId, Revision)` order.
 struct Entries<'a, D> {
-    reader: EntryReader<'a, D>,
+    /// One block, not a window: the listing is paced by the wire that drains it, and widening it here
+    /// would grow the frame of every caller holding this iterator — `LIST`'s, above the seam.
+    reader: EntryReader<'a, D, BLOCK>,
     index: u16,
     count: u16,
     failed: &'a Cell<bool>,
