@@ -45,8 +45,10 @@
 //! table), [`gc`] (§9's reachability and collector), [`mount`] (§12's classification and staging)
 //! and [`names`] (§3's identity mapping).
 //!
-//! [`geometry`], [`adapter`] and [`blocklog`] are the media seam; [`media`], [`fatsim`] and
-//! [`vectors`] are host-only.
+//! [`geometry`], [`adapter`] and [`blocklog`] are the media seam, and [`fat`] is the board's
+//! composition of it: §12's mount classification and initialization over a real directory listing,
+//! and the [`transaction::KernelMedia`] the device runs. [`media`], [`fatsim`] and [`vectors`] are
+//! host-only.
 
 pub mod adapter;
 pub mod blocklog;
@@ -54,6 +56,7 @@ pub mod checkpoint;
 pub mod compaction;
 pub mod entries;
 pub mod error;
+pub mod fat;
 pub mod gate;
 pub mod gc;
 pub mod generation;
