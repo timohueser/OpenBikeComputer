@@ -232,7 +232,11 @@ payload order: range `i` carries the payload bytes that follow range `i-1`.
 
 The ranges MUST cover at least `ceil(payload length / 1 MiB)` extents. They may cover more only while
 the `RECORDING` or `RESERVED` flag is set; every other entry is trimmed to its payload at the commit
-that publishes it, so the tail of the last extent is the only slack an ordinary object carries.
+that publishes it, so the tail of the last extent is the only slack an ordinary object carries. A
+**zero-length object is therefore unrepresentable** without one of those flags, and deliberately so:
+`range count` is at least `1` and every live range holds at least one extent, so an entry that owns
+extents while needing none would be the very slack this rule forbids — an object with no bytes is a
+`Remove`, not a `Put`.
 
 Flags:
 
