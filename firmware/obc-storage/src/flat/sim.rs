@@ -22,6 +22,11 @@
 //!
 //! Determinism is total: the same seed and the same [`FaultPlan`] produce the same bytes, so a
 //! failing case in the crash matrix is a case anyone can rerun.
+//!
+//! A power cut is not the only way media fails, and it is the *less* demanding way: after a cut there
+//! is no store left to ask anything of. [`FaultOnce`] is the other shape — one operation refused, the
+//! card still there — which is the input every error path at the seam actually takes, and the only way
+//! to hold a `StoreError::Media` to leaving the store's resident state where a retry can meet it.
 
 use std::collections::BTreeMap;
 use std::vec::Vec;
@@ -272,6 +277,103 @@ impl BlockDevice for &SparseDisk {
     }
 }
 
+/// One media operation, as a fault-once plan names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaOp {
+    Read,
+    Write,
+    Sync,
+}
+
+/// A card that refuses one operation and then behaves.
+///
+/// [`SparseDisk`]'s only failure is a power cut, which is total: after it nothing works until a reboot.
+/// Real media also fails **transiently** — one read refused, one write refused, the card still there —
+/// and that is the input every error path at the seam actually takes. What such a path owes its caller
+/// is that a `StoreError::Media` leaves the store's resident state where a retry can meet it, and that
+/// a failed read is never read as an answer. Neither can be tested by cutting power, because after a
+/// cut there is no store left to ask.
+///
+/// So this wraps a card and fails the `skip + 1`-th operation of one kind, once. Everything before and
+/// after it goes through to the card underneath, and the wrapper counts nothing else — the plan is
+/// written against the operations one seam call performs.
+pub struct FaultOnce<D> {
+    inner: D,
+    /// The kind to refuse and how many of that kind to let through first.
+    armed: Cell<Option<(MediaOp, u32)>>,
+    fired: Cell<bool>,
+}
+
+impl<D> FaultOnce<D> {
+    /// Wraps a card, armed with nothing.
+    pub fn new(inner: D) -> Self {
+        FaultOnce { inner, armed: Cell::new(None), fired: Cell::new(false) }
+    }
+
+    /// Refuses the next operation of this kind.
+    pub fn fault_next(&self, op: MediaOp) {
+        self.fault_after(op, 0);
+    }
+
+    /// Refuses one operation of this kind, after letting `skip` of them through.
+    pub fn fault_after(&self, op: MediaOp, skip: u32) {
+        self.armed.set(Some((op, skip)));
+        self.fired.set(false);
+    }
+
+    /// True once the armed fault has been delivered. A test asserts this, because a probe whose fault
+    /// never fired proves nothing about the path it was aiming at.
+    pub fn fired(&self) -> bool {
+        self.fired.get()
+    }
+
+    /// The card underneath.
+    pub fn inner(&self) -> &D {
+        &self.inner
+    }
+
+    /// Refuses this operation, or lets it through.
+    fn gate(&self, op: MediaOp) -> Result<(), DiskError> {
+        match self.armed.get() {
+            Some((armed, 0)) if armed == op => {
+                self.armed.set(None);
+                self.fired.set(true);
+                Err(DiskError)
+            }
+            Some((armed, skip)) if armed == op => {
+                self.armed.set(Some((armed, skip - 1)));
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for &FaultOnce<D> {
+    /// The wrapper's own refusal and the card's are the same to the store, which maps every media
+    /// failure to `StoreError::Media` without looking.
+    type Error = DiskError;
+
+    fn block_count(&self) -> Result<u64, DiskError> {
+        self.inner.block_count().map_err(|_| DiskError)
+    }
+
+    fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), DiskError> {
+        self.gate(MediaOp::Read)?;
+        self.inner.read(lba, buf).map_err(|_| DiskError)
+    }
+
+    fn write(&self, lba: u64, buf: &[u8]) -> Result<(), DiskError> {
+        self.gate(MediaOp::Write)?;
+        self.inner.write(lba, buf).map_err(|_| DiskError)
+    }
+
+    fn sync(&self) -> Result<(), DiskError> {
+        self.gate(MediaOp::Sync)?;
+        self.inner.sync().map_err(|_| DiskError)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +463,30 @@ mod tests {
             (0..64).map(|lba| disk.block(lba)).collect::<Vec<_>>()
         };
         assert_eq!(run(), run());
+    }
+
+    /// The other device's contract: one operation of the armed kind fails, the ones before and after it
+    /// reach the card, and a fault armed for one kind does not disturb another.
+    #[test]
+    fn a_fault_once_device_refuses_one_operation_of_one_kind() {
+        let disk = disk();
+        let faulty = FaultOnce::new(&disk);
+        faulty.fault_after(MediaOp::Write, 1);
+        (&faulty).write(0, &[0xAB; BLOCK]).unwrap();
+        assert_eq!((&faulty).write(1, &[0xCD; BLOCK]), Err(DiskError));
+        assert!(faulty.fired());
+        (&faulty).write(1, &[0xCD; BLOCK]).unwrap();
+        (&faulty).sync().unwrap();
+        assert_eq!(disk.block(0), [0xAB; BLOCK], "a write before the fault did not reach the card");
+        assert_eq!(disk.block(1), [0xCD; BLOCK], "a write after the fault did not reach the card");
+
+        faulty.fault_next(MediaOp::Read);
+        let mut buf = [0u8; BLOCK];
+        assert_eq!((&faulty).read(0, &mut buf), Err(DiskError));
+        assert!(faulty.fired());
+        (&faulty).read(0, &mut buf).unwrap();
+        assert_eq!(buf, [0xAB; BLOCK]);
+        (&faulty).write(2, &[0xEF; BLOCK]).unwrap();
     }
 
     #[test]
