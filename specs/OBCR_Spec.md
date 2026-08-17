@@ -79,7 +79,7 @@ the chunks have streamed out (see §5).
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCR"` |
 | 4 | Version | 1 | `uint8` | `0x03`; readers reject anything else |
 | 5 | Flags | 1 | `uint8` | Reserved, `0` |
-| 6 | Name Len | 1 | `uint8` | Used bytes of the Name field (≤ 48) |
+| 6 | Name Len | 1 | `uint8` | Used bytes of the Name field, **1 through 48**; zero is invalid |
 | 7 | Reserved | 1 | `uint8` | `0` |
 | 8 | Min Lon | 4 | `int32` | Global bbox, microdegrees |
 | 12 | Min Lat | 4 | `int32` | |
@@ -97,6 +97,16 @@ the chunks have streamed out (see §5).
 | 56 | Index Offset | 4 | `uint32` | Byte offset to the Chunk Index |
 | 60 | Data Offset | 4 | `uint32` | Byte offset to Chunk 0 data |
 | 64 | Name | 48 | `char[48]` | UTF-8 route name, null-padded |
+
+**The name is mandatory.** `Name Len` is 1 through 48 and a writer that would emit zero fails
+instead (`obc-route`'s converter returns `Error::NoName`). The requirement comes from outside this
+format: under Device Object System v2 a route's catalog projection
+([`Device_Object_Registries_v2.md`](Device_Object_Registries_v2.md) §4.3) carries a **required**
+display name with no default, and the only place the device can derive one is this header. A
+nameless file would therefore be a route a device could store and could never publish — refused at
+the last step of an upload, with an error the client cannot act on. Rejecting it at the writer is
+the one moment a producer can still do something about it. (v1/v2 files permitted zero; they are
+rejected outright anyway, so no accepted file changes meaning.)
 
 With the canonical layout, `Data Offset == 128` (chunks follow the header) and
 `Index Offset == Data Offset + total chunk-data bytes`. Distance/ascent in **km/m**

@@ -26,13 +26,36 @@
 //! entries — so a lock held "for the duration of the operation" is a lock held for as long as the
 //! card feels like taking, and a connection drops.
 //!
-//! What makes this a law rather than an aspiration is the shape above it. The kernel does not expose
-//! an operation; it exposes a *step* — `Claim`, `Append`, `Checkpoint`, `Seal`, `Validate`,
-//! `Publish` — and returns to its caller between every one of them, which is where a lock is
-//! released and the executor gets its turn. A repository view is bound to one such call by the
-//! borrow checker: [`routes`](CardStore::routes) takes `&mut self`, the view holds that borrow, and
-//! there is no way to stash it, send it, or carry it across an `await` in the board glue, because
-//! doing so would keep `&mut CardStore` alive across the suspension point and the compiler refuses.
+//! What holds it up is the shape above it. The kernel does not expose an operation; it exposes a
+//! *step* — `Claim`, `Append`, `Checkpoint`, `Seal`, `Validate`, `Publish` — and returns to its
+//! caller between every one of them, which is where a lock is released and the executor gets its
+//! turn.
+//!
+//! **How much of that the compiler enforces, exactly.** Three properties, and only two of them are
+//! the type system's:
+//!
+//! 1. **A view cannot escape or alias.** [`routes`](CardStore::routes) takes `&mut self` and the
+//!    view holds that borrow, so it cannot outlive the call it was lent to, cannot be stored in
+//!    anything longer-lived, and cannot coexist with a second view. Borrow checker; airtight.
+//! 2. **A view cannot travel.** [`Capability`] carries a `PhantomData<*const ()>`, so every view and
+//!    every future that holds one across a suspension is `!Send`. A `spawn` with a `Send` bound
+//!    refuses such a future, and no view can reach another thread or executor. The probes in
+//!    [`lock_law`](super::lock_law) are the proof — each a program that must fail to build, each
+//!    paired with a sibling that must build — and removing the marker turns two of them red.
+//! 3. **A view is *not* prevented from being held across an `.await`.** This is the honest part: a
+//!    `!Send` future can still suspend on a single-threaded executor, which is exactly what the
+//!    board runs. Nothing in the type system stops it, and this file previously claimed otherwise.
+//!    [`lock_law`](super::lock_law)'s probe A makes the distinction concrete: the future that holds
+//!    a view across an `.await` is rejected only by the `Send` bound, and a board executor imposes
+//!    none.
+//!
+//! So the residual rule is a discipline, and it is this one: **the board glue never `.await`s while
+//! a repository view is alive.** It drives one kernel step, drops the view, and only then yields. A
+//! view is cheap to re-take — it is one `&mut` — so the shape that keeps the rule is the natural one
+//! to write, and property 1 means a view that outlives its step could not have been stored anywhere
+//! to begin with. Properties 1 and 2 remove the ways this could go wrong *silently*, across threads
+//! or through a stash; property 3 is a rule a reviewer has to check, and it is written here so that
+//! there is something to check it against.
 //!
 //! **Where this is not yet true, and it must be said plainly:** the board's *v1* storage owner takes
 //! the opposite posture on purpose — `SharedStoreMutex` in the board crate is documented as being
@@ -596,6 +619,52 @@ mod tests {
         assert_eq!(envelope.field(0x0001).and_then(|field| field.as_str()), Some("Vector Loop"));
         assert_eq!(envelope.field(0x0002).and_then(|field| field.as_u8()), Some(retention::TWO_WEEKS));
         assert_eq!(store.next_commit().map(|event| event.change), Some(ChangeKind::Created));
+    }
+
+    /// The half of the lock law this file can state as a *positive* fact: the store itself is
+    /// `Send`, so the `!Send`-ness the probes in [`lock_law`](crate::obc2::lock_law) demonstrate
+    /// belongs to the lent view and not to something the media dragged in.
+    ///
+    /// The negatives live there rather than here because they are compile failures, and a test that
+    /// asserts the absence of an auto trait has to be a program that does not build.
+    #[test]
+    fn the_store_is_send_and_only_the_lent_view_is_not() {
+        fn assert_send<T: Send>() {}
+        assert_send::<CardStore<Card>>();
+        assert_send::<KernelTransaction<Card, DomainRepositories, StoreHooks>>();
+    }
+
+    /// §4: "none of them has a private shortcut into the catalog." A device-local producer takes the
+    /// same validator, and is refused by it on the same terms a client is.
+    #[test]
+    fn a_device_local_publication_is_validated_like_any_other() {
+        let mut store = store();
+        let mut buffer = [0u8; MAX_PUT_ENVELOPE];
+        let metadata = route_put(&mut buffer, retention::TWO_MONTHS);
+
+        let refused = store
+            .transaction_mut()
+            .publish_local(ObjectKind::Route, &[0x5A; 256], metadata.as_bytes())
+            .expect_err("a local producer of junk is refused, not given a nameless head");
+        assert!(matches!(refused, FailureCause::SemanticValidation { kind: ObjectKind::Route, detail: 1 }));
+        assert_eq!(store.head_count(ObjectKind::Route), 0, "a refused local publication publishes nothing");
+        assert!(store.next_commit().is_none(), "and wakes nobody");
+
+        let (logical, revision) = store
+            .transaction_mut()
+            .publish_local(ObjectKind::Route, ROUTE, metadata.as_bytes())
+            .expect("a valid route publishes locally");
+        let (staged, len) = projection_of(&mut store, logical);
+        let envelope = MetadataEnvelope::decode(&staged[..len], MAX_CATALOG_ENVELOPE).expect("canonical");
+        Schema::lookup(ObjectKind::Route, SchemaClass::Catalog)
+            .expect("registered")
+            .validate(&envelope)
+            .expect("a local head's projection is a client-decodable one");
+        assert_eq!(envelope.field(0x0001).and_then(|field| field.as_str()), Some("Vector Loop"));
+        assert_eq!(envelope.field(0x0002).and_then(|field| field.as_u8()), Some(retention::TWO_MONTHS));
+
+        let event = store.next_commit().expect("a local publication wakes its repository too");
+        assert_eq!((event.kind, event.change, event.revision), (ObjectKind::Route, ChangeKind::Created, revision));
     }
 
     /// The weather repository derives a different projection from a different source, which is the

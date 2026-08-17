@@ -87,7 +87,12 @@ impl WeatherRepository {
     ) -> Result<CatalogProjection, u16> {
         match subject.opcode {
             Opcode::StartUpload => self.put(subject),
-            // §1's matrix gives weather no set-metadata bit; the engine refuses it before a claim.
+            // §1's matrix gives weather no set-metadata bit, so a conforming profile refuses the
+            // request before a claim exists. It is reachable only by a device advertising a bit the
+            // registry forbids, and the answer to that is a refusal — but `payloadFactsMismatch` is
+            // a poor description of it, and it is used because the registry allocates weather no
+            // detail for "this operation does not exist here". The honest reading: the profile is
+            // the fix; this arm exists so the wrong profile cannot silently publish.
             Opcode::SetMetadata => Err(detail::PAYLOAD_FACTS_MISMATCH),
             _ => Ok(CatalogProjection::RESERVATION),
         }

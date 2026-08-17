@@ -54,10 +54,17 @@ impl TripRepository {
         _bytes: &mut dyn SealedBytes,
     ) -> Result<CatalogProjection, u16> {
         match subject.opcode {
-            // §1's matrix gives trip no set-metadata bit, so the engine refuses the request as
-            // `unsupportedCapability` long before a claim exists. Reaching here means the profile
-            // and the registry disagree, which is this device's invariant break, not a client error
-            // — and the only refusal shape available at this seam is the kind's own detail.
+            // §1's matrix gives trip no set-metadata bit, so a conforming device's profile refuses
+            // the request as `unsupportedCapability` before any claim exists — and that profile is
+            // per-device data, not a compile-time fact, so this arm is reachable by a device that
+            // advertises a bit the registry forbids. Refusing is the correct answer to that, and
+            // `invalidTripFormat` is the only shape this seam has: the registry allocates no
+            // "operation not permitted" detail in a kind's namespace, because §12 puts that
+            // refusal in the common namespace where a validator cannot reach.
+            //
+            // The consequence is worth naming rather than hiding: such a device would report a
+            // misdescribing detail. The fix is the profile, and `the_trip_namespace_matches_the_
+            // registry_and_the_matrix_row` is what holds this crate's own answer to the matrix.
             Opcode::SetMetadata => Err(detail::INVALID_TRIP_FORMAT),
             // Until the payload rules land, a trip head carries §5.3's reservation. That is why
             // `QueryCatalog` stays unadvertised: a page built from reservations is well-formed and

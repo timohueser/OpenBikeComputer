@@ -270,7 +270,7 @@ fn describe_route_read_error(e: Error) -> ConvertFailure {
             "This route's chunk index exceeds the reader's limits — it was not written by this \
              toolchain.",
         ),
-        Error::Io | Error::Empty => ConvertFailure::new(
+        Error::Io | Error::Empty | Error::NoName => ConvertFailure::new(
             ErrorCode::Internal,
             "Internal error: reading from an in-memory buffer failed. This is a bug in the \
              conversion bridge — please report it.",
@@ -353,6 +353,14 @@ fn describe_gpx_error(e: Error) -> ConvertFailure {
             "Internal error: the route converter reported a file-format mismatch, which it does \
              not produce when reading GPX. This is a bug — please report it with the file.",
         ),
+        // `OBCR_Spec.md` §1 requires a non-empty route name, and this bridge's own contract is to
+        // pass the dropped file's stem — so an empty one is the bridge breaking that contract
+        // rather than anything about the file the rider chose.
+        Error::NoName => ConvertFailure::new(
+            ErrorCode::Internal,
+            "Internal error: the conversion bridge asked for a route with no name, which the \
+             route format does not allow. This is a bug in the bridge — please report it.",
+        ),
     }
 }
 
@@ -377,9 +385,9 @@ fn describe_track_error(e: Error) -> ConvertFailure {
             "Internal error: writing the exported GPX into memory failed. This is a bug in the \
              conversion bridge — please report it.",
         ),
-        // The exporter has no capacity-bounded output and reads no format tag, so none of these
-        // is reachable from here.
-        Error::TooLarge | Error::BadMagic | Error::BadVersion => ConvertFailure::new(
+        // The exporter has no capacity-bounded output, reads no format tag and writes no OBCR
+        // header, so none of these is reachable from here.
+        Error::TooLarge | Error::BadMagic | Error::BadVersion | Error::NoName => ConvertFailure::new(
             ErrorCode::Internal,
             "Internal error: the track exporter reported a format or capacity failure it does not \
              produce. This is a bug — please report it with the file.",

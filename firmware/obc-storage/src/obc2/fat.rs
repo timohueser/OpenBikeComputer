@@ -1681,6 +1681,107 @@ mod tests {
         let _ = LogicalObjectId::ZERO;
     }
 
+    /// **The writer-binding regression.** A direct mutation validated beside a sealed upload must be
+    /// judged on its own request, not on the upload's payload.
+    ///
+    /// `Validate` used to take whichever writer the transaction was holding, checking only that it
+    /// was sealed. That was harmless while a validator was handed a `GenerationId` it ignored. It
+    /// stopped being harmless the moment a validator reads the bytes: a `DeleteObject` claimed while
+    /// an upload sits sealed would have been handed that upload's length, CRC and payload, and any
+    /// domain rule keyed on them would have judged the wrong object. Without the `writing.operation
+    /// == operation_id` guard this test sees 4,096 bytes where it must see none.
+    #[test]
+    fn a_direct_mutation_is_not_validated_against_a_sealed_uploads_bytes() {
+        /// Records exactly what the validator was handed, and admits everything.
+        #[derive(Debug, Default, Clone, Copy)]
+        struct Recorder {
+            length: u64,
+            crc: u32,
+            first_byte: Option<u8>,
+        }
+
+        impl crate::obc2::transaction::Validator for Recorder {
+            fn validate(
+                &mut self,
+                subject: &crate::obc2::transaction::Validation<'_>,
+                bytes: &mut dyn crate::obc2::transaction::SealedBytes,
+            ) -> Result<crate::obc2::transaction::CatalogProjection, u16> {
+                let mut probe = [0u8; 1];
+                self.length = subject.length;
+                self.crc = subject.crc;
+                self.first_byte = match bytes.read_at(0, &mut probe) {
+                    Some(1) => Some(probe[0]),
+                    _ => None,
+                };
+                Ok(crate::obc2::transaction::CatalogProjection::RESERVATION)
+            }
+        }
+
+        let (_card, media, index, base) = mounted();
+        let mut store =
+            Box::new(KernelTransaction::mount(media, Recorder::default(), NoHooks, index.as_ref().clone(), base));
+        let mut scratch = [0u8; 512];
+
+        // A head to delete, published locally so the delete has a real target.
+        let (target, _) = store.publish_local(ObjectKind::Route, &[0x11; 64], &[]).expect("a local head");
+
+        // An upload, claimed and sealed but deliberately left unpublished.
+        let upload = OperationId::new([0xE5; 16]);
+        let payload = [0xAB; 4_096];
+        let crc = obc_crc::crc32(&payload);
+        assert!(matches!(
+            store.execute(Command::Claim(intent(upload, payload.len() as u64, crc)), &mut scratch),
+            EngineOutcome::Claim(obc_link::engine::ClaimOutcome::Claimed { .. })
+        ));
+        for (step, chunk) in payload.chunks(1_024).enumerate() {
+            let offset = (step * 1_024) as u64;
+            assert!(matches!(
+                store.execute(Command::Append { operation_id: upload, offset, bytes: chunk }, &mut scratch),
+                EngineOutcome::Appended
+            ));
+        }
+        assert!(matches!(
+            store.execute(
+                Command::Seal { operation_id: upload, declared_length: payload.len() as u64, expected_crc: crc },
+                &mut scratch
+            ),
+            EngineOutcome::Sealed
+        ));
+
+        // Now a delete, claimed and validated *beside* that sealed upload.
+        let delete = OperationId::new([0xE6; 16]);
+        let mut deleting = intent(delete, 0, 0);
+        deleting.opcode = Opcode::DeleteObject;
+        deleting.target =
+            Target::Replace { logical_object_id: target, expected_revision: obc_link::ids::Revision::new(1) };
+        deleting.declared_length = 0;
+        deleting.expected_crc = 0;
+        deleting.digest = [0x78; 32];
+        assert!(matches!(
+            store.execute(Command::Claim(deleting), &mut scratch),
+            EngineOutcome::Claim(obc_link::engine::ClaimOutcome::Claimed { .. })
+        ));
+        assert!(matches!(
+            store.execute(Command::Validate { operation_id: delete }, &mut scratch),
+            EngineOutcome::Validated
+        ));
+
+        let seen = *store.validator_mut();
+        assert_eq!(seen.length, 0, "the delete was judged on its own request, not on 4,096 sealed bytes");
+        assert_eq!(seen.crc, 0);
+        assert_eq!(seen.first_byte, None, "and it was handed no payload to read at all");
+
+        // The upload's own validation still sees its own bytes, so the guard did not break the case
+        // it exists to protect.
+        assert!(matches!(
+            store.execute(Command::Validate { operation_id: upload }, &mut scratch),
+            EngineOutcome::Validated
+        ));
+        let seen = *store.validator_mut();
+        assert_eq!((seen.length, seen.crc, seen.first_byte), (payload.len() as u64, crc, Some(0xAB)));
+        store.into_media().unmount();
+    }
+
     /// The same lifecycle through **`CardStore`** — the owner, the route repository and the commit
     /// log — over a real FAT volume rather than a simulated card.
     ///

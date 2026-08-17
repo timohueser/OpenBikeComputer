@@ -97,6 +97,8 @@ pub mod equivalence;
 #[cfg(any(test, feature = "std"))]
 pub mod fatsim;
 #[cfg(any(test, feature = "std"))]
+pub mod lock_law;
+#[cfg(any(test, feature = "std"))]
 pub mod media;
 #[cfg(any(test, feature = "std"))]
 pub mod samples;

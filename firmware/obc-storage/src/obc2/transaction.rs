@@ -87,9 +87,9 @@ pub const RESULT_RING: usize = MAX_TERMINAL_RESULTS;
 ///
 /// §5.3 gives a head an eight-to-ninety-six byte canonical envelope and refuses a shorter one, so
 /// there has to be something. What there is not, any more, is a kernel that *invents* the head's
-/// metadata: the envelope a head carries is now whatever the [`Validator`] returned, and this is
-/// only what a store running [`AcceptEverything`] — a device with no domain repositories at all —
-/// leaves behind. A device-local publication that names no operation is the other user of it.
+/// metadata: every head's envelope — a wire publication's and a device-local producer's alike — is
+/// whatever the [`Validator`] returned for those bytes, and this is only what a validator with no
+/// rules for the kind, such as [`AcceptEverything`], hands back.
 const PLACEHOLDER_ENVELOPE: [u8; 8] = [0; 8];
 
 // ---------------------------------------------------------------------------------------------
@@ -833,9 +833,17 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     ///
     /// It is a **card read**: §13 leaves the envelope on the card precisely so RAM does not hold 256
     /// of them, and a caller that wants a page of metadata pays one bounded read per entry.
+    ///
+    /// A buffer shorter than the envelope is a **refusal**, not a truncation. A truncated canonical
+    /// envelope is not a shorter envelope — it is bytes that decode to something else or to nothing
+    /// — so silently returning a prefix would hand a caller a projection it could reasonably decode
+    /// and misread. §5.3 bounds the envelope at 96 bytes, so a correctly sized buffer always fits.
     pub fn head_projection(&mut self, key: HeadKey, into: &mut [u8]) -> Result<Option<usize>, FailureCause> {
         let Some(head) = self.stored_head(key)? else { return Ok(None) };
-        let len = usize::from(head.envelope_len).min(into.len());
+        let len = usize::from(head.envelope_len);
+        if len > into.len() {
+            return Err(FailureCause::Internal { detail: detail::internal::INVARIANT });
+        }
         into[..len].copy_from_slice(&head.envelope[..len]);
         Ok(Some(len))
     }
@@ -874,13 +882,26 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         self.media.read_generation(head.generation, 0, &mut into[..len]).ok()
     }
 
-    /// Publishes a head directly, as a device-local producer does. Returns its new Revision.
+    /// Publishes a head directly, as a device-local producer does.
     ///
-    /// This is the store's own path, not the wire's: no claim, no session, one terminal record.
-    pub fn publish_local(&mut self, kind: ObjectKind, bytes: &[u8]) -> (LogicalObjectId, Revision) {
+    /// §4: "Device-local producers publish through exactly that path … none of them has a private
+    /// shortcut into the catalog." So this runs the **same typed validator** a wire publication
+    /// does, over the bytes it just wrote, and stores the projection the repository derived — a
+    /// local producer of invalid bytes is refused rather than given a nameless head. `metadata` is
+    /// the Put envelope the producer declares, exactly as `StartUpload` carries one; a kind whose
+    /// repository derives nothing from it passes an empty slice.
+    ///
+    /// What it still is not is a claim and a session. §6.1's two-record shape below is the local
+    /// form of those, and #1356 owns turning the local navigation producer into a full claimant.
+    pub fn publish_local(
+        &mut self,
+        kind: ObjectKind,
+        bytes: &[u8],
+        metadata: &[u8],
+    ) -> Result<(LogicalObjectId, Revision), FailureCause> {
         let logical_object_id = self.allocate_logical_id();
-        let revision = self.commit_head(kind, logical_object_id, bytes).expect("a local publication");
-        (logical_object_id, revision)
+        let revision = self.commit_head(kind, logical_object_id, bytes, metadata)?;
+        Ok((logical_object_id, revision))
     }
 
     /// Claims an `InstallUpdate` directly, so a caller can name a target §9 makes non-cancellable.
@@ -1618,7 +1639,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         // the event to a *repository*, and an abort command belongs to none. It names no head, moves
         // no revision, and the kind its claim carries is a placeholder the engine had to write
         // somewhere — attributing an abort to the route repository would be a lie a consumer acts on.
-        if let ResultEnvelope::Object(result) = envelope {
+        if let (ResultEnvelope::Object(result), Some(change)) = (envelope, change) {
             self.hooks.committed(CommitEvent {
                 store: result.store_id,
                 kind: result.kind,
@@ -2055,7 +2076,13 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     }
 
     /// Publishes a head under no operation identity, as a device-local producer does.
-    fn commit_head(&mut self, kind: ObjectKind, id: LogicalObjectId, bytes: &[u8]) -> Result<Revision, FailureCause> {
+    fn commit_head(
+        &mut self,
+        kind: ObjectKind,
+        id: LogicalObjectId,
+        bytes: &[u8],
+        metadata: &[u8],
+    ) -> Result<Revision, FailureCause> {
         let generation = self.reserve_generation();
         self.media.ensure_shards(generation).map_err(|_| FailureCause::MediaIo { detail: detail::media_io::WRITE })?;
         self.media
@@ -2064,16 +2091,32 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         self.media.truncate_payload().map_err(|_| FailureCause::MediaIo { detail: detail::media_io::WRITE })?;
         self.media.write_payload(0, bytes).map_err(|_| FailureCause::MediaIo { detail: detail::media_io::WRITE })?;
         self.media.sync_payload().map_err(|_| FailureCause::MediaIo { detail: detail::media_io::SYNCHRONIZE })?;
+        // §7's order, unchanged for a local producer: the bytes are on the card and synchronized
+        // *before* the validator judges them, and the projection it derives is what the head gets.
+        // A refusal here has written a payload nothing names — an orphan §9 collects, and taking it
+        // back now saves the collector the walk.
+        let length = bytes.len() as u64;
+        let crc = obc_crc::crc32(bytes);
+        let subject = Validation { kind, opcode: Opcode::StartUpload, metadata, current: None, length, crc };
+        let this = &mut *self;
+        let mut source = SealedGeneration { media: &mut this.media, generation, length };
+        let projection = match this.validator.validate(&subject, &mut source) {
+            Ok(projection) => projection,
+            Err(detail) => {
+                let _ = self.media.collect_generation(generation);
+                return Err(FailureCause::SemanticValidation { kind, detail });
+            }
+        };
         let revision = Revision::new(self.revision + 1);
         let head = CatalogHead {
             key: HeadKey { kind: kind.to_u16(), id },
             flags: 0,
             revision,
             generation,
-            length: bytes.len() as u64,
-            crc: obc_crc::crc32(bytes),
-            envelope_len: PLACEHOLDER_ENVELOPE.len() as u16,
-            envelope: envelope_reservation(),
+            length,
+            crc,
+            envelope_len: projection.len(),
+            envelope: reserve(&projection),
             resolution: GenerationId::ZERO,
         };
         self.commit_local_publication(head, Some(generation))?;
@@ -2430,10 +2473,6 @@ fn local_operation_id(revision: Revision) -> OperationId {
     OperationId::new(bytes)
 }
 
-fn envelope_reservation() -> [u8; CatalogHead::ENVELOPE_CAPACITY] {
-    reserve(&CatalogProjection::RESERVATION)
-}
-
 /// A projection in the fixed 96-byte reservation §5.3 gives every head, zero-padded.
 fn reserve(projection: &CatalogProjection) -> [u8; CatalogHead::ENVELOPE_CAPACITY] {
     let mut envelope = [0u8; CatalogHead::ENVELOPE_CAPACITY];
@@ -2446,15 +2485,42 @@ fn reserve(projection: &CatalogProjection) -> [u8; CatalogHead::ENVELOPE_CAPACIT
 ///
 /// The wire's `Committed` covers both halves of a Put; the claim row is what separates them, because
 /// a create records no expected revision and a compare-and-swap replace always does.
-fn change_kind(opcode: Opcode, row: &ActiveOperation) -> ChangeKind {
-    match opcode {
+fn change_kind(opcode: Opcode, row: &ActiveOperation) -> Option<ChangeKind> {
+    // Exhaustive rather than defaulted. A catch-all arm here reported every future publishing
+    // opcode as a ride acknowledgement — a wrong edge delivered to a consumer that acts on it —
+    // and the compiler is perfectly able to insist that a new opcode be classified instead.
+    Some(match opcode {
         Opcode::StartUpload if row.expected_revision == 0 => ChangeKind::Created,
         Opcode::StartUpload => ChangeKind::Replaced,
         Opcode::DeleteObject => ChangeKind::Deleted,
         Opcode::SetMetadata => ChangeKind::MetadataChanged,
         Opcode::InstallUpdate => ChangeKind::InstallRequested,
-        _ => ChangeKind::RideAcknowledged,
-    }
+        Opcode::AcknowledgeRideImported => ChangeKind::RideAcknowledged,
+        // Every other opcode either publishes nothing or belongs to no repository. `publish`
+        // reaches this for `AbortOperation` alone — §6.4's command, whose claim carries a
+        // placeholder kind — and `None` is what keeps that abort out of a repository's log.
+        Opcode::Hello
+        | Opcode::CheckpointUpload
+        | Opcode::FinishUpload
+        | Opcode::AbortSession
+        | Opcode::StartDownload
+        | Opcode::FinishDownload
+        | Opcode::BeginDraft
+        | Opcode::StartDraftPart
+        | Opcode::FinalizeDraft
+        | Opcode::QueryOperation
+        | Opcode::QueryCatalog
+        | Opcode::QueryDraft
+        | Opcode::QueryWeatherRequest
+        | Opcode::AbortOperation
+        | Opcode::GetDeviceStatus
+        | Opcode::GetConfig
+        | Opcode::SetConfig
+        | Opcode::SetClock
+        | Opcode::ForgetBond
+        | Opcode::Echo
+        | Opcode::ResetStore => return None,
+    })
 }
 
 /// The wire phase one storage phase projects to (§8.1).
@@ -2637,9 +2703,18 @@ mod tests {
     /// It then grew by **1,584 bytes** when the claimed metadata envelope and the repository's
     /// derived catalog projection joined the resident half of a live claim: 176 bytes per row across
     /// §5.1's nine, which is the price of a head whose metadata is the client's own rather than a
-    /// placeholder. Both are resident rather than durable on purpose — the envelope is part of §11's
+    /// placeholder.
+    ///
+    /// **That 1,584 bytes is permanently resident, not per-claim.** `live` is a fixed
+    /// `[Option<Live>; MAX_ACTIVE_OPERATIONS]` inside this struct, which the board places once in
+    /// `.bss`; clearing a claim writes `None` into its slot and frees nothing. A store with no live
+    /// claim at all costs exactly the same as one with nine. That is the intended shape — the whole
+    /// point of the bound is that the footprint does not depend on what a client is doing — but it
+    /// means the figure is a floor, not a peak.
+    ///
+    /// Both fields are resident rather than durable on purpose: the envelope is part of §11's
     /// canonical intent and comes back with any request that could drive the claim forward, and the
-    /// projection is derived from bytes that a restart discards anyway.
+    /// projection is derived from bytes a restart discards anyway.
     #[cfg(target_pointer_width = "64")]
     const _: () = assert!(core::mem::size_of::<Pinned>() == 38_624);
 

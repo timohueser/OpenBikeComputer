@@ -46,6 +46,8 @@ pub mod route;
 pub mod trip;
 pub mod weather;
 
+use core::marker::PhantomData;
+
 use obc_link::engine::FailureCause;
 use obc_link::error::detail;
 use obc_link::ids::{LogicalObjectId, Revision, StoreId};
@@ -82,17 +84,32 @@ pub struct HeadView {
 /// concrete — a repository reaches the store through this and through nothing else, so the set of
 /// things a repository *can* do is a list one can read rather than the whole of `KernelTransaction`.
 ///
-/// It is a borrow, so it is also the admission discipline: a repository cannot outlive the call that
-/// was given it, cannot be stashed, and cannot be held across the point where the board's executor
-/// might do something else. See [`CardStore`](super::store::CardStore) for why that matters.
+/// It carries two of the three properties [`CardStore`](super::store::CardStore)'s lock law rests
+/// on, and it is worth being exact about which:
+///
+/// - **It cannot escape or alias.** It is a `&mut` borrow of the store, so a view cannot outlive the
+///   call that was lent it and no second view can exist beside it. That is the borrow checker, and
+///   it is airtight.
+/// - **It cannot travel.** The [`PhantomData`] below is a raw pointer, which is neither `Send` nor
+///   `Sync`, so a view — and any future that holds one across a suspension — is `!Send`. A view
+///   cannot be moved to another thread or executor, and a `spawn` with a `Send` bound refuses the
+///   future outright.
+/// - **It is not stopped from being held across an `.await`.** Nothing in the type system prevents
+///   that on a single-threaded executor, which is what the board runs. That third property is a
+///   discipline the board glue keeps, stated as one in
+///   [`CardStore`](super::store::CardStore)'s module documentation rather than claimed as a
+///   compiler guarantee.
 pub struct Capability<'a, M: KernelMedia> {
     transaction: &'a mut KernelTransaction<M, DomainRepositories, StoreHooks>,
+    /// Removes `Send` and `Sync`. A raw pointer is the standard marker for it, and `*const ()`
+    /// carries no variance or drop implications of its own.
+    not_send: PhantomData<*const ()>,
 }
 
 impl<'a, M: KernelMedia> Capability<'a, M> {
     /// Lends the store's capabilities. Crate-private: only `CardStore` may hand these out.
     pub(super) fn new(transaction: &'a mut KernelTransaction<M, DomainRepositories, StoreHooks>) -> Self {
-        Capability { transaction }
+        Capability { transaction, not_send: PhantomData }
     }
 
     /// The store this repository is a view of.

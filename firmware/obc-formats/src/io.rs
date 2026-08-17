@@ -19,6 +19,14 @@ pub enum Error {
     Io,
     /// A streamed input contained no usable records.
     Empty,
+    /// A route was asked to be written with an empty display name.
+    ///
+    /// `OBCR_Spec.md` §1 requires 1 through 48 name bytes. The reason is not the route format's own:
+    /// `Device_Object_Registries_v2.md` §4.3 makes the display name a **required** field of a route's
+    /// catalog projection and gives it no default, and the only place that name can come from is the
+    /// header. A nameless file would therefore be a route the device can hold and can never publish,
+    /// refused at the last step of an upload with an error no client could act on.
+    NoName,
 }
 
 /// Primitive validation failure, independent of storage and high-level reader errors.

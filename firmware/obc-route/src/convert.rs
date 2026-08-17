@@ -310,8 +310,8 @@ impl ObcrEmitter {
     }
 
     /// Flush the trailing point, write the chunk index + waypoint table, and backfill the
-    /// header. `Error::Empty` if no point was ever pushed. `wps` is the (already collected)
-    /// waypoint set — pass an empty one for a waypoint-free route.
+    /// header. `Error::Empty` if no point was ever pushed, `Error::NoName` if `name` is empty.
+    /// `wps` is the (already collected) waypoint set — pass an empty one for a waypoint-free route.
     pub(crate) fn finish(
         mut self,
         sink: &mut dyn ByteSink,
@@ -325,6 +325,13 @@ impl ObcrEmitter {
         }
         if self.emitted == 0 {
             return Err(Error::Empty);
+        }
+        // §1 requires 1 through 48 name bytes, and the requirement comes from outside this format:
+        // a route's catalog projection needs a display name it can only get from this header, so a
+        // nameless file is one the device could store and never publish. Refusing it here is the
+        // one place a producer can still do something about it.
+        if name.is_empty() {
+            return Err(Error::NoName);
         }
 
         self.enc.finish(sink)?;

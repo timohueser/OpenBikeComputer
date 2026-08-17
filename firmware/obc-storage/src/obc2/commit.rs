@@ -15,17 +15,28 @@
 //! Three things follow from that paragraph, and [`CommitLog`] is built out of them rather than out
 //! of a general-purpose queue:
 //!
-//! 1. **The queue is indexed by repository, not by event.** Coalescing "into the latest Revision" is
-//!    not a policy applied when a buffer fills — it is the shape of the structure. One slot per
-//!    repository holds the newest event, a later event for the same repository replaces it, and
-//!    there is therefore no capacity to exhaust and no such thing as a dropped edge: the state a
-//!    consumer would have read after the event it missed is exactly the state it reads after the one
-//!    that replaced it.
+//! 1. **Coalescing is sound exactly when the revision carries the fact.** §4's justification is
+//!    conditional and the condition matters: a consumer "that reads the current state loses nothing
+//!    by skipping intermediate ones". That holds for every commit that *moved* the repository
+//!    revision, because the state it reads afterwards is the state those commits produced. So those
+//!    get one slot per repository, newest wins, and there is no capacity to exhaust.
+//!
+//!    It does **not** hold for the two commits that move no revision. `InstallUpdate` and
+//!    `AcknowledgeRideImported` change no head — that is why [`ChangeKind::moves_revision`] is false
+//!    for them — so a consumer reading "the current state" afterwards finds nothing recording that
+//!    they happened. Coalescing one of those into a later revision edge would destroy the only
+//!    notice of it that exists. They therefore get a **second slot per repository**, which an
+//!    explicit [`take`](CommitLog::take) clears and nothing else overwrites. One slot is enough
+//!    because a repository has at most one such change kind: the update repository's is
+//!    `InstallRequested` and the ride repository's is `RideAcknowledged`, and no repository has both.
 //! 2. **Delivery is a retained revision plus a wake, not a stream.** [`CommitLog::latest`] answers
 //!    "what does this repository stand at" whenever it is asked, and stays answerable after the wake
 //!    has been taken; [`CommitLog::take`] is only the edge that says a consumer has something to do.
-//! 3. **Nothing here is durable.** A reboot loses the log, and §4 says that costs nothing: the
-//!    recovered repository Revision is the identical catch-up.
+//! 3. **Nothing here is durable.** A reboot loses the log. For a revision edge §4 says that costs
+//!    nothing — the recovered repository Revision is the identical catch-up. For the two command
+//!    edges the durable fact is elsewhere and is not this type's to keep: an install request lives
+//!    in the boot handoff and an import acknowledgement in the ride head's own metadata, and a
+//!    consumer that missed one across a reboot reads it there.
 //!
 //! It is not a wire message and there is no codec here for the same reason there is no `encode`: a
 //! peer that wants these facts asks `QueryCatalog` or `QueryOperation`.
@@ -108,15 +119,30 @@ pub struct CommitEvent {
     pub operation: OperationId,
 }
 
+/// Which of a repository's two slots a wake names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Wake {
+    /// The repository's index.
+    slot: u8,
+    /// True for the command slot, false for the revision slot.
+    command: bool,
+}
+
 /// The retained revision and coalescing wake §4 describes, for one mounted store.
 ///
-/// It is bounded by construction rather than by a policy: one slot per repository, newest wins.
+/// It is bounded by construction rather than by a policy: **two** slots per repository — one for the
+/// revision-moving edges, which coalesce, and one for the single command edge that repository can
+/// emit, which does not — so the wake queue is at most `2 × REPOSITORIES` and `record` can never
+/// fail.
 #[derive(Debug, Clone)]
 pub struct CommitLog {
-    /// The newest event each repository emitted, retained after delivery.
+    /// The newest revision-moving event each repository emitted, retained after delivery.
     latest: [Option<CommitEvent>; REPOSITORIES],
-    /// Which repositories a consumer has not yet been woken for, oldest first.
-    pending: Vec<u8, REPOSITORIES>,
+    /// The undelivered command edge, which moves no revision and is therefore recorded nowhere a
+    /// consumer could read it back. Cleared by delivery, not by a later commit.
+    command: [Option<CommitEvent>; REPOSITORIES],
+    /// Which slots a consumer has not yet been woken for, oldest first.
+    pending: Vec<Wake, { REPOSITORIES * 2 }>,
 }
 
 impl Default for CommitLog {
@@ -128,7 +154,7 @@ impl Default for CommitLog {
 impl CommitLog {
     /// An empty log.
     pub const fn new() -> Self {
-        CommitLog { latest: [None; REPOSITORIES], pending: Vec::new() }
+        CommitLog { latest: [None; REPOSITORIES], command: [None; REPOSITORIES], pending: Vec::new() }
     }
 
     /// The slot a kind occupies. Total, and stable: it is the kind's position in the registry.
@@ -143,42 +169,66 @@ impl CommitLog {
         }
     }
 
-    /// Records one commit, coalescing it onto whatever that repository last emitted.
+    /// Records one commit.
     ///
-    /// This is the whole of §4's "consecutive events for one repository may be coalesced into the
-    /// latest Revision". A repository already waiting to be delivered is not queued twice, so the
-    /// wake queue can never hold more entries than there are repositories and `record` never fails.
+    /// A revision-moving commit coalesces onto whatever that repository last emitted — §4's
+    /// "consecutive events for one repository may be coalesced into the latest Revision". A command
+    /// commit does not: it lands in its own slot, because the revision a later commit leaves behind
+    /// says nothing about whether an install was requested or an import acknowledged.
+    ///
+    /// A slot already waiting to be delivered is not queued twice, so the wake queue can never hold
+    /// more than two entries per repository and `record` never fails.
     pub fn record(&mut self, event: CommitEvent) {
         let slot = CommitLog::slot(event.kind);
-        self.latest[slot] = Some(event);
-        if !self.pending.contains(&(slot as u8)) {
-            // Infallible: `pending` holds at most one entry per repository and the guard above is
-            // what makes that true, so the push cannot be the one that overflows.
-            let _ = self.pending.push(slot as u8);
+        let command = !event.change.moves_revision();
+        if command {
+            self.command[slot] = Some(event);
+        } else {
+            self.latest[slot] = Some(event);
+        }
+        let wake = Wake { slot: slot as u8, command };
+        if !self.pending.contains(&wake) {
+            // Infallible: `pending` holds at most one entry per (repository, slot) pair and the
+            // guard above is what makes that true, so the push cannot be the one that overflows.
+            let _ = self.pending.push(wake);
         }
     }
 
-    /// Takes the next repository's wake, oldest repository first.
+    /// Takes the next outstanding wake, oldest first.
     ///
-    /// The event it returns is the *newest* that repository emitted, not the oldest outstanding one:
-    /// the intermediate revisions are exactly what §4 permits skipping.
+    /// For a revision edge the event it returns is the *newest* that repository emitted, not the
+    /// oldest outstanding one: the intermediate revisions are exactly what §4 permits skipping. For
+    /// a command edge it is the edge itself, and taking it is what clears it.
     pub fn take(&mut self) -> Option<CommitEvent> {
         if self.pending.is_empty() {
             return None;
         }
-        let slot = usize::from(self.pending.remove(0));
-        self.latest[slot]
+        let wake = self.pending.remove(0);
+        let slot = usize::from(wake.slot);
+        if wake.command {
+            self.command[slot].take()
+        } else {
+            self.latest[slot]
+        }
     }
 
-    /// The newest event a repository emitted, whether or not its wake has been taken.
+    /// The newest revision-moving event a repository emitted, whether or not its wake has been taken.
     ///
     /// This is the "retained revision" half: a consumer that reconnects, or one that never
-    /// subscribed, reads it and is caught up without an event ever having been delivered.
+    /// subscribed, reads it and is caught up without an event ever having been delivered. It is
+    /// deliberately *not* the command slot — a command edge is retained only until it is delivered,
+    /// because a consumer catching up on one reads the boot handoff or the ride head rather than
+    /// this log.
     pub fn latest(&self, kind: ObjectKind) -> Option<CommitEvent> {
         self.latest[CommitLog::slot(kind)]
     }
 
-    /// How many repositories are waiting to wake a consumer. Never more than [`REPOSITORIES`].
+    /// The undelivered command edge a repository is holding, if any.
+    pub fn pending_command(&self, kind: ObjectKind) -> Option<CommitEvent> {
+        self.command[CommitLog::slot(kind)]
+    }
+
+    /// How many wakes are outstanding. Never more than two per repository.
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
@@ -195,6 +245,7 @@ impl CommitLog {
     /// exists.
     pub fn clear(&mut self) {
         self.latest = [None; REPOSITORIES];
+        self.command = [None; REPOSITORIES];
         self.pending.clear();
     }
 }
@@ -256,6 +307,41 @@ mod tests {
         assert!(log.take().is_none());
     }
 
+    /// **The edge coalescing must not eat.** An install request moves no revision, so nothing a
+    /// consumer can read afterwards records that it happened — a later revision edge for the same
+    /// repository must therefore not replace it.
+    ///
+    /// This is the sequence that proved the earlier "no such thing as a dropped edge" claim false.
+    #[test]
+    fn a_command_edge_is_not_coalesced_away_by_a_later_revision_edge() {
+        let mut log = CommitLog::new();
+        log.record(event(ObjectKind::UpdatePackage, 4, ChangeKind::InstallRequested));
+        log.record(event(ObjectKind::UpdatePackage, 5, ChangeKind::Created));
+
+        assert_eq!(log.pending(), 2, "two facts, two wakes, one repository");
+        let first = log.take().expect("the install request, queued first");
+        assert_eq!(first.change, ChangeKind::InstallRequested, "the command edge survived the revision edge");
+        let second = log.take().expect("then the publication");
+        assert_eq!((second.change, second.revision), (ChangeKind::Created, Revision::new(5)));
+        assert!(log.take().is_none());
+
+        // Taking the command edge is what clears it; the revision edge stays readable.
+        assert!(log.pending_command(ObjectKind::UpdatePackage).is_none());
+        assert_eq!(log.latest(ObjectKind::UpdatePackage).map(|latest| latest.revision), Some(Revision::new(5)));
+    }
+
+    /// The other order, and the ride repository's own command edge.
+    #[test]
+    fn a_revision_edge_does_not_hide_a_command_edge_that_follows_it() {
+        let mut log = CommitLog::new();
+        log.record(event(ObjectKind::Ride, 8, ChangeKind::Created));
+        log.record(event(ObjectKind::Ride, 8, ChangeKind::RideAcknowledged));
+        assert_eq!(log.pending(), 2);
+        assert_eq!(log.take().map(|event| event.change), Some(ChangeKind::Created));
+        assert_eq!(log.take().map(|event| event.change), Some(ChangeKind::RideAcknowledged));
+        assert!(log.take().is_none());
+    }
+
     /// The bound is structural: there is nothing to overflow, so a flood cannot lose an edge that
     /// matters. Whatever a consumer reads after the flood is the state the flood produced.
     #[test]
@@ -264,7 +350,7 @@ mod tests {
         for revision in 1..=1_000u64 {
             let kind = ObjectKind::ALL[(revision as usize) % ObjectKind::ALL.len()];
             log.record(event(kind, revision, ChangeKind::Replaced));
-            assert!(log.pending() <= REPOSITORIES, "the wake queue is indexed by repository");
+            assert!(log.pending() <= REPOSITORIES * 2, "the wake queue is indexed by (repository, slot)");
         }
         let mut woken = 0;
         while let Some(event) = log.take() {

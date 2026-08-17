@@ -203,7 +203,10 @@ impl Store for KernelStore {
     }
 
     fn publish_local(&mut self, kind: ObjectKind, bytes: &[u8]) -> (LogicalObjectId, Revision) {
-        self.0.publish_local(kind, bytes)
+        // The harness policy derives no projection, so a scenario's local publication declares no
+        // metadata and its head carries §5.3's reservation. A device with repositories installed
+        // takes the same path and gets a real projection out of it.
+        self.0.publish_local(kind, bytes, &[]).expect("a local publication the harness policy admits")
     }
 
     fn retain_local_result(&mut self, operation_id: OperationId) {

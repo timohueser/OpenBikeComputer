@@ -13,9 +13,17 @@
 //! The name is the interesting one. A Put carries no name, and the projection requires one, so the
 //! name can only come from one place: the payload. §4.3 says as much — catalog projections "contain
 //! validator-derived bounded facts" — and `OBCR_Spec.md` §1 puts a 48-byte UTF-8 name at header
-//! offset 64 with its used length at offset 6, which is exactly the 1–48 bytes the projection field
-//! accepts. So validating the payload and deriving the projection are one pass over one 128-byte
-//! header, and neither is possible without the other.
+//! offset 64 with its used length at offset 6. So validating the payload and deriving the projection
+//! are one pass over one 128-byte header, and neither is possible without the other.
+//!
+//! The two ranges did not line up on their own, and making them line up was a **spec change rather
+//! than a validator decision**. OBCR §1 previously allowed `Name Len` of zero, and this crate's own
+//! writer emitted it; §4.3's projection field is 1 through 48 with no default. A nameless route was
+//! therefore a file the device could store and could never publish, refused at the last step of an
+//! upload with an error no client could act on. The suite is pre-release and carries no legacy law,
+//! so §1 now *requires* 1 through 48 and `obc-route`'s converter refuses an empty name at the one
+//! moment a producer can still fix it. What this validator does is enforce a rule the format states,
+//! not invent one the format contradicts.
 //!
 //! ## What this validates, and what it deliberately leaves to DOS5
 //!
@@ -395,8 +403,14 @@ impl<'a, M: KernelMedia> Routes<'a, M> {
         let name = self.with_projection(logical_object_id, |envelope| {
             let field = envelope.field(base(catalog_tag::DISPLAY_NAME))?;
             let bytes = field.as_str()?.as_bytes();
-            staged[..bytes.len()].copy_from_slice(bytes);
-            Some(bytes.len())
+            // Clamped, not asserted. These bytes came off the card, and `MetadataEnvelope::decode`
+            // proves canonical *form* without proving any field's registered width — only
+            // `Schema::validate` does that, and a projection this repository did not write may never
+            // have seen one. A slice-length panic here would be a firmware fault caused by a corrupt
+            // card, so a long name is truncated to what §4.3 allows and the caller sees a name.
+            let kept = bytes.len().min(staged.len());
+            staged[..kept].copy_from_slice(&bytes[..kept]);
+            Some(kept)
         })?;
         Ok(name.flatten().map(|len| {
             let copied = len.min(into.len());
@@ -450,7 +464,11 @@ fn semantic(detail: u16) -> FailureCause {
     FailureCause::SemanticValidation { kind: ObjectKind::Route, detail }
 }
 
-/// A route's `retention` value, projected only to a helper name — the numbers are the registry's.
+/// Whether a retention byte is one the registry allocates (§4.1's `0..=5`).
+///
+/// Test-only: the *enforcement* is `Schema::validate`'s, through the `U8Enum(0, 5)` field type, and
+/// duplicating it here as a runtime check would be a second place for the range to be wrong. What
+/// this exists for is to pin the constant this file reads against the registry's own maximum.
 #[cfg(test)]
 fn retention_is_registered(value: u8) -> bool {
     value <= retention::MAX
