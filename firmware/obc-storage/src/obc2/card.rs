@@ -23,10 +23,11 @@ use obc_link::ids::{GenerationId, StoreId};
 use super::checkpoint;
 use super::gate::INVALIDATED;
 use super::generation::GenerationMedia;
+use super::index::RamIndex;
 use super::journal::JournalBody;
 use super::limits::{
     CHECKPOINT_BODY_LEN, CHECKPOINT_FILE_LEN, CHECKPOINT_GATE_OFFSET, GATE_LEN, JOURNAL_BODY_LEN, JOURNAL_FILE_LEN,
-    JOURNAL_GATE_OFFSET, JOURNAL_SLOTS, SLOT_STRIDE, WORK_FILE_LEN,
+    JOURNAL_GATE_OFFSET, JOURNAL_SLOTS, SECTOR, SLOT_STRIDE, WORK_FILE_LEN,
 };
 use super::media::{FileId, Media, MediaError};
 use super::model::CatalogModel;
@@ -64,6 +65,13 @@ pub struct Card {
     /// Refuses the next `ensure_shards`, so §11's preflight can be failed at the one media act that
     /// happens before the claim record.
     pub fail_ensure_shards: bool,
+    /// Refuses every §13 on-demand re-read — the active checkpoint and the journal slots.
+    ///
+    /// It is the fault point the index-backed store needs and the model-backed one did not have:
+    /// once envelopes and result bodies are card-resident, a read failure is a new way for an
+    /// ordinary command to fail, and what a store does *around* that failure is the part worth
+    /// testing.
+    pub fail_rereads: bool,
 }
 
 impl Card {
@@ -83,6 +91,7 @@ impl Card {
             open: None,
             shards_created: Vec::new(),
             fail_ensure_shards: false,
+            fail_rereads: false,
         };
         let mut model = Box::new(CatalogModel::empty(store));
         model.reset_to_initial(store, obc_link::registry::ObjectKind::Weather.to_u16());
@@ -123,7 +132,7 @@ impl Card {
     ///
     /// Every byte comes through [`Media::read_at`], so the read path crosses the medium exactly as
     /// the write path does rather than peeking at a durable image the card would not hand out.
-    pub fn mount(&mut self) -> Result<Box<CatalogModel>, MountFailure> {
+    pub fn mount(&mut self) -> Result<Mounted, MountFailure> {
         let mut checkpoints = [None, None];
         let mut models: [Option<Box<CatalogModel>>; 2] = [None, None];
         for index in 0..2 {
@@ -162,13 +171,19 @@ impl Card {
         };
         self.active_checkpoint = checkpoint;
         let mut model = models[checkpoint].clone().expect("the selected checkpoint decoded");
+        // §6.3's slot origin: physical slot `i` of this epoch carries `through_sequence + i + 1`,
+        // and the `through_sequence` that origin is measured from is the checkpoint's own, before
+        // the suffix moves it.
+        let epoch_base = model.through_sequence;
+        let mut index = RamIndex::project(&model);
         for body in bodies.iter().take(replay) {
             let record = body.as_ref().expect("a replayed slot is a valid record");
             // §6.3 chose this suffix because every record in it applies; one that does not means
             // the decision and the projection disagree, and that is a finding.
             assert_eq!(model.apply(record), Ok(()), "a record of the chosen suffix did not apply");
+            assert_eq!(index.absorb(record), Ok(()), "a record of the chosen suffix did not apply to the index");
         }
-        Ok(model)
+        Ok(Mounted { model, index, epoch_base })
     }
 
     /// Writes one gated checkpoint in §6.3's order: invalidate, body, sync, gate, sync.
@@ -249,6 +264,21 @@ fn payload_name(generation: GenerationId) -> String {
 
 fn work_name(generation: GenerationId) -> String {
     format!("WORK.{:016X}", generation.get())
+}
+
+/// What one mount produced.
+///
+/// Two projections of the same records, on purpose. The index is the device's resident state and the
+/// only one a transaction is opened over; the model is the host oracle every crash assertion is
+/// written against, and it exists here so that "the store recovered to exactly this" stays a
+/// statement about whole entries rather than about the fixed fields RAM happens to keep.
+pub struct Mounted {
+    /// The host oracle's projection, whole entries included.
+    pub model: Box<CatalogModel>,
+    /// §13's resident index, with the journal-slot references the replay produced.
+    pub index: Box<RamIndex>,
+    /// The selected checkpoint's `through_sequence`: §6.3's origin for physical journal slots.
+    pub epoch_base: u64,
 }
 
 /// Why a mount produced no store.
@@ -363,6 +393,51 @@ impl KernelMedia for Card {
         if self.open.is_some_and(|open| open.generation == generation) {
             self.open = None;
         }
+        Ok(())
+    }
+
+    fn read_checkpoint(&mut self, offset: usize, into: &mut [u8]) -> Result<(), MediaError> {
+        if self.fail_rereads {
+            return Err(MediaError::NoSuchFile);
+        }
+        let bytes = self.media.read_at(self.cat[self.active_checkpoint], offset, into.len())?;
+        into.copy_from_slice(&bytes);
+        Ok(())
+    }
+
+    fn read_record(&mut self, slot: u16) -> Result<Option<JournalBody>, MediaError> {
+        if self.fail_rereads {
+            return Err(MediaError::NoSuchFile);
+        }
+        let stride = self.media.read_at(self.journal, slot as usize * SLOT_STRIDE, SLOT_STRIDE)?;
+        Ok(JournalBody::validate_slot(&stride, slot).ok())
+    }
+
+    fn begin_checkpoint(&mut self) -> Result<(), MediaError> {
+        let file = self.cat[1 - self.active_checkpoint];
+        self.write_all(file, CHECKPOINT_GATE_OFFSET, &INVALIDATED)?;
+        self.media.sync(file)
+    }
+
+    fn write_checkpoint_sector(&mut self, offset: usize, sector: &[u8; SECTOR]) -> Result<(), MediaError> {
+        let file = self.cat[1 - self.active_checkpoint];
+        self.write_all(file, offset, sector)
+    }
+
+    fn finish_checkpoint(&mut self, epoch: u64, through_sequence: u64, body_crc: u32) -> Result<(), MediaError> {
+        let index = 1 - self.active_checkpoint;
+        let file = self.cat[index];
+        self.media.sync(file)?;
+        let gate = super::gate::Gate {
+            magic: super::gate::MAGIC_CHECKPOINT,
+            slot: index as u16,
+            scope: epoch,
+            sequence: through_sequence,
+            body_crc,
+        };
+        self.write_all(file, CHECKPOINT_GATE_OFFSET, &gate.encode())?;
+        self.media.sync(file)?;
+        self.active_checkpoint = index;
         Ok(())
     }
 

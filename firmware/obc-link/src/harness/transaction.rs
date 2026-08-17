@@ -129,6 +129,17 @@ pub struct FakeTransaction {
     pub clock: ClockStatus,
 }
 
+/// The identity a device-local publication's retained result carries.
+///
+/// Derived rather than supplied, because §11 requires every claim to have an `OperationId` and two
+/// local publications must never share one. The high half is all ones so no wire identity a scenario
+/// picks can alias it.
+fn local_operation_id(logical_object_id: LogicalObjectId) -> OperationId {
+    let mut bytes = [0xFFu8; 16];
+    bytes[8..].copy_from_slice(&logical_object_id.get().to_be_bytes());
+    OperationId::new(bytes)
+}
+
 impl FakeTransaction {
     /// An empty store.
     pub fn new(store_id: StoreId) -> Self {
@@ -207,10 +218,32 @@ impl FakeTransaction {
     }
 
     /// Publishes a head directly, as a device-local producer does. Returns its new Revision.
+    ///
+    /// It retains a terminal result like any other publication. `OBC2_Storage_Format.md` §6.1 admits
+    /// a head change only in a terminal record and fixes a terminal record as "requires active
+    /// remove **and** result append", so there is no record shape that publishes a head without one;
+    /// §8.1 says the same from the other side, that the retained window "is store-global in the
+    /// strict sense". A local producer's result is therefore in the ring and counts against its 64.
     pub fn publish_local(&mut self, kind: ObjectKind, bytes: &[u8]) -> (LogicalObjectId, Revision) {
         let logical_object_id = LogicalObjectId::new(self.next_logical_id);
         self.next_logical_id += 1;
         let revision = self.commit_head(kind, logical_object_id, bytes);
+        let operation_id = local_operation_id(logical_object_id);
+        self.retain(Retained {
+            operation_id,
+            principal: PrincipalScope::new([0; 16]),
+            digest: [0; 32],
+            outcome: Ok(ResultEnvelope::Object(ObjectResult {
+                operation_id,
+                store_id: self.store_id,
+                kind,
+                outcome: ObjectOutcome::Committed,
+                logical_object_id,
+                revision,
+                length: bytes.len() as u64,
+                crc32: 0,
+            })),
+        });
         (logical_object_id, revision)
     }
 

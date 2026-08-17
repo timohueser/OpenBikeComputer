@@ -62,13 +62,14 @@ use obc_link::ids::{GenerationId, StoreId};
 
 use super::adapter::{classify, Adapter, AdapterError, GatedFile};
 use super::checkpoint;
-use super::gate::INVALIDATED;
+use super::gate::{Gate, INVALIDATED};
 use super::generation::GenerationMedia;
+use super::index::{self, RamIndex};
 use super::init::InitRecord;
 use super::journal::JournalBody;
 use super::limits::{
-    CHECKPOINT_BODY_LEN, CHECKPOINT_FILE_LEN, CHECKPOINT_GATE_OFFSET, GATE_LEN, JOURNAL_BODY_LEN, JOURNAL_FILE_LEN,
-    JOURNAL_GATE_OFFSET, JOURNAL_SLOTS, SLOT_FILE_LEN, SLOT_STRIDE, WORK_FILE_LEN,
+    CHECKPOINT_FILE_LEN, CHECKPOINT_GATE_OFFSET, GATE_LEN, JOURNAL_BODY_LEN, JOURNAL_FILE_LEN, JOURNAL_GATE_OFFSET,
+    JOURNAL_SLOTS, SECTOR, SLOT_FILE_LEN, SLOT_STRIDE, WORK_FILE_LEN,
 };
 use super::model::CatalogModel;
 use super::mount::{self, Entry, EntryKind, MountClass, Outcome, StoreShape, CREATION_DIRECTORIES, CREATION_ORDER};
@@ -93,15 +94,6 @@ const WITNESS_NAME: &str = "INIT.REC";
 /// It is one program page, which is what makes a journal append a single write rather than a body
 /// write followed by 29 sectors of padding.
 pub type Stride = [u8; SLOT_STRIDE];
-
-/// The staging one checkpoint file needs: 65,536 bytes.
-///
-/// A checkpoint is validated and decoded as one slice — [`checkpoint::validate_file`] CRCs the whole
-/// 65,024-byte body and [`CatalogModel::decode_body_into`] reads every region out of it — so a mount
-/// stages the file rather than streaming it. §13 budgets *commit* staging at one journal body and
-/// *compaction* staging at 752 bytes; the mount-time figure is neither of those and is reported as
-/// its own number.
-pub type CheckpointImage = [u8; CHECKPOINT_FILE_LEN];
 
 /// The 256 slot observations one all-slot journal scan produces.
 ///
@@ -173,7 +165,6 @@ pub struct FatMedia<
     /// Which checkpoint file the last compaction wrote, so the next one alternates (§6.3).
     active_checkpoint: usize,
     stride: &'a mut Stride,
-    checkpoint_image: &'a mut CheckpointImage,
     open: Option<Open>,
     /// §11's free-space input. Seeded by the caller and maintained against payload growth; the
     /// authoritative one-time full-FAT scan §11 describes is not implemented in this slice.
@@ -224,14 +215,19 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// `survey` must be the one taken from this same card. The decision it carries — which
     /// checkpoint, how many leading slots — was made against these bytes, and replaying a stale
     /// count would apply records to the wrong base.
-    pub fn load_projection(&mut self, survey: &Survey, model: &mut CatalogModel) -> Result<(), AttachError> {
+    pub fn load_index(&mut self, survey: &Survey, index: &mut RamIndex) -> Result<u64, AttachError> {
         let Outcome::Mount { checkpoint: selected, replay, .. } = survey.outcome else {
             return Err(AttachError::NotMountable(survey.class));
         };
-        self.fat.read_at(self.checkpoints[selected], 0, &mut self.checkpoint_image[..]).map_err(AttachError::Media)?;
-        model
-            .decode_body_into(&self.checkpoint_image[..CHECKPOINT_BODY_LEN])
-            .map_err(|_| AttachError::CheckpointUnreadable)?;
+        // §13: the checkpoint projection is card-resident, so the selected body is *streamed* into
+        // the bounded index rather than staged and decoded. Nothing here holds more than `stride`.
+        let mut source = CheckpointFile { fat: &self.fat, file: self.checkpoints[selected] };
+        let header = index::load_checkpoint(index, &mut source, &mut self.stride[..]).map_err(|error| match error {
+            checkpoint::StreamError::Media(error) => AttachError::Media(error),
+            checkpoint::StreamError::Invalid(_) => AttachError::CheckpointUnreadable,
+        })?;
+        // §6.3's slot origin, taken before the suffix moves `through_sequence`.
+        let epoch_base = header.through_sequence;
         // §6.3 chose this suffix because every record in it applies; one that does not means the
         // decision and the projection disagree, which is a finding rather than a repair.
         for slot in 0..replay {
@@ -240,35 +236,34 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
                 .map_err(AttachError::Media)?;
             let body = JournalBody::validate_slot(&self.stride[..], slot as u16)
                 .map_err(|_| AttachError::ReplayRejected(slot))?;
-            model.apply(&body).map_err(|_| AttachError::ReplayRejected(slot))?;
+            index.absorb(&body).map_err(|_| AttachError::ReplayRejected(slot))?;
         }
-        Ok(())
+        Ok(epoch_base)
     }
 
-    /// Writes one gated checkpoint in §6.3's order: invalidate, body, sync, gate, sync.
+    /// Which checkpoint file §6.3's next compaction writes: the one that is not active.
+    fn inactive_checkpoint(&self) -> usize {
+        1 - self.active_checkpoint
+    }
+
+    /// Writes one gated checkpoint from a whole projection, in §6.3's order.
     ///
-    /// The compaction pass that decides *when* to do this is a later slice; what is here is the
-    /// media discipline, because a store that got the ordering wrong would still typecheck. Writing
-    /// index `1 - active_checkpoint` is what makes the pair alternate.
+    /// Host-only, and a fixture rather than a path: it stages the 65,024-byte body, which is exactly
+    /// what §13 forbids a mount or a compaction from doing. It exists so a test can *place* a
+    /// checkpoint this store did not write — the degraded-bit and pair-alternation cases need one.
+    /// The device's own path is [`KernelTransaction::compact`](super::transaction::KernelTransaction::compact),
+    /// which streams.
+    #[cfg(any(test, feature = "std"))]
     pub fn write_checkpoint(&mut self, index: usize, model: &CatalogModel) -> Result<(), AdapterError> {
-        model.encode_body(&mut self.checkpoint_image[..CHECKPOINT_BODY_LEN]).map_err(|_| AdapterError::CallerBug)?;
-        self.gate_staged_checkpoint(index)
-    }
-
-    /// Writes whatever [`write_checkpoint`](Self::write_checkpoint) or
-    /// [`CatalogModel::encode_initial_body`] left in the staging image, in §6.3's order.
-    ///
-    /// The ordering is the whole of this function and the reason it is not inlined at its two call
-    /// sites: invalidate, body, sync, gate, sync. A body written under a still-valid gate would be a
-    /// record the instant its first sector landed.
-    fn gate_staged_checkpoint(&mut self, index: usize) -> Result<(), AdapterError> {
+        let mut body = std::boxed::Box::new([0u8; super::limits::CHECKPOINT_BODY_LEN]);
+        model.encode_body(body.as_mut_slice()).map_err(|_| AdapterError::CallerBug)?;
         let file = self.checkpoints[index];
         let len = CHECKPOINT_FILE_LEN as u32;
         self.fat.write_gate(file, CHECKPOINT_GATE_OFFSET as u32, &INVALIDATED)?;
         self.fat.sync_fixed(file, len)?;
-        self.fat.write_body(file, 0, CHECKPOINT_GATE_OFFSET as u32, &self.checkpoint_image[..CHECKPOINT_BODY_LEN])?;
+        self.fat.write_body(file, 0, CHECKPOINT_GATE_OFFSET as u32, body.as_slice())?;
         self.fat.sync_fixed(file, len)?;
-        let gate = checkpoint::gate_for(&self.checkpoint_image[..CHECKPOINT_BODY_LEN], index as u16);
+        let gate = checkpoint::gate_for(body.as_slice(), index as u16);
         self.fat.write_gate(file, CHECKPOINT_GATE_OFFSET as u32, &gate.encode())?;
         self.fat.sync_fixed(file, len)?;
         self.active_checkpoint = index;
@@ -449,6 +444,26 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     }
 }
 
+/// A [`checkpoint::FileSource`] over one already-open gated checkpoint file.
+///
+/// This is what makes a mount stage nothing: the scan asks for spans and each one becomes a bounded
+/// `read_at` straight off the card, so the largest buffer in the whole mount is whatever scratch the
+/// caller lends it.
+struct CheckpointFile<'f, D: BlockDevice, T: TimeSource, const A: usize, const B: usize, const C: usize> {
+    fat: &'f Adapter<'f, D, T, A, B, C>,
+    file: GatedFile,
+}
+
+impl<D: BlockDevice, T: TimeSource, const A: usize, const B: usize, const C: usize> checkpoint::FileSource
+    for CheckpointFile<'_, D, T, A, B, C>
+{
+    type Error = AdapterError;
+
+    fn read_span(&mut self, offset: usize, into: &mut [u8]) -> Result<(), AdapterError> {
+        self.fat.read_at(self.file, offset as u32, into)
+    }
+}
+
 impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
     KernelMedia for FatMedia<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
@@ -568,6 +583,44 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
         self.free
     }
 
+    fn read_checkpoint(&mut self, offset: usize, into: &mut [u8]) -> Result<(), AdapterError> {
+        self.fat.read_at(self.checkpoints[self.active_checkpoint], offset as u32, into)
+    }
+
+    fn read_record(&mut self, slot: u16) -> Result<Option<JournalBody>, AdapterError> {
+        self.fat.read_at(self.journal, slot as u32 * SLOT_STRIDE as u32, &mut self.stride[..])?;
+        Ok(JournalBody::validate_slot(&self.stride[..], slot).ok())
+    }
+
+    fn begin_checkpoint(&mut self) -> Result<(), AdapterError> {
+        let file = self.checkpoints[self.inactive_checkpoint()];
+        self.fat.write_gate(file, CHECKPOINT_GATE_OFFSET as u32, &INVALIDATED)?;
+        self.fat.sync_fixed(file, CHECKPOINT_FILE_LEN as u32)
+    }
+
+    fn write_checkpoint_sector(&mut self, offset: usize, sector: &[u8; SECTOR]) -> Result<(), AdapterError> {
+        let file = self.checkpoints[self.inactive_checkpoint()];
+        self.fat.write_body(file, offset as u32, CHECKPOINT_GATE_OFFSET as u32, sector)
+    }
+
+    fn finish_checkpoint(&mut self, epoch: u64, through_sequence: u64, body_crc: u32) -> Result<(), AdapterError> {
+        let index = self.inactive_checkpoint();
+        let file = self.checkpoints[index];
+        let len = CHECKPOINT_FILE_LEN as u32;
+        self.fat.sync_fixed(file, len)?;
+        let gate = Gate {
+            magic: super::gate::MAGIC_CHECKPOINT,
+            slot: index as u16,
+            scope: epoch,
+            sequence: through_sequence,
+            body_crc,
+        };
+        self.fat.write_gate(file, CHECKPOINT_GATE_OFFSET as u32, &gate.encode())?;
+        self.fat.sync_fixed(file, len)?;
+        self.active_checkpoint = index;
+        Ok(())
+    }
+
     fn reset_store(&mut self, store: StoreId) -> Result<(), AdapterError> {
         // §16: reset destroys every object, result and lease. §12 defines it as file deletion,
         // never directory deletion, so the skeleton survives and the journal is blanked in place.
@@ -581,16 +634,11 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
             self.fat.write_at(self.journal, slot * SLOT_STRIDE as u32, &self.stride[..])?;
         }
         self.fat.sync_fixed(self.journal, JOURNAL_FILE_LEN as u32)?;
-        // §12's initial projection, encoded straight into the staging image: building a
-        // `CatalogModel` here to encode one header and one repository row would cost 56 KiB of
-        // stack inside `execute`, whose frame every command pays.
-        CatalogModel::encode_initial_body(
-            &mut self.checkpoint_image[..CHECKPOINT_BODY_LEN],
-            store,
-            obc_link::registry::ObjectKind::Weather.to_u16(),
-        )
-        .map_err(|_| AdapterError::CallerBug)?;
-        self.gate_staged_checkpoint(0)?;
+        // §12's initial projection, streamed through the stride: building a `CatalogModel` here to
+        // encode one header and one repository row would cost 56 KiB of stack inside `execute`,
+        // whose frame every command pays, and staging the body would cost 65,024 bytes of `.bss`.
+        write_first_checkpoint(&self.fat, self.checkpoints[0], store, self.stride)?;
+        self.active_checkpoint = 0;
         // The second checkpoint must not survive as an older store's valid gate.
         self.fat.write_gate(self.checkpoints[1], CHECKPOINT_GATE_OFFSET as u32, &INVALIDATED)?;
         self.fat.sync_fixed(self.checkpoints[1], CHECKPOINT_FILE_LEN as u32)
@@ -633,7 +681,6 @@ pub fn survey<
     root: RawDirectory,
     volume: Option<super::geometry::Unsupported>,
     stride: &mut Stride,
-    image: &mut CheckpointImage,
     slots: &mut SlotTable,
 ) -> Survey {
     slots.fill(None);
@@ -734,32 +781,35 @@ pub fn survey<
             continue;
         }
         let Ok(file) = fat.open_fixed(obc2, name, CHECKPOINT_FILE_LEN as u32) else { continue };
-        let read = fat.read_at(file, 0, &mut image[..]);
+        // §13: no mount-time image. The scan asks for spans of at most one stride and each becomes a
+        // bounded read, so a survey of both checkpoints stages `stride` and nothing else.
+        let mut source = CheckpointFile { fat, file };
+        let scanned = checkpoint::validate_file_streamed(&mut source, index as u16, &mut stride[..], &mut ());
         let _ = vmgr.close_file(file.raw());
-        match read {
-            Ok(()) => {}
-            Err(AdapterError::CorruptStore) => {
+        match scanned {
+            Ok((header, body_crc)) => {
+                checkpoints_valid[index] = true;
+                // §5.2 byte 59 bit 0, captured per checkpoint rather than after the decision: §6.3's
+                // choice is deterministic, so a store whose degraded bit lives in the file that is
+                // *not* validated last would drop it at every mount, not just this one. It is a §12
+                // class input rather than a §6.3 decision input, which is why it rides beside
+                // `CheckpointObservation` instead of inside it.
+                degraded[index] = header.flags & 1 != 0;
+                checkpoints[index] = Some(CheckpointObservation {
+                    store: header.store,
+                    epoch: header.epoch,
+                    through_sequence: header.through_sequence,
+                    next_generation: header.next_generation,
+                    // The scan proved the stored CRC equals the fresh one and hands it back, so
+                    // re-deriving it would be a second sweep of 65,024 bytes.
+                    body_crc,
+                });
+            }
+            Err(checkpoint::StreamError::Media(AdapterError::CorruptStore)) => {
                 fat_intact = false;
                 continue;
             }
             Err(_) => continue,
-        }
-        if let Ok(header) = checkpoint::validate_file(&image[..], index as u16) {
-            checkpoints_valid[index] = true;
-            // §5.2 byte 59 bit 0, captured **here**, while this checkpoint's bytes are the ones in
-            // the staging image. Re-deriving it after the decision would read whichever file was
-            // validated last, and §6.3's choice is deterministic — so a store whose degraded bit
-            // lives in the checkpoint that was *not* read last would drop it at every mount, not
-            // just this one. It is a §12 class input rather than a §6.3 decision input, which is
-            // why it rides beside `CheckpointObservation` instead of inside it.
-            degraded[index] = header.flags & 1 != 0;
-            checkpoints[index] = Some(CheckpointObservation {
-                store: header.store,
-                epoch: header.epoch,
-                through_sequence: header.through_sequence,
-                next_generation: header.next_generation,
-                body_crc: checkpoint::body_crc(&image[..CHECKPOINT_BODY_LEN]),
-            });
         }
     }
 
@@ -857,12 +907,11 @@ pub fn initialize<D: BlockDevice, T: TimeSource, const A: usize, const B: usize,
     root: RawDirectory,
     store: StoreId,
     stride: &mut Stride,
-    image: &mut CheckpointImage,
 ) -> Result<Initialized, AdapterError> {
     let vmgr = fat.volume_manager();
     fat.make_dir(root, ROOT_DIRECTORY)?;
     let obc2 = vmgr.open_dir(root, ROOT_DIRECTORY).map_err(classify)?;
-    let outcome = initialize_in(fat, obc2, store, stride, image);
+    let outcome = initialize_in(fat, obc2, store, stride);
     let _ = vmgr.close_dir(obc2);
     outcome
 }
@@ -872,7 +921,6 @@ fn initialize_in<D: BlockDevice, T: TimeSource, const A: usize, const B: usize, 
     obc2: RawDirectory,
     store: StoreId,
     stride: &mut Stride,
-    image: &mut CheckpointImage,
 ) -> Result<Initialized, AdapterError> {
     let vmgr = fat.volume_manager();
     let mut report = Initialized { zero_filled: 0, directories: 1 };
@@ -886,10 +934,12 @@ fn initialize_in<D: BlockDevice, T: TimeSource, const A: usize, const B: usize, 
 
     // §12 writes the witness "before it creates anything else that could outlive a cut".
     InitRecord { store }.encode_slot_into(&mut stride[..]).map_err(|_| AdapterError::CallerBug)?;
-    let witness = fat.create_fixed(obc2, WITNESS_NAME, SLOT_FILE_LEN as u32, &mut image[..SLOT_STRIDE])?;
-    report.zero_filled += SLOT_FILE_LEN as u64;
     let body: [u8; 512] = stride[..512].try_into().expect("512 bytes");
     let gate: [u8; GATE_LEN] = stride[512..1_024].try_into().expect("512 bytes");
+    // The zero-fill buffer is the stride itself, taken after the record has been lifted out of it.
+    stride.fill(0);
+    let witness = fat.create_fixed(obc2, WITNESS_NAME, SLOT_FILE_LEN as u32, &mut stride[..])?;
+    report.zero_filled += SLOT_FILE_LEN as u64;
     fat.write_body(witness, 0, 512, &body)?;
     fat.sync_fixed(witness, SLOT_FILE_LEN as u32)?;
     fat.write_gate(witness, 512, &gate)?;
@@ -911,7 +961,7 @@ fn initialize_in<D: BlockDevice, T: TimeSource, const A: usize, const B: usize, 
 
     // The first checkpoint: §12's initial projection, gated. This is the StoreId birth point.
     let checkpoint = fat.open_fixed(obc2, CHECKPOINT_NAMES[0], CHECKPOINT_FILE_LEN as u32)?;
-    let written = write_first_checkpoint(fat, checkpoint, store, image);
+    let written = write_first_checkpoint(fat, checkpoint, store, stride);
     let _ = vmgr.close_file(checkpoint.raw());
     written?;
 
@@ -920,22 +970,26 @@ fn initialize_in<D: BlockDevice, T: TimeSource, const A: usize, const B: usize, 
     Ok(report)
 }
 
+/// Writes §12's first checkpoint in §6.3's order — invalidate, body, sync, gate, sync — with the
+/// body streamed through `stride` rather than staged whole.
 fn write_first_checkpoint<D: BlockDevice, T: TimeSource, const A: usize, const B: usize, const C: usize>(
     fat: &Adapter<'_, D, T, A, B, C>,
     file: GatedFile,
     store: StoreId,
-    image: &mut CheckpointImage,
+    stride: &mut Stride,
 ) -> Result<(), AdapterError> {
     let len = CHECKPOINT_FILE_LEN as u32;
-    CatalogModel::encode_initial_body(
-        &mut image[..CHECKPOINT_BODY_LEN],
+    // A body written under a still-valid gate would be a record the instant its first sector landed.
+    fat.write_gate(file, CHECKPOINT_GATE_OFFSET as u32, &INVALIDATED)?;
+    fat.sync_fixed(file, len)?;
+    let crc = CatalogModel::stream_initial_body(
         store,
         obc_link::registry::ObjectKind::Weather.to_u16(),
-    )
-    .map_err(|_| AdapterError::CallerBug)?;
-    fat.write_body(file, 0, CHECKPOINT_GATE_OFFSET as u32, &image[..CHECKPOINT_BODY_LEN])?;
+        &mut stride[..],
+        |offset, bytes| fat.write_body(file, offset as u32, CHECKPOINT_GATE_OFFSET as u32, bytes),
+    )?;
     fat.sync_fixed(file, len)?;
-    let gate = checkpoint::gate_for(&image[..CHECKPOINT_BODY_LEN], 0);
+    let gate = Gate { magic: super::gate::MAGIC_CHECKPOINT, slot: 0, scope: 1, sequence: 0, body_crc: crc };
     fat.write_gate(file, CHECKPOINT_GATE_OFFSET as u32, &gate.encode())?;
     fat.sync_fixed(file, len)
 }
@@ -965,7 +1019,6 @@ pub fn attach<'a, D: BlockDevice, T: TimeSource, const A: usize, const B: usize,
     root: RawDirectory,
     survey: &Survey,
     stride: &'a mut Stride,
-    image: &'a mut CheckpointImage,
     free_bytes: u64,
 ) -> Result<FatMedia<'a, D, T, A, B, C>, AttachError> {
     let Outcome::Mount { checkpoint: selected, .. } = survey.outcome else {
@@ -994,17 +1047,7 @@ pub fn attach<'a, D: BlockDevice, T: TimeSource, const A: usize, const B: usize,
         }
     };
 
-    Ok(FatMedia {
-        fat,
-        obc2,
-        journal,
-        checkpoints,
-        active_checkpoint: selected,
-        stride,
-        checkpoint_image: image,
-        open: None,
-        free: free_bytes,
-    })
+    Ok(FatMedia { fat, obc2, journal, checkpoints, active_checkpoint: selected, stride, open: None, free: free_bytes })
 }
 
 #[cfg(test)]
@@ -1058,29 +1101,36 @@ mod tests {
         }
     }
 
-    /// The three staging buffers, leaked so a media can hold them for `'static`.
-    fn buffers() -> (&'static mut Stride, &'static mut CheckpointImage, Box<SlotTable>) {
-        (Box::leak(Box::new([0u8; SLOT_STRIDE])), Box::leak(Box::new([0u8; CHECKPOINT_FILE_LEN])), Box::new(NO_SLOTS))
+    /// The two staging buffers, leaked so a media can hold them for `'static`.
+    ///
+    /// Two, not three: §13's mount image is gone, and the stride is now the largest thing a whole
+    /// mount touches.
+    fn buffers() -> (&'static mut Stride, Box<SlotTable>) {
+        (Box::leak(Box::new([0u8; SLOT_STRIDE])), Box::new(NO_SLOTS))
     }
 
-    /// An initialized card with a mounted media and its projection.
-    fn mounted() -> (Card, Media, Box<CatalogModel>) {
+    /// An initialized card with a mounted media, its resident index, and §6.3's slot origin.
+    fn mounted() -> (Card, Media, Box<RamIndex>, u64) {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.outcome, Outcome::Initialize, "a blank card is not a fresh card");
-        initialize(&fat, card.root, STORE, stride, image).expect("initialization");
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        initialize(&fat, card.root, STORE, stride).expect("initialization");
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert!(survey.is_mountable(), "an initialized card did not mount: {survey:?}");
-        let mut model = Box::new(CatalogModel::empty(STORE));
-        let mut media = attach(fat, card.root, &survey, stride, image, 8 * 1024 * 1024).expect("attach");
-        media.load_projection(&survey, &mut model).expect("projection");
-        (card, media, model)
+        let mut index = Box::new(RamIndex::new(STORE));
+        let mut media = attach(fat, card.root, &survey, stride, 8 * 1024 * 1024).expect("attach");
+        let epoch_base = media.load_index(&survey, &mut index).expect("projection");
+        (card, media, index, epoch_base)
     }
 
-    fn transaction(media: Media, model: &CatalogModel) -> Box<KernelTransaction<Media, AcceptEverything, NoHooks>> {
-        Box::new(KernelTransaction::mount(media, AcceptEverything, NoHooks, model.clone()))
+    fn transaction(
+        media: Media,
+        index: &RamIndex,
+        epoch_base: u64,
+    ) -> Box<KernelTransaction<Media, AcceptEverything, NoHooks>> {
+        Box::new(KernelTransaction::mount(media, AcceptEverything, NoHooks, index.clone(), epoch_base))
     }
 
     fn intent(operation: OperationId, length: u64, crc: u32) -> ClaimIntent {
@@ -1102,15 +1152,15 @@ mod tests {
     #[test]
     fn a_blank_card_initializes_and_then_mounts() {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
 
-        let report = initialize(&fat, card.root, STORE, stride, image).expect("initialization");
+        let report = initialize(&fat, card.root, STORE, stride).expect("initialization");
         assert_eq!(report.directories, 4, "the shard tree was created eagerly");
         // §13.1's figure: the seven fixed files, the witness included, at their stated lengths.
         assert_eq!(report.zero_filled, crate::obc2::limits::INITIALIZATION_ZERO_FILL as u64);
 
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.class, MountClass::Mounted);
         assert_eq!(survey.checkpoints_valid, [true, false], "the pair did not start on CAT0");
         assert_eq!(survey.valid_slots, 0, "a fresh journal holds records");
@@ -1123,27 +1173,26 @@ mod tests {
     #[test]
     fn a_card_with_no_store_is_classified_initialize() {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        assert_eq!(super::survey(&fat, card.root, None, stride, image, &mut slots).outcome, Outcome::Initialize);
+        assert_eq!(super::survey(&fat, card.root, None, stride, &mut slots).outcome, Outcome::Initialize);
 
         fat.make_dir(card.root, ROOT_DIRECTORY).expect("OBC2");
-        assert_eq!(super::survey(&fat, card.root, None, stride, image, &mut slots).outcome, Outcome::Initialize);
+        assert_eq!(super::survey(&fat, card.root, None, stride, &mut slots).outcome, Outcome::Initialize);
     }
 
     /// §1.1 is decided before `/OBC2` is looked for, so a refused volume is never surveyed.
     #[test]
     fn an_unsupported_volume_is_refused_without_reading_the_store() {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        initialize(&fat, card.root, STORE, stride, image).expect("initialization");
+        initialize(&fat, card.root, STORE, stride).expect("initialization");
         let survey = super::survey(
             &fat,
             card.root,
             Some(geometry::Unsupported::ClusterNotWholePages(24_576)),
             stride,
-            image,
             &mut slots,
         );
         assert_eq!(survey.class, MountClass::UnsupportedFilesystem);
@@ -1155,7 +1204,7 @@ mod tests {
     #[test]
     fn an_ungated_pre_birth_prefix_restarts() {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
         fat.make_dir(card.root, ROOT_DIRECTORY).expect("OBC2");
         let obc2 = card.vmgr.open_dir(card.root, ROOT_DIRECTORY).expect("OBC2 opens");
@@ -1166,7 +1215,7 @@ mod tests {
         }
         card.vmgr.close_dir(obc2).expect("close");
 
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.outcome, Outcome::RestartPreBirth { files: 2 });
         assert!(survey.needs_initialization());
     }
@@ -1175,21 +1224,21 @@ mod tests {
     #[test]
     fn a_valid_witness_resumes_the_same_store_id() {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
         fat.make_dir(card.root, ROOT_DIRECTORY).expect("OBC2");
         let obc2 = card.vmgr.open_dir(card.root, ROOT_DIRECTORY).expect("OBC2 opens");
         InitRecord { store: STORE }.encode_slot_into(&mut stride[..]).expect("a stride");
-        let witness =
-            fat.create_fixed(obc2, WITNESS_NAME, SLOT_FILE_LEN as u32, &mut image[..SLOT_STRIDE]).expect("witness");
         let body: [u8; 512] = stride[..512].try_into().unwrap();
         let gate: [u8; GATE_LEN] = stride[512..1_024].try_into().unwrap();
+        stride.fill(0);
+        let witness = fat.create_fixed(obc2, WITNESS_NAME, SLOT_FILE_LEN as u32, &mut stride[..]).expect("witness");
         fat.write_body(witness, 0, 512, &body).expect("body");
         fat.write_gate(witness, 512, &gate).expect("gate");
         card.vmgr.close_file(witness.raw()).expect("close");
         card.vmgr.close_dir(obc2).expect("close");
 
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.outcome, Outcome::ResumeInitialization { store: STORE });
         assert_eq!(survey.witness, Some(STORE));
     }
@@ -1199,14 +1248,14 @@ mod tests {
     #[test]
     fn a_directory_named_like_a_fixed_file_fails_closed() {
         let card = Card::blank();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
         fat.make_dir(card.root, ROOT_DIRECTORY).expect("OBC2");
         let obc2 = card.vmgr.open_dir(card.root, ROOT_DIRECTORY).expect("OBC2 opens");
         fat.make_dir(obc2, "INIT.REC").expect("a directory in the file's place");
         card.vmgr.close_dir(obc2).expect("close");
 
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.class, MountClass::RecoveryFailed);
         assert!(!survey.outcome.admits_mutation());
     }
@@ -1215,7 +1264,7 @@ mod tests {
     /// second call for the same shard is free.
     #[test]
     fn shards_are_created_on_first_use_and_are_idempotent() {
-        let (card, mut media, _model) = mounted();
+        let (card, mut media, _index, _base) = mounted();
         let generation = GenerationId::new(0x1234);
         let shard = LeafName::of(generation).shard;
 
@@ -1236,7 +1285,7 @@ mod tests {
     /// The generation seam, end to end on a real filesystem: create, append, read back, truncate.
     #[test]
     fn a_generation_writes_reads_and_rewinds() {
-        let (_card, mut media, _model) = mounted();
+        let (_card, mut media, _index, _base) = mounted();
         let generation = GenerationId::new(0x99);
         media.ensure_shards(generation).expect("shards");
         media.open_generation(generation).expect("open");
@@ -1266,7 +1315,7 @@ mod tests {
     /// §9: a generation nothing names is gone, and a read of one is not an empty read.
     #[test]
     fn collecting_a_generation_removes_both_files() {
-        let (_card, mut media, _model) = mounted();
+        let (_card, mut media, _index, _base) = mounted();
         let generation = GenerationId::new(0x4242);
         media.ensure_shards(generation).expect("shards");
         media.open_generation(generation).expect("open");
@@ -1285,16 +1334,16 @@ mod tests {
     /// gate. What the test proves is that the record reads back as a record.
     #[test]
     fn a_journal_record_survives_its_append() {
-        let (card, mut media, model) = mounted();
-        let body = crate::obc2::samples::retention_remove(model.epoch, 1, 3, 7);
+        let (card, mut media, index, _base) = mounted();
+        let body = crate::obc2::samples::retention_remove(index.epoch, 1, 3, 7);
         let encoded = body.encode_body();
         let gate = body.gate_for(&encoded).encode();
         media.append_journal(3, &encoded, &gate).expect("append");
         media.unmount();
 
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.valid_slots, 1, "the appended record did not validate: {survey:?}");
         assert!(survey.is_mountable());
         // The record is at the physical slot it named, and nowhere else.
@@ -1306,7 +1355,10 @@ mod tests {
     /// mount selects, on the strength of its greater through-sequence.
     #[test]
     fn the_checkpoint_pair_alternates_and_the_newer_one_is_selected() {
-        let (card, mut media, mut model) = mounted();
+        let (card, mut media, _index, _base) = mounted();
+        // The oracle projection initialization wrote, which is what a *placed* checkpoint is made
+        // from — the store's own path streams, and this test needs to put bytes there by hand.
+        let mut model = CatalogModel::initial(STORE, ObjectKind::Weather.to_u16());
         assert_eq!(media.active_checkpoint(), 0);
         // A projection that is demonstrably later than the one initialization wrote.
         let claim = crate::obc2::journal::JournalBody {
@@ -1318,25 +1370,25 @@ mod tests {
         assert_eq!(media.active_checkpoint(), 1);
         media.unmount();
 
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert_eq!(survey.checkpoints_valid, [true, true], "both files should be valid: {survey:?}");
         assert!(matches!(survey.outcome, Outcome::Mount { checkpoint: 1, replay: 0, .. }), "{survey:?}");
 
-        let mut remounted = Box::new(CatalogModel::empty(STORE));
-        let mut media = attach(fat, card.root, &survey, stride, image, 8 * 1024 * 1024).expect("attach");
-        media.load_projection(&survey, &mut remounted).expect("projection");
+        let mut remounted = Box::new(RamIndex::new(STORE));
+        let mut media = attach(fat, card.root, &survey, stride, 8 * 1024 * 1024).expect("attach");
+        media.load_index(&survey, &mut remounted).expect("projection");
         assert_eq!(remounted.through_sequence, 1);
         assert_eq!(remounted.actives.len(), 1, "the newer checkpoint's active row is missing");
 
         // The other parity. A third checkpoint alternates back to file 0, and §6.3 must select it —
         // which is also the parity that catches a class-6 bit read from the wrong staged file, since
         // a survey validates 0 first and 1 second.
-        media.write_checkpoint(0, &remounted).expect("the third checkpoint");
+        media.write_checkpoint(0, &model).expect("the third checkpoint");
         assert_eq!(media.active_checkpoint(), 0);
         media.unmount();
-        let survey = super::survey(&card.fat(), card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&card.fat(), card.root, None, stride, &mut slots);
         assert_eq!(survey.checkpoints_valid, [true, true]);
         assert!(matches!(survey.outcome, Outcome::Mount { checkpoint: 0, .. }), "{survey:?}");
     }
@@ -1352,7 +1404,8 @@ mod tests {
     #[test]
     fn the_store_degraded_bit_is_observed_from_whichever_checkpoint_is_selected() {
         for degraded_slot in [0usize, 1] {
-            let (card, mut media, mut model) = mounted();
+            let (card, mut media, _index, _base) = mounted();
+            let mut model = CatalogModel::initial(STORE, ObjectKind::Weather.to_u16());
             // Two checkpoints, alternating, the later one in `degraded_slot`. The clear one is
             // written first so the degraded one always carries the greater through-sequence.
             let clear_slot = 1 - degraded_slot;
@@ -1366,9 +1419,9 @@ mod tests {
             media.write_checkpoint(degraded_slot, &model).expect("the degraded checkpoint");
             media.unmount();
 
-            let (stride, image, mut slots) = buffers();
+            let (stride, mut slots) = buffers();
             let fat = card.fat();
-            let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+            let survey = super::survey(&fat, card.root, None, stride, &mut slots);
             assert!(
                 matches!(survey.outcome, Outcome::Mount { checkpoint, store_degraded: true, .. } if checkpoint == degraded_slot),
                 "the degraded bit was dropped with the flag in CAT{degraded_slot}: {survey:?}"
@@ -1385,7 +1438,8 @@ mod tests {
     #[test]
     fn a_store_with_no_degraded_bit_is_mounted_writable_in_either_parity() {
         for newer_slot in [0usize, 1] {
-            let (card, mut media, model) = mounted();
+            let (card, mut media, _index, _base) = mounted();
+            let model = CatalogModel::initial(STORE, ObjectKind::Weather.to_u16());
             media.write_checkpoint(1 - newer_slot, &model).expect("the first checkpoint");
             let mut later = model.clone();
             later
@@ -1397,8 +1451,8 @@ mod tests {
             media.write_checkpoint(newer_slot, &later).expect("the second checkpoint");
             media.unmount();
 
-            let (stride, image, mut slots) = buffers();
-            let survey = super::survey(&card.fat(), card.root, None, stride, image, &mut slots);
+            let (stride, mut slots) = buffers();
+            let survey = super::survey(&card.fat(), card.root, None, stride, &mut slots);
             assert!(
                 matches!(survey.outcome, Outcome::Mount { checkpoint, store_degraded: false, .. } if checkpoint == newer_slot),
                 "{survey:?}"
@@ -1413,8 +1467,8 @@ mod tests {
     #[test]
     fn a_store_reset_leaves_a_freshly_initialized_store_under_the_new_identity() {
         const REPLACEMENT: StoreId = StoreId::new([0x77; 16]);
-        let (card, media, model) = mounted();
-        let mut store = transaction(media, &model);
+        let (card, media, index, base) = mounted();
+        let mut store = transaction(media, &index, base);
         let operation = OperationId::new([0xD1; 16]);
         let payload = [0x2E; 512];
         let mut scratch = [0u8; 512];
@@ -1433,17 +1487,17 @@ mod tests {
         store.media_mut().reset_store(REPLACEMENT).expect("reset");
         store.into_media().unmount();
 
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert!(survey.is_mountable(), "a reset store did not mount: {survey:?}");
         assert_eq!(survey.valid_slots, 0, "the journal survived the reset");
-        let mut remounted = Box::new(CatalogModel::empty(STORE));
-        let mut media = attach(fat, card.root, &survey, stride, image, 8 * 1024 * 1024).expect("attach");
-        media.load_projection(&survey, &mut remounted).expect("projection");
+        let mut remounted = Box::new(RamIndex::new(STORE));
+        let mut media = attach(fat, card.root, &survey, stride, 8 * 1024 * 1024).expect("attach");
+        media.load_index(&survey, &mut remounted).expect("projection");
         assert_eq!(remounted.store, REPLACEMENT, "the StoreId did not change");
         assert!(remounted.heads.is_empty() && remounted.results.is_empty());
-        assert_eq!(*remounted, *CatalogModel::initial(REPLACEMENT, ObjectKind::Weather.to_u16()));
+        assert_eq!(*remounted, *RamIndex::project(&CatalogModel::initial(REPLACEMENT, ObjectKind::Weather.to_u16())));
     }
 
     /// **The simulator twin of the board's clean-flush measurement.**
@@ -1475,13 +1529,13 @@ mod tests {
         let root = vmgr.open_root_dir(volume).expect("a root directory");
 
         let fat: LoggedFat = Adapter::new(vmgr);
-        let (stride, image, mut slots) = buffers();
-        initialize(&fat, root, STORE, stride, image).expect("initialization");
-        let survey = super::survey(&fat, root, None, stride, image, &mut slots);
+        let (stride, mut slots) = buffers();
+        initialize(&fat, root, STORE, stride).expect("initialization");
+        let survey = super::survey(&fat, root, None, stride, &mut slots);
         assert!(survey.is_mountable(), "{survey:?}");
-        let mut model = Box::new(CatalogModel::empty(STORE));
-        let mut media: LoggedMedia = attach(fat, root, &survey, stride, image, 8 * 1024 * 1024).expect("attach");
-        media.load_projection(&survey, &mut model).expect("projection");
+        let mut model = Box::new(RamIndex::new(STORE));
+        let mut media: LoggedMedia = attach(fat, root, &survey, stride, 8 * 1024 * 1024).expect("attach");
+        let base = media.load_index(&survey, &mut model).expect("projection");
 
         // The sector holding `COMMIT.JNL`'s own 32-byte directory entry. On FAT32 a directory lives
         // in the data region, so an entry rewrite is indistinguishable from a record write unless
@@ -1495,7 +1549,7 @@ mod tests {
         .expect("the /OBC2 listing");
         let entry_lba = entry_lba.expect("COMMIT.JNL has a directory entry");
 
-        let mut store = Box::new(KernelTransaction::mount(media, AcceptEverything, NoHooks, *model));
+        let mut store = Box::new(KernelTransaction::mount(media, AcceptEverything, NoHooks, *model, base));
         let operation = OperationId::new([0xE7; 16]);
         let payload = [0x6C; 2_048];
         let crc = obc_crc::crc32(&payload);
@@ -1556,8 +1610,8 @@ mod tests {
     /// card alone, still holding the head and the retained result.
     #[test]
     fn an_upload_lifecycle_commits_and_survives_a_remount() {
-        let (card, media, model) = mounted();
-        let mut store = transaction(media, &model);
+        let (card, media, index, base) = mounted();
+        let mut store = transaction(media, &index, base);
         let operation = OperationId::new([0xC1; 16]);
         let payload = [0xAB; 4_096];
         let crc = obc_crc::crc32(&payload);
@@ -1599,15 +1653,15 @@ mod tests {
 
         // A reboot: every resident fact is gone and the card is remounted from its own bytes.
         store.into_media().unmount();
-        let (stride, image, mut slots) = buffers();
+        let (stride, mut slots) = buffers();
         let fat = card.fat();
-        let survey = super::survey(&fat, card.root, None, stride, image, &mut slots);
+        let survey = super::survey(&fat, card.root, None, stride, &mut slots);
         assert!(survey.is_mountable(), "the store did not remount: {survey:?}");
         assert_eq!(survey.valid_slots, 2, "a claim and a terminal record is two journal slots");
-        let mut remounted = Box::new(CatalogModel::empty(STORE));
-        let mut media = attach(fat, card.root, &survey, stride, image, 8 * 1024 * 1024).expect("attach");
-        media.load_projection(&survey, &mut remounted).expect("projection");
-        let mut store = transaction(media, &remounted);
+        let mut remounted = Box::new(RamIndex::new(STORE));
+        let mut media = attach(fat, card.root, &survey, stride, 8 * 1024 * 1024).expect("attach");
+        let base = media.load_index(&survey, &mut remounted).expect("projection");
+        let mut store = transaction(media, &remounted, base);
 
         assert_eq!(store.head(ObjectKind::Route, logical), Some((revision, length, stored_crc)));
         assert!(store.retains(operation), "the retained result did not survive the remount");
