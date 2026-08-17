@@ -583,7 +583,8 @@ fn ladder(top: u16) -> u32 {
             }
         }
         let started = Instant::now();
-        let Some((commit_us, _, _)) = create_once(&mut store) else { return store.free_extents() };
+        let Some(commit) = create_once(&mut store) else { return store.free_extents() };
+        let commit_us = commit.elapsed;
         publish_total += us(started);
         total += commit_us;
         if commit_us > worst {
@@ -608,9 +609,26 @@ fn ladder(top: u16) -> u32 {
     store.free_extents()
 }
 
+/// One timed commit: what it cost, what the card did, and **which catalog copy it landed on**.
+struct Commit {
+    elapsed: u64,
+    counted: Counters,
+    /// §5.5 writes the copy that is not being served and then serves it, so the copies strictly
+    /// alternate from initialization — which serves copy 0 at sequence 1. A commit that produced
+    /// sequence `s` therefore wrote copy `1 - (s % 2)`, and that survives any number of mounts in
+    /// between because a mount serves whichever copy carries the greater sequence.
+    copy: usize,
+    id: ObjectId,
+}
+
+/// Which catalog copy the commit that produced `sequence` wrote.
+fn copy_of(sequence: u64) -> usize {
+    1 - (sequence % 2) as usize
+}
+
 /// One create: allocate, write the payload, commit. Only the commit is on the clock, because it is
 /// the step §5.5 puts a figure on.
-fn create_once(store: &mut FlatStore<Card>) -> Option<(u64, Counters, ObjectId)> {
+fn create_once(store: &mut FlatStore<Card>) -> Option<Commit> {
     let entries = store.entry_count();
     let payload = [0x5Au8; LADDER_PAYLOAD];
     let mut allocation = match store.allocate(LADDER_PAYLOAD as u64) {
@@ -640,62 +658,94 @@ fn create_once(store: &mut FlatStore<Card>) -> Option<(u64, Counters, ObjectId)>
     let outcome = store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]);
     let elapsed = us(started);
     let counted = counters();
-    if let Err(error) = outcome {
-        error!("LADDER commit at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
-        return None;
-    }
-    Some((elapsed, counted, id))
+    let sequence = match outcome {
+        Ok(sequence) => sequence,
+        Err(error) => {
+            error!("LADDER commit at {=u16} entries refused ({})", entries, defmt::Debug2Format(&error));
+            return None;
+        }
+    };
+    Some(Commit { elapsed, counted, copy: copy_of(sequence), id })
 }
 
 /// One removal, timed: the same whole-prefix rewrite a create pays, without a payload write.
-fn remove_once(store: &mut FlatStore<Card>, id: ObjectId) -> Option<(u64, Counters)> {
+fn remove_once(store: &mut FlatStore<Card>, id: ObjectId) -> Option<Commit> {
     arm();
     let started = Instant::now();
     let outcome = store.commit(&[Mutation::Remove { id, revision: Revision(1) }]);
     let elapsed = us(started);
     let counted = counters();
-    if let Err(error) = outcome {
-        error!("LADDER remove of object {=u64} refused ({})", id.0, defmt::Debug2Format(&error));
-        return None;
-    }
-    Some((elapsed, counted))
+    let sequence = match outcome {
+        Ok(sequence) => sequence,
+        Err(error) => {
+            error!("LADDER remove of object {=u64} refused ({})", id.0, defmt::Debug2Format(&error));
+            return None;
+        }
+    };
+    Some(Commit { elapsed, counted, copy: copy_of(sequence), id })
 }
 
-/// §5.5's figure at one catalog size, sampled [`COMMIT_SAMPLES`] times.
+/// §5.5's figure at one catalog size, sampled [`COMMIT_SAMPLES`] times **per catalog copy**.
 ///
-/// Each sample is a create followed by the removal that puts the catalog back where it was, so every
-/// one of them runs against exactly `entries` entries. The removals are timed too, and they are the
-/// control: same whole-prefix rewrite, one fewer payload write.
+/// The shape of this is the whole point, and the first version of it was confounded. §5.5 alternates
+/// copies, so a create-then-remove sample sends every create to one copy and every remove to the
+/// other: the 22% gap that appeared between the two was a *copy* difference wearing a mutation-kind
+/// costume. Two creates in a row fix it — they land on the two copies with everything else equal —
+/// and the two removals that undo them do the same, so each sample yields four figures:
+///
+/// | | copy A | copy B |
+/// | create | first  | second |
+/// | remove | third  | fourth |
+///
+/// Four commits per sample keeps the parity, so every sample repeats the same assignment. The entry
+/// count moves by one between the paired commits, which changes no block count at any size this
+/// bench reports (`1 + ceil(n/4) + 2` is flat across `n` and `n+1` at 0, 300 and 1024).
 fn sample_commits(store: &mut FlatStore<Card>, entries: u16) {
-    let mut creates = [0u64; COMMIT_SAMPLES];
-    let mut removes = [0u64; COMMIT_SAMPLES];
-    let mut last = Counters::default();
+    let mut creates = [[0u64; COMMIT_SAMPLES]; 2];
+    let mut removes = [[0u64; COMMIT_SAMPLES]; 2];
+    let mut last = [Counters::default(); 2];
     for index in 0..COMMIT_SAMPLES {
-        let Some((elapsed, counted, id)) = create_once(store) else { return };
-        creates[index] = elapsed;
-        last = counted;
-        let Some((elapsed, _)) = remove_once(store, id) else { return };
-        removes[index] = elapsed;
+        let Some(first) = create_once(store) else { return };
+        let Some(second) = create_once(store) else { return };
+        for commit in [&first, &second] {
+            creates[commit.copy][index] = commit.elapsed;
+            last[commit.copy] = commit.counted;
+        }
+        let Some(third) = remove_once(store, first.id) else { return };
+        let Some(fourth) = remove_once(store, second.id) else { return };
+        for commit in [&third, &fourth] {
+            removes[commit.copy][index] = commit.elapsed;
+        }
     }
     // §5.5: `ceil(n/4) + 3` block writes — the body's `1 + ceil(n/4)` blocks (header included), the
     // gate invalidation and the gate itself — and three synchronizations.
     let predicted = 1 + (u32::from(entries) + 1).div_ceil(4) + 2;
-    let (mean, least, greatest) = spread(&creates);
+    let mut cross = 0u64;
+    for copy in 0..2 {
+        let (mean, median, least, greatest) = spread(&creates[copy]);
+        cross += mean;
+        info!(
+            "COMMIT at {=u16} entries, create on catalog copy {=usize} ({=usize} samples): {=u64} us mean, {=u64} median, {=u64}..{=u64} — {=u32} blocks, §5.5 predicts {=u32}",
+            entries, copy, COMMIT_SAMPLES, mean, median, least, greatest, last[copy].write_blocks, predicted
+        );
+        report_split("COMMIT create (last sample)", creates[copy][COMMIT_SAMPLES - 1], &last[copy]);
+        let (mean, median, least, greatest) = spread(&removes[copy]);
+        info!(
+            "COMMIT at {=u16} entries, remove on catalog copy {=usize}: {=u64} us mean, {=u64} median, {=u64}..{=u64}",
+            entries, copy, mean, median, least, greatest
+        );
+    }
+    // The figure a device actually pays: §5.5 alternates, so consecutive commits pay one copy each.
+    let cross = cross / 2;
     info!(
-        "COMMIT at {=u16} entries, {=usize} samples: {=u64} us mean, {=u64}..{=u64} — {=u32} blocks written, §5.5 predicts {=u32}",
-        entries, COMMIT_SAMPLES, mean, least, greatest, last.write_blocks, predicted
-    );
-    report_split("COMMIT create (last sample)", creates[COMMIT_SAMPLES - 1], &last);
-    let (mean_remove, least_remove, greatest_remove) = spread(&removes);
-    info!(
-        "COMMIT at {=u16} entries, the removal that undoes each sample: {=u64} us mean, {=u64}..{=u64}",
-        entries, mean_remove, least_remove, greatest_remove
+        "COMMIT at {=u16} entries: CROSS-COPY create mean {=u64} us — this is the figure to quote, because §5.5 alternates and no caller gets to pick the cheaper copy",
+        entries, cross
     );
     info!(
         "COMMIT at {=u16} entries: the {=u32} syncs are no-ops on this transport — `write_blocks` already waited out the program cycle, so none of the time above is theirs",
-        entries, last.syncs
+        entries, last[0].syncs
     );
-    verdict("COMMIT", mean, PLAN_COMMIT_US);
+    verdict("COMMIT", cross, PLAN_COMMIT_US);
 }
 
 /// What `open` costs — §5.3's binary search over the live prefix, then the hold row.
@@ -1339,13 +1389,19 @@ fn report_split(label: &str, elapsed: u64, counted: &Counters) {
     );
 }
 
-/// The mean, least and greatest of a sample set, so a single-sample figure is never quoted as if it
-/// were the cost.
-fn spread(samples: &[u64]) -> (u64, u64, u64) {
+/// The mean, median, least and greatest of a sample set, so a single-sample figure is never quoted
+/// as if it were the cost.
+///
+/// The median earns its place here: this card produces occasional multi-second commits (1.2 s and
+/// 3.3 s have both been seen mid-ladder, presumably its own housekeeping), and one of those inside a
+/// three-sample set moves the mean by more than every effect this bench is trying to measure.
+fn spread(samples: &[u64]) -> (u64, u64, u64, u64) {
     let mean = samples.iter().sum::<u64>() / samples.len() as u64;
-    let least = samples.iter().copied().min().unwrap_or(0);
-    let greatest = samples.iter().copied().max().unwrap_or(0);
-    (mean, least, greatest)
+    let mut sorted = [0u64; COMMIT_SAMPLES];
+    sorted[..samples.len()].copy_from_slice(samples);
+    sorted[..samples.len()].sort_unstable();
+    let median = sorted[samples.len() / 2];
+    (mean, median, sorted[0], sorted[samples.len() - 1])
 }
 
 /// One measured figure against its plan figure, in the form #1386 asks for: within plan, or a miss,

@@ -265,6 +265,23 @@ def parse_disassembly(disassembly: str) -> Disassembly:
     )
 
 
+def canonical_symbol(name: str) -> str:
+    """One spelling of a path separator, so a scoped needle sees every symbol it names.
+
+    llvm-objdump demangles a plain function to `obc_storage::flat::store::FlatStore<D>::mount`, but
+    a **trait impl** to `<obc_storage..flat..store..FlatStore<D> as obc_storage..flat..seam..Store>
+    ::commit` — legacy escaping renders the paths inside the `<... as ...>` brackets with `..`. A
+    needle written the way a Rust path is written therefore matched the inherent methods and silently
+    skipped every trait method, which is how `Store::commit`'s 2,812 B frame sat outside the #1386
+    gate that was supposed to be watching it. Canonicalising here fixes it once for every scoped
+    needle rather than asking each caller to spell both forms.
+
+    Only the matching predicate sees this form; the reported names stay exactly as the tool emitted
+    them, because a diagnostic that renames the symbol it is complaining about is a worse diagnostic.
+    """
+    return name.replace("..", "::")
+
+
 def select_frames(
     parsed: Disassembly, predicate, description: str, symbol_hint: str
 ) -> dict[str, int]:
@@ -275,7 +292,7 @@ def select_frames(
     prologue spelling moved. Collapsed into one "no results" either would silently disable a guard,
     which is the failure mode that let #1084 through in the first place.
     """
-    matched = [name for name in parsed.symbols if predicate(name)]
+    matched = [name for name in parsed.symbols if predicate(canonical_symbol(name))]
     if not matched:
         raise GuardError(
             f"{description} guard is stale: no {symbol_hint} symbols found in disassembly"
