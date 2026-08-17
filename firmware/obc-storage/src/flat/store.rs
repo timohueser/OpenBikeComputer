@@ -7,7 +7,7 @@
 //! a mount a fixed cost. Every buffer here is fixed and on the stack — no allocation, on the device
 //! or on the host.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use obc_crc::Crc32;
 
@@ -40,14 +40,22 @@ pub const MAX_OPEN_OBJECTS: usize = 12;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     ReadWrite,
-    /// An object reached `Revision` `u64::MAX`. Reads are still served (§3.9).
+    /// An object reached `Revision` `u64::MAX`, so nothing can supersede it (§3). Reads are still
+    /// served. Wire face: `readOnly` / `revisionSpaceExhausted 2`.
     RevisionSpaceExhausted,
+    /// A well-formed gate carries commit sequence `u64::MAX`, so §5.5 step 2 has no sequence to
+    /// continue to. Reads are still served, and the wire face is the same
+    /// `revisionSpaceExhausted 2`: from a client's side both are "this card's counters ran out".
+    SequenceSpaceExhausted,
     /// No gate is well-formed, or no candidate body validated. Evidence preserved, no repair.
+    /// Wire face: `readOnly` / `catalogUnreadable 1`.
     CatalogUnreadable,
     /// §5.6 step 1 classified the card as not a flat store. Initialization is the only transition.
+    /// Wire face: `readOnly` / `unformatted 3`.
     Unformatted,
     /// The card is smaller than the superblock recorded: damaged or swapped, never silently
-    /// truncated (§4).
+    /// truncated (§4). Wire face: `readOnly` / `unformatted 3` — the card the superblock describes
+    /// is not the card in the slot, so there is no flat store here either.
     CardTooSmall,
 }
 
@@ -57,9 +65,9 @@ impl Mode {
         self == Mode::ReadWrite
     }
 
-    /// True when the catalog is usable. Only the exhausted case still serves reads.
+    /// True when the catalog is usable. Only the two exhausted cases still serve reads.
     pub fn readable(self) -> bool {
-        matches!(self, Mode::ReadWrite | Mode::RevisionSpaceExhausted)
+        matches!(self, Mode::ReadWrite | Mode::RevisionSpaceExhausted | Mode::SequenceSpaceExhausted)
     }
 }
 
@@ -109,12 +117,12 @@ impl RideRecovery {
 struct Hold {
     id: ObjectId,
     revision: Revision,
+    /// The extents this reader resolved. A commit may have taken them out of the entry since — by
+    /// removing it or by trimming it — and until the last reader closes they stay out of the
+    /// allocator, which is why the hold keeps its own copy rather than consulting the catalog.
     ranges: Ranges,
     payload_len: u64,
     readers: u16,
-    /// A commit removed this entry while it was open; its extents go back to the allocator when the
-    /// last reader closes.
-    orphaned: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,6 +164,10 @@ pub struct FlatStore<D> {
     nonce: u32,
     ride: Option<RideState>,
     recovered: Option<RideRecovery>,
+    /// Set when the [`Store::entries`] iterator hit a media failure. §2's listing returns a plain
+    /// iterator with nowhere to put an error, so the failure is recorded here and
+    /// [`entries_ok`](Self::entries_ok) is how a caller finds out its listing was short.
+    listing_failed: Cell<bool>,
 }
 
 fn read_blocks<D: BlockDevice>(dev: &D, lba: u64, buf: &mut [u8]) -> Result<(), StoreError> {
@@ -273,6 +285,7 @@ impl<D: BlockDevice> FlatStore<D> {
             nonce: 0,
             ride: None,
             recovered: None,
+            listing_failed: Cell::new(false),
         };
         store.bring_up();
         store
@@ -338,9 +351,25 @@ impl<D: BlockDevice> FlatStore<D> {
         self.entry_count
     }
 
+    /// True when the last [`Store::entries`] listing ran to the end of the array. A listing that hit a
+    /// media failure stops early with no way to say so, so a caller that cares — anything reporting a
+    /// complete list, `LIST` included — asks here before it treats the list as the catalog.
+    pub fn entries_ok(&self) -> bool {
+        !self.listing_failed.get()
+    }
+
     /// The copy the store is serving. §5.5's next commit targets the other one.
+    ///
+    /// A card-layout fact with no caller above the seam: the harness reads the copy the store selected.
+    #[cfg(any(test, feature = "std"))]
     pub fn serving_copy(&self) -> usize {
         self.serving
+    }
+
+    /// The mark §5.5 step 2 continues from, which a fallback mount leaves above the served sequence.
+    #[cfg(any(test, feature = "std"))]
+    pub fn high_water(&self) -> u64 {
+        self.high_water
     }
 
     /// Free extents, each 1 MiB.
@@ -350,6 +379,10 @@ impl<D: BlockDevice> FlatStore<D> {
 
     /// The next `ObjectId` the cursor will hand out. A create names this in its `Put`; the commit
     /// advances the cursor past it and never rewinds.
+    ///
+    /// Reading it reserves nothing. Two creates that both read it before either commits would name the
+    /// same id, and the second one's commit is refused as a duplicate key — acceptable only because
+    /// `FLAT_Store_Protocol.md` §1 serves one transfer at a time.
     pub fn next_object_id(&self) -> ObjectId {
         ObjectId(self.next_object)
     }
@@ -380,6 +413,11 @@ impl<D: BlockDevice> FlatStore<D> {
 
     /// Releases a reservation without publishing it. The bytes written into it are unreachable and
     /// their extents are free again immediately — the same state the next mount would compute.
+    ///
+    /// A dropped `Allocation` releases nothing: the reservation row and its extents stay taken until
+    /// this is called or the card is remounted, and there are only [`MAX_RESERVATIONS`] rows. Every
+    /// path that abandons a transfer — a cancel, a refusal, a validator rejection, a lost link — has to
+    /// come through here.
     pub fn cancel(&mut self, allocation: Allocation) {
         if let Some(row) = self.row(&allocation) {
             let ranges = row.ranges;
@@ -388,8 +426,12 @@ impl<D: BlockDevice> FlatStore<D> {
         }
     }
 
-    /// Closes an open object. When the last reader of an entry a commit removed lets go, its extents
-    /// return to the allocator.
+    /// Closes an open object. When the last reader lets go, every extent it was holding that the
+    /// catalog no longer names goes back to the allocator — which is the whole of §6.2's hold rule,
+    /// whether a commit removed the entry or only trimmed it.
+    ///
+    /// A caller that drops a `Handle` instead of closing it leaks the row (and its extents) until the
+    /// next mount, so the engine must treat `open`/`close` as a pair.
     pub fn close(&mut self, handle: Handle) {
         let mut holds = self.holds.borrow_mut();
         let Some(hold) = holds[handle.slot as usize] else { return };
@@ -402,12 +444,24 @@ impl<D: BlockDevice> FlatStore<D> {
         }
         holds[handle.slot as usize] = None;
         drop(holds);
-        if hold.orphaned {
-            self.free.release(&hold.ranges);
+        // What the entry still names, if it is still there at all. A media failure here leaves the
+        // extents allocated until the next mount rebuilds the map from the catalog, which is the safe
+        // direction: never hand out an extent an entry might name.
+        let live = self.find(hold.id).ok().and_then(|(retained, head)| {
+            [retained, head].into_iter().flatten().find(|entry| entry.meta.revision == hold.revision)
+        });
+        for (first, count) in hold.ranges.iter() {
+            for extent in first..first + count {
+                if !live.is_some_and(|entry| entry.ranges.names(extent)) {
+                    self.free.release_one(u32::from(extent));
+                }
+            }
         }
     }
 
-    /// The device, for a bench or a harness that needs the card underneath.
+    /// The device, for a bench or a harness that needs the card underneath. Nothing above the seam has
+    /// any business with it.
+    #[cfg(any(test, feature = "std"))]
     pub fn device(&self) -> &D {
         &self.dev
     }
@@ -462,13 +516,24 @@ impl<D: BlockDevice> FlatStore<D> {
                 self.sequence = gate.sequence;
                 self.next_object = loaded.next_object;
                 self.entry_count = gate.entry_count;
-                self.mode = if loaded.exhausted { Mode::RevisionSpaceExhausted } else { Mode::ReadWrite };
+                // A counter that has run out mounts read-only rather than wrapping: a revision no
+                // commit can supersede (§3), or a gate sequence §5.5 step 2 cannot continue from.
+                self.mode = if loaded.exhausted {
+                    Mode::RevisionSpaceExhausted
+                } else if self.high_water == u64::MAX {
+                    Mode::SequenceSpaceExhausted
+                } else {
+                    Mode::ReadWrite
+                };
                 if let Some(recording) = loaded.recording {
                     self.recover_ride(&recording);
                 }
                 return;
             }
         }
+        // No copy is being served, so the free map describes nothing: a failed [`load`] leaves its own
+        // attempt's bitmap behind, and `free_extents()` is public.
+        self.free.reset(0);
     }
 
     /// §5.6 step 3 and 4 for one copy: the body CRC, every structural rule of §5.3, and the free
@@ -684,7 +749,10 @@ impl<D: BlockDevice> FlatStore<D> {
                 if meta.id == ObjectId::NONE || meta.revision.0 == 0 {
                     return Err(StoreError::Invalid);
                 }
-                if meta.revision.0 == u64::MAX {
+                // Both counters stop one short of wrapping: nothing could supersede revision
+                // `u64::MAX`, and §5.2's cursor must end up strictly greater than every id in the
+                // array, which `u64::MAX` leaves no room for.
+                if meta.revision.0 == u64::MAX || meta.id.0 == u64::MAX {
                     return Err(StoreError::ReadOnly);
                 }
                 let (retained, head) = self.find(meta.id)?;
@@ -708,9 +776,9 @@ impl<D: BlockDevice> FlatStore<D> {
                         Ok(Resolved { key: meta.key(), entry: Some(entry), creates: false, freed, reservation: None })
                     }
                     PutSource::Fresh(allocation) => {
-                        if existing.is_some() {
-                            return Err(StoreError::Invalid);
-                        }
+                        // A revision that already exists is caught by the compare-and-swap below
+                        // rather than by a check of its own: the head is either this revision, in
+                        // which case one past it is not it, or a greater one.
                         let expected = head.map_or(1, |entry| entry.meta.revision.0 + 1);
                         if meta.revision.0 != expected {
                             return Err(StoreError::RevisionConflict {
@@ -752,17 +820,12 @@ impl<D: BlockDevice> FlatStore<D> {
     /// them — a RAM-only hold that needs no durable record, because after a reboot the extents are
     /// free and there is no reader left to be surprised.
     fn release(&mut self, plan: &[Resolved]) {
-        let mut holds = self.holds.borrow_mut();
+        let holds = self.holds.borrow();
         for resolved in plan {
-            let mut held = false;
-            if resolved.entry.is_none() {
-                for hold in holds.iter_mut().flatten() {
-                    if (hold.id, hold.revision) == resolved.key {
-                        hold.orphaned = true;
-                        held = true;
-                    }
-                }
-            }
+            // Both branches ask, because both take extents away from a reader: a removal takes the
+            // whole entry, and an amend that trims a reserve takes its tail. `close` works out which
+            // of a hold's extents the catalog has stopped naming and frees exactly those.
+            let held = holds.iter().flatten().any(|hold| (hold.id, hold.revision) == resolved.key);
             if !held {
                 self.free.release(&resolved.freed);
             }
@@ -792,6 +855,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             return Err(StoreError::NoSpace { required: bytes });
         }
         let ranges = self.free.first_fit(extents as u32).ok_or(StoreError::TooFragmented)?;
+        // As with the hold table: no free row is `busy` on the wire, not `invalidRequest`.
         let slot = self.reservations.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
         self.free.claim(&ranges).map_err(|_| StoreError::Invalid)?;
         self.nonce = self.nonce.wrapping_add(1);
@@ -874,7 +938,12 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             return Err(StoreError::CatalogFull);
         }
 
-        // Everything the batch would write, checked against §5.3 before the card is touched.
+        // Everything the batch would write, checked against §5.3 before the card is touched. This
+        // streams the live prefix a second time — §5.5 puts the whole cost of a commit at
+        // `ceil(n/4) + 3` *writes* and three synchronizations, and reads are not what it is paying for,
+        // so the alternative (validate while writing, and leave a refused batch half-written under an
+        // invalidated gate) buys nothing and costs the "a commit that returns Err changed nothing"
+        // promise of `FLAT_Store_Protocol.md` §2.1.
         let header = Header {
             store: self.store,
             sequence: self.high_water + 1,
@@ -903,6 +972,11 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             }
             staged = true;
         }
+        // §7.2's ride end: the last checkpoint's tail is on the card in a journal slot, not in the
+        // ride's extents, and this is the commit that gives those bytes a length and a CRC. So the
+        // partial page moves out of the slot and into the extents here — the same "payload
+        // synchronized before the commit begins" rule the staging flush above obeys.
+        staged |= self.flush_ride_tail(plan)?;
         if staged {
             sync(&self.dev)?;
         }
@@ -965,8 +1039,17 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         if let Some(slot) = holds.iter().position(|hold| hold.is_some_and(|hold| (hold.id, hold.revision) == key)) {
             let hold = holds[slot].as_mut().expect("the row was just found");
             hold.readers += 1;
+            // An amend keeps the key and changes the metadata — a ride finalising is exactly that —
+            // so a reader joining an existing row takes the entry just read, not the one the first
+            // reader found. §2.1 promises a handle keeps reading the revision it resolved; it does not
+            // promise a second handle inherits a stale length.
+            hold.ranges = entry.ranges;
+            hold.payload_len = entry.meta.payload_len;
             return Ok(Handle { slot: slot as u8, id: entry.meta.id, revision: entry.meta.revision });
         }
+        // A full table is transient: some other reader is holding all twelve rows, and the answer is
+        // to ask again rather than to reject the request. The wire face is `busy`, not
+        // `invalidRequest` — `StoreError` has no variant of its own for it.
         let slot = holds.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
         holds[slot] = Some(Hold {
             id: entry.meta.id,
@@ -974,7 +1057,6 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             ranges: entry.ranges,
             payload_len: entry.meta.payload_len,
             readers: 1,
-            orphaned: false,
         });
         Ok(Handle { slot: slot as u8, id: entry.meta.id, revision: entry.meta.revision })
     }
@@ -1009,7 +1091,13 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     }
 
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
-        Entries { reader: EntryReader::new(&self.dev, self.serving, self.extents), index: 0, count: self.entry_count }
+        self.listing_failed.set(false);
+        Entries {
+            reader: EntryReader::new(&self.dev, self.serving, self.extents),
+            index: 0,
+            count: self.entry_count,
+            failed: &self.listing_failed,
+        }
     }
 
     /// §7.2 steps 2 and 3: flush whole payload pages out of the front of the tail into the recording
@@ -1036,9 +1124,8 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             self.ride = Some(ride);
             tail = &tail[PROGRAM_PAGE..];
         }
-        if tail.len() > TAIL_CAPACITY {
-            return Err(StoreError::Invalid);
-        }
+        // The loop above leaves less than one program page, which is well inside §7.1's 32,256-byte
+        // tail area — so the slot's bound needs no check here, only on the way back in.
 
         let slot = Slot {
             slot: (ride.next_sequence % SLOTS as u64) as u16,
@@ -1051,6 +1138,11 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             ranges: ride.ranges,
             slot_crc: 0,
         };
+        // §7.1 calls a slot "written in one shot": what that requires is that no reader ever sees a
+        // subset of it, and the single sync below is what provides it. The header, the tail and the pad
+        // are separate writes because the tail is the caller's slice and the pad is in rodata — but they
+        // are all pending until that sync, and a cut that commits any subset of them leaves bytes the
+        // whole-slot CRC does not cover. A torn slot is skipped, exactly as a torn one-write slot is.
         let base = slot_block(slot.slot as usize);
         write_blocks(&self.dev, base, &slot.seal(&self.store, tail))?;
         let whole = tail.len() / BLOCK;
@@ -1078,6 +1170,69 @@ impl<D: BlockDevice> Store for FlatStore<D> {
 }
 
 impl<D: BlockDevice> FlatStore<D> {
+    /// The entry a batch is finalising the live ride with: the `Put` that names the recording entry's
+    /// key and clears `RECORDING`. A `Remove` of that key is not one — the object is going away, and
+    /// so are its bytes.
+    fn finalising(&self, plan: &[Resolved]) -> Option<(RideState, Entry)> {
+        let ride = self.ride?;
+        let entry = plan
+            .iter()
+            .filter_map(|resolved| resolved.entry)
+            .find(|entry| entry.meta.key() == (ride.id, ride.revision))?;
+        (!entry.meta.flags.has(EntryFlags::RECORDING)).then_some((ride, entry))
+    }
+
+    /// Moves the bytes past `flushed length` out of the newest journal slot and into the ride's own
+    /// extents, so the length and CRC the finalising commit publishes describe bytes that are on the
+    /// card. Reports whether anything was written.
+    ///
+    /// Everything up to `flushed length` is already there — §7.2 wrote it a page at a time — and the
+    /// remainder is the partial page no checkpoint ever flushes, because a checkpoint only ever writes
+    /// whole 16 KiB pages. The slot is where those bytes live, so the slot is where they come from:
+    /// re-reading it costs 63 blocks once per ride and needs no buffer of its own.
+    fn flush_ride_tail(&mut self, plan: &[Resolved]) -> Result<bool, StoreError> {
+        let Some((ride, entry)) = self.finalising(plan) else { return Ok(false) };
+        let length = entry.meta.payload_len;
+        if length == ride.flushed {
+            return Ok(false);
+        }
+        // A shorter object than the ride already flushed cannot be a finalisation of it, and neither
+        // can one whose tail no slot holds: `next_sequence` is `1` only before the first checkpoint.
+        if length < ride.flushed || ride.next_sequence == 1 {
+            return Err(StoreError::Invalid);
+        }
+        let tail_len = length - ride.flushed;
+        if tail_len > TAIL_CAPACITY as u64 {
+            return Err(StoreError::Invalid);
+        }
+        let slot_index = ((ride.next_sequence - 1) % SLOTS as u64) as usize;
+        let mut block = [0u8; BLOCK];
+        read_blocks(&self.dev, slot_block(slot_index), &mut block)?;
+        let slot = Slot::decode(&block, slot_index, &self.store, self.extents).map_err(|_| StoreError::Invalid)?;
+        // The slot has to be this ride's, at this flush point, holding exactly the tail the caller is
+        // publishing a length for. Anything else and the commit would describe bytes it cannot produce.
+        // The comparison is against the *reserve* the ride is recording into, not against the entry
+        // being written — that one's ranges are already trimmed to the finalised payload.
+        if (slot.id, slot.revision, slot.ranges) != (ride.id, ride.revision, ride.ranges)
+            || slot.flushed != ride.flushed
+            || u64::from(slot.tail_len) != tail_len
+        {
+            return Err(StoreError::Invalid);
+        }
+
+        let base = slot_block(slot_index) + 1;
+        let mut done = 0u64;
+        while done < tail_len {
+            read_blocks(&self.dev, base + done / BLOCK as u64, &mut block)?;
+            let located = ride.ranges.locate(ride.flushed + done).ok_or(StoreError::Invalid)?;
+            // A whole block goes out even for a partial tail: the bytes past `payload_len` are slack
+            // inside the ride's last extent, which nothing reads and no CRC covers.
+            write_blocks(&self.dev, located.block, &block)?;
+            done += BLOCK as u64;
+        }
+        Ok(true)
+    }
+
     /// The resident ride state after a commit that started, amended or ended the ride.
     ///
     /// Ride end zeroes the 16 slot headers (§7.2), and this runs *after* the gate, so a media failure
@@ -1118,6 +1273,7 @@ struct Entries<'a, D> {
     reader: EntryReader<'a, D>,
     index: u16,
     count: u16,
+    failed: &'a Cell<bool>,
 }
 
 impl<D: BlockDevice> Iterator for Entries<'_, D> {
@@ -1127,7 +1283,13 @@ impl<D: BlockDevice> Iterator for Entries<'_, D> {
         if self.index >= self.count {
             return None;
         }
-        let entry = self.reader.get(self.index).ok()?;
+        // A read failure ends the listing, because the signature has nowhere to put an error — but it
+        // does not end it *silently*: `entries_ok` is how the caller learns the list is short.
+        let Ok(entry) = self.reader.get(self.index) else {
+            self.failed.set(true);
+            self.index = self.count;
+            return None;
+        };
         self.index += 1;
         Some(entry.meta)
     }

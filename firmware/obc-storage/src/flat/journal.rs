@@ -20,6 +20,7 @@ pub const TAIL_CAPACITY: usize = 32_256;
 /// The slot CRC field, inside the range it covers.
 const CRC_OFFSET: usize = 504;
 /// One slot, in bytes.
+#[cfg(test)]
 pub const SLOT_LEN: usize = BLOCK + TAIL_CAPACITY;
 /// The pad between the tail and the end of the slot, in read-only memory: a slot is written in whole
 /// blocks and its CRC covers the pad, so both the writer and a verifier need zeros to hand over. Eight
@@ -48,6 +49,7 @@ pub struct Slot {
 
 impl Slot {
     /// The ride's payload length at this checkpoint. Derived, not stored.
+    #[cfg(test)]
     pub fn payload_len(&self) -> u64 {
         self.flushed + self.tail_len as u64
     }
