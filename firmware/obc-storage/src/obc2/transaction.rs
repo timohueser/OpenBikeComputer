@@ -68,7 +68,7 @@ use super::generation::{Capability, GenerationMedia, GenerationWriter, Intent, W
 use super::journal::{Change, JournalBody, Mutation, RecordKind, RepositoryChange};
 use super::leases::{LeaseHandle, LeaseTable, ReleaseEffect};
 use super::limits::{
-    GATE_LEN, JOURNAL_BODY_LEN, JOURNAL_SLOTS, MAX_ACTIVE_OPERATIONS, MAX_NORMAL_ACTIVE_OPERATIONS,
+    GATE_LEN, JOURNAL_BODY_LEN, JOURNAL_COMPACTION_TRIGGER, MAX_ACTIVE_OPERATIONS, MAX_NORMAL_ACTIVE_OPERATIONS,
     MAX_TERMINAL_RESULTS, SLOT_STRIDE,
 };
 use super::model::CatalogModel;
@@ -229,6 +229,13 @@ impl Hooks for NoHooks {}
 struct Live {
     operation: OperationId,
     phase: Phase,
+    /// Whether a stream session is attached to this claim (§8.1's progress bit 1).
+    ///
+    /// It is a fact of its own, not a function of the phase, and it is **resident**: §8.1 sets the
+    /// bit "only while that session exists", and a session exists inside one connection. So a claim
+    /// this store finds at mount has no attachment however far its durable phase had got, and an
+    /// abort the medium refused has none either even though the claim it left is still live.
+    attached: bool,
     durable_offset: u64,
     checkpoint_sequence: u32,
     /// The operation an `AbortOperation` command names (§6.4).
@@ -239,6 +246,20 @@ struct Live {
     target: Option<OperationId>,
     /// What an `AbortOperation` command found when it reached its target (§6.4).
     disposition: Option<AbortDisposition>,
+}
+
+/// Whether a terminal commit moves the repository revision.
+///
+/// §10 reports a revision on every `ObjectResult`, but only a command that changed a head has moved
+/// one. `InstallUpdate` and `AcknowledgeRideImported` change no head: they hand work to the boot
+/// path and acknowledge an import, and a revision that advanced for either would tell every other
+/// client that something it can see has changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bump {
+    /// A head changed; the repository revision advances with it.
+    Yes,
+    /// Nothing a client can see changed.
+    No,
 }
 
 /// The generation one upload is writing.
@@ -341,6 +362,15 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 state: obc_link::control::ClockState::Trusted,
             },
         }
+    }
+
+    /// True once the journal has reached §6.3's compaction trigger.
+    ///
+    /// A store that answers `true` here must materialize a checkpoint and start a new epoch before
+    /// its next commit. This transaction cannot — the pass is #1359's — so it refuses instead of
+    /// wrapping the ring, and this is the predicate that decides.
+    pub fn compaction_required(&self) -> bool {
+        self.sequence > JOURNAL_COMPACTION_TRIGGER as u64
     }
 
     /// The store's identity.
@@ -459,9 +489,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             length: 0,
             crc32: 0,
         });
-        let result = self.committed_result(operation_id, [0; 32], PrincipalScope::new([0; 16]), envelope);
+        let result = self.result_entry(operation_id, LOCAL_INTENT, LOCAL_PRINCIPAL, Ok(envelope));
         let mutation = Mutation { result: Some(result), ..Mutation::default() };
-        let _ = self.commit(RecordKind::Terminal, operation_id, [0x01; 32], mutation);
+        // §6.1 makes the record's identity and the result's the same pair, so both carry the local
+        // producer's intent rather than one of them carrying zero.
+        let _ = self.commit(RecordKind::Terminal, operation_id, LOCAL_INTENT, mutation);
     }
 
     // -- the claim lock -------------------------------------------------------------------------
@@ -475,14 +507,15 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// synchronized" — so it happens here, before the outcome that carries the flag is returned.
     fn lookup(&mut self, intent: ClaimIntent) -> ClaimOutcome {
         if let Some(row) = self.active(intent.operation_id) {
-            let (principal, digest, logical_id) = (row.principal, row.intent, row.logical_id);
+            let (principal, digest, logical_id, generation) =
+                (row.principal, row.intent, row.logical_id, row.generation);
             if principal != principal_bytes(intent.principal) {
                 return ClaimOutcome::ForeignPrincipal;
             }
             if digest != intent.digest {
                 return ClaimOutcome::Conflict;
             }
-            if let Err(cause) = self.restart_work(intent.operation_id) {
+            if let Err(cause) = self.restart_work(intent, generation) {
                 return ClaimOutcome::Refused(cause);
             }
             return ClaimOutcome::Restarted {
@@ -538,6 +571,14 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             });
         }
 
+        // §6 admits one heavy transfer at a time and the engine's coordinator is what enforces it.
+        // A second upload reaching this store would replace the generation the first is writing
+        // into, and the client would never learn: its declared CRC is computed over the bytes it
+        // offered, not the bytes that were stored. That is an invariant break, not a client error.
+        if intent.opcode == Opcode::StartUpload && self.writing.is_some() {
+            return ClaimOutcome::Refused(FailureCause::Internal { detail: detail::internal::INVARIANT });
+        }
+
         let generation = self.reserve_generation();
         let logical_object_id = match intent.target {
             Target::Create => self.allocate_logical_id(),
@@ -577,49 +618,40 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 flags: 0,
             });
         }
+        // §11: "Failure returns without claiming." Everything the media half of an upload needs —
+        // §12's lazy shard directories, the payload file itself, and the writer's own bound on the
+        // declared length — happens **here**, ahead of the record that burns the OperationId. A
+        // card that cannot make room for this generation must refuse an identifier the client can
+        // still reuse, not one it can never use again.
+        let opened = if intent.opcode == Opcode::StartUpload {
+            match self.open_writer(intent, generation) {
+                Ok(writing) => Some(writing),
+                Err(cause) => {
+                    // Nothing durable names this generation — the claim that would have reserved it
+                    // was never written — so whatever the attempt created is an orphan §9 collects.
+                    // Taking it back now saves the collector the walk.
+                    let _ = self.media.collect_generation(generation);
+                    return ClaimOutcome::Refused(cause);
+                }
+            }
+        } else {
+            None
+        };
+
         if let Err(cause) = self.commit(RecordKind::Claim, intent.operation_id, intent.digest, mutation) {
+            let _ = self.media.collect_generation(generation);
             return ClaimOutcome::Refused(cause);
         }
-
-        if intent.opcode == Opcode::StartUpload {
-            // §12's lazy shards: the leaf's directory has to exist before the leaf does, and
-            // admission is where §11 and §12 put that obligation. The writer asks again before its
-            // first byte; `make_dir` on a directory that is already there "is not an error".
-            if let Err(error) = self.media.ensure_shards(generation) {
-                let _ = error;
-                return ClaimOutcome::Refused(FailureCause::MediaIo { detail: detail::media_io::WRITE });
-            }
-            if let Err(error) = self.media.open_generation(generation) {
-                let _ = error;
-                return ClaimOutcome::Refused(FailureCause::MediaIo { detail: detail::media_io::WRITE });
-            }
-            let generation_intent = Intent {
-                store: self.model.store,
-                operation: intent.operation_id,
-                intent: intent.digest,
-                parent: OperationId::ZERO,
-                generation,
-                declared_length: intent.declared_length,
-                declared_crc: intent.expected_crc,
-                subject_kind: intent.kind.to_u16(),
-                subject: Subject::LogicalObject,
-                part_key: 0,
-            };
-            match GenerationWriter::begin::<M::Error>(generation_intent) {
-                Ok((writer, capability)) => {
-                    self.writing =
-                        Some(Writing { operation: intent.operation_id, writer, capability, generation, sealed: false });
-                }
-                Err(_) => {
-                    return ClaimOutcome::Refused(FailureCause::ResourceLimit {
-                        detail: detail::resource::OBJECT_LENGTH,
-                    })
-                }
-            }
+        // Only an upload opened one, and only an upload may replace one: assigning `opened`
+        // unconditionally would let a direct mutation's claim — which opens nothing — clear the
+        // writer of the upload it is running beside.
+        if let Some(writing) = opened {
+            self.writing = Some(writing);
         }
         let live = Live {
             operation: intent.operation_id,
             phase: wire_phase(phase),
+            attached: intent.opcode == Opcode::StartUpload,
             durable_offset: 0,
             checkpoint_sequence: 0,
             target: intent.target_operation_id,
@@ -632,6 +664,58 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             None => return ClaimOutcome::Refused(FailureCause::Internal { detail: detail::internal::INVARIANT }),
         }
         ClaimOutcome::Claimed { logical_object_id, repository_revision: Revision::new(self.revision) }
+    }
+
+    /// The media half of admitting an upload: the shard directories, an empty payload file, and the
+    /// writer that owns them.
+    ///
+    /// It creates no catalog state, which is what lets §11's preflight call it; and it truncates
+    /// **and synchronizes** before it returns, which is what lets §6.1's restart call it. Both need
+    /// the same thing — a generation that is known to be at offset zero on the card — and having
+    /// one function say so is the only way the two paths cannot drift apart.
+    fn open_writer(&mut self, intent: ClaimIntent, generation: GenerationId) -> Result<Writing, FailureCause> {
+        let write = |_| FailureCause::MediaIo { detail: detail::media_io::WRITE };
+        // §12's lazy shards: the leaf's directory has to exist before the leaf does.
+        self.media.ensure_shards(generation).map_err(write)?;
+        self.media.open_generation(generation).map_err(write)?;
+        // §7: a generation is what it declared or it is nothing, so a readmission starts from an
+        // empty payload rather than from whatever a previous tenancy left behind.
+        self.media.truncate_payload().map_err(write)?;
+        self.media.sync_payload().map_err(|_| FailureCause::MediaIo { detail: detail::media_io::SYNCHRONIZE })?;
+        let generation_intent = Intent {
+            store: self.model.store,
+            operation: intent.operation_id,
+            intent: intent.digest,
+            parent: OperationId::ZERO,
+            generation,
+            declared_length: intent.declared_length,
+            declared_crc: intent.expected_crc,
+            subject_kind: intent.kind.to_u16(),
+            subject: Subject::LogicalObject,
+            part_key: 0,
+        };
+        let (writer, capability) = GenerationWriter::begin::<M::Error>(generation_intent)
+            .map_err(|_| FailureCause::ResourceLimit { detail: detail::resource::OBJECT_LENGTH })?;
+        Ok(Writing { operation: intent.operation_id, writer, capability, generation, sealed: false })
+    }
+
+    /// Points the media at this transaction's generation before a payload or `WORK` write.
+    ///
+    /// The media seam addresses "the generation this transaction opened", and a device-local
+    /// publication opens one of its own. Nothing in the wire contract forbids one landing between
+    /// two payload frames, so the cursor is re-pointed at every write rather than assumed. Without
+    /// this the second half of an upload lands in somebody else's file and the declared CRC does not
+    /// catch it: that CRC is computed over the bytes that were offered, not the bytes stored.
+    fn writable(&mut self, operation_id: OperationId) -> Result<GenerationId, FailureCause> {
+        let Some(generation) =
+            self.writing.as_ref().filter(|writing| writing.operation == operation_id).map(|writing| writing.generation)
+        else {
+            return Err(FailureCause::Internal { detail: detail::internal::INVARIANT });
+        };
+        self.media
+            .open_generation(generation)
+            .map_err(|_| FailureCause::MediaIo { detail: detail::media_io::WRITE })?;
+        Ok(generation)
     }
 
     /// Whether an `AbortOperation` may name this target at all (§3's ownership, §9's
@@ -659,21 +743,39 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// capability exists, which is the durable restart §6.1 requires to precede the acceptance. No
     /// `WORK` slot is written because the restart-only profile records no streaming offset for one
     /// to contradict.
-    fn restart_work(&mut self, operation_id: OperationId) -> Result<(), FailureCause> {
-        if let Some(writing) = self.writing.as_mut() {
-            if writing.operation == operation_id {
-                let capability = writing.capability;
-                match writing.writer.restart(capability, &mut self.media) {
-                    Ok(fresh) => writing.capability = fresh,
+    fn restart_work(&mut self, intent: ClaimIntent, generation: GenerationId) -> Result<(), FailureCause> {
+        let operation_id = intent.operation_id;
+        if intent.opcode == Opcode::StartUpload {
+            let resident = self.writing.as_ref().is_some_and(|writing| writing.operation == operation_id);
+            if resident {
+                self.writable(operation_id)?;
+                let capability = self.writing.as_ref().expect("resident").capability;
+                match self.writing.as_mut().expect("resident").writer.restart(capability, &mut self.media) {
+                    Ok(fresh) => {
+                        let writing = self.writing.as_mut().expect("resident");
+                        writing.capability = fresh;
+                        writing.sealed = false;
+                    }
                     Err(error) => return Err(write_failure(&error)),
                 }
-                writing.sealed = false;
+            } else if self.writing.is_some() {
+                // Another operation owns the one heavy transfer §6 allows, so this claim has no
+                // work to restart and cannot be given any.
+                return Err(FailureCause::Internal { detail: detail::internal::INVARIANT });
+            } else {
+                // No resident writer: a mount found this claim, or a readmission arrived after the
+                // work was released. The restart-only profile has one answer for both — this
+                // generation starts again from zero — and `open_writer` is what makes that durable
+                // before the acceptance that carries the flag goes out.
+                self.writing = Some(self.open_writer(intent, generation)?);
             }
         }
         if let Some(live) = self.live_mut(operation_id) {
             live.phase = Phase::Prepared;
             live.durable_offset = 0;
             live.checkpoint_sequence = 0;
+            // A readmission issues a fresh session, so the claim is attached again.
+            live.attached = intent.opcode == Opcode::StartUpload;
         }
         Ok(())
     }
@@ -691,6 +793,9 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         }
         if let Some(cause) = self.hooks.appending(offset.saturating_add(bytes.len() as u64)) {
+            return Outcome::Failed(cause);
+        }
+        if let Err(cause) = self.writable(operation_id) {
             return Outcome::Failed(cause);
         }
         let Some(writing) = self.writing.as_mut() else {
@@ -713,6 +818,10 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         if writing.operation != operation_id || writing.writer.written() < offset {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         }
+        if let Err(cause) = self.writable(operation_id) {
+            return Outcome::Failed(cause);
+        }
+        let writing = self.writing.as_mut().expect("the writer this transaction just re-opened");
         let capability = writing.capability;
         let prefix_crc = match writing.writer.synchronize(capability, &mut self.media) {
             Ok(crc) => crc,
@@ -747,6 +856,10 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         if writing.writer.declared_length() != declared_length || writing.writer.declared_crc() != expected_crc {
             return Outcome::Failed(FailureCause::Internal { detail: detail::internal::INVARIANT });
         }
+        if let Err(cause) = self.writable(operation_id) {
+            return Outcome::Failed(cause);
+        }
+        let writing = self.writing.as_mut().expect("the writer this transaction just re-opened");
         let capability = writing.capability;
         match writing.writer.seal(capability, &mut self.media, &mut self.stride, DraftPartRef::ZERO) {
             Ok(_) => {
@@ -790,6 +903,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         reason: AbortReason,
     ) -> Outcome<'s> {
         let disposition = if self.active(target).is_some() {
+            if let Some(cause) = self.hooks.aborting() {
+                // §6.4's step 2 is a terminal record like any other, and a medium that cannot write
+                // one cannot write this one either.
+                return Outcome::Failed(cause);
+            }
             let terminal = AbortCause::Cancelled { reason }.terminal();
             if self.finish_claim(target, Err(terminal)).is_err() {
                 return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
@@ -874,7 +992,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                     crc32: crc,
                 };
                 let envelope = ResultEnvelope::Object(result);
-                if self.commit_publication(operation_id, digest, principal, Some(head), envelope).is_err() {
+                if self.commit_publication(operation_id, digest, principal, Some(head), envelope, Bump::Yes).is_err() {
                     return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
                 }
                 envelope
@@ -913,7 +1031,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                     length: existing.length,
                     crc32: existing.crc,
                 });
-                if self.commit_publication(operation_id, digest, principal, Some(head), envelope).is_err() {
+                if self.commit_publication(operation_id, digest, principal, Some(head), envelope, Bump::Yes).is_err() {
                     return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
                 }
                 envelope
@@ -924,7 +1042,11 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                 } else {
                     ObjectOutcome::RideImported
                 };
-                let revision = Revision::new(self.revision + 1);
+                // Neither command changes a head, so neither moves a revision: a repository whose
+                // revision advanced would tell every other client that something it can see has
+                // changed, and nothing has. §10's ObjectResult reports the revision the target
+                // still holds.
+                let revision = self.model.head(key).map_or(Revision::ZERO, |head| head.revision);
                 let envelope = ResultEnvelope::Object(ObjectResult {
                     operation_id,
                     store_id: self.model.store,
@@ -935,7 +1057,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                     length: 0,
                     crc32: 0,
                 });
-                if self.commit_publication(operation_id, digest, principal, None, envelope).is_err() {
+                if self.commit_publication(operation_id, digest, principal, None, envelope, Bump::No).is_err() {
                     return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
                 }
                 envelope
@@ -950,7 +1072,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
                     target_operation_id: live.and_then(|live| live.target).unwrap_or(OperationId::ZERO),
                     disposition,
                 });
-                if self.commit_publication(operation_id, digest, principal, None, envelope).is_err() {
+                if self.commit_publication(operation_id, digest, principal, None, envelope, Bump::No).is_err() {
                     return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
                 }
                 envelope
@@ -969,13 +1091,20 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     /// lands after its connection died, an orphaned claim walked to terminal by teardown — so the
     /// no-op is a property of the store, not a discipline expected of the caller.
     fn abort<'s>(&mut self, operation_id: OperationId, cause: AbortCause) -> Outcome<'s> {
-        if self.active(operation_id).is_some() {
-            if let Some(cause) = self.hooks.aborting() {
-                return Outcome::Failed(cause);
-            }
-        }
         let terminal = cause.terminal();
-        if self.active(operation_id).is_some() && self.finish_claim(operation_id, Err(terminal)).is_err() {
+        if self.active(operation_id).is_none() {
+            return Outcome::Aborted(terminal);
+        }
+        // The session goes whether or not the record lands: the engine has already released it, and
+        // §8.1's attachment bit is about the session, not about the claim.
+        if let Some(live) = self.live_mut(operation_id) {
+            live.attached = false;
+            live.phase = Phase::Aborting;
+        }
+        if let Some(cause) = self.hooks.aborting() {
+            return Outcome::Failed(cause);
+        }
+        if self.finish_claim(operation_id, Err(terminal)).is_err() {
             return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
         }
         Outcome::Aborted(terminal)
@@ -1120,8 +1249,9 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
             let phase = live.map_or(wire_phase(row.phase), |live| live.phase);
             let is_upload = row.opcode == Opcode::StartUpload.to_u16();
             let mut flags = progress_flags::LOGICAL_ID_PRESENT;
-            if is_upload && !matches!(phase, Phase::Aborting) {
-                // "attached only while that session exists; ... aborting has no attachment".
+            if live.is_some_and(|live| live.attached) {
+                // "attached only while that session exists" — a fact about the session, which is
+                // why a claim a mount recovered reports none however far its phase had got.
                 flags |= progress_flags::SESSION_ATTACHED;
             }
             let durable_offset = match (is_upload, phase) {
@@ -1166,13 +1296,18 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         intent: [u8; 32],
         mutation: Mutation,
     ) -> Result<(), FailureCause> {
-        if self.sequence == 0 || self.sequence > JOURNAL_SLOTS as u64 {
+        if self.sequence == 0 || self.compaction_required() {
             // §6.3's compaction is what frees the journal ring, and it is a store-level background
-            // pass with its own budget rather than something a client's FinishUpload should pay
-            // for. Until #1359 owns that pass, the ring is a hard bound and reaching it is a
-            // resource limit — never a wrapped slot that would make recovery choose a suffix that
-            // spans two epochs.
-            return Err(FailureCause::ResourceLimit { detail: detail::resource::NORMAL_OPERATION_CLAIMS });
+            // pass with its own cursor and budget rather than something a client's FinishUpload
+            // should pay for. Until #1359 owns that pass this store cannot honour the §6.3 trigger,
+            // and committing past it would wrap a slot — making recovery choose a suffix that spans
+            // two epochs — or overwrite a record the selected checkpoint still needs.
+            //
+            // §12's registry has no journal-capacity detail, and deliberately: a conforming device
+            // compacts, so the capacity is never one a client can meet by trying later or by
+            // sending less. A device that reaches its own trigger and cannot run the pass is
+            // reporting a broken invariant of its own, which is what `internal/invariant` says.
+            return Err(FailureCause::Internal { detail: detail::internal::INVARIANT });
         }
         let slot = (self.sequence - 1) as u16;
         let record = JournalBody {
@@ -1207,12 +1342,18 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         principal: [u8; 32],
         head: Option<CatalogHead>,
         envelope: ResultEnvelope,
+        bump: Bump,
     ) -> Result<(), FailureCause> {
         let revision = self.revision + 1;
         let kind = head.map_or_else(|| self.active(operation).map_or(0, |row| row.subject_kind), |head| head.key.kind);
         let mut mutation = Mutation {
             active: Some(Change::Remove(operation)),
-            repository: Some(RepositoryChange { kind, revision: Some(revision), next_logical_id: None, flags: 0 }),
+            repository: matches!(bump, Bump::Yes).then_some(RepositoryChange {
+                kind,
+                revision: Some(revision),
+                next_logical_id: None,
+                flags: 0,
+            }),
             result: Some(self.result_entry(operation, intent, principal, Ok(envelope))),
             ..Mutation::default()
         };
@@ -1224,7 +1365,9 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         }
         let displaced = head.and_then(|head| self.displaced_generation(head.key, head.generation));
         self.commit(RecordKind::Terminal, operation, intent, mutation)?;
-        self.revision = revision;
+        if matches!(bump, Bump::Yes) {
+            self.revision = revision;
+        }
         if let Some(generation) = displaced {
             if !self.leases.holds(generation) {
                 let _ = self.media.collect_generation(generation);
@@ -1336,7 +1479,7 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         let row = ActiveOperation {
             operation,
             intent: LOCAL_INTENT,
-            principal: [0; 32],
+            principal: LOCAL_PRINCIPAL,
             opcode: Opcode::StartUpload.to_u16(),
             subject_kind: head.key.kind,
             phase: OperationPhase::Sealed,
@@ -1451,16 +1594,6 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         }
     }
 
-    fn committed_result(
-        &self,
-        operation: OperationId,
-        intent: [u8; 32],
-        principal: PrincipalScope,
-        envelope: ResultEnvelope,
-    ) -> TerminalResult {
-        self.result_entry(operation, intent, principal_bytes(principal), Ok(envelope))
-    }
-
     // -- small helpers ----------------------------------------------------------------------------
 
     fn active(&self, operation: OperationId) -> Option<&ActiveOperation> {
@@ -1538,6 +1671,23 @@ fn principal_bytes(principal: PrincipalScope) -> [u8; 32] {
     out[..16].copy_from_slice(principal.as_bytes());
     out
 }
+
+/// The 32-byte principal a device-local producer's records carry.
+///
+/// Zero-filling the reserved half leaves the all-zero digest reachable from a wire scope of all
+/// zeros — and a client that happened to present one would then own every local producer's
+/// operation, because §3 decides `QueryOperation`'s authorization by comparing exactly these bytes.
+/// Setting the reserved half instead puts the local identity outside the image of
+/// [`principal_bytes`] by construction, so no wire scope can ever alias it.
+const LOCAL_PRINCIPAL: [u8; 32] = {
+    let mut bytes = [0u8; 32];
+    let mut index = 16;
+    while index < 32 {
+        bytes[index] = 0xFF;
+        index += 1;
+    }
+    bytes
+};
 
 /// The canonical-intent digest a device-local publication claims under. It is a constant because
 /// there is no request to canonicalize: §11's digest exists to compare two client intents, and a
