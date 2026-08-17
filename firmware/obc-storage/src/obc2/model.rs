@@ -113,14 +113,69 @@ impl CatalogModel {
     /// through-sequence 0, next `GenerationId` 0, terminal counter 0, and weather logical ID zero
     /// reserved by setting the weather repository's next candidate to one while leaving the
     /// weather state absent.
+    /// It clears field by field rather than assigning [`empty`](Self::empty). `*self = empty(store)`
+    /// reads as the same thing and is not: it builds a 56 KiB value in a stack temporary and copies
+    /// it in. On the nRF54L that made **57,344 bytes** of every `KernelTransaction::execute` frame —
+    /// paid by every command, because a function's frame is the maximum over all its arms and this
+    /// one reached `execute` through §16's `ResetStore`. Measured, then removed.
     pub fn reset_to_initial(&mut self, store: StoreId, weather_kind: u16) {
-        *self = CatalogModel::empty(store);
+        self.store = store;
+        self.epoch = 1;
+        self.through_sequence = 0;
+        self.next_generation = 0;
+        self.terminal_counter = 0;
+        self.flags = 0;
+        self.repositories.clear();
+        self.heads.clear();
+        self.actives.clear();
+        self.draft_parent = None;
+        self.draft_parts.clear();
+        self.retained.clear();
+        self.result_start = 0;
+        self.results.clear();
+        self.handoff = None;
+        self.weather = None;
+        self.ride = None;
         let _ = self.repositories.push(RepositoryState {
             kind: weather_kind,
             flags: 0,
             revision: obc_link::ids::Revision::ZERO,
             next_logical_id: obc_link::ids::LogicalObjectId::new(1),
         });
+    }
+
+    /// Initializes an empty projection into storage the caller already owns.
+    ///
+    /// [`empty`](Self::empty) is `const` and returns by value, which at a board call site is a
+    /// 56 KiB stack temporary — 58,112 bytes of the bench's own frame, measured. This writes each
+    /// field into the uninitialized slot and materializes nothing: the bounded vectors are written
+    /// as `Vec::new()`, whose buffer is uninitialized by construction, so only their lengths are
+    /// stored.
+    pub fn init_empty(slot: &mut core::mem::MaybeUninit<Self>, store: StoreId) -> &mut Self {
+        let at = slot.as_mut_ptr();
+        // SAFETY: every field of `CatalogModel` is written exactly once below, through a raw
+        // pointer into the caller's uninitialized slot, and none is read before it is written. The
+        // list is exhaustive against the struct definition directly above.
+        unsafe {
+            core::ptr::addr_of_mut!((*at).store).write(store);
+            core::ptr::addr_of_mut!((*at).epoch).write(1);
+            core::ptr::addr_of_mut!((*at).through_sequence).write(0);
+            core::ptr::addr_of_mut!((*at).next_generation).write(0);
+            core::ptr::addr_of_mut!((*at).terminal_counter).write(0);
+            core::ptr::addr_of_mut!((*at).flags).write(0);
+            core::ptr::addr_of_mut!((*at).repositories).write(Vec::new());
+            core::ptr::addr_of_mut!((*at).heads).write(Vec::new());
+            core::ptr::addr_of_mut!((*at).actives).write(Vec::new());
+            core::ptr::addr_of_mut!((*at).draft_parent).write(None);
+            core::ptr::addr_of_mut!((*at).draft_parts).write(Vec::new());
+            core::ptr::addr_of_mut!((*at).retained).write(Vec::new());
+            core::ptr::addr_of_mut!((*at).result_start).write(0);
+            core::ptr::addr_of_mut!((*at).results).write(Vec::new());
+            core::ptr::addr_of_mut!((*at).handoff).write(None);
+            core::ptr::addr_of_mut!((*at).weather).write(None);
+            core::ptr::addr_of_mut!((*at).ride).write(None);
+            slot.assume_init_mut()
+        }
     }
 
     /// The same first checkpoint, boxed. Host-only for the reason [`empty`](Self::empty) gives.
@@ -523,23 +578,82 @@ impl CatalogModel {
         Ok(())
     }
 
+    /// Encodes §12's **initial** checkpoint body — the one a freshly initialized store is born
+    /// with — without building a projection at all.
+    ///
+    /// A store's initialization and its §16 reset both need these 65,024 bytes and nothing else, and
+    /// the obvious route to them (`CatalogModel::empty`, `reset_to_initial`, `encode_body`) puts a
+    /// 56 KiB projection on the caller's stack for the sake of one header and one repository row.
+    /// The board cannot afford that on its boot path, so this writes the two records directly.
+    ///
+    /// The duplication that buys is pinned by a test: the bytes here are asserted equal to what an
+    /// empty projection encodes, so the two definitions cannot drift.
+    pub fn encode_initial_body(out: &mut [u8], store: StoreId, weather_kind: u16) -> Result<()> {
+        use super::error::{DecodeError, Reason};
+        if out.len() != CHECKPOINT_BODY_LEN {
+            return Err(DecodeError::new(Record::Checkpoint, Reason::Length));
+        }
+        out.fill(0);
+        let header = CheckpointHeader {
+            store,
+            epoch: 1,
+            through_sequence: 0,
+            next_generation: 0,
+            repository_count: 1,
+            head_count: 0,
+            active_count: 0,
+            draft_parent_count: 0,
+            draft_part_count: 0,
+            retained_count: 0,
+            result_start: 0,
+            result_count: 0,
+            handoff_count: 0,
+            flags: 0,
+            terminal_counter: 0,
+            weather_count: 0,
+            ride_count: 0,
+        };
+        put_bytes(out, 0, &header.encode());
+        let row = RepositoryState {
+            kind: weather_kind,
+            flags: 0,
+            revision: obc_link::ids::Revision::ZERO,
+            next_logical_id: obc_link::ids::LogicalObjectId::new(1),
+        };
+        put_bytes(out, checkpoint::REPOSITORIES.slot(0).start, &row.encode());
+        checkpoint::seal_body(out);
+        Ok(())
+    }
+
     /// Reconstructs a projection from a validated checkpoint body, into a buffer the caller owns.
     ///
     /// The in-place form is the one the device can use: see [`empty`](Self::empty) for why nothing
     /// here returns this value through a return slot.
+    /// Every field is assigned rather than the whole value replaced. `*self = CatalogModel { .. }`
+    /// reads as an in-place write and is not: it builds the 56 KiB value in a temporary first, which
+    /// on the board put **58,112 bytes** on the frame of the mount that called it. Measured, then
+    /// removed — which is the whole point of this function existing beside
+    /// [`decode_body`](Self::decode_body).
     pub fn decode_body_into(&mut self, body: &[u8]) -> Result<()> {
         let header = checkpoint::validate_body(body)?;
-        *self = CatalogModel {
-            store: header.store,
-            epoch: header.epoch,
-            through_sequence: header.through_sequence,
-            next_generation: header.next_generation,
-            terminal_counter: header.terminal_counter,
-            flags: header.flags,
-            result_start: header.result_start as usize,
-            ..CatalogModel::empty(header.store)
-        };
         let model = self;
+        model.store = header.store;
+        model.epoch = header.epoch;
+        model.through_sequence = header.through_sequence;
+        model.next_generation = header.next_generation;
+        model.terminal_counter = header.terminal_counter;
+        model.flags = header.flags;
+        model.result_start = header.result_start as usize;
+        model.repositories.clear();
+        model.heads.clear();
+        model.actives.clear();
+        model.draft_parent = None;
+        model.draft_parts.clear();
+        model.retained.clear();
+        model.results.clear();
+        model.handoff = None;
+        model.weather = None;
+        model.ride = None;
         for index in 0..header.repository_count as usize {
             let _ = model.repositories.push(RepositoryState::decode(&body[checkpoint::REPOSITORIES.slot(index)])?);
         }
@@ -657,6 +771,41 @@ mod tests {
 
     fn body_buffer() -> Box<[u8; CHECKPOINT_BODY_LEN]> {
         Box::new([0u8; CHECKPOINT_BODY_LEN])
+    }
+
+    /// [`CatalogModel::encode_initial_body`] writes §12's first checkpoint without building a
+    /// projection, which is a second definition of the same bytes. This is what stops the two from
+    /// drifting: the shortcut and the long way round must produce the identical 65,024 bytes, CRC
+    /// included, for every kind the weather repository could be registered under.
+    #[test]
+    fn the_initial_body_shortcut_encodes_exactly_what_an_initial_projection_does() {
+        for kind in [0u16, 4, 1_000, u16::MAX] {
+            let mut long_way = body_buffer();
+            CatalogModel::initial(samples::STORE, kind).encode_body(long_way.as_mut_slice()).unwrap();
+            let mut shortcut = body_buffer();
+            CatalogModel::encode_initial_body(shortcut.as_mut_slice(), samples::STORE, kind).unwrap();
+            assert_eq!(long_way.as_slice(), shortcut.as_slice(), "kind {kind}");
+        }
+        // And what it wrote is a valid checkpoint body that decodes back to that same projection.
+        let mut bytes = body_buffer();
+        CatalogModel::encode_initial_body(bytes.as_mut_slice(), samples::STORE, 4).unwrap();
+        assert_eq!(CatalogModel::decode_body(bytes.as_slice()).unwrap(), CatalogModel::initial(samples::STORE, 4));
+    }
+
+    /// A decode reuses the projection it is given rather than replacing it, so anything the previous
+    /// tenant left behind has to be gone — a stale head or a stale draft parent would otherwise
+    /// survive a remount into the next store's catalog.
+    #[test]
+    fn decoding_into_a_populated_projection_leaves_nothing_of_the_old_one() {
+        let mut populated = model();
+        populated.apply(&samples::claim(1, 1, 0, samples::OP_A, 1)).unwrap();
+        populated.apply(&samples::publish(1, 2, 1, samples::OP_A, 1, samples::head(1, 7))).unwrap();
+        assert!(!populated.heads.is_empty() && !populated.results.is_empty());
+
+        let mut fresh = body_buffer();
+        CatalogModel::encode_initial_body(fresh.as_mut_slice(), samples::STORE, 4).unwrap();
+        populated.decode_body_into(fresh.as_slice()).unwrap();
+        assert_eq!(*populated, *CatalogModel::initial(samples::STORE, 4));
     }
 
     #[test]
