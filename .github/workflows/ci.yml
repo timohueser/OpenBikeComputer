@@ -379,7 +379,11 @@ jobs:
       # 1. The store: `FlatStore::mount` builds a 10,416-byte store in a return slot, measured at
       #    12,160 B. 16,384 is that with room for one more row, and it is the number that matters —
       #    FS5 mounts this from the app, against the 51,576 B residual main stack the shipping image
-      #    has.
+      #    has. The needle reaches the store's **trait** methods as well as its inherent ones only
+      #    because `select_frames` canonicalises `..` to `::` first: llvm-objdump demangles a trait
+      #    impl as `<obc_storage..flat..store..FlatStore<D> as ...>::commit`, and without that this
+      #    needle silently skipped all six trait-impl symbols — `Store::commit`'s 2,812 B among them.
+      #    26 symbols now, same 12,160 B maximum.
       # 2. The bench: 32,256 B in `initialize`, which chains two of those return slots. Pinned at
       #    32,768 — the measured figure rounded up to the next 4 KiB, so a bench that grows a frame
       #    fails here and gets re-pinned deliberately rather than drifting. On glass the whole
