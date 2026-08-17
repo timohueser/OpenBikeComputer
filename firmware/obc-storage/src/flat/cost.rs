@@ -47,6 +47,14 @@ const STORE: StoreId = StoreId([0x71; 16]);
 /// marginal ones are its sequential throughputs (7,128 kB/s writing, 12,170 kB/s reading). The read
 /// pair over-predicts the one published *wide* read — a 64-block call measured 2,692 µs against this
 /// model's 2,986 — so read projections here are the conservative side of a two-point fit by about 10%.
+///
+/// **The two marginal constants are the weakest thing in this file, and nothing here checks them.**
+/// [`the_model_reproduces_the_benchs_own_measurements`] cannot: the census it replays had one block per
+/// command, so `write_blocks - writes` and `read_blocks - reads` are both zero there and the marginal
+/// terms multiply out entirely. What that test calibrates is the two *fixed* costs and the two M33
+/// terms. The marginal pair is sequential-throughput arithmetic, bounded from above by the ceilings in
+/// the cases below and by nothing from underneath — the first measurement of the batched schedule on
+/// glass is what will settle them.
 const WRITE_COMMAND_US: u64 = 1_470;
 const WRITE_BLOCK_US: u64 = 72;
 const READ_COMMAND_US: u64 = 340;
