@@ -392,32 +392,51 @@ enum VectorExerciser {
                         throw VectorError("\(entry)/\(name): step \(index) is out of order")
                     }
                     let kind = step["kind"] as? String ?? ""
-                    guard kind == "write" || kind == "sync" else {
+                    guard kind == "write" || kind == "sync" || kind == "truncate" else {
                         throw VectorError("\(entry)/\(name): step \(index) has kind \(kind)")
                     }
-                    if kind == "sync" {
+                    // Only a write addresses bytes. A sync and a truncation carry neither an offset
+                    // nor a length, so a nonzero one is a producer bug rather than a shape to read.
+                    if kind != "write" {
                         guard step["offset"] as? Int == 0, step["length"] as? Int == 0 else {
-                            throw VectorError("\(entry)/\(name): a sync carries an offset or length")
+                            throw VectorError("\(entry)/\(name): a \(kind) carries an offset or length")
                         }
                     }
                 }
-                // A commit path ends at a sync, because its gate is durable only once that
-                // returns — and admits more than one recovered state, because that is what its cut
-                // points are for. A fault-mode transcript is a single refused operation: it ends at
-                // the write that failed and has exactly one outcome, and holding it to the commit
-                // path's rules would be wrong rather than strict.
-                if steps.count > 1 {
+                // The rule is declared, not inferred. A commit path's last operation *is* its
+                // durability point, so it ends at the sync that returns and admits more than one
+                // recovered state — that is what its cut points are for. Two shapes are not commit
+                // paths: a refused operation that ends the sequence where it failed, and a sequence
+                // that deliberately runs one step past its durability point to show what may only
+                // happen after it. Inferring this from the step count held only while every
+                // non-commit sequence happened to be one step long.
+                guard let commit = transcript["commit"] as? Bool else {
+                    throw VectorError("\(entry)/\(name): no commit flag")
+                }
+                let outcomes = transcript["admissibleOutcomes"] as? [String] ?? []
+                if commit {
                     guard (steps.last?["kind"] as? String) == "sync" else {
-                        throw VectorError("\(entry)/\(name): the path does not end at a sync")
+                        throw VectorError("\(entry)/\(name): a commit path does not end at a sync")
                     }
-                    guard (transcript["admissibleOutcomes"] as? [String] ?? []).count > 1 else {
+                    guard outcomes.count > 1 else {
                         throw VectorError("\(entry)/\(name): fewer than two admissible outcomes")
                     }
                 } else {
-                    guard !(transcript["admissibleOutcomes"] as? [String] ?? []).isEmpty else {
+                    guard !outcomes.isEmpty else {
                         throw VectorError("\(entry)/\(name): no admissible outcome")
                     }
+                    // Opting out is a claim about the sequence, so it has to be argued in the note.
+                    guard !((transcript["note"] as? String) ?? "").isEmpty else {
+                        throw VectorError("\(entry)/\(name): opted out of the commit rule silently")
+                    }
                 }
+            }
+            // The flag is not vacuous in either direction: both shapes exist in the inventory, so a
+            // producer that stopped emitting one of them fails here rather than silently narrowing
+            // what these rules cover.
+            let flags = transcripts.compactMap { $0["commit"] as? Bool }
+            guard flags.contains(true), flags.contains(false) else {
+                throw VectorError("\(entry): the commit flag is vacuous — every transcript is the same shape")
             }
             ExerciseLog.shared.record(entry.name)
             return

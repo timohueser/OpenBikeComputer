@@ -17,24 +17,23 @@
 //! the restart-only profile (§7, DOS2 owner decision), which writes no streaming slots at all; what
 //! remains and is tested is the sealed slot both profiles write.
 //!
-//! One shape of the compaction scenario is provisional rather than normative, and the checked-in
-//! transcript says so: it writes the checkpoint body in one call, while §6.3 specifies a bounded
-//! forward pass of many smaller writes. The *ordering* around that write is normative and is what
-//! these cut points prove; the streaming pass arrives with the compaction engine.
+//! The compaction scenario is no longer provisional. It writes the checkpoint body through §6.3's
+//! streaming forward pass — 127 separate sector writes, each its own cut point — rather than one
+//! call, and the checked-in transcript states that sequence.
 //!
-//! ## What the initialization scenario proves, and what it cannot yet
+//! ## What the initialization scenario proves, and what it cannot here
 //!
 //! [`initialization_produces_no_store_or_a_complete_first_checkpoint`] is **not** one of the
 //! exhaustively-cut commit paths, and counting it among them would overstate this slice. Its cut
 //! points are structurally unfailable: every one of them ends in either a complete first checkpoint
 //! or no checkpoint at all, and "no checkpoint" is the same observation whether the witness is
 //! absent, torn, or perfectly valid. Distinguishing those three — a fresh card, a resumable `INIT`
-//! witness, an ungated pre-birth prefix, an unknown shape — is §12's mount classification, and that
-//! is a later slice. What the scenario proves today is the half the record codecs own: that no cut
-//! produces a *partial* record, that the witness that survives is this attempt's, and that nothing
-//! is advertised before the first checkpoint gate. The commit paths whose cut matrices carry real
-//! discriminating power are the seven with a normative media order, each of which has a checked-in
-//! transcript.
+//! witness, an ungated pre-birth prefix, an unknown shape — is §12's mount classification, which
+//! lives in [`mount`](super::mount) and is tested there over the shapes a listing can have rather
+//! than over media cuts: the classification is a decision about a directory, and this harness has no
+//! directory. What the scenario proves here is the half the record codecs own: that no cut produces
+//! a *partial* record, that the witness that survives is this attempt's, and that nothing is
+//! advertised before the first checkpoint gate.
 
 use std::boxed::Box;
 use std::format;
@@ -45,11 +44,15 @@ use obc_link::ids::{GenerationId, OperationId};
 
 use super::checkpoint;
 use super::checkpoint::HEADER_LEN;
+use super::compaction;
 use super::entries::{DraftPartState, RetainedPrevious};
 use super::gate::INVALIDATED;
+use super::generation;
 use super::handoff::{HandoffPhase, HandoffRecord};
+use super::index::RamIndex;
 use super::init::InitRecord;
 use super::journal::{Change, JournalBody, Mutation, RecordKind};
+use super::leases;
 use super::limits::{
     CHECKPOINT_BODY_LEN, CHECKPOINT_FILE_LEN, CHECKPOINT_GATE_OFFSET, JOURNAL_BODY_LEN, JOURNAL_FILE_LEN,
     JOURNAL_GATE_OFFSET, JOURNAL_SLOTS, RIDE_FILE_LEN, RIDE_SLOTS, SLOT_FILE_LEN, SLOT_STRIDE, SMALL_BODY_LEN,
@@ -70,11 +73,24 @@ struct Card {
     arm: [FileId; 2],
     ride: FileId,
     work: FileId,
+    /// `GEN.PRE` — a generation that already exists at its full length: the ride journal's payload,
+    /// appended to inside a file that was there before, and §8's one-shot resolution table.
     payload: FileId,
+    /// `GEN.NEW` — the generation an upload is *creating*: empty at first, extended by writes, and
+    /// with a recorded length that becomes durable only at the sync following the write that
+    /// changed it.
+    ///
+    /// The two are separate files with separate labels because the transcripts name the file each
+    /// step addresses, and one `GEN` for both would make a reader guess. Neither label is a §3 name
+    /// — a real card names both through the leaf mapping — they are harness labels.
+    gen_payload: FileId,
     init: FileId,
+    /// The shard directories §12 would have created on first use. Recorded, not created: see
+    /// [`CardGeneration::ensure_shards`].
+    shards_created: Vec<super::names::ShardName>,
 }
 
-/// The payload length the scenarios use for the one generation they write.
+/// The payload length the scenarios use for the one fixed-length generation they write.
 const PAYLOAD_LEN: usize = 4_096;
 
 impl Card {
@@ -89,23 +105,63 @@ impl Card {
         let ride = media.create("RIDE.ACT", RIDE_FILE_LEN);
         let init = media.create("INIT.REC", SLOT_FILE_LEN);
         let work = media.create("WORK", WORK_FILE_LEN);
-        let payload = media.create("GEN", PAYLOAD_LEN);
-        let mut card = Card { media, cat: [cat0, cat1], journal, arm: [arm0, arm1], ride, work, payload, init };
-        card.write_checkpoint(0, model).expect("initial checkpoint");
+        let payload = media.create("GEN.PRE", PAYLOAD_LEN);
+        let gen_payload = media.create_payload("GEN.NEW");
+        let mut card = Card {
+            media,
+            cat: [cat0, cat1],
+            journal,
+            arm: [arm0, arm1],
+            ride,
+            work,
+            payload,
+            gen_payload,
+            init,
+            shards_created: Vec::new(),
+        };
+        card.install_checkpoint(0, model);
         card
     }
 
-    /// Writes one gated checkpoint: invalidate the gate, write the body, write the gate, each
-    /// followed by its own sync (§6.3 steps 2 through 4).
-    fn write_checkpoint(&mut self, index: usize, model: &CatalogModel) -> Result<(), MediaError> {
-        let file = self.cat[index];
+    /// Places a complete valid checkpoint on the card without counting an operation.
+    ///
+    /// The state a scenario *starts* from. Writing it through the streaming pass instead would add
+    /// 131 uncounted-but-real operations to every one of the several hundred cards a cut matrix
+    /// builds, for no coverage: what a matrix enumerates is the cut points of the sequence under
+    /// test, and this is the card handed to it.
+    fn install_checkpoint(&mut self, index: usize, model: &CatalogModel) {
         let mut body = Box::new([0u8; CHECKPOINT_BODY_LEN]);
         model.encode_body(body.as_mut_slice()).expect("body");
+        let gate = checkpoint::gate_for(body.as_slice(), index as u16);
+        self.media.install(self.cat[index], 0, body.as_slice());
+        self.media.install(self.cat[index], CHECKPOINT_GATE_OFFSET, &gate.encode());
+    }
+
+    /// Writes one gated checkpoint through §6.3's **streaming forward pass**: invalidate the gate
+    /// and sync, materialize the body one 512-byte sector at a time and sync, write the gate and
+    /// sync (§6.3 steps 2 through 4).
+    ///
+    /// The body is 127 separate sector writes, not one. That is the shape §6.3 specifies — "a single
+    /// forward pass over the inactive checkpoint file, region by region and, inside a region, entry
+    /// by entry in key order", staging one entry plus one sector — and it is what the checked-in
+    /// compaction transcript now states. The ordering around it is unchanged and is what these cut
+    /// points prove; what the streaming shape adds is 127 more of them, each a moment at which the
+    /// inactive checkpoint holds a half-materialized body under an invalidated gate.
+    fn write_checkpoint(&mut self, index: usize, model: &CatalogModel) -> Result<(), MediaError> {
+        let file = self.cat[index];
         self.write_all(file, CHECKPOINT_GATE_OFFSET, &INVALIDATED)?;
         self.media.sync(file)?;
-        self.write_all(file, 0, body.as_slice())?;
+
+        let ram = RamIndex::project(model);
+        let mut pass = CardPass { card: self, file, model };
+        let crc = match compaction::materialize(&ram, &mut pass) {
+            Ok(crc) => crc,
+            Err(compaction::CompactionError::Media(error)) => return Err(error),
+            Err(other) => panic!("the harness's own projection did not materialize: {other:?}"),
+        };
         self.media.sync(file)?;
-        let gate = checkpoint::gate_for(body.as_slice(), index as u16);
+
+        let gate = compaction::gate_for(&ram, crc, index as u16);
         self.write_all(file, CHECKPOINT_GATE_OFFSET, &gate.encode())?;
         self.media.sync(file)
     }
@@ -162,6 +218,51 @@ impl Card {
         } else {
             Err(MediaError::Full)
         }
+    }
+}
+
+/// The §6.3 pass environment over one card.
+///
+/// The two card-resident sources are taken from the projection being written, which is what a real
+/// store's active checkpoint and journal hold between them. That substitution is deliberate and
+/// costs this matrix nothing: which *source* a field comes from is proved byte for byte in
+/// [`compaction`](super::compaction)'s own tests, and what a cut matrix tests is the ordering.
+struct CardPass<'a> {
+    card: &'a mut Card,
+    file: FileId,
+    model: &'a CatalogModel,
+}
+
+impl compaction::CheckpointPass for CardPass<'_> {
+    type Error = MediaError;
+
+    fn head_fields(&mut self, entry: &super::index::HeadIndexEntry) -> Result<compaction::CardHeadFields, MediaError> {
+        let head = self
+            .model
+            .heads
+            .iter()
+            .find(|head| head.key == entry.key())
+            .expect("the index was projected from this model");
+        Ok(compaction::CardHeadFields::of(head))
+    }
+
+    fn result_entry(
+        &mut self,
+        _physical: usize,
+        key: &super::index::ResultIndexEntry,
+    ) -> Result<[u8; super::entries::TerminalResult::LEN], MediaError> {
+        let result = self
+            .model
+            .results
+            .iter()
+            .find(|result| result.commit_sequence == key.commit_sequence)
+            .expect("the index was projected from this model");
+        Ok(result.encode())
+    }
+
+    fn write_body_sector(&mut self, offset: usize, sector: &[u8; 512]) -> Result<(), MediaError> {
+        let file = self.file;
+        self.card.write_all(file, offset, sector)
     }
 }
 
@@ -580,6 +681,317 @@ fn a_slot_whose_prefix_the_payload_contradicts_is_discarded() {
 }
 
 // -------------------------------------------------------------------------------------------
+// §3, §7 — the restart-only generation writer
+// -------------------------------------------------------------------------------------------
+
+/// The generation writer's media seam over one card: the growable `GEN` payload and the fixed
+/// two-slot `WORK` file.
+struct CardGeneration<'a> {
+    card: &'a mut Card,
+}
+
+impl generation::GenerationMedia for CardGeneration<'_> {
+    type Error = MediaError;
+
+    /// §12's lazy shards, recorded rather than performed: this harness is sector-addressed and has
+    /// no directories at all. The obligation is real and is #1359's to implement; what the crash
+    /// matrix owes is that the writer asks for it before it addresses the payload, which the
+    /// transcript's operation count would show if it stopped happening.
+    fn ensure_shards(&mut self, generation: GenerationId) -> Result<(), MediaError> {
+        self.card.shards_created.push(super::names::LeafName::of(generation).shard);
+        Ok(())
+    }
+
+    fn payload_length(&mut self) -> Result<u64, MediaError> {
+        Ok(self.card.media.len(self.card.gen_payload) as u64)
+    }
+
+    fn write_payload(&mut self, offset: u64, bytes: &[u8]) -> Result<(), MediaError> {
+        let file = self.card.gen_payload;
+        self.card.write_all(file, offset as usize, bytes)
+    }
+
+    fn sync_payload(&mut self) -> Result<(), MediaError> {
+        self.card.media.sync(self.card.gen_payload)
+    }
+
+    fn truncate_payload(&mut self) -> Result<(), MediaError> {
+        self.card.media.truncate(self.card.gen_payload)
+    }
+
+    fn write_work(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MediaError> {
+        let file = self.card.work;
+        self.card.write_all(file, offset, bytes)
+    }
+
+    fn sync_work(&mut self) -> Result<(), MediaError> {
+        self.card.media.sync(self.card.work)
+    }
+}
+
+/// The intent the generation scenarios stream: one whole payload, declared exactly.
+fn generation_intent(bytes: &[u8]) -> generation::Intent {
+    generation::Intent {
+        store: samples::STORE,
+        operation: OperationId::new(samples::OP_A),
+        intent: samples::INTENT,
+        parent: OperationId::ZERO,
+        generation: GenerationId::new(42),
+        declared_length: bytes.len() as u64,
+        declared_crc: super::raw::crc32(bytes),
+        subject_kind: 1,
+        subject: super::work::Subject::LogicalObject,
+        part_key: 0,
+    }
+}
+
+/// §7's recovery over the generation the writer was sealing: both `WORK` slots and the payload's
+/// durable bytes, through the production selector.
+fn recover_generation(card: &mut Card) -> WorkRecovery {
+    let mut slots = [None, None];
+    for (slot, held) in slots.iter_mut().enumerate() {
+        let Ok(stride) = card.media.read_at(card.work, slot * SLOT_STRIDE, SLOT_STRIDE) else { continue };
+        *held = WorkRecord::validate_slot(&stride, slot as u16).ok();
+    }
+    let len = card.media.len(card.gen_payload);
+    let payload = card.media.read_at(card.gen_payload, 0, len).unwrap_or_default();
+    work::recover_work(&slots, &payload)
+}
+
+/// A cut anywhere in one restart-only upload leaves the generation unclaimed work at offset zero or
+/// a complete sealed record — never a sealed record the payload cannot back.
+///
+/// This is the whole of §7 under the initial profile: the appends acknowledge nothing, so there is
+/// no intermediate durable offset for a cut to expose, and the only durable work fact is the sealed
+/// slot the last four operations write.
+#[test]
+fn a_restart_only_upload_seals_completely_or_not_at_all() {
+    let bytes = payload_bytes();
+    let intent = generation_intent(&bytes);
+    let base = initial();
+
+    let scenario = |card: &mut Card| {
+        let Ok((mut writer, capability)) = generation::GenerationWriter::begin::<MediaError>(intent) else {
+            unreachable!("the declared length is inside the format limit")
+        };
+        let mut scratch = Box::new([0u8; SLOT_STRIDE]);
+        let mut media = CardGeneration { card };
+        if writer.append(capability, &mut media, &bytes).is_err() {
+            return;
+        }
+        let _ = writer.seal(writer.capability(), &mut media, &mut scratch, obc_link::ids::DraftPartRef::ZERO);
+    };
+
+    let total = {
+        let mut card = Card::new(1, &base);
+        let baseline = card.media.ops();
+        scenario(&mut card);
+        card.media.ops() - baseline
+    };
+    assert_eq!(total, 8, "one payload write and sync, then the six operations of a gated WORK slot");
+
+    for op in 1..=total {
+        for when in EVERY_WHEN {
+            let mut card = Card::new(u64::from(op) * 67 + 13, &base);
+            let baseline = card.media.ops();
+            card.media.set_plan(FaultPlan::cut(baseline + op, when));
+            scenario(&mut card);
+            card.media.reboot();
+
+            let recovered = recover_generation(&mut card);
+            let len = card.media.len(card.gen_payload);
+            let durable = card.media.read_at(card.gen_payload, 0, len).unwrap_or_default();
+            match recovered {
+                // §7: "recovery classifies a claimed, unsealed generation as restartable work at
+                // offset zero" — the readmission truncates and streams again.
+                WorkRecovery::RestartAtZero => {}
+                WorkRecovery::Resume(record) => {
+                    assert_eq!(record.state, WorkState::Sealed, "the only slot this profile writes is the sealed one");
+                    assert_eq!(record.durable_offset, bytes.len() as u64);
+                    assert_eq!(
+                        super::raw::crc32(&durable[..record.durable_offset as usize]),
+                        record.prefix_crc,
+                        "cut at op {op} {when:?}: a sealed record the durable payload does not back",
+                    );
+                    assert_eq!(record.declared_crc, record.prefix_crc);
+                }
+                WorkRecovery::DiscardAndAbort => panic!(
+                    "cut at op {op} {when:?}: a healthy restart-only upload was discarded, which is the fault §7's \
+                     restart durability point exists to forbid",
+                ),
+            }
+        }
+    }
+
+    // The fault-free run seals, and the sealed slot is slot zero of an otherwise empty pair.
+    let mut card = Card::new(99, &base);
+    scenario(&mut card);
+    let WorkRecovery::Resume(record) = recover_generation(&mut card) else { panic!("the fault-free run did not seal") };
+    assert_eq!(record.state, WorkState::Sealed);
+    let second = card.media.read_at(card.work, SLOT_STRIDE, SLOT_STRIDE).unwrap();
+    assert!(WorkRecord::validate_slot(&second, 1).is_err(), "a streaming slot was written");
+}
+
+/// §7's readmission rewind, cut at every point: the payload is the old prefix or nothing, and no
+/// `WORK` slot exists to disagree with either.
+///
+/// The restart durability point is satisfied vacuously under this profile precisely because that
+/// last clause holds — with no slot recording an offset, a truncation can never make a recorded
+/// prefix unverifiable.
+#[test]
+fn a_readmission_truncates_to_zero_or_leaves_the_old_prefix() {
+    let bytes = payload_bytes();
+    let intent = generation_intent(&bytes);
+    let base = initial();
+    let first_half = bytes.len() / 2;
+
+    // The state a readmission finds: half the payload durable, no WORK slot at all.
+    let setup = |card: &mut Card| {
+        use generation::GenerationMedia;
+        let (mut writer, capability) =
+            generation::GenerationWriter::begin::<MediaError>(intent).expect("inside the format limit");
+        let mut media = CardGeneration { card };
+        writer.append(capability, &mut media, &bytes[..first_half]).unwrap();
+        media.sync_payload().unwrap();
+    };
+    let scenario = |card: &mut Card| {
+        let (mut writer, capability) =
+            generation::GenerationWriter::begin::<MediaError>(intent).expect("inside the format limit");
+        let mut media = CardGeneration { card };
+        let Ok(fresh) = writer.restart(capability, &mut media) else { return };
+        let _ = writer.append(fresh, &mut media, &bytes);
+    };
+
+    let total = {
+        let mut card = Card::new(1, &base);
+        setup(&mut card);
+        let baseline = card.media.ops();
+        scenario(&mut card);
+        card.media.ops() - baseline
+    };
+    assert_eq!(total, 3, "truncate, sync, and the first write of the restreamed payload");
+
+    for op in 1..=total {
+        for when in EVERY_WHEN {
+            let mut card = Card::new(u64::from(op) * 71 + 19, &base);
+            setup(&mut card);
+            let baseline = card.media.ops();
+            card.media.set_plan(FaultPlan::cut(baseline + op, when));
+            scenario(&mut card);
+            card.media.reboot();
+
+            let len = card.media.len(card.gen_payload);
+            let durable = card.media.read_at(card.gen_payload, 0, len).unwrap_or_default();
+            assert!(
+                durable.is_empty() || durable == bytes[..first_half],
+                "cut at op {op} {when:?}: the payload is neither empty nor the old durable prefix",
+            );
+            // And whichever it is, nothing durable claims an offset over it.
+            assert_eq!(
+                recover_generation(&mut card),
+                WorkRecovery::RestartAtZero,
+                "cut at op {op} {when:?}: the restart-only profile wrote a WORK slot",
+            );
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// §9 — recovery's durable lease-reason clearing
+// -------------------------------------------------------------------------------------------
+
+/// §9: "For every retained-previous entry carrying the live-lease bit, recovery appends and
+/// synchronizes one retention journal record clearing that bit … **before** garbage collection may
+/// treat any generation as unreachable."
+///
+/// The failure this forbids is not local: "Clearing the bit only in RAM would let GC delete a
+/// generation the durable catalog still names, so that the next replay would reconstruct a reference
+/// to a missing file and every later mount would be permanently degraded." So the suffix has to be
+/// durable, and a cut inside it must leave a prefix that a later mount finishes rather than a table
+/// that disagrees with itself.
+#[test]
+fn recovery_clears_every_durable_lease_reason_before_collection_may_run() {
+    // A store that rebooted with two leased generations retained, one of which another reason also
+    // holds — so one record removes an entry and the other only clears a bit.
+    let mut before = initial();
+    let mut leased = samples::retained(200);
+    leased.reasons = RetainedPrevious::REASON_LIVE_LEASE;
+    leased.lease_count = 3;
+    let mut both = samples::retained(201);
+    both.reasons = RetainedPrevious::REASON_LIVE_LEASE | RetainedPrevious::REASON_UPDATE_ROLLBACK;
+    both.lease_count = 1;
+    let untouched = {
+        let mut entry = samples::retained(202);
+        entry.reasons = RetainedPrevious::REASON_UPDATE_ROLLBACK;
+        entry.lease_count = 0;
+        entry
+    };
+    for entry in [leased, both, untouched] {
+        before.retained.push(entry).unwrap();
+    }
+
+    let mut changes: heapless::Vec<Change<RetainedPrevious, GenerationId>, 8> = heapless::Vec::new();
+    leases::recovery_suffix(&before.retained, &mut changes);
+    assert_eq!(changes.len(), 2, "only the entries carrying the lease bit owe a record");
+
+    let records: Vec<JournalBody> = changes
+        .iter()
+        .enumerate()
+        .map(|(index, change)| JournalBody {
+            store: samples::STORE,
+            epoch: 1,
+            sequence: index as u64 + 1,
+            slot: index as u16,
+            kind: RecordKind::Retention,
+            operation: OperationId::ZERO,
+            intent: [0u8; 32],
+            mutation: Mutation { retained: Some(*change), ..Mutation::default() },
+        })
+        .collect();
+
+    let mut prefixes = vec![before.clone()];
+    let mut walk = before.clone();
+    for record in &records {
+        walk.apply(record).unwrap();
+        prefixes.push(walk.clone());
+    }
+    let after = prefixes.last().unwrap().clone();
+    assert!(
+        after.retained.iter().all(|entry| entry.reasons & RetainedPrevious::REASON_LIVE_LEASE == 0),
+        "the complete suffix must leave no durable lease reason",
+    );
+    assert_eq!(after.retained.len(), 2, "the entry no reason held is removed; the other two remain");
+
+    let total = records.len() as u32 * OPS_PER_APPEND;
+    for op in 1..=total {
+        for when in EVERY_WHEN {
+            let mut card = Card::new(u64::from(op) * 83 + 29, &before);
+            let baseline = card.media.ops();
+            card.media.set_plan(FaultPlan::cut(baseline + op, when));
+            for record in &records {
+                if card.append_journal(record).is_err() {
+                    break;
+                }
+            }
+            card.media.reboot();
+            let index = ((op - 1) / OPS_PER_APPEND) as usize;
+            let admissible = [&prefixes[index], &prefixes[index + 1]];
+            let Recovered::Mounted(model) = recover(&mut card) else { panic!("cut at op {op} {when:?} did not mount") };
+            assert!(
+                admissible.iter().any(|prefix| prefix.as_ref() == model.as_ref()),
+                "cut at op {op} {when:?} recovered through sequence {}",
+                model.through_sequence,
+            );
+            // A prefix is a legitimate stop, and the next mount owes the remainder — never fewer
+            // records than were durable, and never a table with a half-cleared entry.
+            let mut remaining: heapless::Vec<Change<RetainedPrevious, GenerationId>, 8> = heapless::Vec::new();
+            leases::recovery_suffix(&model.retained, &mut remaining);
+            assert_eq!(remaining.len(), records.len() - model.through_sequence as usize);
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------
 // §7.1 — the active-ride journal
 // -------------------------------------------------------------------------------------------
 
@@ -877,8 +1289,20 @@ fn blank_card(seed: u64) -> Card {
     let ride = media.create("RIDE.ACT", RIDE_FILE_LEN);
     let init = media.create("INIT.REC", SLOT_FILE_LEN);
     let work = media.create("WORK", WORK_FILE_LEN);
-    let payload = media.create("GEN", PAYLOAD_LEN);
-    Card { media, cat: [cat0, cat1], journal, arm: [arm0, arm1], ride, work, payload, init }
+    let payload = media.create("GEN.PRE", PAYLOAD_LEN);
+    let gen_payload = media.create_payload("GEN.NEW");
+    Card {
+        media,
+        cat: [cat0, cat1],
+        journal,
+        arm: [arm0, arm1],
+        ride,
+        work,
+        payload,
+        gen_payload,
+        init,
+        shards_created: Vec::new(),
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1791,6 +2215,68 @@ fn the_checked_in_transcripts_match_the_operations_the_harness_performs() {
     card.write_checkpoint(0, &newer).unwrap();
     observed.push(("checkpoint-steady-state-reuse", card.media.log()[base..].to_vec()));
 
+    // §7's restart-only upload: the payload, then the sealed WORK slot.
+    let bytes = payload_bytes();
+    let intent = generation_intent(&bytes);
+    let mut card = Card::new(13, &initial());
+    let base = card.media.log().len();
+    {
+        let (mut writer, capability) =
+            generation::GenerationWriter::begin::<MediaError>(intent).expect("inside the format limit");
+        let mut scratch = Box::new([0u8; SLOT_STRIDE]);
+        let mut media = CardGeneration { card: &mut card };
+        writer.append(capability, &mut media, &bytes).unwrap();
+        writer.seal(writer.capability(), &mut media, &mut scratch, obc_link::ids::DraftPartRef::ZERO).unwrap();
+    }
+    observed.push(("generation-seal", card.media.log()[base..].to_vec()));
+
+    // And the readmission that rewinds one to offset zero.
+    let mut card = Card::new(14, &initial());
+    {
+        use generation::GenerationMedia;
+        let (mut writer, capability) =
+            generation::GenerationWriter::begin::<MediaError>(intent).expect("inside the format limit");
+        let mut media = CardGeneration { card: &mut card };
+        writer.append(capability, &mut media, &bytes[..1_024]).unwrap();
+        media.sync_payload().unwrap();
+    }
+    let base = card.media.log().len();
+    {
+        let (mut writer, capability) =
+            generation::GenerationWriter::begin::<MediaError>(intent).expect("inside the format limit");
+        let mut media = CardGeneration { card: &mut card };
+        let fresh = writer.restart(capability, &mut media).unwrap();
+        writer.append(fresh, &mut media, &bytes).unwrap();
+    }
+    observed.push(("generation-restart", card.media.log()[base..].to_vec()));
+
+    // §9's recovery suffix: one retention record per retained entry carrying a lease reason.
+    let mut before = initial();
+    for generation in [200u64, 201] {
+        let mut entry = samples::retained(generation);
+        entry.reasons = RetainedPrevious::REASON_LIVE_LEASE;
+        entry.lease_count = 1;
+        before.retained.push(entry).unwrap();
+    }
+    let mut changes: heapless::Vec<Change<RetainedPrevious, GenerationId>, 8> = heapless::Vec::new();
+    leases::recovery_suffix(&before.retained, &mut changes);
+    let mut card = Card::new(15, &before);
+    let base = card.media.log().len();
+    for (index, change) in changes.iter().enumerate() {
+        card.append_journal(&JournalBody {
+            store: samples::STORE,
+            epoch: 1,
+            sequence: index as u64 + 1,
+            slot: index as u16,
+            kind: RecordKind::Retention,
+            operation: OperationId::ZERO,
+            intent: [0u8; 32],
+            mutation: Mutation { retained: Some(*change), ..Mutation::default() },
+        })
+        .unwrap();
+    }
+    observed.push(("lease-recovery-clear", card.media.log()[base..].to_vec()));
+
     // The three §13.1 fault modes. A short write and a full medium end their sequence at the write
     // that failed, which is exactly one operation.
     let record = samples::claim(1, 1, 0, samples::OP_A, 1);
@@ -1834,8 +2320,7 @@ fn the_checked_in_transcripts_match_the_operations_the_harness_performs() {
             .unwrap_or_else(|| panic!("{} has no observed run", transcript.name));
         assert_eq!(log.len(), transcript.steps.len(), "{}: operation count", transcript.name);
         for (index, (step, operation)) in transcript.steps.iter().zip(log.iter()).enumerate() {
-            let step_file = if step.file == "GEN" { "GEN" } else { step.file };
-            assert_eq!(operation.file, step_file, "{} op {}: file", transcript.name, index + 1);
+            assert_eq!(operation.file, step.file, "{} op {}: file", transcript.name, index + 1);
             assert_eq!(operation.kind, step.kind, "{} op {}: kind", transcript.name, index + 1);
             assert_eq!(operation.offset, step.offset, "{} op {}: offset", transcript.name, index + 1);
             // A zero length in a transcript means "a body whose size the payload decides"; every
