@@ -284,11 +284,6 @@ impl Structure {
         }
         Ok(())
     }
-
-    /// True when the array holds the one active ride.
-    pub fn recording(&self) -> bool {
-        self.recording == 1
-    }
 }
 
 #[cfg(test)]
@@ -448,7 +443,6 @@ mod tests {
     fn at_most_one_entry_is_recording() {
         let mut structure = Structure::default();
         structure.accept(&entry(2, 1, EntryFlags::RECORDING, 0, 0, 1)).unwrap();
-        assert!(structure.recording());
         assert_eq!(
             structure.accept(&entry(3, 1, EntryFlags::RECORDING, 0, 1, 1)).unwrap_err().reason,
             Reason::Revisions
