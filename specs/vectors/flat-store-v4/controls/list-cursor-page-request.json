@@ -1,0 +1,26 @@
+{
+  "name": "list-cursor-page-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "LIST",
+    "value": 1
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 32,
+    "requestId": 10754
+  },
+  "note": "The cursor is the (ObjectId, Revision) pair, and the page resumes strictly after it.",
+  "body": {
+    "kindFilter": 0,
+    "cursor": true,
+    "cursorObjectId": "1",
+    "cursorRevision": "3",
+    "expectedCommitSequence": "7"
+  },
+  "frame": "4f4243340401000020000000022a00000000010000000000010000000000000003000000000000000700000000000000"
+}

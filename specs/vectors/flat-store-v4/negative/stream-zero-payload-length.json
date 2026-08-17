@@ -1,0 +1,11 @@
+{
+  "name": "stream-zero-payload-length",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "streamRecord",
+  "note": "A zero length terminates the transfer with an error response on the control channel.",
+  "expect": {
+    "disposition": "terminateTransfer"
+  },
+  "bytes": "012a000000000000000000000000000000000000"
+}

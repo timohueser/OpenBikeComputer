@@ -1,0 +1,28 @@
+{
+  "name": "put-create-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 84,
+    "requestId": 10753
+  },
+  "note": "Section 3.10's PUT creating the route: ObjectId zero means create and both identity fields are zero.",
+  "body": {
+    "objectId": "0",
+    "expectedRevision": "0",
+    "payloadLength": "42137",
+    "payloadCrc32": 2622127649,
+    "kind": 1,
+    "retainPrevious": false,
+    "displayName": "Grimsel Loop"
+  },
+  "frame": "4f4243340404000054000000012a00000000000000000000000000000000000099a4000000000000217e4a9c010000000c0000004772696d73656c204c6f6f70000000000000000000000000000000000000000000000000000000000000000000000000"
+}

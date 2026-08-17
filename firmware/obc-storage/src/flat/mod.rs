@@ -44,6 +44,7 @@ pub(crate) mod raw;
 pub mod seam;
 pub mod store;
 pub(crate) mod superblock;
+pub mod wire;
 
 #[cfg(any(test, feature = "std"))]
 pub mod model;

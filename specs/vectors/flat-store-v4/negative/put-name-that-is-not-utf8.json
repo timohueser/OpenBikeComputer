@@ -1,0 +1,15 @@
+{
+  "name": "put-name-that-is-not-utf8",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "The field is UTF-8, and a menu has nothing to do with bytes that are not.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "badCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f4243340404000054000000012a00000000000000000000000000000000000099a4000000000000217e4a9c010000000c000000ff72696d73656c204c6f6f70000000000000000000000000000000000000000000000000000000000000000000000000"
+}

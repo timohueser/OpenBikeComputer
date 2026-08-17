@@ -1,0 +1,11 @@
+{
+  "name": "stream-length-disagreeing-with-the-record",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "streamRecord",
+  "note": "The record is the frame followed by exactly payload length bytes.",
+  "expect": {
+    "disposition": "terminateTransfer"
+  },
+  "bytes": "012a000000000000000000000500000000000000"
+}

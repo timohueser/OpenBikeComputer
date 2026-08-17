@@ -1,0 +1,19 @@
+{
+  "name": "catalog-changed-listing",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "LIST",
+    "value": 1
+  },
+  "requestId": 10754,
+  "body": {
+    "code": "catalogChanged",
+    "codeValue": 13,
+    "detail": "listing",
+    "detailValue": 1,
+    "context": "8"
+  },
+  "note": "A paged listing whose expected commit sequence no longer matches; the context is the current one.",
+  "frame": "4f4243340401030010000000022a00000d000100080000000000000000000000"
+}

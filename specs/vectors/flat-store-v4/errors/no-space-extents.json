@@ -1,0 +1,19 @@
+{
+  "name": "no-space-extents",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "noSpace",
+    "codeValue": 6,
+    "detail": "extents",
+    "detailValue": 1,
+    "context": "42137"
+  },
+  "note": "The context of noSpace is the bytes required.",
+  "frame": "4f4243340404030010000000012a00000600010099a400000000000000000000"
+}

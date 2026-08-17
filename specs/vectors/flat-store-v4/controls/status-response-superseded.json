@@ -1,0 +1,25 @@
+{
+  "name": "status-response-superseded",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "STATUS",
+    "value": 2
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 24,
+    "requestId": 10755
+  },
+  "note": "The object exists at a different revision, and the answer says which.",
+  "body": {
+    "state": 2,
+    "headRevision": "4",
+    "headPayloadLength": "42137",
+    "headPayloadCrc32": 2622127649
+  },
+  "frame": "4f4243340402010018000000032a000002000000040000000000000099a4000000000000217e4a9c"
+}

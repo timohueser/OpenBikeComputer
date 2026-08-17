@@ -1,0 +1,25 @@
+{
+  "name": "status-response-absent",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "STATUS",
+    "value": 2
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 24,
+    "requestId": 10755
+  },
+  "note": "No entry names that ObjectId, so every head field is zero.",
+  "body": {
+    "state": 0,
+    "headRevision": "0",
+    "headPayloadLength": "0",
+    "headPayloadCrc32": 0
+  },
+  "frame": "4f4243340402010018000000032a0000000000000000000000000000000000000000000000000000"
+}

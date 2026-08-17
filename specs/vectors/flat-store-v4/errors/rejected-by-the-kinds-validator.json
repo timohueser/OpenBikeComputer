@@ -1,0 +1,19 @@
+{
+  "name": "rejected-by-the-kinds-validator",
+  "suite": "flat-store-v4",
+  "kind": "error",
+  "opcode": {
+    "name": "PUT",
+    "value": 4
+  },
+  "requestId": 10753,
+  "body": {
+    "code": "rejected",
+    "codeValue": 11,
+    "detail": "kindDefined",
+    "detailValue": 3,
+    "context": "0"
+  },
+  "note": "The kind's validator owns this detail space; 3 is an example of one it may define.",
+  "frame": "4f4243340404030010000000012a00000b000300000000000000000000000000"
+}

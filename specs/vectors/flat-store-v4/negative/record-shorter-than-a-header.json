@@ -1,0 +1,11 @@
+{
+  "name": "record-shorter-than-a-header",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "There is no RequestId to echo.",
+  "expect": {
+    "disposition": "closeRecordStream"
+  },
+  "bytes": "000000000000000000000000000000"
+}

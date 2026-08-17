@@ -1,0 +1,23 @@
+{
+  "name": "get-request-pinned-revision",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "GET",
+    "value": 3
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 16,
+    "requestId": 10756
+  },
+  "note": "A named revision, which is how a retained previous revision is reached.",
+  "body": {
+    "objectId": "1",
+    "revision": "3"
+  },
+  "frame": "4f4243340403000010000000042a000001000000000000000300000000000000"
+}

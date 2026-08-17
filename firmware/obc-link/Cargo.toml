@@ -3,7 +3,7 @@ name = "obc-link"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal firmware crate — not published to crates.io
-description = "Device Object System v2 wire codec and transfer engine: OBCP wire major 3 control/stream frames, identities, metadata envelopes, typed results, error bodies and canonical-intent digests, plus the connection/session model and the upload/download/command state machines. no_std, allocation-free, transport-free."
+description = "The device's wire codecs and its one transfer engine. Live: protocol v4 (`flat`) — the OBC4 control and stream frames of the flat card store, the store seam the engine declares, and the transfer engine itself. Superseded and awaiting deletion with its OBC2 consumers: the Device Object System v2 wire, major 3. no_std, allocation-free, transport-free."
 
 # The one Rust authority for the bytes frozen in `specs/Device_Object_Protocol_v3.md` and
 # `specs/Device_Object_Registries_v2.md`. It is deliberately transport-free: no obc-ble, no embassy,
@@ -18,6 +18,15 @@ obc-crc = { path = "../obc-crc" }
 # `core`-only — no std, no allocator — which is what lets the device image link it. Same version the
 # host bakery crates already resolve to, so the workspace holds one sha2.
 sha2 = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+# The flat store, host-only, for the tests that hold the engine to a real card: the sim-backed
+# `FlatStore` and its deterministic faulting device. It is a **dev**-dependency because the
+# production edge runs the other way — `obc-storage` is a platform adapter and this crate is a
+# foundation crate, so `firmware/tools/dependency_rules.json` forbids `obc-link -> obc-storage` for
+# anything the device image links. The engine declares its own store seam (`flat::store`) and the
+# store binds it (`obc_storage::flat::wire`), which is what lets these tests run the real thing.
+obc-storage = { path = "../obc-storage", features = ["std"] }
 
 [features]
 default = []
