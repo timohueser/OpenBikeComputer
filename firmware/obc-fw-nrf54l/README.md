@@ -217,6 +217,27 @@ consecutive resets accumulate objects and journal records — which is the point
 it reports grows with the replay suffix. It refuses to write to a store whose `StoreId` is not its
 own.
 
+```bash
+# The flat store bench (#1386) — `obc_storage::flat` on the card, and the successor to both benches
+# above. It measures every figure `specs/FLAT_Store_Format.md` states: §8 initialization, §5.6 mount
+# at an empty / 300-entry / 1024-entry catalog and with a ride recording, §5.5's commit at each of
+# those, §7.2's checkpoint cadence, and §6.1's read path over a 2 GiB object with the read
+# amplification device blocks read / payload blocks required, which must be 1.00.
+#
+# MORE destructive than the OBC2 benches: the flat store owns the RAW CARD FROM LBA 0, so a run
+# destroys the partition table too. Anything on the card is gone. It refuses a card that already
+# carries a flat store under another `StoreId` (override with `FORCE_REINIT`).
+#
+# One run takes ~20 minutes, most of it writing and sweeping the 2 GiB read-path object.
+cargo run --release --bin flat_store_bench
+```
+
+It runs in two phases, and which one it runs is decided by what is on the card. A card that is not
+this bench's store gets phase one: initialize, then every measurement above, ending with a ride left
+**recording**. `probe-rs reset` then runs phase two on that ride — §7.3 recovery through the store's
+own `recovered_ride`, §7.2's ride end, and the whole ride read back byte for byte against the payload
+phase one generated. A third reset finds no ride recording and starts phase one over.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
