@@ -454,11 +454,21 @@ class ModuleFrameGateTests(unittest.TestCase):
         self._run(4_096, match="obc_storage::flat", disassembly=self.TRAIT_IMPL)
 
     def test_a_trait_impl_does_not_hide_behind_an_inherent_method(self):
-        """The real shape: one module, one inherent frame and one trait frame, one needle."""
-        with self.assertRaisesRegex(resource_guard.GuardError, "above the 2000 B limit"):
-            self._run(
-                2_000,
-                match="obc_storage::obc2",
-                disassembly=self.DISASSEMBLY
-                + self.TRAIT_IMPL.replace("obc_storage..flat", "obc_storage..obc2"),
-            )
+        """The real shape: one module, one inherent frame and one trait frame, one needle.
+
+        The trait frame is deliberately the **larger** of the two and the limit clears the inherent
+        one, so this test can only pass if the needle reached the trait method: with the `..` symbol
+        left un-canonicalised the needle still matches the inherent `KernelTransaction::commit`, the
+        guard reports 6,080 B against an 8,192 B limit, and nothing is raised. An earlier version of
+        this test used a limit below *both* frames and so passed either way — vacuous, and caught in
+        review.
+        """
+        disassembly = self.DISASSEMBLY + self.TRAIT_IMPL.replace(
+            "obc_storage..flat", "obc_storage..obc2"
+        ).replace("#2812", "#9000")
+        with self.assertRaises(resource_guard.GuardError) as caught:
+            self._run(8_192, match="obc_storage::obc2", disassembly=disassembly)
+        # The frame that tripped it is the trait method's, and the diagnostic names that symbol
+        # rather than the inherent one it shares a module with.
+        self.assertIn("9000 B", str(caught.exception))
+        self.assertIn("$u20$as$u20$", str(caught.exception))
