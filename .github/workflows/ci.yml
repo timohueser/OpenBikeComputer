@@ -371,6 +371,34 @@ jobs:
           python3 ../tools/resource_guard.py frames \
             --elf target/thumbv8m.main-none-eabihf/release/obc2_store_bench \
             --match obc2 --limit 8192
+      # The flat store's own stack ceiling (#1386), the same guard one layer down — and it is **two**
+      # gates, because one needle cannot do both jobs. `--match flat` also matches the bench binary,
+      # whose `initialize` frame (32,256 B) is four times the store's own worst and would hide a 3.4x
+      # regression in `FlatStore::mount` underneath it.
+      #
+      # 1. The store: `FlatStore::mount` builds a 10,416-byte store in a return slot, measured at
+      #    12,160 B. 16,384 is that with room for one more row, and it is the number that matters —
+      #    FS5 mounts this from the app, against the 51,576 B residual main stack the shipping image
+      #    has. The needle reaches the store's **trait** methods as well as its inherent ones only
+      #    because `select_frames` canonicalises `..` to `::` first: llvm-objdump demangles a trait
+      #    impl as `<obc_storage..flat..store..FlatStore<D> as ...>::commit`, and without that this
+      #    needle silently skipped all six trait-impl symbols — `Store::commit`'s 2,812 B among them.
+      #    26 symbols now, same 12,160 B maximum.
+      # 2. The bench: 32,256 B in `initialize`, which chains two of those return slots. Pinned at
+      #    32,768 — the measured figure rounded up to the next 4 KiB, so a bench that grows a frame
+      #    fails here and gets re-pinned deliberately rather than drifting. On glass the whole
+      #    phase-one run reached 58,096 B of high-water, on a bench that holds two stores at once.
+      - name: "obc-fw-nrf54l: flat store frame ceiling"
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: |
+          cargo build --release --locked --bin flat_store_bench
+          python3 ../tools/resource_guard.py frames \
+            --elf target/thumbv8m.main-none-eabihf/release/flat_store_bench \
+            --match 'obc_storage::flat' --limit 16384
+          python3 ../tools/resource_guard.py frames \
+            --elf target/thumbv8m.main-none-eabihf/release/flat_store_bench \
+            --match flat_store_bench --limit 32768
       # The BLE board guard also subsumes #677's steady-state poll-frame parser: largest single
       # `sub sp` in every `TaskStorage<F>::poll`, still capped at 12 KiB, now with stale-symbol and
       # stale-instruction diagnostics covered by unit tests.
