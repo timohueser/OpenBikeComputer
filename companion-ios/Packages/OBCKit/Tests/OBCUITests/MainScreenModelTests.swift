@@ -678,9 +678,17 @@ final class MainScreenModelTests: XCTestCase {
 
         let (model, _) = makeModel(.happyPath, library: library)
         await startLoaded(model)
-        // The clear is a reconcile write, so it waits for the identity scope
-        // (#769's fail-closed rule) — poll rather than assert immediately.
-        await waitFor("the stale link to clear") { !model.isUploaded(record.id) }
+        // The clear is a reconcile write gated on the identity scope (#769's
+        // fail-closed rule), so wait on the write itself. The badge is *not* a
+        // proxy for it: `isUploaded` is proof-based (#770), so it goes dark as
+        // soon as the catalog fails to prove object 999 — which happens before
+        // the scope settles, and so before anything is cleared. Waiting on the
+        // badge let this assert into that gap, and it failed under load with the
+        // link still in the store.
+        await waitFor("the stale link to clear from the store") {
+            library.plannedRoutes().first { $0.id == record.id }?.deviceLink == nil
+        }
+        XCTAssertFalse(model.isUploaded(record.id), "the badge goes dark with the link")
         XCTAssertNil(model.plannedDeviceObjectID(for: record.id))
         XCTAssertNil(library.plannedRoutes().first { $0.id == record.id }?.deviceLink,
                      "the cleared link persists")
