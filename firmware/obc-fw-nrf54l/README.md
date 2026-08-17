@@ -201,6 +201,22 @@ Its first cycle is destructive and its later ones are not: the bench resumes the
 and appends exactly one record per boot. Flip `FORCE_REINIT` in the source for one flash to get the
 destructive first-cycle path back on a card it has already initialized.
 
+```bash
+# The OBC2 store bench (#1359) — the layer above the media bench. Same bring-up (storage only, no
+# display/app/BLE/sensors) and the same destructive posture, but it drives the whole DOS3 kernel
+# transaction on the card: §12 mount classification and initialization with lazy shards, then one
+# upload lifecycle (claim → append → seal → validate → publish → QueryOperation), then the sectors
+# that publish wrote, the resident footprint, and the stack high-water. Reset the board and run it
+# again: the store must remount from the card alone with the head, its payload bytes and the
+# retained result intact, and then commit one more object.
+cargo run --release --bin obc2_store_bench
+```
+
+It reinitializes only when §12 refuses to mount what it finds (or when `FORCE_REINIT` is set), so
+consecutive resets accumulate objects and journal records — which is the point, since the mount cost
+it reports grows with the replay suffix. It refuses to write to a store whose `StoreId` is not its
+own.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
