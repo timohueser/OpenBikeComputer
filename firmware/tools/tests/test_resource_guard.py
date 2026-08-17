@@ -401,9 +401,21 @@ class ModuleFrameGateTests(unittest.TestCase):
     3000: b084          sub.w sp, sp, #40000
 """
 
-    def _run(self, limit, match="obc2"):
+    # A **trait impl**, spelled the way llvm-objdump actually demangles one: legacy escaping, and the
+    # paths inside the `<... as ...>` brackets separated by `..` rather than `::`. This is the shape
+    # that escaped the #1386 gate — `Store::commit` carried 2,812 B and a needle of
+    # `obc_storage::flat` never saw it.
+    TRAIT_IMPL = """
+00004000 <_$LT$obc_storage..flat..store..FlatStore$LT$D$GT$$u20$as$u20$obc_storage..flat..seam..Store$GT$::commit::h1234>:
+    4000: b5f0          push {r4, r5, r6, r7, lr}
+    4002: b084          sub.w sp, sp, #2812
+"""
+
+    def _run(self, limit, match="obc2", disassembly=None):
         args = SimpleNamespace(elf=Path("image.elf"), match=match, limit=limit)
-        with mock.patch.object(resource_guard, "run_tool", return_value=self.DISASSEMBLY):
+        with mock.patch.object(
+            resource_guard, "run_tool", return_value=disassembly or self.DISASSEMBLY
+        ):
             resource_guard.check_frames(args)
 
     def test_the_measured_ceiling_passes(self):
@@ -420,3 +432,43 @@ class ModuleFrameGateTests(unittest.TestCase):
     def test_a_module_that_vanished_is_a_stale_guard_rather_than_a_pass(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "guard is stale"):
             self._run(8_192, match="obc3")
+
+    def test_a_scoped_needle_reaches_trait_impl_symbols(self):
+        """The #1386 hole: a needle spelled as a Rust path must gate trait methods too.
+
+        Before canonicalisation this needle matched nothing in a disassembly of only trait impls —
+        the guard read as "stale" rather than as "everything passed", which is the one saving grace,
+        but mixed with inherent methods (as every real ELF is) it silently passed a 2,812 B frame it
+        was pointed at.
+        """
+        self.assertIn(
+            "obc_storage::flat::seam::Store",
+            resource_guard.canonical_symbol(
+                "_$LT$obc_storage..flat..store..FlatStore$LT$D$GT$$u20$as$u20$"
+                "obc_storage..flat..seam..Store$GT$::commit::h1234"
+            ),
+        )
+        # It is selected, and it is gated: the frame is the one the trait method carries.
+        with self.assertRaisesRegex(resource_guard.GuardError, "above the 2000 B limit"):
+            self._run(2_000, match="obc_storage::flat", disassembly=self.TRAIT_IMPL)
+        self._run(4_096, match="obc_storage::flat", disassembly=self.TRAIT_IMPL)
+
+    def test_a_trait_impl_does_not_hide_behind_an_inherent_method(self):
+        """The real shape: one module, one inherent frame and one trait frame, one needle.
+
+        The trait frame is deliberately the **larger** of the two and the limit clears the inherent
+        one, so this test can only pass if the needle reached the trait method: with the `..` symbol
+        left un-canonicalised the needle still matches the inherent `KernelTransaction::commit`, the
+        guard reports 6,080 B against an 8,192 B limit, and nothing is raised. An earlier version of
+        this test used a limit below *both* frames and so passed either way — vacuous, and caught in
+        review.
+        """
+        disassembly = self.DISASSEMBLY + self.TRAIT_IMPL.replace(
+            "obc_storage..flat", "obc_storage..obc2"
+        ).replace("#2812", "#9000")
+        with self.assertRaises(resource_guard.GuardError) as caught:
+            self._run(8_192, match="obc_storage::obc2", disassembly=disassembly)
+        # The frame that tripped it is the trait method's, and the diagnostic names that symbol
+        # rather than the inherent one it shares a module with.
+        self.assertIn("9000 B", str(caught.exception))
+        self.assertIn("$u20$as$u20$", str(caught.exception))
