@@ -923,3 +923,65 @@ fn commit_refusal(error: StoreError) -> Refusal {
         StoreError::Invalid => Refusal::plain(ErrorCode::Internal),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tables between §2's refusals and §3.9's codes, checked where they are written. Every one
+    /// of these also has a behaviour test over a real card in `tests/flat_engine.rs`; these are the
+    /// rows a card cannot easily be made to produce.
+    #[test]
+    fn a_full_table_is_busy_and_never_invalid_request() {
+        assert_eq!(allocate_refusal(StoreError::Invalid, 1).code, ErrorCode::Busy);
+        assert_eq!(open_refusal(StoreError::Invalid).code, ErrorCode::Busy);
+        // The same variant from a commit is the engine's own batch being wrong, which is not the
+        // client's fault either — but it is not transient, so it is not `busy`.
+        assert_eq!(commit_refusal(StoreError::Invalid).code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn a_card_that_is_not_the_card_the_superblock_describes_is_unformatted_on_the_wire() {
+        for mode in [Mode::Unformatted, Mode::CardTooSmall] {
+            assert_eq!(
+                read_refusal(mode),
+                Some(Refusal::new(ErrorCode::ReadOnly, detail::read_only::UNFORMATTED)),
+                "{mode:?} still serves reads"
+            );
+            assert_eq!(write_refusal(mode).map(|refusal| refusal.detail), Some(detail::read_only::UNFORMATTED));
+        }
+        assert_eq!(
+            read_refusal(Mode::CatalogUnreadable),
+            Some(Refusal::new(ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE))
+        );
+        // The two exhausted cases still serve reads, and refuse every commit.
+        for mode in [Mode::RevisionSpaceExhausted, Mode::SequenceSpaceExhausted] {
+            assert_eq!(read_refusal(mode), None, "{mode:?} stopped serving reads");
+            assert_eq!(
+                write_refusal(mode),
+                Some(Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED))
+            );
+        }
+        assert_eq!(read_refusal(Mode::ReadWrite), None);
+        assert_eq!(write_refusal(Mode::ReadWrite), None);
+    }
+
+    #[test]
+    fn every_seam_refusal_carries_the_context_its_code_defines() {
+        assert_eq!(allocate_refusal(StoreError::NoSpace { required: 42_137 }, 1).context, 42_137);
+        assert_eq!(allocate_refusal(StoreError::TooFragmented, 42_137).context, 42_137);
+        assert_eq!(commit_refusal(StoreError::RevisionConflict { current: Revision(5) }).context, 5);
+        assert_eq!(commit_refusal(StoreError::Media), Refusal::new(ErrorCode::MediaIo, detail::media_io::SYNC));
+        assert_eq!(media_refusal(StoreError::Media, detail::media_io::READ).detail, detail::media_io::READ);
+        // A store that refuses a write because it is read-only says so, rather than blaming media.
+        assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE).code, ErrorCode::ReadOnly);
+    }
+
+    #[test]
+    fn a_link_below_the_protocol_floor_is_refused_rather_than_truncated() {
+        assert!(Ceilings::new(CONTROL_FLOOR - 1, 1_024).is_none());
+        assert!(Ceilings::new(CONTROL_FLOOR, STREAM_HEADER_LEN).is_none());
+        let ceilings = Ceilings::new(244, 1_024).expect("the device's preferred BLE link");
+        assert_eq!((ceilings.control(), ceilings.stream()), (244, 1_024));
+    }
+}
