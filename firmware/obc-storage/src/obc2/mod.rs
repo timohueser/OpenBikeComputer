@@ -70,8 +70,13 @@ pub mod names;
 mod raw;
 pub mod recovery;
 pub mod resolution;
+pub mod transaction;
 pub mod work;
 
+#[cfg(any(test, feature = "std"))]
+pub mod card;
+#[cfg(any(test, feature = "std"))]
+pub mod equivalence;
 #[cfg(any(test, feature = "std"))]
 pub mod fatsim;
 #[cfg(any(test, feature = "std"))]
