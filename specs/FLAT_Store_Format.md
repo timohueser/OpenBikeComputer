@@ -200,7 +200,10 @@ The commit sequence starts at `1` at initialization and increments by exactly on
 store-global, never wraps, and is the value a client uses to tell whether its cached listing is
 stale — a staleness hint, not a version a client may pin bytes to, for the reason §5.5 step 2 gives.
 `next ObjectId` is strictly greater than every `ObjectId` in the array and is never rewound;
-an object removed does not return its id.
+an object removed does not return its id. A commit that **creates** an object must therefore name an id
+at or beyond the cursor, and one below it is refused: that id has named an object already, a reader's
+hold is keyed by `(ObjectId, Revision)`, and re-creating a key over different extents would serve a
+removed object's bytes under a live identity.
 
 The header carries no CRC of its own — it is part of the body, and the gate is what certifies the
 body.
