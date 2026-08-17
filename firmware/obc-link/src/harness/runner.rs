@@ -1,11 +1,15 @@
 //! The driver loop: records in, commands to the transaction, records out.
 //!
-//! This is the whole of what the board glue has to do, written once and generic over the link. It
-//! is deliberately small — the engine holds the state, the transaction holds the bytes, and the
-//! driver only carries values between them — because "one upload and one download implementation
-//! serve BLE and USB" is only true if the thing above them is this thin.
+//! This is the whole of what the board glue has to do, written once and generic over the link **and
+//! over the transaction**. It is deliberately small — the engine holds the state, the transaction
+//! holds the bytes, and the driver only carries values between them — because "one upload and one
+//! download implementation serve BLE and USB" is only true if the thing above them is this thin.
+//!
+//! Being generic over [`Transaction`] is what makes the equivalence proof possible: the same
+//! scenario runs over the in-memory [`FakeTransaction`] and over the kernel-backed transaction
+//! `obc-storage` composes, and the records the engine emits must be byte-identical on both.
 
-use crate::engine::{DeviceProfile, Engine, LinkChannel, LinkContext, LinkError, Reaction};
+use crate::engine::{DeviceProfile, Engine, LinkChannel, LinkContext, LinkError, Reaction, Transaction};
 use crate::frame::MAX_STREAM_FRAME;
 
 use super::fake_link::FakeLink;
@@ -13,18 +17,18 @@ use super::transaction::FakeTransaction;
 
 /// One link, one engine, one transaction.
 #[derive(Debug)]
-pub struct Driver<L: FakeLink> {
+pub struct Driver<L: FakeLink, T: Transaction = FakeTransaction> {
     /// The physical link.
     pub link: L,
     /// The engine under test.
     pub engine: Engine,
     /// The transaction the engine's commands are executed against.
-    pub transaction: FakeTransaction,
+    pub transaction: T,
 }
 
-impl<L: FakeLink> Driver<L> {
+impl<L: FakeLink, T: Transaction> Driver<L, T> {
     /// Builds a driver and opens the link's connection generation.
-    pub fn new(link: L, profile: DeviceProfile, transaction: FakeTransaction) -> Self {
+    pub fn new(link: L, profile: DeviceProfile, transaction: T) -> Self {
         let mut engine = Engine::new(profile);
         engine.open_connection(link.context(), link.ceilings());
         Driver { link, engine, transaction }
@@ -120,7 +124,7 @@ impl<L: FakeLink> Driver<L> {
     fn settle(
         link: &mut L,
         engine: &mut Engine,
-        transaction: &mut FakeTransaction,
+        transaction: &mut T,
         context: LinkContext,
         mut reaction: Reaction<'_>,
         out: &mut [u8],

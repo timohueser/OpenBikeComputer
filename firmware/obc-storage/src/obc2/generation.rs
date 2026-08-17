@@ -283,6 +283,37 @@ impl GenerationWriter {
         self.written
     }
 
+    /// The length this transaction declared and will be sealed against.
+    pub fn declared_length(&self) -> u64 {
+        self.intent.declared_length
+    }
+
+    /// The whole-object CRC-32 this transaction declared.
+    pub fn declared_crc(&self) -> u32 {
+        self.intent.declared_crc
+    }
+
+    /// Synchronizes the accepted prefix and reports its finalized CRC-32.
+    ///
+    /// This is §6.2's checkpoint minus the `WORK` slot: the payload bytes are made durable and the
+    /// prefix they form is hashed, but nothing on the card records the offset. That is exactly what
+    /// the restart-only profile of §6.1 can honestly answer a `CheckpointUpload` with — a progress
+    /// fact, not a resumption point — and it is why this is a separate call rather than part of
+    /// [`append`](Self::append): the profile acknowledges no offset per frame, so a sync per frame
+    /// would be write amplification with nothing to show for it.
+    ///
+    /// The capability is checked like every other mutating call, so a stale tenancy cannot make a
+    /// prefix durable at an offset its restart already discarded.
+    pub fn synchronize<M: GenerationMedia>(
+        &mut self,
+        capability: Capability,
+        media: &mut M,
+    ) -> Result<u32, WriteError<M::Error>> {
+        self.authorize(capability)?;
+        media.sync_payload().map_err(WriteError::Media)?;
+        Ok(self.crc.finalize())
+    }
+
     /// Where the transaction is.
     pub fn state(&self) -> WriterState {
         self.state

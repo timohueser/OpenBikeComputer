@@ -47,10 +47,15 @@ sha2 = { version = "0.11", default-features = false, optional = true }
 # The same digest, for `cfg(test)` runs that do not enable the `std` feature.
 sha2 = { version = "0.11", default-features = false }
 
+# The wire crate's host-only fake-link harness and its published scenario suite, which the
+# kernel-backed transaction is held to. It is a dev-dependency so the device image never sees
+# `std`: `cargo build -p obc-storage` still resolves `obc-link` without it.
+obc-link = { path = "../obc-link", features = ["std"] }
+
 [features]
 default = []
 # Host-only: the deterministic faulting-media harness (`obc2::media`) and the spec-derived storage
 # fixture producer (`obc2::vectors`) that writes `specs/vectors/device-object-v2/storage/`. Neither
 # is reachable from the device image. `cfg(test)` enables both implicitly, so `cargo test -p
 # obc-storage` and a workspace `--all-features` run agree.
-std = ["dep:sha2"]
+std = ["dep:sha2", "obc-link/std"]

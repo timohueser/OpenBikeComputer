@@ -434,6 +434,14 @@ digest. The named producers are roles inside that scope, not separate scopes, an
 binds the same scope to USB attachment and to the device's own UI, which is what lets a cable client
 query and abort UI-initiated work.
 
+The principal-scope digest is 32 bytes here and the wire's `PrincipalScope` is 16
+(`Device_Object_Protocol_v3.md` §3), so a device MUST fix one total, injective mapping from the wire
+scope into these bytes and MUST place the local principal-scope digest outside its image. Byte
+equality of this field is what authorizes a status answer (§3), so a local producer's digest that a
+wire scope can also produce is not a cosmetic collision: it hands one client every local producer's
+operations. A mapping that left-aligns the wire scope and zero-fills bytes 16..32 therefore MUST NOT
+also use the all-zero digest for the local principal.
+
 A draft parent is keyed by parent `OperationId`:
 
 | Offset | Size | Field |
