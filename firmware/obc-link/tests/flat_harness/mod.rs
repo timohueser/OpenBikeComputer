@@ -10,10 +10,10 @@
 
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
-use obc_link::flat::{Ceilings, Channel, Engine, ObjectKind, OpenPolicy, Reaction};
-use obc_storage::flat::sim::SparseDisk;
+use obc_link::flat::{CancelCause, Ceilings, Channel, Engine, ObjectKind, OpenPolicy, Reaction};
+use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
-    DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, StoreId,
+    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, StoreId,
 };
 
 /// `FLAT_Store_Format.md` §2: the fixed region is 2 MiB and the extent area starts on the block
@@ -40,7 +40,10 @@ pub const STREAM_CEILING: usize = 1_024;
 /// times, which is the boundary worth exercising.
 const STAGE: usize = 1_024;
 
-type Card<'a> = FlatStore<&'a SparseDisk>;
+/// A device over a plain card.
+pub type Plain<'a> = Device<&'a SparseDisk>;
+/// A device over a card that refuses one media operation and then behaves.
+pub type Faulty<'a> = Device<&'a FaultOnce<&'a SparseDisk>>;
 
 /// A blank card of the harness geometry.
 pub fn blank_card(seed: u64) -> SparseDisk {
@@ -97,15 +100,15 @@ impl Wire {
     }
 }
 
-/// The device: one store, one engine, one policy.
-pub struct Device<'a> {
-    pub store: Card<'a>,
-    engine: Engine<Card<'a>, STAGE>,
+/// The device: one store and one engine, over whatever card the suite handed it.
+pub struct Device<D: BlockDevice> {
+    pub store: FlatStore<D>,
+    engine: Engine<FlatStore<D>, STAGE>,
     out: Vec<u8>,
 }
 
 /// Mounts a card and puts an idle engine on a BLE-shaped link.
-pub fn boot(disk: &SparseDisk) -> Device<'_> {
+pub fn boot<D: BlockDevice>(disk: D) -> Device<D> {
     Device {
         store: FlatStore::mount(disk),
         engine: Engine::new(Ceilings::new(CONTROL_CEILING, STREAM_CEILING).expect("a link above the floor")),
@@ -113,7 +116,7 @@ pub fn boot(disk: &SparseDisk) -> Device<'_> {
     }
 }
 
-impl Device<'_> {
+impl<D: BlockDevice> Device<D> {
     /// Hands the engine one control record and pumps it until it is quiet. The device has no kind
     /// validators and no update path, which is what a board without FS7 and FS9 runs.
     pub fn control(&mut self, record: &[u8]) -> Wire {
@@ -129,7 +132,12 @@ impl Device<'_> {
     /// One control record, pumped at most `budget` times: a link that goes quiet part-way through a
     /// download, which is the only way to catch one in flight.
     pub fn control_upto(&mut self, record: &[u8], budget: usize) -> Wire {
-        let first = self.engine.on_control(&mut self.store, &mut OpenPolicy, record, &mut self.out);
+        self.control_with_upto(record, &mut OpenPolicy, budget)
+    }
+
+    /// Both at once, for a flow that arms an update and is then cut.
+    pub fn control_with_upto<P: Policy>(&mut self, record: &[u8], policy: &mut P, budget: usize) -> Wire {
+        let first = self.engine.on_control(&mut self.store, policy, record, &mut self.out);
         self.drive(first, budget)
     }
 
@@ -159,6 +167,11 @@ impl Device<'_> {
     /// The link went away.
     pub fn link_lost(&mut self) {
         self.engine.on_link_lost(&mut self.store);
+    }
+
+    /// The device drops the live transfer of its own accord (§3.8's other direction).
+    pub fn cancel_live(&mut self, cause: CancelCause) -> bool {
+        self.engine.cancel_live(&mut self.store, cause)
     }
 
     /// True when nothing is live and nothing is owed.

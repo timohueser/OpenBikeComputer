@@ -39,9 +39,6 @@ pub const LIST_ENTRY_LEN: usize = 88;
 /// page (§5.1). A link below this floor is refused rather than truncated.
 pub const CONTROL_FLOOR: usize = HEADER_LEN + LIST_PREFIX_LEN + LIST_ENTRY_LEN;
 
-/// The largest fixed request, which is `PUT` (§5.1).
-pub const MAX_REQUEST_FRAME: usize = HEADER_LEN + PUT_BODY_LEN;
-
 const LIST_BODY_LEN: usize = 32;
 const STATUS_BODY_LEN: usize = 16;
 const GET_BODY_LEN: usize = 16;
@@ -574,7 +571,6 @@ pub fn encode_error(out: &mut [u8], opcode: Opcode, request: RequestId, refusal:
 /// buffer to every channel and the page still stops where §5.1's control ceiling does.
 pub struct ListWriter {
     ceiling: usize,
-    entries: usize,
     filled: usize,
 }
 
@@ -589,7 +585,7 @@ impl ListWriter {
         let body = &mut out[HEADER_LEN..];
         body[0..16].copy_from_slice(&store.0);
         body[16..24].copy_from_slice(&sequence.to_le_bytes());
-        Some(ListWriter { ceiling, entries: 0, filled: LIST_PREFIX_LEN })
+        Some(ListWriter { ceiling, filled: LIST_PREFIX_LEN })
     }
 
     /// How many entries still fit under the ceiling.
@@ -614,18 +610,7 @@ impl ListWriter {
         entry[32] = meta.name.len() as u8;
         entry[36..36 + NAME_CAPACITY].copy_from_slice(meta.name.padded());
         self.filled += LIST_ENTRY_LEN;
-        self.entries += 1;
         true
-    }
-
-    /// Entries on the page.
-    pub fn len(&self) -> usize {
-        self.entries
-    }
-
-    /// True while the page carries the prefix and nothing else.
-    pub fn is_empty(&self) -> bool {
-        self.entries == 0
     }
 
     /// Seals the page. `more` sets §3.1's bit, which is valid on nothing else.
@@ -1033,7 +1018,6 @@ mod tests {
         assert!(page.push(&mut out, &meta));
         assert!(page.push(&mut out, &meta));
         assert!(!page.push(&mut out, &meta));
-        assert_eq!(page.len(), 2);
         let len = page.finish(&mut out, RequestId(1), true).unwrap();
         assert_eq!(len, HEADER_LEN + LIST_PREFIX_LEN + 2 * LIST_ENTRY_LEN);
         assert_eq!(u16_at(&out, 6), flags::RESPONSE | flags::MORE);

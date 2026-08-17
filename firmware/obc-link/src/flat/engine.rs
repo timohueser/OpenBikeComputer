@@ -74,6 +74,26 @@ pub enum Reaction {
     Close(Channel),
 }
 
+/// Why the device is dropping a transfer of its own accord (§3.9's `cancelled` details).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelCause {
+    /// A device-local decision: a ride starting, a battery too low to install, a shutdown.
+    Device,
+    /// The transfer's own channel died under a link that can still carry the answer — a CoC that
+    /// closed while ATT stayed up. A link that went away entirely is [`Engine::on_link_lost`],
+    /// which answers nobody.
+    LinkLost,
+}
+
+impl CancelCause {
+    fn detail(self) -> u16 {
+        match self {
+            CancelCause::Device => detail::cancelled::BY_DEVICE,
+            CancelCause::LinkLost => detail::cancelled::LINK_LOST,
+        }
+    }
+}
+
 /// The record ceilings the binding imposes (§5.1, §5.2).
 ///
 /// A link whose control records cannot carry a header, a `LIST` prefix and one entry cannot carry
@@ -105,6 +125,8 @@ impl Ceilings {
 /// The live upload, if one owns the engine.
 struct Upload<A> {
     request: RequestId,
+    /// The object being replaced, or [`ObjectId::NONE`] for a create — whose id the commit assigns,
+    /// because `next_object_id` reserves nothing and a device-local commit may take it meanwhile.
     id: ObjectId,
     revision: Revision,
     kind: ObjectKind,
@@ -114,8 +136,6 @@ struct Upload<A> {
     retain_previous: bool,
     /// The head this replaces, if any. Re-checked immediately before the commit (§3.6).
     displaced: Option<Revision>,
-    /// A revision the object already keeps retained, which this commit frees either way.
-    retained: Option<Revision>,
     received: u64,
     staged: usize,
     crc: Crc32,
@@ -204,7 +224,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// One whole stream record arrived: §3.8's 16-byte frame followed by exactly its payload.
     pub fn on_stream<P: Policy>(&mut self, store: &mut S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
-        let live = self.live_transfer();
         let Some((frame, payload)) = StreamFrame::split(record) else {
             // A record that does not split names no transfer this can be sure of. §3.8 makes a
             // malformed stream record terminate the transfer, and there is exactly one to terminate.
@@ -219,23 +238,21 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             );
         };
         // §3.8: a frame bearing a `RequestId` that is not the live transfer's is discarded in
-        // silence, and so is one bearing a live *download*'s — those bytes go the other way.
-        if Some(frame.transfer) != live || !matches!(self.live, Live::Upload(_)) {
+        // silence, and so is one bearing a live *download*'s — those bytes go the other way. One
+        // match settles both, and leaves nothing later in this function to be sure about.
+        let Live::Upload(upload) = &self.live else { return Reaction::Idle };
+        if frame.transfer != upload.request {
             return Reaction::Idle;
         }
+        let (offset, declared) = (upload.received, upload.declared_len);
         if frame.len as usize > self.ceilings.stream - STREAM_HEADER_LEN {
             return self.fail_upload(store, Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH), out);
         }
-        let Live::Upload(upload) = &self.live else { unreachable!("the live transfer was just matched") };
-        let (kind, offset, declared) = (upload.kind, upload.received, upload.declared_len);
         // "Frames are contiguous and ascending; the offset equals the receiver's next expected
         // offset." A gap and an overlap are the same refusal.
         if frame.offset != offset || offset + payload.len() as u64 > declared {
             let refusal = Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::STREAM_OFFSET);
             return self.fail_upload(store, refusal, out);
-        }
-        if let Err(reason) = policy.inspect(kind, offset, payload) {
-            return self.fail_upload(store, Refusal::new(ErrorCode::Rejected, reason), out);
         }
         if let Err(error) = self.absorb(store, payload) {
             return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
@@ -265,6 +282,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 None => Reaction::Idle,
             };
         }
+        // A buffer that cannot hold a frame and one payload byte would stall the download forever,
+        // so it ends it instead of looping on `Idle`. An adapter that reports a ceiling it will not
+        // supply is the device's own fault, not the client's.
+        if out.len() <= STREAM_HEADER_LEN {
+            return self.fail_download(store, Refusal::plain(ErrorCode::Internal), out);
+        }
         let room = out.len().min(self.ceilings.stream) - STREAM_HEADER_LEN;
         let want = room.min((payload_len - offset) as usize);
         let read = store.read(&download.handle, offset, &mut out[STREAM_HEADER_LEN..STREAM_HEADER_LEN + want]);
@@ -287,9 +310,28 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// The link went away (§3.8's third form of cancel). The live transfer is dropped, its
     /// allocation released, its handle closed, and no record of it exists.
+    ///
+    /// Nothing is answered, because there is nobody left to answer: an error owed to a transfer the
+    /// peer can no longer hear is dropped with it.
     pub fn on_link_lost(&mut self, store: &mut S) {
         self.abandon(store);
         self.owed = None;
+    }
+
+    /// The **device's** half of §3.8's bilateral cancel: "The device cancels by answering the
+    /// outstanding `PUT` or `GET` with an error and dropping the transfer."
+    ///
+    /// Reports whether there was one. The allocation is released or the handle closed exactly as
+    /// every other abandonment does, and the transfer's `cancelled` answer goes out on the next
+    /// [`poll`](Engine::poll) — the caller is a device-local decision (a ride starting, a battery
+    /// below the install threshold, a stream channel that died under a control channel that did
+    /// not), not a wire request, so there is no second response to pair it with.
+    pub fn cancel_live(&mut self, store: &mut S, cause: CancelCause) -> bool {
+        let Some(request) = self.live_transfer() else { return false };
+        let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
+        self.abandon(store);
+        self.owed = Some(Owed { opcode, request, refusal: Refusal::new(ErrorCode::Cancelled, cause.detail()) });
+        true
     }
 
     // -- the opcodes -----------------------------------------------------------------------------
@@ -434,7 +476,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if put.retain_previous && put.kind != ObjectKind::WeatherBundle {
             return Err(bad_combination());
         }
-        let (id, revision, displaced, retained) = if put.id.is_some() {
+        let (id, revision, displaced) = if put.id.is_some() {
             let found = lookup(store, put.id);
             if !store.entries_ok() {
                 return Err(media_refusal(StoreError::Media, detail::media_io::READ));
@@ -458,11 +500,14 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             let Some(next) = head.revision.next() else {
                 return Err(Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED));
             };
-            (put.id, next, Some(head.revision), found.retained.map(|meta| meta.revision))
+            (put.id, next, Some(head.revision))
         } else {
-            // `next_object_id` reserves nothing; the commit that publishes the create is what
-            // advances the cursor, and one transfer at a time is what makes that safe.
-            (store.next_object_id(), Revision::FIRST, None, None)
+            // A create names no id until it commits. `next_object_id` reserves nothing, and a
+            // device-local commit — a ride starting mid-upload — takes the id this would have pinned
+            // and turns the publish into a `revisionConflict` naming an object the client never sent.
+            // The cursor never rewinds (`FLAT_Store_Format.md` §5.2), so reading it at the commit is
+            // both fresh and free.
+            (ObjectId::NONE, Revision::FIRST, None)
         };
         let allocation = store.allocate(put.payload_len).map_err(|error| allocate_refusal(error, put.payload_len))?;
         self.live = Live::Upload(Upload {
@@ -476,7 +521,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             // A create has no displaced revision to retain, so the flag has nothing to ask for.
             retain_previous: put.retain_previous && displaced.is_some(),
             displaced,
-            retained,
             received: 0,
             staged: 0,
             crc: Crc32::new(),
@@ -524,7 +568,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 store.commit(&[head_mutation, Mutation::Remove { id: retained.id, revision: retained.revision }])
             }
         };
-        sequence.map_err(commit_refusal)
+        // A removal frees space rather than needing any, so `noSpace`'s context is zero here.
+        sequence.map_err(|error| commit_refusal(error, 0))
     }
 
     fn on_cancel(&mut self, store: &mut S, request: RequestId, transfer: RequestId, out: &mut [u8]) -> Reaction {
@@ -616,16 +661,22 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Ok(sequence) => sequence,
             Err(error) => {
                 store.cancel(allocation);
-                return Err(commit_refusal(error));
+                return Err(commit_refusal(error, bytes));
             }
         };
-        // Step 3. A cut before this completes leaves a boot page that does not decode, which the
-        // bootloader reads as *no pending update*; the reserve is then an ordinary object the next
-        // boot removes. A refusal here is the same state, reached without the cut, so it is reported
-        // as the device fault it is and nothing reboots.
-        policy
-            .hand_off((head.id, head.revision), (reserve.id, reserve.revision))
-            .map_err(|_| Refusal::plain(ErrorCode::Internal))?;
+        // Step 3. A *cut* before this completes is survivable because the reboot that follows it runs
+        // the reconciliation §4 describes: the boot page does not decode, the bootloader reads no
+        // pending update, and the reserve is an ordinary object the next boot removes. A **refusal**
+        // reaches no reboot and therefore no reconciliation, and a `RESERVED` entry cannot be removed
+        // from the wire at all (§3.7) — so leaving it would strand extents the client can never free
+        // and let every retry commit another one. The refusal takes its own commit back instead,
+        // which is what makes §3.9's "an error means the mutation did not happen" true here.
+        if policy.hand_off((head.id, head.revision), (reserve.id, reserve.revision)).is_err() {
+            // Best effort: a card that refuses both the handoff and the way back leaves the reserve
+            // for the next boot's reconciliation, and there is nothing further this can do about it.
+            let _ = store.commit(&[Mutation::Remove { id: reserve.id, revision: reserve.revision }]);
+            return Err(Refusal::plain(ErrorCode::Internal));
+        }
         Ok((reserve.id, sequence))
     }
 
@@ -708,34 +759,33 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         Ok(())
     }
 
-    /// The `RequestId` of the live upload, for the response it is about to get.
+    /// The `RequestId` the live transfer's answer echoes. Zero when there is none, which only a
+    /// caller with nothing to answer ever sees.
     fn owed_request(&self) -> RequestId {
-        match &self.live {
-            Live::Upload(upload) => upload.request,
-            Live::Download(download) => download.request,
-            Live::Idle => RequestId(0),
-        }
+        self.live_transfer().unwrap_or(RequestId(0))
     }
 
     /// The one commit a `PUT` makes: publish the new head, and settle what it displaced.
     fn publish(&mut self, store: &mut S) -> Result<(ObjectId, Revision, u64, u32), Refusal> {
         let Live::Upload(upload) = &self.live else { return Err(Refusal::plain(ErrorCode::Internal)) };
+        // A create takes its id here rather than at admission: the cursor only moves forward, so
+        // reading it at the commit cannot collide with a device-local commit that ran meanwhile.
+        let id = if upload.id.is_some() { upload.id } else { store.next_object_id() };
         // §3.6: the expected `Revision` is checked at admission and again immediately before the
-        // commit.
-        let found = lookup(store, upload.id);
+        // commit. For a create the expectation is that nothing names this id at all.
+        let found = lookup(store, id);
         if !store.entries_ok() {
             return Err(media_refusal(StoreError::Media, detail::media_io::READ));
         }
-        let head = found.head.map(|meta| meta.revision);
-        if head != upload.displaced {
+        if found.head.map(|meta| meta.revision) != upload.displaced {
             return Err(Refusal::with_context(
                 ErrorCode::RevisionConflict,
                 detail::revision_conflict::HEAD_DIFFERS,
-                head.unwrap_or(Revision(0)).0,
+                found.head.map_or(0, |meta| meta.revision.0),
             ));
         }
         let meta = EntryMeta {
-            id: upload.id,
+            id,
             revision: upload.revision,
             kind: upload.kind,
             flags: EntryFlags::NONE,
@@ -744,25 +794,26 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             name: upload.name,
         };
         let publish = Mutation::Put { meta, source: PutSource::Fresh(upload.allocation) };
-        // What the displaced head becomes, and the revision the object already kept retained. A
-        // replace leaves at most what it asked for: a retaining one keeps exactly the revision it
-        // displaced, and an ordinary one leaves the object with a head and nothing else.
-        let displace = upload.displaced.map(|revision| {
+        // What the displaced head becomes. A replace leaves at most what it asked for: a retaining
+        // one keeps exactly the revision it displaced, and an ordinary one leaves the object with a
+        // head and nothing else.
+        let displace = found.head.map(|head| {
             if upload.retain_previous {
-                let mut retained = found.head.expect("a displaced revision is a head");
-                retained.flags = retained.flags.with(EntryFlags::RETAINED);
+                let retained = EntryMeta { flags: head.flags.with(EntryFlags::RETAINED), ..head };
                 Mutation::Put { meta: retained, source: PutSource::Amend }
             } else {
-                Mutation::Remove { id: upload.id, revision }
+                Mutation::Remove { id: head.id, revision: head.revision }
             }
         });
-        let free = upload.retained.map(|revision| Mutation::Remove { id: upload.id, revision });
+        // A revision the object already kept retained goes either way: a second retaining replace
+        // frees the first, and an ordinary replace clears retention altogether.
+        let free = found.retained.map(|meta| Mutation::Remove { id: meta.id, revision: meta.revision });
         let sequence = match (displace, free) {
             (None, _) => store.commit(&[publish]),
             (Some(displace), None) => store.commit(&[publish, displace]),
             (Some(displace), Some(free)) => store.commit(&[publish, displace, free]),
         };
-        sequence.map_err(commit_refusal)?;
+        sequence.map_err(|error| commit_refusal(error, meta.payload_len))?;
         Ok((meta.id, meta.revision, meta.payload_len, meta.payload_crc))
     }
 
@@ -869,6 +920,9 @@ fn read_only_detail(mode: Mode) -> u16 {
     }
 }
 
+/// A refusal from a `write` or a `read`. A store that answers `ReadOnly` mid-transfer says so —
+/// detail `0`, because the mode that produced it was `ReadWrite` when the transfer was admitted and
+/// this path has no narrower fact to offer.
 fn media_refusal(error: StoreError, when: u16) -> Refusal {
     match error {
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, 0),
@@ -878,6 +932,12 @@ fn media_refusal(error: StoreError, when: u16) -> Refusal {
 
 /// A refusal from `allocate`. `Invalid` here is a full reservation table — a transient fact about
 /// the device, which §3.9 answers with `busy` and never with `invalidRequest`.
+///
+/// That reading is only sound because the caller has already ruled out every other way `allocate`
+/// says `Invalid`: `admit_put` refuses a zero declared length and a `RECORDING`/`RESERVED` head
+/// before it ever reaches here, and `apply_arm` allocates only what its policy asked for. Those
+/// pre-checks are load-bearing for this mapping, not decoration — remove one and a client's own bad
+/// request comes back as "the device is busy, try again", forever.
 fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
     match error {
         StoreError::NoSpace { required } => {
@@ -904,8 +964,9 @@ fn open_refusal(error: StoreError) -> Refusal {
 }
 
 /// A refusal from `commit`. A commit that returns `Err` changed nothing, so every one of these is a
-/// mutation that did not happen.
-fn commit_refusal(error: StoreError) -> Refusal {
+/// mutation that did not happen. `bytes` is what the mutation needed, which is §3.9's context for
+/// `noSpace` however the store phrased its refusal.
+fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
         StoreError::RevisionConflict { current } => {
@@ -914,8 +975,8 @@ fn commit_refusal(error: StoreError) -> Refusal {
         StoreError::NoSpace { required } => {
             Refusal::with_context(ErrorCode::NoSpace, detail::no_space::EXTENTS, required)
         }
-        StoreError::TooFragmented => Refusal::new(ErrorCode::NoSpace, detail::no_space::TOO_FRAGMENTED),
-        StoreError::CatalogFull => Refusal::new(ErrorCode::NoSpace, detail::no_space::CATALOG_FULL),
+        StoreError::TooFragmented => Refusal::with_context(ErrorCode::NoSpace, detail::no_space::TOO_FRAGMENTED, bytes),
+        StoreError::CatalogFull => Refusal::with_context(ErrorCode::NoSpace, detail::no_space::CATALOG_FULL, bytes),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::SYNC),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
         // The engine built the batch, so a structural refusal is this crate's fault and not the
@@ -937,7 +998,7 @@ mod tests {
         assert_eq!(open_refusal(StoreError::Invalid).code, ErrorCode::Busy);
         // The same variant from a commit is the engine's own batch being wrong, which is not the
         // client's fault either — but it is not transient, so it is not `busy`.
-        assert_eq!(commit_refusal(StoreError::Invalid).code, ErrorCode::Internal);
+        assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
     }
 
     #[test]
@@ -970,11 +1031,18 @@ mod tests {
     fn every_seam_refusal_carries_the_context_its_code_defines() {
         assert_eq!(allocate_refusal(StoreError::NoSpace { required: 42_137 }, 1).context, 42_137);
         assert_eq!(allocate_refusal(StoreError::TooFragmented, 42_137).context, 42_137);
-        assert_eq!(commit_refusal(StoreError::RevisionConflict { current: Revision(5) }).context, 5);
-        assert_eq!(commit_refusal(StoreError::Media), Refusal::new(ErrorCode::MediaIo, detail::media_io::SYNC));
+        assert_eq!(allocate_refusal(StoreError::CatalogFull, 42_137).context, 42_137);
+        assert_eq!(commit_refusal(StoreError::RevisionConflict { current: Revision(5) }, 0).context, 5);
+        assert_eq!(commit_refusal(StoreError::Media, 0), Refusal::new(ErrorCode::MediaIo, detail::media_io::SYNC));
+        // §3.9 gives code 6 one context — the bytes required — however the store phrased its
+        // refusal, so a commit's `noSpace` carries it too.
+        assert_eq!(commit_refusal(StoreError::TooFragmented, 42_137).context, 42_137);
+        assert_eq!(commit_refusal(StoreError::CatalogFull, 42_137).context, 42_137);
         assert_eq!(media_refusal(StoreError::Media, detail::media_io::READ).detail, detail::media_io::READ);
-        // A store that refuses a write because it is read-only says so, rather than blaming media.
-        assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE).code, ErrorCode::ReadOnly);
+        // A store that refuses a write because it is read-only says so, rather than blaming media —
+        // with detail `0`, because the mode was writable when the transfer was admitted and this
+        // path has no narrower fact than "not any more".
+        assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE), Refusal::new(ErrorCode::ReadOnly, 0));
     }
 
     #[test]

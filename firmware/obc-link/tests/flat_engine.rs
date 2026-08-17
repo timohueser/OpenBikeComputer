@@ -10,7 +10,9 @@ mod flat_harness;
 use flat_harness::{boot, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
-use obc_link::flat::{ObjectId, ObjectKind, Revision};
+use obc_link::flat::{CancelCause, ObjectId, ObjectKind, Revision};
+use obc_storage::flat::sim::{FaultOnce, MediaOp};
+use obc_storage::flat::BlockDevice;
 
 const ROUTE: u16 = 1;
 const WEATHER: u16 = 4;
@@ -31,8 +33,8 @@ fn expect_error(answer: &Answer, code: ErrorCode, detail: u16) {
 }
 
 /// Announces, streams and completes one upload, and returns the answer.
-fn upload(
-    device: &mut Device<'_>,
+fn upload<D: BlockDevice>(
+    device: &mut Device<D>,
     request: u32,
     id: u64,
     expected: u64,
@@ -477,6 +479,8 @@ fn the_link_going_away_releases_everything_and_answers_nobody() {
 struct Armer {
     reserve: u64,
     refuse: Option<u16>,
+    /// When set, §4 step 3 fails: the RRAM page did not read back.
+    handoff_fails: bool,
     handed_off: Option<((ObjectId, Revision), (ObjectId, Revision))>,
 }
 
@@ -490,6 +494,9 @@ impl Policy for Armer {
 
     fn hand_off(&mut self, package: (ObjectId, Revision), reserve: (ObjectId, Revision)) -> Result<(), u16> {
         self.handed_off = Some((package, reserve));
+        if self.handoff_fails {
+            return Err(1);
+        }
         Ok(())
     }
 }
@@ -579,4 +586,205 @@ fn an_unknown_opcode_and_an_unknown_kind_are_unsupported() {
     let record = client::put(3, 0, 0, &payload(64), 99, false, "x");
     expect_error(&Answer::of(device.control(&record).answer()), ErrorCode::Unsupported, detail::unsupported::KIND);
     let _ = UPDATE;
+}
+
+/// §4 step 3 refusing is the one window where the engine has already committed something. A cut
+/// there is survivable because the reboot that follows runs §4's reconciliation; a *refusal* reaches
+/// no reboot, and a `RESERVED` entry cannot be removed from the wire at all (§3.7) — so the engine
+/// takes its own commit back and §3.9's "an error means the mutation did not happen" holds.
+#[test]
+fn a_failed_boot_handoff_takes_its_own_reserve_back() {
+    let disk = formatted_card(25);
+    let mut device = boot(&disk);
+    let (id, revision) = device.seed(ObjectKind::UpdatePackage, &payload(4_096), "v2");
+    let entries = device.entries().len();
+    let free = device.free_extents();
+    let sequence = device.commit_sequence();
+    let mut armer = Armer { reserve: 900_000, handoff_fails: true, ..Armer::default() };
+
+    let wire = device.control_with(&client::arm(1, id, revision), &mut armer);
+    assert!(!wire.reboot, "a device that could not hand off must not reboot into an update it cannot run");
+    expect_error(&Answer::of(wire.answer()), ErrorCode::Internal, 0);
+    assert!(armer.handed_off.is_some(), "the hook was reached");
+    assert_eq!(device.entries().len(), entries, "no rollback reserve survived the refusal");
+    assert_eq!(device.free_extents(), free, "and its extents came back");
+    assert_eq!(device.commit_sequence(), sequence + 2, "one commit and one that took it back");
+
+    // The retry is the point: without the rollback each attempt would strand another unremovable
+    // kind-8 entry until the catalog or the extent area ran out.
+    armer.handoff_fails = false;
+    let wire = device.control_with(&client::arm(2, id, revision), &mut armer);
+    assert!(wire.reboot, "{:?}", Answer::of(wire.answer()));
+    let reserve = Answer::of(wire.answer()).u64_at(0);
+    assert_eq!(device.entries().len(), entries + 1, "exactly one reserve, from the attempt that worked");
+    assert!(device.entry(reserve).is_some());
+}
+
+/// §3.8's other half: the device cancels by answering the outstanding transfer with an error and
+/// dropping it. There is no second response, because nothing on the wire asked.
+#[test]
+fn the_device_can_cancel_the_live_transfer_itself() {
+    let disk = formatted_card(26);
+    let mut device = boot(&disk);
+    let bytes = body();
+    let free = device.free_extents();
+
+    assert!(!device.cancel_live(CancelCause::Device), "nothing is live");
+
+    device.control(&client::put(0x70, 0, 0, &bytes, ROUTE, false, "interrupted"));
+    device.stream(&client::stream(0x70, 0, &bytes[..1_008]));
+    assert!(device.cancel_live(CancelCause::Device));
+    let wire = device.pump();
+    let answer = Answer::of(wire.answer());
+    assert_eq!(answer.request, 0x70, "the answer is the transfer's own");
+    expect_error(&answer, ErrorCode::Cancelled, detail::cancelled::BY_DEVICE);
+    assert_eq!(device.free_extents(), free, "the allocation was released");
+    assert!(device.entries().is_empty());
+    assert!(device.is_quiet());
+
+    // The stream channel dying under a control channel that did not is the same act with the other
+    // detail — unlike a link that went away entirely, which answers nobody.
+    let (id, _) = device.seed(ObjectKind::Route, &bytes, "served");
+    device.control_upto(&client::get(0x71, id, 0), 1);
+    assert!(device.cancel_live(CancelCause::LinkLost));
+    expect_error(&Answer::of(device.pump().answer()), ErrorCode::Cancelled, detail::cancelled::LINK_LOST);
+    assert!(device.is_quiet());
+    assert_eq!(device.remove_and_measure(id), 1, "the download's handle was closed");
+}
+
+/// A create names no `ObjectId` until it commits, because `next_object_id` reserves nothing: a
+/// device-local commit during the upload — a ride starting — takes the id a pinned one would have
+/// used, and the client would get a `revisionConflict` naming an object it never sent.
+#[test]
+fn a_device_local_commit_during_an_upload_does_not_steal_the_creates_identity() {
+    let disk = formatted_card(27);
+    let mut device = boot(&disk);
+    let bytes = body();
+    let records = client::stream_all(1, &bytes, 1_008);
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "created"));
+    device.stream(&records[0]);
+    // The device starts a ride mid-upload. It commits, and takes ObjectId 1.
+    let (ride, _) = device.seed_recording(4 * 1_024 * 1_024);
+    assert_eq!(ride, 1);
+
+    let mut answer = None;
+    for record in records.iter().skip(1) {
+        let wire = device.stream(record);
+        if !wire.control.is_empty() {
+            answer = Some(Answer::of(wire.answer()));
+        }
+    }
+    let answer = answer.expect("the last record is answered");
+    assert!(!answer.is_error(), "{answer:?}");
+    assert_eq!(answer.u64_at(0), 2, "the create took the id the cursor had when it committed");
+    assert_eq!(answer.u64_at(8), 1, "and published Revision 1");
+    assert_eq!(device.entry(2).unwrap().name.as_bytes(), b"created");
+}
+
+// -- media faults ---------------------------------------------------------------------------------
+//
+// A power cut is the *less* demanding failure: after it there is no store left to ask anything of.
+// The input every error path at the seam actually takes is one operation refused with the card still
+// there, which is what `FaultOnce` produces. Each test asserts the fault fired — a probe that never
+// fired proves nothing about the path it was aiming at.
+
+/// A listing that stopped early is a media failure with nowhere to report itself, so every caller
+/// that treats one as the catalog asks `entries_ok()` — and an absent object is never made out of a
+/// read that failed.
+#[test]
+fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
+    let disk = formatted_card(30);
+    let faulty = FaultOnce::new(&disk);
+    let mut device = boot(&faulty);
+    let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "there");
+
+    for (name, record) in [
+        ("LIST", client::list(1, None)),
+        ("STATUS", client::status(2, id, revision)),
+        ("GET", client::get(3, id, 0)),
+        ("REMOVE", client::remove(4, id, revision)),
+        ("PUT", client::put(5, id, revision, &payload(600), ROUTE, false, "replace")),
+    ] {
+        faulty.fault_next(MediaOp::Read);
+        let answer = Answer::of(device.control(&record).answer());
+        assert!(faulty.fired(), "{name}: the armed read fault never fired");
+        expect_error(&answer, ErrorCode::MediaIo, detail::media_io::READ);
+    }
+    assert!(device.is_quiet());
+    assert_eq!(device.free_extents(), 63, "no refusal left a reservation behind");
+}
+
+/// §2.1 gives a failed `write` two admissible answers — retry the same bytes, or abandon. The engine
+/// takes the second, always, and `cancel` is what makes it free.
+#[test]
+fn a_write_that_fails_mid_stream_abandons_the_transfer_and_releases_it() {
+    let disk = formatted_card(31);
+    let faulty = FaultOnce::new(&disk);
+    let mut device = boot(&faulty);
+    let bytes = body();
+    let free = device.free_extents();
+    let records = client::stream_all(1, &bytes, 1_008);
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "half written"));
+    device.stream(&records[0]);
+    // The second record crosses the staging buffer, so it is the one that reaches the card.
+    faulty.fault_next(MediaOp::Write);
+    let answer = Answer::of(device.stream(&records[1]).answer());
+    assert!(faulty.fired(), "the armed write fault never fired");
+    expect_error(&answer, ErrorCode::MediaIo, detail::media_io::WRITE);
+    assert_eq!(device.free_extents(), free, "the allocation came back");
+    assert!(device.entries().is_empty(), "and the catalog never heard of it");
+    assert!(device.is_quiet());
+}
+
+/// The one path where the store has already been handed the allocation: a commit that returns `Err`
+/// changed nothing, and the engine still owes it a `cancel`.
+#[test]
+fn a_commit_that_fails_leaves_the_catalog_alone_and_still_releases_the_allocation() {
+    let disk = formatted_card(32);
+    let faulty = FaultOnce::new(&disk);
+    let mut device = boot(&faulty);
+    let bytes = body();
+    let free = device.free_extents();
+    let sequence = device.commit_sequence();
+    let records = client::stream_all(1, &bytes, 1_008);
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "not committed"));
+    for record in records.iter().take(records.len() - 1) {
+        device.stream(record);
+    }
+    // The commit's first synchronization is the one that fails.
+    faulty.fault_next(MediaOp::Sync);
+    let answer = Answer::of(device.stream(records.last().unwrap()).answer());
+    assert!(faulty.fired(), "the armed sync fault never fired");
+    expect_error(&answer, ErrorCode::MediaIo, detail::media_io::SYNC);
+    assert!(device.entries().is_empty(), "the commit changed nothing");
+    assert_eq!(device.commit_sequence(), sequence, "not even the sequence");
+    assert_eq!(device.free_extents(), free, "and the allocation was released");
+    assert!(device.is_quiet());
+
+    // The client restarts from zero, onto a card that is exactly as it was.
+    let answer = upload(&mut device, 2, 0, 0, &bytes, ROUTE, "committed");
+    assert!(!answer.is_error(), "{answer:?}");
+    assert_eq!(answer.u64_at(0), 1);
+}
+
+/// A read that fails mid-download ends the transfer with the failure, and closes the handle it was
+/// reading through.
+#[test]
+fn a_read_that_fails_mid_download_ends_it_and_closes_the_handle() {
+    let disk = formatted_card(33);
+    let faulty = FaultOnce::new(&disk);
+    let mut device = boot(&faulty);
+    let (id, _) = device.seed(ObjectKind::Route, &body(), "served");
+
+    let wire = device.control_upto(&client::get(1, id, 0), 1);
+    assert_eq!(wire.stream.len(), 1, "one record went out before the card refused");
+    faulty.fault_next(MediaOp::Read);
+    let answer = Answer::of(device.pump().answer());
+    assert!(faulty.fired(), "the armed read fault never fired");
+    expect_error(&answer, ErrorCode::MediaIo, detail::media_io::READ);
+    assert!(device.is_quiet());
+    assert_eq!(device.remove_and_measure(id), 1, "a leaked hold would have kept the extent");
 }
