@@ -846,6 +846,37 @@ def check_strict_align(args: argparse.Namespace) -> None:
     print("strict-align backend check passed: 4 x ldrb with flag; ldr control without flag")
 
 
+def check_frames(args: argparse.Namespace) -> None:
+    """Gate the largest single stack frame among the symbols of one module, in any ELF.
+
+    The poll-frame and boot-chain guards above measure the *app* image's async task frames. This
+    measures ordinary synchronous frames in a named module, which is what the OBC2 store is made of
+    — and until the DOS4 cutover puts that code in the app image, nothing else in CI looks at it.
+
+    It exists because of a measured regression, not a hypothetical one. Three constructors in the
+    OBC2 kernel returned or assigned a 56 KiB `CatalogModel` by value; placing one transaction cost
+    206,080 B of transient stack and HardFaulted on MSPLIM, against a 51,576 B residual main stack in
+    the shipping image (#1359). The fix took the largest OBC2 frame to 6,080 B. This is what keeps it
+    there: a by-value constructor reintroduced anywhere under `--match` fails the build.
+    """
+    parsed = parse_disassembly(run_tool("llvm-objdump", "--demangle", "-d", args.elf))
+    needle = args.match
+    frames = select_frames(
+        parsed,
+        lambda name: needle in name,
+        f"{needle} frame",
+        f"`{needle}`",
+    )
+    symbol, largest = max(frames.items(), key=lambda item: item[1])
+    print(f"{needle}: largest frame {largest:,} / {args.limit:,} B across {len(frames)} symbol(s)")
+    require(
+        largest <= args.limit,
+        f"{needle} largest stack frame is {largest} B, above the {args.limit} B limit "
+        f"(`{symbol[:90]}`); a value built in a return slot rather than in place is the usual cause "
+        "— see KernelTransaction::mount_in_place and CatalogModel::init_empty (#1359)",
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
@@ -858,6 +889,10 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("--elf", type=Path, required=True)
     boot = commands.add_parser("boot", help="gate the bootloader flash slot")
     boot.add_argument("--elf", type=Path, required=True)
+    frames = commands.add_parser("frames", help="gate the largest stack frame of one module in any ELF")
+    frames.add_argument("--elf", type=Path, required=True)
+    frames.add_argument("--match", required=True, help="substring of the demangled symbol names to gate")
+    frames.add_argument("--limit", type=int, required=True, help="largest permitted single `sub sp` in bytes")
     strict = commands.add_parser("strict-align", help="prove the active ARM backend honors +strict-align")
     strict.add_argument("--probe", type=Path, default=STRICT_ALIGN_PROBE)
     strict.add_argument(
@@ -880,6 +915,8 @@ def main() -> int:
             check_report(args, baseline)
         elif args.command == "boot":
             check_boot(args, baseline)
+        elif args.command == "frames":
+            check_frames(args)
         else:
             check_strict_align(args)
     except (GuardError, KeyError, TypeError) as error:

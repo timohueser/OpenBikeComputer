@@ -357,6 +357,20 @@ jobs:
           cargo build --release --locked --features resource-report
           python3 ../tools/resource_guard.py report --profile default \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+      # The OBC2 store's own stack ceiling (#1359). The guards above measure the app image's async
+      # task frames; the store is synchronous code that the app image does not link yet, so until the
+      # DOS4 cutover nothing else in CI looks at it. It is gated because the regression is measured,
+      # not hypothetical: a 56 KiB projection built in a return slot put 206,080 B of transient stack
+      # on this board and HardFaulted on MSPLIM, against a 51,576 B residual main stack in the
+      # shipping image. The fix took the largest OBC2 frame to 6,080 B; 8,192 is that with headroom.
+      - name: "obc-fw-nrf54l: OBC2 store frame ceiling"
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: |
+          cargo build --release --locked --bin obc2_store_bench
+          python3 ../tools/resource_guard.py frames \
+            --elf target/thumbv8m.main-none-eabihf/release/obc2_store_bench \
+            --match obc2 --limit 8192
       # The BLE board guard also subsumes #677's steady-state poll-frame parser: largest single
       # `sub sp` in every `TaskStorage<F>::poll`, still capped at 12 KiB, now with stale-symbol and
       # stale-instruction diagnostics covered by unit tests.
