@@ -259,6 +259,19 @@ const REINITIALIZE_ABOVE: u64 = 60;
 /// initialization timings — on a card this bench has already initialized.
 const FORCE_REINIT: bool = false;
 
+/// Flip to `true` for one flash to run §6.3's compaction pass at the end of the cycle and time it.
+///
+/// A commit runs the pass itself once the journal reaches §6.3's 192-record trigger, which is the
+/// cost a client's `FinishUpload` pays on the boot that crosses it. Waiting for a real crossing
+/// costs 80-odd upload lifecycles of card time, and the pass's duration does not depend on how it
+/// was reached — so this calls it directly and reports what it had to materialize alongside, which
+/// is what makes the figure extrapolable to a full 256-head epoch instead of only true for this
+/// store's shape.
+///
+/// It is **not** destructive: the pass writes the inactive checkpoint and advances the epoch, which
+/// is an ordinary thing for the store to do and a later boot mounts normally.
+const FORCE_COMPACT: bool = false;
+
 /// The OperationId of the `index`-th object this bench commits. Deterministic, so a boot after a
 /// reset can ask about the one the previous boot published.
 fn operation_of(index: u64) -> OperationId {
@@ -740,7 +753,44 @@ fn lifecycle(store: &mut Store, log: &'static Log, geometry: &VolumeGeometry, in
         }
         other => error!("LIFE  QueryOperation answered {} — the result is not retained", defmt::Debug2Format(&other)),
     }
+    if FORCE_COMPACT {
+        compaction_phase(store);
+    }
     info!("LIFE  reset the board (`probe-rs reset`) and run again: object {=u64} must come back intact", index);
+}
+
+/// §6.3's compaction pass, timed on the real card, with the shape it ran over.
+///
+/// The pass is a single forward pass over 127 sectors of the inactive checkpoint, and for each
+/// occupied entry it sources the two card-resident head fields and the 208-byte result bodies from
+/// §6.3's newest source. That source is a **whole 16,384-byte journal stride** for anything a record
+/// replayed since the active checkpoint carries, and a bounded checkpoint read for everything else —
+/// so the counts below are what turn one duration into a rate.
+fn compaction_phase(store: &mut Store) {
+    let index = store.index();
+    let (heads, results, journal_heads, journal_results) = (
+        index.heads.len(),
+        index.results.len(),
+        index.heads.iter().filter(|head| head.journal_slot != obc_storage::obc2::index::NO_JOURNAL_SLOT).count(),
+        index.results.iter().filter(|row| row.journal_slot != obc_storage::obc2::index::NO_JOURNAL_SLOT).count(),
+    );
+    let epoch = index.epoch;
+    info!(
+        "CMPCT §6.3 pass over epoch {=u64}: {=usize} heads ({=usize} journal-carried), {=usize} results ({=usize} journal-carried)",
+        epoch, heads, journal_heads, results, journal_results
+    );
+    let started = Instant::now();
+    let outcome = store.compact();
+    let elapsed = us(started);
+    match outcome {
+        Ok(()) => info!(
+            "CMPCT §6.3 steps 2-4 (invalidate + 65,024 B streamed body + gate): {=u64} us — epoch {=u64} now, {=usize} card-sourced entries",
+            elapsed,
+            store.index().epoch,
+            journal_heads + journal_results
+        ),
+        Err(error) => error!("CMPCT the pass refused ({})", defmt::Debug2Format(&error)),
+    }
 }
 
 /// What one armed window wrote, named by the structure it landed in.
@@ -841,22 +891,25 @@ fn report_footprint() {
     let media = core::mem::size_of::<Media>();
     let slots = core::mem::size_of::<SlotTable>();
     let staging = SLOT_STRIDE + slots;
+    // Two of these are addends and two are components, and the total is the sum of the addends
+    // alone. `KernelTransaction` *contains* the media and the index by value, so adding either to
+    // the total would count it twice — which is exactly the arithmetic a reader checks first.
     info!(
-        "RAM   1. resident catalog: RamIndex + lease table {=usize} B vs §13's {=usize} B budget — {=u32}/100x",
+        "RAM   [component] resident catalog: RamIndex + lease table {=usize} B vs §13's {=usize} B budget — {=u32}/100x",
         resident,
         RAM_INDEX_BUDGET,
         (resident * 100 / RAM_INDEX_BUDGET) as u32
     );
+    info!("RAM   [component] FatMedia inside it (handles + one staging reference): {=usize} B", media);
     info!(
-        "RAM   2. transaction: KernelTransaction {=usize} B (the index + a {=usize} B seal stride + tables); §13 budgets no figure for this",
+        "RAM   [addend 1] transaction: KernelTransaction {=usize} B — the two components above plus a {=usize} B seal stride and the resident tables; §13 budgets no figure for this",
         store, SLOT_STRIDE
     );
     info!(
-        "RAM   3. mount staging: {=usize} B = {=usize} B stride + {=usize} B slot table; no checkpoint image — §13's mount streams",
+        "RAM   [addend 2] mount staging: {=usize} B = {=usize} B stride + {=usize} B slot table; no checkpoint image — §13's mount streams",
         staging, SLOT_STRIDE, slots
     );
-    info!("RAM   FatMedia itself (handles + one staging reference): {=usize} B", media);
-    info!("RAM   placed in .bss for one mounted store: {=usize} B", store + staging);
+    info!("RAM   TOTAL placed in .bss for one mounted store (addends only): {=usize} B", store + staging);
 }
 
 // ── 6. reboot recovery ──────────────────────────────────────────────────────────────────────────
