@@ -112,6 +112,14 @@ pub trait Store: Transaction {
 
     /// Arms one injected failure.
     fn arm(&mut self, fault: Fault);
+
+    /// Clears every armed failure, so a scenario can prove that a transient one heals.
+    ///
+    /// A store that only ever fails proves half of what matters. §11 makes a durable claim
+    /// something that must reach a terminal state, and "must" is only meaningful if the path back
+    /// exists once the medium recovers — so at least one scenario arms a failure, observes the
+    /// refusal, disarms, and drives the same claim to a terminal state.
+    fn disarm(&mut self);
 }
 
 /// What builds the stores a scenario runs against.
@@ -1022,7 +1030,8 @@ pub fn an_abort_the_medium_refuses_is_answered_once_rather_than_retried<F: Fixtu
     // under the terminal record has not discharged that. The engine's job is to answer once and
     // stop: asking again would fail the same way, for ever, and a store that cannot write cannot be
     // argued into writing. What the client is told is that the claim is still live and that a query
-    // is where the truth will be.
+    // is where the truth will be — and the claim it is told about has **no session attached**,
+    // because §8.1 sets that bit "only while that session exists" and this one is gone.
     let mut driver = f.ble(1);
     negotiate(&mut driver);
     let bytes = payload(1_024);
@@ -1047,11 +1056,156 @@ pub fn an_abort_the_medium_refuses_is_answered_once_rather_than_retried<F: Fixtu
     assert!(driver.engine.live_session().is_none(), "the session is released either way");
     assert!(!driver.transaction.retains(OP_A), "nothing terminal was retained");
 
+    // §8.1: the claim is still in progress, and it is **not** attached to a session any more.
+    driver
+        .link
+        .deliver(LinkChannel::Control, &record(&Request::QueryOperation(QueryOperation { operation_id: OP_A }), 5));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::OperationStatus(OperationStatus::InProgress(progress)) => {
+            assert_eq!(progress.phase, crate::registry::Phase::Aborting, "the claim is unwinding");
+            assert_eq!(
+                progress.flags & crate::query::progress_flags::SESSION_ATTACHED,
+                0,
+                "a released session is not an attachment"
+            );
+        }
+        other => panic!("expected the live claim, got {other:?}"),
+    }
+
     // And the link is still usable: the engine answered once and went back to idle rather than
     // spinning on an abort that cannot succeed.
-    driver.link.deliver(LinkChannel::Control, &record(&Request::GetDeviceStatus, 5));
+    driver.link.deliver(LinkChannel::Control, &record(&Request::GetDeviceStatus, 6));
     driver.pump().unwrap();
     assert!(matches!(decoded(driver.link.sent(LinkChannel::Control).last().unwrap()), Response::DeviceStatus(_)));
+
+    // The medium recovers. §6.4's AbortOperation is the client's way back to a terminal state, and
+    // it works on the very claim the failed abort left live.
+    driver.transaction.disarm();
+    let command =
+        AbortOperation { operation_id: OP_ABORT, target_operation_id: OP_A, reason: AbortReason::UserRequested };
+    driver.link.deliver(LinkChannel::Control, &record(&Request::AbortOperation(command), 7));
+    driver.pump().unwrap();
+    match decoded(driver.link.sent(LinkChannel::Control).last().unwrap()) {
+        Response::MutationResult(ResultEnvelope::Abort(result)) => {
+            assert_eq!(result.target_operation_id, OP_A);
+            assert_eq!(result.disposition, crate::result::AbortDisposition::Cancelled);
+        }
+        other => panic!("expected the AbortResult, got {other:?}"),
+    }
+    assert!(driver.transaction.retains(OP_A), "the transient failure healed to a terminal state");
+    assert!(driver.transaction.retains(OP_ABORT));
+}
+
+pub fn a_stream_fault_whose_abort_fails_reports_stream_closed_query_status<F: Fixture>(f: &mut F) {
+    // §13's headline path with the medium refusing underneath it. The fault frame still goes out —
+    // the client is owed one — but it must not say `operationDurablyAborted`, because nothing was
+    // durably aborted. Disposition 2 is the honest one: "the stream transport is closed; query the
+    // operation's status", which is exactly what the claim's state now requires the client to do.
+    let mut driver = f.ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(2_048);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+
+    driver.transaction.arm(Fault::FailAbort);
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 512, b"out of order"));
+    driver.pump().unwrap();
+
+    let fault = driver.link.sent(LinkChannel::Stream).last().expect("a fault frame").clone();
+    match StreamFrame::decode(&fault).unwrap() {
+        StreamFrame::Fault { terminal, body, session_id: faulted } => {
+            assert_eq!(faulted, session_id);
+            assert!(terminal, "the session is over either way");
+            assert_eq!(body.category, ErrorCategory::MEDIA_IO);
+            assert_eq!(body.detail, detail::media_io::UNCERTAIN_COMMIT);
+            assert_eq!(body.disposition, crate::stream::FaultDisposition::StreamClosedQueryStatus);
+        }
+        other => panic!("expected a fault, got {other:?}"),
+    }
+    assert!(driver.engine.live_session().is_none());
+    assert!(!driver.transaction.retains(OP_A), "the abort did not land, so nothing is terminal");
+}
+
+pub fn a_teardown_whose_abort_fails_is_silent_and_leaves_the_claim_live<F: Fixture>(f: &mut F) {
+    // §13's teardown has nobody to answer — the link is already gone — so a refused abort here
+    // emits nothing at all. What it must still not do is loop, and what the store must still hold
+    // is a live claim that a later AbortOperation or a mount can finish.
+    let mut driver = f.ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(512);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+
+    let before = driver.link.sent(LinkChannel::Control).len();
+    driver.transaction.arm(Fault::FailAbort);
+    driver.close();
+    assert_eq!(driver.link.sent(LinkChannel::Control).len(), before, "a teardown answers nobody");
+    assert!(driver.engine.live_session().is_none());
+    assert!(driver.engine.active_upload().is_none());
+    assert!(!driver.transaction.retains(OP_A), "the claim is live, and the store still owes it a terminal state");
+}
+
+pub fn a_local_publication_between_payload_frames_does_not_divert_the_upload<F: Fixture>(f: &mut F) {
+    // A store addresses "the generation this transaction is writing", and a device-local producer
+    // opens one of its own. Nothing in the wire contract forbids one landing between two payload
+    // frames — §16's plane runs mid-transfer and so does the ride recorder — so a store that keeps
+    // a single open cursor and does not re-point it writes the second half of a client's upload
+    // into somebody else's file. The declared CRC would not catch it: it is computed over the bytes
+    // that were offered, not the bytes that were stored.
+    let mut driver = f.ble(1);
+    negotiate(&mut driver);
+    let bytes = payload(OBJECT_LEN);
+    let mut buffer = [0u8; 32];
+    let metadata = route_put(&mut buffer, 1);
+    driver.link.deliver(
+        LinkChannel::Control,
+        &record(&Request::StartUpload(start_upload(OP_A, Target::Create, &bytes, metadata)), 3),
+    );
+    driver.pump().unwrap();
+    let session_id = driver.engine.live_session().unwrap();
+    let route_id = driver.engine.active_upload().unwrap().logical_object_id;
+
+    let mut chunks = bytes.chunks(1_008);
+    let first = chunks.next().unwrap();
+    driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, 0, first));
+    driver.pump().unwrap();
+
+    // A device-local producer publishes a whole object of its own, mid-stream.
+    let recorded = payload(777);
+    let (ride_id, _) = driver.transaction.publish_local(ObjectKind::Ride, &recorded);
+
+    for chunk in chunks {
+        let offset = driver.engine.active_upload().unwrap().next_offset;
+        driver.link.deliver(LinkChannel::Stream, &data_frame(session_id, offset, chunk));
+        driver.pump().unwrap();
+    }
+    driver.link.deliver(LinkChannel::Control, &record(&Request::FinishUpload(FinishUpload { session_id }), 4));
+    driver.pump().unwrap();
+    assert!(matches!(
+        decoded(driver.link.sent(LinkChannel::Control).last().unwrap()),
+        Response::UploadResult(ResultEnvelope::Object(_))
+    ));
+
+    assert!(
+        driver.transaction.payload_is(ObjectKind::Route, route_id, &bytes),
+        "every byte of the upload landed in the upload's own generation"
+    );
+    assert!(
+        driver.transaction.payload_is(ObjectKind::Ride, ride_id, &recorded),
+        "and the local publication kept its own"
+    );
 }
 
 // -- fuzzing -----------------------------------------------------------------------------------
@@ -1111,7 +1265,7 @@ pub fn fuzzed_control_and_data_frames_never_panic_and_never_advance_a_session<F:
 
 // -- transcripts ---------------------------------------------------------------------------------
 
-pub fn every_checked_in_transcript_record_survives_both_bindings_byte_for_byte<F: Fixture>(_f: &mut F) {
+pub fn every_checked_in_transcript_record_survives_both_bindings_byte_for_byte() {
     let transcripts = transcript::load();
     assert_eq!(transcripts.len(), transcript::DRIVEN.len(), "the inventory and the directory agree");
     let mut records = 0usize;
@@ -1148,7 +1302,7 @@ pub fn every_checked_in_transcript_record_survives_both_bindings_byte_for_byte<F
     assert!(records >= 100, "the checked-in transcripts carry {records} records");
 }
 
-pub fn every_transcript_record_decodes_through_the_codec_the_engine_dispatches_on<F: Fixture>(_f: &mut F) {
+pub fn every_transcript_record_decodes_through_the_codec_the_engine_dispatches_on() {
     for transcript in transcript::load() {
         for event in &transcript.events {
             if event.record.is_empty() {
@@ -1295,7 +1449,7 @@ pub fn the_end_to_end_transcript_drives_the_engine_identically_on_both_links<F: 
     }
 }
 
-pub fn every_transcript_the_harness_does_not_drive_names_the_reason<F: Fixture>(_f: &mut F) {
+pub fn every_transcript_the_harness_does_not_drive_names_the_reason() {
     for transcript in transcript::load() {
         let (driven, reason) = transcript.drive_note();
         assert!(!reason.is_empty(), "{}", transcript.name);
@@ -2290,6 +2444,18 @@ pub fn two_connections_that_drop_with_claims_in_flight_both_reach_a_terminal_sta
 
 // -- the suite ---------------------------------------------------------------------------------
 
+/// The three checks that are *not* in [`suite`], and why.
+///
+/// They read the checked-in transcripts and hold them to their framing and their decoding. No store
+/// is involved, no command is issued, and running them against a second backend would run the same
+/// bytes through the same codec twice. They are this crate's own tests, and they say so here rather
+/// than sitting in the suite taking an unused fixture.
+pub const TRANSPORT_ONLY: [&str; 3] = [
+    "every_checked_in_transcript_record_survives_both_bindings_byte_for_byte",
+    "every_transcript_record_decodes_through_the_codec_the_engine_dispatches_on",
+    "every_transcript_the_harness_does_not_drive_names_the_reason",
+];
+
 /// One scenario: the name a failure reports, and the body to run it with.
 pub type Scenario<F> = (&'static str, fn(&mut F));
 
@@ -2376,24 +2542,24 @@ pub fn suite<F: Fixture>() -> Vec<Scenario<F>> {
             an_abort_the_medium_refuses_is_answered_once_rather_than_retried::<F>,
         ),
         (
+            "a_stream_fault_whose_abort_fails_reports_stream_closed_query_status",
+            a_stream_fault_whose_abort_fails_reports_stream_closed_query_status::<F>,
+        ),
+        (
+            "a_teardown_whose_abort_fails_is_silent_and_leaves_the_claim_live",
+            a_teardown_whose_abort_fails_is_silent_and_leaves_the_claim_live::<F>,
+        ),
+        (
+            "a_local_publication_between_payload_frames_does_not_divert_the_upload",
+            a_local_publication_between_payload_frames_does_not_divert_the_upload::<F>,
+        ),
+        (
             "fuzzed_control_and_data_frames_never_panic_and_never_advance_a_session",
             fuzzed_control_and_data_frames_never_panic_and_never_advance_a_session::<F>,
         ),
         (
-            "every_checked_in_transcript_record_survives_both_bindings_byte_for_byte",
-            every_checked_in_transcript_record_survives_both_bindings_byte_for_byte::<F>,
-        ),
-        (
-            "every_transcript_record_decodes_through_the_codec_the_engine_dispatches_on",
-            every_transcript_record_decodes_through_the_codec_the_engine_dispatches_on::<F>,
-        ),
-        (
             "the_end_to_end_transcript_drives_the_engine_identically_on_both_links",
             the_end_to_end_transcript_drives_the_engine_identically_on_both_links::<F>,
-        ),
-        (
-            "every_transcript_the_harness_does_not_drive_names_the_reason",
-            every_transcript_the_harness_does_not_drive_names_the_reason::<F>,
         ),
         (
             "a_preflight_refusal_creates_no_state_and_carries_neither_claim_bit",

@@ -61,6 +61,13 @@ struct Claim {
     checkpoint_sequence: u32,
     sealed: bool,
     phase: Phase,
+    /// Whether a stream session is attached to this claim (§8.1's progress bit 1).
+    ///
+    /// It is a fact of its own rather than a function of the phase. §8.1 sets the bit "only while
+    /// that session exists", and a session can go without the claim going with it — an abort the
+    /// medium refused releases the session and leaves the claim live — so deriving it from the
+    /// phase would report an attachment no frame could use.
+    attached: bool,
     /// What an AbortOperation command found when it reached its target (§6.4).
     disposition: Option<AbortDisposition>,
 }
@@ -95,7 +102,7 @@ pub struct Faults {
     pub refuse_claim: Option<FailureCause>,
     /// Publish a competing revision just before the commit lock, as a device-local producer would.
     pub race_publication: bool,
-    /// Fail the terminal record an abort writes, as a medium that dies under it does.
+    /// Fail every terminal record an abort writes, as a medium that dies under one does.
     pub fail_abort: bool,
 }
 
@@ -227,6 +234,7 @@ impl FakeTransaction {
             checkpoint_sequence: 0,
             sealed: false,
             phase: Phase::ExternalHandoff,
+            attached: false,
             disposition: None,
         });
     }
@@ -357,6 +365,8 @@ impl FakeTransaction {
             checkpoint_sequence: 0,
             sealed: false,
             phase: if intent.opcode == Opcode::StartUpload { Phase::Prepared } else { Phase::Validating },
+            // Only a logical Put gets a stream session, and it gets it at admission.
+            attached: intent.opcode == Opcode::StartUpload,
             disposition: None,
         });
         ClaimOutcome::Claimed { logical_object_id, repository_revision: Revision::new(self.repository_revision) }
@@ -392,6 +402,9 @@ impl FakeTransaction {
             claim.checkpoint_sequence = 0;
             claim.sealed = false;
             claim.phase = Phase::Prepared;
+            // A readmission issues a fresh session, so the claim is attached again even if the
+            // teardown that preceded it had detached the old one.
+            claim.attached = claim.intent.opcode == Opcode::StartUpload;
         }
     }
 
@@ -464,6 +477,11 @@ impl FakeTransaction {
         reason: AbortReason,
     ) -> Outcome<'s> {
         let disposition = if self.claims.iter().any(|claim| claim.intent.operation_id == target) {
+            if self.faults.fail_abort {
+                // §6.4's step 2 is a terminal record like any other, and a medium that cannot write
+                // one cannot write this one either.
+                return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
+            }
             let terminal = AbortCause::Cancelled { reason }.terminal();
             self.finish_claim(target, Err(terminal));
             AbortDisposition::Cancelled
@@ -527,12 +545,16 @@ impl FakeTransaction {
                 let (length, crc32) = previous.map(|(_, length, crc)| (length, crc)).unwrap_or((0, 0));
                 self.object_result(&claim, ObjectOutcome::MetadataChanged, revision, length, crc32)
             }
+            // Neither of these changes a head, so neither moves a revision: a repository whose
+            // revision advanced would tell every other client that something it can see has
+            // changed, and nothing has. §10's ObjectResult reports the revision the target still
+            // holds.
             Opcode::InstallUpdate => {
-                let revision = self.bump_repository();
+                let revision = self.current_revision(&claim);
                 self.object_result(&claim, ObjectOutcome::UpdateInstallRequested, revision, 0, 0)
             }
             Opcode::AcknowledgeRideImported => {
-                let revision = self.bump_repository();
+                let revision = self.current_revision(&claim);
                 self.object_result(&claim, ObjectOutcome::RideImported, revision, 0, 0)
             }
             Opcode::AbortOperation => {
@@ -552,16 +574,30 @@ impl FakeTransaction {
     }
 
     fn abort<'s>(&mut self, operation_id: OperationId, cause: AbortCause) -> Outcome<'s> {
+        let terminal = cause.terminal();
+        if self.claim_for(operation_id).is_none() {
+            // §11: the identifier is already spent. A second terminal record would put two results
+            // in a 64-entry window for one operation, so this is a no-op on both backends.
+            return Outcome::Aborted(terminal);
+        }
+        // The session goes whether or not the record lands: the engine has already released it, and
+        // §8.1's attachment bit is about the session, not about the claim.
+        self.detach(operation_id);
         if self.faults.fail_abort {
             // The claim stays live and the store still owes it a terminal state (§11). What the
             // engine must not do is ask again.
             return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
         }
-        let terminal = cause.terminal();
-        if self.claim_for(operation_id).is_some() {
-            self.finish_claim(operation_id, Err(terminal));
-        }
+        self.finish_claim(operation_id, Err(terminal));
         Outcome::Aborted(terminal)
+    }
+
+    /// Releases a claim's session and moves it to `aborting`, without deciding its terminal state.
+    fn detach(&mut self, operation_id: OperationId) {
+        if let Some(claim) = self.claim_mut(operation_id) {
+            claim.attached = false;
+            claim.phase = Phase::Aborting;
+        }
     }
 
     // -- downloads ---------------------------------------------------------------------------------
@@ -647,8 +683,9 @@ impl FakeTransaction {
             }
             let is_upload = claim.intent.opcode == Opcode::StartUpload;
             let mut flags = progress_flags::LOGICAL_ID_PRESENT;
-            if is_upload && !matches!(claim.phase, Phase::Aborting) {
-                // "attached only while that session exists; ... aborting has no attachment".
+            if claim.attached {
+                // "attached only while that session exists" — which is a fact about the session,
+                // not about the phase.
                 flags |= progress_flags::SESSION_ATTACHED;
             }
             let durable_offset = match (is_upload, claim.phase) {
@@ -740,6 +777,11 @@ impl FakeTransaction {
 
     fn remove_head(&mut self, kind: ObjectKind, logical_object_id: LogicalObjectId) {
         self.heads.retain(|head| !(head.kind == kind && head.logical_object_id == logical_object_id));
+    }
+
+    /// The revision the claim's target holds right now, for a command that changes no head.
+    fn current_revision(&self, claim: &Claim) -> Revision {
+        self.head(claim.intent.kind, claim.logical_object_id).map_or(Revision::ZERO, |(revision, _, _)| revision)
     }
 
     fn bump_repository(&mut self) -> Revision {
