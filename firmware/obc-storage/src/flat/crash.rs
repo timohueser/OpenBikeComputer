@@ -13,6 +13,10 @@
 //! cursor, the entry listing and the free-extent count. §5.3 is what makes the byte image fair game —
 //! "the byte image of the catalog is a function of the store's state" — so this is not "the same
 //! entries somehow", it is the same 768 bytes.
+//!
+//! The last section is the other failure media produces: one operation refused, the card still there,
+//! and a caller that gets to retry. A power cut cannot reach those paths, because after a cut there is
+//! no store left to ask — so they get [`FaultOnce`] and a probe each.
 
 use std::vec;
 use std::vec::Vec;
@@ -27,7 +31,7 @@ use super::seam::{
     DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision, RideCheckpoint, Store,
     StoreId,
 };
-use super::sim::{FaultPlan, SparseDisk, EVERY_WHEN};
+use super::sim::{FaultOnce, FaultPlan, MediaOp, SparseDisk, EVERY_WHEN};
 use super::store::{FlatStore, Mode, RideRecovery};
 use super::superblock::Superblock;
 
@@ -1300,4 +1304,151 @@ fn a_full_catalog_refuses_one_more_entry() {
     assert_eq!(store.commit(&batch).unwrap_err(), super::error::StoreError::CatalogFull);
     store.cancel(allocation);
     assert_eq!(snapshot(&mut store), model.snapshot(), "a refused commit changed the card");
+}
+
+// -------------------------------------------------------------------------------------------
+// Transient media failures — the error paths, and what a caller retries against
+// -------------------------------------------------------------------------------------------
+
+/// §7.2's flushed length is durable state, and a checkpoint that fails partway has not moved it. The
+/// caller still holds every byte of its tail — the seam leaves dropping the flushed prefix to the
+/// caller, and a failed checkpoint reported no prefix — so its retry hands over the same tail, and the
+/// store has to put the same bytes at the same payload offsets. A resident flushed length one page
+/// ahead of the card's would put the retry's page past the bytes it repeats and publish a ride nearly
+/// twice the length it recorded.
+#[test]
+fn a_checkpoint_that_fails_after_its_page_flush_does_not_advance_the_flushed_length() {
+    let ride = recording();
+    let disk = card(41, &holding(&[ride], 6), 0);
+    let faulty = FaultOnce::new(&disk);
+    let mut store = FlatStore::mount(&faulty);
+
+    let tail = payload(PROGRAM_PAGE + 300);
+    let checkpoint =
+        || RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) };
+
+    // One whole page and a bit: the page flush is the first write, the slot header the second.
+    faulty.fault_after(MediaOp::Write, 1);
+    assert_eq!(store.journal(checkpoint()), Err(super::error::StoreError::Media));
+    assert!(faulty.fired(), "the probe never reached the slot write");
+    store.journal(checkpoint()).unwrap();
+    disk.reboot();
+
+    let store = FlatStore::mount(&disk);
+    let recovered = store.recovered_ride().unwrap();
+    assert_eq!(recovered.flushed, PROGRAM_PAGE as u64, "the refused checkpoint's page flush was counted twice");
+    assert_eq!(recovered.payload_len(), tail.len() as u64, "the retry published a length the ride never recorded");
+
+    // And the bytes are the ride's, in order: the flushed prefix off the card, then the recovered tail.
+    let mut whole = Vec::new();
+    for block in 0..recovered.flushed / BLOCK as u64 {
+        whole.extend_from_slice(&disk.block(EXTENT_AREA + block));
+    }
+    let mut recovered_tail = vec![0u8; recovered.tail_len as usize];
+    store.recovered_tail(&mut recovered_tail).unwrap();
+    whole.extend_from_slice(&recovered_tail);
+    assert_eq!(whole, tail, "the retry left the payload out of order on the card");
+    assert_eq!(crc32(&whole), recovered.payload_crc);
+}
+
+/// §6.2's hold rule asks the catalog which of a closing hold's extents an entry still names. A read
+/// that fails has not answered that question, and "the entry is gone" is not the answer to assume: an
+/// extent a live entry names would go back to the allocator, the next object would be written over it,
+/// and the commit publishing that would leave a catalog whose overlap only a mount can see — by which
+/// point the card is unreadable. So the extents stay allocated until the next mount rebuilds the map
+/// from the catalog.
+#[test]
+fn a_close_whose_catalog_read_fails_keeps_the_extents_allocated() {
+    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
+    let model = holding(&[route], 4);
+    let disk = card(42, &model, 0);
+    let faulty = FaultOnce::new(&disk);
+    let mut store = FlatStore::mount(&faulty);
+
+    let handle = store.open(ObjectId(1), None).unwrap();
+    assert_eq!(store.free_extents(), EXTENTS - 1);
+    faulty.fault_next(MediaOp::Read);
+    store.close(handle);
+    assert!(faulty.fired(), "the probe never reached the catalog read");
+    assert_eq!(store.free_extents(), EXTENTS - 1, "a failed read freed a live entry's extents");
+
+    // The consequence it would have had, run out: the next object goes somewhere else, and the card the
+    // commit leaves still mounts.
+    let published = entry(2, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
+    let mut allocation = store.allocate(600).unwrap();
+    store.write(&mut allocation, &payload(600)).unwrap();
+    store.commit(&[Mutation::Put { meta: published.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    disk.reboot();
+
+    let mut expected = model.clone();
+    expected.apply(&[Change::Put(published)]);
+    let mut store = FlatStore::mount(&disk);
+    assert_eq!(store.mode(), Mode::ReadWrite, "the commit published a catalog naming one extent twice");
+    assert_eq!(snapshot(&mut store), expected.snapshot());
+}
+
+/// The other half of §6.2's hold rule, and the one a second reader exposes: `release` defers a trimmed
+/// tail *because* a hold names it, so the hold has to keep naming it. A reader that joins the row after
+/// the trim takes the amended length — §2.1 does not promise it a stale one — and leaves the extents
+/// alone, because a trim keeps a prefix and the wider ranges serve every byte of the shorter length.
+/// Narrowing them there would leave the 31 trimmed extents named by nobody: not by the catalog, which
+/// gave them up, and not by the hold that was deferring them.
+#[test]
+fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
+    let ride = recording();
+    let mut before = holding(&[ride], 6);
+    before.ride = Some((0, 900));
+    let disk = recording_card(&before, &ride, 0, 900)(43);
+    let mut store = FlatStore::mount(&disk);
+    assert_eq!(store.free_extents(), EXTENTS - 32);
+
+    let first = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    assert_eq!(store.free_extents(), EXTENTS - 32, "the trimmed reserve was freed under a live reader");
+
+    // The joining reader: the amended length, and the ride's bytes.
+    let second = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    let mut bytes = vec![0u8; 900];
+    assert_eq!(store.read(&second, 0, &mut bytes).unwrap(), 900);
+    assert_eq!(bytes, payload(900));
+
+    store.close(second);
+    assert_eq!(store.free_extents(), EXTENTS - 32, "the row went away while the first reader held it");
+    store.close(first);
+    assert_eq!(store.free_extents(), EXTENTS - 1, "the trimmed tail of a joined hold never came back");
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
+}
+
+/// The sequence space, from the other end of the mount that detects it: a card whose high-water mark is
+/// one short of `u64::MAX` mounts read-write and has exactly one commit left in it. That commit lands,
+/// and the store is read-only from then on — the next one is refused rather than continuing from a mark
+/// there is nothing past, which unchecked would be an `attempt to add with overflow` in a debug build.
+#[test]
+fn the_commit_that_reaches_the_last_sequence_leaves_the_store_read_only() {
+    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
+    let trip = entry(2, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
+    let model = holding(&[route, trip], u64::MAX - 1);
+    let disk = card(44, &model, 0);
+    let mut store = FlatStore::mount(&disk);
+    assert_eq!(store.mode(), Mode::ReadWrite);
+
+    let sequence = store.commit(&[Mutation::Remove { id: ObjectId(2), revision: Revision(1) }]).unwrap();
+    assert_eq!(sequence, u64::MAX);
+    assert_eq!(store.mode(), Mode::SequenceSpaceExhausted, "a store with no sequence left still claimed to write");
+    assert_eq!(
+        store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap_err(),
+        super::error::StoreError::ReadOnly,
+    );
+    assert_eq!(store.allocate(512), Err(super::error::StoreError::ReadOnly));
+
+    // Reads are still served, here and at the next mount — which reaches the same verdict from the gate.
+    let handle = store.open(ObjectId(1), None).unwrap();
+    let mut bytes = vec![0u8; 3_000];
+    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), 3_000);
+    assert_eq!(bytes, payload(3_000));
+    store.close(handle);
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).mode(), Mode::SequenceSpaceExhausted);
 }
