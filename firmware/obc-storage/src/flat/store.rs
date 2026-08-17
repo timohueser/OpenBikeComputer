@@ -182,6 +182,31 @@ fn sync<D: BlockDevice>(dev: &D) -> Result<(), StoreError> {
     dev.sync().map_err(|_| StoreError::Media)
 }
 
+/// Appends `input` to a reservation, one contiguous run per pass: whole blocks straight out of the
+/// caller's slice, and a partial one through the row's staging block. The cursor it advances belongs to
+/// the caller's [`Allocation`] too, which is why [`Store::write`] rewinds it when this fails.
+fn fill<D: BlockDevice>(dev: &D, row: &mut Reservation, mut input: &[u8]) -> Result<(), StoreError> {
+    while !input.is_empty() {
+        let staged = (row.written % BLOCK as u64) as usize;
+        let located = row.ranges.locate(row.written - staged as u64).ok_or(StoreError::Invalid)?;
+        if staged == 0 && input.len() >= BLOCK {
+            let blocks = (input.len() / BLOCK).min((located.contiguous / BLOCK as u64) as usize);
+            write_blocks(dev, located.block, &input[..blocks * BLOCK])?;
+            row.written += (blocks * BLOCK) as u64;
+            input = &input[blocks * BLOCK..];
+        } else {
+            let take = (BLOCK - staged).min(input.len());
+            row.staging[staged..staged + take].copy_from_slice(&input[..take]);
+            row.written += take as u64;
+            input = &input[take..];
+            if row.written.is_multiple_of(BLOCK as u64) {
+                write_blocks(dev, located.block, &row.staging)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reads the entry array of one catalog copy, one block at a time.
 struct EntryReader<'a, D> {
     dev: &'a D,
@@ -785,6 +810,15 @@ impl<D: BlockDevice> FlatStore<D> {
                         Ok(Resolved { key: meta.key(), entry: Some(entry), creates: false, freed, reservation: None })
                     }
                     PutSource::Fresh(allocation) => {
+                        // §5.2's cursor never rewinds, so an id below it named an object once and may
+                        // never name another. Without this the compare-and-swap below would wave a
+                        // retired identity through — `find` comes back empty, so the expected revision
+                        // is `1` again — and the hold table keys on `(ObjectId, Revision)`: a key
+                        // re-created over different extents would serve a removed object's bytes to a
+                        // reader that opened the live one. A create names `next_object_id()`.
+                        if retained.is_none() && head.is_none() && meta.id.0 < self.next_object {
+                            return Err(StoreError::Invalid);
+                        }
                         // A revision that already exists is caught by the compare-and-swap below
                         // rather than by a check of its own: the head is either this revision, in
                         // which case one past it is not it, or a greater one.
@@ -885,24 +919,16 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         }
         let dev = &self.dev;
         let row = self.reservations[allocation.slot as usize].as_mut().expect("the row was just validated");
-        let mut input = bytes;
-        while !input.is_empty() {
-            let staged = (row.written % BLOCK as u64) as usize;
-            let located = row.ranges.locate(row.written - staged as u64).ok_or(StoreError::Invalid)?;
-            if staged == 0 && input.len() >= BLOCK {
-                let blocks = (input.len() / BLOCK).min((located.contiguous / BLOCK as u64) as usize);
-                write_blocks(dev, located.block, &input[..blocks * BLOCK])?;
-                row.written += (blocks * BLOCK) as u64;
-                input = &input[blocks * BLOCK..];
-            } else {
-                let take = (BLOCK - staged).min(input.len());
-                row.staging[staged..staged + take].copy_from_slice(&input[..take]);
-                row.written += take as u64;
-                input = &input[take..];
-                if row.written.is_multiple_of(BLOCK as u64) {
-                    write_blocks(dev, located.block, &row.staging)?;
-                }
-            }
+        // A fragmented allocation is several writes, so one of them can fail with the others already on
+        // the card. The row's cursor goes back where it was: it is the reservation's identity as much as
+        // its position — `row` matches an `Allocation` on it — so a cursor left ahead of the caller's
+        // would make the reservation unnameable, which is a row and its extents wedged until the next
+        // mount, `cancel` included. Rewinding costs nothing instead: the bytes already on the card are
+        // the bytes the retry writes there.
+        let start = row.written;
+        if let Err(error) = fill(dev, row, bytes) {
+            row.written = start;
+            return Err(error);
         }
         allocation.written = row.written;
         Ok(())

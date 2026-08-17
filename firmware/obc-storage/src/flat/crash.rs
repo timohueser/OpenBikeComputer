@@ -1257,6 +1257,51 @@ fn a_payload_round_trips_across_a_range_boundary() {
     assert_eq!(store.read(&handle, bytes.len() as u64, &mut buf).unwrap(), 0);
 }
 
+/// The identity rule at the seam, and the reason §5.2's cursor never rewinds: an `ObjectId` the cursor
+/// has passed named an object once and may never name another. Removing an object does not return its
+/// id — and a `Fresh` put re-using one would find the array empty, take `Revision(1)` from the
+/// compare-and-swap as if it were a create, and re-create a key a reader's hold still names over
+/// different extents. The trace this refuses is #1406's: the second reader joins that row and reads a
+/// removed object's bytes under the live one's identity.
+#[test]
+fn a_fresh_put_may_not_re_use_an_object_id_the_cursor_has_passed() {
+    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
+    let model = holding(&[route], 4);
+    let disk = card(45, &model, 0);
+    let mut store = FlatStore::mount(&disk);
+
+    // A reader holds revision 1, and a commit removes it: the hold defers extent 0, so first-fit hands
+    // the next object extent 1 and the impostor would name bytes this reader never resolved.
+    let handle = store.open(ObjectId(1), None).unwrap();
+    store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap();
+    let mut allocation = store.allocate(600).unwrap();
+    store.write(&mut allocation, &payload(600)).unwrap();
+    let impostor = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 600, "Impostor", &[(1, 1)]);
+    assert_eq!(
+        store.commit(&[Mutation::Put { meta: impostor.meta, source: PutSource::Fresh(allocation) }]).unwrap_err(),
+        super::error::StoreError::Invalid,
+        "a Fresh put re-used an ObjectId the cursor had passed",
+    );
+
+    // So there is nothing for a second reader to join, and the first one still reads its own object.
+    assert_eq!(store.open(ObjectId(1), Some(Revision(1))).unwrap_err(), super::error::StoreError::NotFound);
+    assert_eq!(store.open(ObjectId(1), None).unwrap_err(), super::error::StoreError::NotFound);
+    let mut bytes = vec![0u8; 3_000];
+    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), 3_000);
+    assert_eq!(bytes, payload(3_000), "the held revision stopped reading its own bytes");
+
+    // The cursor's own id is what a create names, and the refusal changed nothing that stops it.
+    assert_eq!(store.next_object_id(), ObjectId(2));
+    let published = entry(2, 1, ObjectKind::Route, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
+    store.commit(&[Mutation::Put { meta: published.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    let second = store.open(ObjectId(2), None).unwrap();
+    let mut six = vec![0u8; 600];
+    assert_eq!(store.read(&second, 0, &mut six).unwrap(), 600);
+    assert_eq!(six, payload(600));
+    store.close(second);
+    store.close(handle);
+}
+
 /// The revision rule at the seam: `Revision` is the compare-and-swap token every mutation carries, so
 /// a fresh publication has to be exactly one past the head — and a `Revision` that already exists is
 /// never overwritten, because an object never changes.
@@ -1451,4 +1496,70 @@ fn a_close_whose_catalog_read_fails_keeps_the_extents_allocated() {
     let mut store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::ReadWrite, "the commit published a catalog naming one extent twice");
     assert_eq!(snapshot(&mut store), expected.snapshot());
+}
+
+/// A fragmented allocation is several block writes, and one of them can fail with the others already on
+/// the card. What must survive that is the reservation: `row` names an `Allocation` by its cursor as
+/// well as its nonce, so a cursor left ahead of the caller's makes the row unnameable — the transfer
+/// cannot be published, cannot be retried, and cannot be cancelled either, which wedges a row and its
+/// extents until the next mount (#1407's trace). The cursor goes back where it was instead.
+fn fragmented(seed: u64) -> (Model, SparseDisk) {
+    // Extent 1 is taken, so a two-extent allocation gets two ranges and `write` iterates twice.
+    let mut model = empty();
+    model.entries.push(entry(9, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "", &[(1, 1)]));
+    model.next_object = 10;
+    let disk = card(seed, &model, 0);
+    (model, disk)
+}
+
+#[test]
+fn a_write_that_fails_leaves_an_allocation_its_caller_can_cancel() {
+    let (_, disk) = fragmented(46);
+    let faulty = FaultOnce::new(&disk);
+    let mut store = FlatStore::mount(&faulty);
+    assert_eq!(store.free_extents(), EXTENTS - 1);
+
+    let bytes = payload(2 << 20);
+    let mut allocation = store.allocate(bytes.len() as u64).unwrap();
+    faulty.fault_after(MediaOp::Write, 1);
+    assert_eq!(store.write(&mut allocation, &bytes), Err(super::error::StoreError::Media));
+    assert!(faulty.fired(), "the probe never reached the second range's write");
+
+    store.cancel(allocation);
+    assert_eq!(store.free_extents(), EXTENTS - 1, "a failed write wedged the extents it had reserved");
+    // And the row went with them: both reservation rows have to be free, which two allocations prove.
+    let first = store.allocate(bytes.len() as u64).unwrap();
+    let second = store.allocate(bytes.len() as u64).unwrap();
+    store.cancel(first);
+    store.cancel(second);
+    assert_eq!(store.free_extents(), EXTENTS - 1);
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
+}
+
+/// The other half of the same rule: the cursor did not move, so the retry writes the same bytes to the
+/// same payload offsets, and what the commit publishes is what a reader gets back. `Snapshot` reads every
+/// payload through the seam and hashes it against the entry's CRC, so this is the byte-correctness claim
+/// and not a "the call returned Ok" claim.
+#[test]
+fn a_write_that_fails_may_be_retried_and_publishes_the_bytes_it_claims() {
+    let (model, disk) = fragmented(47);
+    let faulty = FaultOnce::new(&disk);
+    let mut store = FlatStore::mount(&faulty);
+
+    let bytes = payload(2 << 20);
+    let mut allocation = store.allocate(bytes.len() as u64).unwrap();
+    faulty.fault_after(MediaOp::Write, 1);
+    assert_eq!(store.write(&mut allocation, &bytes), Err(super::error::StoreError::Media));
+    store.write(&mut allocation, &bytes).unwrap();
+
+    let published =
+        entry(10, 1, ObjectKind::MapShard, EntryFlags::NONE, bytes.len() as u64, "shard", &[(0, 1), (2, 1)]);
+    store.commit(&[Mutation::Put { meta: published.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    let mut expected = model.clone();
+    expected.apply(&[Change::Put(published)]);
+    // Through the faulting wrapper, so the local `snapshot` helper's card type does not fit.
+    assert_eq!(model::snapshot(&mut store).expect("a mounted store"), expected.snapshot());
+    disk.reboot();
+    assert_eq!(snapshot(&mut FlatStore::mount(&disk)), expected.snapshot(), "the retry left the payload torn");
 }
