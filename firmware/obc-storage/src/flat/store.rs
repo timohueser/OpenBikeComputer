@@ -432,6 +432,14 @@ impl<D: BlockDevice> FlatStore<D> {
     ///
     /// A caller that drops a `Handle` instead of closing it leaks the row (and its extents) until the
     /// next mount, so the engine must treat `open`/`close` as a pair.
+    ///
+    /// This returns nothing, and one failure is therefore silent: working out which of the hold's
+    /// extents the catalog still names is a media read, and a read that fails leaves those extents
+    /// allocated rather than guessing (§6.2). The row is released either way, so nothing leaks at the
+    /// seam — the observable cost is a lower [`free_extents`](Self::free_extents) until an entry that
+    /// names them is removed or the card is remounted. Like [`entries`](Store::entries), which reports a
+    /// short listing through [`entries_ok`](Self::entries_ok), this is stated rather than hidden; unlike
+    /// it, no caller has a decision to make on it, so there is no flag to ask.
     pub fn close(&mut self, handle: Handle) {
         let mut holds = self.holds.borrow_mut();
         let Some(hold) = holds[handle.slot as usize] else { return };

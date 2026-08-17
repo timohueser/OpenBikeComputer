@@ -881,6 +881,40 @@ fn an_amend_that_trims_a_held_entry_defers_the_extents_it_frees() {
     store.close(handle);
 }
 
+/// The other half of §6.2's hold rule, and the one a second reader exposes: `release` defers a trimmed
+/// tail *because* a hold names it, so the hold has to keep naming it. A reader that joins the row after
+/// the trim takes the amended length — §2.1 does not promise it a stale one — and leaves the extents
+/// alone, because a trim keeps a prefix and the wider ranges serve every byte of the shorter length.
+/// Narrowing them there would leave the 31 trimmed extents named by nobody: not by the catalog, which
+/// gave them up, and not by the hold that was deferring them.
+#[test]
+fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
+    let ride = recording();
+    let mut before = holding(&[ride], 6);
+    before.ride = Some((0, 900));
+    let disk = recording_card(&before, &ride, 0, 900)(43);
+    let mut store = FlatStore::mount(&disk);
+    assert_eq!(store.free_extents(), EXTENTS - 32);
+
+    let first = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    assert_eq!(store.free_extents(), EXTENTS - 32, "the trimmed reserve was freed under a live reader");
+
+    // The joining reader: the amended length, and the ride's bytes.
+    let second = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    let mut bytes = vec![0u8; 900];
+    assert_eq!(store.read(&second, 0, &mut bytes).unwrap(), 900);
+    assert_eq!(bytes, payload(900));
+
+    store.close(second);
+    assert_eq!(store.free_extents(), EXTENTS - 32, "the row went away while the first reader held it");
+    store.close(first);
+    assert_eq!(store.free_extents(), EXTENTS - 1, "the trimmed tail of a joined hold never came back");
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
+}
+
 /// §7.1's cross-check: a slot left by an earlier ride over reused extents is not this ride's, and a
 /// slot whose ranges differ from the recording entry's is rejected.
 #[test]
@@ -991,6 +1025,38 @@ fn an_exhausted_sequence_space_still_serves_reads() {
         store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap_err(),
         super::error::StoreError::ReadOnly,
     );
+}
+
+/// The sequence space, from the other end of the mount that detects it: a card whose high-water mark is
+/// one short of `u64::MAX` mounts read-write and has exactly one commit left in it. That commit lands,
+/// and the store is read-only from then on — the next one is refused rather than continuing from a mark
+/// there is nothing past, which unchecked would be an `attempt to add with overflow` in a debug build.
+#[test]
+fn the_commit_that_reaches_the_last_sequence_leaves_the_store_read_only() {
+    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
+    let trip = entry(2, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
+    let model = holding(&[route, trip], u64::MAX - 1);
+    let disk = card(44, &model, 0);
+    let mut store = FlatStore::mount(&disk);
+    assert_eq!(store.mode(), Mode::ReadWrite);
+
+    let sequence = store.commit(&[Mutation::Remove { id: ObjectId(2), revision: Revision(1) }]).unwrap();
+    assert_eq!(sequence, u64::MAX);
+    assert_eq!(store.mode(), Mode::SequenceSpaceExhausted, "a store with no sequence left still claimed to write");
+    assert_eq!(
+        store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap_err(),
+        super::error::StoreError::ReadOnly,
+    );
+    assert_eq!(store.allocate(512), Err(super::error::StoreError::ReadOnly));
+
+    // Reads are still served, here and at the next mount — which reaches the same verdict from the gate.
+    let handle = store.open(ObjectId(1), None).unwrap();
+    let mut bytes = vec![0u8; 3_000];
+    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), 3_000);
+    assert_eq!(bytes, payload(3_000));
+    store.close(handle);
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).mode(), Mode::SequenceSpaceExhausted);
 }
 
 /// The identity space stops one short of wrapping too: §5.2's cursor has to end up strictly greater than
@@ -1385,70 +1451,4 @@ fn a_close_whose_catalog_read_fails_keeps_the_extents_allocated() {
     let mut store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::ReadWrite, "the commit published a catalog naming one extent twice");
     assert_eq!(snapshot(&mut store), expected.snapshot());
-}
-
-/// The other half of §6.2's hold rule, and the one a second reader exposes: `release` defers a trimmed
-/// tail *because* a hold names it, so the hold has to keep naming it. A reader that joins the row after
-/// the trim takes the amended length — §2.1 does not promise it a stale one — and leaves the extents
-/// alone, because a trim keeps a prefix and the wider ranges serve every byte of the shorter length.
-/// Narrowing them there would leave the 31 trimmed extents named by nobody: not by the catalog, which
-/// gave them up, and not by the hold that was deferring them.
-#[test]
-fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
-    let ride = recording();
-    let mut before = holding(&[ride], 6);
-    before.ride = Some((0, 900));
-    let disk = recording_card(&before, &ride, 0, 900)(43);
-    let mut store = FlatStore::mount(&disk);
-    assert_eq!(store.free_extents(), EXTENTS - 32);
-
-    let first = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
-    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
-    assert_eq!(store.free_extents(), EXTENTS - 32, "the trimmed reserve was freed under a live reader");
-
-    // The joining reader: the amended length, and the ride's bytes.
-    let second = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    let mut bytes = vec![0u8; 900];
-    assert_eq!(store.read(&second, 0, &mut bytes).unwrap(), 900);
-    assert_eq!(bytes, payload(900));
-
-    store.close(second);
-    assert_eq!(store.free_extents(), EXTENTS - 32, "the row went away while the first reader held it");
-    store.close(first);
-    assert_eq!(store.free_extents(), EXTENTS - 1, "the trimmed tail of a joined hold never came back");
-    disk.reboot();
-    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
-}
-
-/// The sequence space, from the other end of the mount that detects it: a card whose high-water mark is
-/// one short of `u64::MAX` mounts read-write and has exactly one commit left in it. That commit lands,
-/// and the store is read-only from then on — the next one is refused rather than continuing from a mark
-/// there is nothing past, which unchecked would be an `attempt to add with overflow` in a debug build.
-#[test]
-fn the_commit_that_reaches_the_last_sequence_leaves_the_store_read_only() {
-    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
-    let trip = entry(2, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
-    let model = holding(&[route, trip], u64::MAX - 1);
-    let disk = card(44, &model, 0);
-    let mut store = FlatStore::mount(&disk);
-    assert_eq!(store.mode(), Mode::ReadWrite);
-
-    let sequence = store.commit(&[Mutation::Remove { id: ObjectId(2), revision: Revision(1) }]).unwrap();
-    assert_eq!(sequence, u64::MAX);
-    assert_eq!(store.mode(), Mode::SequenceSpaceExhausted, "a store with no sequence left still claimed to write");
-    assert_eq!(
-        store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap_err(),
-        super::error::StoreError::ReadOnly,
-    );
-    assert_eq!(store.allocate(512), Err(super::error::StoreError::ReadOnly));
-
-    // Reads are still served, here and at the next mount — which reaches the same verdict from the gate.
-    let handle = store.open(ObjectId(1), None).unwrap();
-    let mut bytes = vec![0u8; 3_000];
-    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), 3_000);
-    assert_eq!(bytes, payload(3_000));
-    store.close(handle);
-    disk.reboot();
-    assert_eq!(FlatStore::mount(&disk).mode(), Mode::SequenceSpaceExhausted);
 }
