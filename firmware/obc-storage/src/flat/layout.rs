@@ -12,6 +12,7 @@ pub const BLOCK: usize = 512;
 /// outside it (§1). Every region boundary and record stride below is a multiple of it.
 pub const PROGRAM_PAGE: usize = 16_384;
 /// Blocks in one program page.
+#[cfg(any(test, feature = "std"))]
 pub const PAGE_BLOCKS: u64 = (PROGRAM_PAGE / BLOCK) as u64;
 
 /// Superblock copy A, and copy B (§2). The body is block 0 of the copy.
@@ -19,6 +20,7 @@ pub const SUPERBLOCK: [u64; 2] = [0, 32];
 /// Catalog copy A, and copy B (§2).
 pub const CATALOG: [u64; 2] = [64, 576];
 /// Blocks in one catalog copy.
+#[cfg(test)]
 pub const CATALOG_BLOCKS: u64 = 512;
 /// The gate block of a catalog copy, copy-relative (§5.1).
 pub const CATALOG_GATE_BLOCK: u64 = 480;
@@ -59,13 +61,10 @@ pub fn slot_block(slot: usize) -> u64 {
     JOURNAL + SLOT_BLOCKS * slot as u64
 }
 
-/// Blocks the body of a catalog copy holding `entries` entries occupies: one header block plus
-/// `ceil(entries / 4)` (§5.5 step 2).
-pub fn body_blocks(entries: u16) -> u64 {
-    1 + (entries as u64).div_ceil(ENTRIES_PER_BLOCK as u64)
-}
-
-/// Bytes the body of a catalog copy holding `entries` entries covers (§5.1).
+/// Bytes the body of a catalog copy holding `entries` entries covers (§5.1). The store never needs
+/// the whole body at once — `commit` counts blocks as it streams them — so this is what a reader of
+/// one asks for.
+#[cfg(any(test, feature = "std"))]
 pub fn body_len(entries: u16) -> usize {
     BLOCK + entries as usize * ENTRY_STRIDE
 }
@@ -133,6 +132,11 @@ impl Ranges {
     /// Extents this object owns.
     pub fn extents(&self) -> u32 {
         self.iter().map(|(_, count)| count as u32).sum()
+    }
+
+    /// True when one of these ranges covers `extent`.
+    pub fn names(&self, extent: u16) -> bool {
+        self.iter().any(|(first, count)| extent >= first && extent - first < count)
     }
 
     /// Drops the tail beyond `extents`, and reports the extents it gave up so the caller can free
@@ -252,11 +256,10 @@ mod tests {
         assert_eq!(ENTRY_CAPACITY, 1_916);
         assert_eq!(body_len(ENTRY_CAPACITY as u16), 245_760);
         assert_eq!(body_len(ENTRY_CAPACITY as u16), ENTRY_BLOCKS * BLOCK);
-        assert_eq!(body_blocks(ENTRY_CAPACITY as u16), ENTRY_BLOCKS as u64);
-        assert_eq!(body_blocks(0), 1);
-        assert_eq!(body_blocks(1), 2);
-        assert_eq!(body_blocks(4), 2);
-        assert_eq!(body_blocks(5), 3);
+        // §5.5 step 2's write count: one header block plus `ceil(n / 4)`.
+        for (entries, blocks) in [(0u16, 1usize), (1, 2), (4, 2), (5, 3), (ENTRY_CAPACITY as u16, ENTRY_BLOCKS)] {
+            assert_eq!(body_len(entries).div_ceil(BLOCK), blocks);
+        }
     }
 
     /// §4.1's card: 62,914,560 blocks recompute to 30,718 extents. And §6's cap holds above 64 GiB.

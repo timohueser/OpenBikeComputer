@@ -17,7 +17,10 @@ use super::catalog::{Entry, Gate, Header};
 use super::error::{Reason, Record};
 use super::journal::Slot;
 use super::layout::{Ranges, BLOCK, ENTRY_STRIDE};
-use super::seam::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
+use super::seam::{
+    DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision, RideCheckpoint, Store,
+    StoreId,
+};
 use super::sim::SparseDisk;
 use super::store::FlatStore;
 use super::superblock::Superblock;
@@ -139,6 +142,78 @@ fn field_mutations_reach_the_entrys_structural_rules() {
         assert_eq!(error.reason, expected, "the field at {offset} gave {error:?}");
         assert_eq!(error.record, Record::Entry);
     }
+}
+
+/// The seam's own totality: hostile *arguments* on a sound card. Decoder fuzzing covers hostile bytes,
+/// and the arithmetic in `commit` — a cursor one past the greatest id, a sequence one past the
+/// high-water mark — is reachable only from here. Nothing panics, every refusal is typed, and whatever
+/// the card ends up holding, a remount reproduces the store's resident state exactly.
+#[test]
+fn the_seam_never_panics_on_hostile_arguments() {
+    let total_blocks = super::layout::EXTENT_AREA + super::layout::EXTENT_BLOCKS * EXTENTS as u64;
+    let disk = SparseDisk::blank(total_blocks, 5);
+    let store = FlatStore::initialize(&disk, STORE).expect("a fresh card initializes");
+    let mut store = store;
+    let mut rng = Rng(0xC0FF_EE00_1234_5678);
+
+    for _ in 0..1_000 {
+        let kinds = [
+            ObjectKind::Route,
+            ObjectKind::Trip,
+            ObjectKind::Ride,
+            ObjectKind::WeatherBundle,
+            ObjectKind::MapShard,
+            ObjectKind::RollbackReserve,
+        ];
+        let flags = [EntryFlags::NONE, EntryFlags::RECORDING, EntryFlags::RETAINED, EntryFlags::RESERVED];
+        // Values chosen to land on the edges as often as in the middle: zero, one, the end of the space.
+        let edge = |rng: &mut Rng| match rng.below(5) {
+            0 => 0,
+            1 => 1,
+            2 => u64::MAX,
+            3 => u64::MAX - 1,
+            _ => rng.next(),
+        };
+        let meta = EntryMeta {
+            id: ObjectId(edge(&mut rng)),
+            revision: Revision(edge(&mut rng)),
+            kind: kinds[rng.below(kinds.len())],
+            flags: flags[rng.below(flags.len())],
+            payload_len: edge(&mut rng),
+            payload_crc: rng.next() as u32,
+            name: DisplayName::new("fuzz").unwrap(),
+        };
+
+        if let Ok(mut allocation) = store.allocate(1 + rng.below(4 << 20) as u64) {
+            let _ = store.write(&mut allocation, &[0xAB; 1_000]);
+            let _ = store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]);
+            store.cancel(allocation);
+        }
+        let _ = store.commit(&[Mutation::Put { meta, source: PutSource::Amend }]);
+        let _ = store.commit(&[Mutation::Remove { id: meta.id, revision: meta.revision }]);
+        let _ = store.journal(RideCheckpoint {
+            id: meta.id,
+            revision: meta.revision,
+            tail: &[0xCD; 300],
+            payload_crc: meta.payload_crc,
+        });
+        if let Ok(handle) = store.open(meta.id, Some(meta.revision)) {
+            let _ = store.read(&handle, edge(&mut rng), &mut [0u8; 64]);
+            store.close(handle);
+        }
+        let listed = store.entries().count();
+        assert!(store.entries_ok(), "the listing failed on a card with no faults armed");
+        assert_eq!(listed, store.entry_count() as usize);
+    }
+
+    let resident = super::model::snapshot(&mut store).expect("the card is still mounted");
+    disk.reboot();
+    let mut remounted = FlatStore::mount(&disk);
+    assert_eq!(
+        super::model::snapshot(&mut remounted).expect("the card still mounts"),
+        resident,
+        "the resident state and the card disagree after hostile traffic",
+    );
 }
 
 /// The same for the entry array's cross-entry rules, driven through a whole mounted card: a body whose
