@@ -150,7 +150,12 @@ pub enum AdapterError {
 ///
 /// Deliberately without a catch-all arm: a new variant in the fork should fail this build rather
 /// than land silently in whichever class the wildcard happened to name.
-fn map<E: core::fmt::Debug>(error: embedded_sdmmc::Error<E>) -> AdapterError {
+///
+/// It is public because [`Adapter::volume_manager`] is: a caller that reaches through the escape
+/// hatch for one of the operations §13.1 does not constrain — directory iteration, deletion,
+/// opening a `GEN` payload for streaming — must classify its failures the same way the constrained
+/// operations do, or §12's mount table becomes unimplementable one call at a time.
+pub fn classify<E: core::fmt::Debug>(error: embedded_sdmmc::Error<E>) -> AdapterError {
     use embedded_sdmmc::Error as E;
     match error {
         E::NotFound => AdapterError::NotFound,
@@ -268,13 +273,13 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
         match self.vmgr.make_dir_in_dir(parent, name) {
             Ok(()) => Ok(()),
             Err(embedded_sdmmc::Error::DirAlreadyExists) => Ok(()),
-            Err(error) => Err(map(error)),
+            Err(error) => Err(classify(error)),
         }
     }
 
     /// The file's recorded length.
     pub fn length(&self, file: GatedFile) -> Result<u32, AdapterError> {
-        self.vmgr.file_length(file.raw()).map_err(map)
+        self.vmgr.file_length(file.raw()).map_err(classify)
     }
 
     /// Reads `buf.len()` bytes at `offset`, bounded by the recorded length.
@@ -284,7 +289,7 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// is therefore reported as an I/O failure rather than as a short read.
     pub fn read_at(&self, file: GatedFile, offset: u32, buf: &mut [u8]) -> Result<(), AdapterError> {
         self.end_of(file, offset, buf.len())?;
-        self.vmgr.file_seek_from_start(file.raw(), offset).map_err(map)?;
+        self.vmgr.file_seek_from_start(file.raw(), offset).map_err(classify)?;
         let mut done = 0;
         while done < buf.len() {
             match self.vmgr.read(file.raw(), &mut buf[done..]) {
@@ -293,7 +298,7 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
                 // a lost FAT structure, which is §1.1's unrecoverable store fault.
                 Ok(0) => return Err(AdapterError::CorruptStore),
                 Ok(read) => done += read,
-                Err(error) => return Err(map(error)),
+                Err(error) => return Err(classify(error)),
             }
         }
         Ok(())
@@ -308,9 +313,9 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     pub fn write_at(&self, file: GatedFile, offset: u32, bytes: &[u8]) -> Result<(), AdapterError> {
         let end = self.end_of(file, offset, bytes.len())?;
         let before = self.length(file)?;
-        self.vmgr.file_seek_from_start(file.raw(), offset).map_err(map)?;
-        self.vmgr.write(file.raw(), bytes).map_err(map)?;
-        let reached = self.vmgr.file_offset(file.raw()).map_err(map)?;
+        self.vmgr.file_seek_from_start(file.raw(), offset).map_err(classify)?;
+        self.vmgr.write(file.raw(), bytes).map_err(classify)?;
+        let reached = self.vmgr.file_offset(file.raw()).map_err(classify)?;
         if reached != end {
             return Err(AdapterError::ShortWrite { wanted: end, reached });
         }
@@ -380,7 +385,7 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// `/OBC2`'s directory entries three times per commit. [`sync_fixed`](Self::sync_fixed) is the
     /// sync a gated file has after initialization; it writes nothing, which is the point.
     pub fn sync_metadata(&self, file: GatedFile) -> Result<(), AdapterError> {
-        self.vmgr.flush_file(file.raw()).map_err(map)
+        self.vmgr.flush_file(file.raw()).map_err(classify)
     }
 
     /// Creates a fixed-size OBC2 file at its full length in zeros (§13.1, full-length
@@ -407,7 +412,8 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
             return Err(AdapterError::CallerBug);
         }
         scratch.fill(0);
-        let file = GatedFile(self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteCreateOrTruncate).map_err(map)?);
+        let file =
+            GatedFile(self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteCreateOrTruncate).map_err(classify)?);
         match self.fill(file, len, scratch) {
             Ok(()) => Ok(file),
             Err(error) => {
@@ -423,13 +429,13 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
         let granule = u32::try_from(scratch.len()).map_err(|_| AdapterError::OutOfRange)?;
         // Returns short rather than failing when the volume is nearly full, so the length check
         // below is what actually reports the failure.
-        self.vmgr.preallocate(file.raw(), len).map_err(map)?;
-        self.vmgr.file_seek_from_start(file.raw(), 0).map_err(map)?;
+        self.vmgr.preallocate(file.raw(), len).map_err(classify)?;
+        self.vmgr.file_seek_from_start(file.raw(), 0).map_err(classify)?;
         let mut written = 0u32;
         while written < len {
             let chunk = granule.min(len - written) as usize;
-            self.vmgr.write(file.raw(), &scratch[..chunk]).map_err(map)?;
-            let reached = self.vmgr.file_offset(file.raw()).map_err(map)?;
+            self.vmgr.write(file.raw(), &scratch[..chunk]).map_err(classify)?;
+            let reached = self.vmgr.file_offset(file.raw()).map_err(classify)?;
             let wanted = written + chunk as u32;
             if reached != wanted {
                 return Err(AdapterError::ShortWrite { wanted, reached });
@@ -450,7 +456,7 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
     /// cannot be slot-addressed at all". A store that mounted such a file and started addressing
     /// slots in it would fail at an arbitrary later offset instead of here.
     pub fn open_fixed(&self, parent: RawDirectory, name: &str, len: u32) -> Result<GatedFile, AdapterError> {
-        let file = GatedFile(self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteAppend).map_err(map)?);
+        let file = GatedFile(self.vmgr.open_file_in_dir(parent, name, Mode::ReadWriteAppend).map_err(classify)?);
         // A failure here is a medium or store fault and must not be flattened into "length zero",
         // which would report a readable-but-truncated file and an unreadable one identically.
         let actual = match self.length(file) {
