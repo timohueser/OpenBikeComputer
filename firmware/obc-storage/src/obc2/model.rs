@@ -79,6 +79,23 @@ pub struct CatalogModel {
     pub ride: Option<ActiveRide>,
 }
 
+/// The size [`CatalogModel::init_empty`]'s field list was written against.
+///
+/// `init_empty` writes the struct field by field through a raw pointer, so its soundness is the
+/// claim that the list is complete; a field added without a line there is an uninitialized hole that
+/// reads as initialized. This is one of the two things that make that a build error — the other is
+/// `every_field_is_named_by_the_in_place_constructor`, which destructures the struct by name.
+///
+/// It is an **anonymous module-level** const on purpose: an associated `const _SIZE` inside the impl
+/// is evaluated lazily and never checked unless something reads it, so it would look like a guard
+/// and gate nothing. (Verified by setting it wrong: the impl-scoped form built clean.) Two values
+/// because the two targets have different pointer widths — the board is 32-bit thumbv8m, the host
+/// suite 64-bit — and both are measured rather than derived.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<CatalogModel>() == 56_112);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<CatalogModel>() == 56_120);
+
 impl CatalogModel {
     /// An empty projection, `const` so it can initialize a `static` rather than be returned by
     /// value.
@@ -113,6 +130,7 @@ impl CatalogModel {
     /// through-sequence 0, next `GenerationId` 0, terminal counter 0, and weather logical ID zero
     /// reserved by setting the weather repository's next candidate to one while leaving the
     /// weather state absent.
+    ///
     /// It clears field by field rather than assigning [`empty`](Self::empty). `*self = empty(store)`
     /// reads as the same thing and is not: it builds a 56 KiB value in a stack temporary and copies
     /// it in. On the nRF54L that made **57,344 bytes** of every `KernelTransaction::execute` frame —
@@ -154,8 +172,14 @@ impl CatalogModel {
     pub fn init_empty(slot: &mut core::mem::MaybeUninit<Self>, store: StoreId) -> &mut Self {
         let at = slot.as_mut_ptr();
         // SAFETY: every field of `CatalogModel` is written exactly once below, through a raw
-        // pointer into the caller's uninitialized slot, and none is read before it is written. The
-        // list is exhaustive against the struct definition directly above.
+        // pointer into the caller's uninitialized slot, and none is read before it is written.
+        //
+        // "Exhaustive" is the whole safety argument, and prose does not enforce it — a field added
+        // to the struct without a line here is uninitialized memory that reads as initialized. Two
+        // things make that a build error rather than a silent hole: the size assert below, which any
+        // layout change trips, and `every_field_is_named_by_the_in_place_constructor` in this
+        // module's tests, which destructures the struct by name so a new field cannot compile until
+        // it is acknowledged.
         unsafe {
             core::ptr::addr_of_mut!((*at).store).write(store);
             core::ptr::addr_of_mut!((*at).epoch).write(1);
@@ -773,6 +797,53 @@ mod tests {
         Box::new([0u8; CHECKPOINT_BODY_LEN])
     }
 
+    /// **The compile-time half of `init_empty`'s safety argument.**
+    ///
+    /// `init_empty` writes a `MaybeUninit<CatalogModel>` field by field, so its soundness is exactly
+    /// the claim that the list is complete. This destructures the struct with no `..`, which means a
+    /// field added to `CatalogModel` stops this file compiling until someone looks at it — and the
+    /// only reason to look is the raw-pointer list above. The body then asserts the values that list
+    /// writes, so the check is not merely structural.
+    #[test]
+    fn every_field_is_named_by_the_in_place_constructor() {
+        let mut slot = Box::new(core::mem::MaybeUninit::<CatalogModel>::uninit());
+        let placed = CatalogModel::init_empty(&mut slot, samples::STORE);
+        let CatalogModel {
+            store,
+            epoch,
+            through_sequence,
+            next_generation,
+            terminal_counter,
+            flags,
+            repositories,
+            heads,
+            actives,
+            draft_parent,
+            draft_parts,
+            retained,
+            result_start,
+            results,
+            handoff,
+            weather,
+            ride,
+        } = placed;
+        assert_eq!(*store, samples::STORE);
+        assert_eq!((*epoch, *through_sequence, *next_generation, *terminal_counter, *flags), (1, 0, 0, 0, 0));
+        assert!(repositories.is_empty() && heads.is_empty() && actives.is_empty());
+        assert!(draft_parts.is_empty() && retained.is_empty() && results.is_empty());
+        assert_eq!(*result_start, 0);
+        assert!(draft_parent.is_none() && handoff.is_none() && weather.is_none() && ride.is_none());
+    }
+
+    /// `init_empty` and `empty` are two spellings of one value, and the board runs the first while
+    /// every host test runs the second.
+    #[test]
+    fn the_in_place_constructor_agrees_with_the_by_value_one() {
+        let mut slot = Box::new(core::mem::MaybeUninit::<CatalogModel>::uninit());
+        let placed = CatalogModel::init_empty(&mut slot, samples::STORE);
+        assert_eq!(*placed, CatalogModel::empty(samples::STORE));
+    }
+
     /// [`CatalogModel::encode_initial_body`] writes §12's first checkpoint without building a
     /// projection, which is a second definition of the same bytes. This is what stops the two from
     /// drifting: the shortcut and the long way round must produce the identical 65,024 bytes, CRC
@@ -797,10 +868,42 @@ mod tests {
     /// survive a remount into the next store's catalog.
     #[test]
     fn decoding_into_a_populated_projection_leaves_nothing_of_the_old_one() {
+        // **Every** region, not a representative few: a decode clears field by field now, so a
+        // region left out of that list is a region whose stale contents survive into the next
+        // store's catalog — and a test that populated only some of them would not see it.
         let mut populated = model();
         populated.apply(&samples::claim(1, 1, 0, samples::OP_A, 1)).unwrap();
         populated.apply(&samples::publish(1, 2, 1, samples::OP_A, 1, samples::head(1, 7))).unwrap();
-        assert!(!populated.heads.is_empty() && !populated.results.is_empty());
+        populated.epoch = 9;
+        populated.through_sequence = 41;
+        populated.next_generation = 12;
+        populated.terminal_counter = 5;
+        populated.flags = 1;
+        populated.result_start = 3;
+        let _ = populated.repositories.push(samples::repository(11, 4));
+        let _ = populated.heads.push(samples::head(2, 8));
+        let _ = populated.actives.push(samples::active(samples::OP_PARENT));
+        populated.draft_parent = Some(samples::parent());
+        let _ = populated.draft_parts.push(samples::part(1));
+        let _ = populated.retained.push(samples::retained(3));
+        let _ = populated.results.push(samples::result(2, samples::OP_A));
+        populated.handoff = Some(samples::handoff_ref(1, super::super::handoff::HandoffPhase::Armed));
+        populated.weather = Some(samples::weather());
+        populated.ride = Some(samples::ride());
+        // Bind the check to the struct: a region added to `CatalogModel` without a line above
+        // leaves this assertion passing vacuously, so the count is asserted rather than assumed.
+        assert!(
+            !populated.repositories.is_empty()
+                && !populated.heads.is_empty()
+                && !populated.actives.is_empty()
+                && populated.draft_parent.is_some()
+                && !populated.draft_parts.is_empty()
+                && !populated.retained.is_empty()
+                && !populated.results.is_empty()
+                && populated.handoff.is_some()
+                && populated.weather.is_some()
+                && populated.ride.is_some()
+        );
 
         let mut fresh = body_buffer();
         CatalogModel::encode_initial_body(fresh.as_mut_slice(), samples::STORE, 4).unwrap();

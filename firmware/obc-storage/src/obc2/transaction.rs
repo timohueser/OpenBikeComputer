@@ -370,9 +370,13 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     ) -> &mut Self {
         let at = slot.as_mut_ptr();
         // SAFETY: every field of `Self` is written exactly once below, through a raw pointer into
-        // the caller's uninitialized slot, and none of them is read before it is written. The list
-        // is exhaustive against the struct definition — a field added without a line here would be
-        // a genuine hole, which is why the two are adjacent in this file.
+        // the caller's uninitialized slot, and none of them is read before it is written.
+        //
+        // "Exhaustive" is the whole safety argument, and prose does not enforce it. Two things do:
+        // `SIZE_32`/`SIZE_64` below, which any layout change trips, and
+        // `every_field_is_named_by_the_in_place_constructor` in this module's tests, which
+        // destructures the struct by name so a field added to it cannot compile until someone has
+        // looked at this list.
         unsafe {
             core::ptr::addr_of_mut!((*at).media).write(media);
             core::ptr::addr_of_mut!((*at).validator).write(validator);
@@ -406,6 +410,14 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
     }
 
     /// Derives the journal cursor and the two identity cursors from the projection now in place.
+    ///
+    /// **Call this after the projection is loaded and before the first command.** A transaction
+    /// built by [`mount_in_place`](Self::mount_in_place) starts on an empty projection, so its
+    /// cursors are the empty store's; a mount that decoded a real checkpoint through
+    /// [`media_and_model_mut`](Self::media_and_model_mut) and skipped this would append its next
+    /// journal record at sequence one, over a slot the store is still replaying, and hand out a
+    /// `LogicalObjectId` some existing head already owns. [`mount`](Self::mount) calls it for the
+    /// caller, which is why the by-value path needs no such note.
     ///
     /// §6.3: the next record's sequence is the projection's `through_sequence` plus one. The
     /// revision and logical-id cursors are the maxima the repository rows carry, which is what makes
@@ -1883,4 +1895,165 @@ fn decode_result(result: &TerminalResult) -> Result<ResultEnvelope, TerminalErro
         current_revision: (body.presence & obc_link::error::presence::CURRENT_REVISION != 0)
             .then_some(body.current_revision),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A media that does nothing, so the size assert below measures **this struct's** layout rather
+    /// than whatever media a particular board composes it with.
+    struct NoMedia;
+
+    impl GenerationMedia for NoMedia {
+        type Error = ();
+
+        fn ensure_shards(&mut self, _generation: GenerationId) -> Result<(), ()> {
+            Ok(())
+        }
+        fn payload_length(&mut self) -> Result<u64, ()> {
+            Ok(0)
+        }
+        fn write_payload(&mut self, _offset: u64, _bytes: &[u8]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn sync_payload(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn truncate_payload(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn write_work(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn sync_work(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    impl KernelMedia for NoMedia {
+        fn append_journal(
+            &mut self,
+            _slot: u16,
+            _body: &[u8; JOURNAL_BODY_LEN],
+            _gate: &[u8; GATE_LEN],
+        ) -> Result<(), ()> {
+            Ok(())
+        }
+        fn open_generation(&mut self, _generation: GenerationId) -> Result<(), ()> {
+            Ok(())
+        }
+        fn read_generation(&mut self, _generation: GenerationId, _offset: u64, _into: &mut [u8]) -> Result<usize, ()> {
+            Ok(0)
+        }
+        fn collect_generation(&mut self, _generation: GenerationId) -> Result<(), ()> {
+            Ok(())
+        }
+        fn free_bytes(&mut self) -> u64 {
+            u64::MAX
+        }
+        fn reset_store(&mut self, _store: StoreId) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    type Pinned = KernelTransaction<NoMedia, AcceptEverything, NoHooks>;
+
+    /// The size [`KernelTransaction::mount_in_place`]'s field list was written against, over a
+    /// zero-sized media so the figure is this struct's own rather than a particular board's.
+    ///
+    /// Anonymous and at module scope so it is evaluated eagerly — a *named* const is checked only
+    /// where something reads it, which would make this look like a guard while gating nothing.
+    /// Two values because the two targets have different pointer widths — the board is 32-bit
+    /// thumbv8m, the host suite 64-bit. Re-pinning one is the moment the field list gets checked.
+    #[cfg(target_pointer_width = "64")]
+    const _: () = assert!(core::mem::size_of::<Pinned>() == 73_384);
+
+    /// **The compile-time half of `mount_in_place`'s safety argument.**
+    ///
+    /// The constructor writes a `MaybeUninit<Self>` field by field, so its soundness is exactly the
+    /// claim that the list is complete. This destructures with no `..`: a field added to
+    /// `KernelTransaction` stops this file compiling until someone looks at it, and the only reason
+    /// to look is the raw-pointer list.
+    #[test]
+    fn every_field_is_named_by_the_in_place_constructor() {
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
+        let store = StoreId::new([0x4C; 16]);
+        let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
+        let KernelTransaction {
+            media: _,
+            validator: _,
+            hooks: _,
+            model,
+            sequence,
+            revision,
+            next_logical_id,
+            leases: _,
+            pinned,
+            lease_connection,
+            live,
+            writing,
+            stride,
+            config,
+            status,
+            clock,
+        } = placed;
+        assert_eq!(model.store, store);
+        assert_eq!((*sequence, *revision, *next_logical_id), (1, 0, 1));
+        assert!(pinned.is_none() && writing.is_none() && live.iter().all(|row| row.is_none()));
+        assert_eq!(*lease_connection, 0);
+        assert!(stride.iter().all(|byte| *byte == 0));
+        assert_eq!(config.name_len, initial_config().name_len);
+        assert_eq!(status.store_id, store);
+        assert_eq!(clock.epoch_seconds, initial_clock().epoch_seconds);
+    }
+
+    /// The board runs `mount_in_place`; every host test runs `mount`. They must produce the same
+    /// transaction, or the board is exercising something the suite never sees.
+    #[test]
+    fn the_in_place_constructor_agrees_with_the_by_value_one() {
+        let store = StoreId::new([0x4C; 16]);
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
+        let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
+        let by_value = std::boxed::Box::new(KernelTransaction::mount(
+            NoMedia,
+            AcceptEverything,
+            NoHooks,
+            CatalogModel::empty(store),
+        ));
+
+        assert_eq!(placed.store_id(), by_value.store_id());
+        assert_eq!(*placed.model(), *by_value.model());
+        assert_eq!(placed.sequence, by_value.sequence);
+        assert_eq!(placed.revision, by_value.revision);
+        assert_eq!(placed.next_logical_id, by_value.next_logical_id);
+        assert_eq!(placed.retained_results(), by_value.retained_results());
+        assert_eq!(placed.has_lease(), by_value.has_lease());
+        assert_eq!(placed.compaction_required(), by_value.compaction_required());
+        assert_eq!(placed.config.name_len, by_value.config.name_len);
+        assert_eq!(placed.status.store_id, by_value.status.store_id);
+        assert_eq!(placed.clock.epoch_seconds, by_value.clock.epoch_seconds);
+        assert_eq!(placed.stride, by_value.stride);
+    }
+
+    /// A mount over a projection that already carries state derives the cursors from it, which is
+    /// what makes a remount continue the store rather than restart it.
+    #[test]
+    fn rebind_derives_the_cursors_from_the_projection_in_place() {
+        let store = StoreId::new([0x4C; 16]);
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Pinned>::uninit());
+        let placed = KernelTransaction::mount_in_place(&mut slot, NoMedia, AcceptEverything, NoHooks, store);
+        {
+            let (_, model) = placed.media_and_model_mut();
+            model.reset_to_initial(store, ObjectKind::Weather.to_u16());
+            model.through_sequence = 41;
+            model.repositories[0].revision = Revision::new(7);
+            model.repositories[0].next_logical_id = LogicalObjectId::new(9);
+        }
+        placed.rebind();
+        assert_eq!(placed.sequence, 42, "the journal cursor is through_sequence + 1");
+        assert_eq!(placed.revision, 7);
+        assert_eq!(placed.next_logical_id, 9);
+        assert_eq!(placed.status.store_id, store);
+    }
 }
