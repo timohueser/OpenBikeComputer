@@ -76,7 +76,7 @@ use obc_storage::obc2::generation::GenerationMedia as _;
 use obc_storage::obc2::geometry::{self, FatType, Region, VolumeGeometry};
 use obc_storage::obc2::limits::{CHECKPOINT_FILE_LEN, INITIALIZATION_ZERO_FILL, SLOT_STRIDE, WORK_FILE_LEN};
 use obc_storage::obc2::model::CatalogModel;
-use obc_storage::obc2::mount::CREATION_ORDER;
+use obc_storage::obc2::mount::{Outcome, CREATION_ORDER};
 use obc_storage::obc2::transaction::KernelMedia as _;
 use obc_storage::obc2::transaction::{AcceptEverything, KernelTransaction, NoHooks};
 use obc_storage::obc2::StoreId;
@@ -221,7 +221,10 @@ static mut READBACK: Aligned<PAYLOAD_LEN> = Aligned([0; PAYLOAD_LEN]);
 
 /// Places `value` in a `.bss` slot and hands back the `'static` reference.
 ///
-/// SAFETY: called exactly once per slot, before anything reads it.
+/// # Safety
+///
+/// The caller must call this at most once per slot, before anything reads it — a second call would
+/// hand out a second `&'static mut` to the same storage.
 unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, value: T) -> &'static mut T {
     let slot = &mut *slot;
     slot.write(value);
@@ -343,13 +346,36 @@ fn run(vmgr: &'static Vmgr, log: &'static Log, root: RawDirectory, geometry: &Vo
     let survey = fat::survey(&fat, root, None, stride, image, slots);
     report_survey("MOUNT", &survey, ms(started));
 
-    let survey = if FORCE_REINIT || !survey.is_mountable() {
+    // Initialization **deletes the seven fixed files**, so the conditions under which this bench is
+    // allowed to run it are the narrow ones. §12 hands back three pre-birth verdicts and a
+    // fail-closed one, and they are not equally safe to overwrite:
+    //
+    // - `Initialize` — `/OBC2` is absent or empty. Nothing to destroy.
+    // - `RestartPreBirth` — an ungated prefix with no witness, which is exactly what §12 authorizes
+    //   deleting. Safe, and the verdict itself is the authorization.
+    // - `ResumeInitialization` — a valid `INIT.REC` naming a StoreId. If that StoreId is not this
+    //   bench's, the card belongs to a real initialization that was cut, and §12 says to *resume* it
+    //   under its own identity rather than restart under a new one. Wiping it would destroy the one
+    //   fact that makes resuming possible.
+    // - `RecoveryFailed` — evidence §12 says to preserve. Never wiped without an explicit flag.
+    let refuses_wipe = match survey.outcome {
+        Outcome::ResumeInitialization { store } if store != BENCH_STORE => {
+            Some("a valid INIT.REC names another store — resuming it is §12's answer, not wiping it")
+        }
+        Outcome::RecoveryFailed(_) => Some("§12 mounted recovery-failed and says to preserve the evidence"),
+        Outcome::Unsupported(_) => Some("§1.1 refused this volume, so nothing may be written to it"),
+        _ => None,
+    };
+    let survey = if survey.is_mountable() && !FORCE_REINIT {
+        survey
+    } else if let Some(reason) = refuses_wipe.filter(|_| !FORCE_REINIT) {
+        error!("MOUNT REFUSING to initialize: {=str} (set FORCE_REINIT to override)", reason);
+        return;
+    } else {
         match initialize_phase(&fat, root, stride, image, slots) {
             Some(survey) => survey,
             None => return,
         }
-    } else {
-        survey
     };
 
     let free = geometry.volume_bytes() / 4;
@@ -794,28 +820,46 @@ fn directory_entry_lba(store: &mut Store, base: &str) -> Option<u32> {
 
 // ── 5. resident cost ────────────────────────────────────────────────────────────────────────────
 
-/// The `size_of` table, against §13's budget.
+/// The `size_of` table, decomposed against §13's budget.
 ///
 /// §13: "RAM holds a bounded index, not the projection … The measured figure at these capacities is
-/// **19,848 bytes**. DOS2 sizes its arena from that figure." What this board actually places is
-/// printed beside it, because the difference is a finding rather than a detail.
+/// **19,848 bytes**. DOS2 sizes its arena from that figure."
+///
+/// The overshoot is reported as three separate figures rather than one ratio, because they are three
+/// different questions with three different answers and a single "8×" would flatten them:
+///
+/// 1. **The projection.** §13's 19,848 B *is* the budget for the resident catalog, so this is the
+///    one line that compares like with like — DOS3 holds whole entries where §13 holds an index with
+///    envelopes and result bodies re-read from card.
+/// 2. **The transaction around it.** The projection plus the 16 KiB seal stride and the resident
+///    tables. §13 budgets none of this explicitly; it is the kernel's own working set.
+/// 3. **Mount staging.** A whole checkpoint file, a slot stride and the observation table. §13
+///    budgets *commit* staging at one journal body and *compaction* staging at 752 B and names no
+///    mount-time figure at all, so this is unbudgeted rather than over budget.
+const RAM_INDEX_BUDGET: usize = 19_848;
+
 fn report_footprint() {
     let model = core::mem::size_of::<CatalogModel>();
     let store = core::mem::size_of::<Store>();
     let media = core::mem::size_of::<Media>();
     let slots = core::mem::size_of::<SlotTable>();
-    info!("RAM   CatalogModel (the card-resident projection, held in RAM): {=usize} B", model);
-    info!("RAM   KernelTransaction (projection + 16 KiB seal stride + tables): {=usize} B", store);
-    info!("RAM   FatMedia (handles + two staging buffer references): {=usize} B", media);
+    let staging = CHECKPOINT_FILE_LEN + SLOT_STRIDE + slots;
     info!(
-        "RAM   mount staging: {=usize} B checkpoint image + {=usize} B stride + {=usize} B slot table",
-        CHECKPOINT_FILE_LEN, SLOT_STRIDE, slots
+        "RAM   1. projection: CatalogModel {=usize} B vs §13's {=usize} B RAM-index budget — {=u32}/100x",
+        model,
+        RAM_INDEX_BUDGET,
+        (model * 100 / RAM_INDEX_BUDGET) as u32
     );
     info!(
-        "RAM   store total {=usize} B against §13's 19,848 B RAM-index budget — {=usize}x",
-        store + CHECKPOINT_FILE_LEN + SLOT_STRIDE + slots,
-        (store + CHECKPOINT_FILE_LEN + SLOT_STRIDE + slots) / 19_848
+        "RAM   2. transaction: KernelTransaction {=usize} B (the projection + a {=usize} B seal stride + tables); §13 budgets no figure for this",
+        store, SLOT_STRIDE
     );
+    info!(
+        "RAM   3. mount staging: {=usize} B = {=usize} B checkpoint image + {=usize} B stride + {=usize} B slot table; §13 names no mount-time staging figure — unbudgeted, not over budget",
+        staging, CHECKPOINT_FILE_LEN, SLOT_STRIDE, slots
+    );
+    info!("RAM   FatMedia itself (handles + two staging references): {=usize} B", media);
+    info!("RAM   placed in .bss for one mounted store: {=usize} B", store + staging);
 }
 
 // ── 6. reboot recovery ──────────────────────────────────────────────────────────────────────────
