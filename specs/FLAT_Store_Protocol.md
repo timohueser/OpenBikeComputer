@@ -149,6 +149,11 @@ destructive and explicit.
   removes it, until it is dropped. This hold is RAM-only.
 - `read` is arithmetic on the entry's ranges: cost is one media read, with no chain walk and no
   indirection block. A reader that needs many small reads pays for the media, not for the format.
+- A `journal` that returns `Ok` has flushed exactly `tail.len() / 16_384` whole pages, and the caller
+  may drop that prefix from its own tail. A `journal` that returns `Err` has flushed **none** of it: the
+  caller keeps the whole tail and retries with the same bytes, or with a tail that extends them. This is
+  the one obligation the seam puts on a caller — everywhere else an `Err` means "changed nothing" and a
+  retry is a free choice, while here the flushed length only moves when the store says it did.
 
 ## 3. Protocol v4
 

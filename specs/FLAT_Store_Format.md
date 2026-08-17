@@ -480,10 +480,11 @@ it, and returns them when the last handle closes. This hold is RAM-only and need
 after a reboot the extents are free, and there is no reader left to be surprised.
 
 Working out which of a closing hold's extents the catalog still names is a read, and a read can fail. A
-failed read is not evidence that an entry is gone: those extents stay allocated until the next mount
-rebuilds the bitmap from the catalog. Losing the use of an extent until the card is remounted is the
-only harm; handing out one a live entry names would put two objects on the same bytes, and that is an
-overlap only a mount detects — after which the catalog copy carrying it is unreadable.
+failed read is not evidence that an entry is gone: those extents stay allocated until an entry that names
+them is removed, or until the next mount rebuilds the bitmap from the catalog. Losing the use of an
+extent that long is the only harm; handing out one a live entry names would put two objects on the same
+bytes, and that is an overlap only a mount detects — after which the catalog copy carrying it is
+unreadable.
 
 ## 7. Ride journal
 
