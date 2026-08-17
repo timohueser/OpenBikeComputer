@@ -7,10 +7,12 @@
 //! `sync` costs nothing of its own — and only ~74 µs a block inside one. A read command is ~0.5 ms plus
 //! ~41 µs a block (12,301 kB/s sequential).
 //!
-//! So blocks are the format's business and this file does not check them; commands are scheduling, they
-//! are what this slice changed, and they are what a regression here would silently give back. Each case
-//! pins the exact census and prints the time it projects, so a change that reintroduces block-at-a-time
-//! I/O fails with a number rather than with a shrug.
+//! So the two counts answer different questions and both are pinned here, for opposite reasons.
+//! **Commands** are scheduling: they are what this slice changed and what a regression would silently
+//! give back, so each case pins its exact census and prints the time it projects, and a change that
+//! reintroduces block-at-a-time I/O fails with a number rather than with a shrug. **Blocks** are the
+//! format's, restated from §5.5 and §5.6 — pinned so that a scheduling change which moved one fails as
+//! the format change it would be.
 //!
 //! **The projections are arithmetic, not measurements.** They are the census times the bench's
 //! per-command figures. Applied to the *old* census the same arithmetic under-predicts the bench's own
@@ -39,8 +41,7 @@ const WRITE_BLOCK_US: u64 = 74;
 const READ_COMMAND_US: u64 = 500;
 const READ_BLOCK_US: u64 = 41;
 
-/// The card commands one path issued, and the blocks they carried. Blocks are here to be *reported*,
-/// not gated: they are §5.5's and §5.6's own figures and this slice did not move them.
+/// The card commands one path issued, and the blocks they carried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Census {
     reads: u64,
