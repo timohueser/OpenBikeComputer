@@ -39,6 +39,14 @@ format constant of **16,384 bytes**, and every region boundary and record stride
 of it, measured from physical LBA 0. A write may corrupt blocks inside the page it is programming
 and does not corrupt blocks lying in another page.
 
+A **multi-block write command** is not a unit of atomicity either, and nothing below may assume it is.
+A cut inside one leaves an arbitrary prefix of its blocks on the card — the card is free to have
+committed them already or to lose them with the power — the block it was programming corrupted to the
+page rule above or untouched if it had stopped cleanly between blocks, and none of the blocks after
+that. So a store may issue a region's blocks in as few commands as the media rewards without changing
+what a reader must tolerate: what makes a record all-or-nothing is its CRC and, where the record is too
+large for one shot, its gate. Never the command count.
+
 That assumption is **taken, not yet measured**: the rig that removes the card's supply rail mid-write
 is #1383, deferred for want of board access. If it later fails, the remedy is region spacing and copy
 counts inside this document and inside the store — nothing above the seam of
@@ -342,10 +350,32 @@ atomically, because the mechanism rewrites the whole live prefix regardless. Wea
 the new head, set `RETAINED` on the displaced entry) and finalising a ride (clear `RECORDING`, trim
 the ranges, set length and CRC) are each one commit.
 
-The cost is `ceil(n/4) + 3` block writes and three synchronizations: about **15–20 ms** at a few
-hundred entries, dominated by the synchronizations. That budget assumes commits are rare —
-publication events, not a running log. If a future feature needs to commit more than about once per
-second, the whole-catalog copy is the thing to re-examine, not the thing to work around.
+The cost is `ceil(n/4) + 3` block **writes** and three synchronizations, and — because the mechanism
+rewrites the whole live prefix — two passes over the array's `ceil(n/4)` blocks to produce them: one to
+check everything the batch would write against §5.3 before the card is touched, one to write it.
+
+Those counts were measured exactly right on glass (#1409): 79 write blocks at 300 entries, 260 at
+1,024. Two things about the **time** they take were not, and the earlier claim of "about 15–20 ms at a
+few hundred entries, dominated by the synchronizations" was wrong on both:
+
+- A synchronization is not the cost. On the sEMMC transport the device uses, a write polls CMD13 for
+  the program cycle to finish, so durability is folded into every write and a `sync` is free.
+- What the card charges is per **command**: about 1.34 ms for a write command, then ~74 µs a block
+  inside it, and about 0.5 ms for a read command plus ~41 µs a block. So a block count fixes the bytes
+  moved and says nothing about the time; 79 blocks issued one per command cost 106 ms, and the same 79
+  blocks in ten commands cost 18.
+
+A store is therefore free to issue these blocks in as few multi-block commands as it likes, and should:
+nothing in this section is a statement about command granularity. What it does fix is the blocks, their
+addresses, their contents, and their order relative to the three synchronizations — a cut inside a wide
+command is still a cut, and the isolation assumption of §1 is per program page whatever command was
+programming it. The device's store batches to 4 KiB windows, which puts a commit at a few hundred
+entries near **40 ms** and at 1,024 near **120 ms**, both projections from the per-command figures
+above rather than fresh measurements.
+
+The budget assumes commits are rare — publication events, not a running log. If a future feature needs
+to commit more than about once per second, the whole-catalog copy is the thing to re-examine, not the
+thing to work around.
 
 ### 5.6 Mount
 
@@ -371,7 +401,12 @@ Those five steps are the whole of mount. There is **no journal replay** — the 
 commit; **no garbage collection** — an extent is free exactly when no entry names it; and **no
 recovery scan** — nothing on the card can be committed that the winning gate does not already
 describe. On a card with no ride in progress a mount reads at most 3 blocks plus the live catalog
-prefix, which is why boot is about 100 ms.
+prefix — 261 blocks at 1,025 entries, the whole boot cost.
+
+As in §5.5, that block count is the normative part and the time is a per-command matter: read one
+block per command and those 261 blocks measured 185.8 ms on glass (#1409), against the ~100 ms this
+section had planned for; read in 4 KiB windows they are 37 commands and project ~28 ms. Nothing about
+which blocks a mount reads changes either way.
 
 One thing that reads like mount is deliberately outside it: reconciling an update that armed before
 the last reboot, which may remove an orphaned rollback reserve
