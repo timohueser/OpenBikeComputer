@@ -95,6 +95,8 @@ pub struct Faults {
     pub refuse_claim: Option<FailureCause>,
     /// Publish a competing revision just before the commit lock, as a device-local producer would.
     pub race_publication: bool,
+    /// Fail the terminal record an abort writes, as a medium that dies under it does.
+    pub fail_abort: bool,
 }
 
 /// The in-memory transaction.
@@ -251,6 +253,10 @@ impl FakeTransaction {
     }
 
     /// Executes one engine command. `scratch` carries any bytes the outcome hands back.
+    ///
+    /// The inherent method and the [`Transaction`](crate::engine::Transaction) implementation below
+    /// are the same code: the trait is what a generic driver or scenario names, and this is what
+    /// the crate's own tests call without importing it.
     pub fn execute<'s>(&mut self, command: Command<'_>, scratch: &'s mut [u8]) -> Outcome<'s> {
         match command {
             Command::Lookup(intent) => Outcome::Claim(self.lookup(intent)),
@@ -546,6 +552,11 @@ impl FakeTransaction {
     }
 
     fn abort<'s>(&mut self, operation_id: OperationId, cause: AbortCause) -> Outcome<'s> {
+        if self.faults.fail_abort {
+            // The claim stays live and the store still owes it a terminal state (§11). What the
+            // engine must not do is ask again.
+            return Outcome::Failed(FailureCause::MediaIo { detail: detail::media_io::WRITE });
+        }
         let terminal = cause.terminal();
         if self.claim_for(operation_id).is_some() {
             self.finish_claim(operation_id, Err(terminal));
@@ -779,6 +790,12 @@ impl FakeTransaction {
         }
         self.results[self.result_start] = retained;
         self.result_start = (self.result_start + 1) % RESULT_RING;
+    }
+}
+
+impl crate::engine::Transaction for FakeTransaction {
+    fn execute<'s>(&mut self, command: Command<'_>, scratch: &'s mut [u8]) -> Outcome<'s> {
+        FakeTransaction::execute(self, command, scratch)
     }
 }
 
