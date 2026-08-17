@@ -70,6 +70,17 @@ pub trait Store {
 
     /// Random access inside an open object. Returns bytes read, short only at end of payload.
     fn read(&self, handle: &Self::Handle, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError>;
+
+    // Beside the five, and not object operations.
+
+    /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
+    /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
+    fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
+
+    /// The ride exception, and the only way bytes become durable without a commit. Performs both
+    /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
+    /// the recording entry's own extents, then write one journal slot.
+    fn journal(&mut self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
 }
 
 pub enum Mutation {
@@ -87,6 +98,18 @@ pub enum PutSource {
     Amend,
 }
 
+pub struct RideCheckpoint<'a> {
+    /// The entry carrying RECORDING; the store rejects a checkpoint naming anything else.
+    pub id: ObjectId,
+    pub revision: Revision,
+    /// Payload bytes past the last flushed page, oldest first. The store flushes whole pages
+    /// out of the front of this and journals whatever remains.
+    pub tail: &'a [u8],
+    /// CRC-32 of the whole ride payload through `flushed length + tail.len()`, carried by the
+    /// caller across checkpoints and recovered from the journal after a cut.
+    pub payload_crc: u32,
+}
+
 pub enum StoreError {
     NotFound,
     RevisionConflict { current: Revision },
@@ -99,38 +122,15 @@ pub enum StoreError {
 }
 ```
 
+The two members below the comment separator sit beside the five and are counted separately because
+they are not object operations: `entries` mutates nothing and names nothing below the seam, and
+`journal` is the ride exception the epic granted.
+
 `EntryMeta` is the metadata half of a catalog entry — kind, flags, `ObjectId`, `Revision`, payload
 length, payload CRC, display name — and nothing else. `Allocation` is opaque: it exposes its reserved
 length. **Neither carries an extent**, which is what makes the sentence at the head of this section
 true rather than aspirational: extents enter the store through `allocate`, leave it never, and the
 only thing a caller ever holds is the opaque token that stands for them.
-
-Two members sit beside the five and are named separately because they are not object operations:
-
-```rust
-impl Store {
-    /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
-    /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
-    fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
-
-    /// The ride exception, and the only way bytes become durable without a commit. Performs both
-    /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
-    /// the recording entry's own extents, then write one journal slot.
-    fn journal(&mut self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
-}
-
-pub struct RideCheckpoint<'a> {
-    /// The entry carrying RECORDING; the store rejects a checkpoint naming anything else.
-    pub id: ObjectId,
-    pub revision: Revision,
-    /// Payload bytes past the last flushed page, oldest first. The store flushes whole pages
-    /// out of the front of this and journals whatever remains.
-    pub tail: &'a [u8],
-    /// CRC-32 of the whole ride payload through `flushed length + tail.len()`, carried by the
-    /// caller across checkpoints and recovered from the journal after a cut.
-    pub payload_crc: u32,
-}
-```
 
 `journal` is the one place where the "nothing above names an extent" rule needs a written reason
 rather than a definition: flushing a payload page is a write into an object's own extents that no
@@ -301,8 +301,12 @@ transport it answers the request, 24 bytes:
 
 The client verifies length and CRC itself. A refusal — `notFound`, `busy`, `mediaIo` — is an error
 response to the same `RequestId`, and it may arrive before, during or instead of the stream; a client
-that sees it discards whatever it has. A `GET` on an entry carrying `RESERVED` is `invalidRequest`:
-the store did not write those bytes.
+that sees it discards whatever it has.
+
+A `GET` on an entry carrying `RESERVED` or `RECORDING` is `invalidRequest`, for the same reason `PUT`
+and `REMOVE` refuse them: the store did not write the reserve's bytes, and a recording ride's length
+and CRC are zero until the commit that ends it, so serving one would report success over an empty
+payload. A client syncs a ride once `RECORDING` has cleared from its `LIST` entry.
 
 The open handle of §2.1 lives for the transfer, so a replace or a remove committed while a download
 is running changes what is visible without disturbing the bytes being read.
@@ -441,14 +445,16 @@ bytes to spare per error has better uses for the frame.
 | 11 | `rejected` | kind-specific | the kind's validator owns the detail space |
 | 12 | `internal` | — | — |
 | 13 | `catalogChanged` | current commit sequence | listing `1` |
-| 14 | `readOnly` | — | catalogUnreadable `1`, revisionSpaceExhausted `2` |
+| 14 | `readOnly` | — | catalogUnreadable `1`, revisionSpaceExhausted `2`, unformatted `3` |
 
 Code `0` is invalid and is treated as a malformed body. A receiver reads a code it does not know as a
 failure it cannot classify; it never treats an unknown code as success.
 
-`readOnly` is the wire face of a store that mounted without a usable catalog or exhausted its
-revision space (`FLAT_Store_Format.md` §3, §5.6). Every mutating opcode returns it; reads are still
-served when the catalog was merely exhausted, and refused when it was unreadable.
+`readOnly` is the wire face of a store that cannot be written: no usable catalog, an exhausted
+revision space, or a card §5.6 step 1 classified as **not a flat store**
+(`FLAT_Store_Format.md` §3, §5.6). Every opcode returns it in the unformatted and unreadable cases,
+including the reads, because there is nothing to read; only the exhausted case still serves reads.
+Initializing such a card is destructive and device-local — no wire opcode formats a card.
 
 An error means the mutation did not happen, with exactly one exception a client must handle: a
 response lost after the commit. That is what §3.4 is for, and it is why no error code claims an
@@ -558,7 +564,11 @@ frame bearing the same `RequestId`. The two channels are independent transports 
 L2CAP CoC, two USB endpoint pairs — and neither orders itself against the other, so this is the one
 guarantee §3.6 needs the binding to supply and the reason a `PUT` may stream without an acceptance.
 An adapter that cannot order the two MUST hold one link-ceiling stream frame for a `RequestId` it has
-not yet seen admitted; it MUST NOT deliver it, and it MUST NOT drop it.
+not yet seen admitted; it MUST NOT deliver it, and it MUST NOT drop it. While it holds that frame it
+MUST withhold link credit — CoC credits on BLE, ceasing to accept stream records on USB — rather than
+buffer a second one. §3.6 lets a client stream as fast as the link allows, so backpressure is the only
+thing that bounds this: without it the second pre-admission frame has nowhere to go and no defined
+disposition.
 
 ### 5.1 BLE
 
