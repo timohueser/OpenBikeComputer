@@ -1503,11 +1503,16 @@ fn a_full_catalog_refuses_one_more_entry() {
 }
 
 /// The batched body write at the array's widest, which is the one place it could reach something that is
-/// not body. §5.1 gives the entry array 480 blocks and puts the copy's **gate** in the block after them,
-/// so a window that padded itself past the live prefix, or one whose base drifted off a window boundary,
-/// would program that gate as part of the body it is about to certify — and would then write a real gate
-/// over it and pass every other test in this file. So: a commit that takes the catalog *to* capacity, and
-/// the gate block is still a gate.
+/// not body: §5.1 gives the entry array 480 blocks and puts the copy's **gate** in the block after them.
+///
+/// What this pins is the *boundary* — a window whose base drifted, or a body length miscounted at
+/// capacity, would program that gate as part of the body it is about to certify and then write a real
+/// gate over it. What it does **not** pin is the no-padding rule, and the distinction is worth stating
+/// because it is easy to assume otherwise: 480 blocks is exactly 60 windows, so at capacity the last
+/// window is already full and a writer that padded every window to eight blocks would pass this test
+/// unchanged. Padding is caught instead by [`cost`](super::cost), whose commit at 300 entries pins a
+/// 77-block body written in ten commands — nine full windows and a five-block one — so a writer that
+/// rounded that last window up would report 83 write blocks instead of 80 and fail.
 #[test]
 fn a_commit_at_capacity_never_programs_the_gate_as_body() {
     const AT: usize = super::layout::ENTRY_CAPACITY - 1;
