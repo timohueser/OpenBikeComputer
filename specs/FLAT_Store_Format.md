@@ -414,10 +414,12 @@ split is the finding: **88.5 ms reading, 95.6 ms on the M33** — a mount is CPU
 Decoding 1,025 entries, checking §5.3, claiming their extents and folding the body CRC is ~93 µs an
 entry and no schedule reaches it.
 
-Reading the same blocks in 4 KiB windows takes the I/O half from 88.5 ms to about 22, which projects a
-mount near **117 ms**. That is a large improvement and still **misses** this section's ~100 ms, by
-about a sixth. Getting under it means making the per-entry work cheaper or reading fewer entries —
-neither is a scheduling change, and neither is done.
+Reading the same blocks in 2 KiB windows takes the I/O half from 88.5 ms to about 31.5, which projects
+a mount near **127 ms**. That is a large improvement and still **misses** this section's ~100 ms, by
+about a quarter. Getting under it means making the per-entry work cheaper or reading fewer entries —
+neither is a scheduling change, and neither is done. (The window is half the one a commit uses because
+the device's mount reads in the frame that is building the store itself, which is that store's largest;
+the wider window would buy ~9 ms and cost 2 KiB of stack there.)
 
 One thing that reads like mount is deliberately outside it: reconciling an update that armed before
 the last reboot, which may remove an orphaned rollback reserve

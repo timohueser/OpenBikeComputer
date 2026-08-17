@@ -220,12 +220,18 @@ fn fill<D: BlockDevice>(dev: &D, row: &mut Reservation, mut input: &[u8]) -> Res
 ///
 /// That split is not tidiness, it is the stack. A reader that owned its window was a value built in a
 /// return slot and then moved, so each one could cost *two* windows of frame, and `commit` — which
-/// needs a scan and a body stage at once — paid for up to four. Two release builds of the same source
-/// measured that frame at 17,664 B and at 13,248 B, four copies and three, against the 16,384 B ceiling
-/// `resource_guard.py frames` holds `obc_storage::flat` to: a 4 KiB swing decided by the inliner, over
-/// the ceiling in the worse of the two. Owning the windows in the caller as plain locals and lending
-/// them is what makes it one slot each and 9,664 B in both. It is the failure mode that guard was
-/// written for, in the same shape.
+/// needs a scan and a body stage at once — paid for up to four: 13,568 B measured here, and 17,664 B in
+/// a reviewer's harness, against 2,796 B on the revision before any of this. Owning the windows in the
+/// caller as plain locals and lending them is what makes it one slot each, and takes the same symbol to
+/// **9,920 B**. It is the failure mode `resource_guard.py frames` was written for, in the same shape.
+///
+/// Worth recording, because it is the opposite of reassuring: that guard did not see any of it. It
+/// substring-matches a demangled name, and `Store::commit` is a *trait* impl, which `llvm-objdump`
+/// demangles with legacy escaping — `_$LT$obc_storage..flat..store..FlatStore$LT$D$GT$$u20$as$u20$…$GT$
+/// ::commit`, with `..` where the needle `obc_storage::flat` expects `::`. So every trait-impl frame in
+/// this module — `commit`, `open`, `read`, `journal`, `write` — was invisible to it, and the ceiling
+/// was being held by `mount` alone. #1409 widens the needle to `obc_storage`, which the escaped names
+/// do match; these numbers are measured against that.
 ///
 /// A cursor and the buffer it is used with are a **pair**: the cursor says which blocks the buffer
 /// holds, so lending a different buffer to a cursor with a live window would decode whatever that other
@@ -259,7 +265,13 @@ impl EntryCursor {
     fn get<D: BlockDevice>(&mut self, dev: &D, buf: &mut [u8], index: u16) -> Result<Entry, StoreError> {
         debug_assert!(!buf.is_empty() && buf.len().is_multiple_of(BLOCK), "a window is whole blocks");
         let block = index as u64 / ENTRIES_PER_BLOCK as u64;
-        let held = self.cached.filter(|(first, count)| block >= *first && block - *first < *count);
+        // The width test is the `no_std` safety half: a cursor paired with a *narrower* buffer than the
+        // one that filled it would otherwise index past the end of it. No call site does that today —
+        // the pairs are adjacent locals — but the failure mode is a panic on a device rather than a
+        // wrong answer, and the fix is to treat a window the buffer cannot hold as a miss and re-read.
+        let held = self.cached.filter(|(first, count)| {
+            block >= *first && block - *first < *count && *count <= (buf.len() / BLOCK) as u64
+        });
         let first = match held {
             Some((first, _)) => first,
             None => {
