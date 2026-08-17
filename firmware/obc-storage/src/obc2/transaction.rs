@@ -1683,11 +1683,9 @@ impl<M: KernelMedia, V: Validator, H: Hooks> KernelTransaction<M, V, H> {
         // because it is a second decode of every commit, and release builds have the crash matrix.
         debug_assert!(
             JournalBody::decode_body(&body).is_ok(),
-            "a committed record does not decode: {:?} kind {:?} op {:?} intent0 {}",
-            JournalBody::decode_body(&body).err(),
-            kind,
+            "a {kind:?} record for {:?} does not decode: {:?}",
             record.operation,
-            record.intent[0],
+            JournalBody::decode_body(&body).err(),
         );
         let gate = record.gate_for(&body).encode();
         if self.media.append_journal(slot, &body, &gate).is_err() {
