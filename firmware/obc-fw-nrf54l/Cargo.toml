@@ -178,6 +178,11 @@ obc-sensors = { path = "../obc-sensors" }
 # The board-agnostic SD storage adapters (#807): `SdByteSource`/`SdByteSink`/`SdTrackSink` + the
 # FAT-extent map fast path — only the concrete SPIM bus type is board-specific here.
 obc-storage = { path = "../obc-storage" }
+# The DOS2 wire/effect contract the OBC2 kernel transaction is defined against: `Command`,
+# `ClaimIntent`, `ObjectKind` and the identity types. Transport-free and storage-free by
+# construction, so this is a foundation dependency and not a second link stack — the only consumer
+# today is the `obc2_store_bench` binary (#1359); the live v1 link path is untouched.
+obc-link = { path = "../obc-link" }
 obc-crc = { path = "../obc-crc" }
 # Shared no_std OBCW reader/cache and deterministic A/B selector. The board supplies only the
 # FatFs adapter; no provider, UI or BLE policy enters this edge.
