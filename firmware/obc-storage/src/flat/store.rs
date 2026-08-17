@@ -182,6 +182,31 @@ fn sync<D: BlockDevice>(dev: &D) -> Result<(), StoreError> {
     dev.sync().map_err(|_| StoreError::Media)
 }
 
+/// Appends `input` to a reservation, one contiguous run per pass: whole blocks straight out of the
+/// caller's slice, and a partial one through the row's staging block. The cursor it advances belongs to
+/// the caller's [`Allocation`] too, which is why [`Store::write`] rewinds it when this fails.
+fn fill<D: BlockDevice>(dev: &D, row: &mut Reservation, mut input: &[u8]) -> Result<(), StoreError> {
+    while !input.is_empty() {
+        let staged = (row.written % BLOCK as u64) as usize;
+        let located = row.ranges.locate(row.written - staged as u64).ok_or(StoreError::Invalid)?;
+        if staged == 0 && input.len() >= BLOCK {
+            let blocks = (input.len() / BLOCK).min((located.contiguous / BLOCK as u64) as usize);
+            write_blocks(dev, located.block, &input[..blocks * BLOCK])?;
+            row.written += (blocks * BLOCK) as u64;
+            input = &input[blocks * BLOCK..];
+        } else {
+            let take = (BLOCK - staged).min(input.len());
+            row.staging[staged..staged + take].copy_from_slice(&input[..take]);
+            row.written += take as u64;
+            input = &input[take..];
+            if row.written.is_multiple_of(BLOCK as u64) {
+                write_blocks(dev, located.block, &row.staging)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reads the entry array of one catalog copy, one block at a time.
 struct EntryReader<'a, D> {
     dev: &'a D,
@@ -432,6 +457,14 @@ impl<D: BlockDevice> FlatStore<D> {
     ///
     /// A caller that drops a `Handle` instead of closing it leaks the row (and its extents) until the
     /// next mount, so the engine must treat `open`/`close` as a pair.
+    ///
+    /// This returns nothing, and one failure is therefore silent: working out which of the hold's
+    /// extents the catalog still names is a media read, and a read that fails leaves those extents
+    /// allocated rather than guessing (§6.2). The row is released either way, so nothing leaks at the
+    /// seam — the observable cost is a lower [`free_extents`](Self::free_extents) until an entry that
+    /// names them is removed or the card is remounted. Like [`entries`](Store::entries), which reports a
+    /// short listing through [`entries_ok`](Self::entries_ok), this is stated rather than hidden; unlike
+    /// it, no caller has a decision to make on it, so there is no flag to ask.
     pub fn close(&mut self, handle: Handle) {
         let mut holds = self.holds.borrow_mut();
         let Some(hold) = holds[handle.slot as usize] else { return };
@@ -446,10 +479,11 @@ impl<D: BlockDevice> FlatStore<D> {
         drop(holds);
         // What the entry still names, if it is still there at all. A media failure here leaves the
         // extents allocated until the next mount rebuilds the map from the catalog, which is the safe
-        // direction: never hand out an extent an entry might name.
-        let live = self.find(hold.id).ok().and_then(|(retained, head)| {
-            [retained, head].into_iter().flatten().find(|entry| entry.meta.revision == hold.revision)
-        });
+        // direction: never hand out an extent an entry might name. A failed read is *not* evidence the
+        // entry is gone, so it must not be read as one — freeing a live entry's extents would let the
+        // next allocation overlap it, and an overlap is a rule only a mount checks.
+        let Ok((retained, head)) = self.find(hold.id) else { return };
+        let live = [retained, head].into_iter().flatten().find(|entry| entry.meta.revision == hold.revision);
         for (first, count) in hold.ranges.iter() {
             for extent in first..first + count {
                 if !live.is_some_and(|entry| entry.ranges.names(extent)) {
@@ -776,6 +810,15 @@ impl<D: BlockDevice> FlatStore<D> {
                         Ok(Resolved { key: meta.key(), entry: Some(entry), creates: false, freed, reservation: None })
                     }
                     PutSource::Fresh(allocation) => {
+                        // §5.2's cursor never rewinds, so an id below it named an object once and may
+                        // never name another. Without this the compare-and-swap below would wave a
+                        // retired identity through — `find` comes back empty, so the expected revision
+                        // is `1` again — and the hold table keys on `(ObjectId, Revision)`: a key
+                        // re-created over different extents would serve a removed object's bytes to a
+                        // reader that opened the live one. A create names `next_object_id()`.
+                        if retained.is_none() && head.is_none() && meta.id.0 < self.next_object {
+                            return Err(StoreError::Invalid);
+                        }
                         // A revision that already exists is caught by the compare-and-swap below
                         // rather than by a check of its own: the head is either this revision, in
                         // which case one past it is not it, or a greater one.
@@ -876,24 +919,16 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         }
         let dev = &self.dev;
         let row = self.reservations[allocation.slot as usize].as_mut().expect("the row was just validated");
-        let mut input = bytes;
-        while !input.is_empty() {
-            let staged = (row.written % BLOCK as u64) as usize;
-            let located = row.ranges.locate(row.written - staged as u64).ok_or(StoreError::Invalid)?;
-            if staged == 0 && input.len() >= BLOCK {
-                let blocks = (input.len() / BLOCK).min((located.contiguous / BLOCK as u64) as usize);
-                write_blocks(dev, located.block, &input[..blocks * BLOCK])?;
-                row.written += (blocks * BLOCK) as u64;
-                input = &input[blocks * BLOCK..];
-            } else {
-                let take = (BLOCK - staged).min(input.len());
-                row.staging[staged..staged + take].copy_from_slice(&input[..take]);
-                row.written += take as u64;
-                input = &input[take..];
-                if row.written.is_multiple_of(BLOCK as u64) {
-                    write_blocks(dev, located.block, &row.staging)?;
-                }
-            }
+        // A fragmented allocation is several writes, so one of them can fail with the others already on
+        // the card. The row's cursor goes back where it was: it is the reservation's identity as much as
+        // its position — `row` matches an `Allocation` on it — so a cursor left ahead of the caller's
+        // would make the reservation unnameable, which is a row and its extents wedged until the next
+        // mount, `cancel` included. Rewinding costs nothing instead: the bytes already on the card are
+        // the bytes the retry writes there.
+        let start = row.written;
+        if let Err(error) = fill(dev, row, bytes) {
+            row.written = start;
+            return Err(error);
         }
         allocation.written = row.written;
         Ok(())
@@ -944,9 +979,14 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         // so the alternative (validate while writing, and leave a refused batch half-written under an
         // invalidated gate) buys nothing and costs the "a commit that returns Err changed nothing"
         // promise of `FLAT_Store_Protocol.md` §2.1.
+        // §5.5 step 2 continues from the high-water mark, and there is nothing past `u64::MAX` to
+        // continue to. A mount at that mark refuses writes outright (`Mode::SequenceSpaceExhausted`),
+        // and so does the store from the commit that reaches it — but the arithmetic is checked here
+        // too, because a refusal is the only admissible answer and a panic is not one.
+        let sequence = self.high_water.checked_add(1).ok_or(StoreError::ReadOnly)?;
         let header = Header {
             store: self.store,
-            sequence: self.high_water + 1,
+            sequence,
             next_object: self.next_object.max(greatest_id + 1),
             entry_count: count as u16,
         };
@@ -1010,6 +1050,12 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         self.high_water = header.sequence;
         self.next_object = header.next_object;
         self.entry_count = header.entry_count;
+        // The counter that ran out mid-session, from the same rule §5.6 applies at mount: a store whose
+        // high-water mark has reached `u64::MAX` has no sequence for the next commit, so this is the
+        // last one this card accepts. Read-only from here, reads still served.
+        if self.high_water == u64::MAX {
+            self.mode = Mode::SequenceSpaceExhausted;
+        }
         self.release(plan);
         for resolved in plan.iter() {
             if let Some(slot) = resolved.reservation {
@@ -1043,7 +1089,12 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             // so a reader joining an existing row takes the entry just read, not the one the first
             // reader found. §2.1 promises a handle keeps reading the revision it resolved; it does not
             // promise a second handle inherits a stale length.
-            hold.ranges = entry.ranges;
+            //
+            // The length, and only the length: the row keeps the extents the *first* reader resolved.
+            // An amend can only trim, and a trim keeps a prefix, so the wider ranges serve every byte
+            // of the amended length — while narrowing them here would lose the trimmed tail, which
+            // `release` deferred to `close` precisely because this row exists. Nothing would free it
+            // until the next mount.
             hold.payload_len = entry.meta.payload_len;
             return Ok(Handle { slot: slot as u8, id: entry.meta.id, revision: entry.meta.revision });
         }
@@ -1111,6 +1162,13 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         if (checkpoint.id, checkpoint.revision) != (ride.id, ride.revision) {
             return Err(StoreError::Invalid);
         }
+        // The flushed length advances in this local and becomes resident only once the slot that
+        // accounts for those bytes is durable, below. A checkpoint that fails partway has flushed
+        // nothing as far as the store is concerned: the caller still holds the whole tail, and its retry
+        // rewrites the same pages with the same bytes at the same offsets (§7.2 — the payload of a
+        // flushed prefix cannot change, which is why recovery is allowed to rewrite a page too). A
+        // flushed length left one page ahead of the card's would put the retry's bytes at the wrong
+        // payload offset and publish a ride twice the length it recorded.
         let mut tail = checkpoint.tail;
         while tail.len() >= PROGRAM_PAGE {
             let located = ride
@@ -1121,7 +1179,6 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             write_blocks(&self.dev, located.block, &tail[..PROGRAM_PAGE])?;
             sync(&self.dev)?;
             ride.flushed += PROGRAM_PAGE as u64;
-            self.ride = Some(ride);
             tail = &tail[PROGRAM_PAGE..];
         }
         // The loop above leaves less than one program page, which is well inside §7.1's 32,256-byte

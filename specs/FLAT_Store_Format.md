@@ -200,7 +200,10 @@ The commit sequence starts at `1` at initialization and increments by exactly on
 store-global, never wraps, and is the value a client uses to tell whether its cached listing is
 stale — a staleness hint, not a version a client may pin bytes to, for the reason §5.5 step 2 gives.
 `next ObjectId` is strictly greater than every `ObjectId` in the array and is never rewound;
-an object removed does not return its id.
+an object removed does not return its id. A commit that **creates** an object must therefore name an id
+at or beyond the cursor, and one below it is refused: that id has named an object already, a reader's
+hold is keyed by `(ObjectId, Revision)`, and re-creating a key over different extents would serve a
+removed object's bytes under a live identity.
 
 The header carries no CRC of its own — it is part of the body, and the gate is what certifies the
 body.
@@ -320,7 +323,9 @@ would leave the card with no valid catalog at all.
    body validated, so a fallback alone cannot make the sequence repeat. It is not global uniqueness —
    the mark lives only in the gates and step 1 erases the one that carried it — so a cut inside the
    commit following a fallback can still reissue a sequence; the sequence is a staleness hint, not a
-   version a client may pin bytes to.
+   version a client may pin bytes to. There is nothing past `u64::MAX` to continue to, so a card whose
+   high-water mark has reached it is read-only — whether the mark was already there at mount or the
+   commit that reached it has just landed. Reads are still served, as for an exhausted `Revision` (§3).
 3. Write `B`'s gate; synchronize.
 
 After step 3 the store's truth is `B`. A cut anywhere before step 3 completes leaves `A` valid with
@@ -477,6 +482,13 @@ an entry, the store keeps that entry's extents out of the allocator even after a
 it, and returns them when the last handle closes. This hold is RAM-only and needs no durable record —
 after a reboot the extents are free, and there is no reader left to be surprised.
 
+Working out which of a closing hold's extents the catalog still names is a read, and a read can fail. A
+failed read is not evidence that an entry is gone: those extents stay allocated until an entry that names
+them is removed, or until the next mount rebuilds the bitmap from the catalog. Losing the use of an
+extent that long is the only harm; handing out one a live entry names would put two objects on the same
+bytes, and that is an overlap only a mount detects — after which the catalog copy carrying it is
+unreadable.
+
 ## 7. Ride journal
 
 A ride grows for hours. Committing it every ten seconds would violate the commit-rate budget of §5.5
@@ -537,6 +549,14 @@ Step 2 before step 3 is the ordering that matters: a payload page is written onl
 it is already in a slot on the card, and once written it is never touched again. Step 3 then records
 that it is durable. A cut between the two leaves the previous slot authoritative — its `flushed
 length` is one page behind, its tail still holds those bytes, and recovery simply rewrites the page.
+
+A checkpoint that fails partway — a refused write, not a power cut — leaves the `flushed length` where
+it was, at the last one a durable slot accounts for. The caller still holds the whole tail, since it
+drops the flushed prefix only against a checkpoint that reported one, so its retry writes the same bytes
+to the same payload offsets. That is the same rewrite recovery performs, and it is admissible for the
+same reason: the payload of a flushed prefix cannot change. A `flushed length` left one page ahead of
+the card's would put the retry's page past the bytes it repeats, and publish a ride longer than the one
+that was recorded.
 
 The binding limit on the tail is the slot's 32,256-byte tail area, not the `u32` field that measures
 it. Step 2 leaves at most 16,383 bytes behind, so an interval may add **15,873 bytes** before the tail

@@ -149,6 +149,14 @@ destructive and explicit.
   removes it, until it is dropped. This hold is RAM-only.
 - `read` is arithmetic on the entry's ranges: cost is one media read, with no chain walk and no
   indirection block. A reader that needs many small reads pays for the media, not for the format.
+- A `journal` that returns `Ok` has flushed exactly `tail.len() / 16_384` whole pages, and the caller
+  may drop that prefix from its own tail. A `journal` that returns `Err` has flushed **none** of it: the
+  caller keeps the whole tail and retries with the same bytes, or with a tail that extends them. The
+  flushed length moves only when the store says it did.
+- A `write` that returns `Err` has advanced the allocation by nothing: the caller may retry the same
+  bytes — a fragmented allocation is several media writes, and the ones that landed are the bytes the
+  retry writes there again — or abandon the transfer, and a `cancel` of an allocation a `write` failed on
+  always releases its row and its extents.
 
 ## 3. Protocol v4
 
