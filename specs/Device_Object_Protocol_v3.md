@@ -1,5 +1,7 @@
 # Device Object Protocol v3 wire contract
 
+> **Superseded** by Epic #1256 / FS2. Do not extend; deletion lands in FS11 (#1393).
+
 Status: **normative** for the Device Object System v2 control and stream wire protocol. Its wire
 major is **3** and minor is **0**. This is a clean cutover: a peer implementing this contract does
 not translate or serve the legacy descriptor protocol.

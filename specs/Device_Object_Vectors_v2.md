@@ -1,5 +1,7 @@
 # Device Object System v2 vector and transcript contract
 
+> **Superseded** by Epic #1256 / FS2. Do not extend; deletion lands in FS11 (#1393).
+
 Status: **normative inventory** for Device Object System v2. The checked-in fixture set lives under
 `specs/vectors/device-object-v2/` and is incomplete until every required row below exists and passes
 independent Rust, Swift, and TypeScript codecs.

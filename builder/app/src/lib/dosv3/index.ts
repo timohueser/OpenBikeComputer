@@ -1,4 +1,6 @@
 /**
+ * Superseded — see #1256. Do not extend.
+ *
  * Device Object Protocol v3 — the browser/desktop client's wire codec.
  *
  * Written from the normative tables in `specs/Device_Object_Protocol_v3.md`,

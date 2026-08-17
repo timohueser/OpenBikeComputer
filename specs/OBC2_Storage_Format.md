@@ -1,5 +1,7 @@
 # OBC2 storage format
 
+> **Superseded** by Epic #1256 / FS2. Do not extend; deletion lands in FS11 (#1393).
+
 - Status: normative for Device Object System v2
 - Format version: 1
 - Wire contract: [`Device_Object_Protocol_v3.md`](Device_Object_Protocol_v3.md)

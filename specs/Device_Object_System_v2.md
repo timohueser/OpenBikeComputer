@@ -1,5 +1,7 @@
 # Device Object System v2 contract
 
+> **Superseded** by Epic #1256 / FS2. Do not extend; deletion lands in FS11 (#1393).
+
 Status: **normative** for Device Object System v2 (DOS v2). DOS v2 uses OBC control wire protocol
 major **3**. The architecture generation and wire major deliberately differ because the existing
 descriptor protocol already uses wire major 2.
