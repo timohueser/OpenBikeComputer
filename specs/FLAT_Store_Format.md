@@ -6,8 +6,9 @@
 - Replaces: every earlier on-card layout, catalog, staging, promotion and sidecar mechanism
 
 This document is the byte contract for the raw SD card. There is no partition table and no
-filesystem: the card is five fixed regions and an array of 1 MiB extents, and every address the
-store computes is arithmetic on those constants.
+filesystem: the card is five fixed regions and an array of equal extents, and every address the
+store computes is arithmetic on those constants and on one recorded value — the extent size, which
+§8 scales to the card and §4 stores.
 
 The rule the whole format serves:
 
@@ -75,11 +76,12 @@ the extent area is everything after it.
 | `576 .. 1088` | 512 | 256 KiB | catalog copy B (§5) |
 | `1088 .. 2112` | 1024 | 512 KiB | ride journal, 16 slots × 32 KiB (§7) |
 | `2112 .. 4096` | 1984 | 992 KiB | reserved; never written and never read |
-| `4096 .. ` | — | rest of card | extent area, 1 MiB extents (§6) |
+| `4096 .. ` | — | rest of card | extent area, extents of the recorded size (§6) |
 
 Every one of those boundaries is a multiple of 16,384 bytes, so no two regions share a program page
-and the reserved tail places the extent area on a 1 MiB boundary, which is also what makes §6's
-address arithmetic exact.
+and the reserved tail places the extent area on a **2 MiB** boundary — a multiple of the 16,384-byte
+program page and of the 1 MiB smallest extent, which is what makes §6's address arithmetic exact and
+§6.1's page-alignment property hold at every size §8 can pick, not only at the smallest.
 
 **Block 0 is deliberately not an MBR.** Its bytes `510..511` are zero (§4 puts the superblock CRC at
 `504..508` for exactly this reason), so a host that inspects the card sees an unformatted device
@@ -134,31 +136,62 @@ never read.
 | 6 | 2 | zero |
 | 8 | 16 | `StoreId` |
 | 24 | 8 | total card blocks observed at initialization |
-| 32 | 472 | zero |
+| 32 | 1 | extent size, as the base-2 logarithm of its bytes: `20..=31` |
+| 33 | 471 | zero |
 | 504 | 4 | CRC-32 over bytes `0..504` |
 | 508 | 4 | zero |
 
-A superblock is valid when its magic, version and CRC all check. Nothing else is stored, because
-nothing else varies: the region layout of §2 is a constant of format version 1, and the extent count
-is a function of the block count that §6 recomputes at every mount. A card whose layout differs is a
-different format version, which the version field already names.
+The block count and the byte after it are the card's **geometry**, and they are why this record
+exists at all. Everything else about the layout is a constant of format version 1 — the regions of §2,
+the sizes of §5 and §7 — and a card whose layout differs is a different version, which the version
+field already names. The extent size is the exception: §6's index is a `u16`, so a fixed 1 MiB would
+cap a card at 64 GiB, and §8 scales the size to the card instead. It is written once, by
+initialization, and read by every mount; nothing derives it a second time.
+
+Recording it as a **logarithm** is what makes "a power of two" a property of the encoding rather than
+a rule: no byte in this field names a size that is not one. Two rules are left, and a superblock that
+breaks either is not a superblock — the same face a failed CRC gets, and the right one, since a card
+whose geometry is unreadable has no addresses at all:
+
+- the recorded value is outside `20..=31` — below the 1 MiB minimum, or above the 2 GiB ceiling that
+  makes `65,536 × E` the 128 TiB no SD standard exceeds;
+- the recorded size does not cover the recorded card in the 65,536 extents §6's index can name. §8's
+  rule produces no such card, so this is forgery or corruption, never a store that was written.
+
+A superblock is otherwise valid when its magic, version and CRC all check. The extent *count* is not
+stored: §6 recomputes it from the block count and the recorded size at every mount.
 
 If a mount observes a card larger than `total card blocks`, the surplus is unused; a card smaller
 than that value is refused as damaged or swapped, never silently truncated.
 
-### 4.1 Vector
+### 4.1 Vectors
 
-`StoreId = 8F2C41D96B074EA3B1559C207DE83466`, a 32 GB card — 62,914,560 blocks, 30 GiB — from which
-§6 recomputes 30,718 extents.
+Two cards, because the geometry byte is the field with something to say. `StoreId =
+8F2C41D96B074EA3B1559C207DE83466` for both.
+
+A 32 GB card — 62,914,560 blocks, 30 GiB. §8 gives it the 1 MiB minimum (`log2 = 20 = 0x14`), from
+which §6 recomputes 30,718 extents.
 
 ```
 0000  46 53 53 42 01 00 00 00 8F 2C 41 D9 6B 07 4E A3
 0010  B1 55 9C 20 7D E8 34 66 00 00 C0 03 00 00 00 00
-0020  ..                                        (zero to 504)
-01F8  CC 5C 51 1D 00 00 00 00
+0020  14 ..                                     (zero to 504)
+01F8  B7 4C 74 53 00 00 00 00
 ```
 
-CRC-32 over bytes `0..504` is `0x1D515CCC`.
+CRC-32 over bytes `0..504` is `0x53744CB7`.
+
+A 128 GiB card — 268,435,456 blocks — which a fixed 1 MiB extent could not have addressed: it would
+need 131,070 of them. §8 gives it 2 MiB extents (`log2 = 21 = 0x15`), and §6 recomputes 65,535.
+
+```
+0000  46 53 53 42 01 00 00 00 8F 2C 41 D9 6B 07 4E A3
+0010  B1 55 9C 20 7D E8 34 66 00 00 00 10 00 00 00 00
+0020  15 ..                                     (zero to 504)
+01F8  2D E7 37 E3 00 00 00 00
+```
+
+CRC-32 over bytes `0..504` is `0xE337E72D`.
 
 ## 5. Catalog
 
@@ -241,7 +274,8 @@ inside the extent area, and does not overlap any other range of any entry — th
 the free bitmap (§5.6) checks exactly that and fails the copy if it does not hold. Ranges are in
 payload order: range `i` carries the payload bytes that follow range `i-1`.
 
-The ranges MUST cover at least `ceil(payload length / 1 MiB)` extents. They may cover more only while
+The ranges MUST cover at least `ceil(payload length / E)` extents, where `E` is the card's recorded
+extent size (§4, §6). They may cover more only while
 the `RECORDING` or `RESERVED` flag is set; every other entry is trimmed to its payload at the commit
 that publishes it, so the tail of the last extent is the only slack an ordinary object carries. A
 **zero-length object is therefore unrepresentable** without one of those flags, and deliberately so:
@@ -385,7 +419,9 @@ thing to work around.
 ### 5.6 Mount
 
 1. Read superblock A block 0; on failure read superblock B. Neither valid ⇒ the card is not a flat
-   store: initialization (§8) is the only transition, and it is destructive and explicit.
+   store: initialization (§8) is the only transition, and it is destructive and explicit. Validity
+   here includes §4's two geometry rules, and what a mount takes from the winning copy is the extent
+   size every address below is computed from — §6's count included.
 2. Read both gate blocks (2 reads) and consider only the **well-formed** ones (§5.4). The highest
    commit sequence any of them carries is the sequence high-water mark §5.5 continues from. No
    well-formed gate ⇒ read-only, evidence preserved: a valid superblock implies a catalog was written
@@ -453,7 +489,8 @@ Entry 0 — route, 1 range (extent 12, 1 extent), 42,137 bytes, payload CRC `0x9
 0070  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
-Entry 1 — ride, `RECORDING`, 1 range (extent 13, 32 extents = a 32 MiB reserve), length and CRC zero,
+Entry 1 — ride, `RECORDING`, 1 range (extent 13, 32 extents, a 32 MiB reserve on this card's 1 MiB
+extents), length and CRC zero,
 no name:
 
 ```
@@ -479,25 +516,40 @@ Gate CRC-32 over bytes `0..504` is `0x935531B8`.
 
 ## 6. Extent area
 
-The extent area begins at LBA 4096 and is a flat array of **1 MiB** extents, 2048 blocks each.
-Extent `k` begins at LBA `4096 + 2048 × k`.
+The extent area begins at LBA 4096 and is a flat array of equal extents of `E` bytes, `E / 512`
+blocks each. Extent `k` begins at LBA `4096 + (E / 512) × k`.
+
+`E` is **not** a constant of this format. It is chosen once, by initialization, from the rule §8
+states — `max(1 MiB, card bytes / 65,536)` rounded up to a power of two — and recorded in the
+superblock, which is the only place it is ever written. Every card of 64 GiB or less gets the 1 MiB
+minimum. `E` is always a power of two between 1 MiB and 2 GiB, so `E / 512` is a whole number of
+blocks and a multiple of the 16,384-byte program page.
 
 ```
-extent_count = min(65536, (total_card_blocks - 4096) / 2048)      // integer division
+extent_count = (total_card_blocks - 4096) / (E / 512)      // integer division
 ```
 
-The cap is what the entry's `u16` extent index buys: 65,536 extents is 64 GiB of extent area and an
-8 KiB resident free bitmap. A larger card leaves its tail unused; that is a deliberate trade of
-capacity nobody has asked for against 8 KiB of RAM on a part that has little.
+`extent_count` MUST be at most 65,536 — what the entry's `u16` extent index names. §8's rule
+guarantees it for every card initialization accepts, and §4's decoder refuses a superblock that
+violates it rather than capping, because the capped tail would be space the superblock claims and no
+index reaches.
+
+**What is fixed is the index, and what scales is the grain.** 65,536 extents is an 8 KiB resident free
+bitmap whatever the card holds, on a part that has little RAM, and that is the figure this rule exists
+to keep constant. The cost is granularity: on a card above 64 GiB an object wastes up to `E - 1` bytes
+in the tail of its last extent, and there is **no sub-extent allocator** — an object is a whole number
+of extents or it is nothing. That is the smaller of the two prices, and the one that was not being
+paid before is the larger: a fixed 1 MiB put a hard 64 GiB ceiling on the card, which the bench card
+already sat at 95% of and a 128 GB card is simply past.
 
 ### 6.1 Addressing
 
 An object's payload is the concatenation of its ranges in order. With ranges `(f_i, c_i)` and
-cumulative byte starts `s_0 = 0`, `s_{i+1} = s_i + c_i × 2^20`, payload offset `o` lies in the range
-`i` with `s_i <= o < s_{i+1}`, and
+cumulative byte starts `s_0 = 0`, `s_{i+1} = s_i + c_i × E`, payload offset `o` lies in the range `i`
+with `s_i <= o < s_{i+1}`, and
 
 ```
-lba   = 4096 + 2048 * f_i + (o - s_i) / 512
+lba   = 4096 + (E / 512) * f_i + (o - s_i) / 512
 inner = (o - s_i) % 512
 ```
 
@@ -505,12 +557,14 @@ That is the whole read path: at most eight comparisons and two divisions by cons
 block, no chain walk, no cache. It is what `fat_extents.rs` was built to fake on top of a filesystem
 (#500), and it is why that file goes away in FS6.
 
-Because every range begins on a 1 MiB boundary and 1 MiB is a multiple of the 16,384-byte program
-page, **any payload offset that is a multiple of 16,384 maps to a page-aligned LBA**. §7 relies on
-that.
+The extent area starts on a 2 MiB boundary and `E` is a power of two of at least 1 MiB, so every
+extent begins on a program page and every `s_i` is a multiple of one. Therefore **any payload offset
+that is a multiple of 16,384 maps to a page-aligned LBA**, at every `E`. §7 relies on that.
 
-Example, with the route entry of §5.7 (range `(12, 1)`): payload offset 40,960 is in range 0, so
-`lba = 4096 + 2048 × 12 + 40960 / 512 = 4096 + 24576 + 80 = 28,752`, inner offset 0.
+Example, with the route entry of §5.7 (range `(12, 1)`) on that card's `E` of 1 MiB: payload offset
+40,960 is in range 0, so `lba = 4096 + 2048 × 12 + 40960 / 512 = 4096 + 24576 + 80 = 28,752`, inner
+offset 0. The same entry on a card of 2 MiB extents puts it at `4096 + 4096 × 12 + 80 = 53,328`: an
+extent index means what the card's superblock says it means, and nothing in the entry changes.
 
 ### 6.2 Allocation
 
@@ -580,10 +634,11 @@ over reused extents from being read as this one's.
 
 ### 7.2 Recording
 
-Ride start is one commit: allocate a **32 MiB reserve** — 32 extents, roughly 400 hours at the ride
-payload's real byte rate — put an entry of kind `ride` with `RECORDING` set, length and CRC zero. No
-further commit happens until the ride ends, which is why the reserve is taken up front and why a start
-that cannot get it in 8 ranges fails rather than recording into a budget it might outgrow.
+Ride start is one commit: allocate a **32 MiB reserve** — `ceil(32 MiB / E)` extents, 32 of them on a
+card of the 1 MiB minimum, roughly 400 hours at the ride payload's real byte rate — put an entry of
+kind `ride` with `RECORDING` set, length and CRC zero. No further commit happens until the ride ends,
+which is why the reserve is taken up front and why a start that cannot get it in 8 ranges fails rather
+than recording into a budget it might outgrow.
 
 Then, on a fixed cadence of **10 seconds**:
 
@@ -613,7 +668,7 @@ A slot claiming a tail above 32,256 is invalid.
 
 Ride end: flush whatever the tail still holds — a partial page, whose bytes are all in the last slot,
 so a cut during it is recovered by rewriting — then one commit that clears `RECORDING`, sets the
-final length and payload CRC, and trims the ranges to `ceil(length / 1 MiB)` extents, freeing the
+final length and payload CRC, and trims the ranges to `ceil(length / E)` extents, freeing the
 rest of the reserve. The 16 slot headers are then zeroed. A cut during that zeroing is harmless: no
 entry carries `RECORDING`, so §5.6 never reads them.
 
@@ -673,12 +728,22 @@ Initialization is explicit, destructive, and the only transition into this forma
 already a valid flat store is never written to implicitly.
 
 1. Zero block 0 of superblock copy A and of copy B; synchronize.
-2. Draw a fresh `StoreId` from the device CSPRNG.
+2. Draw a fresh `StoreId` from the device CSPRNG, and choose the card's extent size:
+
+   ```
+   E = max(1 MiB, ceil(total_card_blocks × 512 / 65,536)) rounded up to a power of two
+   ```
+
+   This is the rule §4 records and §6 computes every address from, and it is stated in exactly these
+   two places. It divides by the whole card rather than by the extent area, which only makes `E`
+   conservative — `extent_count` is then strictly below 65,536 — and it is refused outright for a card
+   past `65,536 × 2 GiB`, or 128 TiB, which no SD standard defines: a superblock recording a size that
+   cannot cover its own card would not mount, and initialization must not write one.
 3. Zero the gate block of catalog copy B; synchronize.
 4. Zero the 16 ride-journal slot header blocks; synchronize.
 5. Write catalog copy A's body — header with commit sequence `1`, next `ObjectId` `1`, entry count
    `0` — then its gate; synchronize each.
-6. Write superblock copy A, then copy B; synchronize.
+6. Write superblock copy A, then copy B, both carrying `E`; synchronize.
 
 **The superblocks are destroyed first and written last, and that bracket is the invariant.** A valid
 superblock therefore implies a valid catalog, unconditionally: a cut anywhere between steps 1 and 6
@@ -690,7 +755,9 @@ a cut in between would present a card that mounts with a valid `StoreId` and no 
 
 A mount after step 6 finds copy A valid and copy B ill-formed, an empty catalog, and every extent free.
 There is no migration path from any earlier layout: an old card is re-initialized, and every object
-on it is gone.
+on it is gone. That covers a card written before the extent size was recorded as well: byte 32 of its
+superblock is zero, which names no size §4 admits, so the record does not decode, so §5.6 step 1
+classifies the card as not a flat store and the ordinary destructive path takes it from there.
 
 ## 9. Capacities
 
@@ -700,10 +767,10 @@ defines it, not here.
 | Limit | Value |
 | :-- | --: |
 | Program page | 16,384 bytes |
-| Extent size | 1 MiB (2048 blocks) |
+| Extent size | card-scaled (§8): 1 MiB minimum, 2 GiB maximum, a power of two |
 | Extent-area start | LBA 4096 |
-| Extents addressable | 65,536 (64 GiB of extent area) |
-| Free bitmap, resident | 8 KiB |
+| Extents addressable | 65,536 — 64 GiB of extent area at the minimum, 128 TiB at the maximum |
+| Free bitmap, resident | 8 KiB, at every extent size |
 | Catalog copies | 2 × 256 KiB |
 | Catalog entries | 1916 |
 | Catalog entry | 128 bytes |
@@ -712,7 +779,7 @@ defines it, not here.
 | Ride journal slots | 16 × 32 KiB |
 | Ride journal tail per slot | 32,256 bytes |
 | Ride checkpoint cadence | 10 s |
-| Ride reserve at start | 32 MiB (32 extents) |
+| Ride reserve at start | 32 MiB (32 extents at the 1 MiB minimum) |
 | Rides recording at once | 1 |
 | Retained previous revisions per object | 1 |
 | Commits per second, design budget | ~1 |
