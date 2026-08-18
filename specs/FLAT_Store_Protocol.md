@@ -33,13 +33,16 @@ Stated once, because most of what follows is short for these reasons and does no
 - **No `OperationId`, no claim record, no result ring, no durable operation result.** The catalog is
   the result, and §3.4 is how a client reads it after a break. There is no `Unknown` to reconcile.
 - **No resume, no checkpoints, no prefix-CRC exchange.** A broken transfer is discarded whole; the
-  worst case is re-sending a map set over USB, about twenty minutes, which is cheaper than the
-  machinery resume needs.
+  worst case is re-sending a whole map over USB, about twenty minutes, which is cheaper than the
+  machinery resume needs. (Since OBCM v14 / #1420 that really is one object, so a late break costs
+  the whole map rather than one shard of it — accepted, inside the same twenty minutes.)
 - **No sessions.** The `RequestId` of the transfer's own request is the identifier.
 - **No Hello, no capability discovery, no wire minor.** The major is a transport fact and every
   message fits every link.
 - **No metadata envelopes, no schema registry, no draft parts.** An object is bytes, a kind, a name
-  and a CRC; a map set is a manifest object naming shards by `ObjectId`.
+  and a CRC — a map included, since OBCM v14 / #1420 made it one object with its terrain inside it
+  (`OBCM_Spec.md` §1.3). The clause that used to stand here, "a map set is a manifest object naming
+  shards by `ObjectId`", is retired with `OBCA_Spec.md` §5.
 - **No fault frames on the stream channel.** A transfer has one outcome and it is the answer to its
   own request.
 
@@ -179,9 +182,10 @@ A binding may of course name them differently or fold the four facts into one; w
 that each is reachable and that nothing else is.
 
 **Every operation takes a shared reference to the store, the mutators included.** A store is shared,
-not owned: a mounted map set holds an open object per shard for the life of the image while an upload
+not owned: a mounted map holds its object open for the life of the image while an upload
 commits and a ride journals, and an exclusive write half makes that shape un-expressible rather than
-merely awkward. An implementation carries whatever interior mutability that needs, under two rules.
+merely awkward. (It was an open object *per shard* until OBCM v14 / #1420; one map is now one
+handle, which is the accounting change FS7.5c lands.) An implementation carries whatever interior mutability that needs, under two rules.
 
 1. **Granularity is per card command for the state a reader needs.** A 1,024-entry commit is ~36 write
    commands over ~250 ms; releasing between them lets a read interleave into the gaps, so the worst

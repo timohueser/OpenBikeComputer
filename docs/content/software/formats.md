@@ -67,6 +67,18 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ## OBCM — the map
 
+> **This tour describes OBCM v12/v13 layout; the spec is at v14.** Two changes are normative in
+> [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) and not yet redrawn here, because the code that produces
+> them lands in the next slice ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)):
+> v13 added a [sparse exact-edge snap index](src:specs/OBCM_Spec.md) to the navigation section, and
+> **v14 scaled every global offset** — the header's section offsets, the LOD table's, the per-LOD
+> chunk offset tables and the POI/nav directories' all count 16-byte units instead of bytes, so a
+> map addresses 64 GiB of interior rather than 4 GiB — and **embedded the terrain raster** in the
+> header's own region. The header is 49 bytes at v14, not 40. Everything below about quadtrees,
+> anchors, deltas, chunks and records is unchanged by either; what moved is what an offset *means*
+> and where terrain lives. The [one map, several files](#one-map-several-files) section below is
+> superseded outright.
+
 ### The file, front to back
 
 An OBCM file (current version **12**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
@@ -1101,10 +1113,12 @@ A few details a reader notices:
 names the format — but the extension had to move, because the device's recorded
 [track log](#recorded-rides-the-track-log-and-the-ride-object) already claims `.obct`,
 and two unrelated things sharing an extension on one card is a bug waiting for a
-directory scan. Inside a [volume set](#one-map-several-files) the raster is
-`MS<id>.OBD`, which is precisely the sidecar name of the set's own `MS<id>.OBS`
-manifest — so a host resolving terrain by the sidecar convention and one reading the
-manifest role open the same file.
+directory scan. That extension is for a **published terrain cell**, the catalog artifact. An
+*assembly's* raster is not a file at all since OBCM v14
+([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)): it is spliced into the map
+file's own terrain region, and a map reader hands it to the sampler as a window onto those bytes
+rather than opening anything. (It used to ride in a [volume set](#one-map-several-files) as
+`MS<id>.OBD`, the sidecar name of the set's `MS<id>.OBS` manifest — retired with the set.)
 
 ## OBCW — provider-neutral weather
 
@@ -1497,10 +1511,11 @@ volume-set bytes. The desktop host differs only at the edge, where it fetches
 through a native same-origin HTTPS transport and saves the files atomically into
 one local folder.
 
-The device's multi-file reader and direct send consume that same assembled set.
-The builder can save every file or stream them to a connected device one
-verified shard at a time, committing the manifest last so an interrupted send
-never mounts as a partial map. Manual single-file upload remains only for maps
+The device's reader and direct send consume that same assembled output. (Until
+[#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420) that was a multi-file *set*,
+saved or streamed one verified shard at a time with the manifest committed last; OBCM v14 makes it
+one file, and the shard/manifest path is deleted in the slices that implement it. See
+[one map, several files](#one-map-several-files).) Manual single-file upload remains only for maps
 obtained elsewhere.
 
 That only works if assembling is nearly free, and the reason it is nearly free
@@ -1592,6 +1607,15 @@ The shipped documents say which half they are. [`builder/presets/`](src:builder/
 
 ### One map, several files
 
+> **Superseded — a map is one file again.** OBCM v14
+> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)) scaled the format's `uint32`
+> offsets to 16-byte units, so one `.obcm` addresses 64 GiB; the flat store replaced FAT32, so its
+> 4 GiB file cap is gone too. Both walls this section is built on have fallen, and with them the
+> manifest, the four roles, the shard tiling, the role-free dispatch and the manifest-last commit —
+> the store's own commit is the atomicity that trick was faking. The terrain raster moved *inside*
+> the map file. Everything below is kept for the reasoning, which is still the honest account of why
+> the design went the way it did; none of it is current. `OBCA_Spec.md` §5 carries the same marker.
+
 The last piece is a ceiling. Germany alone projects to 5.8–7.1 GiB at this schema and DACH to 7.6–8.9 GiB, and **two independent 4 GiB walls** stand in the way: FAT32 caps one file at 4 GiB − 1, and OBCM's own offsets — section offsets, per-LOD chunk offset tables, and `Edge Id` as a pool byte offset — are `uint32` throughout, so a single `.obcm` cannot address past 4 GiB on *any* filesystem.
 
 So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ordinary OBCM files, each inside the ceiling, and invisible in every interface — the device and the builder both show one map.
@@ -1681,7 +1705,7 @@ The replication stream says which OSM objects changed, but it is deliberately **
 
 Featureless output is still coverage. Rather than retain millions of empty OBCM files, the bakery removes those artifacts and folds their identities into the catalog's known-empty row ranges; ordinary artifacts and those zero-byte claims together must cover every geographic cell. A local planet-completion record stays false until every expected leaf succeeds. The verifier and publisher consult it because a catalog can validate every claim it contains, but cannot infer a global cell that was never written. The curated region list remains useful in planet mode: its polygons produce the same named selections without downloading or ingesting the regional PBFs.
 
-The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and provenance rule that stops a partially covered border cell from passing as canonical are normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
+The grid, theorem, seam rules, assembly contract, and provenance rule that stops a partially covered border cell from passing as canonical are normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) (its §5 volume-set manifest is superseded by OBCM v14); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
 
 ---
 
@@ -1703,7 +1727,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
 - The OBCT reader, the normative sampler, the tile cache and the `ElevationSource` seam: [`obc-elevation`](src:firmware/obc-elevation); its layout arithmetic and sentinels: [`obc-formats/src/obct.rs`](src:firmware/obc-formats/src/obct.rs); the assembler's placement + verify pass: [`obcm-assemble/src/terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
 - The cell catalog the section above describes — producer [`catalog.rs`](src:host/obc-pack/src/catalog.rs), region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), and JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
-- The cell grid, the assembly contract, and the volume-set manifest: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
+- The cell grid and the assembly contract: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) — its §5 volume-set manifest is superseded by [OBCM v14](src:specs/OBCM_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
 - The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
 - The assembler that puts the cells back together — [`obcm-assemble`](src:host/obcm-assemble): the verbatim graft in [`graft.rs`](src:host/obcm-assemble/src/graft.rs), the POI/hours merge in [`poi.rs`](src:host/obcm-assemble/src/poi.rs), the seam unification and graph rewrite in [`nav.rs`](src:host/obcm-assemble/src/nav.rs), the volume set and its manifest in [`shard.rs`](src:host/obcm-assemble/src/shard.rs), and the read-it-back gate in [`verify.rs`](src:host/obcm-assemble/src/verify.rs). It carries no geometry library and compiles for the browser, which is the whole point. The proof that a grafted map is the map: [`tests/oracle.rs`](src:host/obcm-assemble/tests/oracle.rs) renders and routes `assemble(cut(X))` against `pack(X)`
 - The browser running exactly that engine — [`obc-web-assemble`](src:apps/obc-web-assemble), the wasm bridge the hosted builder assembles through. It adds no format knowledge: a byte adapter — buffers, or callbacks into the page's own storage in *both* directions — a typed error vocabulary, and a progress/abort/hand-off seam built out of the engine's own clock and shard-store traits. The read callback is what keeps the downloaded cells from ever entering wasm memory; the write callback is what keeps the shards — including the unsplittable core — from ever entering it either, and it is what makes the §4.8 read-back a read of the file rather than of a buffer. Its output is pinned byte-for-byte against the native CLI's from both sides — natively in `tests/determinism.rs`, and from Node against the wasm build in `bridge.test.ts`
