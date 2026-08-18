@@ -439,7 +439,10 @@ mod tests {
         let handle = live.release();
         store.close(handle);
         assert_eq!(store.free_extents(), free_before, "the entry still names them, so nothing moved");
-        assert!(store.source(ids[0], None).expect("the row is free to take again").release().id() == ids[0]);
+        // The row really did come back: reopening resolves, which a row still counted as held by a
+        // reader that no longer exists would also do — so this is checked by exhaustion instead, in
+        // `with_source_returns_its_row_to_the_table`. Here it is only that the object is still whole.
+        store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u32)).expect("it opens again");
     }
 
     /// The other half of the same trade: a source and a writer coexisting at all. It is the board's
