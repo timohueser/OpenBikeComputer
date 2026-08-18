@@ -31,20 +31,18 @@ impl FileSource {
 }
 
 impl ByteSource for FileSource {
-    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), SourceError> {
-        let end = offset
-            .checked_add(u32::try_from(out.len()).map_err(|_| SourceError::BadOffset)?)
-            .ok_or(SourceError::BadOffset)?;
-        if end > self.len {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
+        let end = offset.checked_add(out.len() as u64).ok_or(SourceError::BadOffset)?;
+        if end > u64::from(self.len) {
             return Err(SourceError::BadOffset);
         }
         let mut file = self.file.try_borrow_mut().map_err(|_| SourceError::Io)?;
-        file.seek(SeekFrom::Start(offset as u64)).map_err(|_| SourceError::Io)?;
+        file.seek(SeekFrom::Start(offset)).map_err(|_| SourceError::Io)?;
         file.read_exact(out).map_err(|_| SourceError::Io)
     }
 
-    fn len(&self) -> u32 {
-        self.len
+    fn len(&self) -> u64 {
+        self.len.into()
     }
 }
 

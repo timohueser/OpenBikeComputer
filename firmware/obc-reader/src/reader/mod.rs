@@ -70,19 +70,19 @@ const MAX_QUADTREE_DEPTH: u32 = 32;
 /// packer's shared `FlattenTree` DRY).
 trait QuadIndex {
     /// Byte offset of node 0 in the file.
-    fn index_offset(&self) -> usize;
+    fn index_offset(&self) -> u64;
     /// Number of `uint32` nodes in the index; `0` ⇒ empty (no walk).
     fn node_count(&self) -> usize;
 }
 
 /// The convention every quadtree-indexed section shares (§3/§4): what follows a `node_count`-node
-/// index begins right behind it, at `index_offset + node_count * 4`. `None` on `usize` overflow —
-/// reachable on the 32-bit MCU from a corrupt `index_offset`/`node_count`. What "what follows"
-/// *is* differs per section (a LOD's offset table, a POI category's or the nav graph's chunks),
-/// which is why the callers below name it and this doesn't.
+/// index begins right behind it, at `index_offset + node_count * 4`. `None` on `u64` overflow —
+/// reachable from a corrupt `index_offset`/`node_count`. What "what follows" *is* differs per
+/// section (a LOD's offset table, a POI category's or the nav graph's chunks), which is why the
+/// callers below name it and this doesn't.
 #[inline]
-fn index_end(index_offset: usize, node_count: usize) -> Option<usize> {
-    node_count.checked_mul(4)?.checked_add(index_offset)
+fn index_end(index_offset: u64, node_count: usize) -> Option<u64> {
+    (node_count as u64).checked_mul(4)?.checked_add(index_offset)
 }
 
 /// The same convention for a section whose **chunks** are addressed by a scaled offset (§3, §7.1,
@@ -90,52 +90,45 @@ fn index_end(index_offset: usize, node_count: usize) -> Option<usize> {
 /// index. The index and the offset table themselves are read by 4-byte indexing from a start the
 /// directory names, so neither needs a boundary of its own — the chunks do.
 #[inline]
-fn aligned_index_end(scale: OffsetScale, index_offset: usize, node_count: usize) -> Option<usize> {
-    let end = index_end(index_offset, node_count)?;
-    let aligned = scale.align_up(end as u64)?;
-    resolve_bytes(aligned).ok()
+fn aligned_index_end(scale: OffsetScale, index_offset: u64, node_count: usize) -> Option<u64> {
+    scale.align_up(index_end(index_offset, node_count)?)
 }
 
-/// Narrow a resolved byte offset into this reader's address space.
+/// Resolve one stored scaled offset field to a byte position in **this** file.
 ///
-/// §1.1's widening happens in [`ScaledOffset::bytes`], which is `u64` and has no narrower
-/// spelling. The narrowing here is a property of *this reader*, not of the format: a
-/// [`ByteSource`] addresses 4 GiB, so a file whose interior reaches past that is refused at parse
-/// rather than mis-addressed. Fail-closed, the same posture `SliceSource::len` takes.
+/// It used to narrow, and the narrowing is what died with FS7.5-seam. §1.1's widening happens in
+/// [`ScaledOffset::bytes`], which is `u64`; the seam is now `u64` too, so there is no width to
+/// squeeze a file offset into and nothing here to fail closed about. What bounds a resolved offset
+/// is the **source's own length** — each parse below still refuses a section that reaches past
+/// `total`, and past that the implementor of [`ByteSource`] refuses the read itself.
+///
+/// The function survives the narrowing it existed for because the *scale pairing* is the other
+/// half of its job: the scale rides inside [`ScaledOffset`], so an offset read from one file
+/// cannot be resolved against another's unit — the mistake a mounted map with several open files
+/// could otherwise make silently.
 #[inline]
-fn resolve_bytes(bytes: u64) -> Result<usize, Error> {
-    if bytes > u32::MAX as u64 {
-        return Err(Error::BadOffset);
-    }
-    Ok(bytes as usize)
-}
-
-/// Resolve one stored scaled offset field. The scale rides inside [`ScaledOffset`], so an offset
-/// read from one file cannot be resolved against another's unit — the mistake a mounted map with
-/// several open files could otherwise make silently.
-#[inline]
-pub(crate) fn resolve(offset: ScaledOffset) -> Result<usize, Error> {
-    resolve_bytes(offset.bytes())
+pub(crate) fn resolve(offset: ScaledOffset) -> u64 {
+    offset.bytes()
 }
 
 /// Byte range `[start, end)` of chunk `chunk_id` in a section whose chunks are a **fixed**
 /// `chunk_size` apart from `data_start` (the POI §7.1 and nav §8.1 sections; LOD chunk data is
 /// packed tight behind an offset table instead). `None` if `chunk_id` is out of range or any offset
-/// overflows `usize` — `chunk_id` comes straight from a quadtree leaf, so it is arbitrary in a
+/// overflows `u64` — `chunk_id` comes straight from a quadtree leaf, so it is arbitrary in a
 /// corrupt map and is validated against `chunk_count` with checked arithmetic.
 #[inline]
 fn fixed_chunk_range(
-    data_start: Option<usize>,
+    data_start: Option<u64>,
     chunk_count: usize,
     chunk_size: usize,
     chunk_id: u32,
-) -> Option<(usize, usize)> {
-    let id = chunk_id as usize;
-    if id >= chunk_count {
+) -> Option<(u64, u64)> {
+    let id = chunk_id as u64;
+    if id >= chunk_count as u64 {
         return None;
     }
-    let start = id.checked_mul(chunk_size)?.checked_add(data_start?)?;
-    let end = start.checked_add(chunk_size)?;
+    let start = id.checked_mul(chunk_size as u64)?.checked_add(data_start?)?;
+    let end = start.checked_add(chunk_size as u64)?;
     Some((start, end))
 }
 
@@ -164,11 +157,11 @@ pub(crate) struct MapHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerrainRegion {
     /// Byte offset of the region's first byte, which is the container's byte `0`.
-    pub offset: usize,
+    pub offset: u64,
     /// The region's length. `Terrain Length` counts **units**, so this is the container's byte
     /// length rounded up, and the tail is §1.2 filler: a consumer MUST bound its reads by the
     /// container's own structure and MUST NOT derive the payload length from this.
-    pub len: usize,
+    pub len: u64,
 }
 
 /// Decode + validate the fixed 49-byte v14 OBCM header (magic, version, bbox, marker color, the
@@ -205,7 +198,7 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     let terrain = if terrain_offset.is_zero() {
         None
     } else {
-        Some(TerrainRegion { offset: resolve(terrain_offset)?, len: resolve(terrain_len)? })
+        Some(TerrainRegion { offset: resolve(terrain_offset), len: resolve(terrain_len) })
     };
     Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color, scale, terrain })
 }
@@ -220,24 +213,24 @@ pub(crate) struct HeaderPrologue {
     pub header: [u8; HEADER_LEN],
     pub map: MapHeader,
     pub lod_count: usize,
-    pub lod_table_offset: usize,
+    pub lod_table_offset: u64,
     /// The file's length, already read from the source — every offset check above used it.
-    pub total: usize,
+    pub total: u64,
 }
 
 /// Read + validate the shared prologue from `src`. A file shorter than the header, with the wrong
-/// magic / version, or with a LOD table that is empty, wraps `usize`, or runs past EOF is rejected
+/// magic / version, or with a LOD table that is empty, wraps `u64`, or runs past EOF is rejected
 /// here, so neither parse has to restate the check.
 pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Error> {
-    let total = src.len() as usize;
-    if total < HEADER_LEN {
+    let total = src.len();
+    if total < HEADER_LEN as u64 {
         return Err(Error::TooShort);
     }
     let mut header = [0u8; HEADER_LEN];
     src.read_at(0, &mut header).map_err(Error::Source)?;
     let map = parse_header(&header)?;
     let lod_count = header[25] as usize;
-    let lod_table_offset = resolve(map.scale.offset(rd_u32(&header, 26)))?;
+    let lod_table_offset = resolve(map.scale.offset(rd_u32(&header, 26)));
     if lod_count == 0 {
         return Err(Error::BadOffset);
     }
@@ -249,10 +242,10 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
             return Err(Error::BadOffset);
         }
     }
-    // Checked: `lod_table_offset` is an arbitrary header u32, so on the 32-bit
-    // target the table-end can wrap `usize` and slip past the guard below.
-    let lod_table_end = lod_count
-        .checked_mul(LOD_ENTRY_LEN)
+    // Checked: `lod_table_offset` is an arbitrary header u32 scaled by an arbitrary unit, so the
+    // table-end can wrap `u64` and slip past the guard below.
+    let lod_table_end = (lod_count as u64)
+        .checked_mul(LOD_ENTRY_LEN as u64)
         .and_then(|len| lod_table_offset.checked_add(len))
         .ok_or(Error::BadOffset)?;
     if lod_table_end > total {
@@ -312,9 +305,9 @@ impl MapTables {
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
         let MapHeader { version, bbox, marker_color, scale, terrain } = map;
-        let style_offset = resolve(scale.offset(rd_u32(&header, 21)))?;
-        let poi_section_offset = resolve(scale.offset(rd_u32(&header, 32)))?;
-        let nav_section_offset = resolve(scale.offset(rd_u32(&header, 36)))?;
+        let style_offset = resolve(scale.offset(rd_u32(&header, 21)));
+        let poi_section_offset = resolve(scale.offset(rd_u32(&header, 32)));
+        let nav_section_offset = resolve(scale.offset(rd_u32(&header, 36)));
 
         // The style table cannot start inside the header, but since v14 it does not start *at* it
         // either: 49 bytes is not a whole number of units at any scale above `0`, so the table
@@ -322,7 +315,7 @@ impl MapTables {
         // floor is therefore the aligned header end, not `HEADER_LEN` — reading the field rather
         // than assuming the table follows the header is what it was always for, and v14 is simply
         // the first version where the two differ.
-        let style_floor = resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
+        let style_floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
         if style_offset < style_floor || style_offset > total {
             return Err(Error::BadOffset);
         }
@@ -559,13 +552,13 @@ impl<'a> Reader<'a> {
     /// Read node `idx` of a [`QuadIndex`] (a `u32`), streamed through the index block cache. `None`
     /// on a read failure — the walk then skips that subtree. `idx < node_count` and the index
     /// region lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table` /
-    /// `parse_poi_directory`), so the offset never overflows `u32`.
+    /// `parse_poi_directory`), so the offset never overflows `u64`.
     #[inline]
     fn read_node(&self, index: &dyn QuadIndex, idx: usize) -> Result<u32, MapReadError> {
         if !self.cache_ready {
             return Err(MapReadError::Cache(CacheError::Busy));
         }
-        let off = (index.index_offset() + idx * 4) as u32;
+        let off = index.index_offset() + idx as u64 * 4;
         let mut b = [0u8; 4];
         self.cache
             .try_borrow_mut()
@@ -644,8 +637,8 @@ impl<'a> Reader<'a> {
 #[inline(never)]
 fn parse_styles(
     src: &dyn ByteSource,
-    style_offset: usize,
-    total: usize,
+    style_offset: u64,
+    total: u64,
     styles: &mut [Option<Style>; 256],
 ) -> Result<(), Error> {
     styles.fill(None);
@@ -655,15 +648,17 @@ fn parse_styles(
         return Err(Error::BadOffset);
     }
     let mut cb = [0u8; 1];
-    src.read_at(style_offset as u32, &mut cb).map_err(Error::Source)?;
+    src.read_at(style_offset, &mut cb).map_err(Error::Source)?;
     let count = cb[0] as usize;
     // `count*8` record bytes follow the count, clamped to what the file holds so the `o + 8 > want`
-    // break below stops at the last whole record in a truncated table.
+    // break below stops at the last whole record in a truncated table. The clamp is what makes the
+    // narrowing safe: `count` is a single byte, so `count * 8` fits `usize` on every target, and
+    // the `min` can only make it smaller.
     let avail = total - (style_offset + 1);
-    let want = (count * STYLE_RECORD_LEN).min(avail);
+    let want = ((count * STYLE_RECORD_LEN) as u64).min(avail) as usize;
     let mut buf = [0u8; 256 * STYLE_RECORD_LEN];
     if want > 0 {
-        src.read_at((style_offset + 1) as u32, &mut buf[..want]).map_err(Error::Source)?;
+        src.read_at(style_offset + 1, &mut buf[..want]).map_err(Error::Source)?;
     }
     let mut o = 0usize;
     for _ in 0..count {
@@ -732,12 +727,12 @@ mod tests {
     /// can't reproduce this.
     struct FlakySource<'a> {
         data: &'a [u8],
-        fail_at: u32,
+        fail_at: u64,
         partial: usize,
     }
 
     impl ByteSource for FlakySource<'_> {
-        fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), IoError> {
             let start = offset as usize;
             let end = start.checked_add(buf.len()).ok_or(IoError::BadOffset)?;
             let bytes = self.data.get(start..end).ok_or(IoError::BadOffset)?;
@@ -750,8 +745,8 @@ mod tests {
             Ok(())
         }
 
-        fn len(&self) -> u32 {
-            self.data.len() as u32
+        fn len(&self) -> u64 {
+            self.data.len() as u64
         }
     }
 
@@ -769,12 +764,12 @@ mod tests {
         let mut word = [0u8; 4];
 
         for block in 0..WORKING_BLOCKS {
-            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(inner.stats().sd_reads, WORKING_BLOCKS as u32, "the cold scan fills from the source");
 
         for block in 0..WORKING_BLOCKS {
-            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(
             inner.stats().sd_reads,
@@ -827,12 +822,12 @@ mod tests {
         let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
 
         for cid in 0..CHUNKS as u32 {
-            inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN, &node).unwrap();
+            inner.load_chunk(&src, 0, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
         }
         assert_eq!(inner.stats().chunk_misses, CHUNKS as u32);
 
         for cid in 0..CHUNKS as u32 {
-            inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN, &node).unwrap();
+            inner.load_chunk(&src, 0, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
         }
         let stats = inner.stats();
         assert_eq!(stats.chunk_misses, CHUNKS as u32, "all five chunks should remain resident");
@@ -853,7 +848,7 @@ mod tests {
             *b = (k as u8).wrapping_mul(31).wrapping_add(7); // distinct, offset-derived bytes
         }
         // The eviction read (K_new) lives past the primed chunks (one per slot) and fails partway.
-        let fail_at = CACHE_SLOTS as u32 * LEN as u32;
+        let fail_at = (CACHE_SLOTS * LEN) as u64;
         let src = FlakySource { data: &data, fail_at, partial: 8 };
 
         let cache = MapCache::new();
@@ -862,7 +857,7 @@ mod tests {
 
         // Prime all five slots. RRIP's first victim of the next miss is slot 0 (cid 0).
         for cid in 0..CACHE_SLOTS as u32 {
-            let loc = inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN, &node).unwrap();
+            let loc = inner.load_chunk(&src, 0, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
             if cid < MAP_CHUNK_SLOTS as u32 {
                 assert!(matches!(loc, ChunkLoc::Slot(_)));
             } else {
@@ -1038,7 +1033,7 @@ mod tests {
         );
         // `Style Offset` is scaled (§1.1), so the byte to arm the failing read at is the field
         // resolved through the file's unit — not the field itself, which is `4`.
-        let style_off = obcm_testkit::resolve_offset(&bytes, 21) as u32;
+        let style_off = obcm_testkit::resolve_offset(&bytes, 21) as u64;
         // The count-byte read (at style_off), then the record-block read (at style_off + 1).
         for fail_at in [style_off, style_off + 1] {
             let src = FlakySource { data: &bytes, fail_at, partial: 0 };

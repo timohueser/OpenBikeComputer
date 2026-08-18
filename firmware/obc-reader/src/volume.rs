@@ -280,7 +280,7 @@ impl<'a> MountedSet<'a> {
     /// Total bytes across every shard — the only size figure a UI may show (§5.4).
     #[inline]
     pub fn total_bytes(&self) -> u64 {
-        self.shards.iter().map(|shard| shard.src.len() as u64).sum()
+        self.shards.iter().map(|shard| shard.src.len()).sum()
     }
 
     /// Roles, for diagnostics. Dispatch is deliberately role-blind (§5.1/§5.6).
@@ -342,7 +342,10 @@ fn fill<'a, const N: usize>(
 
     for (index, (record, &src)) in manifest.shards().iter().zip(sources).enumerate() {
         let at = index as u8;
-        if src.len() != record.bytes {
+        // §5.2's `Bytes` is a `uint32`, so a manifest can only describe a shard the seam could
+        // already reach before it widened; the widening is what makes the cast's direction matter
+        // rather than its width. See `obcm_assemble::shard::SET_SHARD_CEILING`.
+        if src.len() != record.bytes as u64 {
             return Err(MountError::Size(at));
         }
         let bbox = BBox {
@@ -393,7 +396,7 @@ fn fill<'a, const N: usize>(
 /// `(offset, length)`, resolved once by the caller.
 fn style_tables_match(
     core: &dyn ByteSource,
-    core_region: (usize, usize),
+    core_region: (u64, usize),
     other: &dyn ByteSource,
     at: u8,
 ) -> Result<bool, MountError> {
@@ -407,8 +410,8 @@ fn style_tables_match(
     let mut done = 0usize;
     while done < core_len {
         let take = (core_len - done).min(64);
-        core.read_at((core_offset + done) as u32, &mut a[..take]).map_err(|_| MountError::Styles(at))?;
-        other.read_at((other_offset + done) as u32, &mut b[..take]).map_err(|_| MountError::Styles(at))?;
+        core.read_at(core_offset + done as u64, &mut a[..take]).map_err(|_| MountError::Styles(at))?;
+        other.read_at(other_offset + done as u64, &mut b[..take]).map_err(|_| MountError::Styles(at))?;
         if a[..take] != b[..take] {
             return Ok(false);
         }
@@ -424,15 +427,14 @@ fn style_tables_match(
 /// here, because this function's whole job is to compare two files. Read as a byte offset it
 /// resolves to `4` at the default scale, which is inside the bbox, so the comparison would run over
 /// fields that legitimately differ per file and refuse every mount.
-fn style_region(src: &dyn ByteSource, at: u8) -> Result<(usize, usize), MountError> {
+fn style_region(src: &dyn ByteSource, at: u8) -> Result<(u64, usize), MountError> {
     let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
     src.read_at(0, &mut header).map_err(|_| MountError::Styles(at))?;
     let scale = obc_formats::obcm::OffsetScale::new(header[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF])
         .map_err(|_| MountError::Styles(at))?;
-    let offset = crate::reader::resolve(scale.offset(obc_formats::io::rd_u32(&header, 21)))
-        .map_err(|_| MountError::Styles(at))?;
+    let offset = crate::reader::resolve(scale.offset(obc_formats::io::rd_u32(&header, 21)));
     let mut count = [0u8; 1];
-    src.read_at(offset as u32, &mut count).map_err(|_| MountError::Styles(at))?;
+    src.read_at(offset, &mut count).map_err(|_| MountError::Styles(at))?;
     Ok((offset, 1 + count[0] as usize * obc_formats::obcm::STYLE_RECORD_LEN))
 }
 
@@ -690,14 +692,27 @@ const _: () = assert!(MAX_TOKEN_CHUNK_ID == 0x07FF_FFFF);
 // chunk-region total went from a `usize` to the `u32` the file actually stores, which on a 64-bit
 // host frees exactly the slot the scale byte lands in. Both numbers are asserted because that is
 // the sort of thing a reader should be told, not left to infer from one target's silence.
+//
+// **FS7.5-seam moved the device figures again, by a further 12 bytes per rung** — 472 → 544,
+// 504 → 584, 16,132 → 18,696 — because `Lod::index_offset` became a `u64`. It is a position in a
+// *file*, and since the read seam widened a file may be larger than the MCU's address space, so a
+// `usize` rung would have bounded a DACH-scale single map below the very wall this slice removed.
+// Eight of the twelve bytes are the offset; the other four are the alignment padding a `u64` field
+// imposes on a struct that was 4-aligned. The host figures are again unchanged: a 64-bit `usize`
+// was already eight bytes, so nothing there grew.
+//
+// **+2,564 B of `.bss` at the full 32-shard `SetShards`** is the whole resident cost of the slice on
+// the board, and it is spent almost entirely on a table FS7.5b2 deletes with the set machinery. A
+// single-file mount pays 72 B (one `ShardTables`), which is the shape every real map takes once the
+// split path goes.
 #[cfg(target_pointer_width = "32")]
 mod device_sizes {
     use super::{Mounted, MountedSet, SetShards, ShardTables};
     use core::mem::size_of;
 
-    const _: () = assert!(size_of::<ShardTables>() == 472);
-    const _: () = assert!(size_of::<Mounted>() == 504);
-    const _: () = assert!(size_of::<SetShards>() == 16_132);
+    const _: () = assert!(size_of::<ShardTables>() == 544);
+    const _: () = assert!(size_of::<Mounted>() == 584);
+    const _: () = assert!(size_of::<SetShards>() == 18_696);
     // Four machine words plus a compact core index. The point of the whole `SetShards` split: a
     // mount is cheap to move, and the 14 KB is somewhere the caller chose.
     const _: () = assert!(size_of::<MountedSet>() == 20);

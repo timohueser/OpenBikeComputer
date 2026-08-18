@@ -371,7 +371,13 @@ impl<D: BlockDevice, const N: usize> ByteSource for ExtentSourceWithCapacity<'_,
     // stack peaks have moved with inlining before). Measured free: one out-of-line call per
     // multi-ms SD read.
     #[inline(never)]
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        // **FAT32's** wall, not the seam's: this source resolves a file through a FAT chain, and a
+        // FAT32 file stops at 4 GiB − 1 whatever a `read_at` could ask for. So the offset narrows
+        // once, here, and everything below stays in the width the on-disk structures use. That the
+        // number matches the read seam's old one is the coincidence the whole slice is about — this
+        // arm is the FAT one and dies with FS7/8, so it is widened where it must be and no further.
+        let offset = u32::try_from(offset).map_err(|_| Error::BadOffset)?;
         // `try_from`, not `as`: a >4 GiB request (possible on a 64-bit host build of this crate)
         // would truncate to a small length and sail through the bound check below.
         let want = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
@@ -410,8 +416,8 @@ impl<D: BlockDevice, const N: usize> ByteSource for ExtentSourceWithCapacity<'_,
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        self.table.len
+    fn len(&self) -> u64 {
+        self.table.len.into()
     }
 }
 
@@ -691,7 +697,7 @@ pub(crate) mod tests {
         let table = ExtentTable::build(fs.disk, eb, eo, len).unwrap();
         let src = ExtentSource::new(fs.disk, &table);
         let mut buf = [0u8; 8];
-        assert_eq!(src.read_at(len - 4, &mut buf).unwrap_err(), Error::BadOffset);
+        assert_eq!(src.read_at(u64::from(len - 4), &mut buf).unwrap_err(), Error::BadOffset);
     }
 
     /// Malformed geometry must be *refused*, never wrapped into a plausible-looking table that
@@ -816,7 +822,7 @@ pub(crate) mod tests {
         ];
         for &(off, n) in windows {
             let mut got = vec![0u8; n];
-            src.read_at(off, &mut got).unwrap();
+            src.read_at(off.into(), &mut got).unwrap();
             // Against the manager's own read of the same window…
             let mut want = vec![0u8; n];
             fs.vmgr.file_seek_from_start(file, off).unwrap();

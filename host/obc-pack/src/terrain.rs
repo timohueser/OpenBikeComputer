@@ -208,32 +208,37 @@ fn collect_obcd(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 /// those rare, so the contention is nothing next to the GEOS work the same threads are doing.
 struct FileSource {
     file: Mutex<File>,
-    len: u32,
+    len: u64,
 }
 
 impl FileSource {
     fn open(path: &Path) -> Result<FileSource, String> {
         let file = File::open(path).map_err(|e| format!("--terrain {}: {e}", path.display()))?;
-        let bytes = file.metadata().map_err(|e| format!("--terrain {}: {e}", path.display()))?.len();
-        let len = u32::try_from(bytes)
-            .map_err(|_| format!("--terrain {}: {bytes} bytes exceeds the 4 GiB OBCT offset space", path.display()))?;
+        let len = file.metadata().map_err(|e| format!("--terrain {}: {e}", path.display()))?.len();
+        // **OBCT's own** wall, not the read seam's: the container's directory entries and cell
+        // offsets are `uint32`, so nothing past 4 GiB − 1 of an `.obcd` can be named from inside it
+        // however far a `read_at` could reach. The seam widened; this did not, and the refusal is
+        // the format's.
+        if len > u32::MAX as u64 {
+            return Err(format!("--terrain {}: {len} bytes exceeds the 4 GiB OBCT offset space", path.display()));
+        }
         Ok(FileSource { file: Mutex::new(file), len })
     }
 }
 
 impl ByteSource for FileSource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         use std::io::{Read, Seek, SeekFrom};
-        let end = (offset as u64).checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
-        if end > self.len as u64 {
+        let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
+        if end > self.len {
             return Err(Error::BadOffset);
         }
         let mut file = self.file.lock().map_err(|_| Error::BadOffset)?;
-        file.seek(SeekFrom::Start(offset as u64)).map_err(|_| Error::BadOffset)?;
+        file.seek(SeekFrom::Start(offset)).map_err(|_| Error::BadOffset)?;
         file.read_exact(buf).map_err(|_| Error::BadOffset)
     }
 
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.len
     }
 }

@@ -126,12 +126,12 @@ struct Counting<'a> {
 }
 
 impl ByteSource for Counting<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         self.reads.set(self.reads.get() + 1);
         SliceSource(self.bytes).read_at(offset, buf)
     }
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
     }
 }
 
@@ -140,18 +140,18 @@ impl ByteSource for Counting<'_> {
 struct FlakyDirectory<'a> {
     bytes: &'a [u8],
     armed: Cell<bool>,
-    directory: core::ops::Range<u32>,
+    directory: core::ops::Range<u64>,
 }
 
 impl ByteSource for FlakyDirectory<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         if self.armed.get() && self.directory.contains(&offset) {
             return Err(Error::Io);
         }
         SliceSource(self.bytes).read_at(offset, buf)
     }
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
     }
 }
 
@@ -344,7 +344,7 @@ fn a_failed_directory_read_voids_the_sample_instead_of_clamping() {
     let src = FlakyDirectory {
         bytes: &bytes,
         armed: Cell::new(false),
-        directory: HEADER_LEN as u32..HEADER_LEN as u32 + dir_len,
+        directory: HEADER_LEN as u64..HEADER_LEN as u64 + u64::from(dir_len),
     };
     let reader = TerrainReader::parse(&src).expect("parse happens before the medium goes bad");
     let mut cache = TileCache::<4>::new();

@@ -211,14 +211,14 @@ fn populated_nav_chunk_regions_are_sector_aligned() {
     // byte. Both runs are checked — the one behind the 40-byte directory, which v14 introduced
     // because 40 is not a unit multiple, and the sector run behind the profile table.
     let section = nav_section_offset(&bytes);
-    let dir_gap = &bytes[section + NAV_DIR_LEN..nav.profile_table_offset];
+    let dir_gap = &bytes[section + NAV_DIR_LEN..nav.profile_table_offset as usize];
     assert_eq!(dir_gap.len(), 8, "the 40-byte directory ends mid-unit at U = 16");
     assert!(dir_gap.iter().all(|&byte| byte == FILLER), "the directory's gap is 0xFF, not zero");
     let run = &bytes[profile_end..index_start];
     assert!(!run.is_empty(), "a populated graph pads to its sector");
     assert!(run.iter().all(|&byte| byte == FILLER), "the alignment run is 0xFF, not zero");
-    assert_eq!(nav.data_start().unwrap() % NAV_CHUNK_SIZE, 0, "node chunks start on a sector boundary");
-    assert_eq!(nav.edge_pool_offset % NAV_CHUNK_SIZE, 0, "edge chunks start on a sector boundary");
+    assert_eq!(nav.data_start().unwrap() % NAV_CHUNK_SIZE as u64, 0, "node chunks start on a sector boundary");
+    assert_eq!(nav.edge_pool_offset % NAV_CHUNK_SIZE as u64, 0, "edge chunks start on a sector boundary");
 }
 
 /// A segment past the 30 000-µdeg delta bound is densified at pack time (same

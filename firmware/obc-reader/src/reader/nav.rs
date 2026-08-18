@@ -56,25 +56,25 @@ const _: () = assert!(
 #[derive(Debug, Clone, Copy)]
 pub struct NavDirectory {
     /// Byte offset to the node quadtree index (§8.2 — the §4 encoding over the global bbox).
-    pub index_offset: usize,
+    pub index_offset: u64,
     /// Number of `uint32` nodes in the index; `0` ⇒ the map has no routable graph.
     pub node_count: usize,
     /// Number of node data chunks (they begin at `index_offset + node_count * 4`, the §3/§4
     /// convention).
     pub chunk_count: usize,
     /// Byte offset of the edge pool (§8.4).
-    pub edge_pool_offset: usize,
+    pub edge_pool_offset: u64,
     /// Number of `chunk_size`-byte chunks in the edge pool.
     pub edge_chunk_count: usize,
     /// Fixed capacity (bytes) of every nav chunk — node chunks and edge-pool chunks alike. v9 pins
     /// this to [`NAV_CHUNK_SIZE`] (512); `parse_nav_directory` rejects any other value.
     pub chunk_size: usize,
     /// Absolute byte offset of the §8.6 profile table (written immediately after this directory).
-    pub profile_table_offset: usize,
+    pub profile_table_offset: u64,
     /// Number of 56-byte profile records at `profile_table_offset` (1..=8; parse rejects otherwise).
     pub profile_count: usize,
     /// Byte offset to the v13 §8.7 snap-anchor quadtree index.
-    pub snap_index_offset: usize,
+    pub snap_index_offset: u64,
     /// Number of `uint32` nodes in the snap-anchor quadtree; `0` means no interior anchors.
     pub snap_node_count: usize,
     /// Number of fixed-size snap-anchor data chunks following that index.
@@ -111,35 +111,35 @@ impl NavDirectory {
     }
 
     /// Byte offset where the node data chunks begin (right after the index), or `None` on
-    /// `usize` overflow (a corrupt directory on the 32-bit MCU) — see `index_end`.
+    /// `u64` overflow (a corrupt directory) — see `index_end`.
     #[inline]
-    pub fn data_start(&self) -> Option<usize> {
+    pub fn data_start(&self) -> Option<u64> {
         aligned_index_end(self.scale, self.index_offset, self.node_count)
     }
 
     /// Byte range `[start, end)` of node chunk `chunk_id`, or `None` if out of range / on
     /// overflow. See [`fixed_chunk_range`]; the nav chunk size is directory-wide (§8.1).
     #[inline]
-    fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
+    fn chunk_range(&self, chunk_id: u32) -> Option<(u64, u64)> {
         fixed_chunk_range(self.data_start(), self.chunk_count, self.chunk_size, chunk_id)
     }
 
     /// Byte offset where v13's snap-anchor chunks begin (right after their quadtree index).
     #[inline]
-    pub fn snap_data_start(&self) -> Option<usize> {
+    pub fn snap_data_start(&self) -> Option<u64> {
         aligned_index_end(self.scale, self.snap_index_offset, self.snap_node_count)
     }
 
     /// Byte range of one v13 snap-anchor chunk.
     #[inline]
-    fn snap_chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
+    fn snap_chunk_range(&self, chunk_id: u32) -> Option<(u64, u64)> {
         fixed_chunk_range(self.snap_data_start(), self.snap_chunk_count, self.chunk_size, chunk_id)
     }
 }
 
 impl QuadIndex for NavDirectory {
     #[inline]
-    fn index_offset(&self) -> usize {
+    fn index_offset(&self) -> u64 {
         self.index_offset
     }
     #[inline]
@@ -150,13 +150,13 @@ impl QuadIndex for NavDirectory {
 
 #[derive(Clone, Copy)]
 struct NavSnapIndex {
-    index_offset: usize,
+    index_offset: u64,
     node_count: usize,
 }
 
 impl QuadIndex for NavSnapIndex {
     #[inline]
-    fn index_offset(&self) -> usize {
+    fn index_offset(&self) -> u64 {
         self.index_offset
     }
     #[inline]
@@ -415,11 +415,11 @@ impl<'a> Reader<'a> {
                 Some(r) => r,
                 None => return,
             };
-            if end > self.src.len() as usize {
+            if end > self.src.len() {
                 return;
             }
             let chunk = &mut scratch[..dir.chunk_size];
-            if let Err(error) = self.src.read_at(start as u32, chunk) {
+            if let Err(error) = self.src.read_at(start, chunk) {
                 read_error = Some(error);
                 return;
             }
@@ -459,22 +459,22 @@ impl<'a> Reader<'a> {
     /// Split out so the two readers below can differ in exactly one line: the router's sites
     /// already own a [`NavTileCache`] and go through its working set, while [`Reader::nav_edge`]
     /// reads into 512 bytes of its own stack.
-    fn nav_edge_chunk_start(&self, edge_id: u32) -> Option<u32> {
+    fn nav_edge_chunk_start(&self, edge_id: u32) -> Option<u64> {
         // A volume-set shard carries no edge pool (see `is_set_shard`).
         let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs != NAV_CHUNK_SIZE {
             return None;
         }
-        let chunk_index = nav_edge_id_chunk(edge_id) as usize;
-        if chunk_index >= dir.edge_chunk_count {
+        let chunk_index = nav_edge_id_chunk(edge_id) as u64;
+        if chunk_index >= dir.edge_chunk_count as u64 {
             return None;
         }
-        let chunk_start = dir.edge_pool_offset.checked_add(chunk_index.checked_mul(cs)?)?;
-        if chunk_start.checked_add(cs)? > self.src.len() as usize {
+        let chunk_start = dir.edge_pool_offset.checked_add(chunk_index.checked_mul(cs as u64)?)?;
+        if chunk_start.checked_add(cs as u64)? > self.src.len() {
             return None;
         }
-        u32::try_from(chunk_start).ok()
+        Some(chunk_start)
     }
 
     /// [`Reader::nav_edge_record`] with the chunk read straight into a caller-owned 512-byte
@@ -561,15 +561,11 @@ impl<'a> Reader<'a> {
                 Some(r) => r,
                 None => return,
             };
-            if end > self.src.len() as usize {
+            if end > self.src.len() {
                 return;
             }
-            let off = match u32::try_from(start) {
-                Ok(o) => o,
-                Err(_) => return,
-            };
             // A failed fill skips this leaf cleanly (the cache never keeps a bad slot).
-            match tiles.chunk(self.src, off, dir.chunk_size) {
+            match tiles.chunk(self.src, start, dir.chunk_size) {
                 Some(chunk) => decode_nav_chunk(chunk, &mut visit),
                 None => read_error = Some(IoError::Io),
             }
@@ -610,13 +606,12 @@ impl<'a> Reader<'a> {
                 return;
             }
             let Some((start, end)) = dir.chunk_range(cid) else { return };
-            if end > self.src.len() as usize {
+            if end > self.src.len() {
                 return;
             }
-            let Some(off) = u32::try_from(start).ok() else { return };
             let mut local = [0u8; NAV_MAX_CHUNK_BYTES];
             {
-                let Some(chunk) = tiles.chunk(self.src, off, dir.chunk_size) else {
+                let Some(chunk) = tiles.chunk(self.src, start, dir.chunk_size) else {
                     read_error = Some(IoError::Io);
                     return;
                 };
@@ -647,13 +642,12 @@ impl<'a> Reader<'a> {
                     return;
                 }
                 let Some((start, end)) = dir.snap_chunk_range(cid) else { return };
-                if end > self.src.len() as usize {
+                if end > self.src.len() {
                     return;
                 }
-                let Some(off) = u32::try_from(start).ok() else { return };
                 let mut local = [CHUNK_END; NAV_CHUNK_SIZE];
                 {
-                    let Some(chunk) = tiles.chunk(self.src, off, dir.chunk_size) else {
+                    let Some(chunk) = tiles.chunk(self.src, start, dir.chunk_size) else {
                         read_error = Some(IoError::Io);
                         return;
                     };
@@ -1031,26 +1025,26 @@ fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
 pub(super) fn parse_nav_directory(
     src: &dyn ByteSource,
     scale: OffsetScale,
-    offset: usize,
-    total: usize,
+    offset: u64,
+    total: u64,
 ) -> Result<NavDirectory, Error> {
     // The lowest byte a scaled offset in this file can name past the header (§1.2).
-    let floor = super::resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
-    if offset < floor || offset.checked_add(NAV_DIR_LEN).is_none_or(|end| end > total) {
+    let floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
+    if offset < floor || offset.checked_add(NAV_DIR_LEN as u64).is_none_or(|end| end > total) {
         return Err(Error::BadOffset);
     }
     let mut d = [0u8; NAV_DIR_LEN];
-    src.read_at(offset as u32, &mut d).map_err(Error::Source)?;
+    src.read_at(offset, &mut d).map_err(Error::Source)?;
     let dir = NavDirectory {
-        index_offset: resolve(scale.offset(rd_u32(&d, 0)))?,
+        index_offset: resolve(scale.offset(rd_u32(&d, 0))),
         node_count: rd_u32(&d, 4) as usize,
         chunk_count: rd_u32(&d, 8) as usize,
-        edge_pool_offset: resolve(scale.offset(rd_u32(&d, 12)))?,
+        edge_pool_offset: resolve(scale.offset(rd_u32(&d, 12))),
         edge_chunk_count: rd_u32(&d, 16) as usize,
         chunk_size: rd_u16(&d, 20) as usize,
-        profile_table_offset: resolve(scale.offset(rd_u32(&d, 22)))?,
+        profile_table_offset: resolve(scale.offset(rd_u32(&d, 22))),
         profile_count: d[26] as usize,
-        snap_index_offset: resolve(scale.offset(rd_u32(&d, 28)))?,
+        snap_index_offset: resolve(scale.offset(rd_u32(&d, 28))),
         snap_node_count: rd_u32(&d, 32) as usize,
         snap_chunk_count: rd_u32(&d, 36) as usize,
         scale,
@@ -1070,9 +1064,8 @@ pub(super) fn parse_nav_directory(
     if dir.profile_table_offset < floor {
         return Err(Error::BadOffset);
     }
-    let profile_end = dir
-        .profile_count
-        .checked_mul(NAV_PROFILE_LEN)
+    let profile_end = (dir.profile_count as u64)
+        .checked_mul(NAV_PROFILE_LEN as u64)
         .and_then(|len| dir.profile_table_offset.checked_add(len))
         .ok_or(Error::BadOffset)?;
     if profile_end > total {
@@ -1083,7 +1076,9 @@ pub(super) fn parse_nav_directory(
     if dir.node_count > 0 {
         let region_end = dir
             .data_start()
-            .and_then(|start| dir.chunk_count.checked_mul(dir.chunk_size).and_then(|len| start.checked_add(len)))
+            .and_then(|start| {
+                (dir.chunk_count as u64).checked_mul(dir.chunk_size as u64).and_then(|len| start.checked_add(len))
+            })
             .ok_or(Error::BadOffset)?;
         if dir.index_offset < floor || region_end > total {
             return Err(Error::BadOffset);
@@ -1098,9 +1093,8 @@ pub(super) fn parse_nav_directory(
     if dir.edge_pool_offset < floor || dir.edge_chunk_count as u64 > NAV_EDGE_MAX_CHUNKS {
         return Err(Error::BadOffset);
     }
-    let pool_end = dir
-        .edge_chunk_count
-        .checked_mul(dir.chunk_size)
+    let pool_end = (dir.edge_chunk_count as u64)
+        .checked_mul(dir.chunk_size as u64)
         .and_then(|len| dir.edge_pool_offset.checked_add(len))
         .ok_or(Error::BadOffset)?;
     if pool_end > total {
@@ -1111,7 +1105,9 @@ pub(super) fn parse_nav_directory(
     if dir.snap_node_count > 0 {
         let region_end = dir
             .snap_data_start()
-            .and_then(|start| dir.snap_chunk_count.checked_mul(dir.chunk_size).and_then(|len| start.checked_add(len)))
+            .and_then(|start| {
+                (dir.snap_chunk_count as u64).checked_mul(dir.chunk_size as u64).and_then(|len| start.checked_add(len))
+            })
             .ok_or(Error::BadOffset)?;
         if dir.snap_index_offset < floor || region_end > total {
             return Err(Error::BadOffset);
@@ -1137,9 +1133,8 @@ pub(super) fn parse_nav_profiles(
     for i in 0..dir.profile_count {
         let off = dir
             .profile_table_offset
-            .checked_add(i.checked_mul(NAV_PROFILE_LEN).ok_or(Error::BadOffset)?)
+            .checked_add((i as u64).checked_mul(NAV_PROFILE_LEN as u64).ok_or(Error::BadOffset)?)
             .ok_or(Error::BadOffset)?;
-        let off = u32::try_from(off).map_err(|_| Error::BadOffset)?;
         src.read_at(off, &mut buf).map_err(Error::Source)?;
         let mut name = [0u8; NAV_PROFILE_NAME_LEN];
         name.copy_from_slice(&buf[0..NAV_PROFILE_NAME_LEN]);

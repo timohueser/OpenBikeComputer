@@ -39,12 +39,12 @@ impl<'a> CountingSource<'a> {
 }
 
 impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), IoError> {
         self.reads.set(self.reads.get() + 1);
         self.bytes.set(self.bytes.get() + buf.len() as u64);
         self.inner.read_at(offset, buf)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.inner.len()
     }
 }

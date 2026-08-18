@@ -242,7 +242,7 @@ fn survey(path: &str, opts: &Options) -> Result<(), String> {
     let hours_b = 2.0 + 29.0 * poi.hours_pool_count as f64;
     let nav = r.nav_directory();
     let nav_start = nav.profile_table_offset;
-    let nav_b = (bytes.len() - nav_start.min(bytes.len())) as f64;
+    let nav_b = (bytes.len() as u64 - nav_start.min(bytes.len() as u64)) as f64;
     let poi_b = poi_end.saturating_sub(poi_start) as f64;
     println!("\n-- non-geometry sections --");
     println!("  header+styles+lod table  {:>10}", human(r.lods().first().map_or(0, |l| l.index_offset) as f64));
@@ -265,7 +265,7 @@ fn survey(path: &str, opts: &Options) -> Result<(), String> {
     // Walk each LOD's leaves once per LOD and bin into every candidate cell size in the same pass.
     let mut leaves: Vec<Vec<(BBox, f64)>> = Vec::new();
     for (i, l) in r.lods().iter().enumerate() {
-        let table_start = l.index_offset + l.node_count * 4;
+        let table_start = (l.index_offset + (l.node_count * 4) as u64) as usize;
         let mut per_lod: Vec<(BBox, f64)> = Vec::new();
         let mut bad = 0usize;
         r.for_each_chunk(i, &bbox, |cid, node| {

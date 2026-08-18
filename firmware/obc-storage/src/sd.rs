@@ -46,7 +46,11 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
 impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> ByteSource
     for SdByteSource<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        // The FAT seam narrows once, here, and works in `u32` below: `file_seek_from_start` takes a
+        // `u32` because a FAT32 file cannot be longer than one. That is FAT's own wall rather than
+        // the read seam's — this arm dies with FS7/8 and is widened only where the trait requires.
+        let offset = u32::try_from(offset).map_err(|_| Error::BadOffset)?;
         // Prove range errors before touching the medium. Once the range is known good, a seek
         // failure is an I/O failure (card removal, corrupt FAT chain, etc.), not malformed caller
         // input. Weather A/B publication relies on that distinction to avoid truncating a slot
@@ -70,8 +74,8 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        self.len
+    fn len(&self) -> u64 {
+        self.len.into()
     }
 }
 

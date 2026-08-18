@@ -82,7 +82,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
                 .data_start()
                 .ok_or_else(|| Error::Format(format!("cell {}: POI directory overflows", cell.id)))?;
             for k in 0..entry.chunk_count {
-                let chunk = cell.read(data_start + k * dir.chunk_size, dir.chunk_size)?;
+                let chunk = cell.read(data_start + (k * dir.chunk_size) as u64, dir.chunk_size)?;
                 for rec in chunk.chunks_exact(POI_RECORD_LEN) {
                     let subtype = rec[8];
                     if subtype == CHUNK_END {

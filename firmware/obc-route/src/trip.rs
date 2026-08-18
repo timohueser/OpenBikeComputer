@@ -99,7 +99,7 @@ impl TripMeta {
         let mut buf = [0u8; 2 * MAX_TRIP_STAGES];
         let bytes = &mut buf[..take * 2];
         if take > 0 {
-            src.read_at(TRIP_HEADER_LEN as u32, bytes)?;
+            src.read_at(TRIP_HEADER_LEN as u64, bytes)?;
         }
         for k in 0..take {
             // Infallible: the loop count equals the pushed count, both ≤ MAX_TRIP_STAGES.
@@ -123,7 +123,7 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     }
     let stage_count = rd_u16(&h, 2);
     // Length is fully determined by the header — a payload of any other size is torn or malformed.
-    if src.len() != trip_object_len(stage_count) {
+    if src.len() != u64::from(trip_object_len(stage_count)) {
         return Err(Error::BadOffset);
     }
     let name_len = (h[4] as usize).min(NAME_CAP);

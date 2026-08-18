@@ -20,9 +20,9 @@ const NAV_TILE_SLOTS: usize = 32;
 /// leave the renderer's carefully-budgeted seven-window cache untouched.
 const NAV_INDEX_BLOCKS: usize = 16;
 
-/// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u32::MAX`
-/// (its whole extent must lie inside a `u32`-addressed source).
-const NAV_TILE_EMPTY: u32 = u32::MAX;
+/// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u64::MAX`
+/// (its whole extent must lie inside the source, and §1.1 bounds a file at `2^32 × U`).
+const NAV_TILE_EMPTY: u64 = u64::MAX;
 
 /// A snapshot of the [`NavTileCache`] counters. These are **logical** `ByteSource::read_at` counts;
 /// physical command counts are lower-level transport diagnostics. Sector-aligned current producers make
@@ -63,7 +63,7 @@ impl NavCacheStats {
 pub struct NavTileCache {
     slots: [[u8; NAV_MAX_CHUNK_BYTES]; NAV_TILE_SLOTS],
     /// Absolute file offset of the chunk each slot holds, or [`NAV_TILE_EMPTY`].
-    tags: [u32; NAV_TILE_SLOTS],
+    tags: [u64; NAV_TILE_SLOTS],
     /// Round-robin eviction cursor.
     next: u8,
     hits: u32,
@@ -73,9 +73,13 @@ pub struct NavTileCache {
     index_misses: u32,
 }
 
-// On-device: 32 graph sectors + tags/counters and sixteen 520-byte index windows.
+// On-device: 32 graph sectors + tags/counters and sixteen 520-byte index windows. It was 24,852 B
+// while a slot tag was a `u32`; the u64 read seam adds 128 B of tags and eight of alignment. Unlike
+// `MapCache`, this cache may take the `u64`'s 8-byte alignment: it lives in the scratch arena's
+// route arm rather than in a `.bss` slot the boot task fills, so no placement of it is on a poll
+// frame — the distinction [`IndexBlock::block`] documents, checked here by measurement.
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<NavTileCache>() == 24_852);
+const _: () = assert!(core::mem::size_of::<NavTileCache>() == 24_984);
 
 impl NavTileCache {
     pub const fn new() -> Self {
@@ -120,7 +124,7 @@ impl NavTileCache {
     /// The `len`-byte chunk at absolute `offset`, from a resident slot or (on miss) read from
     /// `src` into the round-robin victim. `None` on a read failure — the victim's tag is cleared
     /// *before* the read so a short/failed fill can never leave a stale tag over garbage bytes.
-    pub(in crate::reader) fn chunk(&mut self, src: &dyn ByteSource, offset: u32, len: usize) -> Option<&[u8]> {
+    pub(in crate::reader) fn chunk(&mut self, src: &dyn ByteSource, offset: u64, len: usize) -> Option<&[u8]> {
         debug_assert!(len <= NAV_MAX_CHUNK_BYTES);
         for i in 0..NAV_TILE_SLOTS {
             if self.tags[i] == offset {
@@ -145,9 +149,8 @@ impl NavTileCache {
         index: &dyn QuadIndex,
         idx: usize,
     ) -> Result<u32, IoError> {
-        let byte_index = idx.checked_mul(4).ok_or(IoError::BadOffset)?;
-        let off = u32::try_from(index.index_offset().checked_add(byte_index).ok_or(IoError::BadOffset)?)
-            .map_err(|_| IoError::BadOffset)?;
+        let byte_index = (idx as u64).checked_mul(4).ok_or(IoError::BadOffset)?;
+        let off = index.index_offset().checked_add(byte_index).ok_or(IoError::BadOffset)?;
         let mut word = [0u8; 4];
         self.index_read(src, file, off, &mut word)?;
         Ok(u32::from_le_bytes(word))
@@ -157,13 +160,13 @@ impl NavTileCache {
         &mut self,
         src: &dyn ByteSource,
         file: u8,
-        off: u32,
+        off: u64,
         out: &mut [u8],
     ) -> Result<(), IoError> {
         let mut filled = 0usize;
         while filled < out.len() {
-            let cur = off.checked_add(filled as u32).ok_or(IoError::BadOffset)?;
-            let block_off = cur - cur % INDEX_BLOCK as u32;
+            let cur = off.checked_add(filled as u64).ok_or(IoError::BadOffset)?;
+            let block_off = cur - cur % INDEX_BLOCK as u64;
             let slot = self.index_block(src, file, block_off)?;
             let within = (cur - block_off) as usize;
             let blen = self.index[slot].len as usize;
@@ -177,14 +180,16 @@ impl NavTileCache {
         Ok(())
     }
 
-    fn index_block(&mut self, src: &dyn ByteSource, file: u8, block_off: u32) -> Result<usize, IoError> {
-        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.off == block_off) {
+    fn index_block(&mut self, src: &dyn ByteSource, file: u8, block_off: u64) -> Result<usize, IoError> {
+        // See [`IndexBlock::block`]: a block number, checked rather than cast.
+        let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
+        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.block == tag) {
             self.index[i].set_rrpv(0);
             self.index_hits = self.index_hits.saturating_add(1);
             return Ok(i);
         }
-        let remaining = src.len().checked_sub(block_off).ok_or(IoError::BadOffset)? as usize;
-        let want = remaining.min(INDEX_BLOCK);
+        let remaining = src.len().checked_sub(block_off).ok_or(IoError::BadOffset)?;
+        let want = remaining.min(INDEX_BLOCK as u64) as usize;
         if want == 0 {
             return Err(IoError::BadOffset);
         }
@@ -192,7 +197,7 @@ impl NavTileCache {
         let i = empty.unwrap_or_else(|| rrip_victim(&mut self.index));
         self.index[i].meta = 0;
         src.read_at(block_off, &mut self.index[i].buf[..want])?;
-        self.index[i].off = block_off;
+        self.index[i].block = tag;
         self.index[i].len = want as u16;
         self.index_misses = self.index_misses.saturating_add(1);
         let rrpv = if empty.is_some() || self.index_misses.is_multiple_of(8) { 2 } else { 3 };
@@ -225,7 +230,7 @@ mod tests {
         }
         let src = SliceSource(&data);
         let mut cache = NavTileCache::new();
-        let off = |i: usize| (i * LEN) as u32;
+        let off = |i: usize| (i * LEN) as u64;
 
         // Prime every slot: misses only, contents correct.
         for i in 0..NAV_TILE_SLOTS {
@@ -268,12 +273,12 @@ mod tests {
         let mut word = [0u8; 4];
 
         for block in 0..WORKING_BLOCKS {
-            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(cache.stats().index_misses, WORKING_BLOCKS as u32);
 
         for block in 0..WORKING_BLOCKS {
-            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(cache.stats().index_hits, (WORKING_BLOCKS - 2) as u32);
         assert_eq!(cache.stats().index_misses, (WORKING_BLOCKS + 2) as u32);

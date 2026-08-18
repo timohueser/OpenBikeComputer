@@ -80,16 +80,16 @@ impl<T: Read + Write + Seek> TerrainSink for T {}
 /// runs through exactly the parser a device runs rather than a second opinion about the bytes.
 struct SinkSource<'a> {
     sink: std::cell::RefCell<&'a mut dyn TerrainSink>,
-    len: u32,
+    len: u64,
 }
 
 impl ByteSource for SinkSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> std::result::Result<(), obc_formats::io::Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), obc_formats::io::Error> {
         let mut sink = self.sink.borrow_mut();
-        sink.seek(SeekFrom::Start(offset as u64)).map_err(|_| obc_formats::io::Error::Io)?;
+        sink.seek(SeekFrom::Start(offset)).map_err(|_| obc_formats::io::Error::Io)?;
         sink.read_exact(buf).map_err(|_| obc_formats::io::Error::Io)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.len
     }
 }
@@ -219,14 +219,14 @@ fn check_cell(cell: &TerrainCellInput<'_>, params: TerrainParams, block_len: u32
     // says the *content* is what was promised rather than merely well-formed.
     if let Some(expected) = cell.sha256 {
         let mut hasher = Sha256::new();
-        let mut cursor = 0u32;
+        let mut cursor = 0u64;
         let mut buf = [0u8; 8192];
         let total = cell.src.len();
         while cursor < total {
-            let n = buf.len().min((total - cursor) as usize);
+            let n = ((total - cursor).min(buf.len() as u64)) as usize;
             cell.src.read_at(cursor, &mut buf[..n]).map_err(Error::Io)?;
             hasher.update(&buf[..n]);
-            cursor += n as u32;
+            cursor += n as u64;
         }
         let actual: [u8; 32] = hasher.finalize().into();
         if actual != expected {
@@ -242,7 +242,7 @@ fn check_cell(cell: &TerrainCellInput<'_>, params: TerrainParams, block_len: u32
     // The block has to be wholly inside the object. `TerrainReader::parse` already asserted it for
     // the directory entry it read; restated here because this is where the copy's bounds come from.
     let end = CELL_BLOCK_OFFSET as u64 + block_len as u64;
-    if end > cell.src.len() as u64 {
+    if end > cell.src.len() {
         return Err(bad(format!("is {} bytes; a {block_len}-byte block needs {end}", cell.src.len())));
     }
     Ok(CELL_BLOCK_OFFSET)
@@ -316,7 +316,7 @@ pub fn write_shard(
                 // as a row run and never as 2 MiB of sentinel (OBCC §13.6).
                 None => w.push(None).map_err(Error::Format)?,
                 Some(&k) => {
-                    cells[k].src.read_at(CELL_BLOCK_OFFSET, &mut block).map_err(Error::Io)?;
+                    cells[k].src.read_at(CELL_BLOCK_OFFSET.into(), &mut block).map_err(Error::Io)?;
                     w.push(Some(&block)).map_err(Error::Format)?;
                 }
             }
@@ -342,7 +342,7 @@ pub fn write_shard(
     // --- §4.8, on the raster: read the finished file back through the real reader. ---
     let cells_written = by_square.len();
     {
-        let source = SinkSource { sink: std::cell::RefCell::new(&mut *out), len: len32 };
+        let source = SinkSource { sink: std::cell::RefCell::new(&mut *out), len: len32.into() };
         // The parse is the whole of OBCT §4.5: header, pairing, rectangle against the world grid,
         // and **every** directory entry even, after the directory, and wholly inside the file.
         let reader = TerrainReader::parse(&source)
@@ -368,7 +368,7 @@ pub fn write_shard(
         for (slot, (ci, cj)) in plan.rect.cells().enumerate() {
             let entry_at = header.directory_offset + (slot * DIR_ENTRY_LEN) as u32;
             let mut raw = [0u8; DIR_ENTRY_LEN];
-            source.read_at(entry_at, &mut raw).map_err(Error::Io)?;
+            source.read_at(entry_at.into(), &mut raw).map_err(Error::Io)?;
             let offset = u32::from_le_bytes(raw);
             match by_square.get(&(ci, cj)) {
                 None => {
@@ -385,8 +385,8 @@ pub fn write_shard(
                             cells[k].id
                         )));
                     }
-                    source.read_at(offset, &mut mine).map_err(Error::Io)?;
-                    cells[k].src.read_at(CELL_BLOCK_OFFSET, &mut theirs).map_err(Error::Io)?;
+                    source.read_at(offset.into(), &mut mine).map_err(Error::Io)?;
+                    cells[k].src.read_at(CELL_BLOCK_OFFSET.into(), &mut theirs).map_err(Error::Io)?;
                     if mine != theirs {
                         return Err(Error::Verify(format!(
                             "terrain cell {}'s block in the shard is not the block the catalog served",

@@ -163,7 +163,7 @@ fn node_chunks(bytes: &[u8]) -> (usize, usize, usize) {
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
     let dir = *reader.nav_directory();
-    (dir.data_start().expect("the fixture's nav directory resolves"), dir.chunk_count, dir.chunk_size)
+    (dir.data_start().expect("the fixture's nav directory resolves") as usize, dir.chunk_count, dir.chunk_size)
 }
 
 /// Absolute file offsets of every §8.3 record, in chunk order — the addresses a mutation names.
@@ -390,7 +390,7 @@ fn an_offset_table_that_does_not_start_at_zero_is_refused() {
         let reader = Reader::new(&src, &tables, &cache);
         let lod = reader.lods()[0];
         assert!(lod.chunk_count >= 1, "the fixture's LOD has chunks");
-        let table = lod.index_offset + lod.node_count * 4;
+        let table = (lod.index_offset + (lod.node_count * 4) as u64) as usize;
         bytes[table..table + 4].copy_from_slice(&4u32.to_le_bytes());
     });
 }

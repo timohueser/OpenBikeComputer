@@ -61,8 +61,8 @@ struct ScanCore<'a> {
     buf: [u8; SCAN_BUF],
     filled: usize,
     pos: usize,
-    next_read: u32,
-    src_len: u32,
+    next_read: u64,
+    src_len: u64,
 }
 
 /// A located element, as index ranges into the core's buffer (valid until the next
@@ -89,14 +89,15 @@ impl<'a> ScanCore<'a> {
             self.pos = 0;
         }
         let space = SCAN_BUF - self.filled;
-        let avail = (self.src_len - self.next_read) as usize;
-        let n = space.min(avail);
+        // `src_len - next_read` is what is left of the file, which can exceed `usize` on a
+        // 32-bit host; the `min` against the buffer's free space is what makes the narrowing safe.
+        let n = ((self.src_len - self.next_read).min(space as u64)) as usize;
         if n == 0 {
             return Ok(0);
         }
         self.src.read_at(self.next_read, &mut self.buf[self.filled..self.filled + n])?;
         self.filled += n;
-        self.next_read += n as u32;
+        self.next_read += n as u64;
         Ok(n)
     }
 
