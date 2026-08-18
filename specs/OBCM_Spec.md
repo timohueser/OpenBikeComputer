@@ -1210,6 +1210,14 @@ and `u16_at(p + 4)` reads outside the chunk. This is the same class of mistake a
 narrowing §1.1 warns about, and it is spelled out here because this block is the one a reader
 transcribes verbatim.
 
+**`n` is a `uint16` but `len` needs 19 bits — evaluate `15 + 4 × (n - 1)` in at least 32 bits**, the
+same widening rule §1.1 states for `u32 × U`. It is the same defect one operator over: the largest
+`n` the guards above let through is `0xFFFE`, giving `len = 15 + 4 × 65 533 = 262 147`, and a
+transcriber that computes it in the operand's own width wraps that to `3`. Then `p + 3 > 512` is
+false, the `record claims bytes past its chunk` check passes, and the walk advances three bytes into
+the middle of a record instead of refusing — silently, and with every bound in the block written
+correctly.
+
 Four refusal rules, and a reader MUST apply all of them, because an `Edge Id` reaches it from an
 adjacency entry or a snap record and is arbitrary in a corrupt map: `chunk_index < Edge Chunk
 Count`; no record may start where one cannot fit; the walk MUST NOT pass the chunk's last record (an
