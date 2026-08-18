@@ -183,10 +183,18 @@ not owned: a mounted map set holds an open object per shard for the life of the 
 commits and a ride journals, and an exclusive write half makes that shape un-expressible rather than
 merely awkward. An implementation carries whatever interior mutability that needs, under two rules.
 
-1. **Lock or borrow granularity is per card command, never per commit.** A 1,024-entry commit is ~36
-   write commands over ~250 ms; releasing between them lets a read interleave into the gaps, so the
-   worst stall a reader sees is one command rather than a whole commit. State must never be held
-   across an `await`, across a callback, or across another seam call.
+1. **Granularity is per card command for the state a reader needs.** A 1,024-entry commit is ~36 write
+   commands over ~250 ms; releasing between them lets a read interleave into the gaps, so the worst
+   stall a reader sees is one command rather than a whole commit. Concretely: the catalog, the free
+   map and whatever table records open objects must be unheld at every card command a write path
+   issues, so that `open`, `read`, `entries`, `entries_ok` and the free-space answer are all
+   serviceable throughout a `commit`.
+
+   Writer-private state — a reservation's staging buffer, which no read operation names — may be held
+   across the commands that drain it, because the alternative is copying that buffer per command and
+   §1 serves one transfer at a time anyway. An implementation taking this carve-out states which state
+   it covers and for how many commands. State must never be held across an `await`, across a callback,
+   or across another seam call, carve-out or not.
 2. **`close` on an object another reader still holds is a runtime refusal, not a teardown.** The
    reader refcount §6.2 already requires is what decides it: such a `close` spends a count and returns,
    and the extents come back only when the last reader lets go. What the exclusive write half used to
