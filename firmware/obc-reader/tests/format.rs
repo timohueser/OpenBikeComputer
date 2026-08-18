@@ -730,8 +730,12 @@ fn empty_poi_directory_parses_six_empty_categories() {
     }
     // The v7 hours-pool fields: an empty pool (count 0), its 2-byte `count` header lying in-file.
     assert_eq!(dir.hours_pool_count, 0, "no hours in a no-POI map");
-    assert!(dir.hours_pool_offset >= STYLE_OFFSET && dir.hours_pool_offset + 2 <= bytes.len(), "pool offset in-file");
-    assert_eq!(u16::from_le_bytes(bytes[dir.hours_pool_offset..dir.hours_pool_offset + 2].try_into().unwrap()), 0);
+    assert!(
+        dir.hours_pool_offset >= STYLE_OFFSET as u64 && dir.hours_pool_offset + 2 <= bytes.len() as u64,
+        "pool offset in-file"
+    );
+    let pool_at = dir.hours_pool_offset as usize;
+    assert_eq!(u16::from_le_bytes(bytes[pool_at..pool_at + 2].try_into().unwrap()), 0);
 }
 
 /// Hand-assemble a file whose POI section carries **one populated category** (id
@@ -822,14 +826,14 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert!(!cat3.is_empty());
     assert_eq!(cat3.node_count, 1);
     assert_eq!(cat3.chunk_count, 1);
-    assert_eq!(cat3.index_offset, cat3_index_off);
-    assert_eq!(cat3.data_start(), Some(cat3_chunk_off), "chunks start after the 1-node index");
+    assert_eq!(cat3.index_offset, cat3_index_off as u64);
+    assert_eq!(cat3.data_start(), Some(cat3_chunk_off as u64), "chunks start after the 1-node index");
     // Every other category is still present and empty.
     assert_eq!(dir.entries.iter().filter(|e| e.is_empty()).count(), 5);
 
     // The two v7 hours-pool directory fields resolve to the pool + its two blobs.
     assert_eq!(dir.hours_pool_count, 2, "two pooled schedules");
-    assert_eq!(dir.hours_pool_offset, pool_off, "pool at the section tail");
+    assert_eq!(dir.hours_pool_offset, pool_off as u64, "pool at the section tail");
 
     // Pin the first record's exact 36 bytes (spec §7.3): lat, lon, subtype, name_len, name, hours_ref.
     let rec = &bytes[cat3_chunk_off..cat3_chunk_off + POI_RECORD_LEN];
@@ -950,13 +954,14 @@ fn a_spliced_terrain_region_is_handed_back_as_a_window() {
     let tables = MapTables::parse(&src).unwrap();
     let region = tables.terrain().expect("a spliced region parses back");
 
-    assert_eq!(region.offset, align_up(plain.len()), "the window starts at the region's first byte");
-    assert_eq!(region.offset % UNIT, 0, "no scaled offset can name a byte that is not a unit boundary");
-    assert_eq!(region.len, align_up(stub.len()), "Terrain Length counts units, so the window rounds up");
-    assert_eq!(region.offset + region.len, bytes.len(), "terrain sits last, so it ends the file");
-    assert_eq!(&bytes[region.offset..region.offset + stub.len()], &stub[..], "the container's bytes, verbatim");
+    let region_at = region.offset as usize;
+    assert_eq!(region.offset, align_up(plain.len()) as u64, "the window starts at the region's first byte");
+    assert_eq!(region.offset % UNIT as u64, 0, "no scaled offset can name a byte that is not a unit boundary");
+    assert_eq!(region.len, align_up(stub.len()) as u64, "Terrain Length counts units, so the window rounds up");
+    assert_eq!(region.offset + region.len, bytes.len() as u64, "terrain sits last, so it ends the file");
+    assert_eq!(&bytes[region_at..region_at + stub.len()], &stub[..], "the container's bytes, verbatim");
     assert!(
-        bytes[region.offset + stub.len()..].iter().all(|&b| b == FILLER),
+        bytes[region_at + stub.len()..].iter().all(|&b| b == FILLER),
         "the window is up to U-1 bytes longer than the container, and that tail is §1.2 filler"
     );
 

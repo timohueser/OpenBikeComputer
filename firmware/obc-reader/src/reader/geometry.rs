@@ -39,7 +39,10 @@ pub struct Lod {
     /// Upper bound of the meters-per-pixel range this level covers; the coarsest
     /// level is `f32::INFINITY`. Strictly decreasing from coarse (0) to fine.
     pub max_mpp: f32,
-    pub index_offset: usize,
+    /// Byte offset of this level's quadtree index. `u64` because it is a position in a **file**,
+    /// not in memory: the read seam addresses 64 bits, so a level living past 4 GiB of a
+    /// DACH-scale single file is addressable on the 32-bit MCU exactly as it is on a host.
+    pub index_offset: u64,
     pub node_count: usize,
     /// The **capacity bound** on one chunk (spec §3): the packer's leaf-split threshold and the
     /// largest length any single chunk may have. Not a stride — chunks are packed tight and
@@ -60,7 +63,7 @@ pub struct Lod {
 
 impl QuadIndex for Lod {
     #[inline]
-    fn index_offset(&self) -> usize {
+    fn index_offset(&self) -> u64 {
         self.index_offset
     }
     #[inline]
@@ -71,18 +74,19 @@ impl QuadIndex for Lod {
 
 impl Lod {
     /// Byte offset of the LOD's per-chunk **offset table** (spec §5): `chunk_count + 1` `uint32`
-    /// entries sitting between the quadtree index and the chunk data. `None` on `usize` overflow —
-    /// reachable on the 32-bit MCU from a corrupt `index_offset`/`node_count`.
+    /// entries sitting between the quadtree index and the chunk data. `None` on `u64` overflow —
+    /// reachable from a corrupt `index_offset`/`node_count` on any target now that these are file
+    /// offsets rather than host addresses.
     #[inline]
-    fn offset_table(&self) -> Option<usize> {
+    fn offset_table(&self) -> Option<u64> {
         index_end(self.index_offset, self.node_count)
     }
 
     /// Byte offset just past this level's offset table — where the chunk data would begin without
-    /// v14's rounding step. `None` on `usize` overflow (see [`Lod::offset_table`]).
+    /// v14's rounding step. `None` on `u64` overflow (see [`Lod::offset_table`]).
     #[inline]
-    fn table_end(&self) -> Option<usize> {
-        let table_len = self.chunk_count.checked_add(1)?.checked_mul(4)?;
+    fn table_end(&self) -> Option<u64> {
+        let table_len = (self.chunk_count as u64).checked_add(1)?.checked_mul(4)?;
         self.offset_table()?.checked_add(table_len)
     }
 
@@ -91,21 +95,24 @@ impl Lod {
     /// neither needs a unit boundary of its own — the chunks are addressed by scaled offsets, so
     /// they do, and the `0..U-1` bytes this rounds past are §1.2 filler. At `Offset Scale = 0` this
     /// is v13's arithmetic unchanged. `None` on overflow (see [`Lod::offset_table`]).
+    ///
+    /// The `usize` narrowing that used to live here is gone with the u32 read seam: the alignment
+    /// step already works in `u64`, and a chunk region past the host's address space is no longer a
+    /// thing a reader has to refuse — only a thing the *source* has to be able to serve.
     #[inline]
-    fn data_start(&self) -> Option<usize> {
-        let aligned = self.scale.align_up(self.table_end()? as u64)?;
-        usize::try_from(aligned).ok().filter(|&start| start as u64 == aligned)
+    fn data_start(&self) -> Option<u64> {
+        self.scale.align_up(self.table_end()?)
     }
 
     /// Byte offset of chunk `chunk_id`'s entry in the offset table, or `None` if `chunk_id` is out
-    /// of range or the arithmetic overflows `usize`. `chunk_id` comes straight from a quadtree leaf
+    /// of range or the arithmetic overflows `u64`. `chunk_id` comes straight from a quadtree leaf
     /// (arbitrary in a corrupt map), so it is validated against `chunk_count` with checked
     /// arithmetic. Entries `k` and `k+1` are adjacent, which is what makes a chunk extent **one**
     /// 8-byte read ([`Reader::chunk_range`]).
     #[inline]
-    fn offset_entry(&self, chunk_id: u32) -> Option<usize> {
-        let id = chunk_id as usize;
-        if id >= self.chunk_count {
+    fn offset_entry(&self, chunk_id: u32) -> Option<u64> {
+        let id = chunk_id as u64;
+        if id >= self.chunk_count as u64 {
             return None;
         }
         self.offset_table()?.checked_add(id.checked_mul(4)?)
@@ -224,12 +231,11 @@ impl<'a> Reader<'a> {
     ///
     /// The cache borrow is taken and **released here**, before the caller borrows it again for
     /// `load_chunk` — the same read-before-you-need-it discipline as `read_node` in `walk_leaves`.
-    fn chunk_range(&self, l: &Lod, chunk_id: u32) -> Result<(usize, usize), MapReadError> {
+    fn chunk_range(&self, l: &Lod, chunk_id: u32) -> Result<(u64, usize), MapReadError> {
         if !self.cache_ready {
             return Err(MapReadError::Cache(CacheError::Busy));
         }
         let entry = l.offset_entry(chunk_id).ok_or(MapReadError::Malformed)?;
-        let entry = u32::try_from(entry).map_err(|_| MapReadError::Malformed)?;
         let mut b = [0u8; 8];
         self.cache
             .try_borrow_mut()
@@ -249,16 +255,18 @@ impl<'a> Reader<'a> {
         if span > span_bound || span > MAX_CHUNK_BYTES as u64 {
             return Err(MapReadError::Malformed);
         }
+        // The two refusals above bound the span by `MAX_CHUNK_BYTES`, so it is the one number here
+        // that legitimately narrows: a chunk is decoded in RAM, and RAM is `usize`-addressed. The
+        // *start* is not — it is a position in a file that may be larger than this host's address
+        // space, so it stays `u64` all the way to `read_at`.
         let span = span as usize;
-        let start = l
-            .data_start()
-            .and_then(|d| usize::try_from(l.scale.offset(off0).bytes()).ok().and_then(|o| d.checked_add(o)))
-            .ok_or(MapReadError::Malformed)?;
-        let end = start.checked_add(span).ok_or(MapReadError::Malformed)?;
-        if end > self.src.len() as usize {
+        let start =
+            l.data_start().and_then(|d| d.checked_add(l.scale.offset(off0).bytes())).ok_or(MapReadError::Malformed)?;
+        let end = start.checked_add(span as u64).ok_or(MapReadError::Malformed)?;
+        if end > self.src.len() {
             return Err(MapReadError::Malformed);
         }
-        Ok((start, end))
+        Ok((start, span))
     }
 
     /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` overlapping `view`, in
@@ -424,8 +432,7 @@ impl<'a> Reader<'a> {
         // it must finish before the `load_chunk` borrow below. `chunk_range` validates the pair
         // (range, monotonicity, `chunk_size`, `MAX_CHUNK_BYTES`, file length) so nothing here can
         // index past the decode scratch or the file.
-        let (start, end) = self.chunk_range(l, chunk_id)?;
-        let len = end - start;
+        let (start, len) = self.chunk_range(l, chunk_id)?;
         // Pull the chunk through the cache, then decode from the resident bytes. The borrow is held
         // across `decode_chunk_into` — safe because `should_decode`/`visit` only touch
         // `self.tables.styles`, never the cache.
@@ -433,7 +440,7 @@ impl<'a> Reader<'a> {
             return Err(MapReadError::Cache(CacheError::Busy));
         }
         let mut cache = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?;
-        let loc = match cache.load_chunk(self.src, self.file, lod as u8, chunk_id, start as u32, len, node) {
+        let loc = match cache.load_chunk(self.src, self.file, lod as u8, chunk_id, start, len, node) {
             Ok(loc) => loc,
             Err(error) => return Err(MapReadError::Source(error)),
         };
@@ -479,12 +486,11 @@ impl<'a> Reader<'a> {
         let l = self.lods().get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
         // Same offset-table lookup + validation as the full walk (and the same borrow-then-release
         // ordering ahead of `load_chunk`); a read failure there is a read failure here.
-        let (start, end) = match self.chunk_range(l, cid) {
+        let (start, len) = match self.chunk_range(l, cid) {
             Ok(range) => range,
             Err(MapReadError::Malformed) => return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed)),
             Err(error) => return Err(FeatureReadError::Read(error)),
         };
-        let len = end - start;
         // The re-decode offset must additionally land inside *this* chunk — `len` now comes from the
         // offset table, so a stale offset from a differently-sized chunk is rejected here.
         if offset >= len {
@@ -496,7 +502,7 @@ impl<'a> Reader<'a> {
         let mut cache =
             self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
         let loc = cache
-            .load_chunk(self.src, self.file, lod as u8, cid, start as u32, len, node)
+            .load_chunk(self.src, self.file, lod as u8, cid, start, len, node)
             .map_err(|error| FeatureReadError::Read(MapReadError::Source(error)))?;
         let chunk = match loc {
             ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
@@ -904,29 +910,29 @@ fn read_ring<const P: usize>(
 pub(crate) fn parse_lod_table(
     src: &dyn ByteSource,
     scale: OffsetScale,
-    offset: usize,
+    offset: u64,
     lod_count: usize,
-    total: usize,
+    total: u64,
 ) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
     // The lowest byte a scaled offset in this file can name past the header (§1.2).
-    let floor = super::resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
+    let floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
     for k in 0..lod_count {
-        let o = offset + k * LOD_ENTRY_LEN;
-        src.read_at(o as u32, &mut e).map_err(Error::Source)?;
+        let o = offset + (k * LOD_ENTRY_LEN) as u64;
+        src.read_at(o, &mut e).map_err(Error::Source)?;
         let mut lod = Lod {
             max_mpp: rd_f32(&e, 0),
-            index_offset: super::resolve(scale.offset(rd_u32(&e, 4)))?,
+            index_offset: scale.offset(rd_u32(&e, 4)).bytes(),
             node_count: rd_u32(&e, 8) as usize,
             chunk_size: rd_u16(&e, 12) as usize,
             chunk_count: rd_u32(&e, 14) as usize,
             chunk_units_total: 0,
             scale,
         };
-        // Checked: a corrupt entry's `node_count`/`chunk_count` products can wrap `usize` on the
-        // 32-bit target, so an unchecked `data_start` could land below `total` and admit a layer
-        // indexing out of the file.
+        // Checked: a corrupt entry's `node_count`/`chunk_count` products can wrap `u64`, so an
+        // unchecked `data_start` could land below `total` and admit a layer indexing out of the
+        // file.
         let data_start = lod.data_start().ok_or(Error::BadOffset)?;
         if lod.index_offset < floor || data_start > total {
             return Err(Error::BadOffset);
@@ -942,10 +948,10 @@ pub(crate) fn parse_lod_table(
         // `data_start` guard above bounded.
         let last = lod.table_end().and_then(|end| end.checked_sub(4)).ok_or(Error::BadOffset)?;
         let mut t = [0u8; 4];
-        src.read_at(last as u32, &mut t).map_err(Error::Source)?;
+        src.read_at(last, &mut t).map_err(Error::Source)?;
         lod.chunk_units_total = rd_u32(&t, 0);
         let region = scale.offset(lod.chunk_units_total).bytes();
-        if u64::try_from(data_start).ok().and_then(|s| s.checked_add(region)).is_none_or(|end| end > total as u64) {
+        if data_start.checked_add(region).is_none_or(|end| end > total) {
             return Err(Error::BadOffset);
         }
         let _ = lods.push(lod);

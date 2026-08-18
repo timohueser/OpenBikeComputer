@@ -89,7 +89,7 @@ impl ValidatedBundle {
     /// from being paired with another equal-length OBCW object. This is one header read, never the
     /// whole-object CRC/tile walk.
     pub fn reader<'a, S: ByteSource + ?Sized>(self, source: &'a S) -> Result<WeatherReader<'a, S>, Error> {
-        if source.len() != self.header.total_len {
+        if source.len() != u64::from(self.header.total_len) {
             return Err(FormatError::TotalLength.into());
         }
         let mut bytes = [0u8; HEADER_LEN];
@@ -107,7 +107,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         let mut bytes = [0u8; HEADER_LEN];
         source.read_at(0, &mut bytes)?;
         let header = obcw::decode_header(&bytes)?;
-        if header.total_len != source.len() {
+        if u64::from(header.total_len) != source.len() {
             return Err(FormatError::TotalLength.into());
         }
         let reader = Self { source, header };
@@ -133,7 +133,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         }
         let offset = checked_add(HEADER_LEN as u32, checked_mul(index as u32, HOURLY_RECORD_LEN as u32)?)?;
         let mut bytes = [0u8; HOURLY_RECORD_LEN];
-        self.source.read_at(offset, &mut bytes)?;
+        self.source.read_at(offset.into(), &mut bytes)?;
         Ok(obcw::decode_hourly_record(&bytes)?)
     }
 
@@ -159,7 +159,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
             let count = (HOURLY_COUNT - first).min(OPEN_HOURLY_WINDOW_RECORDS);
             let byte_len = count * HOURLY_RECORD_LEN;
             let offset = checked_add(HEADER_LEN as u32, checked_mul(first as u32, HOURLY_RECORD_LEN as u32)?)?;
-            self.source.read_at(offset, &mut bytes[..byte_len])?;
+            self.source.read_at(offset.into(), &mut bytes[..byte_len])?;
             for local in 0..count {
                 let start = local * HOURLY_RECORD_LEN;
                 records[first + local] = obcw::decode_hourly_record(
@@ -177,7 +177,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         let base = HEADER_LEN as u32 + (HOURLY_COUNT * HOURLY_RECORD_LEN) as u32;
         let offset = checked_add(base, checked_mul(index as u32, FRAME_DESCRIPTOR_LEN as u32)?)?;
         let mut bytes = [0u8; FRAME_DESCRIPTOR_LEN];
-        self.source.read_at(offset, &mut bytes)?;
+        self.source.read_at(offset.into(), &mut bytes)?;
         Ok(obcw::decode_frame_descriptor(&bytes)?)
     }
 
@@ -187,7 +187,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         }
         let offset = checked_add(frame.tile_directory_offset, checked_mul(index, TILE_DIRECTORY_ENTRY_LEN as u32)?)?;
         let mut bytes = [0u8; TILE_DIRECTORY_ENTRY_LEN];
-        self.source.read_at(offset, &mut bytes)?;
+        self.source.read_at(offset.into(), &mut bytes)?;
         Ok(obcw::decode_tile_entry(&bytes)?)
     }
 
@@ -201,7 +201,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         if len == 0 || len > RAW4_LEN {
             return Err(FormatError::TileCodec.into());
         }
-        self.source.read_at(entry.data_offset, &mut encoded[..len])?;
+        self.source.read_at(entry.data_offset.into(), &mut encoded[..len])?;
         Ok(obcw::decode_tile_payload(entry, &encoded[..len], out)?)
     }
 
@@ -212,7 +212,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
             let count = (HOURLY_COUNT - first).min(OPEN_HOURLY_WINDOW_RECORDS);
             let byte_len = count * HOURLY_RECORD_LEN;
             let offset = checked_add(HEADER_LEN as u32, checked_mul(first as u32, HOURLY_RECORD_LEN as u32)?)?;
-            self.source.read_at(offset, &mut hourly_bytes[..byte_len])?;
+            self.source.read_at(offset.into(), &mut hourly_bytes[..byte_len])?;
             for local in 0..count {
                 let start = local * HOURLY_RECORD_LEN;
                 let record = obcw::decode_hourly_record(
@@ -255,7 +255,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
                     frame.tile_directory_offset,
                     checked_mul(first_tile, TILE_DIRECTORY_ENTRY_LEN as u32)?,
                 )?;
-                self.source.read_at(directory_offset, &mut directory_bytes[..directory_byte_len])?;
+                self.source.read_at(directory_offset.into(), &mut directory_bytes[..directory_byte_len])?;
 
                 let window_payload_start = payload_cursor;
                 let mut window_payload_len = 0usize;
@@ -277,7 +277,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
                     window_payload_len = window_payload_len.checked_add(len).ok_or(FormatError::Bounds)?;
                     payload_cursor = checked_add(payload_cursor, entry.encoded_len as u32)?;
                 }
-                self.source.read_at(window_payload_start, &mut encoded[..window_payload_len])?;
+                self.source.read_at(window_payload_start.into(), &mut encoded[..window_payload_len])?;
 
                 let mut encoded_cursor = 0usize;
                 for (local, &entry) in entries[..count].iter().enumerate() {
@@ -310,7 +310,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         let mut buffer = [0u8; OPEN_CRC_CHUNK_BYTES];
         while offset < self.header.total_len {
             let take = (self.header.total_len - offset).min(buffer.len() as u32) as usize;
-            self.source.read_at(offset, &mut buffer[..take])?;
+            self.source.read_at(offset.into(), &mut buffer[..take])?;
             hasher.update(&buffer[..take]);
             offset = checked_add(offset, take as u32)?;
         }
@@ -446,7 +446,7 @@ mod tests {
     }
 
     impl ByteSource for CountingSource<'_> {
-        fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), SourceError> {
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
             let start = offset as usize;
             let end = start.checked_add(out.len()).ok_or(SourceError::BadOffset)?;
             out.copy_from_slice(self.bytes.get(start..end).ok_or(SourceError::BadOffset)?);
@@ -455,8 +455,8 @@ mod tests {
             Ok(())
         }
 
-        fn len(&self) -> u32 {
-            self.bytes.len() as u32
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
         }
     }
 

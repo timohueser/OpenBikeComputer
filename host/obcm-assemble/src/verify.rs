@@ -92,7 +92,7 @@ pub fn verify_shard(
             b.min_lon, b.min_lat, b.max_lon, b.max_lat
         )));
     }
-    if src.len() as u64 > crate::shard::FILE_CEILING {
+    if src.len() > crate::shard::FILE_CEILING {
         return Err(Error::Verify(format!(
             "the shard is {} bytes, past the {}-byte interior its `Offset Scale` covers (OBCM §1.1)",
             src.len(),
@@ -174,7 +174,7 @@ fn check_offset_table(
     // constant agrees with itself no matter what byte 40 says. §1.1's whole point is that the unit
     // travels in the file.
     let unit = scale.unit();
-    let table_start = lod.index_offset + lod.node_count * 4;
+    let table_start = lod.index_offset + (lod.node_count * 4) as u64;
     let raw = crate::input::read_at(src, table_start, (lod.chunk_count + 1) * 4)?;
     // §5.1's v14 restatement of "a chunk may not span more than `Chunk Size`": a chunk's *content*
     // still may not exceed it, and its *span* is that content rounded up to a unit — so the tight
@@ -213,8 +213,8 @@ fn check_offset_table(
     }
     // The chunks begin one rounding step past the table (§3), so the region's end is measured from
     // there and not from the table's own last byte.
-    let end = crate::shard::align_up((table_start + raw.len()) as u64) + lod.chunk_units_total as u64 * unit;
-    if end > src.len() as u64 {
+    let end = crate::shard::align_up(table_start + raw.len() as u64) + lod.chunk_units_total as u64 * unit;
+    if end > src.len() {
         return Err(Error::Verify(format!("LOD {i}: the chunk region runs past the end of the file")));
     }
     Ok(())

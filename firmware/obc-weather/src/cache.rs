@@ -283,7 +283,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
             return Err(FormatError::TileCodec.into());
         }
         let mut encoded = [0u8; RAW4_LEN];
-        self.source.read_at(entry.data_offset, &mut encoded[..len])?;
+        self.source.read_at(entry.data_offset.into(), &mut encoded[..len])?;
         obcw::decode_tile_payload(entry, &encoded[..len], &mut cache.tile)?;
         cache.tile_generation = generation;
         cache.tile_bundle_crc = self.header.crc32;
@@ -337,7 +337,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
             let mut bytes = [0u8; DIRECTORY_WINDOW_ENTRIES * TILE_DIRECTORY_ENTRY_LEN];
             let offset =
                 checked_add(frame.tile_directory_offset, checked_mul(first, TILE_DIRECTORY_ENTRY_LEN as u32)?)?;
-            self.source.read_at(offset, &mut bytes[..count * TILE_DIRECTORY_ENTRY_LEN])?;
+            self.source.read_at(offset.into(), &mut bytes[..count * TILE_DIRECTORY_ENTRY_LEN])?;
             for (index, entry) in cache.directory[..count].iter_mut().enumerate() {
                 let start = index * TILE_DIRECTORY_ENTRY_LEN;
                 *entry = obcw::decode_tile_entry(
@@ -416,7 +416,7 @@ mod tests {
     }
 
     impl ByteSource for CountingSource<'_> {
-        fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), SourceError> {
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
             let start = offset as usize;
             let end = start.checked_add(out.len()).ok_or(SourceError::BadOffset)?;
             out.copy_from_slice(self.bytes.get(start..end).ok_or(SourceError::BadOffset)?);
@@ -430,8 +430,8 @@ mod tests {
             Ok(())
         }
 
-        fn len(&self) -> u32 {
-            self.bytes.len() as u32
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
         }
     }
 

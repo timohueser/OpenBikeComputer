@@ -2015,7 +2015,7 @@ impl ObjectStore {
                 .storage
                 .as_ref()
                 .and_then(|s| s.object_source())
-                .is_some_and(|src| obc_formats::io::ByteSource::read_at(&src, offset, buf).is_ok()),
+                .is_some_and(|src| obc_formats::io::ByteSource::read_at(&src, offset.into(), buf).is_ok()),
         }
     }
 

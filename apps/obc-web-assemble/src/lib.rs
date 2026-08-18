@@ -246,8 +246,10 @@ mod web {
             JsSink::taken(self.write.call2(&JsValue::NULL, &JsValue::from_f64(slot as f64), &src), "write")
         }
 
-        fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String> {
+        fn read_at(&self, slot: usize, offset: u64, into: &mut [u8]) -> Result<(), String> {
             // SAFETY: as in `JsReads::read` — a per-call view, filled and dropped inside the call.
+            // A sunk shard's offset can pass 4 GiB since the read seam widened; `f64` carries it
+            // exactly to 2^53, far past the 64 GiB §1.1 lets a file reach.
             let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
             JsSink::taken(
                 self.read_at.call3(
@@ -373,7 +375,7 @@ mod web {
     }
 
     impl CellReads for JsReads {
-        fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+        fn read(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
             // SAFETY: `view_mut_raw` aliases linear memory and is invalidated by anything that grows
             // it. This one is made, passed, and dropped inside a single synchronous JS call that
             // does nothing but fill it — no Rust allocation can run in between, and the callback is
@@ -767,10 +769,12 @@ mod web {
     /// space. A selection can pass one and fail the other. See [`crate::estimate`] for the model
     /// and where its constants were measured.
     ///
-    /// The two numbers are both 4 GiB today and that is a **coincidence**, not a shared cause. The
-    /// address space is wasm32's. The file wall is `min(the interior the scale covers, what the
-    /// read seam addresses)` — 64 GiB and `u32::MAX` respectively since v14, so the read seam binds
-    /// (`obcm_assemble::FILE_CEILING`). Widening the seam moves one and not the other.
+    /// The two numbers were both 4 GiB and it was always a **coincidence**, not a shared cause —
+    /// which FS7.5-seam demonstrated by moving one and not the other. This budget is wasm32's
+    /// address space and is still 4 GiB. The *readable* file wall went to 64 GiB when the seam
+    /// widened (`obcm_assemble::FILE_CEILING`), while the *writable* one stayed at 4 GiB − 1 for a
+    /// third reason again — OBCA §5.2's `uint32` `Bytes`
+    /// (`obcm_assemble::shard::SET_SHARD_CEILING`). Three walls, three causes, one number twice.
     ///
     /// `budget_bytes` overrides the number `fits` is judged against. The default is a **desktop**
     /// judgement ([`crate::PRACTICAL_BUDGET`], 3 GiB); a caller that knows it is on a phone should
