@@ -22,11 +22,6 @@ use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 /// no larger chunk is ever routed through a slot.
 pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
-/// The per-read window of [`Reader::nav_edge`]'s delta stream, bytes (a multiple of the 4-byte
-/// delta pair, so a pair never straddles two reads). Edge polylines are fetched once per route
-/// emit, so a small fixed stack window is plenty.
-const NAV_EDGE_WINDOW: usize = 128;
-
 /// The parsed nav directory (spec §8.1) — the graph's **entire resident state** (the quadtree and
 /// every record stream on demand). Empty graph (`node_count == 0`) ⇒ no walk, exactly like an
 /// empty POI category. Parse-only in R2: [`Reader::for_each_nav_node`] walks the node quadtree and

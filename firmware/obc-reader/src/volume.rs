@@ -669,14 +669,26 @@ const _: () = assert!(MAX_TOKEN_CHUNK_ID == 0x07FF_FFFF);
 // `ShardTables` is **invariant** in the ladder's length — `heapless::Vec<Lod, 16>` reserves all 16
 // rungs whatever the schema uses — so there is no "260 B at the v1 ladder, 500 B at the maximum".
 // There is one number.
+//
+// **v14 moved the device figures by 4 bytes per `Lod` rung** — 408 → 472, 440 → 504,
+// 14,084 → 16,132 — because a `Lod` now carries the `OffsetScale` of the file it was read from, so
+// that an offset-table entry read lazily at render time resolves against *that* file's unit and no
+// other's. A mounted map can hold several files open, and an offset resolved against the wrong unit
+// lands inside the wrong file rather than outside it: the read succeeds and returns the wrong
+// section. Four bytes a rung is what makes that combination unspellable rather than documented.
+//
+// The **host figures do not move**, and the asymmetry is real rather than an oversight: `Lod`'s
+// chunk-region total went from a `usize` to the `u32` the file actually stores, which on a 64-bit
+// host frees exactly the slot the scale byte lands in. Both numbers are asserted because that is
+// the sort of thing a reader should be told, not left to infer from one target's silence.
 #[cfg(target_pointer_width = "32")]
 mod device_sizes {
     use super::{Mounted, MountedSet, SetShards, ShardTables};
     use core::mem::size_of;
 
-    const _: () = assert!(size_of::<ShardTables>() == 408);
-    const _: () = assert!(size_of::<Mounted>() == 440);
-    const _: () = assert!(size_of::<SetShards>() == 14_084);
+    const _: () = assert!(size_of::<ShardTables>() == 472);
+    const _: () = assert!(size_of::<Mounted>() == 504);
+    const _: () = assert!(size_of::<SetShards>() == 16_132);
     // Four machine words plus a compact core index. The point of the whole `SetShards` split: a
     // mount is cheap to move, and the 14 KB is somewhere the caller chose.
     const _: () = assert!(size_of::<MountedSet>() == 20);
