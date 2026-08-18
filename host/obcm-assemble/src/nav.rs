@@ -2443,4 +2443,89 @@ mod tests {
             assert_eq!(n.3[0].0, 0, "node {dense}'s neighbour is the hub");
         }
     }
+
+    /// **The ordinal reset, at merge level.** Every other fixture in this file lays its edges out in
+    /// a single 512-byte chunk, so `Edge Chunk Count == 1` throughout and the `if here !=
+    /// chunk_index { ordinal = 0 }` branch in [`merge`]'s minting loop has never executed under
+    /// test. The branch that mints duplicate ids when it is wrong is the branch nothing runs.
+    ///
+    /// This drives the merged pool past 512 bytes twice, once through each way a chunk can end —
+    /// and they are genuinely different code paths, which is what the bug in this PR's own history
+    /// was about:
+    ///
+    /// - **pushed**: a record that does not fit the space left is moved to the next boundary, so
+    ///   the chunk ends with filler behind its last record;
+    /// - **flush**: a record whose length divides the space left *exactly* ends on the boundary, so
+    ///   the next chunk opens with no filler and no push. This is the case the original writer got
+    ///   wrong — it reset the ordinal when a record was pushed, and a flush run carried the counter
+    ///   straight over into the next chunk and minted a duplicate id.
+    ///
+    /// Both assert the ids as `(chunk, ordinal)` pairs rather than as raw `u32`s, because the whole
+    /// point of the field is that those two halves are separable.
+    #[test]
+    fn a_merged_pool_that_spans_two_chunks_restarts_the_ordinal_in_each() {
+        const MIN_REC: usize = NAV_EDGE_FIXED_LEN + 4; // a 2-point record: 19 bytes
+
+        /// `edges[k] = point count of edge k`, laid out as disjoint two-node edges whose latitude
+        /// increases with `k` — dense renumbering is by latitude, so emission order is `k` order
+        /// and the fixture controls exactly where each record lands.
+        fn ids_of(points: &[usize]) -> Vec<(u32, u32)> {
+            let lat_of = |k: usize| 6_000_000i32 + 1_000 * k as i32;
+            let recs: Vec<Vec<u8>> = points
+                .iter()
+                .enumerate()
+                .map(|(k, &n)| {
+                    let pts: Vec<(i32, i32)> = (0..n).map(|i| (lat_of(k), SEAM_LON + i as i32)).collect();
+                    obcm_testkit::pack_nav_edge_record(100 + k as u32, 3, &pts)
+                })
+                .collect();
+            let ids = pool_ids(&recs);
+            let mut nodes = Vec::new();
+            for (k, _) in points.iter().enumerate() {
+                let (a, b) = (2 * k as u32, 2 * k as u32 + 1);
+                let nbr = |id: u32| SrcNbr { id, edge_id: ids[k], cost: 100 + k as u16, kind: 3, ascent: 7 };
+                nodes.push(SrcNode { id: a, lat: lat_of(k), lon: SEAM_LON, nbrs: vec![nbr(b)] });
+                nodes.push(SrcNode { id: b, lat: lat_of(k), lon: SEAM_LON + points[k] as i32 - 1, nbrs: vec![nbr(a)] });
+            }
+            let (bytes, dir) = nav_bytes(&nodes, &recs);
+            let src = obc_formats::io::SliceSource(&bytes);
+            let cell = nav_cell(&src, dir);
+            let bbox =
+                (SEAM_LON as i64 - 10, lat_of(0) as i64 - 10, SEAM_LON as i64 + 100, lat_of(points.len()) as i64 + 10);
+            let nav = merged(&[&cell], 20, 0, bbox);
+            assert_eq!(nav.stats.edges, points.len(), "every disjoint edge survives the merge");
+            let mut seen: Vec<(u32, u32)> = merged_nodes(&nav)
+                .iter()
+                .flat_map(|n| n.3.iter().map(|e| (nav_edge_id_chunk(e.1), nav_edge_id_ordinal(e.1))))
+                .collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen
+        }
+
+        // --- pushed ------------------------------------------------------------------------
+        // 26 x 19 = 494 bytes; the 27th needs 19 more and 494 + 19 = 513 > 512, so it is pushed
+        // to the boundary and opens chunk 1.
+        assert_eq!(26 * MIN_REC, 494);
+        assert!(494 + MIN_REC > NAV_CHUNK_SIZE, "the 27th record cannot fit — it is pushed");
+        let pushed = ids_of(&[2; 27]);
+        let mut want: Vec<(u32, u32)> = (0..26).map(|o| (0, o)).collect();
+        want.push((1, 0));
+        assert_eq!(pushed, want, "26 ordinals in chunk 0, then the ordinal restarts at 0 in chunk 1");
+
+        // --- flush -------------------------------------------------------------------------
+        // Record lengths are `15 + 4*(n-1)`, so every one is 3 mod 4 and a run can only land on
+        // 512 with a multiple of four records. 23 x 19 + 75 = 512 exactly: a 16-point record
+        // closes chunk 0 on its last byte, with no filler and nothing pushed.
+        let big = NAV_EDGE_FIXED_LEN + 4 * (16 - 1);
+        assert_eq!(big, 75);
+        assert_eq!(23 * MIN_REC + big, NAV_CHUNK_SIZE, "chunk 0 ends flush on its boundary");
+        let mut shape = vec![2usize; 23];
+        shape.push(16); // the record that ends flush at 512
+        shape.push(2); // and the one that must therefore be (1, 0)
+        let flush = ids_of(&shape);
+        let mut want: Vec<(u32, u32)> = (0..24).map(|o| (0, o)).collect();
+        want.push((1, 0));
+        assert_eq!(flush, want, "a flush chunk end restarts the ordinal just as a pushed one does");
+    }
 }
