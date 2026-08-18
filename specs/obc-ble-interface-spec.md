@@ -558,9 +558,17 @@ of them unchanged. Eight rules govern the sequence, and they are **normative**:
    **before any byte streams**. §5.4 addresses the writer; this is the receiver's
    half of the same sentence, and it exists because a device cannot hold a host
    to a MUST it merely read. An announced `total_len` that is not
-   `72 + 56 × Shard Count` is likewise refused at the descriptor, where
+   `72 + 64 × Shard Count` is likewise refused at the descriptor, where
    `Shard Count` is the manifest's own field and therefore counts **every**
    record — see rule 8, which is where that word did real damage.
+
+   The manifest a `mapSet` carries on this transport is **unbound**
+   ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)): every member `ObjectId` is `0`. This
+   protocol writes files to a FAT card, which has no object identities to mint,
+   and a device receiving a set here resolves its members by the derived §5.2
+   filenames exactly as it did before v3. Binding belongs to the flat store's own
+   object protocol, where the device answers each member's commit with the id it
+   assigned.
 3. **The terrain shard is its own type, and it precedes the manifest** (#1044).
    A set with elevation carries one OBCT raster
    ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role, stored as
@@ -664,13 +672,13 @@ of them unchanged. Eight rules govern the sequence, and they are **normative**:
    A device MUST NOT let a stored set's terrain record affect whether that set
    lists or mounts.
 8. **`Shard Count` counts every record, and the manifest's announced length
-   follows from that** (#1044). Rule 2's `72 + 56 × Shard Count` uses the
+   follows from that** (#1044). Rule 2's `72 + 64 × Shard Count` uses the
    manifest's own field, and [`OBCA_Spec.md` §5.2](OBCA_Spec.md) is explicit
    that the field counts **every** record — the `terrain` one included. So the
    length a device expects at the `mapSet` announce is
 
    ```text
-   72 + 56 × (mapShards committed + terrainShards committed)
+   72 + 64 × (mapShards committed + terrainShards committed)
    ```
 
    …computed from what **this upload session actually received**, not from the
@@ -680,7 +688,7 @@ of them unchanged. Eight rules govern the sequence, and they are **normative**:
 
    The reason this is a numbered rule rather than a clause is that it was a real
    and expensive bug. A host that built a terrain-bearing manifest and skipped
-   the raster announced 56 bytes more than a device counting only OBCM shards
+   the raster announced one record more than a device counting only OBCM shards
    could expect; the manifest was refused with `error` at the **last** transfer
    of a multi-gigabyte upload, every shard already on the card was swept at the
    next boot, and — because an announce-time refusal never reaches the glass —

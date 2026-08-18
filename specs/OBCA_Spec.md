@@ -21,10 +21,13 @@ new bytes on the card are the small [set manifest](#5-volume-sets) of §5.2 and,
 has elevation, the terrain shard §5.1 names. What OBCA adds is a set of *constraints* on how those
 files are produced, plus the discipline that makes assembling them cheap enough to run in a browser.
 
-> **Manifest v2** (EL4, #1072). The set manifest's `Version` byte is `2`: §5.2 gained the `terrain`
-> role, and §5.3's role and tiling rules count OBCM shards rather than records. It is a **hard cut** —
-> a v1 manifest is not read — because a v1 reader shown a v2 manifest would reject the unknown role
-> and refuse the whole set anyway, and the version byte at least says why.
+> **Manifest v3** (FS7, #1389). The set manifest's `Version` byte is `3`: every record in §5.2 now
+> carries its member's **`ObjectId`** (`FLAT_Store_Format.md` §3), so a set resolves through object
+> identity rather than through the filenames §5.2 derives. The record grew 56 → 64 bytes, which makes
+> it a **hard cut** in the strongest sense — a v2 reader handed v3 bytes would find every record but
+> the first at the wrong offset — so the version byte refuses the file in both directions. (v2 was
+> EL4, #1072: it added the `terrain` role and made §5.3's role and tiling rules count OBCM shards
+> rather than records. Both cuts follow the pre-release rule: no migration, no compatibility path.)
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -839,14 +842,14 @@ Two consequences shape the firmware work (P3b) and are worth stating as contract
 ### 5.2 The set manifest
 
 The manifest is parsed on the device, so it is fixed-layout, little-endian, and needs no
-allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Count` bytes.
+allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 64 × Shard Count` bytes.
 
 **Header (72 bytes)**
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCS"` |
-| 4 | Version | 1 | `uint8` | `0x02` (readers reject any other value) |
+| 4 | Version | 1 | `uint8` | `0x03` (readers reject any other value) |
 | 5 | OBCM Version | 1 | `uint8` | The OBCM version of every **OBCM** shard, e.g. `0x0C` |
 | 6 | Shard Count | 1 | `uint8` | `1..=32`; readers reject `0` or `> 32`. Counts **every** record, the terrain one included |
 | 7 | Core Shard | 1 | `uint8` | Index of the core shard (§5.1); `< Shard Count`, and it MUST name an OBCM record |
@@ -859,7 +862,7 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 | 32 | Set Id | 16 | `uint8[16]` | First 16 bytes of SHA-256 over the shard digests concatenated in index order |
 | 48 | Name | 24 | `char[24]` | Display name; pre-folded printable ASCII, `0xFF`-padded (the `OBCM_Spec.md` §7.3 name convention) |
 
-**Shard record (56 bytes each, `Shard Count` of them, starting at offset 72)**
+**Shard record (64 bytes each, `Shard Count` of them, starting at offset 72)**
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -872,6 +875,39 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 | 16 | Max Lon | 4 | `int32` | |
 | 20 | Bytes | 4 | `uint32` | Shard size in bytes. `uint32` is exactly right: the FAT32 ceiling is `4 GiB − 1 = u32::MAX` |
 | 24 | SHA-256 | 32 | `uint8[32]` | Digest of the shard's bytes |
+| 56 | Member Id | 8 | `uint64` | This member's `ObjectId` (`FLAT_Store_Format.md` §3), or `0` while the manifest is **unbound** — see below |
+
+**Members are named by identity.** Every record — the `terrain` one included — carries the
+`ObjectId` of the object that holds its bytes. That is what a reader resolves a set through: it opens
+`Shard Count` ids, not `Shard Count` filenames it computed from a card id and an ordinal. The v3 field
+was **appended** rather than fitted into the three reserved bytes (eight will not fit in three) and
+appended rather than inserted, so every field v2 defined keeps the offset it had; the whole byte-level
+diff between the two versions is "eight more bytes at the end of each record". 64 over a 72-byte header
+also puts every member id on an 8-byte boundary.
+
+**Bound and unbound.** An id is minted by the store on the card a set is sent to, and an assembler has
+never spoken to one — it may write a set that is sent to several cards, or to none. So a manifest has
+exactly two legal states:
+
+- **Unbound** — every member id is `0`, the reserved id that names no object. This is what an
+  assembler MUST write. It is a complete, §5.3-valid manifest; it simply names no objects yet.
+- **Bound** — every member id is non-zero, and no two records carry the same one. A client reaches
+  this by committing each member, learning the id the store assigned it, and patching that id into
+  the manifest bytes before the manifest itself is committed — which §5.4 already made the last
+  write of a set.
+
+A **half-bound** manifest — some ids named, some `0` — MUST be rejected (§5.3). It is the shape a
+client that died mid-binding leaves, and it is the dangerous one: it looks resolvable, and a reader
+that trusted it would open the members that were patched and silently lose the rest.
+
+Member ids are **not** required to ascend. Ids come from a never-reused monotonic cursor, but a set
+that shares a member with one already on the card reuses that object rather than storing its bytes
+twice, so an older id beside newer ones is deduplication working, not a fault.
+
+Member ids are **not** in the `Set Id` digest chain, and this is load-bearing twice over: `Set Id` is
+a *content* identity (two assemblies of the same cells with the same skin produce the same id) while
+ids are properties of one card's store, and keeping them out is what makes binding a legal in-place
+patch of eight bytes rather than a re-serialization.
 
 **The terrain record is the last one.** A manifest with a `Role == 3` record MUST carry exactly one,
 and it MUST be at index `Shard Count − 1`. That is not house style: readers take the leading records
@@ -880,8 +916,10 @@ else would renumber every shard after it. Keeping it last means a consumer that 
 terrain — every existing mount, dispatch and transfer path — needs no role filter and cannot hand a
 raster to an OBCM parser.
 
-**Filenames are derived, not stored.** Shard `k` of the set with card id `id` lives at the card
-root as
+**Filenames are derived, not stored**, and since v3 they are no longer the only way to reach a
+member. A reader resolving a set through the flat store opens the member ids above and never forms a
+name at all; the derived names below are what a reader of a **FAT card** has, and that path is
+unchanged. Shard `k` of the set with card id `id` lives at the card root as
 
 ```
 MS<id>S<kk>.OBM       e.g.  MS7S00.OBM, MS7S01.OBM     (id: 1..3 digits, kk: 2 digits, 00..31)
@@ -929,10 +967,12 @@ a set that does not validate does not mount (§5.4).
 Below, an **OBCM shard** is a record whose `Role` is `0`, `1` or `2`, and the *shard count* the rules
 speak of is the number of those — `Shard Count` minus the terrain record, if there is one.
 
-- length is exactly `72 + 56 × Shard Count`; magic is `OBCS`; `Version == 2`; `Flags == 0`;
+- length is exactly `72 + 64 × Shard Count`; magic is `OBCS`; `Version == 3`; `Flags == 0`;
 - `1 ≤ Shard Count ≤ 32`; `Core Shard < Shard Count`; the record at `Core Shard` has `Role == 0` and
   is the **only** record with `Role == 0`; every other record has `Role == 1`, `2` or `3`;
 - at most one record has `Role == 3`, and if one does it is the **last** record (§5.2);
+- the member ids are either **all** `0` (unbound) or **all** non-zero and pairwise distinct (bound);
+  a half-bound manifest, or one naming a single object twice, is refused (§5.2);
 - if there is exactly one OBCM shard it is the core (§5.5); otherwise there is **at least one**
   shard of each role the schema's bands name — at least one `Role == 2` and at least one
   `Role == 1` at the v1 table — because a role with no shard is a map missing whole zoom levels. The
@@ -944,8 +984,16 @@ speak of is the number of those — `Shard Count` minus the terrain record, if t
   assembly bbox (§5.1), which for a single shard of that role means its bbox equals the assembly
   bbox. The terrain record takes no part in that tiling — it spans the whole assembly, so counting it
   would read as an overlapping shard of some role;
-- every **OBCM shard** file named by §5.2 exists, has exactly the recorded `Bytes`, opens as OBCM
-  with the recorded `OBCM Version`, and has a header bbox equal to its recorded bbox.
+- every **OBCM shard** member exists, has exactly the recorded `Bytes`, opens as OBCM with the
+  recorded `OBCM Version`, and has a header bbox equal to its recorded bbox. A reader resolving by
+  identity reaches each member by its `Member Id`; one reading a FAT card reaches it by the derived
+  §5.2 filename. Which of the two is a property of the reader, not of the manifest.
+
+**Being bound is a mount precondition, not a validity rule.** An unbound manifest is valid — an
+assembler writes nothing else — so it MUST parse. But a reader that resolves members **by identity**
+MUST refuse to mount one: every id it would open is `0`, which names no object. A reader that resolves
+by the derived §5.2 filenames needs no id and is unaffected either way, which is what lets the two
+resolution paths coexist on one format while the device's own storage is migrated.
 
 The `terrain` record is deliberately **not** in that list, and this is the one place the two halves
 of §5.3 have to be read together rather than as a checklist:
@@ -1003,7 +1051,7 @@ touched all become possible later without a manifest change.
 >
 > **§5.2's `Shard Count` reaches across that seam**, and it is worth restating where the count is
 > defined rather than only where it is checked (#1044). The field counts every record, so the
-> manifest of a set with terrain is `72 + 56 × (N + 1)` bytes for `N` OBCM shards. A device checks
+> manifest of a set with terrain is `72 + 64 × (N + 1)` bytes for `N` OBCM shards. A device checks
 > that length at the manifest's *announce*, against the files this upload actually delivered — which
 > is why the terrain shard is transferred under its own object type and before the manifest, rather
 > than skipped. A host that omits it and sends the longer manifest anyway loses the whole set at its
