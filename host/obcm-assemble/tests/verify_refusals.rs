@@ -153,13 +153,17 @@ fn refuses(what: &str, wants: &str, break_it: impl Fn(&mut Vec<u8>)) {
 }
 
 /// Where the §8.2 node chunks begin, and how many there are.
+///
+/// Through the directory's own `data_start`, which is `align_up(index_offset + node_count × 4, U)`
+/// since v14 — spelling it out as the bare sum here would land this suite a few bytes before the
+/// first chunk, find no record at all, and turn every mutation below into a silent no-op.
 fn node_chunks(bytes: &[u8]) -> (usize, usize, usize) {
     let src = MemorySource(bytes.to_vec());
     let tables = MapTables::parse(&src).expect("the fixture parses");
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
     let dir = *reader.nav_directory();
-    (dir.index_offset + dir.node_count * 4, dir.chunk_count, dir.chunk_size)
+    (dir.data_start().expect("the fixture's nav directory resolves"), dir.chunk_count, dir.chunk_size)
 }
 
 /// Absolute file offsets of every §8.3 record, in chunk order — the addresses a mutation names.

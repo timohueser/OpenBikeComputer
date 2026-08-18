@@ -77,7 +77,31 @@ pub const SPILL_PER_NAV_BYTE: f64 = 2.5;
 /// rewritten to about the size the cells' own had, so the set comes out the size of its inputs:
 /// measured 0.9988 (freiburg) and 0.9989 (baden-württemberg). Kept at `1.0`, which rounds the
 /// right way.
+///
+/// # Where OBCM v14's filler lands in this ratio (`OBCM_Spec.md` §1.2)
+///
+/// §1.2 quantifies two costs, and the coefficient absorbs them for two different reasons:
+///
+/// * **Per chunk** — a §5 geometry chunk is padded to the next `U = 16` boundary, `(U-1)/2 = 7.5`
+///   bytes on average, which is **~0.47 %** at the measured average 1,600-byte chunk and at most
+///   1.5 % at the 512-byte floor. It is on **both sides of this ratio**: the cells the builder
+///   downloads are v14 too, so a chunk arrives already padded and the graft copies its bytes
+///   verbatim (`OBCA_Spec.md` §2.3). The numerator and the denominator carry the same filler, so the
+///   ratio is unmoved — which is why the measured 0.9988 did not shift with the version.
+/// * **Per region and per section boundary** — one gap of `0..U-1` bytes each, about **50** of them
+///   in a full-ladder map (two per LOD, plus the header, the style and LOD tables, the six POI
+///   categories, the hours pool, the nav section's six). Those are the assembly's own and appear
+///   only in the numerator, and they come to a few hundred bytes: `50 × 15 = 750 B` worst case,
+///   which is `3 × 10⁻⁶` of the freiburg selection and vanishes against any real one. Rounding
+///   `0.9989` up to `1.0` gives back 0.11 % — 315 KB on freiburg, over 400× what the region gaps can
+///   consume, and the margin only widens with the selection — so they are covered, not ignored.
 pub const OUTPUT_PER_CELL_BYTE: f64 = 1.0;
+
+/// The §1.2 region gaps a full-ladder assembly adds over its inputs, worst case: about 50 boundaries
+/// at `U - 1` bytes each. Stated so [`the_rounding_covers_the_v14_region_gaps`] can check the claim
+/// above rather than leave it as a sentence.
+#[cfg(test)]
+const REGION_GAP_BYTES: f64 = 50.0 * 15.0;
 
 /// One block cache's residency (`driver.rs`'s default geometry). Two exist on the download path —
 /// the input cells' and the sink read-back's.
@@ -346,6 +370,29 @@ mod tests {
         // …and the floor is not so fat that it re-refuses what the epic exists to allow.
         let ceiling = 128.0 * 1024.0 * 1024.0;
         assert!(ENGINE_FLOOR < ceiling, "{ENGINE_FLOOR} has drifted past the {ceiling} sanity line");
+    }
+
+    /// v14's filler, priced against [`OUTPUT_PER_CELL_BYTE`]'s rounding.
+    ///
+    /// The per-chunk share is on both sides of the ratio — the downloaded cells are v14 too and
+    /// their chunks are copied verbatim — so the only term this coefficient has to absorb is the
+    /// per-region one, and the 0.11 % the rounding already gives back covers it by a wide margin on
+    /// every selection the builder can offer.
+    #[test]
+    fn the_rounding_covers_the_v14_region_gaps() {
+        // The measured ratio the coefficient rounds up from, and the headroom that buys.
+        let measured = 0.9989;
+        for cells in [catalog::FREIBURG_CELLS, catalog::BW_CELLS, catalog::DACH_CELLS] {
+            let headroom = (OUTPUT_PER_CELL_BYTE - measured) * cells;
+            assert!(
+                headroom > 400.0 * REGION_GAP_BYTES,
+                "{cells} B of cells: {headroom} B of rounding headroom is not a comfortable margin over the \
+                 {REGION_GAP_BYTES} B of §1.2 region gaps"
+            );
+        }
+        // …and the per-chunk share is genuinely not in the numerator alone: 0.47 % of a region's
+        // geometry would swamp that headroom if the graft had to *add* it rather than copy it.
+        assert!(0.0047 * catalog::FREIBURG_CELLS > (OUTPUT_PER_CELL_BYTE - measured) * catalog::FREIBURG_CELLS);
     }
 
     /// Degenerate inputs must not produce a nonsense verdict.

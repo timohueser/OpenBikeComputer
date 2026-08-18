@@ -1427,7 +1427,9 @@ fn a_malformed_cell_is_a_format_error() {
 fn the_skin_is_stamped_onto_the_output() {
     let (packed, grafted, _, _) = both("skin");
     let table = |map: &[u8]| -> Vec<u8> {
-        let style_offset = u32::from_le_bytes(map[21..25].try_into().unwrap()) as usize;
+        // Through the file's own `Offset Scale` (§1.1): since v14 `Style Offset` counts units, and
+        // reading it as bytes lands inside the header rather than obviously outside the file.
+        let style_offset = obcm_assemble::shard::header_style_offset(map).expect("the map states its style offset");
         let count = map[style_offset] as usize;
         map[style_offset..style_offset + 1 + count * obc_formats::obcm::STYLE_RECORD_LEN].to_vec()
     };

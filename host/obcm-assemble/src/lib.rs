@@ -913,13 +913,22 @@ fn split_boxes(
 
 /// The bytes `bands` together contribute inside `box_` — index nodes, offset table and chunks of the
 /// LODs they carry. Exactly the sum §5.7 says a consumer can compute before fetching anything.
+///
+/// `Chunk Units Total` is `OBCM_Spec.md` §5.1's last offset-table entry, so the chunk term already
+/// carries the `~0.47 %` of §1.2 filler each cell's own chunks were padded with — it is copied
+/// verbatim into the assembly and is neither added nor removed here. What this deliberately leaves
+/// out is the couple of dozen *region* gaps, at most `U - 1` bytes each: they are a property of the
+/// output's structure rather than of the cells, and a few hundred bytes cannot move a split whose
+/// unit is the target shard size.
 fn bands_bytes_in(cells: &[Cell<'_>], box_: AlignedBox, bands: &[&Band]) -> Result<u64> {
     let mut total = 0u64;
     for band in bands {
         for c in cells.iter().filter(|c| c.band == band.id && box_.contains_cell(c.id)) {
             for &lod in &band.lods {
                 let l = c.lod(lod)?;
-                total += l.node_count as u64 * 4 + (l.chunk_count as u64 + 1) * 4 + l.chunk_bytes_total as u64;
+                total += l.node_count as u64 * 4
+                    + (l.chunk_count as u64 + 1) * 4
+                    + l.chunk_units_total as u64 * shard::SCALE.unit();
             }
         }
     }
