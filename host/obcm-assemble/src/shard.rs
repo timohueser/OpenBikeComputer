@@ -25,9 +25,24 @@ use crate::schema::{BandRole, StyleRecord};
 use crate::scratch::ScratchStore;
 use crate::{Error, Result};
 
-/// The hard per-file ceiling: FAT32's `4 GiB − 1 B`, which is also `u32::MAX` and therefore also
-/// OBCM's own offset ceiling (§5).
-pub const FILE_CEILING: u64 = u32::MAX as u64;
+/// The hard per-file ceiling: **`OBCM_Spec.md` §1.1's addressable interior at this engine's
+/// [`SCALE`]** — `2^32 units × U`, which at `U = 16` is `2^36` B = 64 GiB.
+///
+/// It is derived rather than written down, because §1.1 states the producer rule in exactly these
+/// terms: "the scale MUST cover the file it writes — `2^32 × U` MUST be at least the file's total
+/// length", the largest legal file being exactly that many bytes. [`OffsetScale::covers`] is the
+/// same sentence as a predicate, and this constant is its boundary.
+///
+/// **It was `u32::MAX` through v13**, where a byte offset was a bare `uint32` and a file therefore
+/// stopped at 4 GiB — the same number FAT32's per-file cap happened to land on, which is why the
+/// old comment here named both and why sets exist at all (§5.5). v14 scales the offsets and the
+/// flat store replaced FAT, so *both* of those 4 GiB walls are gone and the interior is sixteen
+/// times what it was. §8's edge pool was already built for this number:
+/// `NAV_EDGE_MAX_CHUNKS × NAV_CHUNK_SIZE == 1 << 36` is pinned in `obc-formats` as "the pool
+/// reaches the interior".
+pub const FILE_CEILING: u64 = (1u64 << 32) * SCALE.unit();
+const _: () = assert!(SCALE.covers(FILE_CEILING), "the ceiling is the largest file the scale covers");
+const _: () = assert!(!SCALE.covers(FILE_CEILING + 1), "and one byte past it is not covered");
 
 /// The `Offset Scale` every shard this engine writes carries (`OBCM_Spec.md` §1.1): `U = 16`, the
 /// same byte `obc-pack` writes, so a cell and the assembly it lands in count offsets in one unit.
@@ -79,8 +94,14 @@ pub fn scaled(at: u64) -> Result<u32> {
 /// section boundaries, one 512-byte sector for §8.1's alignment runs. Sliced, never allocated.
 pub(crate) const FILLER_RUN: [u8; obc_formats::obcm::NAV_CHUNK_SIZE] = [FILLER; obc_formats::obcm::NAV_CHUNK_SIZE];
 
-/// Where a producer SHOULD warn about the core (§5.7): ≈ 3.5 GiB, naming the nav graph.
-pub const CORE_WARN: u64 = 3_758_096_384;
+/// Where a producer SHOULD warn about the core (OBCA §5.7), naming the nav graph.
+///
+/// §5.7 wrote this as "≈ 3.5 GiB" against a `4 GiB − 1 B` ceiling — seven eighths of the wall, i.e.
+/// "you are close". [`FILE_CEILING`] moved sixteen-fold in v14, so the *number* 3.5 GiB stopped
+/// meaning "close" and started meaning "a twentieth of the way there"; keeping it would have made
+/// the warning fire on maps with 60 GiB of headroom left. The **proportion** is what §5.7 was
+/// expressing, so that is what is preserved: seven eighths of the ceiling, 56 GiB at `U = 16`.
+pub const CORE_WARN: u64 = FILE_CEILING / 8 * 7;
 
 /// Manifest sizes (§5.2), taken from the format authority rather than restated. They were literals
 /// here until v3 moved the record width, at which point two of the three numbers this file computes
@@ -241,16 +262,19 @@ pub fn write(
     let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_projection)?;
     if l.total > FILE_CEILING {
         return Err(Error::Capacity(format!(
-            "shard {} would be {} bytes, past the {FILE_CEILING}-byte FAT32/uint32 ceiling — reduce the coverage \
-             (OBCA §5.7)",
-            plan.index, l.total
+            "shard {} would be {} bytes, past the {FILE_CEILING}-byte interior `Offset Scale` {} covers \
+             (OBCM §1.1) — reduce the coverage (OBCA §5.7)",
+            plan.index,
+            l.total,
+            SCALE.log2()
         )));
     }
-    // `OBCM_Spec.md` §1.1's one producer rule: **the scale MUST cover the file it writes**. It
-    // cannot fail behind the ceiling above — 4 GiB is a sixteenth of what `U = 16` addresses — and
-    // that is the point of asserting it here rather than trusting the arithmetic: a reader that
-    // never resolves the last section never sees a thing wrong, so the producer is the only party
-    // positioned to notice, and the check must outlive whichever of the two numbers moves first.
+    // `OBCM_Spec.md` §1.1's one producer rule: **the scale MUST cover the file it writes**. The
+    // ceiling above is now *derived from* this rule rather than independent of it, so the two can
+    // no longer disagree — which is why this stays: it is the rule stated where the bytes are, and
+    // it is the check that survives if the ceiling above is ever re-expressed. A reader that never
+    // resolves the last section never sees a thing wrong, so the producer is the only party
+    // positioned to notice.
     if !SCALE.covers(l.total) {
         return Err(Error::Capacity(format!(
             "shard {} would be {} bytes, past the interior `Offset Scale` {} addresses (OBCM §1.1)",
@@ -767,7 +791,9 @@ mod tests {
     #[test]
     fn a_layout_past_the_ceiling_is_refused_rather_than_wrapped() {
         let mut p = plan(0, BandRole::Geometry, false);
-        p.lods = vec![LodPlan { node_count: 1, chunk_bytes: 3_000_000_000, ..LodPlan::empty(0, None, 4096) }; 2];
+        // Two LODs of 40 GB each: past v14's 64 GiB interior, where v13's test only had to clear
+        // 4 GiB. Raising these numbers with the ceiling is the point of the test.
+        p.lods = vec![LodPlan { node_count: 1, chunk_bytes: 40_000_000_000, ..LodPlan::empty(0, None, 4096) }; 2];
         // The empty pair this non-core shard carries, which is what `write` will project against.
         let poi = crate::poi::empty_layout(p.box_.ubox());
         let nav = MergedNav::empty(Default::default());
@@ -782,7 +808,7 @@ mod tests {
         // and its chunks.
         let prefix = align_up(align_up(STYLE_OFFSET) + 2 * LOD_ENTRY_LEN as u64);
         assert_eq!(prefix, 112);
-        assert_eq!(projected, prefix + 2 * (3_000_000_000 + 4 + 4 + 8) + poi_len + nav_len);
+        assert_eq!(projected, prefix + 2 * (40_000_000_000 + 4 + 4 + 8) + poi_len + nav_len);
         assert!(projected > FILE_CEILING);
 
         let mut sink = |_: &[u8]| -> Result<()> { panic!("a refused shard writes no bytes") };
