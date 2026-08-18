@@ -30,19 +30,31 @@
 //! | `free`, `holds`, `reservations` | [`RefCell`] | 8 KiB and two tables of rows — too big to copy through a `Cell` |
 //!
 //! **2. Card commands run with the state unborrowed.** Every `RefCell` borrow in this module is
-//! taken, used and dropped inside a window that issues no card command — with exactly one exception,
-//! named in rule 3. A commit's ~36 write commands, a mount's scan, a journal's page flushes and every
-//! `read` therefore run holding **nothing**: the addresses they need are `Copy` values taken out of a
-//! cell first ([`Hold`], [`RideState`], [`Served`]), and the device is reached through a plain `&`.
-//! That is `FLAT_Store_Protocol.md`'s "per card command, never per commit" granularity, and it is the
-//! property a storage task needs in order to interleave a render read into a commit's gaps.
+//! taken, used and dropped inside a window that issues no card command — with **two** exceptions, both
+//! named below. A commit's ~36 write commands, a journal's page flushes and every `read` therefore run
+//! holding **nothing**: the addresses they need are `Copy` values taken out of a cell first
+//! ([`Hold`], [`RideState`], [`Served`]), and the device is reached through a plain `&`. That is
+//! `FLAT_Store_Protocol.md`'s "per card command, never per commit" granularity, and it is the property
+//! a storage task needs in order to interleave a render read into a commit's gaps.
 //!
-//! **3. The one exception is `reservations`, and it is safe because no reader needs it.** A
+//! [`granularity`](super::granularity) is where this stops being a claim: it re-enters the store from
+//! inside the block driver on every card command and pins what is served.
+//!
+//! **3. The first exception is `reservations`, and it is safe because no reader needs it.** A
 //! [`write`](Store::write) streams the caller's bytes through a row's staging block, and a commit
 //! flushes those blocks; both hold the reservations borrow across the card commands they issue, because
 //! releasing it between them would mean copying a 512-byte staging block onto a frame this module
 //! measures. Nothing on the read path — `open`, `read`, `entries`, `handle_len` — touches
-//! `reservations`, so that borrow can block only another writer, and writers serialize anyway.
+//! `reservations`, so the only caller that borrow can reach is another writer. It does not *block* one
+//! — a `RefCell` has no queue; it would **panic**, which on the device is a hard fault. The safety
+//! therefore rests on writers being serialized by construction (`FLAT_Store_Protocol.md` §1 serves one
+//! transfer at a time, and slice 3's storage task owns the write path), not on the cell arbitrating.
+//! Measured cost: one command per reservation, not a phase.
+//!
+//! **4. The second exception is [`load`](FlatStore::load), and it is the constructor.** It holds the
+//! free map across its whole catalog scan. Nothing else can reach a store that `mount` has not
+//! returned yet, so there is no borrow to contend with — but it is an exception to rule 2 as stated,
+//! and counting it as one is cheaper than explaining every time why it is not.
 //!
 //! **Re-entrancy is structurally impossible, which is why the borrows are `borrow_mut` and not
 //! `try_borrow_mut`.** A borrow panic on the device is a hard fault, so the guarantee has to be
@@ -758,6 +770,20 @@ impl<D: BlockDevice> FlatStore<D> {
         &self.dev
     }
 
+    /// **Rule 2 broken on purpose**: one card command issued with the free map held.
+    ///
+    /// The positive control for [`granularity`](super::granularity), and it earns its five lines. That
+    /// module enforces rule 2 by re-entering the store from inside the block driver and recording what
+    /// is refused — but a probe that quietly stopped re-entering would report zero refusals forever and
+    /// read as a pass. This gives it something it *must* catch. Nothing else calls it, and it is
+    /// `cfg(test)`, so no device build has it.
+    #[cfg(test)]
+    pub(super) fn hold_free_across_a_command(&self) {
+        let _free = self.free.borrow_mut();
+        let mut block = [0u8; BLOCK];
+        let _ = read_blocks(&self.dev, SUPERBLOCK[0], &mut block);
+    }
+
     /// The one method that takes `&mut self`, and the reason `store`, `geometry` and `extents` need
     /// no cell: it runs inside [`mount`](Self::mount) on a store nothing else can reach yet, and those
     /// three are never written again.
@@ -846,9 +872,11 @@ impl<D: BlockDevice> FlatStore<D> {
     /// bitmap built from the ranges as they go past. A failure leaves the caller free to try the
     /// next candidate — the bitmap is rebuilt from scratch each attempt.
     ///
-    /// The free map is borrowed for the whole scan rather than per window, which looks like rule 2's
-    /// exception and is not one: this runs inside [`mount`](Self::mount), before the store exists for
-    /// anyone else to reach, so there is no borrow to contend with.
+    /// The free map is borrowed for the whole scan rather than per window, which is the module docs'
+    /// **rule 4**: an exception to rule 2, and a safe one only because this runs inside
+    /// [`mount`](Self::mount), before the store exists for anyone else to reach. It is the one place a
+    /// borrow spans card commands where the reason is "nobody can be here" rather than "nobody who
+    /// could be here wants this cell", which is why it is counted separately from rule 3's.
     fn load(&self, copy: usize, gate: &Gate) -> Result<Loaded, StoreError> {
         let mut free = self.free.borrow_mut();
         free.reset(self.extents);
@@ -1170,9 +1198,10 @@ impl<D: BlockDevice> FlatStore<D> {
     /// them — a RAM-only hold that needs no durable record, because after a reboot the extents are
     /// free and there is no reader left to be surprised.
     fn release(&self, plan: &[Resolved]) {
-        // Two cells at once and no card command between them: the only place in this module that holds
-        // a second borrow while it has one, which is admissible because neither is `holds`' or `free`'s
-        // own method calling back into the store.
+        // Two cells at once and no card command between them — as in `allocate`, which holds `free`
+        // and `reservations` together for the same reason. Admissible because the two are different
+        // cells and neither `holds`' nor `free`'s own methods call back into the store, so there is
+        // nothing here that could ask for either of them a second time.
         let holds = self.holds.borrow();
         let mut free = self.free.borrow_mut();
         for resolved in plan {
@@ -1448,7 +1477,18 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             // of the amended length — while narrowing them here would lose the trimmed tail, which
             // `release` deferred to `close` precisely because this row exists. Nothing would free it
             // until the next mount.
-            hold.payload_len = entry.meta.payload_len;
+            //
+            // **`max`, not assignment, and this PR is what made the difference matter.** The row is
+            // shared by every reader of the key, so a plain assignment lets a *later* joiner shorten
+            // what an *earlier* one is already serving. Before the seam went `&self` that sequence was
+            // unreachable — an amend needed `&mut`, and a live source held `&` — so the only writer of
+            // this field was a ride finalising, which only ever grows it. Now `source` → trimming
+            // amend → second `open` is expressible, and assignment would give the original reader
+            // `Err(Io)` at offsets below the `len()` it reported: a silent truncation, and exactly the
+            // "never to *silent*" line `source`'s docs draw. Taking the maximum keeps the
+            // adopt-the-longer intent and can never over-serve, because an amend only ever trims and
+            // the row's ranges are the wider, first-resolved ones.
+            hold.payload_len = hold.payload_len.max(entry.meta.payload_len);
             return Ok(Handle { slot: slot as u8, id: entry.meta.id, revision: entry.meta.revision });
         }
         // A full table is transient: some other reader is holding every row, and the answer is
@@ -1498,11 +1538,21 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     }
 
     /// The listing snapshots the copy and the count it was built against, and holds no cell borrow —
-    /// which is what lets an iterator coexist with a commit now that both take `&self`. What it costs
-    /// is stated rather than hidden: an iterator held **across** a commit keeps walking the copy the
-    /// store was serving when it was made. That copy is intact until the commit *after* the one that
-    /// displaced it, so the listing stays well-formed and simply reads one commit stale. Every caller
-    /// in the tree drains its listing inside the request that asked for it.
+    /// which is what lets an iterator coexist with a commit now that both take `&self`.
+    ///
+    /// **It also snapshots the commit sequence, and stops if the store moves off it.** That case did
+    /// not exist before the seam went `&self`: a listing could not outlive a commit, because the
+    /// commit needed `&mut`. Now it can, and the untended version of this was genuinely unsafe to
+    /// leave — one commit later the snapshotted copy is still intact, so the walk reads one commit
+    /// stale and looks fine; **two** commits later that copy has been rewritten underneath the cursor,
+    /// and the walk would serve the *new* generation's entries mid-listing with
+    /// [`entries_ok`](Self::entries_ok) still answering `true`. A listing that silently splices two
+    /// catalogs together and calls itself complete is exactly the failure this seam refuses
+    /// everywhere else, so the sequence check turns it into the short listing it already knows how to
+    /// report. Cost: two words on the iterator and one `Cell` read per entry.
+    ///
+    /// Every caller in the tree drains its listing inside the request that asked for it, so nothing
+    /// observes this today; it is here so that nothing has to.
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
         self.listing_failed.set(false);
         let served = self.served.get();
@@ -1512,6 +1562,8 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             buf: [0; BLOCK],
             index: 0,
             count: served.entry_count,
+            sequence: served.sequence,
+            served: &self.served,
             failed: &self.listing_failed,
         }
     }
@@ -1708,6 +1760,10 @@ struct Entries<'a, D> {
     buf: [u8; BLOCK],
     index: u16,
     count: u16,
+    /// The commit sequence this listing was built against. See [`Store::entries`] for why a listing
+    /// that outlives it has to stop rather than carry on.
+    sequence: u64,
+    served: &'a Cell<Served>,
     failed: &'a Cell<bool>,
 }
 
@@ -1716,6 +1772,15 @@ impl<D: BlockDevice> Iterator for Entries<'_, D> {
 
     fn next(&mut self) -> Option<EntryMeta> {
         if self.index >= self.count {
+            return None;
+        }
+        // A commit has landed since this listing was made, so the copy under the cursor is no longer
+        // the one the store is serving and will be rewritten by the next commit. Reported through the
+        // same channel a media failure is — the listing is short, and `entries_ok` says so — because
+        // to the caller it is the same fact: this list is not the catalog.
+        if self.served.get().sequence != self.sequence {
+            self.failed.set(true);
+            self.index = self.count;
             return None;
         }
         // A read failure ends the listing, because the signature has nowhere to put an error — but it

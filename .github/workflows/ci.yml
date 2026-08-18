@@ -395,9 +395,16 @@ jobs:
       # 2. The bench: 22,528 B in `initialize`, which chains three of those return slots. Pinned at
       #    36,864 — the measurement it was set from was 33,024, and the pin is deliberately *not*
       #    tightened to the new figure: the ratchet exists against growth, and CI's toolchain is not
-      #    the host these were measured on. FS7 slice 1's `const` initializers are what removed the
-      #    10,496 B, by taking the blank tables out of each chained slot's temporaries. On glass the
-      #    whole phase-one run reached 58,096 B of high-water, on a bench that holds two stores at once.
+      #    the host these were measured on. On glass the whole phase-one run reached 58,096 B of
+      #    high-water, on a bench that holds two stores at once.
+      #
+      #    Where FS7 slice 1's 10,496 B saving here came from is **recorded as observed, not
+      #    explained**, because the two obvious credits are both wrong and a wrong mechanism in this
+      #    comment is worse than none. Isolated by building each combination: reverting the `const`
+      #    blocks leaves this symbol at 22,528 (they are worth 6,208 B on `mount` and nothing here),
+      #    and reverting the bench's own `&mut FlatStore` -> `&FlatStore` leaves it at 22,528 too. What
+      #    remains is the store-side cell rework changing how `FlatStore::initialize`'s chained
+      #    store-sized return slots lay out. If this figure ever regresses, start from that.
       - name: "obc-fw-nrf54l: flat store frame ceiling"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
