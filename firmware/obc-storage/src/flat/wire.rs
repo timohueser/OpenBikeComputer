@@ -168,19 +168,19 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         v4::ObjectId(FlatStore::next_object_id(self).0)
     }
 
-    fn allocate(&mut self, bytes: u64) -> Result<Allocation, v4::StoreError> {
+    fn allocate(&self, bytes: u64) -> Result<Allocation, v4::StoreError> {
         Store::allocate(self, bytes).map_err(error_out)
     }
 
-    fn write(&mut self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), v4::StoreError> {
+    fn write(&self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), v4::StoreError> {
         Store::write(self, allocation, bytes).map_err(error_out)
     }
 
-    fn cancel(&mut self, allocation: Allocation) {
+    fn cancel(&self, allocation: Allocation) {
         FlatStore::cancel(self, allocation);
     }
 
-    fn commit(&mut self, mutations: &[v4::Mutation<Allocation>]) -> Result<u64, v4::StoreError> {
+    fn commit(&self, mutations: &[v4::Mutation<Allocation>]) -> Result<u64, v4::StoreError> {
         if mutations.len() > MAX_BATCH {
             return Err(v4::StoreError::Invalid);
         }
@@ -193,7 +193,7 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         Store::commit(self, &batch).map_err(error_out)
     }
 
-    fn open(&mut self, id: v4::ObjectId, revision: Option<v4::Revision>) -> Result<Handle, v4::StoreError> {
+    fn open(&self, id: v4::ObjectId, revision: Option<v4::Revision>) -> Result<Handle, v4::StoreError> {
         Store::open(self, ObjectId(id.0), revision.map(|revision| Revision(revision.0))).map_err(error_out)
     }
 
@@ -201,7 +201,7 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         Store::read(self, handle, offset, buf).map_err(error_out)
     }
 
-    fn close(&mut self, handle: Handle) {
+    fn close(&self, handle: Handle) {
         FlatStore::close(self, handle);
     }
 

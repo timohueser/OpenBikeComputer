@@ -127,7 +127,7 @@ impl<D: BlockDevice> Device<D> {
 
     /// The same on a device whose policy hooks are filled in.
     pub fn control_with<P: Policy>(&mut self, record: &[u8], policy: &mut P) -> Wire {
-        let first = self.engine.on_control(&mut self.store, policy, record, &mut self.out);
+        let first = self.engine.on_control(&self.store, policy, record, &mut self.out);
         self.drive(first, usize::MAX)
     }
 
@@ -139,25 +139,25 @@ impl<D: BlockDevice> Device<D> {
 
     /// Both at once, for a flow that arms an update and is then cut.
     pub fn control_with_upto<P: Policy>(&mut self, record: &[u8], policy: &mut P, budget: usize) -> Wire {
-        let first = self.engine.on_control(&mut self.store, policy, record, &mut self.out);
+        let first = self.engine.on_control(&self.store, policy, record, &mut self.out);
         self.drive(first, budget)
     }
 
     /// Pumps a live transfer until it goes quiet.
     pub fn pump(&mut self) -> Wire {
-        let first = self.engine.poll(&mut self.store, &mut self.out);
+        let first = self.engine.poll(&self.store, &mut self.out);
         self.drive(first, usize::MAX)
     }
 
     /// Pumps exactly one record out of it.
     pub fn pump_once(&mut self) -> Wire {
-        let first = self.engine.poll(&mut self.store, &mut self.out);
+        let first = self.engine.poll(&self.store, &mut self.out);
         self.drive(first, 1)
     }
 
     /// One stream record.
     pub fn stream(&mut self, record: &[u8]) -> Wire {
-        let first = self.engine.on_stream(&mut self.store, &mut OpenPolicy, record, &mut self.out);
+        let first = self.engine.on_stream(&self.store, &mut OpenPolicy, record, &mut self.out);
         self.drive(first, usize::MAX)
     }
 
@@ -168,12 +168,12 @@ impl<D: BlockDevice> Device<D> {
 
     /// The link went away.
     pub fn link_lost(&mut self) {
-        self.engine.on_link_lost(&mut self.store);
+        self.engine.on_link_lost(&self.store);
     }
 
     /// The device drops the live transfer of its own accord (§3.8's other direction).
     pub fn cancel_live(&mut self, cause: CancelCause) -> bool {
-        self.engine.cancel_live(&mut self.store, cause)
+        self.engine.cancel_live(&self.store, cause)
     }
 
     /// True when nothing is live and nothing is owed.
@@ -209,7 +209,7 @@ impl<D: BlockDevice> Device<D> {
             if sent >= budget {
                 break;
             }
-            reaction = self.engine.poll(&mut self.store, &mut self.out);
+            reaction = self.engine.poll(&self.store, &mut self.out);
         }
         wire
     }
@@ -218,8 +218,8 @@ impl<D: BlockDevice> Device<D> {
     /// something on it without spending a transfer on it.
     pub fn seed(&mut self, kind: ObjectKind, bytes: &[u8], name: &str) -> (u64, u64) {
         let id = FlatStore::next_object_id(&self.store);
-        let mut allocation = Store::allocate(&mut self.store, bytes.len() as u64).expect("the seed allocates");
-        Store::write(&mut self.store, &mut allocation, bytes).expect("the seed writes");
+        let mut allocation = Store::allocate(&self.store, bytes.len() as u64).expect("the seed allocates");
+        Store::write(&self.store, &mut allocation, bytes).expect("the seed writes");
         let meta = EntryMeta {
             id,
             revision: Revision(1),
@@ -229,7 +229,7 @@ impl<D: BlockDevice> Device<D> {
             payload_crc: crc32(bytes),
             name: DisplayName::new(name).expect("a seed name"),
         };
-        Store::commit(&mut self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
+        Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
             .expect("the seed commits");
         (id.0, 1)
     }
@@ -237,7 +237,7 @@ impl<D: BlockDevice> Device<D> {
     /// Publishes the one entry a client may never touch: a ride, mid-recording, over a reserve.
     pub fn seed_recording(&mut self, reserve: u64) -> (u64, u64) {
         let id = FlatStore::next_object_id(&self.store);
-        let allocation = Store::allocate(&mut self.store, reserve).expect("the ride reserves");
+        let allocation = Store::allocate(&self.store, reserve).expect("the ride reserves");
         let meta = EntryMeta {
             id,
             revision: Revision(1),
@@ -247,19 +247,19 @@ impl<D: BlockDevice> Device<D> {
             payload_crc: 0,
             name: DisplayName::default(),
         };
-        Store::commit(&mut self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
+        Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
             .expect("the ride starts");
         (id.0, 1)
     }
 
     /// Takes a reservation row out from under the engine, which is how a full table is produced.
     pub fn hog(&mut self, bytes: u64) -> obc_storage::flat::Allocation {
-        Store::allocate(&mut self.store, bytes).expect("a row was free")
+        Store::allocate(&self.store, bytes).expect("a row was free")
     }
 
     /// Gives one back.
     pub fn release(&mut self, allocation: obc_storage::flat::Allocation) {
-        FlatStore::cancel(&mut self.store, allocation);
+        FlatStore::cancel(&self.store, allocation);
     }
 
     /// Free extents, which is what a leaked reservation or a leaked hold shows up in.
@@ -288,7 +288,7 @@ impl<D: BlockDevice> Device<D> {
             .map(|meta| Mutation::Remove { id: meta.id, revision: meta.revision })
             .collect();
         assert!(!batch.is_empty(), "the probe names an entry that is not there");
-        Store::commit(&mut self.store, &batch).expect("the probe removes");
+        Store::commit(&self.store, &batch).expect("the probe removes");
         self.free_extents() - before
     }
 }

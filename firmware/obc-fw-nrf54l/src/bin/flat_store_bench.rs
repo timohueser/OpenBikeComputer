@@ -566,7 +566,7 @@ fn measure_boot(label: &str, plan: Option<u64>) -> Boot {
 /// commit is on the clock, because it is the one §5.5 puts a figure on. Returns the free extents
 /// left behind.
 fn ladder(top: u16) -> u32 {
-    let mut store = FlatStore::mount(Card);
+    let store = FlatStore::mount(Card);
     let mut total = 0u64;
     let mut worst = 0u64;
     let mut worst_at = 0u16;
@@ -577,13 +577,13 @@ fn ladder(top: u16) -> u32 {
         // ten per cent between two runs of this bench, so one observation is an anecdote rather than
         // a cost. The ladder's own commit below still feeds the aggregate.
         if entries == 0 || entries == LADDER_MID || entries == top {
-            sample_commits(&mut store, entries);
+            sample_commits(&store, entries);
             if entries > 0 {
-                measure_opens(&mut store, entries);
+                measure_opens(&store, entries);
             }
         }
         let started = Instant::now();
-        let Some(commit) = create_once(&mut store) else { return store.free_extents() };
+        let Some(commit) = create_once(&store) else { return store.free_extents() };
         let commit_us = commit.elapsed;
         publish_total += us(started);
         total += commit_us;
@@ -628,7 +628,7 @@ fn copy_of(sequence: u64) -> usize {
 
 /// One create: allocate, write the payload, commit. Only the commit is on the clock, because it is
 /// the step §5.5 puts a figure on.
-fn create_once(store: &mut FlatStore<Card>) -> Option<Commit> {
+fn create_once(store: &FlatStore<Card>) -> Option<Commit> {
     let entries = store.entry_count();
     let payload = [0x5Au8; LADDER_PAYLOAD];
     let mut allocation = match store.allocate(LADDER_PAYLOAD as u64) {
@@ -669,7 +669,7 @@ fn create_once(store: &mut FlatStore<Card>) -> Option<Commit> {
 }
 
 /// One removal, timed: the same whole-prefix rewrite a create pays, without a payload write.
-fn remove_once(store: &mut FlatStore<Card>, id: ObjectId) -> Option<Commit> {
+fn remove_once(store: &FlatStore<Card>, id: ObjectId) -> Option<Commit> {
     arm();
     let started = Instant::now();
     let outcome = store.commit(&[Mutation::Remove { id, revision: Revision(1) }]);
@@ -700,7 +700,7 @@ fn remove_once(store: &mut FlatStore<Card>, id: ObjectId) -> Option<Commit> {
 /// Four commits per sample keeps the parity, so every sample repeats the same assignment. The entry
 /// count moves by one between the paired commits, which changes no block count at any size this
 /// bench reports (`1 + ceil(n/4) + 2` is flat across `n` and `n+1` at 0, 300 and 1024).
-fn sample_commits(store: &mut FlatStore<Card>, entries: u16) {
+fn sample_commits(store: &FlatStore<Card>, entries: u16) {
     let mut creates = [[0u64; COMMIT_SAMPLES]; 2];
     let mut removes = [[0u64; COMMIT_SAMPLES]; 2];
     let mut last = [Counters::default(); 2];
@@ -754,7 +754,7 @@ fn sample_commits(store: &mut FlatStore<Card>, entries: u16) {
 /// mounts plus one transfer: this is the figure a renderer pays to bring a set up. The same search is
 /// `find`, which every commit's `resolve` runs once per mutation — so it is also half of why the
 /// commit figures above carry the read time they do.
-fn measure_opens(store: &mut FlatStore<Card>, entries: u16) {
+fn measure_opens(store: &FlatStore<Card>, entries: u16) {
     let mut ids = [ObjectId::NONE; MAX_OPEN_OBJECTS];
     let step = (entries as usize / MAX_OPEN_OBJECTS).max(1);
     let mut found = 0usize;
@@ -797,7 +797,7 @@ fn measure_opens(store: &mut FlatStore<Card>, entries: u16) {
 ///
 /// The ride is left **recording** on purpose. It is what phase two recovers.
 fn ride() {
-    let mut store = FlatStore::mount(Card);
+    let store = FlatStore::mount(Card);
     let id = store.next_object_id();
 
     let allocation = match store.allocate(RIDE_RESERVE) {
@@ -916,7 +916,7 @@ fn ride() {
 
 /// §6.1 over a multi-GiB object: write it, sweep it, then hit it at random.
 fn read_path(bytes: u64) {
-    let mut store = FlatStore::mount(Card);
+    let store = FlatStore::mount(Card);
     // SAFETY: sole borrows of the two payload slots.
     let pattern = unsafe { &mut (*core::ptr::addr_of_mut!(PATTERN)).0 };
     let readback = unsafe { &mut (*core::ptr::addr_of_mut!(READBACK)).0 };
@@ -1233,7 +1233,7 @@ fn phase_two(boot: &Boot) {
 /// §7.2's ride end and what it makes readable, with the store scoped to this call.
 #[inline(never)]
 fn ride_end(entry: &EntryMeta, expected_crc: u32) {
-    let mut store = FlatStore::mount(Card);
+    let store = FlatStore::mount(Card);
     // SAFETY: sole borrows.
     let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
     let readback = unsafe { &mut (*core::ptr::addr_of_mut!(READBACK)).0 };
@@ -1322,12 +1322,12 @@ fn ride_end(entry: &EntryMeta, expected_crc: u32) {
     // one's measurement, and what phase two is asking is only whether it survived the reset.
     let big = store.entries().find(|entry| entry.kind == ObjectKind::MapShard);
     if let Some(meta) = big {
-        spot_check(&mut store, &meta);
+        spot_check(&store, &meta);
     }
 }
 
 /// A few pages of a published object, read at random and compared with the pattern that wrote it.
-fn spot_check(store: &mut FlatStore<Card>, meta: &EntryMeta) {
+fn spot_check(store: &FlatStore<Card>, meta: &EntryMeta) {
     // SAFETY: sole borrows.
     let readback = unsafe { &mut (*core::ptr::addr_of_mut!(READBACK)).0 };
     let Ok(handle) = store.open(meta.id, None) else {

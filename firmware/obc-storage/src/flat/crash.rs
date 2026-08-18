@@ -759,7 +759,7 @@ fn a_write_through_a_two_tebibyte_run_consumes_its_input() {
     use super::device::BlockDevice as _;
 
     let disk = SparseDisk::blank((4u64 << 40) / BLOCK as u64, 5);
-    let mut store = FlatStore::initialize(&disk, STORE).expect("a 4 TiB card formats");
+    let store = FlatStore::initialize(&disk, STORE).expect("a 4 TiB card formats");
     assert_eq!(store.extent_size(), 64 << 20, "§8: 4 TiB / 65,536 is 64 MiB");
     let free = store.free_extents();
 
@@ -927,7 +927,7 @@ fn a_finalisation_that_outruns_the_journal_is_refused() {
 
     // And a ride with no checkpoint at all has nothing to publish.
     let disk = card(6, &holding(&[ride], 6), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
     assert_eq!(
         store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap_err(),
@@ -1083,7 +1083,7 @@ fn the_first_checkpoint_recovers_nothing_or_itself() {
 #[test]
 fn the_recovered_payload_crc_covers_the_prefix_on_the_card() {
     let disk = card(11, &holding(&[recording()], 6), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let tail = payload(3 * PROGRAM_PAGE + 777);
     store
         .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
@@ -1113,7 +1113,7 @@ fn the_recovered_payload_crc_covers_the_prefix_on_the_card() {
 #[test]
 fn recording_resumes_at_the_recovered_sequence_plus_one() {
     let disk = card(13, &holding(&[recording()], 6), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     for step in 1..=20u64 {
         let tail = payload(100 + step as usize);
         store
@@ -1122,7 +1122,7 @@ fn recording_resumes_at_the_recovered_sequence_plus_one() {
     }
     disk.reboot();
 
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let recovered = store.recovered_ride().unwrap();
     assert_eq!(recovered.checkpoint_sequence, 20, "the greatest sequence did not win the wrapped ring");
     assert_eq!(recovered.slot, 4, "checkpoint 20 belongs in slot 20 mod 16");
@@ -1140,7 +1140,7 @@ fn recording_resumes_at_the_recovered_sequence_plus_one() {
 #[test]
 fn ending_a_ride_leaves_no_slot_behind() {
     let disk = card(17, &holding(&[recording()], 6), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let tail = payload(1_000);
     store
         .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
@@ -1165,7 +1165,7 @@ fn a_reader_that_opens_after_an_amend_sees_the_amended_length() {
     let mut before = holding(&[ride], 6);
     before.ride = Some((0, 900));
     let disk = recording_card(&before, &ride, 0, 900)(7);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
 
     // A reader while the ride is still recording: length zero, nothing to read.
     let during = store.open(ObjectId(1), Some(Revision(1))).unwrap();
@@ -1190,7 +1190,7 @@ fn an_amend_that_trims_a_held_entry_defers_the_extents_it_frees() {
     let mut before = holding(&[ride], 6);
     before.ride = Some((0, 900));
     let disk = recording_card(&before, &ride, 0, 900)(8);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(store.free_extents(), EXTENTS - 32);
 
     let handle = store.open(ObjectId(1), Some(Revision(1))).unwrap();
@@ -1220,7 +1220,7 @@ fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
     let mut before = holding(&[ride], 6);
     before.ride = Some((0, 900));
     let disk = recording_card(&before, &ride, 0, 900)(43);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(store.free_extents(), EXTENTS - 32);
 
     let first = store.open(ObjectId(1), Some(Revision(1))).unwrap();
@@ -1247,7 +1247,7 @@ fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
 #[test]
 fn a_slot_from_another_ride_is_not_this_ones() {
     let disk = card(19, &holding(&[recording()], 6), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let tail = payload(1_000);
     store
         .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
@@ -1324,7 +1324,7 @@ fn a_shrunken_card_is_refused() {
 fn an_exhausted_revision_space_still_serves_reads() {
     let last = entry(1, u64::MAX, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
     let disk = card(6, &holding(&[last], 4), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::RevisionSpaceExhausted);
     assert!(store.open(ObjectId(1), None).is_ok());
     assert_eq!(store.allocate(512), Err(super::error::StoreError::ReadOnly));
@@ -1339,7 +1339,7 @@ fn an_exhausted_sequence_space_still_serves_reads() {
     let mut model = holding(&[route], u64::MAX);
     model.high_water = u64::MAX;
     let disk = card(11, &model, 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::SequenceSpaceExhausted);
 
     let handle = store.open(ObjectId(1), None).unwrap();
@@ -1364,7 +1364,7 @@ fn the_commit_that_reaches_the_last_sequence_leaves_the_store_read_only() {
     let trip = entry(2, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "Alps", &[(1, 1)]);
     let model = holding(&[route, trip], u64::MAX - 1);
     let disk = card(44, &model, 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::ReadWrite);
 
     let sequence = store.commit(&[Mutation::Remove { id: ObjectId(2), revision: Revision(1) }]).unwrap();
@@ -1452,7 +1452,7 @@ fn a_torn_superblock_falls_back_to_the_other_copy() {
 #[test]
 fn an_uncommitted_allocation_is_free_again_at_the_next_mount() {
     let disk = card(21, &empty(), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let mut allocation = store.allocate(4 << 20).unwrap();
     store.write(&mut allocation, &payload(BLOCK)).unwrap();
     assert_eq!(store.free_extents(), EXTENTS - 4);
@@ -1463,7 +1463,7 @@ fn an_uncommitted_allocation_is_free_again_at_the_next_mount() {
 #[test]
 fn cancelling_an_allocation_returns_its_extents_immediately() {
     let disk = card(22, &empty(), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let allocation = store.allocate(4 << 20).unwrap();
     assert_eq!(store.free_extents(), EXTENTS - 4);
     store.cancel(allocation);
@@ -1478,7 +1478,7 @@ fn a_reader_holds_its_extents_until_it_closes() {
     let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
     let disk = card(23, &holding(&[route], 4), 0);
     disk.install(EXTENT_AREA, &payload(3_000));
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
 
     let handle = store.open(ObjectId(1), None).unwrap();
     let second = store.open(ObjectId(1), None).unwrap();
@@ -1526,7 +1526,7 @@ fn a_reserve_owns_extents_and_refuses_to_be_read() {
 #[test]
 fn allocation_refusals_are_the_two_the_format_admits() {
     let disk = card(26, &empty(), 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(
         store.allocate((EXTENTS as u64 + 1) << 20),
         Err(super::error::StoreError::NoSpace { required: (EXTENTS as u64 + 1) << 20 })
@@ -1539,7 +1539,7 @@ fn allocation_refusals_are_the_two_the_format_admits() {
     }
     model.next_object = 10;
     let disk = card(27, &model, 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     assert_eq!(store.allocate(9 << 20), Err(super::error::StoreError::TooFragmented));
     assert_eq!(store.free_extents(), EXTENTS - 9, "a refusal changed the free map");
 }
@@ -1557,7 +1557,7 @@ fn a_payload_round_trips_across_a_range_boundary() {
     model.entries.push(entry(9, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "", &[(1, 1)]));
     model.next_object = 10;
     let disk = card(28, &model, 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
 
     // This card's extents are the 1 MiB minimum §8 gives it, and the payload spans two of them.
     let extent = Geometry::DEFAULT.extent_size();
@@ -1597,7 +1597,7 @@ fn a_fresh_put_may_not_re_use_an_object_id_the_cursor_has_passed() {
     let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
     let model = holding(&[route], 4);
     let disk = card(45, &model, 0);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
 
     // A reader holds revision 1, and a commit removes it: the hold defers extent 0, so first-fit hands
     // the next object extent 1 and the impostor would name bytes this reader never resolved.
@@ -1810,7 +1810,7 @@ fn a_checkpoint_that_fails_after_its_page_flush_does_not_advance_the_flushed_len
     let ride = recording();
     let disk = card(41, &holding(&[ride], 6), 0);
     let faulty = FaultOnce::new(&disk);
-    let mut store = FlatStore::mount(&faulty);
+    let store = FlatStore::mount(&faulty);
 
     let tail = payload(PROGRAM_PAGE + 300);
     let checkpoint =
@@ -1852,7 +1852,7 @@ fn a_close_whose_catalog_read_fails_keeps_the_extents_allocated() {
     let model = holding(&[route], 4);
     let disk = card(42, &model, 0);
     let faulty = FaultOnce::new(&disk);
-    let mut store = FlatStore::mount(&faulty);
+    let store = FlatStore::mount(&faulty);
 
     let handle = store.open(ObjectId(1), None).unwrap();
     assert_eq!(store.free_extents(), EXTENTS - 1);
@@ -1894,7 +1894,7 @@ fn fragmented(seed: u64) -> (Model, SparseDisk) {
 fn a_write_that_fails_leaves_an_allocation_its_caller_can_cancel() {
     let (_, disk) = fragmented(46);
     let faulty = FaultOnce::new(&disk);
-    let mut store = FlatStore::mount(&faulty);
+    let store = FlatStore::mount(&faulty);
     assert_eq!(store.free_extents(), EXTENTS - 1);
 
     let bytes = payload(2 << 20);

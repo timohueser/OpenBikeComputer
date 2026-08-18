@@ -61,6 +61,8 @@ mod crash;
 #[cfg(test)]
 mod fuzz;
 #[cfg(test)]
+mod granularity;
+#[cfg(test)]
 mod read_cost;
 #[cfg(test)]
 mod vectors;
