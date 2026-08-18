@@ -18,7 +18,9 @@
 //! [`layout`] is the card's geometry and the address arithmetic that *is* the read path, and
 //! [`superblock`], [`catalog`] and [`journal`] are the three record shapes. [`bitmap`] is the free
 //! map, which is the catalog's complement and nothing else. [`store`] composes them: mount,
-//! initialization, the alternating commit, and the ride journal's write half.
+//! initialization, the alternating commit, and the ride journal's write half. [`source`] is the one
+//! adapter above the seam: an open object as an `obc_formats::io::ByteSource`, which is the only
+//! vocabulary the readers — chunk caches, A\*, the route and weather readers — speak.
 //!
 //! Decoding is **total** — every input is either a typed record or a typed
 //! [`DecodeError`](error::DecodeError) — bounded, and allocation-free. The seam is total in the same
@@ -42,6 +44,7 @@ pub(crate) mod journal;
 pub(crate) mod layout;
 pub(crate) mod raw;
 pub mod seam;
+pub mod source;
 pub mod store;
 pub(crate) mod superblock;
 pub mod wire;
@@ -58,6 +61,8 @@ mod crash;
 #[cfg(test)]
 mod fuzz;
 #[cfg(test)]
+mod read_cost;
+#[cfg(test)]
 mod vectors;
 
 pub use device::BlockDevice;
@@ -66,6 +71,7 @@ pub use seam::{
     Allocation, DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision,
     RideCheckpoint, Store, StoreId,
 };
+pub use source::StoreSource;
 pub use store::{FlatStore, Handle, Mode, RideRecovery};
 
 /// The format version this store implements. A card whose layout differs is a different version,
