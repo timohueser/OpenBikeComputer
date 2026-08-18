@@ -919,8 +919,8 @@ twice, so an older id beside newer ones is deduplication working, not a fault.
 
 Member ids are **not** in the `Set Id` digest chain, and this is load-bearing twice over: `Set Id` is
 a *content* identity (two assemblies of the same cells with the same skin produce the same id) while
-ids are properties of one card's store, and keeping them out is what makes binding a legal in-place
-patch of eight bytes rather than a re-serialization.
+ids are properties of one card's store, and keeping them out is what makes binding a legal eight-byte
+write into the staged bytes rather than a re-serialization.
 
 **The terrain record is the last one.** A manifest with a `Role == 3` record MUST carry exactly one,
 and it MUST be at index `Shard Count − 1`. That is not house style: readers take the leading records

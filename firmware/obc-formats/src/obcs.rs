@@ -86,7 +86,7 @@ pub const HEADER_LEN: usize = 72;
 /// each record". The width is also a power of two over an 8-aligned header, so a member id is
 /// 8-aligned in any buffer that is.
 pub const SHARD_RECORD_LEN: usize = 64;
-/// Offset of the member `ObjectId` inside a record (§5.2), for a caller patching one in place.
+/// Offset of the member `ObjectId` inside a record (§5.2), for a caller binding a staged manifest.
 pub const MEMBER_ID_OFFSET: usize = 56;
 /// The reserved member id that names no object (`FLAT_Store_Format.md` §3) — an **unbound** record.
 pub const MEMBER_ID_NONE: u64 = 0;
@@ -1122,7 +1122,7 @@ mod tests {
         let len = unbound.encoded_len();
         assert_eq!(&raw[32..48], &bytes[32..48], "Set Id does not depend on the member ids");
 
-        // Binding is a patch: 8 bytes per record and nothing else moves.
+        // Binding writes 8 bytes per record into the staged buffer and moves nothing else.
         bind_member(&mut raw[..len], 0, 5).unwrap();
         bind_member(&mut raw[..len], 1, 6).unwrap();
         assert_eq!(&raw[..len], &bytes[..len], "binding reproduces the manifest byte for byte");
