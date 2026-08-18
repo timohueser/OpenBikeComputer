@@ -8,7 +8,7 @@ use obc_formats::io::Error as IoError;
 use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 use obc_reader::{rgb565_to_rgb888, ByteSource, MapCache, MapTables, Reader};
 use obc_render::{RenderConfig, RenderScratch, Viewport, MAX_DECODE_POINTS};
-use obcm_testkit::{build_file, pack_line, pack_line16, pack_line_decl, seal, LodSpec, Style};
+use obcm_testkit::{align_up, build_file, pack_line, pack_line16, pack_line_decl, seal, LodSpec, Style};
 
 mod common;
 use common::Buf;
@@ -103,11 +103,13 @@ fn truncated_feature_is_dropped_whole_with_malformed_stat() {
     assert_eq!(buf.count(Rgb888::new(255, 0, 0)), 0, "malformed geometry must not reach the painter");
 }
 
-/// Absolute file offset of a LOD's first chunk byte: past the quadtree index **and** the v11
-/// `chunk_count + 1` entry offset table. The failure fixtures below arm on that offset, so they must
-/// not confuse the table with the data.
+/// Absolute file offset of a LOD's first chunk byte: past the quadtree index, past the v11
+/// `chunk_count + 1` entry offset table, and past v14's one rounding step — chunks are addressed by
+/// scaled offsets, so they start at `align_up(table_end, U)` and the `0..U-1` bytes in between are
+/// §1.2 filler. The failure fixtures below arm on that offset, so they must not confuse the table,
+/// or the gap behind it, with the data.
 fn chunk_data_offset(lod: &obc_reader::Lod) -> u32 {
-    (lod.index_offset + lod.node_count * 4 + (lod.chunk_count + 1) * 4) as u32
+    align_up(lod.index_offset + lod.node_count * 4 + (lod.chunk_count + 1) * 4) as u32
 }
 
 struct FailAfterParse<'a> {
