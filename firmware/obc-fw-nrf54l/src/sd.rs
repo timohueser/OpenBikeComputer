@@ -4024,7 +4024,7 @@ impl Storage {
     /// placeholder into a map.
     ///
     /// The re-read is what makes "the manifest is written last" a *checked* property rather than a
-    /// hoped-for one. A manifest is at most 1,864 B, so validating it costs a stack buffer and one
+    /// hoped-for one. A manifest is at most 2,120 B, so validating it costs a stack buffer and one
     /// pass over the shard headers — the same pass the boot scan runs — against a transfer measured
     /// in gigabytes. Returns the set's total bytes, or `None` with the **whole set deleted**: a
     /// manifest that does not describe the files beside it is not a map, and leaving the shards
@@ -4055,7 +4055,7 @@ impl Storage {
 
     /// Parse the streamed `MS{id}.OBS` with `magic` spliced over its placeholder and check it
     /// against the card, returning the set's total bytes. Split out of
-    /// [`set_manifest_commit`](Self::set_manifest_commit) so the 1,864 B manifest buffer leaves the
+    /// [`set_manifest_commit`](Self::set_manifest_commit) so the 2,120 B manifest buffer leaves the
     /// frame before the commit write (the ~36 KB stack rule).
     ///
     /// Everything [`set_file_totals`](Self::set_file_totals) checks, **plus** the one check that is

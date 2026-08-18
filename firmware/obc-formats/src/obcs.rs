@@ -21,19 +21,29 @@
 //! - **Unbound**: every member id is `0`, the reserved id that names no object. This is what an
 //!   assembler writes. It is a complete, §5.3-valid manifest; it simply names no objects yet.
 //! - **Bound**: every member id is non-zero and no two records share one. A client reaches this by
-//!   committing each member, learning the id the store assigned, and patching it in with
-//!   [`bind_member`] before the manifest itself is committed — which §5.4 already required to be the
-//!   last write of a set.
+//!   committing each member, learning the id the store assigned, and writing it into the buffer it
+//!   is still assembling with [`bind_member`] — all of it before the manifest itself is committed,
+//!   which §5.4 already required to be the last write of a set.
+//!
+//! **Binding edits a staging buffer, and only a staging buffer.** §5.2 makes that normative:
+//! binding MUST complete before the manifest is committed, and a committed manifest MUST NOT be
+//! patched. The reason is that this is the one rule here a validator cannot enforce — an interrupted
+//! 8-byte id write leaves a value that is neither `0` nor a duplicate, so [`validate`] accepts it,
+//! [`SetManifest::is_bound`] answers `true`, and the mount resolves a member to an `ObjectId` naming
+//! nothing or the wrong object. §5.4's magic-last-write is safe precisely because its torn shape *is*
+//! recognisable; an id's is not.
 //!
 //! A half-bound manifest is refused ([`ManifestError::Members`]): it would name some members and
-//! silently lose the rest. Which of the two legal states a *mount* will accept is the mount's rule,
-//! not the codec's, and it depends on how that reader resolves members — see
-//! [`SetManifest::is_bound`].
+//! silently lose the rest. Per §5.2 it means **the set never existed** — a reader treats it as §5.4
+//! treats any failed validation (not a map, no partial acceptance), and a client discards the whole
+//! set and sends it again rather than repairing it. Which of the two *legal* states a mount will
+//! accept is the mount's rule, not the codec's, and it depends on how that reader resolves members —
+//! see [`SetManifest::is_bound`].
 //!
 //! Member ids are deliberately **not** in the `Set Id` digest chain. `Set Id` is a *content*
 //! identity (§5.2: the same cells and skin produce the same id), and ids are properties of one
-//! card's store. Keeping them out is also what makes [`bind_member`] a legal in-place patch rather
-//! than a re-serialization.
+//! card's store. Keeping them out is also what lets [`bind_member`] write eight bytes into a staging
+//! buffer instead of forcing a re-serialization.
 //!
 //! ## Two kinds of record, one array (manifest v2, EL4)
 //!
@@ -646,13 +656,19 @@ pub fn serialize(manifest: &SetManifest, digests: &[[u8; DIGEST_LEN]], out: &mut
     Ok(len)
 }
 
-/// Patch record `index`'s member id into already-serialized manifest bytes, in place (§5.2).
+/// Write record `index`'s member id into a **staging** manifest buffer (§5.2).
 ///
 /// This is how a client binds a set: it commits each member, learns the id the store assigned, and
 /// writes it here — one 8-byte field, without re-serializing and without disturbing `Set Id`, which
 /// covers the digests and never the ids. `id` must name an object; passing [`MEMBER_ID_NONE`] would
 /// *un*bind a record, which is the half-bound shape [`validate`] exists to refuse, so it is rejected
 /// here rather than left to be discovered at the next parse.
+///
+/// **`bytes` MUST be a buffer the client still owns, never a committed manifest.** §5.2 makes that
+/// normative and it is not a style preference: a committed manifest is bytes a reader may resolve a
+/// set through, and an id write interrupted halfway leaves a value neither `0` nor duplicated —
+/// which [`validate`] accepts, [`SetManifest::is_bound`] calls bound, and a mount follows to an
+/// object that is not there. Bind every record first; commit once, afterwards.
 ///
 /// The bytes are otherwise unexamined — this reads `Shard Count` to bound the index and nothing
 /// else. Whether the result is a valid, fully bound manifest is [`parse`]'s answer, and a client
