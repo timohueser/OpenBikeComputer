@@ -411,19 +411,35 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
 /// `.bss` slot, not this frame; the deepest transient is the one emitter-sized move when the
 /// emit phase constructs it). Everything long-running (render, input, the watchdog feed) runs
 /// normally **between** steps — that is the whole point of #499.
+///
+/// A mounted set gets its reader from [`MountedSet::core_reader`], exactly like the render and POI
+/// paths above — never a `Reader::new` over the core's bytes. The two are not interchangeable: a
+/// set shares **one** `MapCache` across its shards and every cache key carries the shard index, so
+/// a reader built with `Reader::new` is tagged file `0` whatever file it reads. `Core Shard` is a
+/// manifest field (`OBCA_Spec.md` §5.3 pins only `< Shard Count`), so on a set whose core is not
+/// shard 0 that tag is *another shard's* namespace, and the planner's quadtree reads and the
+/// renderer's would serve each other index blocks out of the same slots.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
     storage: &sd::Storage,
+    mounted_set: Option<&MountedSet<'static>>,
     map_tables: &MapTables,
     map_cache: &MapCache,
     nav: &mut NavBuffers,
     file: embedded_sdmmc::RawFile,
 ) -> obc_route::Step {
-    let Some(map_src) = storage.map_source() else {
-        return obc_route::Step::Failed(obc_route::NavError::NoPath);
+    // Built only for a single map: a set reads through the mount, and `map_source` would hand back
+    // the core's bytes untagged.
+    let map_src = match mounted_set {
+        Some(_) => None,
+        None => storage.map_source(),
     };
-    let reader = Reader::new(&map_src, map_tables, map_cache);
+    let reader = match (mounted_set, &map_src) {
+        (Some(set), _) => set.core_reader(),
+        (None, Some(src)) => Reader::new(src, map_tables, map_cache),
+        (None, None) => return obc_route::Step::Failed(obc_route::NavError::NoPath),
+    };
     let mut sink = storage.nav_sink(file);
     // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
     // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
@@ -1618,7 +1634,7 @@ pub(crate) async fn run_app(
                         #[cfg(feature = "sd-bench")]
                         let reads_before = sd::read_perf_snapshot();
                         let ts = Instant::now();
-                        let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
+                        let step = nav_step(s, mounted_set.as_ref(), map_tables, map_cache, &mut bufs, run.file);
                         let us = ts.elapsed().as_micros();
                         run.phase_us[phase_idx] += us;
                         #[cfg(feature = "sd-bench")]
