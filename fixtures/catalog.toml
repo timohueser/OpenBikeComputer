@@ -5,19 +5,19 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/c23237c5527b58801e17a2a7ecc5d9145b1db7a8cf8ae0b47d2ee3414410c3a6.tar.gz"
-sha256 = "c23237c5527b58801e17a2a7ecc5d9145b1db7a8cf8ae0b47d2ee3414410c3a6"
-bytes = 3320272
-provenance = "Switzerland OSM snapshot 2026-08-08; Copernicus GLO-30 terrain; authored Grimsel test routes. See fixtures/README.md."
+archive = "packages/c04aea84cad66e678be0cf3147560ddd825d16d7057c0860fe1ffc52ba98630a.tar.gz"
+sha256 = "c04aea84cad66e678be0cf3147560ddd825d16d7057c0860fe1ffc52ba98630a"
+bytes = 3417575
+provenance = "OBCM v14, packed from Switzerland OSM snapshot 2026-08-17; Copernicus GLO-30 terrain; authored Grimsel test routes. See fixtures/README.md."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
 
 [packages.sim-monaco]
 summary = "Monaco POI-dense simulator map and up-ahead track"
-archive = "packages/f668c49b2ddd5aa2fe588561a589274396566fedf9ca030fac440a6bd6f564f4.tar.gz"
-sha256 = "f668c49b2ddd5aa2fe588561a589274396566fedf9ca030fac440a6bd6f564f4"
-bytes = 449883
-provenance = "Monaco OSM snapshot 2026-08-08 and an authored 2.7 km up-ahead track. See fixtures/README.md."
+archive = "packages/97f7c05195888cf1c5b19b85f0f59293b9c1c8ac5f4e60a271bcb02f0d305f57.tar.gz"
+sha256 = "97f7c05195888cf1c5b19b85f0f59293b9c1c8ac5f4e60a271bcb02f0d305f57"
+bytes = 442379
+provenance = "OBCM v14, packed from Monaco OSM snapshot 2026-08-17, and an authored 2.7 km up-ahead track. See fixtures/README.md."
 license = "ODbL-1.0 (map); GPL-3.0-only (authored track)"
 tracked_sources = { "tracks/monaco-upahead.gpx" = "sources/sim-monaco/tracks/monaco-upahead.gpx" }
 
