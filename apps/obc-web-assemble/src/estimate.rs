@@ -27,25 +27,28 @@
 //! every earlier coefficient carried. On top, [`WASM_ALLOC_MARGIN`] — the same ×1.15 as before, for
 //! the allocator this was not measured on (dlmalloc in a linear memory that only grows).
 //!
-//! # The other two terms are modes, as they have been since phase B
+//! # The other two terms are modes
 //!
 //! One OPFS probe answers for all three seams — the cells (B2), the spill (D2's scratch), and the
-//! shard sink (D1) ride the same sync-access-handle capability — so [`Residency::input_on_disk`]
+//! map sink (D1) ride the same sync-access-handle capability — so [`Residency::input_on_disk`]
 //! states the *host*, not one seam:
 //!
-//! * **OPFS host, download path** (`streamed_shard_bytes > 0`): input is two block caches plus the
-//!   terrain squares (terrain deliberately never stored on disk); output is the terrain sink's
-//!   buffer — the OBCM shards go straight to OPFS and are never wasm's. At DACH scale terrain is
-//!   the biggest wasm term left (~430 MiB in, ~430 MiB out), and it still fits with room; streaming
-//!   it is the follow-up the cell store's comment always reserved, not tonight's requirement.
-//! * **OPFS host, device path** (`streamed_shard_bytes = 0`): the sink stays buffered
-//!   (`sendAssembledSetFile` needs `planned`'s counts first), so the whole set is resident and the
-//!   verdicts genuinely differ from ~1.4× BW up — computed apart, never averaged.
-//! * **No usable OPFS**: the buffered fallback. Cells resident, spill in `MemoryScratch` —
-//!   which after phase D is *the edge and adjacency streams*, priced at [`SPILL_PER_NAV_BYTE`] ×
-//!   nav (D3 measured 409 MiB of spill at BW pre-eviction; 2.5× covers it with margin) — plus B1's
-//!   one-shard eviction on the download path. A no-OPFS browser honestly cannot do a country, and
-//!   this model says so instead of letting the tab die trying.
+//! * **OPFS host, sunk output** ([`Residency::output_sunk`]): input is the block caches plus the
+//!   terrain squares (terrain is never stored on disk — the cells are handed over as buffers and
+//!   spliced straight into the map's tail, so they are resident on the way in and nowhere on the way
+//!   out); output is **nothing**, because the map goes to OPFS a megabyte at a time and is never
+//!   wasm's. This is the only mode a country assembles in, and after the one-file slice it is not
+//!   merely the cheapest — a DACH map is ~9 GB, so no address space can hold it and there is no
+//!   resident variant of that selection to compare against.
+//! * **OPFS host, resident output**: the caller keeps the whole file (it wants the bytes back — the
+//!   device path, which needs the finished map in hand). The verdicts genuinely differ from ~1.4× BW
+//!   up, so they are computed apart and never averaged.
+//! * **No usable OPFS**: the buffered fallback. Cells resident, spill in `MemoryScratch` — which
+//!   after phase D is *the edge and adjacency streams*, priced at [`SPILL_PER_NAV_BYTE`] × nav (D3
+//!   measured 409 MiB of spill at BW pre-eviction; 2.5× covers it with margin) — and the whole map
+//!   resident on top, because a browser with no sync access handles has nowhere else to put it. Such
+//!   a browser honestly cannot do a country, and this model says so instead of letting the tab die
+//!   trying.
 //!
 //! # What this does not cover
 //!
@@ -74,9 +77,13 @@ pub const WASM_ALLOC_MARGIN: f64 = 1.15;
 pub const SPILL_PER_NAV_BYTE: f64 = 2.5;
 
 /// Output bytes per byte of input cell. Geometry chunks are copied verbatim and the nav section is
-/// rewritten to about the size the cells' own had, so the set comes out the size of its inputs:
+/// rewritten to about the size the cells' own had, so the map comes out the size of its inputs:
 /// measured 0.9988 (freiburg) and 0.9989 (baden-württemberg). Kept at `1.0`, which rounds the
 /// right way.
+///
+/// The raster is on both sides too, since the splice: a terrain square is an input byte
+/// (`total_cell_bytes` includes it) and it is copied verbatim into the map's §1.3 region, so it
+/// contributes the same count to each.
 ///
 /// # Where OBCM v14's filler lands in this ratio (`OBCM_Spec.md` §1.2)
 ///
@@ -103,8 +110,8 @@ pub const OUTPUT_PER_CELL_BYTE: f64 = 1.0;
 #[cfg(test)]
 const REGION_GAP_BYTES: f64 = 50.0 * 15.0;
 
-/// One block cache's residency (`driver.rs`'s default geometry). Two exist on the download path —
-/// the input cells' and the sink read-back's.
+/// One block cache's residency (`driver.rs`'s default geometry). Two exist on the sunk path — the
+/// input cells' and the map read-back's.
 pub const READ_CACHE_BYTES: f64 = (READ_CACHE_BLOCKS * DEFAULT_READ_BLOCK) as f64;
 
 /// wasm32's hard address space. Nothing can be allocated past this, whatever the machine has.
@@ -116,35 +123,35 @@ pub const WASM32_ADDRESS_SPACE: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
 /// allocation that cannot be served aborts the module: there is no `Err` to render, the tab has
 /// already spent the whole download and the whole rewrite, and the rider sees a crash. Browsers
 /// also do not reliably grant the full 4 GiB. A quarter of the space is the margin those facts are
-/// worth — and post-D the question has teeth only on the fallback and device paths, because the
-/// streamed path no longer gets anywhere near it.
+/// worth — and post-D the question has teeth only on the resident-output and fallback paths, because
+/// the sunk path no longer gets anywhere near it.
 pub const PRACTICAL_BUDGET: f64 = 3.0 * 1024.0 * 1024.0 * 1024.0;
 
 /// Which escapes from linear memory this run will actually have. The projection is a property of
-/// the selection *and the mode* — the download and device paths genuinely disagree from ~1.4× BW
-/// up, and a no-OPFS browser runs a different engine profile altogether.
+/// the selection *and the mode* — a caller that keeps the finished map and one that sinks it
+/// genuinely disagree from ~1.4× BW up, and a no-OPFS browser runs a different engine profile
+/// altogether.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Residency {
     /// This browser passed the sync-access-handle probe with room to spare: the cells read from
-    /// OPFS (B2), the spill lives there (D2's scratch), and — on the download path — the shards
-    /// are written there (D1). One capability, three seams.
+    /// OPFS (B2) and the spill lives there (D2's scratch). One capability, and `output_sunk` is the
+    /// third seam that rides it.
     pub input_on_disk: bool,
-    /// `> 0`: the OBCM shards leave wasm as they are made — the download path. On an OPFS host the
-    /// sink takes them (resident output ≈ the terrain sink); on the fallback it is B1's eviction,
-    /// one shard of at most this many bytes resident. `0`: the caller keeps the whole set until
-    /// the run ends — the device path, which needs `planned`'s counts before it can take a file.
-    pub streamed_shard_bytes: f64,
+    /// The map is written straight to the host through a `MapWrites` sink (D1) and is never
+    /// resident. `false` keeps the whole file in wasm memory until the caller takes it.
+    pub output_sunk: bool,
 }
 
 impl Residency {
-    /// The browser **download** path on an OPFS host, at the builder's shard split.
-    pub fn streamed(shard_bytes: f64) -> Residency {
-        Residency { input_on_disk: true, streamed_shard_bytes: shard_bytes }
+    /// The browser's real path on an OPFS host: cells and spill on disk, the map written through
+    /// the sink.
+    pub fn streamed() -> Residency {
+        Residency { input_on_disk: true, output_sunk: true }
     }
 
-    /// No escapes at all: the no-OPFS fallback keeping the whole set.
+    /// No escapes at all: the no-OPFS fallback, keeping cells, spill and the whole map.
     pub fn resident() -> Residency {
-        Residency { input_on_disk: false, streamed_shard_bytes: 0.0 }
+        Residency { input_on_disk: false, output_sunk: false }
     }
 }
 
@@ -157,9 +164,7 @@ pub struct MemoryEstimate {
     /// The **resident** input: the whole selection, or the block caches plus terrain when the
     /// cells stay in OPFS.
     pub input_bytes: f64,
-    /// The **resident** output: the whole set (the device path keeps it; §4.8 needs written bytes
-    /// addressable), one evicted shard (the fallback download path), or the terrain sink alone
-    /// (the OPFS download path — the shards were never wasm's).
+    /// The **resident** output: the whole map, or nothing when it goes to the host's own storage.
     pub output_bytes: f64,
     /// The sum: what wasm32 has to hold at once.
     pub peak_bytes: f64,
@@ -179,7 +184,7 @@ pub struct MemoryEstimate {
 /// * `network_band_bytes` — the selected cells of the `network` band (nav + POIs, no geometry).
 /// * `total_cell_bytes` — every selected cell of every band **plus the terrain squares**.
 /// * `terrain_bytes` — the terrain squares' share of that total (0 for a terrain-less catalog).
-///   Terrain rides outside every escape: never stored in OPFS, and its sink accumulates in wasm.
+///   Terrain rides outside the input escape: it is handed over as buffers, never read from OPFS.
 /// * `merge_budget_bytes` — the engine's sort budget (`Options::merge_budget_bytes`), which after
 ///   phase D **is** the engine term on an OPFS host. Non-positive or non-finite falls back to the
 ///   engine's own 64 MiB default, so a caller that has not chosen still gets a verdict about
@@ -224,22 +229,14 @@ pub fn estimate_memory_with_budget(
     } else {
         64.0 * 1024.0 * 1024.0
     };
-    let whole_set = OUTPUT_PER_CELL_BYTE * cells;
-    let (engine_bytes, input_bytes, output_bytes) = if residency.input_on_disk {
-        let engine = (sort_budget + ENGINE_FLOOR) * WASM_ALLOC_MARGIN;
-        let input = 2.0 * READ_CACHE_BYTES + terrain;
-        let output = if residency.streamed_shard_bytes > 0.0 { terrain } else { whole_set };
-        (engine, input, output)
+    let whole_map = OUTPUT_PER_CELL_BYTE * cells;
+    let output_bytes = if residency.output_sunk { 0.0 } else { whole_map };
+    let (engine_bytes, input_bytes) = if residency.input_on_disk {
+        ((sort_budget + ENGINE_FLOOR) * WASM_ALLOC_MARGIN, 2.0 * READ_CACHE_BYTES + terrain)
     } else {
-        // The fallback: spill in MemoryScratch, cells in memory, B1's eviction the only output
-        // escape. No wasm margin on the spill term — 2.5× is already the margin.
-        let engine = (sort_budget + ENGINE_FLOOR) * WASM_ALLOC_MARGIN + SPILL_PER_NAV_BYTE * nav;
-        let output = if residency.streamed_shard_bytes > 0.0 {
-            whole_set.min(residency.streamed_shard_bytes + terrain)
-        } else {
-            whole_set
-        };
-        (engine, cells, output)
+        // The fallback: spill in MemoryScratch and cells in memory. No wasm margin on the spill
+        // term — 2.5× is already the margin.
+        ((sort_budget + ENGINE_FLOOR) * WASM_ALLOC_MARGIN + SPILL_PER_NAV_BYTE * nav, cells)
     };
     let peak_bytes = engine_bytes + input_bytes + output_bytes;
     MemoryEstimate {
@@ -259,8 +256,7 @@ mod tests {
     use super::*;
 
     const MB: f64 = 1_000_000.0;
-    /// The split the builder asks for and the sort budget it runs with (`DownloadStep.svelte`).
-    const SHARD: f64 = 256.0 * 1024.0 * 1024.0;
+    /// The sort budget the builder runs with (`DownloadStep.svelte`).
     const SORT: f64 = 256.0 * 1024.0 * 1024.0;
 
     /// The published catalog's figures for the measured regions, plus the DACH shape from
@@ -273,57 +269,61 @@ mod tests {
         pub const BW_NAV: f64 = 295_921_548.0;
         pub const BW_TERRAIN: f64 = 58_721_264.0;
         pub const BW_CELLS: f64 = 794_735_626.0 + BW_TERRAIN;
-        /// DACH: core 2.8–3.0 GiB, ~8.5 GB of cells, ~430 MiB of raster.
+        /// DACH: one file of ~9 GB, ~8.5 GB of cells, ~430 MiB of raster.
         pub const DACH_NAV: f64 = 3.0e9;
         pub const DACH_TERRAIN: f64 = 0.45e9;
         pub const DACH_CELLS: f64 = 8.5e9;
     }
 
     fn streamed(nav: f64, cells: f64, terrain: f64) -> MemoryEstimate {
-        estimate_memory(nav, cells, terrain, SORT, Residency::streamed(SHARD))
+        estimate_memory(nav, cells, terrain, SORT, Residency::streamed())
     }
 
-    fn device(nav: f64, cells: f64, terrain: f64) -> MemoryEstimate {
-        estimate_memory(nav, cells, terrain, SORT, Residency { input_on_disk: true, streamed_shard_bytes: 0.0 })
+    /// An OPFS host that keeps the finished map instead of sinking it.
+    fn kept(nav: f64, cells: f64, terrain: f64) -> MemoryEstimate {
+        estimate_memory(nav, cells, terrain, SORT, Residency { input_on_disk: true, output_sunk: false })
     }
 
     fn fallback(nav: f64, cells: f64, terrain: f64) -> MemoryEstimate {
-        estimate_memory(nav, cells, terrain, SORT, Residency { input_on_disk: false, streamed_shard_bytes: SHARD })
+        estimate_memory(nav, cells, terrain, SORT, Residency::resident())
     }
 
-    /// **The assertion epic #1116 exists for, closed.** DACH — a core within a breath of the
-    /// writable per-file wall (4 GiB − 1: OBCA §5.2's `uint32` `Bytes`, see
-    /// `obcm_assemble::shard::SET_SHARD_CEILING`; the *readable* wall is 64 GiB since FS7.5-seam),
-    /// 8.5 GB of cells — projects at ~1.3 GB on the download path of
-    /// an OPFS host: the budget-bounded engine, two block caches, and the raster in and out. It
-    /// fits a 3 GiB tab with more headroom than BW had before this epic started.
+    /// **The assertion epic #1116 exists for, closed.** DACH — one ~9 GB map, 8.5 GB of cells —
+    /// projects at ~0.88 GB on the sunk path of an OPFS host: the budget-bounded engine, two block
+    /// caches, and the raster on the way in. It fits a 3 GiB tab with more headroom than BW had
+    /// before this epic started.
+    ///
+    /// One file made the claim stronger rather than weaker. The map is now larger than the address
+    /// space, so "the output is not wasm's" stopped being an optimisation and became the only shape
+    /// in which the selection exists at all.
     #[test]
-    fn dach_fits_the_download_path_and_that_is_the_epic() {
+    fn dach_fits_the_sunk_path_and_that_is_the_epic() {
         let e = streamed(catalog::DACH_NAV, catalog::DACH_CELLS, catalog::DACH_TERRAIN);
         assert!(e.fits, "DACH must fit — {} B against {} B", e.peak_bytes, e.budget_bytes);
-        assert!((e.peak_bytes - 1.325e9).abs() < 2e7, "{}", e.peak_bytes);
+        assert!((e.peak_bytes - 0.877e9).abs() < 2e7, "{}", e.peak_bytes);
         assert!(e.headroom_bytes > 0.5 * PRACTICAL_BUDGET, "…with real headroom: {}", e.headroom_bytes);
+        assert_eq!(e.output_bytes, 0.0, "a sunk map is never wasm's");
         // The engine term genuinely stopped scaling with the map: DACH and freiburg differ only in
         // their terrain, never in the merge.
         let f = streamed(catalog::FREIBURG_NAV, catalog::FREIBURG_CELLS, catalog::FREIBURG_TERRAIN);
         assert_eq!(e.engine_bytes, f.engine_bytes, "the engine term is the budget, not the map");
     }
 
-    /// The device path still keeps the whole set (`sendAssembledSetFile` needs `planned` first), so
-    /// DACH to a device honestly refuses — 8.5 GB cannot be resident — while BW to a device fits.
-    /// The two verdicts stay separate for exactly this reason.
+    /// A caller that keeps the finished map pays for all of it, so DACH honestly refuses — 8.5 GB
+    /// cannot be resident, and past this slice it cannot even be addressed — while BW fits. The two
+    /// verdicts stay separate for exactly this reason.
     #[test]
-    fn dach_refuses_the_device_path_and_bw_does_not() {
-        let dach = device(catalog::DACH_NAV, catalog::DACH_CELLS, catalog::DACH_TERRAIN);
+    fn dach_refuses_a_resident_map_and_bw_does_not() {
+        let dach = kept(catalog::DACH_NAV, catalog::DACH_CELLS, catalog::DACH_TERRAIN);
         assert!(!dach.fits);
         assert!(dach.peak_bytes > WASM32_ADDRESS_SPACE, "past the address space, not merely the budget");
-        let bw = device(catalog::BW_NAV, catalog::BW_CELLS, catalog::BW_TERRAIN);
+        let bw = kept(catalog::BW_NAV, catalog::BW_CELLS, catalog::BW_TERRAIN);
         assert!(bw.fits, "{}", bw.peak_bytes);
     }
 
-    /// A browser with no usable OPFS is the pre-phase-D world with the spill on top: BW still fits
-    /// (barely mattering-ly), a country does not, and the refusal is honest — that browser would
-    /// die trying.
+    /// A browser with no usable OPFS is the pre-phase-D world with the spill and the whole map on
+    /// top: BW still fits (barely mattering-ly), a country does not, and the refusal is honest —
+    /// that browser would die trying.
     #[test]
     fn the_no_opfs_fallback_admits_bw_and_refuses_dach() {
         let bw = fallback(catalog::BW_NAV, catalog::BW_CELLS, catalog::BW_TERRAIN);
@@ -333,19 +333,19 @@ mod tests {
         assert!(dach.headroom_bytes < 0.0);
     }
 
-    /// BW and freiburg on the download path: small numbers now, and the difference between them is
+    /// BW and freiburg on the sunk path: small numbers now, and the difference between them is
     /// terrain, not graph.
     #[test]
     fn the_measured_regions_are_comfortable_and_terrain_shaped() {
         let bw = streamed(catalog::BW_NAV, catalog::BW_CELLS, catalog::BW_TERRAIN);
-        assert!((bw.peak_bytes - 0.542e9).abs() < 1e7, "{}", bw.peak_bytes);
+        assert!((bw.peak_bytes - 0.485e9).abs() < 1e7, "{}", bw.peak_bytes);
         assert!(bw.headroom_bytes > 0.8 * PRACTICAL_BUDGET);
         let phone = estimate_memory_with_budget(
             catalog::FREIBURG_NAV,
             catalog::FREIBURG_CELLS,
             catalog::FREIBURG_TERRAIN,
             SORT,
-            Residency::streamed(SHARD),
+            Residency::streamed(),
             1024.0 * 1024.0 * 1024.0,
         );
         assert!(phone.fits, "a Regierungsbezirk fits a phone's tab: {}", phone.peak_bytes);
@@ -401,9 +401,9 @@ mod tests {
         assert!(zero.fits);
         let nav_only = estimate_memory(100.0 * MB, 0.0, 0.0, SORT, Residency::resident());
         assert_eq!(nav_only.input_bytes, 100.0 * MB, "total_cell_bytes cannot be below the network band's share");
-        let bad_budget = estimate_memory(20.0 * MB, 60.0 * MB, 0.0, f64::NAN, Residency::streamed(SHARD));
+        let bad_budget = estimate_memory(20.0 * MB, 60.0 * MB, 0.0, f64::NAN, Residency::streamed());
         assert!(bad_budget.engine_bytes > 0.0, "a NaN sort budget falls back to the engine default");
-        let all_terrain = estimate_memory(0.0, 50.0 * MB, 80.0 * MB, SORT, Residency::streamed(SHARD));
+        let all_terrain = estimate_memory(0.0, 50.0 * MB, 80.0 * MB, SORT, Residency::streamed());
         assert!(all_terrain.input_bytes <= 50.0 * MB + 2.0 * READ_CACHE_BYTES, "terrain clamps to the total");
     }
 
@@ -412,7 +412,7 @@ mod tests {
     /// everything.
     #[test]
     fn the_budget_override_and_its_fallback_still_hold() {
-        let r = Residency { input_on_disk: true, streamed_shard_bytes: 0.0 };
+        let r = Residency { input_on_disk: true, output_sunk: false };
         let desktop = estimate_memory(catalog::BW_NAV, catalog::BW_CELLS, catalog::BW_TERRAIN, SORT, r);
         let phone = estimate_memory_with_budget(
             catalog::BW_NAV,
@@ -422,10 +422,10 @@ mod tests {
             r,
             1024.0 * 1024.0 * 1024.0,
         );
-        assert!(desktop.fits && !phone.fits, "BW-to-device fits a desktop tab and not a 1 GiB one");
+        assert!(desktop.fits && !phone.fits, "a resident BW map fits a desktop tab and not a 1 GiB one");
         assert_eq!(desktop.peak_bytes, phone.peak_bytes);
         for bad in [f64::NAN, 0.0, -1.0, f64::INFINITY] {
-            let e = estimate_memory_with_budget(20.0 * MB, 60.0 * MB, 0.0, SORT, Residency::streamed(SHARD), bad);
+            let e = estimate_memory_with_budget(20.0 * MB, 60.0 * MB, 0.0, SORT, Residency::streamed(), bad);
             assert_eq!(e.budget_bytes, PRACTICAL_BUDGET, "budget {bad} should have fallen back");
             assert!(e.fits);
         }
