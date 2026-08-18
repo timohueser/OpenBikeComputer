@@ -1,6 +1,6 @@
 ---
 title: Terrain & elevation
-description: How ground height reaches the device — the Copernicus GLO-30 bake, the OBCT raster carried beside the map, and the three consumers (routing cost, route profiles, altimeter reference) that all read one surface.
+description: How ground height reaches the device — the Copernicus GLO-30 bake, the OBCT raster the map carries inside it, and the three consumers (routing cost, route profiles, altimeter reference) that all read one surface.
 ---
 
 # Terrain & elevation
@@ -14,14 +14,14 @@ absolute reference anywhere in the system, could only ever be trusted for
 *differences*.
 
 Closing that gap needed one new thing and exactly one: **a raster of ground heights,
-carried beside the map**. This page is the argument for its shape — why it is its own
-file rather than a section of the map, why every consumer samples the same bytes, and
-what still works when a card carries no terrain at all.
+carried by the map**. This page is the argument for its shape — why it is baked and
+published as an artifact of its own rather than as part of the map, why every consumer
+samples the same bytes, and what still works when a map carries no terrain at all.
 
 ## The pipeline, end to end
 
 <figure class="fig">
-<svg viewBox="0 0 720 420" role="img" aria-label="The terrain pipeline in three bands. Top band, left to right: Copernicus GLO-30 float32 GeoTIFF tiles are resampled by the host tool obc-dem into terrain cells of 2 to the 19 microdegrees, published as .obcd objects on their own revision track; a selection's cells are then placed by the assembler into one terrain shard carried on the card, spliced into the map file's own terrain region since OBCM v14 (previously MS-id.OBD inside a volume set, or an .obcd sidecar beside a single-file map). Middle band, spanning the full width: obc-elevation, the single implementation of the OBCT section 5 sampling rules — integer bilinear over a four-slot 512-byte tile cache. Bottom band, three consumers fed from that one sampler: the packer integrating per-edge ascent into the OBCM section 8.3 nav graph at bake time; the device's route emit filling each OBCR point's height when it plans a route; and the live altimeter fusion that turns the barometer's relative reading into an absolute elevation. A footer states that with no terrain file every one of those three answers no height here, and nothing else changes.">
+<svg viewBox="0 0 720 420" role="img" aria-label="The terrain pipeline in three bands. Top band, left to right: Copernicus GLO-30 float32 GeoTIFF tiles are resampled by the host tool obc-dem into terrain cells of 2 to the 19 microdegrees, published as .obcd objects on their own revision track; a selection's cells are then placed by the assembler into one terrain region, spliced into the map file's own tail. Middle band, spanning the full width: obc-elevation, the single implementation of the OBCT section 5 sampling rules — integer bilinear over a four-slot 512-byte tile cache. Bottom band, three consumers fed from that one sampler: the packer integrating per-edge ascent into the OBCM section 8.3 nav graph at bake time; the device's route emit filling each OBCR point's height when it plans a route; and the live altimeter fusion that turns the barometer's relative reading into an absolute elevation. A footer states that in a map with no terrain every one of those three answers no height here, and nothing else changes.">
   <defs>
     <marker id="aT1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="aT2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -49,9 +49,9 @@ what still works when a card carries no terrain at all.
 
   <line class="d-flow" x1="512" y1="78" x2="540" y2="78" marker-end="url(#aT1)" />
   <rect class="d-panel" x="544" y="50" width="152" height="56" rx="9" />
-  <text class="d-label" x="620" y="70" text-anchor="middle" style="font-size:10.5px">terrain shard</text>
-  <text class="d-sub" x="620" y="86" text-anchor="middle" style="font-size:8.5px">MS7.OBD in a set</text>
-  <text class="d-sub" x="620" y="98" text-anchor="middle" style="font-size:8.5px">or a .obcd sidecar</text>
+  <text class="d-label" x="620" y="70" text-anchor="middle" style="font-size:10.5px">terrain region</text>
+  <text class="d-sub" x="620" y="86" text-anchor="middle" style="font-size:8.5px">spliced into the map</text>
+  <text class="d-sub" x="620" y="98" text-anchor="middle" style="font-size:8.5px">OBCM §1.3, at its tail</text>
 
   <text class="d-sub" x="24" y="133" style="font-size:8.5px;fill:#a9501c">own revision track — an OBCM bump republishes none of it</text>
 
@@ -92,9 +92,9 @@ what still works when a card carries no terrain at all.
 
   <!-- footer -->
   <rect class="d-panel-2" x="24" y="374" width="672" height="32" rx="8" />
-  <text class="d-sub" x="360" y="394" text-anchor="middle" style="font-size:9.5px">no terrain file → all three answer <tspan style="font-weight:700">&#8220;no height here&#8221;</tspan>, and nothing else in the system changes</text>
+  <text class="d-sub" x="360" y="394" text-anchor="middle" style="font-size:9.5px">a map with no terrain → all three answer <tspan style="font-weight:700">&#8220;no height here&#8221;</tspan>, and nothing else in the system changes</text>
 </svg>
-<figcaption>Four stages and one hinge. <b>obc-dem</b> turns the public DEM into cells on the map grid; the bakery publishes them under their <b>own revision</b>; the assembler <b>places</b> the selected squares — copying blocks, grafting nothing — into one raster on the card. Everything below that hinge — the packer's baked ascent, the device's emitted route heights, the live altimeter reference — goes through <b>one</b> sampler over <b>one</b> artifact. The arrows never run the other way: nothing about the map is an input to a terrain bake.</figcaption>
+<figcaption>Four stages and one hinge. <b>obc-dem</b> turns the public DEM into cells on the map grid; the bakery publishes them under their <b>own revision</b>; the assembler <b>places</b> the selected squares — copying blocks, grafting nothing — into one raster, spliced into the map file it is writing. Everything below that hinge — the packer's baked ascent, the device's emitted route heights, the live altimeter reference — goes through <b>one</b> sampler over <b>one</b> artifact. The arrows never run the other way: nothing about the map is an input to a terrain bake.</figcaption>
 </figure>
 
 ## One sampling truth
@@ -130,11 +130,12 @@ not per-cell — both stubs sample the same surface at the same points, and thei
 booked climbs sum to the uncut way's within the dead-band's re-anchoring cost. That
 is a test, not a hope.
 
-## Why terrain is not a section of the map
+## Why terrain is baked as its own artifact
 
-The obvious design is a raster section inside OBCM, next to POIs and the nav graph.
-It was rejected on four counts, and all four are properties of the *data* rather than
-preferences.
+A map file carries the raster, but nothing else about it is the map's. The obvious
+design — bake the heights the way every other layer is baked, out of the same run,
+into the same store — was rejected on three counts, and all three are properties of
+the *data* rather than preferences.
 
 **Terrain is static; OpenStreetMap churns.** The cell store re-bakes on every OBCM
 version or schema-revision bump — that lockstep is what makes
@@ -145,19 +146,20 @@ every rider re-downloads it. Outside it, each store moves when its own inputs mo
 and never otherwise.
 
 **Blast radius.** As a separate artifact class, `obc-reader`, `obcm_diff`,
-`obcm-testkit` and the assembler's graft path never learn a raster exists. The format
-surface every existing consumer parses is unchanged.
+`obcm-testkit` and the assembler's graft path never learn a raster exists. Riding in
+the map's own tail costs them nothing either: a reader hands that region over as a
+window onto its bytes and parses nothing inside it, so the format surface every
+existing consumer parses is unchanged.
 
-**Splittability.** A raster splits by bounding box trivially, so it never spent the
-[core file's headroom](../formats/#one-map-several-files) — the scarcest resource in a
-volume set, because the nav graph was the one component that *could not* be split by box. (Volume
-sets are superseded by OBCM v14,
-[#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420): a map is one file, and an
-assembly's raster is spliced **into** it rather than carried beside it. The property still holds; it
-is no longer paying for anything.)
-
-**Independence.** A terrain re-bake at a new posting does not touch the map; a map
-re-bake does not touch the raster.
+**Independence.** A terrain re-bake at a new posting does not touch the cell store, and
+a map re-bake does not touch the terrain store. What that deliberately does *not* buy is a partial update on the card: the raster is
+part of the map file, so a rider taking a new surface takes a new map, and there is no
+terrain-only path, no separable object, and nothing for a client to reconcile. That is
+a statement about the *download* rather than about the bakes, and it costs little to
+make — a new Copernicus posting is a yearly event at most, and a full re-send lands
+inside the transfer worst case the link's [no-resume
+rule](../companion-link/#a-map-is-the-one-object-that-does-not-fit-the-pattern) already
+accepts.
 
 The catalog carries that independence as an explicit contract: a terrain block naming
 `(dataset_version, posting_log2, cell_log2, terrain_revision)`, and **that tuple is
@@ -187,9 +189,9 @@ describe. It is exactly the class of bug a lockstep exists to make impossible.
 | | |
 | :-- | --: |
 | Terrain at the shipped posting | ≈ 0.90 MiB per 1000 km² |
-| …as a share of a whole map | **+4.4–6.7 %**, in its own file |
+| …as a share of a whole map | **+4.4–6.7 %** |
 | Per-edge ascent in the nav graph | 24–130 KB per 1000 km² (alpine → dense) |
-| …as a share of the core file | ≤ +1.9 % (≤ +0.65 % of a whole map) |
+| …as a share of the navigation graph | ≤ +1.9 % (≤ +0.65 % of a whole map) |
 | **Total** | **≈ +5–7 %** against an agreed 20 % ceiling |
 | DACH (~482 000 km²) | ≈ 430 MiB of terrain objects, baked once per dataset version |
 | Device RAM | < 4 KB resident — a 32-byte header, a 4 × 512 B tile cache, one memoized directory entry |
@@ -199,19 +201,12 @@ A finer `2^8` posting (≈ 28 m) was measured and rejected: it costs +17–26 % 
 map for gradient detail below the ~100 m scale a cyclist can act on. The remaining
 headroom under the ceiling is deliberately reserved rather than spent.
 
-The one number that moved a *hard* limit is the nav graph's: two bytes per adjacency
-entry pull the graph-alone 4 GiB ceiling from roughly 640–700 thousand km² down to
-630–690 thousand — still comfortably past DACH, and the documented escape hatch
-(sharding the nav graph) is unchanged and still unused.
-
-> **That ceiling is gone.** [OBCM v14](src:specs/OBCM_Spec.md)
-> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)) scales every global offset
-> to 16-byte units and re-addresses the edge pool by `(chunk, ordinal)`, so a map — nav graph
-> included — reaches **64 GiB** rather than 4 GiB, and the flat store replaced the FAT32 file cap
-> underneath it. The two bytes per adjacency entry still cost what they cost; what they no longer
-> eat into is a limit at country scale. Sharding the nav graph was the escape hatch from a 4 GiB
-> file and is now unnecessary rather than merely unused: geometry, POIs and the graph share one
-> 64 GiB interior with no sub-region ceiling under it.
+What none of those bytes eat into is a *hard* limit, which is the one thing worth
+checking when a format grows a field. The two bytes per adjacency entry are the largest
+claim ascent makes on the file, and they are spent inside an interior of
+[64 GiB](../formats/#one-map-one-file) that geometry, the POIs and the graph all share,
+with no sub-region ceiling underneath it. At DACH scale the whole map is under
+9 GiB, so the ascent field costs what the table says and nothing else.
 
 ## What the router does with it
 
@@ -237,7 +232,7 @@ implementation answers `None` for everything, and that implementation is pinned 
 reproduce the pre-terrain behaviour byte for byte — a device-planned route emitted
 with it has the same OBCR digest it had before any of this existed.
 
-| Without a terrain file | What happens |
+| In a map with no terrain | What happens |
 | :-- | :-- |
 | Map rendering | Unchanged. Nothing in the render path reads the raster. |
 | Routing | Works. The map's baked ascents are `0`, so the climb term vanishes and the router costs exactly as it did before — the same result a climb weight of `0` gives. |
@@ -277,8 +272,8 @@ entire first real height as ascent, a bug that shipped +1 412 m of phantom climb
 testing before it was caught). But an export of such a route re-imports with a
 `0 → first-real-height` step that the converter's dead-band *will* book. Parity
 therefore holds for a route lying **wholly inside coverage**, which is every route on
-a map whose terrain was baked for it. The honest fix for the exception is a terrain
-file that covers the map's graph — never a fabricated height.
+a map whose terrain was baked for it. The honest fix for the exception is a raster
+that covers the map's graph — never a fabricated height.
 
 ## Attribution
 

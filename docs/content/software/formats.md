@@ -87,9 +87,7 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 >
 > Everything below about quadtrees, anchors, deltas, chunks and records is unchanged by any of it:
 > the interior of every geometry chunk, POI record and navigation record is byte-identical to v13.
-> What moved is what an offset *means* and where terrain lives. The
-> [one map, several files](#one-map-several-files) section below is superseded outright; the
-> machinery behind it is deleted with the board's set support.
+> What moved is what an offset *means* and where terrain lives.
 
 ### The file, front to back
 
@@ -1001,8 +999,8 @@ The exhaustive byte tables — every header and point field in both versions —
 
 ## OBCT — the terrain raster
 
-The third file on the card is not a map and not a route: it is a grid of **ground
-heights**, carried beside the map so the router can price a climb, a device-planned
+The third format is not a map and not a route: it is a grid of **ground
+heights**, carried inside the map so the router can price a climb, a device-planned
 route can carry real elevations, and the barometer can be told what altitude it is
 actually at. *Why* it is a separate artifact — and what still works when it is absent
 — is the [terrain & elevation](../terrain/) page; this is the tour of its bytes.
@@ -1014,7 +1012,7 @@ Four ideas stack, each a power of two on the same origin as the
 instead of search.
 
 <figure class="fig">
-<svg viewBox="0 0 720 340" role="img" aria-label="The OBCT format as four nested ideas and a file layout. Top left, the sample lattice: a global microdegree lattice anchored on the grid origin at a posting of 2 to the 9 microdegrees, roughly 57 by 39 metres at 47 degrees north, each sample a signed 16-bit height in whole metres with negative 32768 reserved as NODATA. Next, a tile: 16 by 16 samples, exactly 512 bytes, one SD block, laid out row-major with rows advancing latitude so the first sample is the tile's minimum corner. Next, a terrain cell: 2 to the 19 microdegrees on the grid, 64 by 64 tiles, 1024 squared samples, a 2 mebibyte block, half-open so a boundary sample belongs to exactly one cell. Below, the container: a fixed 32-byte header, then a row-major uint32 offset directory over the cell rectangle where zero means the cell is absent, then the present cell blocks. A note says a published cell is a container whose rectangle is 1 by 1 and a shard is one covering a whole selection, so there is one format and no branch.">
+<svg viewBox="0 0 720 340" role="img" aria-label="The OBCT format as four nested ideas and a file layout. Top left, the sample lattice: a global microdegree lattice anchored on the grid origin at a posting of 2 to the 9 microdegrees, roughly 57 by 39 metres at 47 degrees north, each sample a signed 16-bit height in whole metres with negative 32768 reserved as NODATA. Next, a tile: 16 by 16 samples, exactly 512 bytes, one SD block, laid out row-major with rows advancing latitude so the first sample is the tile's minimum corner. Next, a terrain cell: 2 to the 19 microdegrees on the grid, 64 by 64 tiles, 1024 squared samples, a 2 mebibyte block, half-open so a boundary sample belongs to exactly one cell. Below, the container: a fixed 32-byte header, then a row-major uint32 offset directory over the cell rectangle where zero means the cell is absent, then the present cell blocks. A note says a published cell is a container whose rectangle is 1 by 1 and the region spliced into an assembled map is one covering that map's whole selection, so there is one format and no branch.">
   <defs>
     <marker id="aTF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -1070,7 +1068,7 @@ instead of search.
   <text class="d-sub" x="574" y="126" style="font-size:8.5px;fill:#a9501c">no sample stored twice</text>
 
   <!-- container ribbon -->
-  <text class="d-sub" x="24" y="190" style="font-size:9px;fill:#6b7758">the container — one format for a published cell and an assembled shard</text>
+  <text class="d-sub" x="24" y="190" style="font-size:9px;fill:#6b7758">the container — one format for a published cell and a map's spliced raster</text>
   <g stroke="#20301d" stroke-width="1">
     <rect x="24" y="200" width="86" height="40" class="d-forest" />
     <rect x="110" y="200" width="170" height="40" class="d-amber" />
@@ -1091,7 +1089,7 @@ instead of search.
   <text class="d-sub" x="24" y="278" style="font-size:9px;fill:#a9501c">no bbox field — the cell rectangle <tspan style="font-style:italic">is</tspan> the bounding box</text>
 
   <rect class="d-panel-2" x="24" y="296" width="672" height="32" rx="8" />
-  <text class="d-sub" x="360" y="316" text-anchor="middle" style="font-size:9.5px">a <tspan style="font-weight:700">cell</tspan> is a 1 &#215; 1 container; a <tspan style="font-weight:700">shard</tspan> covers a selection — one format, no branch</text>
+  <text class="d-sub" x="360" y="316" text-anchor="middle" style="font-size:9.5px">a <tspan style="font-weight:700">cell</tspan> is a 1 &#215; 1 container; a map's <tspan style="font-weight:700">spliced region</tspan> covers a selection — one format, no branch</text>
 </svg>
 <figcaption>Every step is a shift. A coordinate's sample index is <code>(µdeg − origin) &gt;&gt; posting_log2</code>; the tile inside a cell is that index <code>&gt;&gt; 4</code>; the sample inside the tile is the low four bits. The <b>offset directory</b> is a dense rectangle rather than a sorted list of ids on purpose: it is O(1) with two subtractions and a multiply, costs four bytes per covered <i>or</i> uncovered square in the box (≈ 2 KB for a DACH-shaped selection, against ≈ 430 MiB of raster), and needs no resident index at all.</figcaption>
 </figure>
@@ -1125,12 +1123,11 @@ A few details a reader notices:
 names the format — but the extension had to move, because the device's recorded
 [track log](#recorded-rides-the-track-log-and-the-ride-object) already claims `.obct`,
 and two unrelated things sharing an extension on one card is a bug waiting for a
-directory scan. That extension is for a **published terrain cell**, the catalog artifact. An
-*assembly's* raster is not a file at all since OBCM v14
-([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)): it is spliced into the map
-file's own terrain region, and a map reader hands it to the sampler as a window onto those bytes
-rather than opening anything. (It used to ride in a [volume set](#one-map-several-files) as
-`MS<id>.OBD`, the sidecar name of the set's `MS<id>.OBS` manifest — retired with the set.)
+directory scan. That extension names a **published terrain cell** — the catalog artifact the
+bakery uploads and an assembly downloads. An *assembly's* raster is not a file at all: it is
+spliced into the map file's own terrain region
+([`OBCM_Spec.md` §1.3](src:specs/OBCM_Spec.md)), and a map reader hands it to the sampler as a
+window onto those bytes rather than opening anything.
 
 ## OBCW — provider-neutral weather
 
@@ -1489,7 +1486,7 @@ bands use, run on the terrain lattice — and there is deliberately **no toggle*
 it: elevation is roughly five per cent of a download, and a switch would make a
 rider decide something they have no way to decide well. So the builder prices it as
 its own line, credits the source beside it, and downloads it with the map; the
-assembler writes it as one file per set, and the device finds it there.
+assembler splices it into the map file, and the device finds it there.
 
 One coupling is real, and the catalog states it rather than hiding it. The routing
 band's cells are baked *sampling* that raster: each navigation edge stores the
@@ -1520,16 +1517,11 @@ bridge, and coverage-selection UI are the current map-building path. Both the
 website and desktop app use them: regions, drawn boxes, and corridors buffered
 around GPX routes all become cell sets, and the same worker assembles identical
 bytes. The desktop host differs only at the edge, where it fetches
-through a native same-origin HTTPS transport and saves atomically into
-one local folder. (Those bytes were a *volume set* until OBCM v14 made a map one file — see
-[one map, several files](#one-map-several-files).)
+through a native same-origin HTTPS transport and saves the finished map atomically into
+one local folder.
 
-The device's reader and direct send consume that same assembled output. (Until
-[#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420) that was a multi-file *set*,
-saved or streamed one verified shard at a time with the manifest committed last; OBCM v14 makes it
-one file, and the shard/manifest path is deleted in the slices that implement it. See
-[one map, several files](#one-map-several-files).) Manual single-file upload remains only for maps
-obtained elsewhere.
+The device's reader and direct send consume that same assembled output — one OBCM file, saved or
+streamed as a single object. Manual upload remains only for maps obtained elsewhere.
 
 That only works if assembling is nearly free, and the reason it is nearly free
 is a piece of arithmetic already sitting in the format.
@@ -1618,89 +1610,31 @@ Cells are stored per schema; the hosted catalog has exactly **one** (the nine-LO
 
 The shipped documents say which half they are. [`builder/presets/`](src:builder/presets) holds one `schema.json` — a complete packer config, id `bikepacking` — and a `skins/` set beside it. Each skin restates the presentation values for the schema's feature types and nothing else. Merge passes can retag several identically rendered feature types to one canonical style id, so a skin must keep those merged styles identical too. Three rules make that safe rather than merely tidy, and all three are checked by the catalog generator and bakery before the first cut: a skin covers **every** schema feature type, cannot add, drop, or renumber one, and carries **nothing but presentation** — no ladder, tolerances, merge passes, routing table, or per-style `min_lod`. A document that breaks those rules describes a different schema and therefore a different cell store.
 
-### One map, several files
+### One map, one file
 
-> **Superseded — a map is one file again.** OBCM v14
-> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)) scaled the format's `uint32`
-> offsets to 16-byte units, so one `.obcm` addresses 64 GiB; the flat store replaced FAT32, so its
-> 4 GiB file cap is gone too. Both walls this section is built on have fallen, and with them the
-> manifest, the four roles, the shard tiling, the role-free dispatch and the manifest-last commit —
-> the store's own commit is the atomicity that trick was faking. The terrain raster moved *inside*
-> the map file. Everything below is kept for the reasoning, which is still the honest account of why
-> the design went the way it did; none of it is current. `OBCA_Spec.md` §5 carries the same marker.
+The last piece is size. A logical map is **one** `.obcm` object — no manifest, nothing beside it, and no tiling into pieces a reader has to put back together — and that is affordable because of [v14's scaled offsets](#obcm-the-map): every global offset counts 16-byte units, so a file's addressable interior is **64 GiB** where a `uint32` byte offset reached 4 GiB, and the card underneath it is the [flat store](src:specs/FLAT_Store_Format.md) rather than a filesystem with a 4 GiB cap of its own. Germany alone projects to 5.8–7.1 GiB at this schema and DACH to 7.6–8.9 GiB, so the biggest selection anyone has asked for sits an order of magnitude under the ceiling. What matters more than the headroom is that **no sub-region ceiling sits under it**: geometry, the POIs and the navigation graph share one interior, and an `Edge Id` is a `(chunk, ordinal)` pair rather than a byte offset precisely so the format's last `uint32` did not quietly become the new limit the moment the old one lifted.
 
-The last piece is a ceiling. Germany alone projects to 5.8–7.1 GiB at this schema and DACH to 7.6–8.9 GiB, and **two independent 4 GiB walls** stand in the way: FAT32 caps one file at 4 GiB − 1, and OBCM's own offsets — section offsets, per-LOD chunk offset tables, and `Edge Id` as a pool byte offset — are `uint32` throughout, so a single `.obcm` cannot address past 4 GiB on *any* filesystem.
+That the graph shares the interior rather than getting a file of its own is the part worth dwelling on, because the graph is the **one component of a map that cannot be split by box**. Geometry tiles: more ground means more chunks, and a viewport reads the ones it touches. But the navigation graph is *one* graph until the router learns to route across a seam, so any design that splits a map by area has to keep the graph whole somewhere, and that somewhere becomes the scarcest number in the design. One interior big enough for the whole map is what makes the question go away — nav plus POIs measure 3.8–7.1 MiB per 1000 km², so DACH's routable network is 2.8–3.0 GiB, against 64 GiB shared with everything else.
 
-So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ordinary OBCM files, each inside the ceiling, and invisible in every interface — the device and the builder both show one map.
+And the size is never *discovered* at runtime. An assembly's byte count is computable from the catalog **before a single byte is downloaded** — the sum of the cell sizes it will carry plus fixed overheads — so the builder prices a selection up front and checks that one number against the card's free space, and the assembler and its verify pass check the file they actually wrote against the same arithmetic. Density growth degrades to a sentence in a dialog, never to a truncated offset on a card.
 
-- **One core file** carries the style table, the single unified navigation graph, and the POIs — and *no map geometry whatsoever*. Routing therefore never crosses a file, and the router is untouched.
-- **One coarse shard** spans the whole map and carries the five coarsest LODs, so a zoomed-out view is still a single-file read. It is a shard rather than part of the core for one reason, below.
-- **Geometry shards** carry the finer LODs and tile the assembly bbox. They are cell-aligned squares, so each one is a *valid* OBCM map in its own right and `uint32` offsets stay valid per file — no 64-bit bump anywhere.
-- **A viewport query goes to every shard whose box it touches.** A shard that does not carry the requested LOD has an empty index for it and contributes nothing, so the dispatch needs no notion of roles. Each file's "which LODs am I empty at" answer is cached at mount from its own LOD table — one bit per ladder tier — so the role-free dispatch costs no reads either.
-- **The manifest is written last.** A half-uploaded set has no manifest and never mounts — and a shard on its own is never mounted as a standalone map, even though it would open, because a map with no roads is exactly the kind of quiet wrongness a rider cannot diagnose.
-- **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
-- **One terrain shard**, when the selection has elevation, carries the whole map's raster — a single [OBCT](src:specs/OBCT_Spec.md) container rather than an OBCM file, so the manifest's fourth role is the one that names something a map reader never opens. It spans the whole assembly, and it is always its own file: at DACH scale it is ≈ 430 MiB against the same 4 GiB ceiling, an order of magnitude of headroom, so splitting it would buy a file-count problem in exchange for nothing.
+Assembling terrain is the shortest step of the whole pipeline, and it is worth saying why: it is *placement*, not grafting. A published terrain cell is already in its final form, and the sample lattice is global and half-open, so two neighbouring cells agree about every sample without anyone looking. There is no index to relocate, no seam to unify, and nothing to decode — the assembler writes one directory over the assembly rectangle, copies each cell's block into the slot its id names, and splices the finished [OBCT](#obct-the-terrain-raster) container into the map's own terrain region. Squares the selection covers but the catalog publishes no object for — canonically void ocean, or ground outside the dataset — are a zero in that directory, which reads exactly like a block of "no data": four bytes instead of two megabytes. A map with no raster at all is not a degraded map; it is the map every selection produced before terrain existed, with flat profiles and zero baked ascent.
 
-The manifest itself is 72 bytes plus one 64-byte record per file. Its version byte has
-moved twice, both times as a hard cut with no compatibility path: terrain's arrival took
-it to `0x02`, and **`0x03`** gave every record the eight-byte `ObjectId` of the object
-that holds its bytes — so a set is resolved through object identity rather than through
-filenames the reader computes from a card id and an ordinal. The ids are written `0` by
-the assembler, which has no store to have been given ids by, and patched in by the client
-that uploads the set as each member commits; a manifest that is *half* patched is refused,
-because it would look resolvable while silently losing the members that were never named.
-The terrain record is an ordinary shard record — role, bbox, byte count, SHA-256, member
-id — with three rules stacked on top, and each one exists to stop something specific:
+### Assembling a country in a tab
 
-- **At most one, and it is the last record.** Readers take the leading records as the
-  OBCM shards and a record's *index* as the `S<kk>` in its derived filename, so a
-  raster anywhere else would renumber every shard after it. Keeping it last is what
-  lets every existing mount, dispatch and transfer path stay exactly as it was — none
-  of them needs a role filter, and none of them can hand a raster to an OBCM parser.
-- **Its bbox is the whole assembly**, like the core's. It takes no part in the
-  geometry/coarse tiling proof, because it is not tiling anything.
-- **Its name carries no shard index** — `MS<id>.OBD`, not `MS<id>S00.OBD` — since an
-  index that is always `00` is a second thing to keep in step with the manifest for
-  no gain. What the role adds over the sidecar convention is the two things a filename
-  cannot state: that the set *claims* a raster, and how many bytes of one. That is
-  the failure it exists to close — `MS<id>.OBD` may well be sitting on a card as the
-  leftover of a set this one replaced, and a rider getting a profile from the map they
-  deleted is exactly the quiet wrongness the manifest is for.
-
-Assembling terrain is the shortest step of the whole pipeline, and it is worth saying why: it is *placement*, not grafting. A published terrain cell is already in its final form, and the sample lattice is global and half-open, so two neighbouring cells agree about every sample without anyone looking. There is no index to relocate, no seam to unify, and nothing to decode — the assembler writes one directory over the assembly rectangle and copies each cell's block into the slot its id names. Squares the selection covers but the catalog publishes no object for — canonically void ocean, or ground outside the dataset — are a zero in that directory, which reads exactly like a block of "no data": four bytes instead of two megabytes. A set with no raster at all is not a degraded map; it is the map every selection produced before terrain existed, with flat profiles and zero baked ascent.
-
-Mounting preserves that one-map illusion all the way through the UI. The runtime opens every shard
-for the mount lifetime, parses the full style and LOD tables once from the core, and keeps only each
-other shard's bbox, LOD ladder and empty-LOD mask. The app then renders either a single-file reader
-or the mounted set through the same `MapScene` seam: viewport geometry fans out, while POIs, opening
-hours and routing continue to use the core reader; route overlays and the rest of the UI are unchanged.
-On the device each open shard also
-gets a resident FAT extent table, so panning across a shard boundary is bbox dispatch plus direct
-block reads—not a directory lookup or FAT-chain walk in the render loop. A missing shard, mismatched
-size/bbox/LOD ladder/style table, unsupported version, or target-specific handle limit refuses the
-whole mount before a pixel is drawn; it never degrades into a map with a quiet hole.
-
-The reason the coarse LODs are a shard and not part of the core is that the core is the **one component of a set that cannot be split by box**. Every shard tiles: more ground means more shards, each one comfortably inside the ceiling. But the navigation graph is *one* graph, in one file, until the router learns to route across a seam — so the core's remaining headroom under 4 GiB − 1 is the scarcest number in the design, and nothing that has somewhere else to go may spend it. Coarse geometry has somewhere else to go.
-
-What that leaves is a map whose limit is a single sentence: **one map reaches the ceiling when its navigation graph alone does.** Nav plus POIs measure 3.8–7.1 MiB per 1000 km², so a DACH core is 2.8–3.0 GiB, and the graph alone hits the wall at roughly 630–690 thousand km² — enough for DACH and its northern and eastern neighbours, not enough for DACH plus France. No geometry decision can move that number in either direction, which is exactly the property worth having.
-
-And the limit is never met at runtime. Every file's size is *computable from the catalog before a single byte is downloaded* — the sum of the cell sizes it will carry plus fixed overheads — so a builder refuses an over-ceiling selection up front, naming the navigation graph, and the assembler and its verify pass reject one again before writing. Density growth degrades to a sentence in a dialog, never to a truncated offset on a card.
-
-There is a *second* ceiling when the assembly happens in a browser, and it is the tighter one: wasm32 has a 4 GiB address space, and a run has to hold three things at once — the downloaded cells, the finished set, and the graph rewrite's working memory. All three are projected from the same catalog numbers, the same way, before the download.
+There is a *second* ceiling when the assembly happens in a browser, and it is the tighter one: wasm32 has a 4 GiB address space, and a run has to hold three things at once — the downloaded cells, the finished map, and the graph rewrite's working memory. All three are projected from the same catalog numbers, the same way, before the download.
 
 The third term used to be the expensive one, at several bytes resident per byte of rebuilt navigation graph, and it is the one that got fixed — not by improving that constant but by ending the "bytes per byte of graph" model outright. Every stage of the rewrite — the duplicate check, the island prune, the endpoint joins, the rebuilt adjacency, and the node quadtree over it — is now an **external sort or a merge walk over a host-provided scratch area**, so the working set is a *sort buffer the caller sizes*, not a structure sized by the graph. Nothing per-edge stays resident: the adjacency stopped being one array of neighbour lists, the quadtree stopped taking the junctions by value, and the per-edge handle array went with the passes that wanted it. The tree is recovered instead from the same records sorted in **tree order** — the quadrant digits of each point's descent, concatenated into one key — which puts every subtree's records in a contiguous run and makes the tree's shape, its bin packing, and where each record lands a single forward pass. The §8 section is then written straight out of that scratch: the index a block at a time, the chunks one 512-byte chunk at a time, each edge record read out of the cell that wrote it, and none of it resident. Measured on the finished engine, Baden-Württemberg's 296 MB navigation graph peaks at **50.4 MiB at a 16 MiB sort budget, 80.4 MiB at the shipped 64 MiB default, and 248.2 MiB at 256 MiB**. The peak follows the budget it was given rather than the map it was given, which is the property the ceiling actually needs — and it is why the projection prices the engine as (sort budget + a fixed floor) × an allocator margin, a term constant in the size of the graph. Only the fallback for a browser without origin-private storage still pays per byte of graph, for the spill it has nowhere else to put.
 
-What that buys is the selection people actually ask for: **Baden-Württemberg — 215 cells, 850 MB with its terrain — assembles in a tab**, where the model this section opened with said 3.6 GB and refused. The engine fix alone did not get it there, and the reason is worth stating plainly: with the engine down to a budget, what was left was the two copies of the selection the **bridge** held — the cells copied into linear memory when they arrived, and the shards sitting in memory until the page handed them to a card. Streaming those two through origin-private storage is what the next paragraphs describe, and it is what moved the ceiling the rest of the way. What no amount of streaming buys is precision, and the builder shows the difference as one: a file's size is *arithmetic*, exact before anything is downloaded, while the memory numbers are a model fitted to measured runs on two published regions and carried up with a deliberate margin — the harness counts bytes requested rather than pages touched, and wasm's allocator lives in a linear memory that only ever grows, so a freed block is reusable but never returned. The budget it is compared against — 3 GiB of the 4 — is a judgement rather than a limit anyone publishes: browsers do not promise how much of the address space a tab gets, and an allocation wasm cannot serve kills the module outright, with no error left to render. So a comfortable "does not fit" is trustworthy, and that is the verdict worth acting on; a "fits" with a few per cent to spare means *probably*, and reads as a warning rather than a green light.
+What that buys is the selection people actually ask for: **Baden-Württemberg — 215 cells, 850 MB with its terrain — assembles in a tab**, where the model this section opened with said 3.6 GB and refused. The engine fix alone did not get it there, and the reason is worth stating plainly: with the engine down to a budget, what was left was the two copies of the selection the **bridge** held — the cells copied into linear memory when they arrived, and the finished map sitting in memory until the page handed it to a card. Streaming those two through origin-private storage is what the next paragraphs describe, and it is what moved the ceiling the rest of the way. What no amount of streaming buys is precision, and the builder shows the difference as one: a file's size is *arithmetic*, exact before anything is downloaded, while the memory numbers are a model fitted to measured runs on two published regions and carried up with a deliberate margin — the harness counts bytes requested rather than pages touched, and wasm's allocator lives in a linear memory that only ever grows, so a freed block is reusable but never returned. The budget it is compared against — 3 GiB of the 4 — is a judgement rather than a limit anyone publishes: browsers do not promise how much of the address space a tab gets, and an allocation wasm cannot serve kills the module outright, with no error left to render. So a comfortable "does not fit" is trustworthy, and that is the verdict worth acting on; a "fits" with a few per cent to spare means *probably*, and reads as a warning rather than a green light.
 
-Two of those three terms have since stopped being resident for the whole run. A browser assembly splits at 256 MB and hands each shard to the page the moment its read-back passes, so the *finished set* costs one shard at a time rather than the whole map — the same discipline the manifest-last rule already gives an interrupted transfer, applied to memory instead of to a card.
-
-One shard at a time is the right answer only while a shard is small enough to be one, and the core shard is not: it is a single navigation graph, so it is a single file whatever the split size says, and at DACH scale that is 2.8–3.0 GiB by itself. So the shards go where the cells came from. Given origin-private storage, the assembler writes each one straight into it through the same kind of synchronous handle the cells are read through — the engine's bytes never enter wasm memory at all — and the §4.8 pass reads the file *back* through it, cached in blocks because the read-back walks a shard a record at a time. That last part is the quiet upgrade: with the shard in a buffer, "read it back" and "look at it" were the same operation, so the pass could only prove the encoder and the decoder agree. Reading the file makes it a check on the medium too, and a byte corrupted on the way to disk now fails the set. The page is then handed a filename and a digest instead of bytes, and saves the file from storage — so a gigabyte-scale map is never copied into the tab's heap either. A browser without that storage falls back to the per-shard hand-off above, and the byte-for-byte pin against the command line is run down both paths.
+Two of those three terms have since stopped being resident for the whole run, and the finished map is the first of them. It cannot be handed over in instalments — it is one file, and the navigation graph inside it is one graph — so it goes where the cells came from. Given origin-private storage, the assembler writes it straight into that storage through the same kind of synchronous handle the cells are read through — the engine's bytes never enter wasm memory at all — and the §4.8 pass reads the file *back* through it, cached in blocks because the read-back walks the map a record at a time. That last part is the quiet upgrade: with the map in a buffer, "read it back" and "look at it" were the same operation, so the pass could only prove the encoder and the decoder agree. Reading the file makes it a check on the medium too, and a byte corrupted on the way to disk now fails the run. The page is then handed a filename and a digest instead of bytes, and saves the file from storage — so a gigabyte-scale map is never copied into the tab's heap either. A browser without that storage has nowhere to put it but memory, which is exactly what the projection below prices; the byte-for-byte pin against the command line is run down both paths.
 
 And the *cells* need never enter wasm memory at all. Where the browser gives a page an origin private file system, each verified download is written there under the digest the catalog already pins it with, and the engine reads it back through a synchronous file handle — which exists only inside a dedicated worker, which is exactly where the assembly's one blocking call runs. Two things follow. Baden-Württemberg's 795 MB of cells become a **1 MiB read cache**, because the reads go through a small block cache rather than one at a time: the graph rewrite emits its edge pool one record at a time — seventeen million of them at that scale — and a file read per record would be slower than the assembly it feeds. And a cell already on disk is not downloaded again, so a reload, a second attempt, or a neighbouring selection resumes instead of starting over. A browser without that storage keeps the cells in memory exactly as before; nothing about the map changes either way, and the byte-for-byte pin against the command line is run down both paths.
 
-The projection prices the run **it is actually about**, because the escapes are conditional and the verdicts genuinely differ. On the download path of a browser with origin-private storage — cells on disk, spill on disk, shards written to disk — the engine term *is the sort budget*, the other resident terms are the raster and a pair of small caches, and **DACH projects at about 1.3 GB of a 3 GiB allowance**. The memory ceiling the paragraphs above spend their length describing has stopped being the ceiling: what bounds a selection now is the format's own unsplittable core file, and the *disk* — a country-scale run wants its cells, its output and its working files in origin-private storage at once, which the builder prices and checks against the browser's quota **before** the download starts, because a storage refusal six gigabytes in is the crash all of this exists to prevent. A direct-to-device send still keeps the finished set in memory until its counts have been announced, so it binds at roughly 1.4 Bundesländer and refuses a country — download it and copy it to the card instead. A browser without usable origin-private storage runs the old shape with the merge's working files in memory on top, and honestly cannot do a country at all.
+The projection prices the run **it is actually about**, because the escapes are conditional and the verdicts genuinely differ. On the download path of a browser with origin-private storage — cells on disk, spill on disk, the map written to disk — the engine term *is the sort budget*, the other resident terms are the raster and a pair of small caches, and **DACH projects at about 1.3 GB of a 3 GiB allowance**. The memory ceiling the paragraphs above spend their length describing has stopped being the ceiling: what bounds a selection now is the *disk* — a country-scale run wants its cells, its output and its working files in origin-private storage at once, which the builder prices and checks against the browser's quota **before** the download starts, because a storage refusal six gigabytes in is the crash all of this exists to prevent. A browser without usable origin-private storage runs the old shape with the merge's working files in memory on top, and honestly cannot do a country at all.
 
-The measurement behind all of these numbers — where the bytes actually are, per LOD, per cell, at candidate cell sizes — is [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs), and it is what settled the band sizes and the DACH shape above: a core of 2.8–3.0 GiB, one coarse shard of 225–296 MiB, and about six geometry shards holding 4.6–5.5 GiB.
+The measurement behind all of these numbers — where the bytes actually are, per LOD, per cell, at candidate cell sizes — is [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs), and it is what settled the band sizes and the DACH projection above.
 
 ### Baking cells from regions or the planet
 
@@ -1718,7 +1652,7 @@ The replication stream says which OSM objects changed, but it is deliberately **
 
 Featureless output is still coverage. Rather than retain millions of empty OBCM files, the bakery removes those artifacts and folds their identities into the catalog's known-empty row ranges; ordinary artifacts and those zero-byte claims together must cover every geographic cell. A local planet-completion record stays false until every expected leaf succeeds. The verifier and publisher consult it because a catalog can validate every claim it contains, but cannot infer a global cell that was never written. The curated region list remains useful in planet mode: its polygons produce the same named selections without downloading or ingesting the regional PBFs.
 
-The grid, theorem, seam rules, assembly contract, and provenance rule that stops a partially covered border cell from passing as canonical are normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) (its §5 volume-set manifest is superseded by OBCM v14); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
+The grid, theorem, seam rules, assembly contract, and provenance rule that stops a partially covered border cell from passing as canonical are normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
 
 ---
 
@@ -1740,11 +1674,11 @@ The grid, theorem, seam rules, assembly contract, and provenance rule that stops
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
 - The OBCT reader, the normative sampler, the tile cache and the `ElevationSource` seam: [`obc-elevation`](src:firmware/obc-elevation); its layout arithmetic and sentinels: [`obc-formats/src/obct.rs`](src:firmware/obc-formats/src/obct.rs); the assembler's placement + verify pass: [`obcm-assemble/src/terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
 - The cell catalog the section above describes — producer [`catalog.rs`](src:host/obc-pack/src/catalog.rs), region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), and JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
-- The cell grid and the assembly contract: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) — its §5 volume-set manifest is superseded by [OBCM v14](src:specs/OBCM_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
+- The cell grid and the assembly contract: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
 - The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
-- The assembler that puts the cells back together — [`obcm-assemble`](src:host/obcm-assemble): the verbatim graft in [`graft.rs`](src:host/obcm-assemble/src/graft.rs), the POI/hours merge in [`poi.rs`](src:host/obcm-assemble/src/poi.rs), the seam unification and graph rewrite in [`nav.rs`](src:host/obcm-assemble/src/nav.rs), the volume set and its manifest in [`shard.rs`](src:host/obcm-assemble/src/shard.rs), and the read-it-back gate in [`verify.rs`](src:host/obcm-assemble/src/verify.rs). It carries no geometry library and compiles for the browser, which is the whole point. The proof that a grafted map is the map: [`tests/oracle.rs`](src:host/obcm-assemble/tests/oracle.rs) renders and routes `assemble(cut(X))` against `pack(X)`
-- The browser running exactly that engine — [`obc-web-assemble`](src:apps/obc-web-assemble), the wasm bridge the hosted builder assembles through. It adds no format knowledge: a byte adapter — buffers, or callbacks into the page's own storage in *both* directions — a typed error vocabulary, and a progress/abort/hand-off seam built out of the engine's own clock and shard-store traits. The read callback is what keeps the downloaded cells from ever entering wasm memory; the write callback is what keeps the shards — including the unsplittable core — from ever entering it either, and it is what makes the §4.8 read-back a read of the file rather than of a buffer. Its output is pinned byte-for-byte against the native CLI's from both sides — natively in `tests/determinism.rs`, and from Node against the wasm build in `bridge.test.ts`
+- The assembler that puts the cells back together — [`obcm-assemble`](src:host/obcm-assemble): the verbatim graft in [`graft.rs`](src:host/obcm-assemble/src/graft.rs), the POI/hours merge in [`poi.rs`](src:host/obcm-assemble/src/poi.rs), the seam unification and graph rewrite in [`nav.rs`](src:host/obcm-assemble/src/nav.rs), the file layout — header, tables, LOD regions, the two rebuilt sections and the spliced raster — in [`emit.rs`](src:host/obcm-assemble/src/emit.rs), and the read-it-back gate in [`verify.rs`](src:host/obcm-assemble/src/verify.rs). It carries no geometry library and compiles for the browser, which is the whole point. The proof that a grafted map is the map: [`tests/oracle.rs`](src:host/obcm-assemble/tests/oracle.rs) renders and routes `assemble(cut(X))` against `pack(X)`
+- The browser running exactly that engine — [`obc-web-assemble`](src:apps/obc-web-assemble), the wasm bridge the hosted builder assembles through. It adds no format knowledge: a byte adapter — buffers, or callbacks into the page's own storage in *both* directions — a typed error vocabulary, and a progress/abort/hand-off seam built out of the engine's own clock and map-store traits. The read callback is what keeps the downloaded cells from ever entering wasm memory; the write callback is what keeps the assembled map — navigation graph and all — from ever entering it either, and it is what makes the §4.8 read-back a read of the file rather than of a buffer. Its output is pinned byte-for-byte against the native CLI's from both sides — natively in `tests/determinism.rs`, and from Node against the wasm build in `bridge.test.ts`
 - The bakery that fills the tree and publishes it — curated region list [`regions.toml`](src:host/obc-bake/regions.toml), scoped cell runner [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), hierarchical planet runner [`obc-bake/src/planet.rs`](src:host/obc-bake/src/planet.rs), read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), and ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
 - The bakery's **cell** path — region → cell sets and the co-baked source-set rule in [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), the `.poly` coverage geometry that decides both the selection and `partial` in [`obc-bake/src/coverage.rs`](src:host/obc-bake/src/coverage.rs), the lockstep guard in [`obc-bake/src/guard.rs`](src:host/obc-bake/src/guard.rs)
 
-Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). Where the raster beside the map comes from, and what breaks when it isn't there, is [terrain & elevation](../terrain/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
+Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). Where the raster inside the map comes from, and what breaks when it isn't there, is [terrain & elevation](../terrain/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
