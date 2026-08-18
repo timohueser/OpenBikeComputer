@@ -477,8 +477,8 @@ const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= 
 const _: () = assert!(POI_HOURS_BLOB_LEN == 1 + POI_HOURS_DAYS * POI_HOURS_SLOTS_PER_DAY * 2);
 // §1.1: `9` is the largest scale at which `U` still divides the fixed 512-byte chunk stride, which
 // is what keeps §7's and §8's chunk runs free of internal filler.
-const _: () = assert!(NAV_CHUNK_SIZE % (1usize << OFFSET_SCALE_MAX) == 0);
-const _: () = assert!(POI_CHUNK_SIZE % (1usize << OFFSET_SCALE_MAX) == 0);
+const _: () = assert!(NAV_CHUNK_SIZE.is_multiple_of(1usize << OFFSET_SCALE_MAX));
+const _: () = assert!(POI_CHUNK_SIZE.is_multiple_of(1usize << OFFSET_SCALE_MAX));
 // §8.4: the real per-chunk maximum sits below the 31-record cap, so the cap gives up nothing today
 // and keeps the encoding sound if a future record ever shrinks.
 const _: () = assert!(NAV_CHUNK_SIZE / NAV_EDGE_MIN_LEN <= NAV_EDGE_MAX_RECORDS_PER_CHUNK);

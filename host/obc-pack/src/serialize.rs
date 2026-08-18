@@ -1347,6 +1347,44 @@ fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
 /// fact (the dead-band is a fold over samples, not a length). Hand it
 /// [`NullElevation`](obc_elevation::NullElevation) and every entry gets `0`: a decode-valid map that
 /// routes exactly as v11 did, which is the degrade path *and* what keeps small test packs cheap.
+/// Mints §8.4 `Edge Id`s as records are placed in the edge pool.
+///
+/// The writer got *simpler* at v14 — the id is a per-chunk record counter, so nothing has to know a
+/// record's byte position any more — but the counter has one subtlety worth a type of its own.
+/// **The ordinal restarts whenever the chunk does, which is not the same as "whenever a record was
+/// pushed past a boundary".** A record whose length happens to divide the space left in its chunk
+/// exactly ends flush with it: the next record opens the next chunk with no filler and no push, and
+/// an ordinal tied to the push keeps counting straight across. Deriving both halves from the byte
+/// the record lands on makes that case fall out instead of needing to be remembered — and it is not
+/// hypothetical, since it is what a real Freiburg pack hit.
+#[derive(Default)]
+struct EdgeIds {
+    chunk: u32,
+    ordinal: u32,
+}
+
+impl EdgeIds {
+    /// The id of a record starting at pool byte `at`, which must already have been advanced past
+    /// any no-straddle filler.
+    fn mint(&mut self, at: usize) -> u32 {
+        let chunk = (at / NAV_CHUNK_SIZE) as u32;
+        if chunk != self.chunk {
+            self.chunk = chunk;
+            self.ordinal = 0;
+        }
+        // §8.4's producer cap, and the reason `0xFFFFFFFF` is an impossible id *unconditionally*.
+        // The 19-byte minimum record puts the real maximum at 26, so this never binds today; it is
+        // asserted so that it stays true if a future record shrinks.
+        assert!(
+            (self.ordinal as usize) < NAV_EDGE_MAX_RECORDS_PER_CHUNK,
+            "an edge chunk may hold at most {NAV_EDGE_MAX_RECORDS_PER_CHUNK} records"
+        );
+        let id = nav_edge_id(chunk, self.ordinal).expect("chunk index and ordinal are both in field");
+        self.ordinal += 1;
+        id
+    }
+}
+
 pub fn serialize_nav_section(
     graph: &NavGraph,
     profiles: &[NavProfile],
@@ -1457,30 +1495,18 @@ pub fn serialize_nav_section(
 
     // Edge pool: records back-to-back in `edges` order, each pushed to the next chunk start if it
     // would straddle a boundary. Since v14 the wire `edge_id` is the packed `(chunk, ordinal)` pair
-    // (§8.4), and the writer got *simpler* for it: the id is the per-chunk record counter, so
-    // nothing has to know a record's byte position. The no-straddle rule now carries a second
-    // weight — it is what makes "the nth record of a chunk" a well-defined thing to name.
+    // (§8.4), minted by [`EdgeIds`] from the byte the record lands on.
     let mut pool: Vec<u8> = Vec::new();
     let mut edge_ids: Vec<u32> = Vec::with_capacity(edges.len());
-    let mut ordinal = 0u32;
+    let mut ids = EdgeIds::default();
     for e in &edges {
         let rec_len = NAV_EDGE_FIXED_LEN + (e.polyline.len() - 1) * 4;
         debug_assert!(rec_len <= NAV_CHUNK_SIZE, "split bounded every record to one chunk");
         let within = pool.len() % NAV_CHUNK_SIZE;
         if within + rec_len > NAV_CHUNK_SIZE {
             pool.resize(pool.len() + (NAV_CHUNK_SIZE - within), FILLER);
-            ordinal = 0;
         }
-        let chunk_index = (pool.len() / NAV_CHUNK_SIZE) as u32;
-        // §8.4's producer cap, and the reason `0xFFFFFFFF` is an impossible id *unconditionally*.
-        // The 19-byte minimum record puts the real maximum at 26, so this never binds today; it is
-        // asserted so that it stays true if a future record shrinks.
-        assert!(
-            (ordinal as usize) < NAV_EDGE_MAX_RECORDS_PER_CHUNK,
-            "an edge chunk may hold at most {NAV_EDGE_MAX_RECORDS_PER_CHUNK} records"
-        );
-        edge_ids.push(nav_edge_id(chunk_index, ordinal).expect("chunk index and ordinal are both in field"));
-        ordinal += 1;
+        edge_ids.push(ids.mint(pool.len()));
         pack_edge_record(e, &mut pool);
     }
     pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, FILLER);
@@ -1896,7 +1922,56 @@ where
 mod tests {
     use super::*;
     use obc_elevation::NullElevation;
-    use obc_formats::obcm::FEATURE_HEADER_WIDE_LEN;
+    use obc_formats::obcm::{nav_edge_id_ordinal, FEATURE_HEADER_WIDE_LEN};
+
+    /// The one case a push-driven ordinal gets wrong: a record that ends **flush** with its chunk.
+    /// The record behind it opens the next chunk with no filler and no push, so an ordinal reset on
+    /// the push would carry straight over the boundary and mint a duplicate id. A real Freiburg
+    /// pack hits this, which is how the `31 records` assertion earned its keep.
+    #[test]
+    fn an_edge_ordinal_restarts_with_the_chunk_not_with_the_push() {
+        // 19 + 19 + 19 + 455 = 512 exactly: the fourth record ends on the boundary.
+        let flush = [19usize, 19, 19, 455, 19, 19];
+        let mut ids = EdgeIds::default();
+        let mut at = 0usize;
+        let mut minted = Vec::new();
+        for len in flush {
+            let within = at % NAV_CHUNK_SIZE;
+            if within + len > NAV_CHUNK_SIZE {
+                at += NAV_CHUNK_SIZE - within;
+            }
+            minted.push(ids.mint(at));
+            at += len;
+        }
+        let decoded: Vec<(u32, u32)> =
+            minted.iter().map(|&id| (obc_formats::obcm::nav_edge_id_chunk(id), nav_edge_id_ordinal(id))).collect();
+        assert_eq!(decoded, [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1)]);
+        // Distinctness is the property that actually matters, and it is what a push-driven counter
+        // would have broken here.
+        let mut sorted = minted.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), minted.len(), "every record gets its own id");
+    }
+
+    /// …and the ordinary case, where the last record does *not* fit and is pushed.
+    #[test]
+    fn an_edge_pushed_past_a_boundary_opens_the_next_chunk_at_ordinal_zero() {
+        let mut ids = EdgeIds::default();
+        let mut at = 0usize;
+        let mut minted = Vec::new();
+        for len in [500usize, 19, 19] {
+            let within = at % NAV_CHUNK_SIZE;
+            if within + len > NAV_CHUNK_SIZE {
+                at += NAV_CHUNK_SIZE - within;
+            }
+            minted.push(ids.mint(at));
+            at += len;
+        }
+        let decoded: Vec<(u32, u32)> =
+            minted.iter().map(|&id| (obc_formats::obcm::nav_edge_id_chunk(id), nav_edge_id_ordinal(id))).collect();
+        assert_eq!(decoded, [(0, 0), (1, 0), (1, 1)]);
+    }
 
     #[test]
     fn rounding_is_ties_even_not_away() {
